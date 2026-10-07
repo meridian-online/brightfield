@@ -9959,7 +9959,10 @@ fn carve_shelf_band(
         .shelf
         .band
         .get_or_insert_with(|| ShelfBand::new(channels.clone()));
-    band.set_channels(channels);
+    band.set_channels(channels.clone());
+    // A cell marks what is set on its channel: the dot, and a scale that is not
+    // linear. A hero with no spec to read from has nothing set to mark.
+    band.set_settings(hero_axis_settings(&charts.doc, &channels).unwrap_or_default());
     // The cell says *preview* while the chart document draws a column it has
     // not kept, and only then: the document's preview is the one record of it.
     match charts.doc.shelf_preview() {
@@ -9988,11 +9991,20 @@ fn hero_shelf_channels(doc: &ChartDoc) -> Option<ShelfChannels> {
 /// What the hero's axes read on their settings lists, from the live spec at the
 /// hero's path: the values the plot resolves to, with `channels` saying what
 /// each axis holds, so a title can be told from the column's own name.
+///
+/// The rows found by name are judged against the scales the hero was drawn
+/// against, which the composed plot holds, so a row the render crate says does
+/// not apply to the axis it drew carries its reason.
 fn hero_axis_settings(doc: &ChartDoc, channels: &ShelfChannels) -> Option<ChannelSettings> {
-    let path = &doc.composed.plots.get(HERO_PLOT)?.path;
+    let hero = doc.composed.plots.get(HERO_PLOT)?;
     let spec = doc.live_dashboard()?.spec();
-    let plot = brightfield_spec::edit::plot_at_path(spec, path)?;
-    Some(ChannelSettings::of_plot(spec, plot, channels))
+    let plot = brightfield_spec::edit::plot_at_path(spec, &hero.path)?;
+    Some(ChannelSettings::of_plot_drawn(
+        spec,
+        plot,
+        channels,
+        &hero.scales,
+    ))
 }
 
 /// Draw the grid pane's layout switch on `band`, record it on the document and

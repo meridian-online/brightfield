@@ -49,10 +49,15 @@ use std::sync::OnceLock;
 
 use brightfield_keys::dispatch::{resolution_table, DispatchContext, ResolutionTable};
 use brightfield_keys::registry::{keymap_bindings, registry, BindingContext};
+use brightfield_render::axis::{axis_kind, tick_count_applies, AxisKind};
+use brightfield_render::channel::Channel;
+use brightfield_render::scale::{Scale, ScaleSet};
+use brightfield_render::scene::{axis_ends_apply, axis_keys_apply, axis_reverse_applies};
 use brightfield_spec::ast::{Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
 use brightfield_spec::layout::{
-    read_tick_format, resolve_axis_titles, resolve_plot_scales_in, AxisTitle, ScaleType,
-    TickFormatReading,
+    read_tick_format, resolve_axis_ends, resolve_axis_reverse, resolve_axis_titles,
+    resolve_grid_lines, resolve_plot_scales_in, resolve_tick_counts, AxisTitle, ScaleType,
+    TickFormatReading, DEFAULT_TICK_COUNT,
 };
 use brightfield_spec::vocab::is_colour_literal;
 use brightfield_workbench::channel::{self, ShelfChannel, BAND_HEIGHT};
@@ -205,6 +210,9 @@ pub struct ShelfBand {
     channels: ShelfChannels,
     active: Option<ShelfChannel>,
     preview: Option<(ShelfChannel, String)>,
+    /// What the axes' settings read, which a cell marks: a dot while any of its
+    /// channel's rows is set, and the scale's name while it is not linear.
+    settings: ChannelSettings,
 }
 
 impl ShelfBand {
@@ -215,7 +223,15 @@ impl ShelfBand {
             channels,
             active: None,
             preview: None,
+            settings: ChannelSettings::default(),
         }
+    }
+
+    /// Hand the band what the axes' settings read, as the plot's spec changes.
+    /// A band handed none, or a plot that sets nothing, draws its cells with no
+    /// mark on them.
+    pub fn set_settings(&mut self, settings: ChannelSettings) {
+        self.settings = settings;
     }
 
     /// What the plot's mark takes, as the band says it.
@@ -346,6 +362,12 @@ impl ShelfBand {
     /// channel holds no column.
     fn words(&self, channel: ShelfChannel) -> CellWords {
         let word = channel.word();
+        let rows = self.settings.rows(channel);
+        let set = rows.iter().any(|row| row.set);
+        let scale = rows
+            .iter()
+            .find(|row| row.name == SCALE_ROW && row.set)
+            .map(|row| row.value.clone());
         if let Some((on, column)) = &self.preview {
             if *on == channel {
                 return CellWords {
@@ -353,6 +375,8 @@ impl ShelfBand {
                     value: column.clone(),
                     previewed: true,
                     empty: false,
+                    set,
+                    scale,
                 };
             }
         }
@@ -367,6 +391,8 @@ impl ShelfBand {
             value,
             previewed: false,
             empty,
+            set,
+            scale,
         }
     }
 
@@ -470,10 +496,18 @@ struct CellWords {
     value: String,
     previewed: bool,
     empty: bool,
+    /// Whether any of the channel's settings rows is the analyst's, which the
+    /// cell marks with a dot after its word.
+    set: bool,
+    /// The scale's name, where the channel's scale is not linear, which the cell
+    /// reads after its word.
+    scale: Option<String>,
 }
 
 /// Paint one cell's contents: the keycap, the channel's word over the column's
-/// name, the chevron on the word's line and, where it fits, *preview*.
+/// name, the chevron on the word's line and, where it fits, *preview*. The word
+/// reads `x · log` while the scale is not linear, and a dot follows it while a
+/// value of the channel is set.
 fn paint_words(
     ui: &mut egui::Ui,
     painter: &egui::Painter,
@@ -525,17 +559,33 @@ fn paint_words(
     icons::CHEVRON_DOWN.paint(painter, chevron, muted);
     let label_right = chevron.left() - spacing::SPACE_2;
 
-    // The channel's word, in a text ink and not in the channel's hue.
+    // The channel's word, in a text ink and not in the channel's hue, and the
+    // scale's name after it where the scale is not linear.
     let room = (label_right - text_left).max(0.0);
-    let word = text_ink::fit(painter, words.word, label_font.clone(), room, muted);
+    let said = match &words.scale {
+        Some(scale) => format!("{} \u{b7} {scale}", words.word),
+        None => words.word.to_owned(),
+    };
+    let word = text_ink::fit(painter, &said, label_font.clone(), room, muted);
     let word_width = word.size().x;
     painter.galley(egui::pos2(text_left, block_top), word, muted);
 
-    // *preview*, where the word leaves the room for it.
+    // The dot of a value set, where the word leaves the room for it.
+    let mut label_used = text_left + word_width;
+    if words.set {
+        let centre = label_used + spacing::SPACE_3 + MARKER_RADIUS;
+        if centre + MARKER_RADIUS <= label_right {
+            let dot = chrome::colour(sem.text.primary);
+            painter.circle_filled(egui::pos2(centre, label_cy), MARKER_RADIUS, dot);
+            label_used = centre + MARKER_RADIUS;
+        }
+    }
+
+    // *preview*, where the word and the dot leave the room for it.
     if words.previewed {
         let preview = painter.layout_no_wrap(PREVIEW.to_owned(), label_font, muted);
         let at = label_right - preview.size().x;
-        if at >= text_left + word_width + spacing::SPACE_3 {
+        if at >= label_used + spacing::SPACE_3 {
             painter.galley(egui::pos2(at, block_top), preview, muted);
         }
     }
@@ -651,6 +701,36 @@ pub const SCALE_ROW: &str = "scale";
 /// The name of the format row.
 pub const FORMAT_ROW: &str = "format";
 
+/// The name of the ticks row, which is found by typing it.
+pub const TICKS_ROW: &str = "ticks";
+
+/// The name of the grid row, which is found by typing it.
+pub const GRID_ROW: &str = "grid";
+
+/// The name of the zero row, which is found by typing it.
+pub const ZERO_ROW: &str = "zero";
+
+/// The name of the reverse row, which is found by typing it.
+pub const REVERSE_ROW: &str = "reverse";
+
+/// What a switch row reads while the key is on.
+pub const ON: &str = "on";
+
+/// What a switch row reads while the key is off.
+pub const OFF: &str = "off";
+
+/// The foot's sentence for the ticks row.
+const TICKS_SAYS: &str = "About how many ticks the axis draws, which auto leaves to its own step.";
+
+/// The foot's sentence for the grid row.
+const GRID_SAYS: &str = "Whether a line crosses the plot at each tick, which auto draws.";
+
+/// The foot's sentence for the zero row.
+const ZERO_SAYS: &str = "Whether the axis reaches zero, which auto leaves to the data.";
+
+/// The foot's sentence for the reverse row.
+const REVERSE_SAYS: &str = "Whether the axis runs from high to low, which auto runs low to high.";
+
 /// The foot's sentence for the title row: what it does, and the rule for its
 /// default.
 const TITLE_SAYS: &str = "The words along the axis, which auto takes from the column's name.";
@@ -697,9 +777,15 @@ pub struct SettingRow {
     /// Whether the value differs from brightfield's own.
     pub set: bool,
     /// Why the row does not apply to the chart as it is, where it does not.
-    /// The judges are the render crate's own; the three rows this card draws
-    /// apply to every axis, so none carries one.
+    /// The judges are the render crate's own and are asked, not re-derived:
+    /// `axis_ends_apply` for zero, `tick_count_applies` for ticks,
+    /// `axis_reverse_applies` for reverse, and `axis_keys_apply` for ticks, grid
+    /// and zero under a map projection. The three head rows apply to every axis,
+    /// so none carries one.
     pub reason: Option<String>,
+    /// Whether the row is listed only where the query names it: ticks, grid,
+    /// zero and reverse. A head row is listed with no query as well.
+    pub by_name: bool,
     /// How the row takes a value.
     pub kind: SettingKind,
     /// The one sentence the list's foot reads under the cursor: what the row
@@ -724,13 +810,44 @@ impl ChannelSettings {
     /// override, suppression or derivation, the scale is the type the plot
     /// resolves to (so a name this build cannot draw reads as the linear it is
     /// drawn as), and the format is the one the judge reads.
+    ///
+    /// **No scale has been drawn here, so no judge speaks**: a by-name row
+    /// carries no reason. A window hands the scales its chart was drawn against
+    /// to [`Self::of_plot_drawn`].
     #[must_use]
     pub fn of_plot(spec: &Spec, plot: &PlotNode, channels: &ShelfChannels) -> Self {
+        Self::of_plot_drawn(spec, plot, channels, &ScaleSet::new())
+    }
+
+    /// [`Self::of_plot`] with the scales `plot` was drawn against, which the
+    /// render crate's judges are asked of: a row that does not apply to the axis
+    /// those scales draw carries the reason.
+    #[must_use]
+    pub fn of_plot_drawn(
+        spec: &Spec,
+        plot: &PlotNode,
+        channels: &ShelfChannels,
+        drawn: &ScaleSet,
+    ) -> Self {
         let titles = resolve_axis_titles(plot);
         let scales = resolve_plot_scales_in(plot, &spec.params);
         Self {
-            x: axis_rows(plot, ShelfChannel::X, &titles.x, scales.x, &channels.x),
-            y: axis_rows(plot, ShelfChannel::Y, &titles.y, scales.y, &channels.y),
+            x: axis_rows(
+                plot,
+                ShelfChannel::X,
+                &titles.x,
+                scales.x,
+                &channels.x,
+                drawn,
+            ),
+            y: axis_rows(
+                plot,
+                ShelfChannel::Y,
+                &titles.y,
+                scales.y,
+                &channels.y,
+                drawn,
+            ),
         }
     }
 
@@ -746,13 +863,15 @@ impl ChannelSettings {
     }
 }
 
-/// The head rows of one axis: title, scale and format, in that order.
+/// The rows of one axis: the head rows, title, scale and format, in that order,
+/// and the four found by name, ticks, grid, zero and reverse, behind them.
 fn axis_rows(
     plot: &PlotNode,
     axis: ShelfChannel,
     title: &AxisTitle,
     scale: ScaleType,
     binding: &Binding,
+    drawn: &ScaleSet,
 ) -> Vec<SettingRow> {
     // brightfield's own title is the name of the column the axis holds.
     let derived = match binding {
@@ -778,10 +897,11 @@ fn axis_rows(
         value,
         set,
         reason: None,
+        by_name: false,
         kind,
         says,
     };
-    vec![
+    let mut rows = vec![
         row(
             TITLE_ROW,
             title_value,
@@ -803,7 +923,156 @@ fn axis_rows(
             SettingKind::Enumerated,
             FORMAT_SAYS,
         ),
+    ];
+    rows.extend(by_name_rows(plot, axis, drawn));
+    rows
+}
+
+/// The rows found by name on one axis: ticks, grid, zero and reverse, each
+/// reading *auto* or the value the plot sets, and carrying the reason where the
+/// render crate's judge says the key does not apply to the axis `drawn` holds.
+fn by_name_rows(plot: &PlotNode, axis: ShelfChannel, drawn: &ScaleSet) -> [SettingRow; 4] {
+    let x = axis == ShelfChannel::X;
+    let channel = if x { Channel::X } else { Channel::Y };
+    let scale = drawn.get(channel);
+    let projected = !axis_keys_apply(drawn);
+
+    let ticks = {
+        let asked = resolve_tick_counts(plot);
+        if x {
+            asked.x
+        } else {
+            asked.y
+        }
+    };
+    let grid = {
+        let lines = resolve_grid_lines(plot);
+        if x {
+            lines.x
+        } else {
+            lines.y
+        }
+    };
+    let zero = {
+        let ends = resolve_axis_ends(plot);
+        if x {
+            ends.x.zero
+        } else {
+            ends.y.zero
+        }
+    };
+    let reverse = {
+        let turned = resolve_axis_reverse(plot);
+        if x {
+            turned.x
+        } else {
+            turned.y
+        }
+    };
+    let word = |on: bool| if on { ON } else { OFF }.to_string();
+    let row = |name, value, set, kind, says, reason| SettingRow {
+        name,
+        value,
+        set,
+        reason,
+        by_name: true,
+        kind,
+        says,
+    };
+
+    let ticks_reason = if projected {
+        Some(PROJECTED.to_string())
+    } else {
+        scale
+            .filter(|scale| !tick_count_applies(scale))
+            .map(ticks_reason)
+    };
+    let zero_reason = if projected {
+        Some(PROJECTED.to_string())
+    } else {
+        scale
+            .filter(|scale| !axis_ends_apply(scale))
+            .map(zero_reason)
+    };
+    [
+        row(
+            TICKS_ROW,
+            ticks.unwrap_or(DEFAULT_TICK_COUNT).to_string(),
+            ticks.is_some_and(|count| count != DEFAULT_TICK_COUNT),
+            SettingKind::Typed,
+            TICKS_SAYS,
+            ticks_reason,
+        ),
+        row(
+            GRID_ROW,
+            word(grid),
+            !grid,
+            SettingKind::Enumerated,
+            GRID_SAYS,
+            projected.then(|| PROJECTED.to_string()),
+        ),
+        row(
+            ZERO_ROW,
+            word(zero),
+            zero,
+            SettingKind::Enumerated,
+            ZERO_SAYS,
+            zero_reason,
+        ),
+        row(
+            REVERSE_ROW,
+            word(reverse),
+            reverse,
+            SettingKind::Enumerated,
+            REVERSE_SAYS,
+            (!axis_reverse_applies(drawn)).then(|| PROJECTED.to_string()),
+        ),
     ]
+}
+
+/// The reason a key does not apply under a map projection, which every key of
+/// the four shares: the plot's x and y are the projection's, and there is no
+/// axis to set.
+const PROJECTED: &str = "a map's x and y are its projection, which has no axis to set";
+
+/// What the axis `scale` is, said with its article: the words a reason names the
+/// axis it does not apply to by.
+fn axis_phrase(scale: &Scale) -> &'static str {
+    match scale {
+        Scale::Log { .. } => "a log axis",
+        Scale::Symlog { .. } => "a symlog axis",
+        Scale::Time { .. } => "a time axis",
+        Scale::Band { .. } => match axis_kind(scale) {
+            Some(AxisKind::Date) => "an axis of days",
+            _ => "an axis of names",
+        },
+        _ => "this axis",
+    }
+}
+
+/// Why a tick count does not aim the ticks of `scale`, an axis
+/// `tick_count_applies` has judged one it does not reach: a band has a tick for
+/// each category, and a log or symlog axis one for each decade.
+fn ticks_reason(scale: &Scale) -> String {
+    let phrase = axis_phrase(scale);
+    match scale {
+        Scale::Band { .. } => {
+            format!("{phrase} has a tick for each, which a count does not change")
+        }
+        Scale::Log { .. } | Scale::Symlog { .. } => {
+            format!("{phrase} ticks at each decade, which a count does not change")
+        }
+        _ => format!("{phrase} does not tick to a count"),
+    }
+}
+
+/// Why zero does not move the ends of `scale`, an axis `axis_ends_apply` has
+/// judged one it does not: a linear axis's alone.
+fn zero_reason(scale: &Scale) -> String {
+    format!(
+        "only a linear axis reaches zero, and this is {}",
+        axis_phrase(scale)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -946,8 +1215,14 @@ impl ColumnList {
             self.tab = ListTab::Columns;
         }
         self.row = self.row.filter(|r| *r < rows);
-        if self.tab == ListTab::Settings && self.row.is_none() {
-            self.row = self.setting_order().first().copied();
+        if self.tab == ListTab::Settings {
+            // A row that was under the cursor and is no longer drawn, as a
+            // by-name row is not once the query is gone, hands the cursor to
+            // the first of those that are.
+            let order = self.setting_order();
+            if !self.row.is_some_and(|r| order.contains(&r)) {
+                self.row = order.first().copied();
+            }
         }
     }
 
@@ -975,15 +1250,16 @@ impl ColumnList {
     }
 
     /// The settings rows in the order the list draws them, as indices into
-    /// [`Self::settings`]: with no query the channel's order, and with one the
-    /// rows whose name begins with the letters, then those that hold them. A row
-    /// the query does not match is not drawn, as it is a name being looked for
-    /// among a handful and not a column among a table's.
+    /// [`Self::settings`]: with no query the channel's head rows in the
+    /// channel's order, and with one the rows, found by name or not, whose name
+    /// begins with the letters, then those that hold them. A row the query does
+    /// not match is not drawn, as it is a name being looked for among a handful
+    /// and not a column among a table's.
     fn setting_order(&self) -> Vec<usize> {
         let rows = self.settings();
         let all: Vec<usize> = (0..rows.len()).collect();
         if self.query.is_empty() {
-            return all;
+            return all.into_iter().filter(|i| !rows[*i].by_name).collect();
         }
         let named = |i: &usize| rows[*i].name.to_lowercase();
         let mut order: Vec<usize> = all
@@ -1479,6 +1755,9 @@ pub struct SettingRowDrawn {
     /// Where the word *auto* was laid out, on a row whose value is
     /// brightfield's own.
     pub auto_rect: Option<egui::Rect>,
+    /// Where the reason was laid out, under the line, on a row that does not
+    /// apply to the axis.
+    pub reason_rect: Option<egui::Rect>,
     /// The bar down the row's leading edge, on the row under the cursor.
     pub bar: Option<egui::Rect>,
 }
@@ -1885,8 +2164,9 @@ impl ColumnList {
             painter.galley(at, galley, muted);
         }
 
-        // The names share a column as wide as the longest of the channel's, so
-        // the values stand in one line whichever rows a query leaves.
+        // The names share a column as wide as the longest of the channel's, those
+        // found by name included, so the values stand in one line whichever rows
+        // a query leaves.
         let name_column = rows
             .iter()
             .map(|r| {
@@ -1902,8 +2182,24 @@ impl ColumnList {
         let mut pointed = None;
         for &i in &order {
             let row = &rows[i];
-            let (rect, response) =
-                ui.allocate_exact_size(egui::vec2(width, b.row), egui::Sense::click());
+            // A row that does not apply says why on a line of its own under the
+            // name and the value, in the room the row's content leaves.
+            let reason = row.reason.as_ref().map(|text| {
+                painter.layout(
+                    text.clone(),
+                    caption_font(),
+                    muted,
+                    width - 2.0 * spacing::SPACE_4 - 2.0 * b.pad_x,
+                )
+            });
+            let reason_height = reason
+                .as_ref()
+                .map_or(0.0, |g| g.size().y + spacing::SPACE_2);
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(width, b.row + reason_height),
+                egui::Sense::click(),
+            );
+            let line = egui::Rect::from_min_size(rect.min, egui::vec2(width, b.row));
             let on = self.row == Some(i);
             response.widget_info(|| {
                 egui::WidgetInfo::selected(
@@ -1938,11 +2234,13 @@ impl ColumnList {
                 egui::pos2(rect.right() - b.pad_x, rect.bottom()),
             );
 
-            // The marker at the trailing end.
-            let centre = egui::pos2(content.right() - MARKER_RADIUS, rect.center().y);
+            // The marker at the trailing end. A row that does not apply is in
+            // muted ink throughout, set or not, and says so by its reason.
+            let applies = row.reason.is_none();
+            let centre = egui::pos2(content.right() - MARKER_RADIUS, line.center().y);
             let marker = egui::Rect::from_center_size(centre, egui::Vec2::splat(MARKER_BOX));
             if row.set {
-                painter.circle_filled(centre, MARKER_RADIUS, primary);
+                painter.circle_filled(centre, MARKER_RADIUS, if applies { primary } else { muted });
             } else {
                 painter.circle_stroke(
                     centre,
@@ -1958,7 +2256,7 @@ impl ColumnList {
                 let at = egui::Rect::from_min_size(
                     egui::pos2(
                         right - galley.size().x,
-                        rect.center().y - galley.size().y / 2.0,
+                        line.center().y - galley.size().y / 2.0,
                     ),
                     galley.size(),
                 );
@@ -1968,20 +2266,29 @@ impl ColumnList {
             });
 
             // The name, then the value in what room is left.
-            let name_galley = painter.layout_no_wrap(row.name.to_string(), ui_font(), primary);
+            let name_ink = if applies { primary } else { muted };
+            let name_galley = painter.layout_no_wrap(row.name.to_string(), ui_font(), name_ink);
             let name_rect = egui::Rect::from_min_size(
-                egui::pos2(content.left(), rect.center().y - name_galley.size().y / 2.0),
+                egui::pos2(content.left(), line.center().y - name_galley.size().y / 2.0),
                 name_galley.size(),
             );
-            painter.galley(name_rect.min, name_galley, primary);
+            painter.galley(name_rect.min, name_galley, name_ink);
             let value_left = content.left() + name_column + spacing::SPACE_3;
-            let ink = if row.set { primary } else { muted };
+            let ink = if row.set && applies { primary } else { muted };
             let value = text_ink::fit(&painter, &row.value, ui_font(), right - value_left, ink);
             let value_rect = egui::Rect::from_min_size(
-                egui::pos2(value_left, rect.center().y - value.size().y / 2.0),
+                egui::pos2(value_left, line.center().y - value.size().y / 2.0),
                 value.size(),
             );
             painter.galley(value_rect.min, value, ink);
+            let reason_rect = reason.map(|galley| {
+                let at = egui::Rect::from_min_size(
+                    egui::pos2(content.left(), line.bottom()),
+                    galley.size(),
+                );
+                painter.galley(at.min, galley, muted);
+                at
+            });
             drawn.push(SettingRowDrawn {
                 name: row.name,
                 rect,
@@ -1989,6 +2296,7 @@ impl ColumnList {
                 value_rect,
                 marker,
                 auto_rect,
+                reason_rect,
                 bar,
             });
         }
