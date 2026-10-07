@@ -22,6 +22,12 @@
 //! Accuracy rides the same pass: each plot's legend derivation is compared
 //! against the scale set that plot was composed with — entries exactly the
 //! scale's categories, in the scale's order.
+//!
+//! The file decides whether a legend is drawn, so the corpus is also held to
+//! two laws about the files: an example whose colour scale calls for a legend
+//! declares one, bar the examples named in [`LEGENDLESS`], and the legend an
+//! example draws is named, for the column or for the transform that produced the
+//! fill.
 
 use std::path::PathBuf;
 
@@ -29,7 +35,7 @@ use brightfield_render::channel::Channel;
 use brightfield_render::scale::Scale;
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{band_width, blocks, LegendSpec};
+use brightfield_shell::legend::{band_width, blocks, legend_name, LegendSpec};
 use brightfield_shell::pipeline::{compose_spec, Composed};
 use brightfield_shell::window::{chart_window_size, Boot, MeridianApp};
 
@@ -207,6 +213,16 @@ fn every_margin_legend_is_accurate_to_its_plots_displayed_scale() {
     );
 }
 
+/// Whether an example's text holds a `legend: color` line, as an item in a plot
+/// or as a standalone node beside it.
+fn declares_colour_legend(text: &str) -> bool {
+    text.lines().any(|l| {
+        l.trim_start()
+            .trim_start_matches("- ")
+            .starts_with("legend: color")
+    })
+}
+
 /// **The file decides, over the corpus.** An example whose text holds no
 /// `legend: color` line draws no legend, though its scales may call for one; an
 /// example that holds one over a plot with a colour scale draws that plot's
@@ -224,11 +240,7 @@ fn an_example_draws_a_legend_when_its_file_holds_a_colour_legend_node() {
             .to_string_lossy()
             .into_owned();
         let text = std::fs::read_to_string(&path).expect("an example reads");
-        let holds_node = text.lines().any(|l| {
-            l.trim_start()
-                .trim_start_matches("- ")
-                .starts_with("legend: color")
-        });
+        let holds_node = declares_colour_legend(&text);
         let Ok(composed) = compose_spec(path.to_str().expect("utf-8 path")) else {
             continue;
         };
@@ -265,4 +277,108 @@ fn an_example_draws_a_legend_when_its_file_holds_a_colour_legend_node() {
         "only {with_node} examples hold a legend node over a colour scale — the \
          rule was held over almost nothing"
     );
+}
+
+/// The examples whose colour scale calls for a legend and whose file declares
+/// none, by file name, in the order `example_specs` lists them. **Empty, and it
+/// stays empty:** a reader of the gallery has no analyst beside them to say what
+/// a colour means, so a new example with a colour scale carries the legend
+/// item. A name goes here only with the reason it is an exception written beside
+/// it, and the test below fails when a name here no longer belongs, so the list
+/// cannot outlive the exception.
+const LEGENDLESS: &[&str] = &[];
+
+/// **An example whose colour scale calls for a legend declares one.** Every
+/// example composed, any whose plots have a fill scale a legend can draw and
+/// whose file holds no `legend: color` line is listed in [`LEGENDLESS`], so
+/// adding such an example fails here, and so does listing one that has since
+/// gained the item.
+#[test]
+fn an_example_whose_colour_scale_calls_for_a_legend_declares_one() {
+    let mut scaled = 0usize;
+    let mut without: Vec<String> = Vec::new();
+    for path in example_specs() {
+        let name = path
+            .file_name()
+            .expect("a file has a name")
+            .to_string_lossy()
+            .into_owned();
+        let text = std::fs::read_to_string(&path).expect("an example reads");
+        let Ok(composed) = compose_spec(path.to_str().expect("utf-8 path")) else {
+            continue;
+        };
+        if !composed
+            .plots
+            .iter()
+            .any(|p| LegendSpec::from_scales(&p.scales).is_some())
+        {
+            continue;
+        }
+        scaled += 1;
+        if !declares_colour_legend(&text) {
+            without.push(name);
+        }
+    }
+    assert!(
+        scaled >= 15,
+        "only {scaled} examples have a colour scale a legend can draw — the rule \
+         was held over almost nothing"
+    );
+    let listed: Vec<String> = LEGENDLESS.iter().map(|n| (*n).to_owned()).collect();
+    assert_eq!(
+        without, listed,
+        "the examples whose colour scale calls for a legend and whose file holds no \
+         `legend: color` line are not the names in LEGENDLESS: add the item to the \
+         example, or name the example there with its reason"
+    );
+}
+
+/// **A legend an example draws names what the colour encodes.** A fill that is
+/// a column is named for the column; a fill the transform produced, which has no
+/// column of the author's, is named for the transform: `density` for a heatmap
+/// and `count` for a hexbin, a raster and a raster with a scheme. The four are
+/// pinned by name because they are the fills a column cannot name.
+#[test]
+fn every_legend_an_example_draws_is_named_and_the_transform_fills_carry_their_word() {
+    let composed = composed_examples();
+    let mut named = 0usize;
+    for (name, composed) in &composed {
+        for (i, plot) in composed.plots.iter().enumerate() {
+            if LegendSpec::of_plot(plot).is_none() {
+                continue;
+            }
+            assert!(
+                legend_name(plot).is_some(),
+                "{name} plot {i}: a legend is drawn and names nothing"
+            );
+            named += 1;
+        }
+    }
+    assert!(
+        named >= 15,
+        "only {named} example legends were checked for a name — the rule was held \
+         over almost nothing"
+    );
+    for (file, word) in [
+        ("heatmap.yaml", "density"),
+        ("hexbin.yaml", "count"),
+        ("raster.yaml", "count"),
+        ("raster-blues.yaml", "count"),
+    ] {
+        let (_, composed) = composed
+            .iter()
+            .find(|(name, _)| name == file)
+            .unwrap_or_else(|| panic!("{file} did not compose"));
+        let names: Vec<&str> = composed
+            .plots
+            .iter()
+            .filter(|plot| LegendSpec::of_plot(plot).is_some())
+            .filter_map(legend_name)
+            .collect();
+        assert_eq!(
+            names,
+            vec![word],
+            "{file}: its legend is not named for its transform"
+        );
+    }
 }

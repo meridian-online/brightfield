@@ -31,6 +31,7 @@ hconcat:
       fill: g
     - select: toggleX
       as: $pick
+    name: pick
     width: 360
     height: 320
   - plot:
@@ -41,3 +42,5 @@ hconcat:
       fill: g
     width: 360
     height: 320
+  - legend: color
+    for: pick

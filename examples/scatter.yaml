@@ -33,5 +33,6 @@ plot:
     x: weight
     y: height
     fill: group
+  - legend: color
 width: 640
 height: 480

@@ -20,6 +20,7 @@ plot:
   - mark: geo
     data: { from: regions }
     fill: rate
+  - legend: color
 colorScheme: viridis
 title: Regional rate
 width: 480

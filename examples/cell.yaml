@@ -43,5 +43,6 @@ plot:
     x: hour
     y: day
     fill: value
+  - legend: color
 width: 560
 height: 360
