@@ -121,13 +121,15 @@ deviations:
     affected_specs: []
     conformance_layers_suppressed: [3]
   - id: DEV-0005
-    surface: "scales — positional domain pinning (`Domain: Fixed`)"
+    surface: "scales — positional domain pinning (`Domain: Fixed`, and two numbers)"
     mosaic_behaviour: |
       Mosaic accepts `Fixed` at `xDomain`, `yDomain`, the `xyDomain`
       both-axes shorthand, and the facet axes `fxDomain` / `fyDomain`, at a
       plot and under `plotDefaults`. The domain is fixed after the first
       render, on whatever data the marks then hold, and later filtering
-      leaves it where it is.
+      leaves it where it is. The same keys also take a two-element array,
+      Observable Plot's own domain, which sets the axis's ends from the first
+      render whatever the rows span.
     brightfield_behaviour: |
       `Fixed` is read from a plot's own `xDomain` and `yDomain` — which now
       includes whatever `plotDefaults` set and the plot itself left unset,
@@ -139,14 +141,31 @@ deviations:
       category ORDER, so a filtered-away category keeps its slot rather than
       closing the gap.
 
+      The explicit two-element domain is read, at `xDomain`, `yDomain` and
+      the `xyDomain` shorthand, from the plot's own keys, from what
+      `plotDefaults` sets, and from a `$param` that holds the pair now. Two
+      finite numbers with the low end first fix that axis's ends on every
+      composition, so the axis keeps them through a filter, a selection and
+      a re-query, and the ends the file wrote are not captured from the rows.
+      An axis's own key is read before `xyDomain`. A reader's pan or zoom
+      takes precedence over the written ends, as it does over a pin. A value
+      that is not two numbers low first (`[100, 0]`, `[0, "high"]`, `[0]`) is
+      not read as a reversal or as half a pair: the axis draws as if the key
+      were absent and the warning banner names the key and the value as
+      written. A `$param` the file never declares, or one that holds a
+      selection, holds no value and is read as an absent key. Two numbers on
+      a date axis or an axis of names change nothing there, and the banner
+      says so; `xNice` or `xZero` beside two numbers on a linear, log or
+      symlog axis leave the ends as written, and the banner says so.
+
       Three positions are still NOT read, and a spec using one gets a domain
-      inferred from the rows it is currently drawing: the `xyDomain`
-      both-axes shorthand, the facet axes `fxDomain` / `fyDomain`, and any
-      spelling other than the exact string `Fixed`. An explicit two-element
-      domain (`xDomain: [0, 100]`) is a different instruction and is
-      likewise not read here. The warning banner names `xyDomain` and
-      `fxDomain` / `fyDomain` as keys this build does not read (DEV-0014 for
-      `xyDomain`).
+      inferred from the rows it is currently drawing: `Fixed` at the
+      `xyDomain` both-axes shorthand, the facet axes `fxDomain` /
+      `fyDomain`, and any spelling of `Fixed` other than the exact string.
+      The warning banner names `xyDomain: Fixed` and `fxDomain` /
+      `fyDomain` as keys this build does not read (DEV-0014 for `xyDomain`);
+      a spelling of `Fixed` that is not the exact string is named as not
+      being two numbers.
 
       One brightfield-local rule sits on top: pan and zoom are offered on
       any plot with a continuous positional scale, and an axis the reader
@@ -171,6 +190,15 @@ deviations:
       the frame must not move when the DASHBOARD moves; a pan is the reader
       moving the frame on purpose. A pin that outranked the gesture would
       make a plot silently refuse to pan.
+
+      Two numbers are read because they are how a file puts several charts on
+      one axis, 0 to 100 on a score, and without them each chart's axis moves
+      with its rows and a reader who compares two charts by position is
+      misled. The high end first is refused and not read as a reversal,
+      because `xReverse` is the key that turns an axis. A pair on an axis that
+      cannot take two numbers, or beside a nice or zero request that would
+      move the ends, is named rather than half-applied, so the file and the
+      drawing do not disagree in silence.
     affected_specs:
       - facet-interval.yaml
     conformance_layers_suppressed: [3]
@@ -394,7 +422,7 @@ deviations:
     affected_specs: []
     conformance_layers_suppressed: [3]
   - id: DEV-0014
-    surface: "plot attributes — `axis`, `facetGrid`, `facetLabel`, `padding`, `align` and `xyDomain`, named rather than read"
+    surface: "plot attributes — `axis`, `facetGrid`, `facetLabel`, `padding`, `align` and `xyDomain` set to `Fixed`, named rather than read"
     mosaic_behaviour: |
       Mosaic hands these plot attributes to Observable Plot. `axis` places the
       implicit axis on a side of the frame or on both sides, and `null`
@@ -405,7 +433,9 @@ deviations:
     brightfield_behaviour: |
       The plot is drawn as the same file draws it without the key, and the
       warning banner names the key as one this build does not read, with the
-      key first and then the plot, whatever it is set to. A key set under
+      key first and then the plot, whatever it is set to, except `xyDomain`
+      set to two numbers, which is read (DEV-0005): of the three values
+      `xyDomain` takes it is `Fixed` that is named. A key set under
       `plotDefaults` is named once, there, and not at each plot that inherits
       it. `xDomain: Fixed` and `yDomain: Fixed` are read (DEV-0005), and
       `xyDomain: Fixed` is not.

@@ -4185,6 +4185,103 @@ mod tests {
         }
     }
 
+    /// **Two numbers fix a linear, log or symlog axis and no other.** A date
+    /// axis's ends are instants and a band axis's are names, so the judge the
+    /// draw and the warning both ask says no for them, and a colour ramp is not a
+    /// positional axis at all.
+    #[test]
+    fn written_ends_apply_to_a_numeric_axis_and_to_no_other() {
+        let linear = |kind: &str| match kind {
+            "linear" => Scale::Linear {
+                domain_min: 1.0,
+                domain_max: 9.0,
+                range_start: 0.0,
+                range_end: 100.0,
+            },
+            "log" => Scale::Log {
+                domain_min: 1.0,
+                domain_max: 9.0,
+                range_start: 0.0,
+                range_end: 100.0,
+            },
+            _ => Scale::Symlog {
+                domain_min: 1.0,
+                domain_max: 9.0,
+                range_start: 0.0,
+                range_end: 100.0,
+            },
+        };
+        for kind in ["linear", "log", "symlog"] {
+            assert!(written_ends_apply(&linear(kind)), "{kind}");
+        }
+        let time = Scale::Time {
+            domain_min_us: 0,
+            domain_max_us: 1_000_000,
+            range_start: 0.0,
+            range_end: 100.0,
+        };
+        let band = Scale::Band {
+            categories: vec!["a".into(), "b".into()],
+            range_start: 0.0,
+            range_end: 100.0,
+            padding: 0.1,
+        };
+        assert!(!written_ends_apply(&time), "a date axis takes no numbers");
+        assert!(!written_ends_apply(&band), "a band axis takes no numbers");
+    }
+
+    /// **The ends a file wrote are laid over the pins a plot holds, axis by
+    /// axis.** An axis the file wrote two numbers for is pinned to them and
+    /// marked as written, over whatever domain was held for it; an axis it wrote
+    /// nothing, or a refused value, for keeps the pin it held and is not marked.
+    #[test]
+    fn written_ends_are_laid_over_the_held_pins_per_axis() {
+        use brightfield_spec::layout::DomainReading;
+        let held = PinnedDomains {
+            x: Some(PinnedDomain::Linear(10.0, 20.0)),
+            y: Some(PinnedDomain::Linear(30.0, 40.0)),
+            ..PinnedDomains::default()
+        };
+
+        let x_written = held.clone().with_written_ends(&DomainReadings {
+            x: DomainReading::Ends {
+                key: "xDomain",
+                lo: 0.0,
+                hi: 100.0,
+            },
+            y: DomainReading::Absent,
+        });
+        assert_eq!(x_written.x, Some(PinnedDomain::Linear(0.0, 100.0)));
+        assert!(x_written.x_written);
+        assert_eq!(
+            x_written.y,
+            Some(PinnedDomain::Linear(30.0, 40.0)),
+            "y keeps the pin it held"
+        );
+        assert!(!x_written.y_written);
+
+        let refused = held.clone().with_written_ends(&DomainReadings {
+            x: DomainReading::Refused {
+                key: "xDomain",
+                value: "[100, 0]".to_string(),
+            },
+            y: DomainReading::Absent,
+        });
+        assert_eq!(refused, held, "a refused value changes no pin");
+
+        let from_nothing = PinnedDomains::default().with_written_ends(&DomainReadings {
+            x: DomainReading::Absent,
+            y: DomainReading::Ends {
+                key: "yDomain",
+                lo: -1.0,
+                hi: 1.0,
+            },
+        });
+        assert_eq!(from_nothing.x, None);
+        assert_eq!(from_nothing.y, Some(PinnedDomain::Linear(-1.0, 1.0)));
+        assert!(from_nothing.y_written && !from_nothing.x_written);
+    }
+
     /// **Nothing pinned, nothing written.** The default path through
     /// `build_multi_mark_scene_with_domains` passes an empty set, so this is
     /// what makes a spec asking for no pin take the behaviour it always had.

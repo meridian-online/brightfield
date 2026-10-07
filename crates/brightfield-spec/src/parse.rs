@@ -487,7 +487,8 @@ pub enum ParseWarning {
     /// A plot, or `plotDefaults:`, set an axis attribute Mosaic's schema
     /// declares and this build does not read: `xTickRotate`, `yAxis`,
     /// `xLabelAnchor`, or one of the bare names that carry no `x` or `y` of their
-    /// own (`axis`, `align`, `padding`, `xyDomain`, `facetGrid`, `facetLabel`).
+    /// own (`axis`, `align`, `padding`, `facetGrid`, `facetLabel`, and `xyDomain`
+    /// set to Mosaic's `Fixed`, which this build does not read; two numbers it does).
     /// The plot draws as it does without the key. This names the key and the
     /// plot that carries it, so an author can tell a gap in brightfield from a
     /// typing mistake and trust the rest of the chart.

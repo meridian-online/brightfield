@@ -4344,9 +4344,9 @@ xScale: log
 
     /// **Every other value at these keys leaves the axis unpinned.** A
     /// two-element domain and a `$param` are different instructions with
-    /// different effects, and the positions `deviations.yaml` DEV-0005 records
-    /// as unread have to stay unread — a resolver that treated any `xDomain` as
-    /// a pin would silently freeze `mark-types.yaml`'s explicit `[-1, 8]`.
+    /// different effects, which [`read_domains_in`] reads — a resolver that
+    /// treated any `xDomain` as a `Fixed` pin would capture the rows' domain
+    /// over `mark-types.yaml`'s explicit `[-1, 8]`.
     #[test]
     fn only_the_fixed_literal_pins_an_axis() {
         for value in [
@@ -4437,6 +4437,160 @@ xDomain: [0, 100]
             "the plot's own xDomain is an explicit two-element domain, not \
              Fixed; the plotDefaults entry must not overwrite it with a pin"
         );
+    }
+
+    // --- positional domain ends written as two numbers ---
+
+    fn pair(lo: SpecValue, hi: SpecValue) -> SpecValue {
+        SpecValue::Array(vec![lo, hi])
+    }
+
+    fn word(w: &str) -> SpecValue {
+        SpecValue::String(w.to_string())
+    }
+
+    /// Two finite numbers, low end first, are the axis's ends, whichever of an
+    /// integer or a float each is written as, and a negative end is an end.
+    #[test]
+    fn two_numbers_low_first_are_read_as_the_ends() {
+        let read = |lo: SpecValue, hi: SpecValue| {
+            read_domains_in(&plot_with(&[("xDomain", pair(lo, hi))]), &IndexMap::new())
+                .x
+                .ends()
+        };
+        assert_eq!(
+            read(SpecValue::Integer(0), SpecValue::Integer(100)),
+            Some((0.0, 100.0))
+        );
+        assert_eq!(
+            read(SpecValue::Float(1.5), SpecValue::Float(2.1)),
+            Some((1.5, 2.1))
+        );
+        assert_eq!(
+            read(SpecValue::Integer(-60), SpecValue::Float(180.5)),
+            Some((-60.0, 180.5))
+        );
+    }
+
+    /// **Each axis is read on its own key, and `xyDomain` stands for an axis
+    /// whose own key says nothing.** An axis's own key wins, even when what it
+    /// says is `Fixed`, which is no ends: `yDomain: Fixed` beside
+    /// `xyDomain: [0, 1]` leaves y to the rows.
+    #[test]
+    fn an_axis_is_read_on_its_own_key_before_the_shorthand() {
+        let ends = || pair(SpecValue::Integer(0), SpecValue::Integer(1));
+        let other = || pair(SpecValue::Integer(5), SpecValue::Integer(9));
+        let params = IndexMap::new();
+
+        let x_only = read_domains_in(&plot_with(&[("xDomain", ends())]), &params);
+        assert_eq!(x_only.x.ends(), Some((0.0, 1.0)));
+        assert_eq!(x_only.y, DomainReading::Absent);
+
+        let both = read_domains_in(&plot_with(&[("xyDomain", ends())]), &params);
+        assert_eq!(both.x.ends(), Some((0.0, 1.0)));
+        assert_eq!(both.y.ends(), Some((0.0, 1.0)));
+
+        let own_wins = read_domains_in(
+            &plot_with(&[("xyDomain", ends()), ("yDomain", other())]),
+            &params,
+        );
+        assert_eq!(own_wins.x.ends(), Some((0.0, 1.0)));
+        assert_eq!(own_wins.y.ends(), Some((5.0, 9.0)));
+
+        let fixed_wins = read_domains_in(
+            &plot_with(&[("xyDomain", ends()), ("yDomain", word("Fixed"))]),
+            &params,
+        );
+        assert_eq!(fixed_wins.x.ends(), Some((0.0, 1.0)));
+        assert_eq!(fixed_wins.y, DomainReading::Absent);
+    }
+
+    /// **`Fixed`, a `null`, and a `$param` with no value to read are no ends.**
+    /// `Fixed` is [`resolve_fixed_domains`]'s, a param the file does not declare
+    /// or one that holds a selection has nothing to say, and none of them is
+    /// refused: a refusal is a warning.
+    #[test]
+    fn fixed_null_and_a_param_with_no_value_are_no_ends() {
+        let mut params: IndexMap<String, ParamNode> = IndexMap::new();
+        params.insert(
+            "picked".to_string(),
+            ParamNode::Selection(SelectionNode {
+                select: crate::vocab::SelectionResolution::Crossfilter,
+                status: crate::vocab::ImplStatus::Implemented,
+                options: IndexMap::new(),
+            }),
+        );
+        for value in [
+            word("Fixed"),
+            SpecValue::Null,
+            SpecValue::Param(ParamRef::new("picked")),
+            SpecValue::Param(ParamRef::new("nowhere")),
+        ] {
+            let read = read_domains_in(&plot_with(&[("xDomain", value.clone())]), &params);
+            assert_eq!(read.x, DomainReading::Absent, "xDomain: {value:?}");
+        }
+    }
+
+    /// **A `$param` is read through the value it holds.** A pair is the ends, a
+    /// bad value is refused with its own text, as the literal would be.
+    #[test]
+    fn a_param_is_read_through_its_value() {
+        let mut params: IndexMap<String, ParamNode> = IndexMap::new();
+        params.insert(
+            "ends".to_string(),
+            ParamNode::Value(pair(SpecValue::Integer(0), SpecValue::Integer(100))),
+        );
+        params.insert(
+            "backwards".to_string(),
+            ParamNode::Value(pair(SpecValue::Integer(100), SpecValue::Integer(0))),
+        );
+        let read = |name: &str| {
+            read_domains_in(
+                &plot_with(&[("xDomain", SpecValue::Param(ParamRef::new(name)))]),
+                &params,
+            )
+            .x
+        };
+        assert_eq!(read("ends").ends(), Some((0.0, 100.0)));
+        assert_eq!(
+            read("backwards"),
+            DomainReading::Refused {
+                key: "xDomain",
+                value: "[100, 0]".to_string()
+            }
+        );
+    }
+
+    /// **A value that is not two finite numbers low first is refused, with the
+    /// key and the value as the file wrote it.** High first, equal ends, a
+    /// string end, one end, three ends, an infinite end, a bare number and any
+    /// word but `Fixed`: none is read as a reversal, half a pair or a pin.
+    #[test]
+    fn a_value_that_is_not_two_numbers_low_first_is_refused_with_its_text() {
+        let int = SpecValue::Integer;
+        for (value, text) in [
+            (pair(int(100), int(0)), "[100, 0]"),
+            (pair(int(5), int(5)), "[5, 5]"),
+            (pair(int(0), word("high")), "[0, \"high\"]"),
+            (SpecValue::Array(vec![int(0)]), "[0]"),
+            (SpecValue::Array(vec![int(0), int(5), int(9)]), "[0, 5, 9]"),
+            (pair(int(0), SpecValue::Float(f64::INFINITY)), "[0, inf]"),
+            (SpecValue::Array(vec![]), "[]"),
+            (int(50), "50"),
+            (word("fixed"), "\"fixed\""),
+            (SpecValue::Bool(true), "true"),
+        ] {
+            let read = read_domains_in(&plot_with(&[("yDomain", value.clone())]), &IndexMap::new());
+            assert_eq!(
+                read.y,
+                DomainReading::Refused {
+                    key: "yDomain",
+                    value: text.to_string()
+                },
+                "yDomain: {value:?}"
+            );
+            assert_eq!(read.x, DomainReading::Absent, "the key names y alone");
+        }
     }
 
     // --- tick count (`xTicks` / `yTicks`) ---
