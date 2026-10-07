@@ -3,7 +3,7 @@
 //!
 //! `Fixed` was the one value read, so a plot drew each axis from its rows'
 //! lowest value to their highest whatever ends the file wrote, and an analyst who
-//! wanted every chart in a report on one axis, 0 to 100, could not have it.
+//! wanted the charts of a report on one axis, 0 to 100, could not have it.
 //!
 //! Assertions read two things, as the zero and round-ends file beside this one
 //! does. The domain of the scale the plot was composed against says what the axis
