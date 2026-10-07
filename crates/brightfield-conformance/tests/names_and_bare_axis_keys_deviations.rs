@@ -3,10 +3,11 @@
 //! read, and `DEVIATIONS.md` carries both.**
 //!
 //! A band axis prints its names, so a number or date format on one has nothing to
-//! act on; `axis`, `facetGrid`, `facetLabel`, `padding`, `align` and `xyDomain`
-//! are plot attributes no resolver reads. brightfield draws the chart as the
-//! file draws it without the key and names the key. A difference nobody wrote
-//! down is one the next reader meets as a bug.
+//! act on; `axis`, `facetGrid`, `facetLabel`, `padding` and `align` are plot
+//! attributes no resolver reads, and `xyDomain` is read as two numbers and named
+//! when it is Mosaic's `Fixed`. brightfield draws the chart as the file draws it
+//! without the key and names the key. A difference nobody wrote down is one the
+//! next reader meets as a bug.
 //!
 //! The drift gate in `generate_deviations.rs` holds `DEVIATIONS.md` equal to a
 //! regeneration; this reads each entry itself, so a record dropped from the
@@ -19,8 +20,9 @@ use brightfield_conformance::deviations::{load_deviations, Deviation};
 const NAMES_SURFACE: &str = "a tick format (`xTickFormat`, `yTickFormat`) of either kind";
 const BARE_SURFACE: &str = "named rather than read";
 
-/// The six keys the schema declares and no resolver reads. The entry names them
-/// all, so a key added to the banner without the register fails here.
+/// The six keys the schema declares and the banner names, `xyDomain` as `Fixed`.
+/// The entry names each, so a key added to the banner without the register fails
+/// here.
 const BARE_KEYS: [&str; 6] = [
     "`axis`",
     "`facetGrid`",
