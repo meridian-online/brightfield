@@ -1534,6 +1534,32 @@ fn plan_aggregates(plan: &QueryPlan) -> bool {
     }
 }
 
+/// Whether `plan` returns its source's rows one for one: no `GROUP BY`, no
+/// scalar aggregate and no bin anywhere in its tree, over a named source. A
+/// filter, an order, a limit or a sample keeps fewer rows or reorders them, and
+/// each row it keeps is still a row of the source.
+///
+/// A count taken over such a plan's batch is a count of rows, and over any
+/// other plan it is a count of groups, bins or summary rows. The renderer's
+/// count of the rows past a fixed axis end asks this, so the question of which
+/// marks draw rows is answered by the plan the emitter ran rather than by a
+/// second reading of the spec.
+#[must_use]
+pub fn plan_returns_rows(plan: &QueryPlan) -> bool {
+    match plan {
+        QueryPlan::Aggregation { .. }
+        | QueryPlan::AggregateScalar { .. }
+        | QueryPlan::Bin { .. }
+        | QueryPlan::Singleton { .. } => false,
+        QueryPlan::Filter { input, .. }
+        | QueryPlan::Projection { input, .. }
+        | QueryPlan::Order { input, .. }
+        | QueryPlan::Limit { input, .. }
+        | QueryPlan::Sample { input, .. } => plan_returns_rows(input),
+        QueryPlan::Source { .. } => true,
+    }
+}
+
 /// Extract the selection name that this mark's `data.filter_by` references,
 /// if any. Returns `None` for marks without `filter_by` or with inline data.
 fn mark_filter_by_name(mark: &Mark) -> Option<&str> {

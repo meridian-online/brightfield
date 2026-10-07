@@ -21,6 +21,7 @@ pub mod layout;
 pub mod legend;
 pub mod mark;
 pub mod nearest;
+pub mod past_ends;
 pub mod sample_notice;
 pub mod sample_policy;
 pub mod scale;

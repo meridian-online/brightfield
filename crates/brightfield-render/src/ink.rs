@@ -195,6 +195,15 @@ pub struct ChartInk {
     /// mode: warm gray step 2 in light and step 4 in dark. Its two arms are
     /// the same in both modes, so only this one colour lives here.
     pub diverging_mid: Color,
+    /// The warning ink: the mark and the count drawn at an axis end the file
+    /// fixed, saying how many rows lie past it (`crate::past_ends`).
+    ///
+    /// The design system's amber scale at step 11, its text step, in this
+    /// mode: #9e6300 in light and #ebb15b in dark. It is text on the chart
+    /// surface, so it takes the text bar of 4.5:1 there, which step 11 clears in
+    /// both modes and the status warning (#da950b, one value in both modes,
+    /// drawn as a fill or a dot beside a label) does not on the light surface.
+    pub warning: Color,
     /// The "Harbour" categorical order for this mode, as the raw component
     /// arrays [`crate::scale::Scale::Colour`] stores. The ORDER is the
     /// colourblind-safety mechanism and is therefore data, never cosmetic; both
@@ -289,6 +298,11 @@ impl ChartInk {
                 meridian_design::viz::DIVERGING_MID_DARK
             } else {
                 meridian_design::viz::DIVERGING_MID_LIGHT
+            }),
+            warning: ink(if dark {
+                meridian_design::scales::AMBER_DARK[10]
+            } else {
+                meridian_design::scales::AMBER_LIGHT[10]
             }),
             categorical: if dark {
                 &CATEGORICAL_DARK
@@ -565,6 +579,37 @@ mod tests {
             stale_basemap < 7.0,
             "the retired geo literal is {stale_basemap:.2}:1 on the dark \
              surface, which now clears the floor this test holds"
+        );
+    }
+
+    /// The warning ink is text on the chart surface, so it clears the text bar
+    /// of 4.5:1 there in both modes, and it is amber, not the muted label ink
+    /// beside it. The status warning, the one amber the design system keeps in
+    /// both modes, is held to the same bar on the light surface and fails it,
+    /// which is why the count does not wear it.
+    #[test]
+    fn the_warning_ink_reads_as_text_on_both_surfaces() {
+        for dark in [false, true] {
+            let ink = ChartInk::for_mode(dark);
+            let ratio = contrast_ratio(ink.warning, ink.background);
+            assert!(
+                ratio >= 4.5,
+                "the warning ink is {ratio:.2}:1 on the {} surface",
+                if dark { "dark" } else { "light" }
+            );
+            let [r, g, b, _] = ink.warning.components;
+            assert!(
+                r > g && g > b,
+                "the warning ink ({r}, {g}, {b}) is not an amber"
+            );
+            assert_ne!(ink.warning, ink.label, "the warning ink is the label's");
+        }
+        let status = super::ink(meridian_design::viz::STATUS.warning);
+        let light = ChartInk::LIGHT.background;
+        assert!(
+            contrast_ratio(status, light) < 4.5,
+            "the status warning now clears the text bar on the light surface, \
+             so the bound has stopped telling the two ambers apart"
         );
     }
 

@@ -46,6 +46,10 @@ use brightfield_render::ink::ChartInk;
 use brightfield_render::inset::{resolve_insets_for_marks, DEFAULT_SCALE_INSET};
 use brightfield_render::layout::{ChartLayout, Margins};
 use brightfield_render::mark::{default_renderers_scaled, find_renderer, MarkRenderer};
+use brightfield_render::past_ends::{
+    count_rows_past, mark_counts_rows_past, render_rows_past, rows_past_band_margins, FixedEnds,
+    PastEnds,
+};
 use brightfield_render::sample_notice::{sample_band_margins, SampleFact};
 use brightfield_render::sample_policy;
 use brightfield_render::scale::{
@@ -54,8 +58,8 @@ use brightfield_render::scale::{
 };
 use brightfield_render::scene::{
     axis_ends_apply, axis_keys_apply, build_multi_mark_scene_pinned, colour_override_applies,
-    colour_reverse_applies, compose_dashboard, unrestorable_under_sampling, ChartData,
-    UnsampledDomains,
+    colour_reverse_applies, compose_dashboard, unrestorable_under_sampling, written_ends_held,
+    ChartData, UnsampledDomains,
 };
 use brightfield_render::selection::{
     committed_selection_rect, render_committed_selection, CommittedSelection, Selected,
@@ -75,7 +79,7 @@ use brightfield_spec::layout::{
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, ParseWarning, Spec};
-use brightfield_sql::emit::as_bound_selection_default;
+use brightfield_sql::emit::{as_bound_selection_default, plan_for_mark, plan_returns_rows};
 use brightfield_sql::ir::{Predicate, SampleRate, ScalarValue};
 use brightfield_sql::lower::{compile_selection, NO_SELF_EXCLUDE};
 use brightfield_sql::{collect_marks, collect_plot_groups, plot_of_each_mark};
@@ -176,6 +180,12 @@ pub struct PlotHandle {
     /// surface reading plot handles (chrome, a future export caption) can tell
     /// a sampled plot from a complete one without re-deriving it.
     pub sample: Option<SampleFact>,
+    /// **How many rows lie past each end of an axis the file fixed**, as the
+    /// count drawn at that end reads: counted over the plot's dots whose plan
+    /// returns rows, on the axes the draw held at the file's two numbers. Zero
+    /// at every end of a plot with no fixed ends, of an axis the reader has
+    /// panned or zoomed, and of a plot whose marks draw no rows to count.
+    pub rows_past: PastEnds,
     /// **The layer a pointer resting on this plot reads**, when one of its
     /// marks can be read that way — see [`HoverLayer`].
     ///
@@ -2353,24 +2363,11 @@ fn compose_from_results(
             .map(|(_, node)| resolve_plot_margins(node))
             .unwrap_or_default();
 
-        // Two bands, reserved the same way: one for the axis titles, one for
-        // the sampling notice. Growing the margin is what makes the device
-        // removable later without disturbing anything else's geometry.
-        let plot_sample = chart_data.iter().find_map(|d| d.sample);
-        let margins = sample_band_margins(
-            grow_margins(Margins::default().with_declared(declared_margins), &titles),
-            plot_sample.is_some(),
-        );
-        let layout = ChartLayout::with_margins_and_insets(
-            plot.rect.width,
-            plot.rect.height,
-            margins,
-            insets,
-        );
-        for d in &mut chart_data {
-            d.layout = layout;
-        }
-
+        // Three bands, reserved the same way: one for the axis titles, one for
+        // the sampling notice, and the title row an untitled axis's count of
+        // the rows past its fixed ends is drawn in. Growing the margin is what
+        // makes the device removable later without disturbing anything else's
+        // geometry.
         // What this plot's spec asked to hold still, and what it is holding
         // still so far. The pin is READ before the draw and CAPTURED after, so
         // the first composition draws against its own inference (there is
@@ -2391,6 +2388,48 @@ fn compose_from_results(
             .map(|(_, node)| read_domains_in(node, &spec.params))
             .unwrap_or_default();
         let plot_pins = held_pins.clone().with_written_ends(&written_ends);
+
+        // Which of this plot's marks count their rows past an end the file
+        // fixed, index for index with `chart_data`: a dot whose plan returns
+        // rows one for one. A dot that aggregates or bins draws a mark per
+        // group, and the emitter's plan is what says so.
+        let counts_rows: Vec<bool> = drawn
+            .iter()
+            .zip(&plot_marks)
+            .map(|(&mi, &kind)| {
+                mark_counts_rows_past(kind)
+                    && plan_for_mark(spec, mi, None, None).is_ok_and(|p| plan_returns_rows(&p))
+            })
+            .collect();
+        // The axes whose count has a row to be drawn in. Read off the file, not
+        // the rows, so the frame holds still when a brush moves the count.
+        let counted_axes = if counts_rows.contains(&true) {
+            FixedEnds {
+                x: plot_pins.x_written,
+                y: plot_pins.y_written,
+            }
+        } else {
+            FixedEnds::default()
+        };
+
+        let plot_sample = chart_data.iter().find_map(|d| d.sample);
+        let margins = rows_past_band_margins(
+            sample_band_margins(
+                grow_margins(Margins::default().with_declared(declared_margins), &titles),
+                plot_sample.is_some(),
+            ),
+            &titles,
+            counted_axes,
+        );
+        let layout = ChartLayout::with_margins_and_insets(
+            plot.rect.width,
+            plot.rect.height,
+            margins,
+            insets,
+        );
+        for d in &mut chart_data {
+            d.layout = layout;
+        }
 
         // What this plot's spec asked each positional axis's ticks to target
         // — `xTicks`/`yTicks`. A plot that asks for neither reads back its
@@ -2469,7 +2508,7 @@ fn compose_from_results(
         // rect, from the scales returned here — one legend per chart, one
         // source of truth, and no in-plot swatch block a margin copy could
         // drift from or that could sit on top of the marks.
-        let (scene, scales) = build_multi_mark_scene_pinned(
+        let (mut scene, scales) = build_multi_mark_scene_pinned(
             &refs,
             false,
             &titles,
@@ -2484,6 +2523,22 @@ fn compose_from_results(
             colour_reverse,
             ink,
         );
+        // The rows past each end the draw held at the file's numbers, counted
+        // over the marks that draw rows and drawn at that end. Taken here, on
+        // every composition, so a re-present after a brush counts the rows the
+        // brush left.
+        let counted: Vec<&ChartData<'_>> = refs
+            .iter()
+            .zip(&counts_rows)
+            .filter_map(|(entry, &counts)| counts.then_some(*entry))
+            .collect();
+        let rows_past = count_rows_past(
+            &counted,
+            &scales,
+            written_ends_held(&plot_pins, &refs, &scales),
+        );
+        render_rows_past(&mut scene, &layout, &scales, rows_past, ink);
+        drop(counted);
         drop(refs);
         drop(chart_data);
 
@@ -2580,6 +2635,7 @@ fn compose_from_results(
                 .map(|(_, node)| resolve_plot_stack_offset(node))
                 .unwrap_or_default(),
             sample: plot_sample,
+            rows_past,
             hover,
             navigated_empty,
             // Set by `ink_committed_selections` alone — a one-shot

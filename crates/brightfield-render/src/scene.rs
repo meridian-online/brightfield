@@ -898,6 +898,38 @@ fn ends_left_to_written_pins(ends: AxisEnds, pins: &PinnedDomains, scales: &Scal
     }
 }
 
+/// Which positional axes the draw holds at the ends the file wrote as two
+/// numbers: the axes [`build_multi_mark_scene_pinned`] fixed for `pins` and
+/// `entries`, read off the `scales` it returned.
+///
+/// An axis is held when the file wrote its ends, the reader has not panned or
+/// zoomed it (a navigated axis drops its pin, as the draw does), and its scale
+/// is one two numbers fix ([`written_ends_apply`]); a plot with a map
+/// projection holds neither ([`axis_keys_apply`]). These are the axes that
+/// count the rows past their ends ([`crate::past_ends`]), so an axis a gesture
+/// has taken over says nothing about rows its own frame leaves out.
+#[must_use]
+pub fn written_ends_held(
+    pins: &PinnedDomains,
+    entries: &[&ChartData<'_>],
+    scales: &ScaleSet,
+) -> crate::past_ends::FixedEnds {
+    let Some(first) = entries.first() else {
+        return crate::past_ends::FixedEnds::default();
+    };
+    if !axis_keys_apply(scales) {
+        return crate::past_ends::FixedEnds::default();
+    }
+    let pins = pins_yielding_to_navigation(pins, first);
+    let held = |written: bool, channel: Channel| {
+        written && scales.get(channel).is_some_and(written_ends_apply)
+    };
+    crate::past_ends::FixedEnds {
+        x: held(pins.x_written, Channel::X),
+        y: held(pins.y_written, Channel::Y),
+    }
+}
+
 /// `pins` with every axis the reader has navigated dropped.
 ///
 /// The view extent is already on the scale by the time a pin would be applied
