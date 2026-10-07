@@ -8,8 +8,8 @@
 //!
 //! Assertions read two things. [`PlotHandle::rows_past`] is the number the
 //! count draws, and the raster of the composed scene, through the renderer the
-//! window uses, says where the warning ink landed: at which end, and never
-//! inside the data area. Each arm that fixes an end is paired with one that
+//! window uses, says where the warning ink landed: at which end, and whether
+//! any landed inside the data area. Each arm that fixes an end is paired with one that
 //! does not, or with rows that stay inside, so a count drawn whatever the file
 //! said would fail.
 //!
@@ -412,7 +412,7 @@ fn a_dot_beside_a_binned_mark_counts_its_own_rows() {
 }
 
 /// **`deviations.yaml` says which marks count and which do not, and its two
-/// lists are the code's**: every mark kind the vocabulary declares is named
+/// lists are the code's**: each mark kind the vocabulary declares is named
 /// once, under the marks that count exactly when [`mark_counts_rows_past`]
 /// says it counts, and `DEVIATIONS.md` carries the entry.
 #[test]

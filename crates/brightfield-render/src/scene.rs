@@ -907,7 +907,7 @@ fn ends_left_to_written_pins(ends: AxisEnds, pins: &PinnedDomains, scales: &Scal
 /// is one two numbers fix ([`written_ends_apply`]); a plot with a map
 /// projection holds neither ([`axis_keys_apply`]). These are the axes that
 /// count the rows past their ends ([`crate::past_ends`]), so an axis a gesture
-/// has taken over says nothing about rows its own frame leaves out.
+/// has taken over draws no count for rows its own frame leaves out.
 #[must_use]
 pub fn written_ends_held(
     pins: &PinnedDomains,
