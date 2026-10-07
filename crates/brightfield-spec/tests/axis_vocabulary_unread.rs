@@ -406,6 +406,10 @@ fn corpus() -> Vec<PathBuf> {
 /// The root keys that are not a component: the walker reads them as blocks.
 const ROOT_BLOCKS: &[&str] = &["meta", "data", "params", "config", "plotDefaults"];
 
+/// The keys a raw plot or `plotDefaults:` block sets, each with its value as
+/// the author wrote it.
+type RawAttributes = Vec<(String, serde_yaml::Value)>;
+
 /// Whether what a spec wrote makes `key` an axis attribute brightfield reads: a
 /// name on `READ_AXIS_ATTRIBUTES`, except `xyDomain` set to Mosaic's `Fixed`,
 /// which no resolver reads and the parser names. The value is the author's,
@@ -465,7 +469,7 @@ fn each_unread_axis_attribute_in_the_corpus_is_named_and_no_read_one_is() {
             .into_iter()
             .map(|(at, plot)| (at.clone(), plot_label(&at, plot)))
             .collect();
-        let mut carriers: Vec<(Option<String>, Vec<(String, serde_yaml::Value)>)> = plots
+        let mut carriers: Vec<(Option<String>, RawAttributes)> = plots
             .into_iter()
             .map(|(at, attrs)| {
                 let label = labels
