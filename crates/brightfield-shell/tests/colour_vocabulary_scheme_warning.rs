@@ -295,7 +295,7 @@ fn writing_the_param_to_a_drawn_name_clears_the_warning_and_draws_that_ramp() {
     );
 }
 
-/// **Held nothing.** A `colorScheme` param the file never declares, one that holds a
+/// **No value to judge.** A `colorScheme` param the file never declares, one that holds a
 /// selection, and one that holds `null` draw as a file without the key and
 /// raise no warning.
 #[test]
