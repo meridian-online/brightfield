@@ -32,6 +32,8 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use brightfield_protocol::layout::Flow;
+use brightfield_render::channel::Channel;
+use brightfield_render::scale::{Scale, ScaleSet};
 use brightfield_shell::column_header::{column_header_frame, draw_column_band, GridDensity};
 use brightfield_shell::data_file;
 use brightfield_shell::design::{self, Mode};
@@ -149,6 +151,12 @@ fn request(channel: ShelfChannel) -> ColumnListRequest {
 /// top-level lines of the spec, as the window reads them off the live plot and
 /// hands them to the list.
 fn settings_of(attrs: &str, channels: &ShelfChannels) -> ChannelSettings {
+    settings_over(attrs, channels, &ScaleSet::new())
+}
+
+/// [`settings_of`] against the scales the plot was drawn with, which the rows
+/// found by name are judged by.
+fn settings_over(attrs: &str, channels: &ShelfChannels, drawn: &ScaleSet) -> ChannelSettings {
     let source = format!(
         "data:\n  t:\n    - {{ a: 1 }}\nplot:\n  - mark: dot\n    data: {{ from: t }}\n    x: a\n    y: a\nwidth: 600\nheight: 300\n{attrs}\n"
     );
@@ -156,11 +164,11 @@ fn settings_of(attrs: &str, channels: &ShelfChannels) -> ChannelSettings {
         .expect("the spec parses")
         .spec;
     let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
-    ChannelSettings::of_plot(&spec, plot, channels)
+    ChannelSettings::of_plot_drawn(&spec, plot, channels, drawn)
 }
 
 /// The list the window hands the Outline: opened on `request`, and given what
-/// the axes read, which here is brightfield's own on its three rows, so a column list
+/// the axes read, which here is brightfield's own on every row, so a column list
 /// is drawn as it is with a settings tab behind it.
 fn list(channel: ShelfChannel) -> ColumnList {
     let mut list = ColumnList::new(request(channel));
@@ -1539,5 +1547,86 @@ fn the_settings_list_dark_matches_its_baseline() {
         Mode::Dark,
         settings_list(),
         None,
+    );
+}
+
+/// The Outline's list on x's settings over a plot that draws `scale` on both
+/// axes and writes `attrs`, the by-name rows judged against that scale.
+fn settings_over_scale(attrs: &str, scale: Scale) -> ColumnList {
+    let mut drawn = ScaleSet::new();
+    drawn.insert(Channel::X, scale.clone());
+    drawn.insert(Channel::Y, scale);
+    let mut list = ColumnList::new(request(ShelfChannel::X));
+    list.set_settings(settings_over(attrs, &channels(), &drawn));
+    list.feed_events(&[key_event(egui::Key::Tab)]);
+    assert_eq!(list.tab(), ListTab::Settings, "Tab turned the list");
+    list
+}
+
+/// A row found by its query, on an axis it applies to: *ticks*, at brightfield's
+/// own count.
+fn found_list() -> ColumnList {
+    settings_over_scale(
+        "",
+        Scale::Linear {
+            domain_min: 0.0,
+            domain_max: 10.0,
+            range_start: 0.0,
+            range_end: 100.0,
+        },
+    )
+}
+
+/// A row that does not apply to the axis, found by its query: *zero* on a log
+/// axis, set by the file, drawn muted with its reason.
+fn muted_list() -> ColumnList {
+    settings_over_scale(
+        "xScale: log\nxZero: true",
+        Scale::Log {
+            domain_min: 1.0,
+            domain_max: 1000.0,
+            range_start: 0.0,
+            range_end: 100.0,
+        },
+    )
+}
+
+#[test]
+fn a_by_name_row_found_by_its_query_light_matches_its_baseline() {
+    baseline_of(
+        "shelf_settings_found_light",
+        Mode::Light,
+        found_list(),
+        Some("tick"),
+    );
+}
+
+#[test]
+fn a_by_name_row_found_by_its_query_dark_matches_its_baseline() {
+    baseline_of(
+        "shelf_settings_found_dark",
+        Mode::Dark,
+        found_list(),
+        Some("tick"),
+    );
+}
+
+#[test]
+fn a_muted_row_with_its_reason_light_matches_its_baseline() {
+    baseline_of(
+        "shelf_settings_muted_light",
+        Mode::Light,
+        muted_list(),
+        Some("zero"),
+    );
+}
+
+#[test]
+fn a_muted_row_with_its_reason_dark_matches_its_baseline() {
+    baseline_of(
+        "shelf_settings_muted_dark",
+        Mode::Dark,
+        muted_list(),
+        Some("zero"),
     );
 }

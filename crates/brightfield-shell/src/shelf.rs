@@ -24,6 +24,12 @@
 //! and the cell keeps its width, which [`channel::cell_widths`] takes from the
 //! band's width alone.
 //!
+//! **A cell marks what is set on its channel.** A dot follows the word while any
+//! one of the channel's settings rows is the analyst's, and the scale's name
+//! follows it (`x axis · log`) while the scale is not linear. The band is handed
+//! the rows by [`ShelfBand::set_settings`]; a band handed none, and a plot that
+//! sets nothing, draw the cell as it was drawn before there were marks.
+//!
 //! # Colour
 //!
 //! Each cell's ground is its channel's hue at the design system's tint
@@ -2130,6 +2136,10 @@ impl ColumnList {
     /// one that differs is in the text ink, with a filled dot. Nothing here
     /// changes a value, so a click or the pointer over a row moves the cursor and
     /// no more.
+    ///
+    /// **A row that does not apply to the axis is in muted ink throughout**, set
+    /// or not, and says why on a line of its own under the name and the value. A
+    /// row found by name is drawn only where the query names it.
     fn show_settings(&mut self, ui: &mut egui::Ui, mode: Mode, head: SettingsHead) -> ListDrawn {
         let sem = semantic(mode.is_dark());
         let b = control::binding(spacing::ROW_DENSE);

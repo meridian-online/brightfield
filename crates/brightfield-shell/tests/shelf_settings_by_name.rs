@@ -20,10 +20,9 @@
 //!   asking the judge does not.
 //! - **How a row looks** is read off the shapes the frame painted: the ink each
 //!   galley was laid out in and the marker at each row's trailing end. The
-//!   baselines at the foot draw the same lists through the wgpu renderer, under
-//!   `kittest.toml`'s thresholds. Regenerate them with
-//!   `UPDATE_SNAPSHOTS=1 cargo +1.95.0 test -p brightfield-shell --test
-//!   shelf_settings_by_name`, and read what moved before committing it.
+//!   pixels are baselines in `outline_list.rs`, beside the head rows' own, since
+//!   a target that draws through the wgpu renderer has to be one of the
+//!   workflow's serial targets and this one is not.
 
 use brightfield_render::axis::tick_count_applies;
 use brightfield_render::channel::Channel;
@@ -43,7 +42,6 @@ use brightfield_spec::parse::{parse_spec, Format};
 use brightfield_workbench::channel::ShelfChannel;
 use brightfield_workbench::chrome;
 use egui::epaint::{ClippedShape, Shape};
-use egui_kittest::{Harness, SnapshotOptions};
 use meridian_design::semantic;
 
 /// The Outline rail's default width.
@@ -667,91 +665,47 @@ fn a_letter_lists_the_head_and_by_name_rows_that_hold_it_beginning_with_it_first
     assert_eq!(list.setting_cursor().map(|r| r.name), Some(TITLE_ROW));
 }
 
-// ---------------------------------------------------------------------------
-// AC4: the baselines.
-// ---------------------------------------------------------------------------
-
-/// `kittest.toml`'s thresholds, unloosened.
-fn options() -> SnapshotOptions {
-    SnapshotOptions::default()
-}
-
-/// Draw `list` through the wgpu renderer and compare it with the committed
-/// baseline `name`.
-fn baseline(name: &str, mode: Mode, mut list: ColumnList, word: &'static str) {
-    search(&mut list, word);
-    list.feed_events(&[key_event(egui::Key::Tab)]);
-    assert_eq!(list.tab(), ListTab::Settings, "Tab turned the list");
-    let size = egui::vec2(WIDTH, 420.0);
-    let mut harness = Harness::builder()
-        .with_size(size)
-        .with_pixels_per_point(2.0)
-        .wgpu()
-        .build_ui(move |ui| {
-            design::apply(ui.ctx(), mode);
-            ui.scope_builder(
-                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-                |ui| {
-                    list.show(ui, mode);
-                },
+/// **The values stand in one column whichever rows a query leaves**: the names
+/// share a column as wide as the longest of the channel's rows, the four found
+/// by name included, so a value is where it was when the query is typed and
+/// another row is left on the screen.
+#[test]
+fn the_values_stand_in_one_column_whichever_rows_a_query_leaves() {
+    let stage = Stage::new(Mode::Light);
+    let drawn = drawn_with(&linear());
+    let mut list = list_with(ShelfChannel::X, "", &drawn);
+    let rest = stage.rest(&mut list);
+    let column = rest.drawn.settings[0].value_rect.left();
+    assert!(
+        rest.drawn
+            .settings
+            .iter()
+            .all(|r| near(r.value_rect.left(), column)),
+        "the head rows' values share a column"
+    );
+    for word in ["tick", "grid", "zero", "reverse", "o"] {
+        let mut list = list_with(ShelfChannel::X, "", &drawn);
+        let frame = stage.found(&mut list, word);
+        assert!(!frame.drawn.settings.is_empty(), "{word} leaves rows");
+        for row in &frame.drawn.settings {
+            assert!(
+                near(row.value_rect.left(), column),
+                "{word} leaves {} at {}, the column is at {column}",
+                row.name,
+                row.value_rect.left()
             );
-        });
-    harness.run();
-    harness.snapshot_options(name, &options());
-}
-
-/// A row found by its query, on an axis it applies to: *ticks*, at brightfield's
-/// own count, with the foot's sentence under the cursor.
-fn found_list() -> ColumnList {
-    list_with(ShelfChannel::X, "", &drawn_with(&linear()))
-}
-
-/// A row that does not apply to the axis, found by its query: *zero* on a log
-/// axis, set by the file, with its reason.
-fn muted_list() -> ColumnList {
-    list_with(
-        ShelfChannel::X,
-        "xScale: log\nxZero: true",
-        &drawn_with(&log()),
-    )
-}
-
-#[test]
-fn a_by_name_row_found_by_its_query_light_matches_its_baseline() {
-    baseline(
-        "shelf_settings_found_light",
-        Mode::Light,
-        found_list(),
-        "tick",
+        }
+    }
+    // The longest name is the one found by name, and its value clears it.
+    let mut list = list_with(ShelfChannel::X, "", &drawn);
+    let frame = stage.found(&mut list, "reverse");
+    let row = &frame.drawn.settings[0];
+    assert!(
+        row.value_rect.left() > row.name_rect.right(),
+        "reverse's value follows its name"
     );
 }
 
-#[test]
-fn a_by_name_row_found_by_its_query_dark_matches_its_baseline() {
-    baseline(
-        "shelf_settings_found_dark",
-        Mode::Dark,
-        found_list(),
-        "tick",
-    );
-}
-
-#[test]
-fn a_muted_row_with_its_reason_light_matches_its_baseline() {
-    baseline(
-        "shelf_settings_muted_light",
-        Mode::Light,
-        muted_list(),
-        "zero",
-    );
-}
-
-#[test]
-fn a_muted_row_with_its_reason_dark_matches_its_baseline() {
-    baseline(
-        "shelf_settings_muted_dark",
-        Mode::Dark,
-        muted_list(),
-        "zero",
-    );
+fn near(a: f32, b: f32) -> bool {
+    (a - b).abs() < 0.01
 }
