@@ -859,39 +859,70 @@ fn a_press_on_the_card_let_go_off_it_leaves_the_list_open() {
     );
 }
 
-/// The card's rule, in points: the frame adds it to the scroll area's height on
-/// the card's top and again on its foot.
-const RULE: f32 = 1.0;
-
-/// **The card's foot keeps the design system's gap from the window's.** A window
-/// too short for the list leaves the card the room under its cell less
-/// `SPACE_4`, and the frame's rule on top of that room is two points more, so
-/// the foot stands `SPACE_4` less the rule's two sides off the window's. With no
-/// gap the card would run to the window's edge.
+/// **The card's foot stands the design system's gap from the window's.** A window
+/// too short for the list leaves the card's foot `SPACE_4` off the window's,
+/// rule and all, in the light mode and in the dark. With no gap the card would
+/// run to the window's edge.
 #[test]
 fn a_card_taller_than_the_room_keeps_a_space_4_gap_from_the_windows_foot() {
-    let tall = {
+    for mode in [Mode::Light, Mode::Dark] {
+        let tall = {
+            let mut win = Window::rail_shut(mode);
+            win.open_cell(egui::Key::X, "x");
+            win.card().rect.height()
+        };
+        let mut win = Window::open_at(mode, 420.0);
+        win.shut_the_rail();
+        win.open_cell(egui::Key::X, "x");
+        let card = win.card();
+        assert!(
+            card.rect.height() < tall,
+            "{mode:?}: the list fits the room in a window 420 high ({}), so no gap is being asked \
+             of the card",
+            card.rect.height()
+        );
+        let gap = win.screen.bottom() - card.rect.bottom();
+        assert!(
+            near(gap, spacing::SPACE_4),
+            "{mode:?}: the card's foot stands {gap} from the window's, not the design system's \
+             `SPACE_4` ({})",
+            spacing::SPACE_4
+        );
+    }
+}
+
+/// **A card whose list fits the room under its cell is the height the list is.**
+/// The window is made one point taller than the list needs to stand `SPACE_4`
+/// off its foot, so the list fits and the card is its natural height, the
+/// height it has in a window with room to spare. A window one point shorter than
+/// the list needs clips the card by that point.
+#[test]
+fn a_card_whose_list_fits_is_the_height_of_its_list() {
+    let (top, tall) = {
         let mut win = Window::rail_shut(Mode::Light);
         win.open_cell(egui::Key::X, "x");
-        win.card().rect.height()
+        let card = win.card();
+        (card.rect.top(), card.rect.height())
     };
-    let mut win = Window::open_at(Mode::Light, 420.0);
-    win.shut_the_rail();
-    win.open_cell(egui::Key::X, "x");
-    let card = win.card();
-    assert!(
-        card.rect.height() < tall,
-        "the list fits the room in a window 420 high ({}), so no gap is being asked of the card",
-        card.rect.height()
-    );
-    let gap = win.screen.bottom() - card.rect.bottom();
-    let designed = spacing::SPACE_4 - 2.0 * RULE;
-    assert!(
-        near(gap, designed),
-        "the card's foot stands {gap} from the window's, not the {designed} the design \
-         system's `SPACE_4` ({}) less the rule's two sides leaves",
-        spacing::SPACE_4
-    );
+    let fits = top + tall + spacing::SPACE_4 + 1.0;
+    for (height, clipped) in [(fits, 0.0), (fits - 2.0, 1.0)] {
+        let mut win = Window::open_at(Mode::Light, height);
+        win.shut_the_rail();
+        win.open_cell(egui::Key::X, "x");
+        let card = win.card();
+        assert!(
+            near(card.rect.top(), top),
+            "the card hangs {} from the window's head in a window {height} high, not the {top} it \
+             hangs in one 900 high, so the window is not measuring the same list",
+            card.rect.top()
+        );
+        assert!(
+            near(card.rect.height(), tall - clipped),
+            "in a window {height} high the card is {} high, not the {} the list leaves it",
+            card.rect.height(),
+            tall - clipped
+        );
+    }
 }
 
 /// The `(longitude, latitude)` of every row of the sample.

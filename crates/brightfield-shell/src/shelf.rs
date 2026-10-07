@@ -2175,8 +2175,8 @@ pub const CARD_WIDTH: f32 = 320.0;
 /// The card's rule, one pixel in the default border ink.
 const CARD_RULE: f32 = 1.0;
 
-/// What the card leaves between its foot and the window's, when the list is
-/// longer than the room under the cell.
+/// How far the card's foot, its rule included, stands from the window's when the
+/// list is longer than the room under the cell: the design system's `SPACE_4`.
 const CARD_MARGIN: f32 = spacing::SPACE_4;
 
 /// The frame of a floating card: the workbench's overlay fill, a one-pixel rule
@@ -2237,7 +2237,10 @@ impl ColumnList {
     /// cell's list in its place.
     pub fn show_card(&mut self, ctx: &egui::Context, cell: egui::Rect, mode: Mode) -> CardDrawn {
         let frame = floating_card_frame(mode);
-        let room = (ctx.content_rect().bottom() - cell.bottom() - CARD_MARGIN).max(0.0);
+        // The frame draws its rule on the card's top and foot outside the list's
+        // height, so the list is given that much less.
+        let room =
+            (ctx.content_rect().bottom() - cell.bottom() - CARD_MARGIN - 2.0 * CARD_RULE).max(0.0);
         let shown = egui::Area::new(egui::Id::new("shelf-column-card"))
             .order(egui::Order::Foreground)
             .fixed_pos(cell.left_bottom())
