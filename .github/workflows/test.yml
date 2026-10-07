@@ -10,11 +10,18 @@ env:
 
 # A push to a PR branch supersedes the run already in flight for that ref.
 # Worth having here specifically: every run is a cold-ish `macos-15` build of a
-# large graph (wgpu/vello/egui/duckdb) with a 60-minute ceiling, so stacked
-# pushes otherwise burn expensive minutes on results nobody will read.
+# large graph (wgpu/vello/egui/duckdb) behind a long `timeout-minutes` ceiling,
+# so stacked pushes otherwise burn expensive minutes on results nobody will read.
+#
+# A push to `main` supersedes nothing. A merge used to cancel the `main` run
+# still in flight for the merge before it, which ended that run with no verdict
+# on a commit that had already landed. The group is per commit on `main` for
+# the same reason: one group shared by every `main` run lets a third merge
+# replace a second run still queued behind the first, which is also a run with
+# no verdict.
 concurrency:
-  group: test-${{ github.ref }}
-  cancel-in-progress: true
+  group: test-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -40,7 +47,14 @@ jobs:
     # kittest.toml — do NOT blanket-loosen the floor to make it green.
     # ---------------------------------------------------------------------
     runs-on: macos-15
-    timeout-minutes: 60
+    # 1.25 times the slowest of the last ten `main` runs of this job that ran
+    # to a verdict or to the ceiling, read from each run's job list on
+    # 2026-10-05: the slowest, 60.4 minutes, is a run stopped at the previous
+    # 60-minute ceiling, so its true length is longer and the margin is a floor.
+    # This figure was derived before the GPU-sharing targets ran apart from
+    # the rest (the two `cargo test` steps below); derive the next ceiling
+    # from the job list of runs made under the split, not from this comment.
+    timeout-minutes: 80
 
     steps:
       - uses: actions/checkout@v4
@@ -160,17 +174,126 @@ jobs:
           "$engine" --version
           echo "ARC_DUCKDB_BIN=${engine}" >> "$GITHUB_ENV"
 
-      # --test-threads=1 is the project's standing invocation: it keeps the
-      # GPU-backed suites (the shared wgpu device the shell's snapshot harness
-      # builds) off each other's toes. At this suite
-      # size the serialisation costs little and buys determinism.
+      # THE WORKSPACE SUITE, IN TWO STEPS: the targets that share the GPU run
+      # alone on one thread, and every other target runs under cargo's default
+      # threads (one per core). The whole workspace used to run on one thread
+      # because a few targets need it, which made every target that needs no
+      # device wait in line behind them.
+      #
+      # WHY ONE THREAD, TWO KINDS. The shell's pixel and snapshot targets
+      # render through a wgpu device, and under cargo's default threads their
+      # tests contend for it: at brightfield 17ea980 on 2026-10-07,
+      # `dashboard_baseline` failed 7 of its 19 tests in one run and 9 in
+      # another on an 8-core machine at default threads, and passed all 19 on
+      # one. The first group below is every target whose process asked Metal
+      # for a device, including through a child it spawns. That was measured,
+      # not read off the source: each test executable was run with a dyld
+      # interposer on `MTLCreateSystemDefaultDevice` and `MTLCopyAllDevices`
+      # that logs the call, and a target is listed when its log was non-empty.
+      # The second group opens no device and still needs one thread:
+      # `grid_spot` failed
+      # `no_chrome_ink_is_drawn_inside_the_heros_data_area` in each of the
+      # five runs made at more than one thread (8 threads three times, 3
+      # twice), with the status band reading "spec changed on disk" where it
+      # expects "240 of 240 rows", and passed all 10 tests on one thread.
+      #
+      # THE LIST IS THESE COMMENT LINES. Both steps read every line below that
+      # begins `serial-targets:` out of this file, so the names a reader sees
+      # here are the names that run on one thread and the comment cannot
+      # disagree with the step. A target on no list runs on default threads,
+      # so a new target that opens a device belongs on the first group; the
+      # sign it was left off is a test that fails at default threads and
+      # passes when run alone. Each step refuses to run when the list is
+      # empty, and the second refuses a name that is not exactly one cargo
+      # test target.
+      #
+      # Every crate's `--lib` unit tests run in this step too, though only
+      # brightfield-shell's opens a device. Cargo cannot select one crate's
+      # library without `--exclude` or `-p`, and each of those rebuilt
+      # dependencies the workspace build already holds (measured 2026-10-07:
+      # `--exclude brightfield-shell --lib` rebuilt 23 units, `-p
+      # brightfield-model --lib` 81). That rebuild is the one the pin-staleness
+      # step's comment below describes, and this runner has no disk to spare
+      # for a second copy.
+      #
+      # First group, the targets that open a device:
+      # serial-targets: automatic_sample banded_bar_ink bar_orientation
+      # serial-targets: binned_histogram close_question_baseline colour_literals
+      # serial-targets: committed_selection_ink dark_mark_ink dashboard_baseline
+      # serial-targets: data_grid decimal_column editor_snapshot frame_ink front_door
+      # serial-targets: gallery_gate ghosted_histogram grouped_histogram
+      # serial-targets: grouped_histogram_shares keyed_canvas legend_baseline
+      # serial-targets: legend_below_baseline legend_short_chart log_binned_histogram
+      # serial-targets: navigation_extent outline_list pane_reflow
+      # serial-targets: part_of_whole_histogram point_map_baseline
+      # serial-targets: protocol_degrade_channel protocol_frame_crop
+      # serial-targets: ranked_category_bars sampled_export scatter_kind scripted_open
+      # serial-targets: shelf_band shelf_band_window shelf_edit shelf_fallback
+      # serial-targets: snapshot sorted_bar_ink surfaces versions_panel
+      # serial-targets: versions_step_back workflow_graph_baseline
+      # Second group, the target that opens none and needs one thread anyway:
+      # serial-targets: grid_spot
       #
       # `--locked` because Cargo.lock is tracked: without it CI would happily
       # re-resolve around the committed lock and go green on a dependency graph
       # nobody reviewed, and lockfile drift would never be caught. With it, a
       # stale lock is a hard error here.
-      - name: cargo test --workspace
-        run: cargo test --locked --workspace -- --test-threads=1
+      - name: cargo test, the GPU-bound targets on one thread
+        shell: bash
+        run: |
+          set -eu
+          serial=$(sed -n 's/^ *# serial-targets: *//p' .github/workflows/test.yml | tr -s '[:space:]' ' ')
+          if [ -z "$serial" ]; then
+            echo "::error title=no serial targets::no line of .github/workflows/test.yml begins 'serial-targets:'. The GPU-bound targets are listed in those lines; without them this step would run no one-thread target and the next step would run every target in parallel."
+            exit 1
+          fi
+          read -r -a names <<<"$serial"
+          args=()
+          for t in "${names[@]}"; do
+            args+=(--test "$t")
+          done
+          cargo test --locked --workspace --lib "${args[@]}" -- --test-threads=1
+
+      # Every other target, on cargo's default threads. It is not gated on the
+      # step above passing, so a red there still reports these too; a
+      # cancelled run stops both. The targets are the whole workspace's test
+      # targets minus the serial list above, read from `cargo metadata`, so a
+      # new target runs here until someone lists it. `--workspace` on every
+      # command, never `--exclude` or `-p`, so each reuses the build above.
+      - name: cargo test, every other target on cargo's default threads
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -eu
+          serial=$(sed -n 's/^ *# serial-targets: *//p' .github/workflows/test.yml | tr -s '[:space:]' ' ')
+          if [ -z "$serial" ]; then
+            echo "::error title=no serial targets::no line of .github/workflows/test.yml begins 'serial-targets:'. Running on would put the GPU-bound targets on default threads."
+            exit 1
+          fi
+          all=$(cargo metadata --locked --no-deps --format-version 1 | python3 -c '
+          import json, sys
+          for package in json.load(sys.stdin)["packages"]:
+              for target in package["targets"]:
+                  if "test" in target["kind"]:
+                      print(target["name"])
+          ')
+          read -r -a names <<<"$serial"
+          for t in "${names[@]}"; do
+            n=$(grep -cx -- "$t" <<<"$all" || true)
+            if [ "$n" -ne 1 ]; then
+              echo "::error title=a serial target is not one test target::'$t' is named in a serial-targets line and matches ${n} cargo test targets; it was renamed, deleted, or shares its name with another crate's target, which a --test name cannot tell apart."
+              exit 1
+            fi
+          done
+          args=()
+          while read -r t; do
+            case " $serial " in
+              *" $t "*) ;;
+              *) args+=(--test "$t") ;;
+            esac
+          done < <(sort -u <<<"$all")
+          cargo test --locked --workspace --bins "${args[@]}"
+          cargo test --locked --workspace --doc
 
       # THE PIN-STALENESS CHECK. Its own step with its own pass/fail, for the
       # same reason the conformance scoreboard below is one: the number that
@@ -322,8 +445,8 @@ jobs:
   # a separate way to ship an application with no type source in it.
   #
   # Its own job rather than a step inside `test` because it needs no cache and
-  # no build: it should report in a couple of minutes rather than behind a
-  # 60-minute suite.
+  # no build: it should report in a couple of minutes rather than behind the
+  # full suite.
   #
   # It does need a toolchain, which is new and is not free.
   # scripts/check-artifact-type-source.sh refuses to guess the host triple from
@@ -361,7 +484,7 @@ jobs:
   # the disk image are darwin-only paths in scripts/package.sh and because
   # hdiutil, codesign and plutil are macOS tools; its own job because it runs
   # packaging four times — once intact and once per mutation it drives — and
-  # should not queue behind the 60-minute suite. No cache and no real compile:
+  # should not queue behind the full suite. No cache and no real compile:
   # `cargo` is stubbed with a short C program, which is a genuine Mach-O for the
   # linkage audit, the version floor and codesign, and which answers
   # `--check-type-source` so the read-back's run leg is actually reached.

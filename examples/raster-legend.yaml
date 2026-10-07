@@ -1,9 +1,9 @@
 # Standalone continuous legend (sequential colour scale): a
-# `legend: color for: heat` node placed as a composition sibling renders the
-# raster plot's count → colour ramp as a vertical GRADIENT BAR (with min/mid/max
-# tick labels) at its own layout rect, to the right of the plot. An explicit
-# `for:` relocates the plot's inline legend, so the ramp appears once, on the far
-# right, colour-matching the cells.
+# `legend: color for: heat` node placed as a composition sibling puts a legend on
+# the raster plot: its count → colour ramp, named `count`, the maximum at the top
+# and the minimum at the foot. The shell draws it in a band it reserves at the
+# right of the plot's raster, outside the data, so the ramp appears once, on the
+# far right, colour-matching the cells.
 #
 #   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/raster-legend.yaml --out raster-legend.png --vello-only
 data:

@@ -219,7 +219,7 @@ dependencies = [
 [[package]]
 name = "arc"
 version = "0.1.0"
-source = "git+https://github.com/meridian-online/arcform?rev=2090b485491b734ad77c716ce0d01c938e43efa1#2090b485491b734ad77c716ce0d01c938e43efa1"
+source = "git+https://github.com/meridian-online/arcform?rev=f0561cd255e010e12a6ae82edc0b70785c3d19fc#f0561cd255e010e12a6ae82edc0b70785c3d19fc"
 dependencies = [
  "clap",
  "dirs",
@@ -724,6 +724,7 @@ dependencies = [
  "brightfield-spec",
  "brightfield-sql",
  "brightfield-workbench",
+ "chrono",
  "duckdb",
  "eframe",
  "egui",
@@ -4539,7 +4540,7 @@ dependencies = [
 [[package]]
 name = "sqlparser"
 version = "0.55.0"
-source = "git+https://github.com/meridian-online/arcform?rev=2090b485491b734ad77c716ce0d01c938e43efa1#2090b485491b734ad77c716ce0d01c938e43efa1"
+source = "git+https://github.com/meridian-online/arcform?rev=f0561cd255e010e12a6ae82edc0b70785c3d19fc#f0561cd255e010e12a6ae82edc0b70785c3d19fc"
 dependencies = [
  "log",
  "recursive",

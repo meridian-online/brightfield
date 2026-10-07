@@ -40,7 +40,7 @@ use brightfield_render::channel::Channel;
 use brightfield_render::scale::{ramp_at, Scale, ScaleSet};
 use brightfield_spec::edit::colour_legend_covers;
 use brightfield_spec::layout::{below_legends, collect_legend_nodes, Rect};
-use brightfield_spec::vocab::LegendChannel;
+use brightfield_spec::vocab::{LegendChannel, MarkKind};
 use brightfield_spec::Spec;
 use meridian_design::{control, semantic, spacing, typography};
 use meridian_egui::Mode;
@@ -80,6 +80,17 @@ pub enum LegendSpec {
         /// The ramp's control points, low pole → midpoint → high pole,
         /// straight-alpha RGBA.
         stops: Vec<[f32; 4]>,
+    },
+    /// A stepped colour scale (`colorScale: quantize`): one flat block for each
+    /// step, the highest step at the top, with the value each block begins and
+    /// ends at beside it.
+    Steps {
+        /// The colour of each step, lowest step first, straight-alpha RGBA.
+        colours: Vec<[f32; 4]>,
+        /// The values that bound the steps, lowest first: one more than there are
+        /// steps. The scale's own [`Scale::step_edges`], so a block's labels
+        /// bound the points that wear its colour.
+        edges: Vec<f64>,
     },
 }
 
@@ -134,6 +145,10 @@ impl LegendSpec {
                 pivot: *pivot,
                 stops: stops.clone(),
             }),
+            quantized @ Scale::Quantized { colours, .. } => Some(Self::Steps {
+                colours: colours.clone(),
+                edges: quantized.step_edges()?,
+            }),
             _ => None,
         }
     }
@@ -158,7 +173,7 @@ impl LegendSpec {
     pub fn labels(&self) -> Vec<&str> {
         match self {
             Self::Categorical { entries } => entries.iter().map(|e| e.label.as_str()).collect(),
-            Self::Sequential { .. } | Self::Diverging { .. } => Vec::new(),
+            Self::Sequential { .. } | Self::Diverging { .. } | Self::Steps { .. } => Vec::new(),
         }
     }
 }
@@ -292,6 +307,46 @@ pub fn band_width(composed: &Composed) -> f32 {
     }
 }
 
+/// The reserved column a counting aggregate lands in. `fill: { count: }` binds
+/// a fill channel to it, since no column of the author's holds a count, so a
+/// plot whose fill is this column is a fill the transform produced. Matched as a
+/// literal because the constant is private to `brightfield-render` (its title
+/// code matches the same literal); the legend tests over a hexbin go red if the
+/// alias is renamed.
+const COUNT_COLUMN: &str = "__bf_count";
+
+/// What a legend over a count is named: the word vgplot gives a counting
+/// aggregate, which `exprLabel` in its `plot-renderer.js` makes of `count(*)`.
+const COUNT_NAME: &str = "count";
+
+/// What a legend over a heatmap is named: the name vgplot gives the grid a
+/// heatmap smooths, `DENSITY` in its `Grid2DMark.js`.
+const DENSITY_NAME: &str = "density";
+
+/// The name the legend over `plot`'s fill carries over its ramp or its swatches.
+///
+/// A fill that is a column is named for the column. A fill the transform
+/// produced has no column of the author's to name, so it is named for the
+/// transform: `density` for a heatmap, and `count` for a hexbin coloured by
+/// `fill: { count: }`, a raster, or any other mark whose fill is the count.
+/// A raster and a heatmap set no fill channel and colour by their bins all the
+/// same, so a plot with none is named for them. The first such mark in draw order
+/// gives the word. `None` when neither a column nor a transform names it, which
+/// is a plot whose scales call for no legend.
+#[must_use]
+pub fn legend_name(plot: &PlotHandle) -> Option<&str> {
+    let column = plot.fill_column.as_deref();
+    if let Some(column) = column.filter(|column| *column != COUNT_COLUMN) {
+        return Some(column);
+    }
+    let transform = plot.marks.iter().find_map(|kind| match kind {
+        MarkKind::Heatmap => Some(DENSITY_NAME),
+        MarkKind::Hexbin | MarkKind::Raster => Some(COUNT_NAME),
+        _ => None,
+    });
+    transform.or(column.map(|_| COUNT_NAME))
+}
+
 /// Draw every plot's legend into the reserved band beside the raster.
 ///
 /// `band` is the rect the chart pane reserved — entirely outside the
@@ -318,7 +373,7 @@ pub fn draw_band(
             egui::pos2(band.left(), y),
             band.bottom(),
             &legend,
-            composed.plots[i].fill_column.as_deref(),
+            legend_name(&composed.plots[i]),
             mode,
         );
     }
@@ -341,7 +396,7 @@ pub fn draw_below(ui: &egui::Ui, origin: egui::Pos2, composed: &Composed, mode: 
             &ui.painter_at(band),
             band,
             &legend,
-            composed.plots[i].fill_column.as_deref(),
+            legend_name(&composed.plots[i]),
             mode,
         );
     }
@@ -356,16 +411,16 @@ pub const BELOW_RAMP_MAX_WIDTH: f32 = 240.0;
 /// the ramp and the categorical swatches share a row's weight.
 pub const BELOW_RAMP_HEIGHT: f32 = control::ICON_XS;
 
-/// One legend block in the `band` under its plot: the column's name at the left,
+/// One legend block in the `band` under its plot: the legend's name at the left,
 /// then for a continuous scale a ramp running left to right — the low end at its
 /// left — with the domain's two ends under it (and a diverging scale's pivot
 /// under its middle), or for a categorical scale a swatch and its label for each
 /// category, in a row. The block is centred on the band's height.
 ///
 /// The name is cut short inside [`LABEL_COLUMN`], as it is at the plot's right,
-/// and the ramp starts after what is drawn of it. `name` is `None` for a plot
-/// whose fill names no column, which draws no legend through
-/// [`LegendSpec::of_plot`].
+/// and the ramp starts after what is drawn of it. `name` is [`legend_name`]'s,
+/// and `None` for a plot whose fill is neither a column nor a transform's
+/// output, which draws no legend through [`LegendSpec::of_plot`].
 pub fn draw_below_block(
     painter: &egui::Painter,
     band: egui::Rect,
@@ -432,6 +487,103 @@ pub fn draw_below_block(
             below_value(painter, ramp, egui::Align::Center, *pivot, &font, ink);
             below_value(painter, ramp, egui::Align::Max, *max, &font, ink);
         }
+        LegendSpec::Steps { colours, edges } => {
+            below_steps(painter, band, colours, edges, &font, &name_at, ink);
+        }
+    }
+}
+
+/// Where the ramp under a plot starts: the left edge after the name, the top of
+/// the ramp's row, and the width the ramp has to run in. The ramp and the row of
+/// values under it are centred together on the band's height, and the name is
+/// drawn first, level with the ramp.
+fn below_origin(
+    painter: &egui::Painter,
+    band: egui::Rect,
+    font: &egui::FontId,
+    name_at: &dyn Fn(&egui::Painter, f32, f32) -> f32,
+) -> (f32, f32, f32) {
+    let value_height = painter
+        .layout_no_wrap(String::from("0"), font.clone(), egui::Color32::WHITE)
+        .size()
+        .y;
+    let rows = BELOW_RAMP_HEIGHT + spacing::SPACE_2 + value_height;
+    let top = band.center().y - rows / 2.0;
+    let left = name_at(painter, band.left(), top + BELOW_RAMP_HEIGHT / 2.0);
+    let room = (band.right() - left).clamp(0.0, BELOW_RAMP_MAX_WIDTH);
+    (left, top, room)
+}
+
+/// The steps under a plot: one flat block for each, equal in width, the lowest at
+/// the left, with the value each begins at under its left edge and the highest
+/// step's upper bound under the right end of the last.
+///
+/// Each block is whole points wide, so no two share a fractional edge for the
+/// rasteriser to blend into a seam, and the row is at most
+/// [`BELOW_RAMP_MAX_WIDTH`] wide. A value is drawn when it stands clear of the
+/// one before it; the two at the ends are always drawn, and each is kept inside
+/// the row's own extent, as the ramp's are. A band with less width than a point
+/// for each step draws the name alone.
+fn below_steps(
+    painter: &egui::Painter,
+    band: egui::Rect,
+    colours: &[[f32; 4]],
+    edges: &[f64],
+    font: &egui::FontId,
+    name_at: &dyn Fn(&egui::Painter, f32, f32) -> f32,
+    ink: egui::Color32,
+) {
+    let (left, top, room) = below_origin(painter, band, font, name_at);
+    let Some(block) = step_block_size(room, colours.len()) else {
+        return;
+    };
+    let steps = colours.len();
+    let row = egui::Rect::from_min_size(
+        egui::pos2(left, top),
+        egui::vec2(block * steps as f32, BELOW_RAMP_HEIGHT),
+    );
+    for (i, colour) in colours.iter().enumerate() {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(row.left() + i as f32 * block, row.top()),
+            egui::vec2(block, row.height()),
+        );
+        painter.rect_filled(rect, 0.0, chart_ink(*colour));
+    }
+    let galleys: Vec<_> = edges
+        .iter()
+        .map(|value| {
+            text_ink::fit(
+                painter,
+                &format_domain(*value),
+                font.clone(),
+                row.width(),
+                ink,
+            )
+        })
+        .collect();
+    // Each value's extent along the row, the ends kept inside the row.
+    let spans: Vec<(f32, f32)> = galleys
+        .iter()
+        .enumerate()
+        .map(|(i, galley)| {
+            let width = galley.size().x;
+            let at = row.left() + i as f32 * block;
+            let start = if i == 0 {
+                row.left()
+            } else if i == steps {
+                row.right() - width
+            } else {
+                at - width / 2.0
+            };
+            (start, start + width)
+        })
+        .collect();
+    for i in kept_labels(&spans, spacing::CONTROL_GAP) {
+        painter.galley(
+            egui::pos2(spans[i].0, row.bottom() + spacing::SPACE_2),
+            galleys[i].clone(),
+            ink,
+        );
     }
 }
 
@@ -450,14 +602,7 @@ fn below_ramp(
     font: &egui::FontId,
     name_at: &dyn Fn(&egui::Painter, f32, f32) -> f32,
 ) -> egui::Rect {
-    let value_height = painter
-        .layout_no_wrap(String::from("0"), font.clone(), egui::Color32::WHITE)
-        .size()
-        .y;
-    let rows = BELOW_RAMP_HEIGHT + spacing::SPACE_2 + value_height;
-    let top = band.center().y - rows / 2.0;
-    let left = name_at(painter, band.left(), top + BELOW_RAMP_HEIGHT / 2.0);
-    let room = (band.right() - left).clamp(0.0, BELOW_RAMP_MAX_WIDTH);
+    let (left, top, room) = below_origin(painter, band, font, name_at);
     let strip = (room / RAMP_STRIPS as f32).floor().max(1.0);
     let ramp = egui::Rect::from_min_size(
         egui::pos2(left, top),
@@ -503,7 +648,7 @@ fn below_value(
     );
 }
 
-/// One legend block at `origin`: the column's name over the block, then a
+/// One legend block at `origin`: the legend's name over the block, then a
 /// swatch and its label for each category of a categorical scale, or a ramp
 /// running top to bottom with its values beside it for a continuous one — the
 /// domain's maximum level with the ramp's top, its minimum with the ramp's
@@ -512,8 +657,9 @@ fn below_value(
 /// The name is cut short inside [`block_width`], the width the band was sized
 /// to, so a long name leaves the block and the band as wide as they were
 /// (`a_long_name_is_cut_short_inside_the_column_and_the_band_stays_as_wide`).
-/// `name` is `None` for a plot whose fill names no column, which draws no
-/// legend through [`LegendSpec::of_plot`].
+/// `name` is [`legend_name`]'s, and `None` for a plot whose fill is neither a
+/// column nor a transform's output, which draws no legend through
+/// [`LegendSpec::of_plot`].
 ///
 /// `bottom` is the foot of the room the block draws in, in the same
 /// coordinates as `origin`: the band's. A number column's ramp is drawn as tall
@@ -582,6 +728,9 @@ fn draw_block(
             };
             number_legend(painter, origin, bottom, &values, &font, ink);
         }
+        LegendSpec::Steps { colours, edges } => {
+            steps_legend(painter, origin, bottom, colours, edges, &font, ink);
+        }
     }
 }
 
@@ -632,16 +781,142 @@ fn number_legend(
             }
             ramp_value(painter, ramp, egui::Align::Max, low, ink);
         }
-        NumberFit::Labels => {
-            let column = origin.x + control::ICON_XS + spacing::ICON_LABEL_GAP;
-            for (i, galley) in [high, low].into_iter().enumerate() {
-                let top = origin.y + i as f32 * (label_height + LABEL_GAP);
-                if top + label_height <= bottom {
-                    painter.galley(egui::pos2(column, top), galley, ink);
-                }
-            }
+        NumberFit::Labels => end_labels(painter, origin, bottom, [high, low], ink),
+    }
+}
+
+/// The two end labels alone, the maximum over the minimum from `origin` down, in
+/// the label column; a label the room down to `bottom` cannot hold whole is not
+/// drawn.
+fn end_labels(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    bottom: f32,
+    labels: [std::sync::Arc<egui::Galley>; 2],
+    ink: egui::Color32,
+) {
+    let column = origin.x + control::ICON_XS + spacing::ICON_LABEL_GAP;
+    let label_height = labels[0].size().y;
+    for (i, galley) in labels.into_iter().enumerate() {
+        let top = origin.y + i as f32 * (label_height + LABEL_GAP);
+        if top + label_height <= bottom {
+            painter.galley(egui::pos2(column, top), galley, ink);
         }
     }
+}
+
+/// A stepped scale's legend under its name, at `origin`, in the room down to
+/// `bottom`: a stack of flat blocks, one for each step, the highest at the top,
+/// with the value at each boundary beside the stack.
+///
+/// The stack is as tall as the ramp a number column would draw in the same room
+/// ([`number_fit`]), to within the rounding: the blocks are the same whole number
+/// of points ([`step_block_size`]), so a block does not share a fractional edge
+/// with the next. A boundary's label is level with the line between its two blocks, the
+/// highest level with the stack's top and the lowest with its foot, and one that
+/// would stand within [`LABEL_GAP`] of the one above it is not drawn
+/// ([`kept_labels`]); the two at the ends always are. In a room that holds no
+/// stack, or one a point high for each step cannot fill, the end labels stand
+/// alone, as a ramp's do.
+fn steps_legend(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    bottom: f32,
+    colours: &[[f32; 4]],
+    edges: &[f64],
+    font: &egui::FontId,
+    ink: egui::Color32,
+) {
+    let steps = colours.len();
+    let label = |value: f64| {
+        text_ink::fit(
+            painter,
+            &format_domain(value),
+            font.clone(),
+            LABEL_COLUMN,
+            ink,
+        )
+    };
+    let (Some(&high), Some(&low)) = (edges.last(), edges.first()) else {
+        return;
+    };
+    let label_height = label(high).size().y;
+    let block = match number_fit(bottom - origin.y, label_height, false) {
+        NumberFit::Ramp { strips, .. } => step_block_size(strips as f32 * STRIP_HEIGHT, steps),
+        NumberFit::Labels => None,
+    };
+    let Some(block) = block else {
+        end_labels(painter, origin, bottom, [label(high), label(low)], ink);
+        return;
+    };
+    for (i, colour) in colours.iter().rev().enumerate() {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(origin.x, origin.y + i as f32 * block),
+            egui::vec2(control::ICON_XS, block),
+        );
+        painter.rect_filled(rect, 0.0, chart_ink(*colour));
+    }
+    // The boundaries from the top: boundary `i` is `i` blocks down the stack.
+    let galleys: Vec<_> = edges.iter().rev().map(|value| label(*value)).collect();
+    let spans: Vec<(f32, f32)> = (0..=steps)
+        .map(|i| {
+            let line = origin.y + i as f32 * block;
+            let start = if i == 0 {
+                line
+            } else if i == steps {
+                line - label_height
+            } else {
+                line - label_height / 2.0
+            };
+            (start, start + label_height)
+        })
+        .collect();
+    let column = origin.x + control::ICON_XS + spacing::ICON_LABEL_GAP;
+    for i in kept_labels(&spans, LABEL_GAP) {
+        painter.galley(egui::pos2(column, spans[i].0), galleys[i].clone(), ink);
+    }
+}
+
+/// How many whole points each of `steps` blocks is across `extent` points, or
+/// `None` when a block would be under a point: the stack gives way to the end
+/// labels rather than draw blocks that share a fractional edge.
+///
+/// Every block is the same, so the stack is `steps` times this: as long as
+/// `extent` to within `steps - 1` points.
+#[must_use]
+pub fn step_block_size(extent: f32, steps: usize) -> Option<f32> {
+    if steps == 0 {
+        return None;
+    }
+    let block = (extent / steps as f32).floor();
+    (block >= 1.0).then_some(block)
+}
+
+/// Which of a legend's value labels are drawn, as indices into `spans`: each
+/// label's extent along the legend, `(start, end)`, in reading order.
+///
+/// The first and the last are always drawn, since they name the ends the legend
+/// runs between. One between them is drawn when it stands `gap` clear of the one
+/// drawn before it and of the last, so a legend with many steps and little room
+/// draws the labels that fit and none that overlap.
+#[must_use]
+pub fn kept_labels(spans: &[(f32, f32)], gap: f32) -> Vec<usize> {
+    let Some(last) = spans.len().checked_sub(1) else {
+        return Vec::new();
+    };
+    if last == 0 {
+        return vec![0];
+    }
+    let mut kept = vec![0];
+    let mut edge = spans[0].1;
+    for (i, &(start, end)) in spans.iter().enumerate().take(last).skip(1) {
+        if start >= edge + gap && end + gap <= spans[last].0 {
+            kept.push(i);
+            edge = end;
+        }
+    }
+    kept.push(last);
+    kept
 }
 
 /// The ramp as `strips` adjacent solid strips, the ramp's high end at the top

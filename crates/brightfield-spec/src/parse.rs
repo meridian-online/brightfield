@@ -486,9 +486,11 @@ pub enum ParseWarning {
 
     /// A plot, or `plotDefaults:`, set an axis attribute Mosaic's schema
     /// declares and this build does not read: `xTickRotate`, `yAxis`,
-    /// `xLabelAnchor`. The plot draws as it does without the key. This names the
-    /// key and the plot that carries it, so an author can tell a gap in
-    /// brightfield from a typing mistake and trust the rest of the chart.
+    /// `xLabelAnchor`, or one of the bare names that carry no `x` or `y` of their
+    /// own (`axis`, `align`, `padding`, `xyDomain`, `facetGrid`, `facetLabel`).
+    /// The plot draws as it does without the key. This names the key and the
+    /// plot that carries it, so an author can tell a gap in brightfield from a
+    /// typing mistake and trust the rest of the chart.
     ///
     /// [`crate::axis_vocabulary::unread_axis_attributes`] is the sole judge, so
     /// a resolver that learns a name narrows this warning in the same edit.
@@ -557,18 +559,21 @@ pub enum ParseWarning {
 
     /// A plot sets an x or y axis instruction that the axis it meets does not
     /// act on: `yNice` or `yZero` on a log, symlog, date or category axis, since
-    /// a linear axis's ends follow them and no other kind's, or `xTicks` on a
+    /// a linear axis's ends follow them and no other kind's, `xTicks` on a
     /// log, symlog or category axis,
-    /// whose ticks are decades and names and not a count's. The plot draws as it
-    /// does without the key. Known only once the data has typed the axis, so it
+    /// whose ticks are decades and names and not a count's, or `xTickFormat` of
+    /// either kind on a category axis, which prints its names. The plot draws as
+    /// it does without the key. Known only once the data has typed the axis, so it
     /// is raised where the composition finds the scales, not at parse time; it
     /// names the key, the plot that carries it and the kind of axis.
     ///
-    /// `brightfield_render::scene::axis_ends_apply` and
-    /// `brightfield_render::axis::tick_count_applies` are the judges, and the
+    /// `brightfield_render::scene::axis_ends_apply`,
+    /// `brightfield_render::axis::tick_count_applies` and
+    /// `brightfield_render::axis::tick_format_applies` are the judges, and the
     /// axis draws through them, so the warning and the drawing cannot disagree.
     AxisAttributeOnWrongAxis {
-        /// The attribute key: `xZero`, `xNice`, `xTicks` or the `y` of each.
+        /// The attribute key: `xZero`, `xNice`, `xTicks`, `xTickFormat` or the
+        /// `y` of each.
         attribute: String,
         /// The plot that sets it, as [`crate::layout::plot_label`] names one.
         plot: String,
@@ -578,43 +583,72 @@ pub enum ParseWarning {
         axis: String,
     },
 
-    /// A plot with a map projection sets `xReverse` or `yReverse`. A projection
-    /// replaces the plot's x and y with planar units, and the plot draws as it
+    /// A plot with a map projection sets an x or y axis instruction: `xReverse`,
+    /// `xZero` or `xNice` with a request, `xTicks` with a count, `xTickFormat`
+    /// with a format this build reads, or `xGrid` or the bare `grid` with
+    /// `true`, and the `y` of each. A projection replaces the plot's x and y
+    /// with planar units, which are no axis: the map draws no axis, the
+    /// graticule stands where its gridlines would, and the plot draws as it
     /// does without the key. Known once the composition has built the scales;
     /// it names the key and the plot.
     ///
-    /// `brightfield_render::scene::axis_reverse_applies` is the judge, and the
-    /// draw goes through it.
-    AxisReverseUnderProjection {
-        /// The attribute key: `xReverse` or `yReverse`.
+    /// `brightfield_render::scene::axis_keys_apply` is the judge. The draw asks
+    /// it before it moves the ends or turns the axis; the tick, format and grid
+    /// keys act only on a frame, which a plot with a projection does not draw,
+    /// so it is the draw's missing frame that leaves them without an effect.
+    AxisAttributeUnderProjection {
+        /// The attribute key: any of the keys above.
         attribute: String,
         /// The plot that sets it, as [`crate::layout::plot_label`] names one.
         plot: String,
     },
 
     /// A plot-level colour attribute (`colorScheme`, `colorScale`, `colorPivot`,
-    /// `colorReverse`) carried a value brightfield cannot draw: a scheme name it
-    /// has no ramp for (`magma`, `ylgnbu`, a misspelt `viridis`), a scale type it
-    /// does not draw (`quantile`, `symlog`), a pivot that is no number, a
-    /// `colorReverse` that is neither `true` nor `false`, or a value that is no
-    /// name. The plot draws as if the key were absent, and this names the key and
+    /// `colorReverse`, `colorN`) carried a value brightfield cannot draw: a scheme
+    /// name it has no ramp for (`magma`, `ylgnbu`, a misspelt `viridis`), a scale
+    /// type it does not draw (`quantile`, `symlog`), a pivot that is no number, a
+    /// `colorReverse` that is neither `true` nor `false`, a `colorN` that is no
+    /// whole number from one up to the most steps a plot can draw, or a value that
+    /// is no name. The plot draws as if the key were absent, and this names the key and
     /// the value so an author sees why the colours are not the file's.
     ///
     /// A `null` and a lifted `$param` are deferrals and say nothing.
     /// [`crate::layout::read_colour_scheme`], [`crate::layout::read_colour_scale`],
-    /// [`crate::layout::colour_pivot`] and [`crate::layout::colour_reverse_switch`]
-    /// are the judges, and for a value written as a literal the renderer draws
+    /// [`crate::layout::colour_pivot`], [`crate::layout::colour_reverse_switch`]
+    /// and [`crate::layout::read_colour_steps`] are the judges, and for a value written as a literal the renderer draws
     /// exactly what they accept. A `$param` is read when the plot is drawn, so a
     /// param holding a value no judge accepts draws the default and raises
     /// nothing: the one case where the warning and the drawing differ. A later
-    /// colour key a build cannot read (`colorN`) is another value of this one
-    /// warning rather than a new variant.
+    /// colour key a build cannot read is another value of this one warning rather
+    /// than a new variant.
     UnreadColourKey {
         /// The offending attribute key.
         attribute: String,
         /// What the attribute held, as written: the string itself, a number's
         /// digits, or `<non-string>` for a list or map.
         value: String,
+    },
+
+    /// A plot's `xScale` or `yScale` named a scale this build does not draw:
+    /// `sqrt`, `pow`, `band`, a wrong-case `LOG`. The axis draws linear, so the
+    /// picture differs from the file, and this names the key, the word and the
+    /// plot so an author sees why. A lifted `$param` is read through its
+    /// declared value, so a param holding `sqrt` is named as a literal is; a
+    /// `$param` that declares no value names no scale and says nothing.
+    ///
+    /// Raised by analysis, after the whole spec is built, because a `$param`
+    /// cannot be read before `params:` has been parsed and a plot inherits
+    /// `plotDefaults:` only once it is built.
+    /// [`crate::layout::read_plot_scales_in`] is the sole judge, and it is the
+    /// reading the drawn scale is taken from, so a name a later build draws
+    /// narrows this warning in the same edit.
+    UndrawnScale {
+        /// The attribute key, `xScale` or `yScale`.
+        attribute: String,
+        /// The scale name the file asked for, as written.
+        value: String,
+        /// The plot, as [`crate::layout::plot_label`] names one.
+        plot: String,
     },
 
     /// A plot's `projectionType` carried a value outside Mosaic's
@@ -929,13 +963,21 @@ impl fmt::Display for ParseWarning {
                 f,
                 "plot {plot} sets `{attribute}`, which changes nothing on a {axis} axis — the plot draws as it does without it"
             ),
-            Self::AxisReverseUnderProjection { attribute, plot } => write!(
+            Self::AxisAttributeUnderProjection { attribute, plot } => write!(
                 f,
                 "plot {plot} sets `{attribute}`, which changes nothing on a plot with a map projection — the plot draws as it does without it"
             ),
             Self::UnreadColourKey { attribute, value } => write!(
                 f,
                 "plot attribute `{attribute}` is `{value}`, which this build does not draw — the plot draws its default colours"
+            ),
+            Self::UndrawnScale {
+                attribute,
+                value,
+                plot,
+            } => write!(
+                f,
+                "plot {plot} sets `{attribute}: {value}`, a scale this build does not draw — the axis draws linear"
             ),
             Self::UnknownProjection { value } => write!(
                 f,
@@ -1659,9 +1701,9 @@ impl Walker {
                 self.warn_tick_format(&key, &value);
             }
             // A plot-level colour attribute (`colorScheme`, `colorScale`,
-            // `colorPivot`, `colorReverse`) this build cannot draw is drawn as if
-            // it were absent; name it, with what was written. A `$param` and
-            // `null` are deferrals, not typos.
+            // `colorPivot`, `colorReverse`, `colorN`) this build cannot draw is
+            // drawn as if it were absent; name it, with what was written. A
+            // `$param` and `null` are deferrals, not typos.
             if PLOT_COLOUR_KEYS.contains(&key.as_str()) {
                 self.warn_colour_key(&key, &value);
             }
@@ -2117,7 +2159,7 @@ impl Walker {
     fn warn_colour_key(&mut self, key: &str, value: &SpecValue) {
         use crate::layout::{
             colour_pivot, colour_reverse_switch, read_colour_scale, read_colour_scheme,
-            ColourScaleReading, ColourSchemeReading,
+            read_colour_steps, ColourScaleReading, ColourSchemeReading, ColourStepsReading,
         };
         let unread = match key {
             "colorScheme" => read_colour_scheme(value) == ColourSchemeReading::Unknown,
@@ -2127,6 +2169,10 @@ impl Walker {
                 colour_pivot(value).is_none()
                     && !matches!(value, SpecValue::Param(_) | SpecValue::Null)
             }
+            // A step count is a whole number from one up; `null` and a `$param`
+            // are deferrals. A count no `quantize` scale reads is named whether
+            // or not the plot writes `colorScale: quantize`, as a pivot is.
+            "colorN" => read_colour_steps(value) == ColourStepsReading::Unknown,
             // A reverse is a literal `true` or `false`; `null` and a `$param`
             // are deferrals.
             "colorReverse" => {
@@ -2729,7 +2775,13 @@ const PLOT_TICK_FORMAT_KEYS: [&str; 2] = ["xTickFormat", "yTickFormat"];
 
 /// The plot attributes that set a colour, whose values
 /// [`ParseWarning::UnreadColourKey`] judges.
-const PLOT_COLOUR_KEYS: [&str; 4] = ["colorScheme", "colorScale", "colorPivot", "colorReverse"];
+const PLOT_COLOUR_KEYS: [&str; 5] = [
+    "colorScheme",
+    "colorScale",
+    "colorPivot",
+    "colorReverse",
+    "colorN",
+];
 
 /// The plot attributes that switch gridlines on or off: the bare `grid` for
 /// both axes, and each axis's own key.

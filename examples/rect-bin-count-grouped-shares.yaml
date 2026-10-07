@@ -84,6 +84,7 @@ hconcat:
         x: { bin: depth }
         y: { count: }
         fill: site
+      - legend: color
     stackOffset: normalize
     width: 320
     height: 320

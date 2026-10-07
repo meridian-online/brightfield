@@ -1122,11 +1122,11 @@ pub fn read_colour_scheme(value: &SpecValue) -> ColourSchemeReading {
     }
 }
 
-/// The names a plot's `colorScale` can give and be drawn in: the straight ramp
-/// and the one that diverges about a pivot. Any other Mosaic scale type
-/// (`quantile`, `symlog`, `diverging-log`) is drawn as `linear`, and the parser
-/// names it.
-pub const DRAWN_COLOUR_SCALES: [&str; 2] = ["linear", "diverging"];
+/// The names a plot's `colorScale` can give and be drawn in: the straight ramp,
+/// the one that diverges about a pivot, and the one that steps in a count
+/// (`quantize`, with `colorN`). Any other Mosaic scale type (`quantile`,
+/// `symlog`, `diverging-log`) is drawn as `linear`, and the parser names it.
+pub const DRAWN_COLOUR_SCALES: [&str; 3] = ["linear", "diverging", "quantize"];
 
 /// What a plot's `colorScale` value is, to the parser that warns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1153,6 +1153,24 @@ pub fn read_colour_scale(value: &SpecValue) -> ColourScaleReading {
     }
 }
 
+/// The name a plot's `colorScale` gives: the literal, or a `$param` that holds a
+/// string *now*, as [`resolve_colour_scheme_name`] reads its own key. A plot with
+/// no `colorScale`, and a param that holds a value other than a string, give no
+/// name.
+fn resolve_colour_scale_name<'a>(
+    plot: &'a PlotNode,
+    params: &'a IndexMap<String, ParamNode>,
+) -> Option<&'a str> {
+    match plot.attributes.get("colorScale") {
+        Some(SpecValue::String(name)) => Some(name.as_str()),
+        Some(SpecValue::Param(param)) => match params.get(&param.0) {
+            Some(ParamNode::Value(SpecValue::String(name))) => Some(name.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Whether a plot's `colorScale` draws about a pivot: the literal `diverging`,
 /// or a `$param` that holds it *now*, as [`resolve_colour_scheme_name`] reads
 /// its own key. A plot with no `colorScale`, a name no renderer draws, and a
@@ -1162,15 +1180,82 @@ pub fn resolve_colour_scale_diverging(
     plot: &PlotNode,
     params: &IndexMap<String, ParamNode>,
 ) -> bool {
-    let name = match plot.attributes.get("colorScale") {
-        Some(SpecValue::String(name)) => Some(name.as_str()),
-        Some(SpecValue::Param(param)) => match params.get(&param.0) {
-            Some(ParamNode::Value(SpecValue::String(name))) => Some(name.as_str()),
-            _ => None,
+    resolve_colour_scale_name(plot, params) == Some("diverging")
+}
+
+/// Whether a plot's `colorScale` draws in steps: the literal `quantize`, or a
+/// `$param` that holds it *now*. A plot with no `colorScale`, a name no renderer
+/// draws, and a param that holds some other value does not step and draws the
+/// ramp it drew before the key was read.
+#[must_use]
+pub fn resolve_colour_scale_quantize(
+    plot: &PlotNode,
+    params: &IndexMap<String, ParamNode>,
+) -> bool {
+    resolve_colour_scale_name(plot, params) == Some("quantize")
+}
+
+/// How many steps a `quantize` scale draws when the plot gives no count, which is
+/// the count Mosaic's renderer draws when `colorN` is absent.
+pub const DEFAULT_COLOUR_STEPS: usize = 5;
+
+/// The most steps a plot's `colorN` can ask for. A count past it is no count the
+/// legend could draw a block for in the room a number legend has, and a file
+/// cannot make the colour scale as long as it likes.
+pub const MAX_COLOUR_STEPS: usize = 256;
+
+/// What a plot's `colorN` value is, to the parser that warns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColourStepsReading {
+    /// A whole number from one to [`MAX_COLOUR_STEPS`]: the plot draws that many
+    /// steps under `colorScale: quantize`.
+    Steps(usize),
+    /// `null` or a lifted `$param`: a recorded deferral, not a typo.
+    Deferred,
+    /// A value that is no count (zero, a negative, a fraction, a string, a list,
+    /// a count past [`MAX_COLOUR_STEPS`]). The plot draws
+    /// [`DEFAULT_COLOUR_STEPS`] and the parser names the value.
+    Unknown,
+}
+
+/// The one judge of a plot's `colorN` value, for the parser that warns and the
+/// resolver that draws. An integer, or a float that is a whole number, from one
+/// to [`MAX_COLOUR_STEPS`].
+#[must_use]
+pub fn read_colour_steps(value: &SpecValue) -> ColourStepsReading {
+    let most = MAX_COLOUR_STEPS as i64;
+    match value {
+        SpecValue::Param(_) | SpecValue::Null => ColourStepsReading::Deferred,
+        SpecValue::Integer(n) if (1..=most).contains(n) => ColourStepsReading::Steps(*n as usize),
+        SpecValue::Float(f)
+            if f.is_finite() && f.fract() == 0.0 && (1.0..=most as f64).contains(f) =>
+        {
+            ColourStepsReading::Steps(*f as usize)
+        }
+        _ => ColourStepsReading::Unknown,
+    }
+}
+
+/// The count of steps a plot's `colorN` gives, if it gives one: a count
+/// [`read_colour_steps`] accepts, or a `$param` whose value param holds one
+/// *now*. `None` is the plot asking for [`DEFAULT_COLOUR_STEPS`], which is what
+/// a missing key, a value that is no count and a param that holds no count draw.
+#[must_use]
+pub fn resolve_colour_steps(
+    plot: &PlotNode,
+    params: &IndexMap<String, ParamNode>,
+) -> Option<usize> {
+    let value = match plot.attributes.get("colorN")? {
+        SpecValue::Param(param) => match params.get(&param.0) {
+            Some(ParamNode::Value(value)) => value,
+            _ => return None,
         },
-        _ => None,
+        value => value,
     };
-    name == Some("diverging")
+    match read_colour_steps(value) {
+        ColourStepsReading::Steps(n) => Some(n),
+        ColourStepsReading::Deferred | ColourStepsReading::Unknown => None,
+    }
 }
 
 /// The pivot a plot's `colorPivot` gives, if it gives one: a number, or a
@@ -1230,6 +1315,111 @@ pub fn resolve_colour_reverse(plot: &PlotNode, params: &IndexMap<String, ParamNo
         None => None,
     };
     switch.unwrap_or(false)
+}
+
+/// What a plot's `colorDomain` fixes: the two ends of a number ramp, or the
+/// categories of a string column in the order the legend lists them.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ColourDomain {
+    /// Two numbers, low then high: a linear or diverging ramp's ends, and the ends a
+    /// stepped scale is cut between.
+    Ends(f64, f64),
+    /// One or more categories, first to last.
+    Categories(Vec<String>),
+}
+
+/// A `colorDomain` value read as the domain it fixes: a list of two finite
+/// numbers with the low end first, or a non-empty list of strings.
+///
+/// A string (Mosaic's `Fixed`, which asks for the data's own domain held still
+/// and which this build leaves unread), a list of any other shape, a pair of
+/// numbers with the high end first or equal, and a list that mixes strings
+/// with numbers are no domain, and a plot that writes one draws as a file
+/// without the key does.
+#[must_use]
+pub fn colour_domain(value: &SpecValue) -> Option<ColourDomain> {
+    let SpecValue::Array(items) = value else {
+        return None;
+    };
+    let number = |item: &SpecValue| match item {
+        SpecValue::Integer(n) => Some(*n as f64),
+        SpecValue::Float(f) if f.is_finite() => Some(*f),
+        _ => None,
+    };
+    if let [lo, hi] = items.as_slice() {
+        if let (Some(lo), Some(hi)) = (number(lo), number(hi)) {
+            return (lo < hi).then_some(ColourDomain::Ends(lo, hi));
+        }
+    }
+    let categories: Option<Vec<String>> = items
+        .iter()
+        .map(|item| match item {
+            SpecValue::String(name) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    categories
+        .filter(|names| !names.is_empty())
+        .map(ColourDomain::Categories)
+}
+
+/// A `colorRange` value read as the colours it lists, as written: a non-empty
+/// list of strings. Whether each string is a colour is the renderer's to judge,
+/// which has the parser for one.
+#[must_use]
+pub fn colour_range(value: &SpecValue) -> Option<Vec<&str>> {
+    let SpecValue::Array(items) = value else {
+        return None;
+    };
+    let names: Option<Vec<&str>> = items
+        .iter()
+        .map(|item| match item {
+            SpecValue::String(name) => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    names.filter(|names| !names.is_empty())
+}
+
+/// The value a plot's attribute `key` holds: what it wrote, or what the value
+/// param it names holds *now*, so a plot redrawn after the param is written draws
+/// from the value the param then holds. A selection and a param nobody declared
+/// hold no value.
+fn literal_attribute<'a>(
+    plot: &'a PlotNode,
+    params: &'a IndexMap<String, ParamNode>,
+    key: &str,
+) -> Option<&'a SpecValue> {
+    match plot.attributes.get(key)? {
+        SpecValue::Param(param) => match params.get(&param.0) {
+            Some(ParamNode::Value(value)) => Some(value),
+            _ => None,
+        },
+        value => Some(value),
+    }
+}
+
+/// The domain a plot's `colorDomain` fixes, if it fixes one: a literal list, or a
+/// `$param` whose value param holds a list *now*. `None` is a plot that draws the
+/// domain its rows give, whether it wrote no key, wrote `Fixed`, or wrote a value
+/// [`colour_domain`] reads as no domain.
+#[must_use]
+pub fn resolve_colour_domain(
+    plot: &PlotNode,
+    params: &IndexMap<String, ParamNode>,
+) -> Option<ColourDomain> {
+    colour_domain(literal_attribute(plot, params, "colorDomain")?)
+}
+
+/// The colours a plot's `colorRange` lists, if it lists any: a literal list, or a
+/// `$param` whose value param holds a list *now*, as [`resolve_colour_domain`]
+/// reads its own key.
+#[must_use]
+pub fn resolve_colour_range<'a>(
+    plot: &'a PlotNode,
+    params: &'a IndexMap<String, ParamNode>,
+) -> Option<Vec<&'a str>> {
+    colour_range(literal_attribute(plot, params, "colorRange")?)
 }
 
 /// What one positional axis asks of where it starts and ends: `xZero` and
@@ -1559,6 +1749,137 @@ pub fn plot_scale_key(axis: PlotAxis) -> Option<&'static str> {
         .map(|(_, key)| *key)
 }
 
+/// **What a plot's file said of one axis's scale** — the part of the reading
+/// [`PlotScales`] cannot keep, because the resolved scale is the same
+/// [`ScaleType::Linear`] whether the file left the key out, named `linear`, or
+/// named a scale this build does not draw.
+///
+/// A value is the analyst's when it differs from brightfield's own default, not
+/// when its key is present, so `linear` reads as [`ScaleReading::Default`] and
+/// `log` reads as [`ScaleReading::Set`]. [`ScaleReading::Undrawn`] is the third
+/// case: the file asked for a scale this build cannot draw, so the axis is
+/// drawn as the default and the record keeps the word the file used.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ScaleReading {
+    /// The axis is on brightfield's default, linear: the plot has no key for
+    /// it, or the key names `linear`, or it is a `$param` that declares no
+    /// value. Nothing here was chosen.
+    #[default]
+    Default,
+    /// The file sets a transform this build draws and that differs from the
+    /// default: `log` or `symlog`. A file that names `linear` reads as
+    /// [`ScaleReading::Default`] instead.
+    Set(ScaleType),
+    /// The file names a scale this build does not draw — `sqrt`, `pow`,
+    /// `band`, a wrong-case `LOG` — as written. The axis draws as
+    /// [`ScaleReading::Default`] does.
+    Undrawn(String),
+}
+
+impl ScaleReading {
+    /// The transform the axis draws with: the set one, or linear.
+    #[must_use]
+    pub fn scale(&self) -> ScaleType {
+        match self {
+            Self::Set(scale) => *scale,
+            Self::Default | Self::Undrawn(_) => ScaleType::Linear,
+        }
+    }
+
+    /// Whether the file chose a transform this build draws and that differs
+    /// from the default.
+    #[must_use]
+    pub fn is_set(&self) -> bool {
+        matches!(self, Self::Set(_))
+    }
+
+    /// The scale name the file asked for and this build does not draw, as
+    /// written; `None` for the other two readings.
+    #[must_use]
+    pub fn undrawn(&self) -> Option<&str> {
+        match self {
+            Self::Undrawn(name) => Some(name),
+            Self::Default | Self::Set(_) => None,
+        }
+    }
+
+    /// The reading of one scale name, as [`ScaleType::from_wire`] judges it.
+    fn of_name(name: &str) -> Self {
+        match ScaleType::from_wire(name) {
+            Some(ScaleType::Linear) => Self::Default,
+            Some(scale) => Self::Set(scale),
+            None => Self::Undrawn(name.to_string()),
+        }
+    }
+}
+
+/// [`ScaleReading`] for each of a plot's positional axes: the record beside
+/// [`PlotScales`], which stays `Copy` for the crates that hold it by value.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PlotScaleReadings {
+    /// What the file said of the x axis's scale.
+    pub x: ScaleReading,
+    /// What the file said of the y axis's scale.
+    pub y: ScaleReading,
+}
+
+impl PlotScaleReadings {
+    /// The reading of one axis.
+    #[must_use]
+    pub fn axis(&self, axis: PlotAxis) -> &ScaleReading {
+        match axis {
+            PlotAxis::X => &self.x,
+            PlotAxis::Y => &self.y,
+        }
+    }
+
+    /// The transforms the plot draws with.
+    #[must_use]
+    pub fn scales(&self) -> PlotScales {
+        PlotScales {
+            x: self.x.scale(),
+            y: self.y.scale(),
+        }
+    }
+}
+
+/// Read what a plot's `xScale` / `yScale` attributes say, reading a lifted
+/// `$param` through its declared value.
+///
+/// The one judge of those attributes: [`resolve_plot_scales_in`] is this
+/// reading's [`PlotScaleReadings::scales`], so the scale a plot draws and the
+/// word the record keeps cannot disagree about what the file asked for.
+///
+/// A `$param` at the attribute position resolves through `params` — one hop,
+/// not a chain, because a param whose value is another param reference is not
+/// a form the spec language produces. A reference that resolves to no string
+/// reads as [`ScaleReading::Default`] and carries no word. A value that is no
+/// string, a number or a list, does the same: it names no scale.
+#[must_use]
+pub fn read_plot_scales_in(
+    plot: &PlotNode,
+    params: &IndexMap<String, crate::ast::ParamNode>,
+) -> PlotScaleReadings {
+    let read = |axis: PlotAxis| -> ScaleReading {
+        let Some(key) = plot_scale_key(axis) else {
+            return ScaleReading::Default;
+        };
+        let named = match plot.attributes.get(key) {
+            Some(SpecValue::String(s)) => Some(s.as_str()),
+            Some(SpecValue::Param(r)) => match params.get(&r.0) {
+                Some(crate::ast::ParamNode::Value(SpecValue::String(s))) => Some(s.as_str()),
+                _ => None,
+            },
+            _ => None,
+        };
+        named.map_or(ScaleReading::Default, ScaleReading::of_name)
+    };
+    PlotScaleReadings {
+        x: read(PlotAxis::X),
+        y: read(PlotAxis::Y),
+    }
+}
+
 /// Resolve a plot's `xScale` / `yScale` attributes, reading a lifted `$param`
 /// through its declared value.
 ///
@@ -1570,37 +1891,19 @@ pub fn plot_scale_key(axis: PlotAxis) -> Option<&'static str> {
 /// [`ScaleType::from_wire`] holds. A name outside that set leaves the axis
 /// linear, which `an_unknown_scale_name_degrades_to_linear` holds over a list
 /// of near-misses; it is the same degradation an unreadable `xDomain` takes,
-/// since a name this build cannot draw is not a reason to draw nothing.
+/// since a name this build cannot draw is not a reason to draw nothing. The
+/// name is kept by [`read_plot_scales_in`], which this is the scales of, and
+/// `ParseWarning::UndrawnScale` says it.
 ///
-/// A `$param` at the attribute position resolves through `params` — one hop,
-/// not a chain, because a param whose value is another param reference is not
-/// a form the spec language produces. An unresolvable reference leaves the
+/// A `$param` at the attribute position resolves through `params`, as
+/// [`read_plot_scales_in`] reads it. An unresolvable reference leaves the
 /// axis linear.
 #[must_use]
 pub fn resolve_plot_scales_in(
     plot: &PlotNode,
     params: &IndexMap<String, crate::ast::ParamNode>,
 ) -> PlotScales {
-    let resolve = |axis: PlotAxis| -> ScaleType {
-        let Some(key) = plot_scale_key(axis) else {
-            return ScaleType::Linear;
-        };
-        let named = match plot.attributes.get(key) {
-            Some(SpecValue::String(s)) => Some(s.as_str()),
-            Some(SpecValue::Param(r)) => match params.get(&r.0) {
-                Some(crate::ast::ParamNode::Value(SpecValue::String(s))) => Some(s.as_str()),
-                _ => None,
-            },
-            _ => None,
-        };
-        named
-            .and_then(ScaleType::from_wire)
-            .unwrap_or(ScaleType::Linear)
-    };
-    PlotScales {
-        x: resolve(PlotAxis::X),
-        y: resolve(PlotAxis::Y),
-    }
+    read_plot_scales_in(plot, params).scales()
 }
 
 /// [`resolve_plot_scales_in`] with no params in scope — the literal-only
@@ -3736,6 +4039,104 @@ vconcat:
         assert_eq!(resolve_plot_scales_in(&p, &params).x, ScaleType::Log);
         // Undeclared, and a selection rather than a value, both degrade.
         assert!(resolve_plot_scales_in(&p, &IndexMap::new()).is_linear());
+    }
+
+    fn read_scales(attrs: &[(&str, SpecValue)]) -> PlotScaleReadings {
+        read_plot_scales_in(&plot_with(attrs), &IndexMap::new())
+    }
+
+    fn scale_word(word: &str) -> SpecValue {
+        SpecValue::String(word.to_string())
+    }
+
+    /// `yScale: log` reads y as set and log; no `yScale`, and `yScale: linear`,
+    /// both read y as the default linear; and x does not move with y's key.
+    #[test]
+    fn a_y_scale_is_read_as_set_only_when_it_differs_from_the_default() {
+        let log = read_scales(&[("yScale", scale_word("log"))]);
+        assert_eq!(log.y, ScaleReading::Set(ScaleType::Log));
+        assert!(log.y.is_set());
+        assert_eq!(log.y.scale(), ScaleType::Log);
+        assert_eq!(log.x, ScaleReading::Default, "x is unaffected by y's key");
+
+        let none = read_scales(&[]);
+        let linear = read_scales(&[("yScale", scale_word("linear"))]);
+        for (what, reading) in [("no yScale", none), ("yScale: linear", linear)] {
+            assert_eq!(reading.y, ScaleReading::Default, "{what}");
+            assert!(!reading.y.is_set(), "{what} is not the analyst's choice");
+            assert_eq!(reading.y.scale(), ScaleType::Linear, "{what}");
+            assert_eq!(reading.y.undrawn(), None, "{what} carries no word");
+            assert_eq!(reading.x, ScaleReading::Default, "{what}: x is unaffected");
+        }
+    }
+
+    /// A file that sets `xScale: log` and no `yScale` reads x as set and y as
+    /// the default.
+    #[test]
+    fn an_x_scale_set_alone_leaves_y_on_the_default() {
+        let read = read_scales(&[("xScale", scale_word("log"))]);
+        assert_eq!(read.x, ScaleReading::Set(ScaleType::Log));
+        assert!(read.x.is_set());
+        assert_eq!(read.y, ScaleReading::Default);
+        assert!(!read.y.is_set());
+        assert_eq!(read.scales().x, ScaleType::Log);
+        assert_eq!(read.scales().y, ScaleType::Linear);
+    }
+
+    /// `yScale: sqrt`, written literally or through a `$param` holding it,
+    /// reads as the default linear and carries the word `sqrt`; a `$param`
+    /// nobody declared carries no word.
+    #[test]
+    fn an_undrawn_scale_name_reads_as_default_and_carries_the_word() {
+        let literal = read_scales(&[("yScale", scale_word("sqrt"))]);
+        assert_eq!(literal.y.scale(), ScaleType::Linear, "drawn linear");
+        assert!(!literal.y.is_set(), "it reads as the default");
+        assert_eq!(literal.y.undrawn(), Some("sqrt"));
+        assert_eq!(literal.x.undrawn(), None, "x is unaffected by y's key");
+
+        let p = plot_with(&[("yScale", SpecValue::Param(ParamRef::new("s")))]);
+        let mut params = IndexMap::new();
+        params.insert(
+            "s".to_string(),
+            ParamNode::Value(SpecValue::String("sqrt".to_string())),
+        );
+        let through = read_plot_scales_in(&p, &params);
+        assert_eq!(through.y.scale(), ScaleType::Linear);
+        assert!(!through.y.is_set());
+        assert_eq!(through.y.undrawn(), Some("sqrt"));
+
+        let undeclared = read_plot_scales_in(&p, &IndexMap::new());
+        assert_eq!(undeclared.y, ScaleReading::Default);
+        assert_eq!(
+            undeclared.y.undrawn(),
+            None,
+            "no word for a param nobody set"
+        );
+    }
+
+    /// The word is kept as written, for each name `from_wire` refuses: the
+    /// near-misses the degradation test lists, and a wrong-case `LOG`.
+    #[test]
+    fn every_name_from_wire_refuses_is_carried_as_written() {
+        for name in ["band", "sqrt", "LOG", "", "pow"] {
+            let read = read_scales(&[("xScale", scale_word(name))]);
+            assert_eq!(read.x.undrawn(), Some(name), "xScale: {name:?}");
+            assert_eq!(read.x.scale(), ScaleType::Linear, "xScale: {name:?}");
+        }
+    }
+
+    /// The drawn scale is the record's `scales()`: one judge, so a plot cannot
+    /// draw a scale the record did not read.
+    #[test]
+    fn the_resolved_scales_are_the_records_scales() {
+        for (x, y) in [("log", "sqrt"), ("symlog", "linear"), ("pow", "log")] {
+            let p = plot_with(&[("xScale", scale_word(x)), ("yScale", scale_word(y))]);
+            assert_eq!(
+                resolve_plot_scales_in(&p, &IndexMap::new()),
+                read_plot_scales_in(&p, &IndexMap::new()).scales(),
+                "xScale: {x}, yScale: {y}"
+            );
+        }
     }
 
     /// The resolver reads the axis's key out of the consumed list, so a key

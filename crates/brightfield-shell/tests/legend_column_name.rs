@@ -355,6 +355,7 @@ fn values_top_down(legend: &LegendSpec) -> Vec<f64> {
         LegendSpec::Diverging {
             min, max, pivot, ..
         } => vec![*max, *pivot, *min],
+        LegendSpec::Steps { edges, .. } => edges.iter().rev().copied().collect(),
         LegendSpec::Categorical { .. } => panic!("a number fill draws a ramp"),
     }
 }

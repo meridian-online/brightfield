@@ -142,7 +142,9 @@ inferred from the rows it is currently drawing: the `xyDomain`
 both-axes shorthand, the facet axes `fxDomain` / `fyDomain`, and any
 spelling other than the exact string `Fixed`. An explicit two-element
 domain (`xDomain: [0, 100]`) is a different instruction and is
-likewise not read here.
+likewise not read here. The warning banner names `xyDomain` and
+`fxDomain` / `fyDomain` as keys this build does not read (DEV-0014 for
+`xyDomain`).
 
 One brightfield-local rule sits on top: pan and zoom are offered on
 any plot with a continuous positional scale, and an axis the reader
@@ -292,6 +294,154 @@ as nothing, and its arms are tuned to the chart surface in both themes.
 Blue sits at the low end, where rdbu puts red, so a spec that wants
 Mosaic's colours writes `colorScheme: rdbu`, and only the default
 differs.
+
+
+**Conformance layers suppressed:** 3
+
+## DEV-0010 — colour — a fixed domain on a diverging scale (`colorScale: diverging`, `colorDomain` as two numbers)
+
+**Mosaic behaviour.** Mosaic's renderer keeps a diverging scale symmetric about its pivot, and
+does so for a domain the file wrote as well as one inferred from the rows:
+a `colorDomain` that is uneven about the pivot is widened on its short
+side until both ends are the same distance from the pivot, so the ends
+its legend reads are not the ends the file wrote.
+
+
+**Brightfield behaviour.** A `colorDomain` of two numbers is drawn as written. With `colorPivot: 2`
+and `colorDomain: [0, 10]` the legend's ends read 0 and 10, a point at 0
+wears the low pole and a point at 10 the high pole, and each arm of the
+ramp runs over its own span: from 0 to 2 below the pivot and from 2 to 10
+above it. A diverging scale with no `colorDomain` is drawn even about the
+pivot as before (DEV-0008), and so is one whose `colorDomain` is no pair of
+numbers, `Fixed` among them.
+
+
+**Rationale.** A domain is fixed in a file so that a colour means the same value in two
+charts, and a renderer that widens it moves the colour of every value on
+one side of the pivot by an amount nobody wrote. Drawing the ends as
+written keeps the legend true to the file, and the arms' unequal rates are
+the cost of an uneven domain that the author chose. A spec that wants
+Mosaic's picture writes a domain even about its pivot, and only the uneven
+one differs.
+
+
+**Conformance layers suppressed:** 3
+
+## DEV-0011 — colour — the count of steps of a stepped scale (`colorScale: quantize`, `colorN`)
+
+**Mosaic behaviour.** Mosaic's renderer takes the thresholds of a `quantize` scale from tidy ticks
+of the domain, so `colorN` is a target for the count and not the count: a
+plot with `colorN: 5` over a column running 0 to 500001 comes out as six
+steps there, their edges at round values. With no `colorN` it draws five
+steps, and with a `colorRange` it draws as many steps as the range has
+colours.
+
+
+**Brightfield behaviour.** The count asked for is the count drawn. `colorN: 5` over a column running 0
+to 500001 is five steps of equal width, each a fifth of the domain, the
+domain being the `colorDomain` when the file writes one and the rows' own
+otherwise (so `colorDomain: [0, 50]` gives five steps each 10 wide). A
+point at an edge is in the step above it, and a point past either end is in
+the end step. With no `colorN` it draws five steps, and a `colorRange` of
+two or more colours gives the steps their colours and their count, whatever
+`colorN` says. A `colorN` that is not a whole number from one to 256 draws
+five steps, and the page's warning names the key and the value.
+
+
+**Rationale.** The scale row of the settings list reads *steps · 5*, written as `colorN`,
+and a count the analyst types is a count they expect to see: five colours
+they can tell apart and name the band of, with a legend of five blocks.
+Rounding the edges to tidy values gives a different count from the one in
+the file and edges that are not the equal fifths the legend's labels say.
+A spec that wants Mosaic's tidy edges writes a `colorDomain` with round
+ends, and only a domain that does not divide into round steps differs.
+
+
+**Conformance layers suppressed:** 3
+
+## DEV-0012 — axes — the x and y axis keys on a plot with a map projection (`xTicks`, `xTickFormat`, `xGrid`, `grid`, `xZero`, `xNice`, `xReverse` and the `y` of each)
+
+**Mosaic behaviour.** Mosaic hands a plot's axis attributes to Observable Plot, which has no x or
+y scale on a plot with a projection: the projection takes their place, so
+the planar units a projected point lands on are no axis, and none of these
+keys sets a scale option. Mosaic web draws the map and does not report a
+key it had no use for.
+
+
+**Brightfield behaviour.** The map is drawn as the same file draws it without the key, and the
+warning banner names each key as changing nothing on a plot with a map
+projection, with the key first and then the plot. A tick count, a number
+or date tick format and a gridline switch that asks for gridlines have no
+frame to act on, because a plot with a projection draws a graticule where
+the frame would be. `xZero` and `xNice`, and `yZero` and `yNice`, leave the
+map's extent where it is, as `xReverse` and `yReverse` leave its
+direction. A key that asks for nothing (a switch set to `false`) is not
+named. A plot with no projection reads each of these keys as it did.
+
+
+**Rationale.** An analyst who opens a Mosaic map that sets one of these keys is looking at
+a map that differs from what they wrote only if brightfield acted on the
+key, and is owed a line saying the key was not used if it did not. Reading
+the key on a projected plot would move the map's extent for a request
+Observable Plot has no scale to receive, and say nothing; leaving it
+unread and unnamed would be the silence the axis vocabulary exists to
+end. The picture is the one Mosaic draws, and the banner is what differs.
+
+
+**Conformance layers suppressed:** 3
+
+## DEV-0013 — axes — a tick format (`xTickFormat`, `yTickFormat`) of either kind on an axis of names
+
+**Mosaic behaviour.** Mosaic's schema describes a tick format as a d3-format string for a
+numeric scale and a d3-time-format string for a temporal one. An axis of
+names is neither: Mosaic's band axis prints the names, so a format set on
+one has nothing to format.
+
+
+**Brightfield behaviour.** A band axis of names prints its names as they are, and the warning banner
+names `xTickFormat` or `yTickFormat` as changing nothing on a category
+axis, with the key first and then the plot. A number format and a date
+format are named alike, and whether or not the names read as numbers: an
+axis is an axis of names when its column is text that is not a calendar
+day, whatever the text spells. A band of calendar days is a date axis and
+takes a date format; a number format on it is named as the other kind of
+format, as it was. A format that is no format at all is named once, as
+such. A plot with no format on an axis of names says nothing.
+
+
+**Rationale.** An analyst who opens a Mosaic chart that sets a format on an axis of names
+sees the names and was told nothing, so a format that looked like it
+should change the labels reads as a fault in brightfield. The picture is
+the one Mosaic draws, because formatting names as numbers or dates would
+draw text Mosaic does not; the banner is what differs, and says the key
+had nothing to act on.
+
+
+**Conformance layers suppressed:** 3
+
+## DEV-0014 — plot attributes — `axis`, `facetGrid`, `facetLabel`, `padding`, `align` and `xyDomain`, named rather than read
+
+**Mosaic behaviour.** Mosaic hands these plot attributes to Observable Plot. `axis` places the
+implicit axis on a side of the frame or on both sides, and `null`
+suppresses it. `padding` and `align` space the bands of an ordinal axis.
+`xyDomain` sets the x and y scale domains, and `Fixed` there fixes both
+after the first render. `facetGrid` and `facetLabel` set the default
+gridlines and label of the facet axes.
+
+
+**Brightfield behaviour.** The plot is drawn as the same file draws it without the key, and the
+warning banner names the key as one this build does not read, with the
+key first and then the plot, whatever it is set to. A key set under
+`plotDefaults` is named once, there, and not at each plot that inherits
+it. `xDomain: Fixed` and `yDomain: Fixed` are read (DEV-0005), and
+`xyDomain: Fixed` is not.
+
+
+**Rationale.** The schema rule that decides which plot attributes are axis attributes
+counted a name by an `x` or `y` before a capital letter, so these six were
+neither read nor named: a chart that set one differed from its file and
+the analyst was told nothing. They are named until a chart needs one
+read, which is a change of its own.
 
 
 **Conformance layers suppressed:** 3

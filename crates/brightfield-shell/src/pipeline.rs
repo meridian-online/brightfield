@@ -7,9 +7,13 @@
 //! and axis insets resolved via the same public helpers the app uses), and
 //! composites them into a single dashboard scene the egui host presents.
 //!
-//! Scope for the loop-first phase: projection / highlight / explicit colorDomain
-//! are NOT ported (the golden `dashboard.yaml` and the simple examples do not
-//! exercise them). Standalone-legend relocation is ported for one placement: a colour
+//! Scope for the loop-first phase: projection / highlight are NOT ported (the
+//! golden `dashboard.yaml` and the simple examples do not exercise them). A
+//! plot's `colorDomain` and `colorRange` are ported for its dot marks: the ends
+//! of a number ramp, the order of a string column's categories and the colours
+//! both draw in. Mosaic's `colorDomain: Fixed` is not read. A plot's
+//! `colorScale: quantize` with `colorN` cuts a dot's number ramp into steps.
+//! Standalone-legend relocation is ported for one placement: a colour
 //! legend under the plot it is for in a `vconcat` is drawn in the band the layout
 //! reserved for it ([`PlotHandle::legend_below`]). A standalone legend placed
 //! any other way is drawn at the plot's right. A plot's `colorScheme` is ported:
@@ -33,7 +37,8 @@ use brightfield_engine::{
     assemble_batches, DeclinedMark, Engine, NavigationExtent, RowsAudience, ScanTally, Session,
 };
 use brightfield_render::axis::{
-    axis_kind, axis_scale_word, tick_count_applies, tick_format_crosses_axis, AxisKind,
+    axis_kind, axis_scale_word, tick_count_applies, tick_format_applies, tick_format_crosses_axis,
+    AxisKind,
 };
 use brightfield_render::canvas_host::SurfaceRect;
 use brightfield_render::channel::{Channel, ChannelMap};
@@ -44,11 +49,12 @@ use brightfield_render::mark::{default_renderers_scaled, find_renderer, MarkRend
 use brightfield_render::sample_notice::{sample_band_margins, SampleFact};
 use brightfield_render::sample_policy;
 use brightfield_render::scale::{
-    ColourScale, PinnedDomains, Scale, ScaleSet, SequentialScheme, ViewExtent,
+    ColourOverride, ColourScale, PinnedDomains, Scale, ScaleSet, SequentialScheme, ViewExtent,
 };
 use brightfield_render::scene::{
-    axis_ends_apply, axis_reverse_applies, build_multi_mark_scene_pinned, colour_reverse_applies,
-    compose_dashboard, unrestorable_under_sampling, ChartData, UnsampledDomains,
+    axis_ends_apply, axis_keys_apply, build_multi_mark_scene_pinned, colour_override_applies,
+    colour_reverse_applies, compose_dashboard, unrestorable_under_sampling, ChartData,
+    UnsampledDomains,
 };
 use brightfield_render::selection::{
     committed_selection_rect, render_committed_selection, CommittedSelection, Selected,
@@ -59,11 +65,12 @@ use brightfield_spec::analysis::{
 };
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
-    collect_plot_nodes, placed_plots, plot_label, resolve_axis_ends, resolve_axis_reverse,
-    resolve_colour_pivot, resolve_colour_reverse, resolve_colour_scale_diverging,
-    resolve_colour_scheme_name, resolve_fixed_domains, resolve_grid_lines, resolve_plot_insets,
-    resolve_plot_margins, resolve_plot_stack_offset, resolve_tick_counts, resolve_tick_formats,
-    AxisEnds, AxisFormat, AxisReverse, Rect, StackOffset, TickCounts, TickFormats,
+    collect_plot_nodes, grid_switch, placed_plots, plot_label, resolve_axis_ends,
+    resolve_axis_reverse, resolve_colour_pivot, resolve_colour_reverse,
+    resolve_colour_scale_diverging, resolve_colour_scheme_name, resolve_fixed_domains,
+    resolve_grid_lines, resolve_plot_insets, resolve_plot_margins, resolve_plot_stack_offset,
+    resolve_tick_counts, resolve_tick_formats, AxisEnds, AxisFormat, AxisReverse, Rect,
+    StackOffset, TickCounts, TickFormats,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, ParseWarning, Spec};
@@ -186,11 +193,14 @@ pub struct PlotHandle {
     /// this says that nothing is there.
     pub navigated_empty: bool,
     /// **The column on this plot's fill channel**, from the first mark drawn
-    /// that names one — the name the legend at the plot's right carries over its
-    /// ramp or its swatches. Read off the drawn mark's channel map, on the same
+    /// that names one. Read off the drawn mark's channel map, on the same
     /// standing as [`Self::x_column`], so it is the column the fill scale was
-    /// built from. `None` for a plot whose fill is a colour literal or is not
-    /// set, which is also a plot whose scales call for no legend.
+    /// built from. A fill that is a column of the author's gives the name the
+    /// legend carries over its ramp or its swatches. A fill the transform
+    /// produced is the reserved count column (`fill: { count: }`), and a raster
+    /// or a heatmap sets a fill channel of neither kind. [`crate::legend::legend_name`]
+    /// names those legends. A plot whose fill is a colour literal or is not set
+    /// holds `None`.
     pub fill_column: Option<String>,
     /// **The file puts a colour legend on this plot** — its own `legend: color`
     /// item, a standalone one that names it by `for:`, or a standalone one with
@@ -2430,6 +2440,18 @@ fn compose_from_results(
             .is_some_and(|node| resolve_colour_reverse(node, &spec.params))
             && colour_reverse_applies(&plot_marks);
 
+        // The ends and colours the plot's spec wrote for its colour —
+        // `colorDomain` and `colorRange` — and the steps it cuts the ramp into,
+        // `colorScale: quantize` with `colorN`, read from the spec this
+        // composition draws so a param that holds any of them is read as it
+        // stands now. The dots are the marks that take them, as they are
+        // `colorReverse`'s: a plot with no dot among its marks keeps the ramp it
+        // draws today (`a_cell_a_heatmap_and_a_raster_keep_their_ramp`).
+        let colour_override = plot_node
+            .filter(|_| colour_override_applies(&plot_marks))
+            .map(|node| ColourOverride::of_plot(node, &spec.params))
+            .unwrap_or_default();
+
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
         // `draw_inline_legend = false`: the legend is NOT baked into the data
         // scene. The shell draws it as a native margin panel outside the plot
@@ -2447,6 +2469,7 @@ fn compose_from_results(
             grid,
             axis_ends,
             axis_reverse,
+            &colour_override,
             colour_reverse,
             ink,
         );
@@ -2460,8 +2483,10 @@ fn compose_from_results(
                 let mut found = crossed_tick_formats(node, &tick_formats, &scales);
                 found.extend(inert_axis_instructions(
                     &plot_label(&plot.path, node),
+                    node,
                     axis_ends,
                     tick_counts,
+                    &tick_formats,
                     axis_reverse,
                     &scales,
                 ));
@@ -2621,7 +2646,9 @@ fn compose_from_results(
 }
 
 /// The warnings for a plot's tick formats that sit on an axis of the other kind:
-/// a number format on a date axis, a date format on a number axis.
+/// a number format on a date axis, a date format on a number axis. A format of
+/// either kind on an axis of names is no kind's to cross and is named by
+/// [`inert_axis_instructions`], through [`tick_format_applies`].
 ///
 /// Known here, where the data has typed the scales, and asked of
 /// [`tick_format_crosses_axis`], the same judge the axis draws through, so a
@@ -2633,6 +2660,12 @@ fn crossed_tick_formats(
     formats: &TickFormats,
     scales: &ScaleSet,
 ) -> Vec<ParseWarning> {
+    // A plot with a map projection has no axis to cross: its x and y are planar
+    // units, and a tick format on it is named once, by
+    // [`inert_axis_instructions`], as an instruction the map drops.
+    if !axis_keys_apply(scales) {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     for (key, channel, format) in [
         ("xTickFormat", Channel::X, &formats.x),
@@ -2665,30 +2698,43 @@ fn crossed_tick_formats(
 
 /// The warnings for a plot's axis instructions that the axis they meet does not
 /// act on: `xZero`, `xNice` or `xTicks` (and the `y` of each) on an axis that
-/// does not follow it, and `xReverse` or `yReverse` on a plot with a map
-/// projection.
+/// does not follow it, `xTickFormat` (and `yTickFormat`) of either kind on an
+/// axis of names, and any x or y axis instruction (`xZero`, `xNice`, `xTicks`,
+/// `xTickFormat`, `xGrid`, `xReverse`, the bare `grid`) on a plot with a map
+/// projection, whose x and y are no axis.
 ///
 /// Known here, where the data has typed the scales, and asked of the judges the
 /// draw goes through ([`axis_ends_apply`], [`tick_count_applies`],
-/// [`axis_reverse_applies`]), so an instruction the draw drops is an instruction
-/// that was named
-/// (`an_instruction_an_axis_takes_none_of_is_named_and_the_plot_draws_without_it`).
+/// [`tick_format_applies`], [`axis_keys_apply`]), so an instruction the draw
+/// drops is an instruction that was named
+/// (`an_instruction_an_axis_takes_none_of_is_named_and_the_plot_draws_without_it`,
+/// `a_tick_format_on_an_axis_of_names_is_named_and_the_names_are_drawn`,
+/// `a_projected_plots_axis_keys_are_named_and_the_map_draws_without_them`).
 /// A key set to `false`, or to a value the resolvers read as no request, is no
-/// instruction and says nothing.
+/// instruction and says nothing. A plot with a projection says each key once,
+/// as changing nothing on a plot with a map projection, and says nothing of the
+/// kind of axis the key landed on, since there is none.
 fn inert_axis_instructions(
     plot: &str,
+    node: &PlotNode,
     ends: AxisEnds,
     counts: TickCounts,
+    formats: &TickFormats,
     reverse: AxisReverse,
     scales: &ScaleSet,
 ) -> Vec<ParseWarning> {
+    let projected = !axis_keys_apply(scales);
+    // `grid` and `xGrid` are no instruction unless they ask for gridlines.
+    let grid_asked = |key: &str| node.attributes.get(key).and_then(grid_switch) == Some(true);
     let mut out = Vec::new();
-    for (channel, zero, nice, ticks, reversed) in [
+    for (channel, zero, nice, ticks, format, grid, reversed) in [
         (
             Channel::X,
             ("xZero", ends.x.zero),
             ("xNice", ends.x.nice),
             ("xTicks", counts.x.is_some()),
+            ("xTickFormat", formats.x.is_some()),
+            ("xGrid", grid_asked("xGrid")),
             ("xReverse", reverse.x),
         ),
         (
@@ -2696,10 +2742,21 @@ fn inert_axis_instructions(
             ("yZero", ends.y.zero),
             ("yNice", ends.y.nice),
             ("yTicks", counts.y.is_some()),
+            ("yTickFormat", formats.y.is_some()),
+            ("yGrid", grid_asked("yGrid")),
             ("yReverse", reverse.y),
         ),
     ] {
-        if let Some((scale, axis)) = scales
+        if projected {
+            for (key, set) in [zero, nice, ticks, format, grid, reversed] {
+                if set {
+                    out.push(ParseWarning::AxisAttributeUnderProjection {
+                        attribute: key.to_string(),
+                        plot: plot.to_string(),
+                    });
+                }
+            }
+        } else if let Some((scale, axis)) = scales
             .get(channel)
             .and_then(|scale| Some((scale, axis_scale_word(scale)?)))
         {
@@ -2707,6 +2764,7 @@ fn inert_axis_instructions(
                 (zero.0, zero.1, axis_ends_apply(scale)),
                 (nice.0, nice.1, axis_ends_apply(scale)),
                 (ticks.0, ticks.1, tick_count_applies(scale)),
+                (format.0, format.1, tick_format_applies(scale)),
             ] {
                 if set && !applies {
                     out.push(ParseWarning::AxisAttributeOnWrongAxis {
@@ -2717,12 +2775,12 @@ fn inert_axis_instructions(
                 }
             }
         }
-        if reversed.1 && !axis_reverse_applies(scales) {
-            out.push(ParseWarning::AxisReverseUnderProjection {
-                attribute: reversed.0.to_string(),
-                plot: plot.to_string(),
-            });
-        }
+    }
+    if projected && grid_asked("grid") {
+        out.push(ParseWarning::AxisAttributeUnderProjection {
+            attribute: "grid".to_string(),
+            plot: plot.to_string(),
+        });
     }
     out
 }

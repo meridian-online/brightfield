@@ -54,6 +54,11 @@ image = "0.25"
 arrow = { version = "58", default-features = false }
 # --script ndjson parsing for the headless shot's scripted RawInput.
 serde_json = "1"
+# The local time zone's offset at an instant, for the Versions panel's *when*
+# (`today 14:02`). Already in the graph, with `clock` on; named
+# here so the shell reads it directly, and with no default features so it adds
+# nothing the graph did not hold.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # `serde` is egui_tiles' only feature and its default, and it is the whole of
 # what makes a dock layout persistable. This crate builds a `Tree` and never
 # serialises one, so `default-features = false` was costing it nothing today
@@ -74,7 +79,7 @@ brightfield-protocol = { version = "0.1.0", path = "../brightfield-protocol" }
 # What `cli` adds to the build is clap; `http-fetch`, the other half of it, was
 # already on. BUMPING moves this rev with `brightfield-protocol`'s, in lockstep —
 # README §"The arcform dependency".
-arc = { git = "https://github.com/meridian-online/arcform", rev = "2090b485491b734ad77c716ce0d01c938e43efa1", default-features = false, features = ["cli", "http-fetch"] }
+arc = { git = "https://github.com/meridian-online/arcform", rev = "f0561cd255e010e12a6ae82edc0b70785c3d19fc", default-features = false, features = ["cli", "http-fetch"] }
 brightfield-keys = { version = "0.1.0", path = "../brightfield-keys" }
 # The framework-free argument collector the argument-prompt overlay drives —
 # consumed read-only, like the keys registry above.

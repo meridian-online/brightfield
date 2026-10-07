@@ -628,8 +628,11 @@ fn resolve_position(scale: &Scale, value_f64: Option<f64>, value_str: Option<&st
             value_f64.map(|v| scale.map_f64(v))
         }
         Scale::Band { .. } => value_str.and_then(|s| scale.map_category(s)),
-        // Colour ramps (categorical, sequential or diverging) don't position on an axis.
-        Scale::Colour { .. } | Scale::Sequential { .. } | Scale::Diverging { .. } => None,
+        // Colour ramps (categorical, sequential, diverging or stepped) don't position on an axis.
+        Scale::Colour { .. }
+        | Scale::Sequential { .. }
+        | Scale::Diverging { .. }
+        | Scale::Quantized { .. } => None,
     }
 }
 
@@ -784,7 +787,8 @@ fn dot_position(
 }
 
 /// A dot's number fill, read once per draw: the column's values beside the
-/// [`Scale::Sequential`] or [`Scale::Diverging`] they map through.
+/// [`Scale::Sequential`], [`Scale::Diverging`] or [`Scale::Quantized`] they map
+/// through.
 ///
 /// `None` from [`NumberFill::of`] answers a fill that is not a number column on a
 /// ramp — a colour literal, a string column, no fill channel — and those
@@ -806,9 +810,12 @@ impl<'a> NumberFill<'a> {
             return None;
         }
         let column = channel_map.get(Channel::Fill)?;
-        let ramp = scales
-            .get(Channel::Fill)
-            .filter(|scale| matches!(scale, Scale::Sequential { .. } | Scale::Diverging { .. }))?;
+        let ramp = scales.get(Channel::Fill).filter(|scale| {
+            matches!(
+                scale,
+                Scale::Sequential { .. } | Scale::Diverging { .. } | Scale::Quantized { .. }
+            )
+        })?;
         Some(Self {
             ramp,
             values: column_as_f64(batch, column)?,
@@ -5652,6 +5659,11 @@ pub fn default_renderers_scaled(
 /// column inference and the density-family ramp builders, on the first render
 /// AND on every live rebuild (the wrapper rides `MarkInput.renderer_override`
 /// like `configured_renderer`'s output).
+///
+/// The shell's composition does not wrap its renderers in this. It applies the
+/// plot's override in the scene build ([`crate::scene::build_multi_mark_scene_pinned`]),
+/// after a sampled plot's categories are put back, which this wrapper's
+/// `augment_scales` runs before and so cannot win over.
 ///
 /// KNOWN in-session limitation (documented, matches the cycled-scheme
 /// precedent): the verbs that REBUILD a renderer override from scratch — the

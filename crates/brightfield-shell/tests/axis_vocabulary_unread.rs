@@ -152,7 +152,49 @@ fn a_facet_axis_attribute_draws_and_the_banner_names_it_and_its_plot() {
         lines.len() == 1 && lines[0].contains("`yAxis`"),
         "an `x` or `y` name set to `null` is named today; got {lines:?}"
     );
-    let lines = said(&compose("fxFlavour: 1\nfacetLabel: x"));
+    let lines = said(&compose("fxFlavour: 1\nfxyDomain: Fixed"));
+    assert!(
+        lines.is_empty(),
+        "a name the schema does not declare says nothing; got {lines:?}"
+    );
+}
+
+/// **A bare axis attribute draws, and the banner names it and its plot: the
+/// schema declares `axis`, `facetGrid`, `facetLabel`, `padding`, `align` and
+/// `xyDomain`, a rule counting a name by an `x` or `y` and a capital letter left
+/// them out, and the layout resolvers read the six as they read an unset plot
+/// (`the_read_list_is_what_the_layout_resolvers_read`).** `xyDomain: Fixed` is
+/// what the vendored specs write.
+#[test]
+fn a_bare_axis_attribute_draws_and_the_banner_names_it_and_its_plot() {
+    let unset = compose("");
+    for attrs in [
+        "axis: both",
+        "axis: null",
+        "facetGrid: true",
+        "facetLabel: Region",
+        "padding: 0.5",
+        "align: 0.5",
+        "xyDomain: Fixed",
+    ] {
+        let key = attrs.split(':').next().expect("a key");
+        let asked = compose(attrs);
+        assert_eq!(
+            points(&asked),
+            points(&unset),
+            "`{attrs}`: the plot draws as it does without the key"
+        );
+        let lines = said(&asked);
+        assert_eq!(lines.len(), 1, "one line for `{attrs}`; got {lines:?}");
+        assert!(
+            lines[0].contains(&format!("`{key}`"))
+                && lines[0].contains("root (`rotated`)")
+                && lines[0].contains("does not read"),
+            "the line names the key and the plot; got {:?}",
+            lines[0]
+        );
+    }
+    let lines = said(&compose("xyDomains: Fixed\npaddings: 0.5"));
     assert!(
         lines.is_empty(),
         "a name the schema does not declare says nothing; got {lines:?}"
@@ -236,6 +278,49 @@ fn an_axis_attribute_brightfield_reads_says_nothing() {
         assert!(
             lines.is_empty(),
             "`{asked}` is read and draws in silence; got {lines:?}"
+        );
+    }
+}
+
+/// **A scale brightfield does not draw is named in the banner with its key, its
+/// word and the plot that carries it, and the plot draws linear; a scale it
+/// draws raises none.**
+///
+/// `yScale: sqrt` was read as linear in silence, so an analyst saw a picture
+/// that differed from their file and nothing said so. "Draws linear" is read off
+/// the painted scene: the plot paints the same points as the plot without the
+/// key.
+#[test]
+fn a_scale_brightfield_does_not_draw_is_named_and_the_plot_draws_linear() {
+    let unset = compose("");
+    for (attrs, key, word) in [
+        ("yScale: sqrt", "yScale", "sqrt"),
+        ("xScale: pow", "xScale", "pow"),
+    ] {
+        let asked = compose(attrs);
+        assert_eq!(
+            points(&asked),
+            points(&unset),
+            "`{attrs}`: the plot draws linear, as it does without the key"
+        );
+        let lines = said(&asked);
+        assert_eq!(lines.len(), 1, "one line for one scale; got {lines:?}");
+        assert!(
+            lines[0].contains(&format!("`{key}: {word}`"))
+                && lines[0].contains("linear")
+                && lines[0].contains("root (`rotated`)"),
+            "the line names the key, the word, linear and the plot; got {:?}",
+            lines[0]
+        );
+    }
+
+    // The y axis alone: the template's `xTicks` already draws its own line on a
+    // non-linear x axis, which is no scale's.
+    for asked in ["yScale: log", "yScale: symlog", "yScale: linear"] {
+        let lines = said(&compose(asked));
+        assert!(
+            lines.is_empty(),
+            "`{asked}` is a scale brightfield draws and raises nothing; got {lines:?}"
         );
     }
 }

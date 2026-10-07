@@ -279,8 +279,9 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         | ParseWarning::UnreadDateDirective { attribute, .. }
         | ParseWarning::TickFormatOnWrongAxis { attribute, .. }
         | ParseWarning::AxisAttributeOnWrongAxis { attribute, .. }
-        | ParseWarning::AxisReverseUnderProjection { attribute, .. }
+        | ParseWarning::AxisAttributeUnderProjection { attribute, .. }
         | ParseWarning::UnreadColourKey { attribute, .. }
+        | ParseWarning::UndrawnScale { attribute, .. }
         | ParseWarning::UnreadAxisAttribute { attribute, .. } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
         ParseWarning::AspectRatioWithProjection { mark }
@@ -330,8 +331,9 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::UnreadDateDirective { .. }
         | ParseWarning::TickFormatOnWrongAxis { .. }
         | ParseWarning::AxisAttributeOnWrongAxis { .. }
-        | ParseWarning::AxisReverseUnderProjection { .. }
+        | ParseWarning::AxisAttributeUnderProjection { .. }
         | ParseWarning::UnreadColourKey { .. }
+        | ParseWarning::UndrawnScale { .. }
         | ParseWarning::UnreadAxisAttribute { .. } => "plot",
         ParseWarning::UnknownAggregate { .. }
         | ParseWarning::UnconsumedChannelTransform { .. }
@@ -400,6 +402,27 @@ mod tests {
             !d.advisory().iter().any(|a| a.message.contains("voronoi")),
             "the parser's quieter twin of the blocking line must not also show: {:?}",
             d.lines()
+        );
+    }
+
+    /// A scale the build does not draw is one advisory, headlined by the key the
+    /// author wrote and filed under the plot; it does not block, because the
+    /// plot still draws.
+    #[test]
+    fn dfconf_an_undrawn_scale_is_an_advisory_headlined_by_its_key() {
+        let d = diagnose(
+            "data:\n  t: { file: t.parquet }\nplot:\n  - mark: dot\n    data: { from: t }\n    \
+             x: a\n    y: b\nyScale: sqrt\n",
+        );
+        assert!(d.blocking().is_empty(), "{:?}", d.lines());
+        let advisory = d.advisory();
+        assert_eq!(advisory.len(), 1, "{:?}", d.lines());
+        assert_eq!(advisory[0].wire_name, "yScale");
+        assert_eq!(advisory[0].surface, "plot");
+        assert!(
+            advisory[0].message.contains("`yScale: sqrt`"),
+            "{}",
+            advisory[0].message
         );
     }
 
@@ -717,7 +740,7 @@ mod tests {
             plot: "root (`sales`)".to_string(),
             axis: "log".to_string(),
         };
-        let under_a_projection = ParseWarning::AxisReverseUnderProjection {
+        let under_a_projection = ParseWarning::AxisAttributeUnderProjection {
             attribute: "xReverse".to_string(),
             plot: "root/vconcat[1]".to_string(),
         };

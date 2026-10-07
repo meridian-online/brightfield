@@ -82,5 +82,6 @@ plot:
     x: { bin: depth }
     y: { count: }
     fill: site
+  - legend: color
 width: 640
 height: 400

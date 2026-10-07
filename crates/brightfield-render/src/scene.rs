@@ -20,8 +20,8 @@ use crate::legend::render_colour_legend;
 use crate::mark::{HighlightState, MarkRenderer};
 use crate::sample_notice::{render_sample_notice, SampleFact};
 use crate::scale::{
-    apply_pinned_domains, infer_scales_in, infer_scales_multi_in, order_categories, PinnedDomains,
-    Scale, ScaleSet, ViewExtent,
+    apply_colour_override, apply_pinned_domains, infer_scales_in, infer_scales_multi_in,
+    order_categories, ColourOverride, PinnedDomains, Scale, ScaleSet, ViewExtent,
 };
 use crate::title::ResolvedTitles;
 
@@ -538,6 +538,7 @@ pub fn build_multi_mark_scene_with_domains(
         GridLines::default(),
         AxisEnds::default(),
         AxisReverse::default(),
+        &ColourOverride::default(),
         false,
         ink,
     )
@@ -606,6 +607,7 @@ pub fn build_multi_mark_scene_pinned(
     grid: GridLines,
     axis_ends: AxisEnds,
     axis_reverse: AxisReverse,
+    colour_override: &ColourOverride,
     colour_reverse: bool,
     ink: ChartInk,
 ) -> (Scene, ScaleSet) {
@@ -620,6 +622,11 @@ pub fn build_multi_mark_scene_pinned(
     apply_pinned_domains(&mut scales, &pins_yielding_to_navigation(pins, entries[0]));
     apply_axis_ends(&mut scales, axis_ends, tick_counts, entries[0]);
     apply_axis_reverse(&mut scales, axis_reverse);
+    // After `apply_unsampled_domains`, which puts a sampled plot's categories
+    // back in their own order, so the file's domain and colours win there as they
+    // do on a complete plot; and before the reversal, which turns what the file
+    // wrote.
+    apply_colour_override(&mut scales, colour_override);
     apply_colour_reverse(&mut scales, colour_reverse);
     let scene = draw_multi_mark_scene(
         entries,
@@ -633,15 +640,44 @@ pub fn build_multi_mark_scene_pinned(
     (scene, scales)
 }
 
+/// Whether a plot's x and y axis instructions have an axis to act on: not when
+/// the plot has a map projection, whose x and y are the projection's planar
+/// units and no axis. `xZero` and `xNice` would move the map's extent were they
+/// not guarded by this judge, and `xTicks`, `xTickFormat` and `xGrid` (the bare `grid`, and the
+/// `y` of each) have no frame to act on, because a plot with a projection draws
+/// a graticule where the frame would be.
+///
+/// It is the judge `apply_axis_ends` and `apply_axis_reverse` (private
+/// functions) draw through and the composition warns through, so an instruction
+/// the plot drops is an instruction that was named.
+#[must_use]
+pub fn axis_keys_apply(scales: &ScaleSet) -> bool {
+    scales.projection().is_none()
+}
+
 /// Whether a plot's `xReverse` / `yReverse` can turn its axes: not when the
 /// plot has a map projection, whose x and y are the projection's planar units.
-///
-/// It is the judge `apply_axis_reverse` draws through (a private function) and
-/// the composition warns through, so a reversal the plot drops is a reversal
-/// that was named.
+/// [`axis_keys_apply`] is that judgement, and `apply_axis_reverse` draws
+/// through this name for it.
 #[must_use]
 pub fn axis_reverse_applies(scales: &ScaleSet) -> bool {
-    scales.projection().is_none()
+    axis_keys_apply(scales)
+}
+
+/// Whether a plot's `colorDomain`, `colorRange` and `colorScale: quantize` with
+/// `colorN` set its colour scale: when a dot is among the marks the plot drew.
+///
+/// A dot builds its fill ramp and its categories, and the keys set the ends and
+/// the colours of what it built, and cut the ramp into steps. A raster, a heatmap,
+/// a cell and a hexbin keep the ramp they draw today under these keys, so a plot with none of the dot kinds
+/// draws as a file without them. A plot that mixes a dot with one of those shares
+/// one colour scale between them, and the dot's request sets the shared scale,
+/// as [`colour_reverse_applies`] says of `colorReverse`.
+///
+/// It is the judge the composition asks before it reads the keys from the plot.
+#[must_use]
+pub fn colour_override_applies(marks: &[MarkKind]) -> bool {
+    colour_reverse_applies(marks)
 }
 
 /// Whether a plot's `colorReverse` runs its colour the other way: when a dot is
@@ -747,12 +783,20 @@ fn apply_axis_reverse(scales: &mut ScaleSet, reverse: AxisReverse) {
 /// reason [`pins_yielding_to_navigation`] drops a pin: rounding a zoomed frame
 /// outward would undo the zoom. Log, symlog, time and band scales are left as
 /// they are; their ends are not a linear step's to round.
+///
+/// A plot with a map projection is left as it is: its x and y are the
+/// projection's planar units, so rounding or zeroing one widens the map's extent
+/// and draws the map smaller than the same file draws it without the key.
+/// [`axis_keys_apply`] is that judgement, and the composition warns through it.
 fn apply_axis_ends(
     scales: &mut ScaleSet,
     ends: AxisEnds,
     tick_counts: TickCounts,
     entry: &ChartData<'_>,
 ) {
+    if !axis_keys_apply(scales) {
+        return;
+    }
     let navigated = entry.view_extent;
     for (channel, end, target, reader_moved) in [
         (
@@ -2527,6 +2571,7 @@ mod tests {
                 GridLines::default(),
                 AxisEnds::default(),
                 AxisReverse::default(),
+                &ColourOverride::default(),
                 false,
                 ChartInk::LIGHT,
             );
@@ -2643,6 +2688,7 @@ mod tests {
                 grid,
                 AxisEnds::default(),
                 AxisReverse::default(),
+                &ColourOverride::default(),
                 false,
                 ChartInk::LIGHT,
             )

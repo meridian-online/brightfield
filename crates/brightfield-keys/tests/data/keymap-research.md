@@ -156,6 +156,25 @@ looking, and moving it writes nothing.
 | `move-cursor-left` | `h` · `left` | 5 / 4 / 5 | home-row `h` = left (vim, VisiData); the arrow is its twin; the Grid context keeps it apart from the Workspace's `pop-out` and `pan-left` |
 | `move-cursor-right` | `l` · `right` | 5 / 4 / 5 | home-row `l` = right (vim, VisiData); the arrow is its twin; the Grid context keeps it apart from the Workspace's `dive-in` and `pan-right` |
 
+### The Versions panel's cursor — a row of a chart's saved versions, in a key context of its own
+
+The ledger's Versions panel lists a chart's saved versions, newest first. With the panel focused, a
+cursor moves over its rows and the chart is drawn as the version under it; `Enter` steps the chart back
+to that version as an unsaved edit that Save writes, and `Esc` draws the chart as it was before the
+cursor moved. It takes the grid's precedent: a key context of its own (`Versions`), so `j`, `k`, the
+arrows, `Enter` and `Esc` never reach the Workspace's sibling focus, `dive-in` and `clear-selection` on
+the same keys. lazygit walks its commit list on the same `j` and `k`, and the shelf's list keeps the row
+under its cursor on the same `Enter`. A move past the oldest or the newest row leaves the cursor where
+it is. The step back is **Data**-tier, since Save writes it and `u` takes it back; the other three are
+**View**-tier and write nothing.
+
+| longname | key(s) | freq / mnem / conv | motor note |
+|----------|--------|--------------------|------------|
+| `move-version-cursor-down` | `j` · `down` | 4 / 4 / 5 | home-row `j` = down (vim, lazygit's commit list); the arrow is its twin; agrees with the grid's, the shelf's and the Protocol panel's `j` |
+| `move-version-cursor-up` | `k` · `up` | 4 / 4 / 5 | home-row `k` = up (vim, lazygit's commit list); the arrow is its twin; agrees with the grid's, the shelf's and the Protocol panel's `k` |
+| `step-back-to-version` | `enter` | 3 / 4 / 5 | enter = take the row under the cursor (the shelf's keep, telescope, fzf); a Data verb, since Save writes it; `u` takes it back |
+| `return-to-now` | `escape` | 4 / 4 / 5 | esc = back out one level (the Esc ladder), as the shelf's `back-out-of-shelf`; writes nothing |
+
 Reserved verbs are deliberately unscored (no key yet), shown greyed in the palette until their keys land:
 needs-keyboard-target (`filter-view`, `cross-filter-all`, `toggle-point-select`, `set-param`) and
 needs-command-log (`change-mark-type`, `add-mark`, `set-channel`, `remove-mark`, `undo`).

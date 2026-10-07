@@ -92,8 +92,8 @@ use crate::design::Mode;
 use crate::editor::EDITOR;
 use crate::inspector::{ColumnTable, InspectorPane, Selection, TableHandle};
 use crate::overlays::{
-    close_question_body, CloseAnswer, CommandPalette, HelpSheet, JumpTarget, JumpToNode,
-    CLOSE_QUESTION_TITLE,
+    close_question_body, close_question_keys, CloseAnswer, CloseQuestion, CommandPalette,
+    HelpSheet, JumpTarget, JumpToNode, CLOSE_QUESTION_TITLE,
 };
 use crate::pipeline::Composed;
 use crate::protocol::{
@@ -1713,10 +1713,11 @@ enum Overlay {
     /// The node jump (`/`): fuzzy finder over the graph in view.
     Jump(Picker<JumpToNode>),
     /// The question a close request raises over a window that carries the
-    /// unsaved mark: save, discard or cancel. It holds no state of its own —
-    /// what it asks about is the chart document's pending edits — and it is
-    /// drawn from [`crate::overlays::close_question_body`].
-    CloseQuestion,
+    /// unsaved mark: save and close, close without saving, or keep editing. It
+    /// holds what it says — the chart file, the unsaved edits in the shelf's
+    /// words, and why a close without saving could not keep the chart — and it
+    /// is drawn from [`crate::overlays::close_question_body`].
+    CloseQuestion(CloseQuestion),
 }
 
 /// The registry-bound keystrokes that open overlays, resolved once at boot.
@@ -1877,6 +1878,33 @@ fn grid_bindings() -> Vec<(&'static str, &'static str)> {
                 .map(move |spec| (spec.keystrokes, verb.longname))
         })
         .collect()
+}
+
+/// The Versions panel's `(keystroke token, longname)` pairs: every binding the
+/// registry declares in its Versions context, the arrow twins included.
+fn versions_bindings() -> Vec<(&'static str, &'static str)> {
+    brightfield_keys::registry()
+        .iter()
+        .flat_map(|verb| {
+            verb.binding_specs
+                .iter()
+                .filter(|spec| spec.context == brightfield_keys::BindingContext::Versions)
+                .map(move |spec| (spec.keystrokes, verb.longname))
+        })
+        .collect()
+}
+
+/// [`consume_token`] with the Versions panel's two keys no other caller
+/// consumes as a bare token, `enter` and `escape`. They are spelled here rather
+/// than in [`consume_token`] so a verb elsewhere whose primary key is one of
+/// them does not start consuming it.
+fn consume_versions_token(ctx: &egui::Context, token: &str) -> bool {
+    use egui::{Key, Modifiers};
+    match token {
+        "enter" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)),
+        "escape" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)),
+        other => consume_token(ctx, other),
+    }
 }
 
 /// Perform a navigation verb on the chart document, or report that this is not
@@ -2315,6 +2343,9 @@ pub struct MeridianApp {
     /// bindings the registry declares in its Grid context, read at boot — same
     /// rule as [`Self::nav_bindings`].
     grid_bindings: Vec<(&'static str, &'static str)>,
+    /// Whether the ledger's Versions panel holds the keys: a press in it gave
+    /// them to it, and no press elsewhere has taken them since.
+    versions_hold: bool,
     /// The per-session palette recency: verbs run from the palette rank
     /// higher on its next empty-query open. Session-scoped by design (the
     /// sanctioned v1 simplification); it resets each launch.
@@ -2667,6 +2698,7 @@ impl MeridianApp {
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             nav_bindings: navigation_bindings(),
             grid_bindings: grid_bindings(),
+            versions_hold: false,
             recency: RecencyCounter::new(),
             notifications: NotificationLayer::new(),
             last_chart_fault: None,
@@ -3812,6 +3844,54 @@ impl MeridianApp {
         self
     }
 
+    /// [`Self::keeping_history`] for a window already built, which is what a
+    /// capture's `prepare` step holds.
+    pub fn set_history(&mut self, history: Option<brightfield_protocol::HistoryStore>) {
+        self.history = history;
+    }
+
+    /// Give the Versions panel a clock and a home folder of its own in place of
+    /// the machine's, so `today 14:02` and `~/.arcform/history` read the same on
+    /// every run: what a baseline of the panel is drawn under.
+    pub fn set_versions_env(&mut self, clock: crate::versions::Clock, home: Option<PathBuf>) {
+        self.charts.doc.versions_mut().set_env(clock, home);
+    }
+
+    /// Bring the Versions panel's listing up to date for a frame in which it is,
+    /// or is not, the panel the ledger rail shows.
+    fn sync_versions(&mut self, shown: bool) {
+        let source = self.history.as_ref().and_then(|store| {
+            let protocol = self.protocol.doc.model.source()?;
+            Some(crate::versions::Source {
+                store: store.clone(),
+                file: brightfield_model::panel_capture::panel_file(&protocol.dir, &protocol.name),
+                dir: protocol.dir.clone(),
+            })
+        });
+        let tiles = self.charts.doc.tile_names();
+        let tile_of = |plot: &str| {
+            tiles
+                .iter()
+                .find(|(path, _)| path == plot)
+                .map_or_else(|| plot.to_string(), |(_, name)| name.clone())
+        };
+        let target = source.as_ref().map(|s| s.file.clone());
+        let mut versions = std::mem::take(self.charts.doc.versions_mut());
+        versions.sync(
+            source,
+            shown,
+            &tile_of,
+            self.charts.doc.unsaved_edits(),
+            self.charts.doc.stepped_back_to(),
+            || {
+                target
+                    .as_deref()
+                    .map_or_else(Vec::new, |file| self.charts.doc.unsaved_changes(file))
+            },
+        );
+        *self.charts.doc.versions_mut() = versions;
+    }
+
     /// The protocol view's interaction model, read-only.
     ///
     /// The window is the only thing that feeds it keys, and it feeds it keys
@@ -4050,6 +4130,9 @@ impl MeridianApp {
         // The grid's cursor keys, ahead of the frame verbs: with the grid
         // focused its keys are the cursor's, and the frame verbs stand down.
         self.grid_cursor_keys(&ctx, graph_on_canvas);
+        // The Versions panel's keys, on the same terms: with the panel focused
+        // its keys are the cursor's, the step back's and the way back to now.
+        self.versions_keys(&ctx, graph_on_canvas);
         // The frame verbs, on the same gate and only where the chart holds the
         // canvas: they are bare keys, so an overlay or a text field must own
         // the keyboard first.
@@ -4315,6 +4398,13 @@ impl MeridianApp {
             let ledger_collapsed = self.collapsed.contains(&ledger.id);
             let navigator_collapsed = self.collapsed.contains(&navigator.id);
             let inspector_collapsed = self.collapsed.contains(&inspector.id);
+
+            // The Versions panel reads the store when it is shown after not
+            // being shown, and after a Save; the rest of the time this is a
+            // comparison and no read.
+            self.sync_versions(
+                !ledger_collapsed && ledger_panes[ledger_panel] == crate::versions::VERSIONS,
+            );
 
             // Each strip's words are the panes' own `Subject` titles, read
             // before the closures below take their borrows of the documents.
@@ -5256,6 +5346,14 @@ impl MeridianApp {
         if self.charts.doc.undo_shelf_edit().is_none() {
             return false;
         }
+        self.rebind_shelf();
+        true
+    }
+
+    /// Set the shelf band's cells, and an open list's cursor, to the channels
+    /// the page drawn binds: what a page loaded by `u` or by the Versions panel
+    /// leaves for the window, since the band reads what it was last given.
+    fn rebind_shelf(&mut self) {
         if let Some(channels) = hero_shelf_channels(&self.charts.doc) {
             if let Some(band) = self.charts.shelf.band.as_mut() {
                 band.set_channels(channels.clone());
@@ -5265,7 +5363,6 @@ impl MeridianApp {
             }
             self.protocol.doc.model.rebind_column_list(channels);
         }
-        true
     }
 
     /// Perform whichever navigation verb's key is down this frame.
@@ -5814,6 +5911,96 @@ impl MeridianApp {
         }
     }
 
+    /// Whether the ledger's Versions panel holds the keys and is drawn — the
+    /// situation its key context, the registry's Versions, resolves in.
+    ///
+    /// A press in the panel gives it the keys and a press anywhere else takes
+    /// them away ([`crate::versions::Versions::take_press`]), as a press does
+    /// for the shelf. The rail's panes are not the dock's, so the workspace's
+    /// focus record does not reach them.
+    fn versions_has_focus(&mut self) -> bool {
+        if let Some(inside) = self.charts.doc.versions_mut().take_press() {
+            self.versions_hold = inside;
+        }
+        if !self.versions_hold {
+            return false;
+        }
+        let ledger = arrangement::default_arrangement().expect_region(arrangement::LEDGER_RAIL);
+        let panes = region_panes(ledger);
+        !self.collapsed.contains(&ledger.id)
+            && panes.get(self.ledger_panel.min(panes.len().saturating_sub(1)))
+                == Some(&crate::versions::VERSIONS)
+    }
+
+    /// **Give the Versions panel its keys**: the cursor's row, the step back,
+    /// and the way back to now.
+    ///
+    /// Gated as [`Self::grid_cursor_keys`] is — the chart on the canvas, no
+    /// overlay open, no widget holding the keyboard — and on the panel holding
+    /// focus, which a press in it gives it. Each binding comes off the
+    /// registry's Versions context, so the keys the help sheet lists for the
+    /// panel are the keys that act.
+    ///
+    /// - `j` and `k`, and the arrows, move the cursor a row and draw the chart
+    ///   as the version it is on ([`ChartDoc::move_version_cursor`]). They are
+    ///   consumed whether or not the cursor could move, so a move off the
+    ///   list's end does not fall through to a Workspace verb.
+    /// - `Enter`, and a click on the Step back control the cursor's row drew,
+    ///   step the chart back to that version as an unsaved edit
+    ///   ([`ChartDoc::step_back_to_cursor`]).
+    /// - `Esc` draws the chart as it was before the cursor moved
+    ///   ([`ChartDoc::return_to_now`]).
+    ///
+    /// `Enter` and `Esc` are taken with the cursor on a row and left to the
+    /// window's other handlers when the cursor is off the rows. **The panel letting go of the keys
+    /// is the way back to now too**: the version drawn under the cursor is a
+    /// preview of the panel's, and a chart left drawn as it with the keys gone
+    /// elsewhere would take a shelf edit or a switch made to a spec Save does
+    /// not write.
+    fn versions_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
+        let clicked = self.charts.doc.versions_mut().take_step_back_click();
+        if graph_on_canvas || !self.versions_has_focus() {
+            self.versions_hold = false;
+            if self.charts.doc.return_to_now() {
+                self.rebind_shelf();
+                ctx.request_repaint();
+            }
+            return;
+        }
+        if clicked && self.charts.doc.step_back_to_cursor() {
+            self.rebind_shelf();
+            ctx.request_repaint();
+        }
+        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        for (token, longname) in versions_bindings() {
+            let on_row = self.charts.doc.versions().cursor().is_some();
+            let acted = match longname {
+                "move-version-cursor-down" | "move-version-cursor-up" => {
+                    consume_token(ctx, token)
+                        && self
+                            .charts
+                            .doc
+                            .move_version_cursor(longname == "move-version-cursor-down")
+                }
+                "step-back-to-version" => {
+                    on_row
+                        && consume_versions_token(ctx, token)
+                        && self.charts.doc.step_back_to_cursor()
+                }
+                "return-to-now" => {
+                    on_row && consume_versions_token(ctx, token) && self.charts.doc.return_to_now()
+                }
+                _ => false,
+            };
+            if acted {
+                self.rebind_shelf();
+                ctx.request_repaint();
+            }
+        }
+    }
+
     /// Open the command palette at the Protocol altitude, over a snapshot of
     /// the session's recency, restricted to what choosing a row does here —
     /// [`crate::overlays::protocol_palette_verbs`].
@@ -5897,6 +6084,7 @@ impl MeridianApp {
             return;
         };
         let close;
+        let mut answered = None;
         match &mut overlay {
             Overlay::Palette(picker) => {
                 let chrome = ModalChrome::new().title("Commands").enter_hint("run");
@@ -5935,29 +6123,34 @@ impl MeridianApp {
                     None => close = shown.dismissed,
                 }
             }
-            Overlay::CloseQuestion => {
-                // The card's own exits are its answers: escape and a click on
-                // the backdrop are the third of them, cancel.
+            Overlay::CloseQuestion(question) => {
+                // The card's own exits are its answers, each with its key
+                // beside it, so it has no footer: escape and a click on the
+                // backdrop are the third of them, keep editing. The keys are
+                // read before the card draws, so a D is not also typed into
+                // whatever the card holds.
+                let typed = close_question_keys(ctx, question);
                 let chrome = ModalChrome::new()
                     .title(CLOSE_QUESTION_TITLE)
-                    .narrow()
-                    .esc_hint("cancel");
+                    .without_esc_hint();
                 let shown = ModalLayer::show(ctx, "bf-overlay-close-question", &chrome, |ui| {
-                    close_question_body(ui)
+                    close_question_body(ui, question)
                 });
-                let answer = shown
-                    .inner
-                    .or(shown.dismissed.then_some(CloseAnswer::Cancel));
-                close = answer.is_some();
-                if let Some(answer) = answer {
-                    self.answer_close_question(ctx, answer);
-                }
+                answered = typed
+                    .or(shown.inner)
+                    .or(shown.dismissed.then_some(CloseAnswer::KeepEditing));
+                // The answer decides whether the question stays: a close
+                // without saving that could not keep the chart leaves it up.
+                close = false;
             }
         }
         if close {
             ctx.request_repaint();
         } else {
             self.overlay = Some(overlay);
+        }
+        if let Some(answer) = answered {
+            self.answer_close_question(ctx, answer);
         }
     }
 
@@ -5971,7 +6164,7 @@ impl MeridianApp {
     /// closed and took its edit with it. This sends the cancel and opens
     /// [`Overlay::CloseQuestion`] in the window's one modal slot, replacing
     /// whatever overlay was open; a second request while the question is up
-    /// is cancelled again and leaves it as it is.
+    /// is cancelled again and leaves it as it is, with what it says.
     ///
     /// A window without the mark, and one whose close was already decided
     /// ([`Self::allow_close`]), is not touched: the request goes through
@@ -5980,12 +6173,83 @@ impl MeridianApp {
         if !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
-        if self.closing || !self.carries_unsaved_mark() {
-            return;
+        if self.ask_before_closing() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.request_repaint();
         }
-        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        self.overlay = Some(Overlay::CloseQuestion);
-        ctx.request_repaint();
+    }
+
+    /// **Open the close question, as a close request over the unsaved mark
+    /// does**, and answer whether the window is asking: `false` for a window
+    /// without the mark and for one whose close was already decided
+    /// ([`Self::allow_close`]), which a close request lets through.
+    ///
+    /// The question replaces whatever overlay was open; one already up is left
+    /// as it is, with what it says. Public because a close request is raised
+    /// in the viewport's input and not as an event, so a capture that
+    /// photographs the question opens it here, the entry the request reaches
+    /// ([`crate::capture::capture_png_staged`]).
+    pub fn ask_before_closing(&mut self) -> bool {
+        if self.closing || !self.carries_unsaved_mark() {
+            return false;
+        }
+        if !matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
+            self.overlay = Some(Overlay::CloseQuestion(self.close_question_for_now()));
+        }
+        true
+    }
+
+    /// **What the close question says about this window now**: the chart
+    /// file, named relative to the Protocol's folder, and each unsaved edit in
+    /// the shelf's words, as the Versions panel words the change not yet saved
+    /// ([`crate::versions::change_lines`]). A window with no Protocol names the
+    /// file its chart was read from.
+    fn close_question_for_now(&self) -> CloseQuestion {
+        let protocol = self.protocol.doc.model.source();
+        let target = match protocol {
+            Some(p) => Some(brightfield_model::panel_capture::panel_file(
+                &p.dir, &p.name,
+            )),
+            None => self.charts.doc.spec_path.clone(),
+        };
+        let file = match (&target, protocol) {
+            (Some(file), Some(p)) => file
+                .strip_prefix(&p.dir)
+                .unwrap_or(file)
+                .display()
+                .to_string(),
+            (Some(file), None) => file.file_name().map_or_else(
+                || file.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            ),
+            (None, _) => "This chart".to_string(),
+        };
+        let tiles = self.charts.doc.tile_names();
+        let tile_of = |plot: &str| {
+            tiles
+                .iter()
+                .find(|(path, _)| path == plot)
+                .map_or_else(|| plot.to_string(), |(_, name)| name.clone())
+        };
+        let changes = target
+            .as_deref()
+            .map_or_else(Vec::new, |file| self.charts.doc.unsaved_changes(file));
+        CloseQuestion {
+            file,
+            edits: crate::versions::change_lines(&changes, &tile_of),
+            not_kept: None,
+            focused: None,
+        }
+    }
+
+    /// The close question while it is up, with what it says: a test hook, read
+    /// beside the text the card paints.
+    #[must_use]
+    pub fn close_question(&self) -> Option<&CloseQuestion> {
+        match &self.overlay {
+            Some(Overlay::CloseQuestion(question)) => Some(question),
+            _ => None,
+        }
     }
 
     /// Let the next close request through without a question — for a close the
@@ -5996,29 +6260,83 @@ impl MeridianApp {
     }
 
     /// **What each answer of the close question does** — the entry point the
-    /// question's buttons reach through, and one a test may drive.
+    /// question's buttons and keys reach through, and one a test may drive.
     ///
-    /// - [`CloseAnswer::Save`] writes as the Save verb does
+    /// - [`CloseAnswer::SaveAndClose`] writes as the Save verb does
     ///   ([`Self::save_protocol`]: `arcform.yaml`, its model and the chart
     ///   beside them) and closes the window when the chart is in, which is
     ///   when the mark is gone. A write that failed leaves the window open,
     ///   with the banner the write raised saying why; the question is closed
     ///   so the banner can be read, and the next close request asks again.
-    /// - [`CloseAnswer::Discard`] closes without a write: the files on disk
-    ///   are not touched, and the pending edits are dropped with the window.
-    /// - [`CloseAnswer::Cancel`] leaves the window as it was: the edit stays
-    ///   drawn, the mark stays in the title.
+    /// - [`CloseAnswer::CloseWithoutSaving`] keeps the chart as a Save would
+    ///   write it as a version of the chart file, which the Versions panel
+    ///   lists as `closed unsaved` ([`ChartDoc::keep_unsaved_beside`]), and
+    ///   closes. Neither the chart file nor `arcform.yaml` is written. When the
+    ///   chart cannot be kept the window stays open and the question says
+    ///   why, and the same answer given again closes with nothing kept.
+    /// - [`CloseAnswer::KeepEditing`] leaves the window as it was: the edit
+    ///   stays drawn, the mark stays in the title.
     pub fn answer_close_question(&mut self, ctx: &egui::Context, answer: CloseAnswer) {
         match answer {
-            CloseAnswer::Cancel => {}
-            CloseAnswer::Discard => self.close_window(ctx),
-            CloseAnswer::Save => {
+            CloseAnswer::KeepEditing => self.put_the_question_down(),
+            CloseAnswer::CloseWithoutSaving => {
+                let told = self.close_question().is_some_and(|q| q.not_kept.is_some());
+                if told {
+                    self.put_the_question_down();
+                    self.close_window(ctx);
+                } else {
+                    match self.keep_unsaved() {
+                        Ok(()) => {
+                            self.put_the_question_down();
+                            self.close_window(ctx);
+                        }
+                        Err(why) => {
+                            eprintln!("the unsaved chart could not be kept: {why}");
+                            let mut question = match self.overlay.take() {
+                                Some(Overlay::CloseQuestion(question)) => question,
+                                _ => self.close_question_for_now(),
+                            };
+                            question.not_kept = Some(why);
+                            self.overlay = Some(Overlay::CloseQuestion(question));
+                        }
+                    }
+                }
+            }
+            CloseAnswer::SaveAndClose => {
+                self.put_the_question_down();
                 if self.save_for_close(ctx) {
                     self.close_window(ctx);
                 }
             }
         }
         ctx.request_repaint();
+    }
+
+    /// Take the close question down, leaving any other overlay as it is.
+    fn put_the_question_down(&mut self) {
+        if matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
+            self.overlay = None;
+        }
+    }
+
+    /// Keep the chart as a Save would write it as a version of its chart file,
+    /// writing no file: the first half of a close without saving.
+    ///
+    /// # Errors
+    ///
+    /// Why it could not be kept: a window with no Protocol to keep the
+    /// chart's versions beside, and [`ChartDoc::keep_unsaved_beside`]'s.
+    fn keep_unsaved(&mut self) -> Result<(), String> {
+        let Some(source) = self.protocol.doc.model.source() else {
+            return Err(NO_PROTOCOL_TO_KEEP_BESIDE.to_string());
+        };
+        let kept =
+            self.charts
+                .doc
+                .keep_unsaved_beside(&source.dir, &source.name, self.history.as_ref());
+        // A version may have been recorded; the panel reads the store again.
+        self.charts.doc.versions_mut().invalidate();
+        kept
     }
 
     /// Close this window: let the request through and raise it.
@@ -6061,7 +6379,7 @@ impl MeridianApp {
             Overlay::Palette(_) => "palette",
             Overlay::Help(_) => "help",
             Overlay::Jump(_) => "jump",
-            Overlay::CloseQuestion => "close-question",
+            Overlay::CloseQuestion(_) => "close-question",
         })
     }
 
@@ -6340,6 +6658,13 @@ impl MeridianApp {
         if !graph_on_canvas {
             if let Some(address) = grid_cursor_status_entry(&self.charts.doc) {
                 entries.insert(0, address);
+            }
+        }
+        // A saved version drawn in place of the chart leads it: the picture is
+        // not the chart's own, and the band says so and names the two keys.
+        if !graph_on_canvas {
+            if let Some(shown) = version_shown_status_entry(&self.charts.doc) {
+                entries.insert(0, shown);
             }
         }
 
@@ -7165,11 +7490,13 @@ impl MeridianApp {
     fn save_chart_beside_protocol(&mut self, source: &crate::one_step::OneStepProtocol) {
         let banner = NotificationId::new("save-chart");
         let history_banner = NotificationId::new("save-history");
-        match self
-            .charts
-            .doc
-            .save_chart_beside(&source.dir, &source.name, self.history.as_ref())
-        {
+        let saved =
+            self.charts
+                .doc
+                .save_chart_beside(&source.dir, &source.name, self.history.as_ref());
+        // A Save may have recorded a version; the panel reads the store again.
+        self.charts.doc.versions_mut().invalidate();
+        match saved {
             Ok(not_recorded) => {
                 self.notifications.dismiss(banner);
                 // The chart was written either way; the history is the part
@@ -8113,6 +8440,41 @@ fn last_shelf_edit_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
 /// reads the line by.
 pub const SHELF_EDIT_STATUS_ID: &str = "shelf-last-edit";
 
+/// **The status band's line while the Versions panel's cursor draws a saved
+/// version**: which version is shown, and the keys that step back to it and
+/// return to now — `showing the version saved at 14:02 · Enter steps back to it
+/// as an unsaved edit · Esc returns to now`. The keys are read off the
+/// registry, so a rebinding cannot leave the band naming a key that does
+/// nothing.
+fn version_shown_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
+    let (_, at, kind) = doc.shown_version()?;
+    let key = |verb: &'static str| Verb::new(verb).keys().map(crate::versions::key_word);
+    let mut text = format!(
+        "showing the version {} at {}",
+        crate::versions::as_words(kind),
+        doc.versions().time_words(at)
+    );
+    if let Some(enter) = key(crate::versions::STEP_BACK_VERB) {
+        text.push_str(&format!(
+            " \u{b7} {enter} steps back to it as an unsaved edit"
+        ));
+    }
+    if let Some(esc) = key("return-to-now") {
+        text.push_str(&format!(" \u{b7} {esc} returns to now"));
+    }
+    Some(StatusEntry {
+        id: VERSION_SHOWN_STATUS_ID,
+        side: StatusSide::Leading,
+        text,
+        tone: Tone::Neutral,
+        hide: HideAffordance::WithRail,
+    })
+}
+
+/// The stable id `version_shown_status_entry` writes — the handle a test reads
+/// the line by.
+pub const VERSION_SHOWN_STATUS_ID: &str = "version-shown";
+
 /// The stable id `grid_cursor_status_entry` writes — the handle a test reads
 /// the cursor's address by.
 pub const GRID_CURSOR_STATUS_ID: &str = "grid-cursor";
@@ -8394,12 +8756,13 @@ fn rail_default(region: &Region) -> f32 {
 }
 
 /// What the open ledger rail holds, as far as its height is concerned: the
-/// grid in its *Rows* spot, or one of the run-record panes. The key its open
+/// grid in its *Rows* spot, or one of the other panes. The key its open
 /// panel's id is derived with, so each keeps the height it was dragged to.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum LedgerHolds {
-    /// *Log*, *Quality*, the *Editor*, or the *Rows* spot saying where the grid
-    /// went — the panes that open at the rail's declared default.
+    /// *Log*, *Quality*, the *Editor*, *Versions*, or the *Rows* spot saying
+    /// where the grid went — the panes that open at the rail's declared
+    /// default.
     Record,
     /// The grid, drawn in the *Rows* spot.
     Grid,
@@ -9070,6 +9433,32 @@ pub(crate) fn map_pane_title(
 /// What a hero whose x and y are no longer the coordinate pair is called.
 const DOT_PLOT: &str = "Dot plot";
 
+/// **The hero pane's header**: [`map_pane_title`] over the spec drawn, ending
+/// `as saved 14:02` while the Versions panel's cursor draws a saved version in
+/// place of the chart, and `as closed unsaved 14:02` while it draws the chart a
+/// window closed without saving, so the header does not name the picture as
+/// the chart's own.
+pub(crate) fn hero_pane_title(
+    doc: &ChartDoc,
+    hero: Option<&crate::one_step::ColumnFacts>,
+) -> String {
+    let title = map_pane_title(hero, hero_shelf_channels(doc).as_ref());
+    match doc.shown_version() {
+        Some((_, at, kind)) => format!(
+            "{title} \u{b7} as {} {}",
+            crate::versions::as_words(kind),
+            doc.versions().time_words(at)
+        ),
+        None => title,
+    }
+}
+
+/// What a close without saving says, and keeps nothing, in a window with no
+/// Protocol behind it: the chart file whose versions it would key is beside a
+/// Protocol.
+pub const NO_PROTOCOL_TO_KEEP_BESIDE: &str =
+    "this window has no Protocol to keep the chart's versions beside";
+
 /// What `mapping` puts on y and on x, as the pane names them, when it does not
 /// hold the pair — `lon` on x and `lat` on y — and `None` while it does.
 fn off_the_pair<'a>(
@@ -9162,7 +9551,7 @@ fn draw_canvas_pane_group(
     let (map_rect, grid_rect) = (rects.hero, rects.grid);
     let hero = charts.doc.tile_columns().first().cloned();
     let map_subject = Subject::new(
-        map_pane_title(hero.as_ref(), hero_shelf_channels(&charts.doc).as_ref()),
+        hero_pane_title(&charts.doc, hero.as_ref()),
         subject_icon(hero.as_ref()),
         brightfield_keys::BindingContext::Workspace,
     );
@@ -9377,7 +9766,7 @@ fn draw_transposed_pane_group(
     let (map_rect, grid_rect) = (rects.hero, rects.grid);
     let hero = charts.doc.tile_columns().first().cloned();
     let map_subject = Subject::new(
-        map_pane_title(hero.as_ref(), hero_shelf_channels(&charts.doc).as_ref()),
+        hero_pane_title(&charts.doc, hero.as_ref()),
         subject_icon(hero.as_ref()),
         brightfield_keys::BindingContext::Workspace,
     );
