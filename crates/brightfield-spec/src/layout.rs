@@ -1030,10 +1030,13 @@ pub const MAX_TICK_COUNT: usize = 1000;
 /// target to aim a 1/2/5 step at, and a target of zero, a negative one or a
 /// fractional one is not one it can aim at.
 ///
-/// `None` is not itself a warning: a lifted `$param` is a recorded deferral and
-/// resolves to it silently. The parser asks this same function to decide which
-/// `None`s are malformed values to name, so the resolver and the warning cannot
-/// disagree about what a valid count is.
+/// `None` is not itself a warning. The parser reads a lifted `$param` as a
+/// recorded deferral and judges nothing, having not yet seen the value the param
+/// will hold; [`resolve_tick_counts_in`] reads the value the param holds, and
+/// [`param_held_axis_warnings`] names it when this function refuses it. The
+/// parser asks this same function to decide which `None`s are malformed values
+/// to name, so the resolver and the warning cannot disagree about what a valid
+/// count is.
 #[must_use]
 pub fn tick_count_target(value: &SpecValue) -> Option<usize> {
     let whole = match value {
@@ -1085,9 +1088,11 @@ pub enum AxisFormat {
 /// and holds no opinion about what a scale then does with it — whether the axis
 /// is one the format is for is settled where the scale is known, by
 /// `brightfield_render::axis::tick_format_crosses_axis`. `None` covers the key
-/// being absent, being `null` or a `$param`, and being a value that is no format
-/// or names a directive this build does not read, which
-/// [`crate::parse::ParseWarning`] has already named at parse time.
+/// being absent or `null`, being a `$param` that holds no format (a selection and
+/// a param nobody declared hold none), and being a value that is no format or
+/// names a directive this build does not read, which
+/// [`crate::parse::ParseWarning`] has named at parse time, or
+/// [`param_held_axis_warnings`] names when the value is a param's.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TickFormats {
     /// `xTickFormat`, when the plot wrote a format this build reads.
@@ -1104,8 +1109,10 @@ pub enum TickFormatReading {
     /// A date format that names a directive this build does not read, as it was
     /// written (`%K`). The axis draws its default text.
     UnreadDirective(String),
-    /// `null` (Mosaic's "no format") or a lifted `$param`: a recorded deferral,
-    /// not a typo. The axis draws its default text and nothing is said.
+    /// `null` (Mosaic's "no format") or a lifted `$param` handed to this judge
+    /// itself: a recorded deferral, not a typo. The axis draws its default text
+    /// and nothing is said. [`resolve_tick_formats_in`] reads a `$param` through
+    /// to the value it holds before it asks, so a param is judged on that value.
     Deferred,
     /// A value that is no format: `~~`, `.f`, a number, a list. The axis draws
     /// its default text and the parser names the value.
@@ -1205,10 +1212,12 @@ impl Default for GridLines {
 ///
 /// A literal `true` or `false` is a switch. A colour string, a number, a list,
 /// `null` and a lifted `$param` are no switch this build reads. `None` is not
-/// itself a warning: a lifted `$param` is a recorded deferral and resolves to
-/// it silently. The parser asks this same function to decide which `None`s are
-/// malformed values to name, so the resolver and the warning cannot disagree
-/// about what a valid switch is.
+/// itself a warning. The parser reads a lifted `$param` as a recorded deferral
+/// and judges nothing; [`resolve_grid_lines_in`] reads the value the param holds,
+/// and [`param_held_axis_warnings`] names it when this function refuses it. The
+/// parser asks this same function to decide which `None`s are malformed values
+/// to name, so the resolver and the warning cannot disagree about what a valid
+/// switch is.
 #[must_use]
 pub fn grid_switch(value: &SpecValue) -> Option<bool> {
     match value {
@@ -1728,8 +1737,10 @@ impl AxisEnds {
 /// A literal `true` or `false` is a switch. Observable Plot also reads a number
 /// or an interval at a `nice` key, as the count or the step to round to; this
 /// build reads neither, and neither is a switch. A string, a list, `null` and a
-/// lifted `$param` are no switch either. `None` is not itself a warning: a
-/// lifted `$param` is a recorded deferral and resolves to it silently. The
+/// lifted `$param` are no switch either. `None` is not itself a warning. The
+/// parser reads a lifted `$param` as a recorded deferral and judges nothing;
+/// [`resolve_axis_ends_in`] reads the value the param holds, and
+/// [`param_held_axis_warnings`] names it when this function refuses it. The
 /// parser asks this same function to decide which `None`s are malformed values
 /// to name, so the resolver and the warning cannot disagree about what a valid
 /// switch is.
@@ -1798,8 +1809,10 @@ impl AxisReverse {
 /// The one judge of an `xReverse` / `yReverse` value: the switch it sets.
 ///
 /// A literal `true` or `false` is a switch. A string, a number, a list, `null`
-/// and a lifted `$param` are no switch. `None` is not itself a warning: a
-/// lifted `$param` is a recorded deferral and resolves to it silently. The
+/// and a lifted `$param` are no switch. `None` is not itself a warning. The
+/// parser reads a lifted `$param` as a recorded deferral and judges nothing;
+/// [`resolve_axis_reverse_in`] reads the value the param holds, and
+/// [`param_held_axis_warnings`] names it when this function refuses it. The
 /// parser asks this same function to decide which `None`s are malformed values
 /// to name, so the resolver and the warning cannot disagree about what a valid
 /// switch is.
