@@ -19,6 +19,7 @@ use crate::ast::{
 use crate::date_format::DateFormat;
 use crate::error::{FrameFault, FrameSide};
 use crate::number_format::NumberFormat;
+use crate::parse::{written_value_text, ParseWarning};
 use crate::vocab::{InputKind, LegendChannel};
 use indexmap::IndexMap;
 
@@ -1029,10 +1030,13 @@ pub const MAX_TICK_COUNT: usize = 1000;
 /// target to aim a 1/2/5 step at, and a target of zero, a negative one or a
 /// fractional one is not one it can aim at.
 ///
-/// `None` is not itself a warning: a lifted `$param` is a recorded deferral and
-/// resolves to it silently. The parser asks this same function to decide which
-/// `None`s are malformed values to name, so the resolver and the warning cannot
-/// disagree about what a valid count is.
+/// `None` is not itself a warning. The parser reads a lifted `$param` as a
+/// recorded deferral and judges nothing, having not yet seen the value the param
+/// will hold; [`resolve_tick_counts_in`] reads the value the param holds, and
+/// [`param_held_axis_warnings`] names it when this function refuses it. The
+/// parser asks this same function to decide which `None`s are malformed values
+/// to name, so the resolver and the warning cannot disagree about what a valid
+/// count is.
 #[must_use]
 pub fn tick_count_target(value: &SpecValue) -> Option<usize> {
     let whole = match value {
@@ -1045,16 +1049,27 @@ pub fn tick_count_target(value: &SpecValue) -> Option<usize> {
     (1..=MAX_TICK_COUNT).contains(&whole).then_some(whole)
 }
 
-/// Resolve a plot's `xTicks` / `yTicks` target tick count from its
-/// attributes. Literal-only and per-axis, the same reading
-/// [`resolve_fixed_domains`] gives its keys.
+/// Resolve a plot's `xTicks` / `yTicks` target tick count from its attributes:
+/// a literal, or a `$param` whose value param holds a target *now*, so a plot
+/// redrawn after the param is written draws at the count the param then holds
+/// ([`literal_attribute`]). Per-axis, as [`read_domains_in`] reads its keys.
+///
+/// A param that holds no target, a selection, and a param nobody declared ask for
+/// no count, and the plot draws as a file without the key does.
 #[must_use]
-pub fn resolve_tick_counts(plot: &PlotNode) -> TickCounts {
-    let target = |key: &str| plot.attributes.get(key).and_then(tick_count_target);
+pub fn resolve_tick_counts_in(plot: &PlotNode, params: &IndexMap<String, ParamNode>) -> TickCounts {
+    let target = |key: &str| literal_attribute(plot, params, key).and_then(tick_count_target);
     TickCounts {
         x: target("xTicks"),
         y: target("yTicks"),
     }
+}
+
+/// [`resolve_tick_counts_in`] with no params in scope: the literal-only reading,
+/// which is what a caller handed a plot and not a spec can answer.
+#[must_use]
+pub fn resolve_tick_counts(plot: &PlotNode) -> TickCounts {
+    resolve_tick_counts_in(plot, &IndexMap::new())
 }
 
 /// A tick format a plot asked for, read as the kind of axis text it names.
@@ -1073,9 +1088,12 @@ pub enum AxisFormat {
 /// and holds no opinion about what a scale then does with it — whether the axis
 /// is one the format is for is settled where the scale is known, by
 /// `brightfield_render::axis::tick_format_crosses_axis`. `None` covers the key
-/// being absent, being `null` or a `$param`, and being a value that is no format
-/// or names a directive this build does not read, which
-/// [`crate::parse::ParseWarning`] has already named at parse time.
+/// being absent or `null`, being a `$param` that holds no format (a selection
+/// holds no value, and neither does a param nobody declared), and being a value
+/// that is no format or
+/// names a directive this build does not read, which
+/// [`crate::parse::ParseWarning`] has named at parse time, or
+/// [`param_held_axis_warnings`] names when the value is a param's.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TickFormats {
     /// `xTickFormat`, when the plot wrote a format this build reads.
@@ -1092,8 +1110,10 @@ pub enum TickFormatReading {
     /// A date format that names a directive this build does not read, as it was
     /// written (`%K`). The axis draws its default text.
     UnreadDirective(String),
-    /// `null` (Mosaic's "no format") or a lifted `$param`: a recorded deferral,
-    /// not a typo. The axis draws its default text and nothing is said.
+    /// `null` (Mosaic's "no format") or a lifted `$param` handed to this judge
+    /// itself: a recorded deferral, not a typo. The axis draws its default text
+    /// and nothing is said. [`resolve_tick_formats_in`] reads a `$param` through
+    /// to the value it holds before it asks, so a param is judged on that value.
     Deferred,
     /// A value that is no format: `~~`, `.f`, a number, a list. The axis draws
     /// its default text and the parser names the value.
@@ -1133,12 +1153,16 @@ pub fn read_tick_format(value: &SpecValue) -> TickFormatReading {
     }
 }
 
-/// Resolve a plot's `xTickFormat` / `yTickFormat` from its attributes.
-/// Literal-only and per-axis, the same reading [`resolve_tick_counts`] gives
-/// its keys.
+/// Resolve a plot's `xTickFormat` / `yTickFormat` from its attributes: a literal,
+/// or a `$param` whose value param holds a format *now*, as
+/// [`resolve_tick_counts_in`] reads its keys. A param that holds no format, a
+/// selection, and a param nobody declared ask for none.
 #[must_use]
-pub fn resolve_tick_formats(plot: &PlotNode) -> TickFormats {
-    let read = |key: &str| match plot.attributes.get(key).map(read_tick_format) {
+pub fn resolve_tick_formats_in(
+    plot: &PlotNode,
+    params: &IndexMap<String, ParamNode>,
+) -> TickFormats {
+    let read = |key: &str| match literal_attribute(plot, params, key).map(read_tick_format) {
         Some(TickFormatReading::Format(format)) => Some(format),
         _ => None,
     };
@@ -1146,6 +1170,12 @@ pub fn resolve_tick_formats(plot: &PlotNode) -> TickFormats {
         x: read("xTickFormat"),
         y: read("yTickFormat"),
     }
+}
+
+/// [`resolve_tick_formats_in`] with no params in scope: the literal-only reading.
+#[must_use]
+pub fn resolve_tick_formats(plot: &PlotNode) -> TickFormats {
+    resolve_tick_formats_in(plot, &IndexMap::new())
 }
 
 /// Which positional axes draw gridlines behind the marks.
@@ -1183,10 +1213,12 @@ impl Default for GridLines {
 ///
 /// A literal `true` or `false` is a switch. A colour string, a number, a list,
 /// `null` and a lifted `$param` are no switch this build reads. `None` is not
-/// itself a warning: a lifted `$param` is a recorded deferral and resolves to
-/// it silently. The parser asks this same function to decide which `None`s are
-/// malformed values to name, so the resolver and the warning cannot disagree
-/// about what a valid switch is.
+/// itself a warning. The parser reads a lifted `$param` as a recorded deferral
+/// and judges nothing; [`resolve_grid_lines_in`] reads the value the param holds,
+/// and [`param_held_axis_warnings`] names it when this function refuses it. The
+/// parser asks this same function to decide which `None`s are malformed values
+/// to name, so the resolver and the warning cannot disagree about what a valid
+/// switch is.
 #[must_use]
 pub fn grid_switch(value: &SpecValue) -> Option<bool> {
     match value {
@@ -1195,18 +1227,27 @@ pub fn grid_switch(value: &SpecValue) -> Option<bool> {
     }
 }
 
-/// Resolve a plot's `grid` / `xGrid` / `yGrid` from its attributes.
-/// Literal-only and per-axis, the same reading [`resolve_tick_counts`] gives
-/// its keys, with the axis key outranking the bare one.
+/// Resolve a plot's `grid` / `xGrid` / `yGrid` from its attributes: a literal, or
+/// a `$param` whose value param holds a switch *now*, as
+/// [`resolve_tick_counts_in`] reads its keys, with the axis key outranking the
+/// bare one. A param that holds no switch, a selection, and a param nobody
+/// declared read as the key absent, so the axis key a param fails to answer
+/// leaves the bare `grid` standing.
 #[must_use]
-pub fn resolve_grid_lines(plot: &PlotNode) -> GridLines {
-    let read = |key: &str| plot.attributes.get(key).and_then(grid_switch);
+pub fn resolve_grid_lines_in(plot: &PlotNode, params: &IndexMap<String, ParamNode>) -> GridLines {
+    let read = |key: &str| literal_attribute(plot, params, key).and_then(grid_switch);
     let both = read("grid");
     let default = GridLines::default();
     GridLines {
         x: read("xGrid").or(both).unwrap_or(default.x),
         y: read("yGrid").or(both).unwrap_or(default.y),
     }
+}
+
+/// [`resolve_grid_lines_in`] with no params in scope: the literal-only reading.
+#[must_use]
+pub fn resolve_grid_lines(plot: &PlotNode) -> GridLines {
+    resolve_grid_lines_in(plot, &IndexMap::new())
 }
 
 /// The name a plot's `colorScheme` gives, as the spec wrote it.
@@ -1538,7 +1579,8 @@ pub fn colour_range(value: &SpecValue) -> Option<Vec<&str>> {
 /// param it names holds *now*, so a plot redrawn after the param is written draws
 /// from the value the param then holds. A selection and a param nobody declared
 /// hold no value.
-fn literal_attribute<'a>(
+#[must_use]
+pub fn literal_attribute<'a>(
     plot: &'a PlotNode,
     params: &'a IndexMap<String, ParamNode>,
     key: &str,
@@ -1562,6 +1604,75 @@ pub fn resolve_colour_domain(
     params: &IndexMap<String, ParamNode>,
 ) -> Option<ColourDomain> {
     colour_domain(literal_attribute(plot, params, "colorDomain")?)
+}
+
+/// The warnings a plot's `xTicks` / `yTicks`, `xTickFormat` / `yTickFormat`,
+/// `grid` / `xGrid` / `yGrid`, `xZero` / `yZero`, `xNice` / `yNice` and
+/// `xReverse` / `yReverse` earn when the key is a `$param` whose value param
+/// holds a value the key's judge refuses: the warning the same value written in
+/// the file raises at parse time, so a file that writes `xTicks: 0` and one that
+/// writes `xTicks: $n` beside `n: 0` are named alike
+/// (`a_param_holding_a_bad_literal_raises_the_warning_the_literal_raises`).
+///
+/// The parser reads `$n` as a recorded deferral and says nothing, because it has
+/// not yet seen the value the param will hold; the value is known where the
+/// params are, when the plot is composed, and again after each write. A
+/// selection, a param nobody declared, a held value the judge reads, and a key
+/// written as a literal (named at parse time) raise nothing here.
+///
+/// Each arm asks the judge the resolver reads the key through, and builds the
+/// variant the parser builds, with the value text the parser shows, so the
+/// literal's warning and the param's are one warning.
+#[must_use]
+pub fn param_held_axis_warnings(
+    plot: &PlotNode,
+    params: &IndexMap<String, ParamNode>,
+) -> Vec<ParseWarning> {
+    let mut out = Vec::new();
+    for (key, value) in &plot.attributes {
+        let SpecValue::Param(param) = value else {
+            continue;
+        };
+        let Some(ParamNode::Value(held)) = params.get(&param.0) else {
+            continue;
+        };
+        // A param that holds a param is a deferral, as a literal `$name` is.
+        if matches!(held, SpecValue::Param(_)) {
+            continue;
+        }
+        let attribute = key.clone();
+        let warning = match key.as_str() {
+            "xTicks" | "yTicks" => tick_count_target(held)
+                .is_none()
+                .then_some(ParseWarning::InvalidTickCount { attribute }),
+            "xTickFormat" | "yTickFormat" => match read_tick_format(held) {
+                TickFormatReading::Format(_) | TickFormatReading::Deferred => None,
+                TickFormatReading::Invalid => Some(ParseWarning::InvalidTickFormat {
+                    attribute,
+                    value: written_value_text(held),
+                }),
+                TickFormatReading::UnreadDirective(directive) => {
+                    Some(ParseWarning::UnreadDateDirective {
+                        attribute,
+                        value: written_value_text(held),
+                        directive,
+                    })
+                }
+            },
+            "grid" | "xGrid" | "yGrid" => grid_switch(held)
+                .is_none()
+                .then_some(ParseWarning::InvalidGridSwitch { attribute }),
+            "xZero" | "yZero" | "xNice" | "yNice" => axis_end_switch(held)
+                .is_none()
+                .then_some(ParseWarning::InvalidAxisEndSwitch { attribute }),
+            "xReverse" | "yReverse" => axis_reverse_switch(held)
+                .is_none()
+                .then_some(ParseWarning::InvalidAxisReverseSwitch { attribute }),
+            _ => None,
+        };
+        out.extend(warning);
+    }
+    out
 }
 
 /// The colours a plot's `colorRange` lists, if it lists any: a literal list, or a
@@ -1627,8 +1738,10 @@ impl AxisEnds {
 /// A literal `true` or `false` is a switch. Observable Plot also reads a number
 /// or an interval at a `nice` key, as the count or the step to round to; this
 /// build reads neither, and neither is a switch. A string, a list, `null` and a
-/// lifted `$param` are no switch either. `None` is not itself a warning: a
-/// lifted `$param` is a recorded deferral and resolves to it silently. The
+/// lifted `$param` are no switch either. `None` is not itself a warning. The
+/// parser reads a lifted `$param` as a recorded deferral and judges nothing;
+/// [`resolve_axis_ends_in`] reads the value the param holds, and
+/// [`param_held_axis_warnings`] names it when this function refuses it. The
 /// parser asks this same function to decide which `None`s are malformed values
 /// to name, so the resolver and the warning cannot disagree about what a valid
 /// switch is.
@@ -1640,14 +1753,15 @@ pub fn axis_end_switch(value: &SpecValue) -> Option<bool> {
     }
 }
 
-/// Resolve a plot's `xZero` / `xNice` / `yZero` / `yNice` from its attributes.
-/// Literal-only and per-axis, the same reading [`resolve_grid_lines`] gives its
-/// keys; a key that is absent, or is no switch, asks for nothing.
+/// Resolve a plot's `xZero` / `xNice` / `yZero` / `yNice` from its attributes: a
+/// literal, or a `$param` whose value param holds a switch *now*, as
+/// [`resolve_grid_lines_in`] reads its keys; a key that is absent, or is no
+/// switch, asks for nothing, and so does a param that holds no switch, a
+/// selection, or a param nobody declared.
 #[must_use]
-pub fn resolve_axis_ends(plot: &PlotNode) -> AxisEnds {
+pub fn resolve_axis_ends_in(plot: &PlotNode, params: &IndexMap<String, ParamNode>) -> AxisEnds {
     let on = |key: &str| {
-        plot.attributes
-            .get(key)
+        literal_attribute(plot, params, key)
             .and_then(axis_end_switch)
             .unwrap_or(false)
     };
@@ -1661,6 +1775,12 @@ pub fn resolve_axis_ends(plot: &PlotNode) -> AxisEnds {
             nice: on("yNice"),
         },
     }
+}
+
+/// [`resolve_axis_ends_in`] with no params in scope: the literal-only reading.
+#[must_use]
+pub fn resolve_axis_ends(plot: &PlotNode) -> AxisEnds {
+    resolve_axis_ends_in(plot, &IndexMap::new())
 }
 
 /// Which positional axes a plot's spec asked to draw from high to low:
@@ -1690,8 +1810,10 @@ impl AxisReverse {
 /// The one judge of an `xReverse` / `yReverse` value: the switch it sets.
 ///
 /// A literal `true` or `false` is a switch. A string, a number, a list, `null`
-/// and a lifted `$param` are no switch. `None` is not itself a warning: a
-/// lifted `$param` is a recorded deferral and resolves to it silently. The
+/// and a lifted `$param` are no switch. `None` is not itself a warning. The
+/// parser reads a lifted `$param` as a recorded deferral and judges nothing;
+/// [`resolve_axis_reverse_in`] reads the value the param holds, and
+/// [`param_held_axis_warnings`] names it when this function refuses it. The
 /// parser asks this same function to decide which `None`s are malformed values
 /// to name, so the resolver and the warning cannot disagree about what a valid
 /// switch is.
@@ -1703,14 +1825,17 @@ pub fn axis_reverse_switch(value: &SpecValue) -> Option<bool> {
     }
 }
 
-/// Resolve a plot's `xReverse` / `yReverse` from its attributes. Literal-only
-/// and per-axis, the same reading [`resolve_axis_ends`] gives its keys; a key
-/// that is absent, or is no switch, reverses nothing.
+/// Resolve a plot's `xReverse` / `yReverse` from its attributes: a literal, or a
+/// `$param` whose value param holds a switch *now*, as [`resolve_axis_ends_in`]
+/// reads its keys; a key that is absent, or is no switch, reverses nothing, and
+/// so does a param that holds no switch, a selection, or a param nobody declared.
 #[must_use]
-pub fn resolve_axis_reverse(plot: &PlotNode) -> AxisReverse {
+pub fn resolve_axis_reverse_in(
+    plot: &PlotNode,
+    params: &IndexMap<String, ParamNode>,
+) -> AxisReverse {
     let on = |key: &str| {
-        plot.attributes
-            .get(key)
+        literal_attribute(plot, params, key)
             .and_then(axis_reverse_switch)
             .unwrap_or(false)
     };
@@ -1718,6 +1843,12 @@ pub fn resolve_axis_reverse(plot: &PlotNode) -> AxisReverse {
         x: on("xReverse"),
         y: on("yReverse"),
     }
+}
+
+/// [`resolve_axis_reverse_in`] with no params in scope: the literal-only reading.
+#[must_use]
+pub fn resolve_axis_reverse(plot: &PlotNode) -> AxisReverse {
+    resolve_axis_reverse_in(plot, &IndexMap::new())
 }
 
 /// Which positional axis a plot attribute speaks about.

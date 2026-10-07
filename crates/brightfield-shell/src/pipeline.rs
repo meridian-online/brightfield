@@ -70,12 +70,13 @@ use brightfield_spec::analysis::{
 };
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
-    collect_plot_nodes, grid_switch, placed_plots, plot_label, read_domains_in, resolve_axis_ends,
-    resolve_axis_reverse, resolve_colour_pivot, resolve_colour_reverse,
-    resolve_colour_scale_diverging, resolve_colour_scheme_name, resolve_fixed_domains,
-    resolve_grid_lines, resolve_plot_insets, resolve_plot_margins, resolve_plot_stack_offset,
-    resolve_tick_counts, resolve_tick_formats, AxisEnds, AxisFormat, AxisReverse, DomainReading,
-    DomainReadings, PlotAxis, Rect, StackOffset, TickCounts, TickFormats,
+    collect_plot_nodes, grid_switch, literal_attribute, param_held_axis_warnings, placed_plots,
+    plot_label, read_domains_in, resolve_axis_ends_in, resolve_axis_reverse_in,
+    resolve_colour_pivot, resolve_colour_reverse, resolve_colour_scale_diverging,
+    resolve_colour_scheme_name, resolve_fixed_domains, resolve_grid_lines_in, resolve_plot_insets,
+    resolve_plot_margins, resolve_plot_stack_offset, resolve_tick_counts_in,
+    resolve_tick_formats_in, AxisEnds, AxisFormat, AxisReverse, DomainReading, DomainReadings,
+    PlotAxis, Rect, StackOffset, TickCounts, TickFormats,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, ParseWarning, Spec};
@@ -2434,11 +2435,13 @@ fn compose_from_results(
         // What this plot's spec asked each positional axis's ticks to target
         // — `xTicks`/`yTicks`. A plot that asks for neither reads back its
         // default via `TickCounts::x_target`/`y_target` inside the draw call
-        // below, same as before this resolver existed.
+        // below, same as before this resolver existed. The six axis keys below
+        // are read from the spec this composition draws, so a param that holds
+        // one is read as it stands now.
         let tick_counts = plot_nodes
             .iter()
             .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| resolve_tick_counts(node))
+            .map(|(_, node)| resolve_tick_counts_in(node, &spec.params))
             .unwrap_or_default();
 
         // What this plot's spec asked each positional axis's tick TEXT to
@@ -2449,7 +2452,7 @@ fn compose_from_results(
         let tick_formats = plot_nodes
             .iter()
             .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| resolve_tick_formats(node))
+            .map(|(_, node)| resolve_tick_formats_in(node, &spec.params))
             .unwrap_or_default();
 
         // Which positional axes this plot's spec asked to draw gridlines —
@@ -2458,7 +2461,7 @@ fn compose_from_results(
         let grid = plot_nodes
             .iter()
             .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| resolve_grid_lines(node))
+            .map(|(_, node)| resolve_grid_lines_in(node, &spec.params))
             .unwrap_or_default();
 
         // Where this plot's spec asked each positional axis to start and end —
@@ -2468,7 +2471,7 @@ fn compose_from_results(
         let axis_ends = plot_nodes
             .iter()
             .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| resolve_axis_ends(node))
+            .map(|(_, node)| resolve_axis_ends_in(node, &spec.params))
             .unwrap_or_default();
 
         // Which way this plot's spec asked each positional axis to run —
@@ -2479,7 +2482,7 @@ fn compose_from_results(
         let axis_reverse = plot_nodes
             .iter()
             .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| resolve_axis_reverse(node))
+            .map(|(_, node)| resolve_axis_reverse_in(node, &spec.params))
             .unwrap_or_default();
 
         // Whether this plot's spec asked its colour to run the other way —
@@ -2546,10 +2549,15 @@ fn compose_from_results(
             .iter()
             .find(|(p, _)| *p == plot.path)
             .map(|(_, node)| {
-                let mut found = crossed_tick_formats(node, &tick_formats, &scales);
+                // A key given through a `$param` that holds a value its judge
+                // refuses is named as the same value written in the file is;
+                // the parser could not, having no value to judge.
+                let mut found = param_held_axis_warnings(node, &spec.params);
+                found.extend(crossed_tick_formats(node, spec, &tick_formats, &scales));
                 found.extend(inert_axis_instructions(
                     &plot_label(&plot.path, node),
                     node,
+                    spec,
                     axis_ends,
                     tick_counts,
                     &tick_formats,
@@ -2725,6 +2733,7 @@ fn compose_from_results(
 /// The axis then draws its default text, which is what the warning says.
 fn crossed_tick_formats(
     node: &PlotNode,
+    spec: &Spec,
     formats: &TickFormats,
     scales: &ScaleSet,
 ) -> Vec<ParseWarning> {
@@ -2745,7 +2754,7 @@ fn crossed_tick_formats(
         if !tick_format_crosses_axis(scale, format) {
             continue;
         }
-        let Some(SpecValue::String(value)) = node.attributes.get(key) else {
+        let Some(SpecValue::String(value)) = literal_attribute(node, &spec.params, key) else {
             continue;
         };
         out.push(ParseWarning::TickFormatOnWrongAxis {
@@ -2796,6 +2805,7 @@ fn plot_axis(channel: Channel) -> PlotAxis {
 fn inert_axis_instructions(
     plot: &str,
     node: &PlotNode,
+    spec: &Spec,
     ends: AxisEnds,
     counts: TickCounts,
     formats: &TickFormats,
@@ -2805,7 +2815,8 @@ fn inert_axis_instructions(
 ) -> Vec<ParseWarning> {
     let projected = !axis_keys_apply(scales);
     // `grid` and `xGrid` are no instruction unless they ask for gridlines.
-    let grid_asked = |key: &str| node.attributes.get(key).and_then(grid_switch) == Some(true);
+    let grid_asked =
+        |key: &str| literal_attribute(node, &spec.params, key).and_then(grid_switch) == Some(true);
     let mut out = Vec::new();
     for (channel, zero, nice, ticks, format, grid, reversed) in [
         (
