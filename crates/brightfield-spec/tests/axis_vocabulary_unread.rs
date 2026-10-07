@@ -215,8 +215,8 @@ const BARE_AXIS_ATTRIBUTES: [&str; 6] = [
 /// resolver reads, and a plot that sets one is told about it, whatever it is set
 /// to.** `padding: 0.2` is told, as is a `null`, an array and a lifted `$param`;
 /// a name that only resembles one, and is not in the schema, is not. The sixth,
-/// `xyDomain`, is read as two numbers, and is told about as Mosaic's `Fixed`,
-/// which the vendored specs write, and as nothing else.
+/// `xyDomain`, is read as two numbers, and is told about when it is Mosaic's
+/// `Fixed`, which the vendored specs write, and for no other value.
 #[test]
 fn a_bare_axis_attribute_no_resolver_reads_is_named_whatever_it_is_set_to() {
     let schema = vendored_schema();
