@@ -42,7 +42,7 @@ const TITLE_GAP: f64 = 4.0;
 /// sits in the leftmost grown-margin band, left of the (right-aligned) tick
 /// labels. Fixed-band placement — a pathologically wide tick label is the
 /// recorded measured-fit deferral, not handled here.
-const Y_TITLE_X: f64 = 12.0;
+pub(crate) const Y_TITLE_X: f64 = 12.0;
 
 /// Baseline y for the x-axis title — below the tick-label band, inside the
 /// (grown) bottom margin. Exposed so the tick-clearance test can pin it.

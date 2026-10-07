@@ -157,6 +157,8 @@ deviations:
       a date axis or an axis of names change nothing there, and the banner
       says so; `xNice` or `xZero` beside two numbers on a linear, log or
       symlog axis leave the ends as written, and the banner says so.
+      A row past an end the file wrote is counted at that end, for a dot
+      (DEV-0015).
 
       Three positions are still NOT read, and a spec using one gets a domain
       inferred from the rows it is currently drawing: `Fixed` at the
@@ -445,5 +447,62 @@ deviations:
       neither read nor named: a chart that set one differed from its file and
       the analyst was told nothing. They are named until a chart needs one
       read, which is a change of its own.
+    affected_specs: []
+    conformance_layers_suppressed: [3]
+  - id: DEV-0015
+    surface: "axes — a count of the rows past an end the file fixed (`xDomain`, `yDomain`, `xyDomain` as two numbers)"
+    mosaic_behaviour: |
+      Mosaic hands two numbers at `xDomain`, `yDomain` or `xyDomain` to
+      Observable Plot as the scale's domain, and the axis runs between them
+      whatever the rows span. Nothing on the plot says how many rows lie past
+      either end.
+    brightfield_behaviour: |
+      Each end of an axis whose ends the file wrote as two numbers, that rows
+      of a counting mark fell past, carries a triangle in the warning ink
+      pointing past the end and the number of those rows, outside the data
+      area: in the x title's row at the plot's left and right edges, and in the
+      y title's column, rotated as the title is, at its top and bottom edges.
+      The low end is wherever the axis draws its low value, so a reversed axis
+      draws it at the other side. An end no row lies past draws nothing. An
+      axis with no title has its title's band reserved for the count when the
+      file fixes its ends and a counting mark is drawn, read from the file, so
+      the frame holds still while a brush moves the count. A plot with no
+      fixed ends draws as before.
+
+      The count is of the rows the plot then draws, taken from each counting
+      mark's own batch on every composition, so after a brush on another tile
+      it counts the rows the brush left, and under a sample it counts the
+      sample the sampling notice names. A null is past neither end. An axis
+      the reader has panned or zoomed, an axis two numbers do not fix (dates,
+      names), and a plot with a map projection count nothing.
+
+      Marks that count, when the emitter's plan for the mark returns its rows
+      one for one, with no aggregate and no bin: `dot`, `dotX`, `dotY`, `circle`.
+      This build draws `dot` among them and not yet the other three.
+
+      Marks that draw no count: `areaY`, `areaX`, `barY`, `barX`, `cell`,
+      `cellX`, `cellY`, `line`, `lineX`, `lineY`, `rect`, `rectX`, `rectY`,
+      `rule`, `ruleX`, `ruleY`, `tickX`, `tickY`, `text`, `textX`, `textY`,
+      `link`, `vector`, `vectorX`, `vectorY`, `arrow`, `density`, `densityX`,
+      `densityY`, `denseLine`, `heatmap`, `contour`, `raster`, `hexbin`,
+      `hexgrid`, `waffleX`, `waffleY`, `regressionY`, `regressionX`,
+      `errorbarX`, `errorbarY`, `frame`, `axisX`, `axisY`, `axisFx`, `axisFy`,
+      `gridX`, `gridY`, `gridFx`, `gridFy`, `geo`, `sphere`, `graticule`,
+      `voronoi`, `voronoiMesh`, `delaunayMesh`, `delaunayLink`, `hull`,
+      `image`. A binned, raster or aggregating
+      mark among them (a `rectY` or a `barY` over a bin or a reducer, a
+      `hexbin`, a `heatmap`, a `raster`, a `contour`, the densities, the
+      regressions) holds bins, cells or summary rows in its batch rather than
+      rows, so it has nothing to count. A mark among them that draws rows (a
+      `line`, a `text`, a `ruleX`) is left for a change of its own.
+    rationale: |
+      A reader of a chart whose axis the file fixed at 0 to 100 cannot tell
+      whether the picture holds every row or whether a hundred lie off the
+      end, and a chart's readers reach as wide as the general public. The
+      marks inside the frame are the ones Mosaic draws; the count is drawn
+      outside it, so the departure is ink brightfield adds and none it
+      changes. It is drawn for the marks whose batch holds rows, since a count
+      of bins or groups presented as a count of rows would mislead in the
+      direction the count exists to correct.
     affected_specs: []
     conformance_layers_suppressed: [3]

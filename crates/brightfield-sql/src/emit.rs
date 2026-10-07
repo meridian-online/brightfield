@@ -1534,6 +1534,32 @@ fn plan_aggregates(plan: &QueryPlan) -> bool {
     }
 }
 
+/// Whether `plan` returns its source's rows one for one: no `GROUP BY`, no
+/// scalar aggregate and no bin anywhere in its tree, over a named source. A
+/// filter, an order, a limit or a sample keeps fewer rows or reorders them, and
+/// each row it keeps is still a row of the source.
+///
+/// A count taken over such a plan's batch is a count of rows, and over any
+/// other plan it is a count of groups, bins or summary rows. The renderer's
+/// count of the rows past a fixed axis end asks this, so the question of which
+/// marks draw rows is answered by the plan the emitter ran rather than by a
+/// second reading of the spec.
+#[must_use]
+pub fn plan_returns_rows(plan: &QueryPlan) -> bool {
+    match plan {
+        QueryPlan::Aggregation { .. }
+        | QueryPlan::AggregateScalar { .. }
+        | QueryPlan::Bin { .. }
+        | QueryPlan::Singleton { .. } => false,
+        QueryPlan::Filter { input, .. }
+        | QueryPlan::Projection { input, .. }
+        | QueryPlan::Order { input, .. }
+        | QueryPlan::Limit { input, .. }
+        | QueryPlan::Sample { input, .. } => plan_returns_rows(input),
+        QueryPlan::Source { .. } => true,
+    }
+}
+
 /// Extract the selection name that this mark's `data.filter_by` references,
 /// if any. Returns `None` for marks without `filter_by` or with inline data.
 fn mark_filter_by_name(mark: &Mark) -> Option<&str> {
@@ -2146,6 +2172,48 @@ plot:
 
     /// an aggregate mark (heatmap) is guarded — no membership
     /// projection is appended even with an active selection, so the query can't
+    /// A plan returns rows when it neither aggregates nor bins: a dot over
+    /// columns does, and a binned rectY, a heatmap and a density do not. A
+    /// sample and a filter keep the answer.
+    #[test]
+    fn plan_returns_rows_only_for_a_plan_that_neither_aggregates_nor_bins() {
+        let plan = |marks: &str| {
+            let yaml = format!("plot:\n{marks}");
+            let spec = parse_spec(&yaml, Format::Yaml).unwrap().spec;
+            plan_for_mark(&spec, 0, None, None).expect("plan")
+        };
+        let dot = plan("  - mark: dot\n    data: { from: t }\n    x: a\n    y: b\n");
+        assert!(plan_returns_rows(&dot), "a dot over columns: {dot:?}");
+        let sampled = QueryPlan::Sample {
+            input: Box::new(dot.clone()),
+            modulus: 4,
+        };
+        assert!(
+            plan_returns_rows(&sampled),
+            "a sampled dot still returns rows"
+        );
+        let filtered =
+            plan("  - mark: dot\n    data: { from: t, filter: \"a > 1\" }\n    x: a\n    y: b\n");
+        assert!(plan_returns_rows(&filtered), "a filtered dot: {filtered:?}");
+        for (what, marks) in [
+            (
+                "a binned rectY",
+                "  - mark: rectY\n    data: { from: t }\n    x: { bin: a }\n    y: { count: null }\n",
+            ),
+            (
+                "a heatmap",
+                "  - mark: heatmap\n    data: { from: t }\n    x: a\n    y: b\n",
+            ),
+            (
+                "a densityX",
+                "  - mark: densityX\n    data: { from: t }\n    x: a\n",
+            ),
+        ] {
+            let p = plan(marks);
+            assert!(!plan_returns_rows(&p), "{what} returns rows: {p:?}");
+        }
+    }
+
     /// reference a grouped-away column and SQL-error.
     #[test]
     fn emit_skips_projection_for_aggregate() {

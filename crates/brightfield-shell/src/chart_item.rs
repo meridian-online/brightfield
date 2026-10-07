@@ -2248,6 +2248,7 @@ mod tests {
             fill_column: None,
             stack_offset: StackOffset::None,
             sample: None,
+            rows_past: brightfield_render::past_ends::PastEnds::default(),
             hover: Some(HoverLayer {
                 mark: 0,
                 channels: vec![(Channel::X, "x".to_string()), (Channel::Y, "y".to_string())],
