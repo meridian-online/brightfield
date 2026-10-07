@@ -1110,6 +1110,14 @@ pub struct ChartDoc {
     /// [`Self::tile_columns`]. Set by a click on a tile, cleared with the
     /// document.
     selected_tile: Option<usize>,
+    /// **The column picked by name that the dashboard draws no tile for**, so
+    /// no index into [`Self::tile_columns`] can hold it: a free-text column or
+    /// a key the generated dashboard declined. Held beside
+    /// [`Self::selected_tile`], not with it: a tile selected takes the place of
+    /// this one, and this one takes the place of a tile. A name that is a column
+    /// of the table is held, which [`Self::column_facts`] answers, and a name
+    /// the table has no column of is not.
+    selected_untiled: Option<String>,
     canvas: CanvasSlot<CanvasKey>,
 }
 
@@ -1242,6 +1250,7 @@ impl ChartDoc {
             tile_columns: Vec::new(),
             column_facts: std::rc::Rc::default(),
             selected_tile: None,
+            selected_untiled: None,
             canvas: CanvasSlot::new(host),
         }
     }
@@ -1298,6 +1307,7 @@ impl ChartDoc {
             tile_columns: Vec::new(),
             column_facts: std::rc::Rc::default(),
             selected_tile: None,
+            selected_untiled: None,
             canvas: CanvasSlot::headless(),
         }
     }
@@ -1358,6 +1368,7 @@ impl ChartDoc {
         self.tile_columns = Vec::new();
         self.column_facts = std::rc::Rc::default();
         self.selected_tile = None;
+        self.selected_untiled = None;
         // …and the pane group described the replaced document's layout. A
         // document that arrives as one picture must not be drawn in the
         // outgoing dashboard's two panes.
@@ -3064,6 +3075,7 @@ impl ChartDoc {
     pub fn set_tile_columns(&mut self, columns: Vec<ColumnFacts>) {
         self.tile_columns = columns;
         self.selected_tile = None;
+        self.selected_untiled = None;
     }
 
     /// What every column of the table is, for the grid pane's header band.
@@ -3096,10 +3108,14 @@ impl ChartDoc {
     /// is the ordinary case for every dashboard that came from a spec.
     pub fn select_tile(&mut self, plot: usize) {
         self.selected_tile = (plot < self.tile_columns.len()).then_some(plot);
+        self.selected_untiled = None;
     }
 
     /// Select by column name — what an outline row's click resolves to.
-    /// A name this document draws no tile for selects nothing.
+    /// A column this document draws no tile for is still selected, by name
+    /// ([`Self::selected_column_name`]): the Outline's cursor lands on its row
+    /// and `z` puts it on a channel, as a chip on the row does. A name the
+    /// table has no column of selects nothing.
     ///
     /// Prefers an entry that is **not** the other half's joint tile: of a
     /// coordinate pair's two columns, the one sharing its name with the
@@ -3120,6 +3136,20 @@ impl ChartDoc {
             .iter()
             .position(|c| c.column == column && c.paired.is_none())
             .or_else(|| self.tile_columns.iter().position(|c| c.column == column));
+        self.selected_untiled = match self.selected_tile {
+            Some(_) => None,
+            None => self.column_facts.get(column).map(|c| c.column.clone()),
+        };
+    }
+
+    /// The name of the column selected, whether the dashboard draws a tile for
+    /// it or not — what the Outline's cursor follows. [`Self::selected_column`]
+    /// is the tile's facts and is `None` for a column with no tile.
+    #[must_use]
+    pub fn selected_column_name(&self) -> Option<&str> {
+        self.selected_column()
+            .map(|c| c.column.as_str())
+            .or(self.selected_untiled.as_deref())
     }
 
     /// The column the inspector is showing, if one is selected.
