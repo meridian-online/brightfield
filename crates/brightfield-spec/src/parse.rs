@@ -2851,7 +2851,7 @@ const PLOT_AXIS_REVERSE_KEYS: [&str; 2] = ["xReverse", "yReverse"];
 /// An attribute value as [`ParseWarning::InvalidTickFormat`] and
 /// [`ParseWarning::UnreadColourKey`] show it: what the author wrote, where it
 /// can be written on one line.
-fn written_value_text(value: &SpecValue) -> String {
+pub(crate) fn written_value_text(value: &SpecValue) -> String {
     match value {
         SpecValue::String(s) => s.clone(),
         SpecValue::Integer(n) => n.to_string(),
