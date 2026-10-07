@@ -1305,6 +1305,43 @@ fn a_previewed_cell_with_a_dot_and_a_scale_reads_word_dot_and_preview_in_order()
     );
 }
 
+/// **The word *preview* stands clear of the dot at each width the cell takes**:
+/// the preview is drawn where the word and the dot leave it the room, and left
+/// out where they do not, so that it is never drawn over the dot. The widths are
+/// scanned in steps finer than the dot and its gap, and the scan has to meet
+/// both a width that holds the preview and one that does not.
+#[test]
+fn a_previewed_cell_keeps_the_word_preview_clear_of_the_dot_at_each_width() {
+    let (mut drawn_at, mut left_out_at) = (0, 0);
+    for width in (400..=1100).step_by(6) {
+        let stage = Stage::new(Mode::Light, width as f32);
+        let mut band = band_with("xScale: log");
+        band.activate(ShelfChannel::X);
+        band.set_preview(ShelfChannel::X, "median_income");
+        let frame = stage.draw(&mut band);
+        let cell = frame.drawn.cells[ShelfChannel::X.index()];
+        let Some(preview) = texts_in(&frame, cell)
+            .into_iter()
+            .find(|t| t.text == PREVIEW)
+        else {
+            left_out_at += 1;
+            continue;
+        };
+        drawn_at += 1;
+        for (centre, radius, _) in dots_in(&frame, cell) {
+            assert!(
+                centre.x + radius < preview.ink.left(),
+                "at {width} the word preview ({:?}) is over the dot ({centre:?})",
+                preview.ink
+            );
+        }
+    }
+    assert!(
+        drawn_at > 0 && left_out_at > 0,
+        "the scan met {drawn_at} widths with the preview and {left_out_at} without"
+    );
+}
+
 /// The band over the generated map with a scale and a value set, through the wgpu
 /// renderer, compared with the committed baseline `name`.
 fn marked_baseline(name: &str, mode: Mode) {
