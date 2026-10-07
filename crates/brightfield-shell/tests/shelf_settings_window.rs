@@ -15,7 +15,10 @@
 
 use brightfield_shell::app::CHART;
 use brightfield_shell::design::Mode;
-use brightfield_shell::shelf::{CardDrawn, ListTab, FORMAT_ROW, SCALE_ROW, TITLE_ROW};
+use brightfield_shell::shelf::{
+    CardDrawn, ListTab, FORMAT_ROW, GRID_ROW, REVERSE_ROW, SCALE_ROW, TICKS_ROW, TITLE_ROW,
+    ZERO_ROW,
+};
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::text_ink;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -435,4 +438,49 @@ fn with_the_rail_shut_tab_turns_the_hung_card_to_the_settings_and_its_keys_act_o
     win.press(egui::Key::Escape);
     assert_eq!(win.list_channel(), None, "Esc closed the list");
     assert!(win.app.shelf_card_drawn().is_none(), "and the card with it");
+}
+
+// ---------------------------------------------------------------------------
+// The rows found by name are judged against the scales the hero was drawn with.
+// ---------------------------------------------------------------------------
+
+/// **The window hands the settings the scales the hero was drawn against, so a
+/// row the render crate's judge says does not apply to the axis carries its
+/// reason.** The settings are built from the plot's attributes and the scales
+/// beside them; a window that built them from the attributes alone would offer
+/// ticks, grid, zero and reverse on a map as it offers them on a scatter. The
+/// oracle is the judges themselves, asked of the scales the document holds.
+#[test]
+fn the_window_judges_the_by_name_rows_against_the_scales_the_hero_was_drawn_with() {
+    let mut win = Window::open();
+    let scales = win.app.chart_doc().composed.plots[0].scales.clone();
+    assert!(
+        !brightfield_render::scene::axis_keys_apply(&scales),
+        "the generated hero is a map, whose x and y are its projection's"
+    );
+    for channel in [egui::Key::X, egui::Key::Y] {
+        win.open_cell(channel, if channel == egui::Key::X { "x" } else { "y" });
+        win.press(egui::Key::Tab);
+        assert_eq!(win.list_tab(), Some(ListTab::Settings));
+        let rows = win
+            .app
+            .protocol_model()
+            .column_list()
+            .expect("a list is open")
+            .settings()
+            .to_vec();
+        for name in [TICKS_ROW, GRID_ROW, ZERO_ROW, REVERSE_ROW] {
+            let row = rows.iter().find(|r| r.name == name).expect("the row");
+            assert!(
+                row.reason.is_some(),
+                "{name} on {channel:?} of a map carries the reason the judge gives"
+            );
+        }
+        for name in [TITLE_ROW, SCALE_ROW, FORMAT_ROW] {
+            let row = rows.iter().find(|r| r.name == name).expect("the row");
+            assert!(row.reason.is_none(), "{name} applies to every axis");
+        }
+        win.press(egui::Key::Escape);
+        win.press(egui::Key::Escape);
+    }
 }

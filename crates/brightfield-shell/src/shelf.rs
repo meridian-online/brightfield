@@ -1215,14 +1215,8 @@ impl ColumnList {
             self.tab = ListTab::Columns;
         }
         self.row = self.row.filter(|r| *r < rows);
-        if self.tab == ListTab::Settings {
-            // A row that was under the cursor and is no longer drawn, as a
-            // by-name row is not once the query is gone, hands the cursor to
-            // the first of those that are.
-            let order = self.setting_order();
-            if !self.row.is_some_and(|r| order.contains(&r)) {
-                self.row = order.first().copied();
-            }
+        if self.tab == ListTab::Settings && self.row.is_none() {
+            self.row = self.setting_order().first().copied();
         }
     }
 

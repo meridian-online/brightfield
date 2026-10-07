@@ -26,8 +26,8 @@
 use brightfield_shell::design::{self, Mode};
 use brightfield_shell::shelf::{
     Binding, ChannelSettings, ColumnList, ColumnListRequest, ListColumn, ListDrawn, ListReport,
-    ListTab, SettingRow, ShelfChannels, AUTO, FORMAT_ROW, NO_TITLE, SCALE_ROW, TICK_TEXT,
-    TITLE_ROW,
+    ListTab, SettingRow, ShelfChannels, AUTO, FORMAT_ROW, NO_TITLE, SCALE_ROW, TICKS_ROW,
+    TICK_TEXT, TITLE_ROW,
 };
 use brightfield_shell::text_ink::{self, DrawnText};
 use brightfield_spec::edit::plot_at_path;
@@ -471,13 +471,13 @@ fn text_typed_before_tab_narrows_the_settings_rows_and_the_rule_goes() {
         "a query typed takes the rule away"
     );
 
-    // `title` begins with the letter and `format` only holds it: `scale` holds
-    // none.
+    // `title` and `ticks`, which a query finds by name, begin with the letter
+    // and `format` only holds it: `scale` holds none.
     let mut list = self::list(ShelfChannel::X);
     search(&mut list, "t");
     list.feed_events(&tab());
     let frame = stage.draw(&mut list);
-    assert_eq!(drawn_rows(&frame), [TITLE_ROW, FORMAT_ROW]);
+    assert_eq!(drawn_rows(&frame), [TITLE_ROW, TICKS_ROW, FORMAT_ROW]);
     assert_eq!(
         list.setting_cursor().map(|r| r.name),
         Some(TITLE_ROW),
