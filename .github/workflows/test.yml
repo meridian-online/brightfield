@@ -217,7 +217,8 @@ jobs:
       # for a second copy.
       #
       # First group, the targets that open a device:
-      # serial-targets: automatic_sample banded_bar_ink bar_orientation
+      # serial-targets: automatic_sample axis_vocabulary_rows_past banded_bar_ink
+      # serial-targets: bar_orientation
       # serial-targets: binned_histogram close_question_baseline colour_literals
       # serial-targets: committed_selection_ink dark_mark_ink dashboard_baseline
       # serial-targets: data_grid decimal_column editor_snapshot frame_ink front_door
