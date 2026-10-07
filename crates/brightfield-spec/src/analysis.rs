@@ -1401,6 +1401,45 @@ pub fn check_undrawn_scales(spec: &Spec) -> Vec<ParseWarning> {
 }
 
 // ---------------------------------------------------------------------------
+// Axis ends that are not two numbers
+// ---------------------------------------------------------------------------
+
+/// Name each plot whose `xDomain`, `yDomain` or `xyDomain` holds a value that
+/// is not two numbers with the low end first.
+///
+/// Asks [`crate::layout::read_domains_in`] — the reading the pinned ends are
+/// taken from — over each plot as built, so a `$param` is read through its
+/// declared value and a `plotDefaults:` domain is named at each plot that
+/// inherits it. A key that fixes ends, `Fixed`, a `null` and a `$param` that
+/// holds no value say nothing. `xyDomain` is named once for a plot, however
+/// many axes it landed on.
+#[must_use]
+pub fn check_unread_axis_ends(spec: &Spec) -> Vec<ParseWarning> {
+    use crate::layout::{collect_plot_nodes, plot_label, read_domains_in, DomainReading};
+
+    let mut warnings = Vec::new();
+    for (path, plot) in collect_plot_nodes(spec) {
+        let readings = read_domains_in(plot, &spec.params);
+        let mut named: Vec<(&str, &str)> = Vec::new();
+        for reading in [&readings.x, &readings.y] {
+            let DomainReading::Refused { key, value } = reading else {
+                continue;
+            };
+            if named.contains(&(*key, value.as_str())) {
+                continue;
+            }
+            named.push((key, value));
+            warnings.push(ParseWarning::UnreadAxisEnds {
+                attribute: (*key).to_string(),
+                value: value.clone(),
+                plot: plot_label(&path, plot),
+            });
+        }
+    }
+    warnings
+}
+
+// ---------------------------------------------------------------------------
 // Selection subscriber graph
 // ---------------------------------------------------------------------------
 
@@ -2410,6 +2449,7 @@ pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
 
     // A plot whose file asks for a scale this build does not draw.
     warnings.extend(check_undrawn_scales(spec));
+    warnings.extend(check_unread_axis_ends(spec));
 
     // filterBy validation — hard error on missing or non-selection refs.
     validate_filter_by_refs(spec)?;

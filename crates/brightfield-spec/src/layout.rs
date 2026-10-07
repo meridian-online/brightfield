@@ -802,10 +802,10 @@ const FIXED: &str = "Fixed";
 /// its keys. Any other value — a two-element array of explicit endpoints, a
 /// lifted `$param`, an absent key — leaves that axis unpinned here; explicit
 /// endpoints are a different instruction with a different effect, not a weaker
-/// version of this one.
+/// version of this one, and [`read_domains_in`] reads them.
 ///
-/// `xyDomain`, `fxDomain` and `fyDomain` are NOT read: see `deviations.yaml`
-/// DEV-0005.
+/// `xyDomain: Fixed`, `fxDomain` and `fyDomain` are NOT read: see
+/// `deviations.yaml` DEV-0005.
 #[must_use]
 pub fn resolve_fixed_domains(plot: &PlotNode) -> FixedDomains {
     let pinned =
@@ -814,6 +814,159 @@ pub fn resolve_fixed_domains(plot: &PlotNode) -> FixedDomains {
         x: pinned("xDomain"),
         y: pinned("yDomain"),
     }
+}
+
+/// What one positional axis's `xDomain` / `yDomain`, or the both-axes
+/// `xyDomain`, writes as the axis's ends.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum DomainReading {
+    /// No ends written: no key, a `null`, Mosaic's `Fixed` (which
+    /// [`resolve_fixed_domains`] reads), or a `$param` the file never declares
+    /// or that holds a selection. The axis draws the domain its rows give.
+    #[default]
+    Absent,
+    /// Two finite numbers, low end first. `key` is the attribute that wrote
+    /// them, `xDomain` or `yDomain` or `xyDomain`.
+    Ends {
+        /// The attribute that wrote the ends.
+        key: &'static str,
+        /// The low end.
+        lo: f64,
+        /// The high end.
+        hi: f64,
+    },
+    /// A value that is not two finite numbers with the low end first:
+    /// `[100, 0]`, `[0, "high"]`, `[0]`, a number, a word other than `Fixed`.
+    /// The axis draws as if the key were absent. `value` is the value as
+    /// written, for the warning that names it.
+    Refused {
+        /// The attribute that wrote the value.
+        key: &'static str,
+        /// The value as written.
+        value: String,
+    },
+}
+
+impl DomainReading {
+    /// The ends this reading fixes, low first, when it fixes any.
+    #[must_use]
+    pub fn ends(&self) -> Option<(f64, f64)> {
+        match self {
+            Self::Ends { lo, hi, .. } => Some((*lo, *hi)),
+            Self::Absent | Self::Refused { .. } => None,
+        }
+    }
+}
+
+/// [`DomainReading`] for each of a plot's positional axes.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DomainReadings {
+    /// What the file wrote of the x axis's ends.
+    pub x: DomainReading,
+    /// What the file wrote of the y axis's ends.
+    pub y: DomainReading,
+}
+
+impl DomainReadings {
+    /// The reading of one axis.
+    #[must_use]
+    pub fn axis(&self, axis: PlotAxis) -> &DomainReading {
+        match axis {
+            PlotAxis::X => &self.x,
+            PlotAxis::Y => &self.y,
+        }
+    }
+}
+
+/// A number the way a domain end is read: an integer, or a float that is
+/// finite.
+fn domain_end(value: &SpecValue) -> Option<f64> {
+    match value {
+        SpecValue::Integer(n) => Some(*n as f64),
+        SpecValue::Float(f) if f.is_finite() => Some(*f),
+        _ => None,
+    }
+}
+
+/// A domain value as the file wrote it, for the warning that names it: a list
+/// as `[0, "high"]`, a string in quotes, a lifted `$param` as `$name`.
+fn domain_value_text(value: &SpecValue) -> String {
+    match value {
+        SpecValue::Null => "null".to_string(),
+        SpecValue::Bool(b) => b.to_string(),
+        SpecValue::Integer(n) => n.to_string(),
+        SpecValue::Float(f) => f.to_string(),
+        SpecValue::String(s) => format!("\"{s}\""),
+        SpecValue::Array(items) => {
+            let items: Vec<String> = items.iter().map(domain_value_text).collect();
+            format!("[{}]", items.join(", "))
+        }
+        SpecValue::Param(r) => r.to_wire(),
+        _ => "<non-number>".to_string(),
+    }
+}
+
+/// Read what a plot's `xDomain` / `yDomain`, and the both-axes `xyDomain`, write
+/// as each positional axis's ends, reading a lifted `$param` through the value
+/// it holds *now*.
+///
+/// A pure spec reading, mirroring [`resolve_fixed_domains`], which reads the
+/// other thing these keys take, Mosaic's `Fixed`. Two numbers with the low end
+/// first are [`DomainReading::Ends`]; a value that is neither those nor `Fixed`
+/// nor `null` is [`DomainReading::Refused`], so a file that writes `[100, 0]`
+/// draws as one without the key and the reading keeps the value to name. The
+/// high end first is refused and not read as a reversal, because `xReverse` is
+/// the key that turns an axis.
+///
+/// An axis's own key shadows `xyDomain`: a file that writes `yDomain: Fixed`
+/// beside `xyDomain: [0, 1]` fixes y to the data's own domain and x to 0 to 1.
+/// A `$param` the file never declares, or one that holds a selection, holds no
+/// value, so the key reads as absent and `xyDomain` stands for that axis.
+/// `xyDomain: Fixed` reads as absent: `deviations.yaml` DEV-0005 records it as
+/// not read.
+#[must_use]
+pub fn read_domains_in(plot: &PlotNode, params: &IndexMap<String, ParamNode>) -> DomainReadings {
+    let read = |own: &'static str| -> DomainReading {
+        let (key, value) = match literal_attribute(plot, params, own) {
+            Some(value) => (own, value),
+            None => match literal_attribute(plot, params, "xyDomain") {
+                Some(value) => ("xyDomain", value),
+                None => return DomainReading::Absent,
+            },
+        };
+        match value {
+            SpecValue::Null => DomainReading::Absent,
+            SpecValue::String(word) if word == FIXED => DomainReading::Absent,
+            SpecValue::Array(items) => match items.as_slice() {
+                [lo, hi] => match (domain_end(lo), domain_end(hi)) {
+                    (Some(lo), Some(hi)) if lo < hi => DomainReading::Ends { key, lo, hi },
+                    _ => DomainReading::Refused {
+                        key,
+                        value: domain_value_text(value),
+                    },
+                },
+                _ => DomainReading::Refused {
+                    key,
+                    value: domain_value_text(value),
+                },
+            },
+            _ => DomainReading::Refused {
+                key,
+                value: domain_value_text(value),
+            },
+        }
+    };
+    DomainReadings {
+        x: read("xDomain"),
+        y: read("yDomain"),
+    }
+}
+
+/// [`read_domains_in`] with no params in scope: the literal-only reading, which
+/// is what a caller handed a plot and not a spec can answer.
+#[must_use]
+pub fn resolve_domains(plot: &PlotNode) -> DomainReadings {
+    read_domains_in(plot, &IndexMap::new())
 }
 
 /// The tick count a renderer draws when a plot sets neither key — the count
