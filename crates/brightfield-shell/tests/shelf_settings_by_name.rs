@@ -518,10 +518,11 @@ fn a_value_equal_to_brightfields_own_reads_auto_however_the_file_wrote_it() {
 // ---------------------------------------------------------------------------
 
 /// **A row carries a reason exactly where the render crate's judge says the key
-/// does not apply**, over every kind of scale: ticks where `tick_count_applies`
-/// is false, zero where `axis_ends_apply` is, and, under a map projection,
-/// all four where `axis_keys_apply` and `axis_reverse_applies` are. The grid row
-/// has no judge of its own and carries a reason under a projection alone.
+/// does not apply**, over the kinds of scale a positional axis draws: ticks
+/// where `tick_count_applies` is false, zero where `axis_ends_apply` is, and,
+/// under a map projection, the four where `axis_keys_apply` and
+/// `axis_reverse_applies` are. The grid row has no judge of its own and carries
+/// a reason under a projection alone.
 #[test]
 fn a_row_carries_a_reason_exactly_where_the_render_judge_says_it_does_not_apply() {
     for (word, scale) in every_scale() {

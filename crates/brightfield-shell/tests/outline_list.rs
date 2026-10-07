@@ -168,8 +168,8 @@ fn settings_over(attrs: &str, channels: &ShelfChannels, drawn: &ScaleSet) -> Cha
 }
 
 /// The list the window hands the Outline: opened on `request`, and given what
-/// the axes read, which here is brightfield's own on every row, so a column list
-/// is drawn as it is with a settings tab behind it.
+/// the axes read from a plot that writes no attribute, so a column list is
+/// drawn as it is with a settings tab behind it.
 fn list(channel: ShelfChannel) -> ColumnList {
     let mut list = ColumnList::new(request(channel));
     list.set_settings(settings_of("", &channels()));
