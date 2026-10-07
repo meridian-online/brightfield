@@ -1282,7 +1282,7 @@ pub fn resolve_colour_scheme_name<'a>(
 /// equal in both directions, so a name on one list and not the other fails
 /// there. That holds for a name written as a string; a `$param` is read when
 /// the plot is drawn, and a param that holds a name on neither list draws the
-/// default with no warning.
+/// default, which [`param_held_colour_warnings`] names when the plot is composed.
 pub const DRAWN_COLOUR_SCHEMES: [&str; 5] = ["viridis", "blues", "turbo", "meridian", "rdbu"];
 
 /// What a plot's `colorScheme` value is, to the parser that warns.
@@ -1304,7 +1304,8 @@ pub enum ColourSchemeReading {
 /// The names it accepts are [`DRAWN_COLOUR_SCHEMES`], case-exact as the
 /// renderer's reading is. A `$param` is judged by the parser as a deferral
 /// whatever it holds, because the parser has not yet seen the value the param
-/// will hold; [`resolve_colour_scheme_name`] reads it when the plot is drawn.
+/// will hold; [`resolve_colour_scheme_name`] reads it when the plot is drawn,
+/// and [`param_held_colour_warnings`] asks this judge of what it holds.
 #[must_use]
 pub fn read_colour_scheme(value: &SpecValue) -> ColourSchemeReading {
     match value {
@@ -1673,6 +1674,43 @@ pub fn param_held_axis_warnings(
         out.extend(warning);
     }
     out
+}
+
+/// The warning a plot's `colorScheme` earns when the key is a `$param` whose
+/// value param holds a name [`read_colour_scheme`] refuses: the warning the same
+/// value written in the file raises at parse time, so a file that writes
+/// `colorScheme: magma` and one that writes `colorScheme: $s` beside `s: magma`
+/// are named alike, and the plot draws the default ramp under either.
+///
+/// The parser reads `$s` as a recorded deferral and says nothing, because it has
+/// not yet seen the value the param will hold; the value is known where the
+/// params are, when the plot is composed, and again after each write. A
+/// selection, a param nobody declared, a param that holds a name this build
+/// draws or `null`, and a key written as a literal (named at parse time) raise
+/// nothing here.
+///
+/// The question is asked of [`read_colour_scheme`], the judge the parser asks,
+/// and the warning is the parser's variant with the parser's value text.
+#[must_use]
+pub fn param_held_colour_warnings(
+    plot: &PlotNode,
+    params: &IndexMap<String, ParamNode>,
+) -> Vec<ParseWarning> {
+    let Some(SpecValue::Param(param)) = plot.attributes.get("colorScheme") else {
+        return Vec::new();
+    };
+    let Some(ParamNode::Value(held)) = params.get(&param.0) else {
+        return Vec::new();
+    };
+    // A drawn name, `null` and a param that holds a param are each a reading
+    // the parser stays silent on, so each is silent here.
+    if read_colour_scheme(held) != ColourSchemeReading::Unknown {
+        return Vec::new();
+    }
+    vec![ParseWarning::UnreadColourKey {
+        attribute: "colorScheme".to_string(),
+        value: written_value_text(held),
+    }]
 }
 
 /// The colours a plot's `colorRange` lists, if it lists any: a literal list, or a

@@ -70,13 +70,13 @@ use brightfield_spec::analysis::{
 };
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
-    collect_plot_nodes, grid_switch, literal_attribute, param_held_axis_warnings, placed_plots,
-    plot_label, read_domains_in, resolve_axis_ends_in, resolve_axis_reverse_in,
-    resolve_colour_pivot, resolve_colour_reverse, resolve_colour_scale_diverging,
-    resolve_colour_scheme_name, resolve_fixed_domains, resolve_grid_lines_in, resolve_plot_insets,
-    resolve_plot_margins, resolve_plot_stack_offset, resolve_tick_counts_in,
-    resolve_tick_formats_in, AxisEnds, AxisFormat, AxisReverse, DomainReading, DomainReadings,
-    PlotAxis, Rect, StackOffset, TickCounts, TickFormats,
+    collect_plot_nodes, grid_switch, literal_attribute, param_held_axis_warnings,
+    param_held_colour_warnings, placed_plots, plot_label, read_domains_in, resolve_axis_ends_in,
+    resolve_axis_reverse_in, resolve_colour_pivot, resolve_colour_reverse,
+    resolve_colour_scale_diverging, resolve_colour_scheme_name, resolve_fixed_domains,
+    resolve_grid_lines_in, resolve_plot_insets, resolve_plot_margins, resolve_plot_stack_offset,
+    resolve_tick_counts_in, resolve_tick_formats_in, AxisEnds, AxisFormat, AxisReverse,
+    DomainReading, DomainReadings, PlotAxis, Rect, StackOffset, TickCounts, TickFormats,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, ParseWarning, Spec};
@@ -2553,6 +2553,7 @@ fn compose_from_results(
                 // refuses is named as the same value written in the file is;
                 // the parser could not, having no value to judge.
                 let mut found = param_held_axis_warnings(node, &spec.params);
+                found.extend(param_held_colour_warnings(node, &spec.params));
                 found.extend(crossed_tick_formats(node, spec, &tick_formats, &scales));
                 found.extend(inert_axis_instructions(
                     &plot_label(&plot.path, node),
