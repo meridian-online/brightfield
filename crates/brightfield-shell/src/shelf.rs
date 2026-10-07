@@ -36,8 +36,9 @@
 //!
 //! The keys are the registry's, in its Shelf context: `m` `x` `y` `c` go to a
 //! cell, `h` `l` (and the arrows) move to the cell beside and stop at the
-//! mark's cell on the left and at colour on the right, and `Esc` leaves the
-//! open cell. The keycap a cell prints is read from the registry's binding for
+//! mark's cell on the left and at colour on the right, `Tab` turns an axis's
+//! list between its columns and its settings, and `Esc` leaves the open cell.
+//! The keycap a cell prints is read from the registry's binding for
 //! the verb that goes to it, so a key moved there moves on the band.
 //! `the_cell_keys_printed_on_the_band_are_the_registrys` holds it. The list of
 //! columns that opens under a cell, its query, `j` `k` and `Enter` belong to
@@ -48,7 +49,11 @@ use std::sync::OnceLock;
 
 use brightfield_keys::dispatch::{resolution_table, DispatchContext, ResolutionTable};
 use brightfield_keys::registry::{keymap_bindings, registry, BindingContext};
-use brightfield_spec::ast::{Mark, PlotNode, SpecValue, ValueOrParamRef};
+use brightfield_spec::ast::{Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
+use brightfield_spec::layout::{
+    read_tick_format, resolve_axis_titles, resolve_plot_scales_in, AxisTitle, ScaleType,
+    TickFormatReading,
+};
 use brightfield_spec::vocab::is_colour_literal;
 use brightfield_workbench::channel::{self, ShelfChannel, BAND_HEIGHT};
 use brightfield_workbench::chrome;
@@ -590,6 +595,7 @@ fn key_token(key: egui::Key) -> Option<&'static str> {
         Key::ArrowDown => "down",
         Key::Enter => "enter",
         Key::Escape => "escape",
+        Key::Tab => "tab",
         _ => return None,
     })
 }
@@ -620,6 +626,185 @@ pub fn undoes(key: egui::Key, modifiers: egui::Modifiers) -> bool {
 
 /// The registry's verb that takes back the last kept column.
 pub const UNDO: &str = "undo";
+
+// ---------------------------------------------------------------------------
+// The settings list: an axis's rows, read from the plot.
+// ---------------------------------------------------------------------------
+
+/// The word a row carries while its value is brightfield's own.
+pub const AUTO: &str = "auto";
+
+/// What a title row reads where the axis draws no title: the file suppresses
+/// it, or the channel holds no column to name it from.
+pub const NO_TITLE: &str = "none";
+
+/// What a format row reads while the file names no format the axis reads: the
+/// axis draws its own tick text.
+pub const TICK_TEXT: &str = "tick text";
+
+/// The name of the title row.
+pub const TITLE_ROW: &str = "title";
+
+/// The name of the scale row.
+pub const SCALE_ROW: &str = "scale";
+
+/// The name of the format row.
+pub const FORMAT_ROW: &str = "format";
+
+/// The foot's sentence for the title row: what it does, and the rule for its
+/// default.
+const TITLE_SAYS: &str = "The words along the axis, which auto takes from the column's name.";
+
+/// The foot's sentence for the scale row.
+const SCALE_SAYS: &str = "How values are spaced along the axis, which auto draws linear.";
+
+/// The foot's sentence for the format row.
+const FORMAT_SAYS: &str =
+    "How a tick's number or date is written, which auto leaves to the axis's own tick text.";
+
+/// The plot attribute each axis's tick format is written under, which
+/// [`brightfield_spec::layout::resolve_tick_formats`] reads. The row reads the
+/// same key through the same judge, and
+/// `a_format_row_agrees_with_the_reader_over_what_is_a_format` holds the two
+/// together.
+const TICK_FORMAT_KEYS: [(ShelfChannel, &str); 2] = [
+    (ShelfChannel::X, "xTickFormat"),
+    (ShelfChannel::Y, "yTickFormat"),
+];
+
+/// How a settings row takes a value, which the cards that set one read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingKind {
+    /// One of a short list, stepped through by `h` and `l`: scale, format.
+    Enumerated,
+    /// Text typed into the row: title.
+    Typed,
+}
+
+/// One row of a channel's settings list: what it is called, what it reads, and
+/// whether the value is the analyst's.
+///
+/// **The row model every settings card inherits.** A row has a name, a value
+/// text, whether it is set, a reason when it does not apply, and a kind. A
+/// value is *set* when it differs from brightfield's own, by value and not by
+/// whether the file wrote it, so `yScale: linear` is written and reads *auto*.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettingRow {
+    /// The row's name: `title`.
+    pub name: &'static str,
+    /// What the row reads: the value as the analyst would say it.
+    pub value: String,
+    /// Whether the value differs from brightfield's own.
+    pub set: bool,
+    /// Why the row does not apply to the chart as it is, where it does not.
+    /// The judges are the render crate's own; the three rows this card draws
+    /// apply to every axis, so none carries one.
+    pub reason: Option<String>,
+    /// How the row takes a value.
+    pub kind: SettingKind,
+    /// The one sentence the list's foot reads under the cursor: what the row
+    /// does, and the rule for its default.
+    pub says: &'static str,
+}
+
+/// The settings rows of the channels that have any: x and y. Colour's and the
+/// mark's are not built, so they have no rows, and `Tab` leaves their list on
+/// its columns.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChannelSettings {
+    x: Vec<SettingRow>,
+    y: Vec<SettingRow>,
+}
+
+impl ChannelSettings {
+    /// The rows of `plot`'s two axes, with `channels` saying what each axis
+    /// holds and `spec` the params a lifted scale name resolves through.
+    ///
+    /// Each value is the resolved one: the title is the resolver's
+    /// override, suppression or derivation, the scale is the type the plot
+    /// resolves to (so a name this build cannot draw reads as the linear it is
+    /// drawn as), and the format is the one the judge reads.
+    #[must_use]
+    pub fn of_plot(spec: &Spec, plot: &PlotNode, channels: &ShelfChannels) -> Self {
+        let titles = resolve_axis_titles(plot);
+        let scales = resolve_plot_scales_in(plot, &spec.params);
+        Self {
+            x: axis_rows(plot, ShelfChannel::X, &titles.x, scales.x, &channels.x),
+            y: axis_rows(plot, ShelfChannel::Y, &titles.y, scales.y, &channels.y),
+        }
+    }
+
+    /// `channel`'s rows, in the order the list draws them. Empty for a channel
+    /// with no settings list.
+    #[must_use]
+    pub fn rows(&self, channel: ShelfChannel) -> &[SettingRow] {
+        match channel {
+            ShelfChannel::X => &self.x,
+            ShelfChannel::Y => &self.y,
+            ShelfChannel::Mark | ShelfChannel::Colour => &[],
+        }
+    }
+}
+
+/// The head rows of one axis: title, scale and format, in that order.
+fn axis_rows(
+    plot: &PlotNode,
+    axis: ShelfChannel,
+    title: &AxisTitle,
+    scale: ScaleType,
+    binding: &Binding,
+) -> Vec<SettingRow> {
+    // brightfield's own title is the name of the column the axis holds.
+    let derived = match binding {
+        Binding::Column(name) => Some(name.as_str()),
+        Binding::Unset | Binding::Expression => None,
+    };
+    let (title_value, title_set) = match title {
+        AxisTitle::Derive => (derived.unwrap_or(NO_TITLE).to_string(), false),
+        AxisTitle::Override(text) => (text.clone(), derived != Some(text.as_str())),
+        AxisTitle::Suppress => (NO_TITLE.to_string(), derived.is_some()),
+    };
+    let format_key = TICK_FORMAT_KEYS
+        .iter()
+        .find(|(channel, _)| *channel == axis)
+        .map(|(_, key)| *key);
+    let written = format_key.and_then(|key| plot.attributes.get(key));
+    let (format_value, format_set) = match (written.map(read_tick_format), written) {
+        (Some(TickFormatReading::Format(_)), Some(SpecValue::String(text))) => (text.clone(), true),
+        _ => (TICK_TEXT.to_string(), false),
+    };
+    let row = |name, value, set, kind, says| SettingRow {
+        name,
+        value,
+        set,
+        reason: None,
+        kind,
+        says,
+    };
+    vec![
+        row(
+            TITLE_ROW,
+            title_value,
+            title_set,
+            SettingKind::Typed,
+            TITLE_SAYS,
+        ),
+        row(
+            SCALE_ROW,
+            scale.wire_name().to_string(),
+            scale != ScaleType::Linear,
+            SettingKind::Enumerated,
+            SCALE_SAYS,
+        ),
+        row(
+            FORMAT_ROW,
+            format_value,
+            format_set,
+            SettingKind::Enumerated,
+            FORMAT_SAYS,
+        ),
+    ]
+}
 
 // ---------------------------------------------------------------------------
 // The column list.
@@ -673,6 +858,32 @@ pub enum ListReport {
     /// `u`, or `⌘Z` from the query: take back the last kept column, which is
     /// the window's to do, as the kept columns are the window's.
     Undo,
+    /// `Tab` turned the list to this tab. A column the cursor was previewing
+    /// belongs to the columns, so the window backs it out when the list turns
+    /// to the settings; turning back, the list reports the column its cursor
+    /// lands on as it does when the query moves it.
+    Turned(ListTab),
+}
+
+/// Which of its two states a channel's list is in: the table's columns, or
+/// the channel's settings. A third, what is set on the chart, comes behind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListTab {
+    /// The table's columns, offered to the channel.
+    Columns,
+    /// The channel's settings rows.
+    Settings,
+}
+
+impl ListTab {
+    /// The word the tab strip prints for this tab.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Columns => "columns",
+            Self::Settings => "settings",
+        }
+    }
 }
 
 /// The list of a channel's columns, with a query line.
@@ -695,6 +906,14 @@ pub struct ColumnList {
     cursor: Option<usize>,
     /// The cursor moved, so the next frame scrolls its row into view.
     scroll: bool,
+    /// Which list is showing: the columns, or the channel's settings.
+    tab: ListTab,
+    /// What the axes' settings read, handed in by the window, which holds the
+    /// plot. Empty until [`Self::set_settings`], and then a channel with no
+    /// rows has no settings tab.
+    settings: ChannelSettings,
+    /// The settings row under the cursor, as an index into the channel's rows.
+    row: Option<usize>,
 }
 
 impl ColumnList {
@@ -710,9 +929,74 @@ impl ColumnList {
             querying: false,
             cursor: None,
             scroll: true,
+            tab: ListTab::Columns,
+            settings: ChannelSettings::default(),
+            row: None,
         };
         list.cursor = list.held();
         list
+    }
+
+    /// Hand the list what the axes' settings read. The cursor's row stays where
+    /// it is, as an index, and moves to the first row if the rows are fewer.
+    pub fn set_settings(&mut self, settings: ChannelSettings) {
+        self.settings = settings;
+        let rows = self.settings.rows(self.channel).len();
+        if self.tab == ListTab::Settings && rows == 0 {
+            self.tab = ListTab::Columns;
+        }
+        self.row = self.row.filter(|r| *r < rows);
+        if self.tab == ListTab::Settings && self.row.is_none() {
+            self.row = self.setting_order().first().copied();
+        }
+    }
+
+    /// The tab the list is on.
+    #[must_use]
+    pub fn tab(&self) -> ListTab {
+        self.tab
+    }
+
+    /// The channel's settings rows, in the channel's order.
+    #[must_use]
+    pub fn settings(&self) -> &[SettingRow] {
+        self.settings.rows(self.channel)
+    }
+
+    /// The settings row under the cursor.
+    #[must_use]
+    pub fn setting_cursor(&self) -> Option<&SettingRow> {
+        self.row.and_then(|i| self.settings().get(i))
+    }
+
+    /// Whether the list has a settings tab: the channel has rows to show.
+    fn has_settings(&self) -> bool {
+        !self.settings().is_empty()
+    }
+
+    /// The settings rows in the order the list draws them, as indices into
+    /// [`Self::settings`]: with no query the channel's order, and with one the
+    /// rows whose name begins with the letters, then those that hold them. A row
+    /// the query does not match is not drawn, as it is a name being looked for
+    /// among a handful and not a column among a table's.
+    fn setting_order(&self) -> Vec<usize> {
+        let rows = self.settings();
+        let all: Vec<usize> = (0..rows.len()).collect();
+        if self.query.is_empty() {
+            return all;
+        }
+        let named = |i: &usize| rows[*i].name.to_lowercase();
+        let mut order: Vec<usize> = all
+            .iter()
+            .copied()
+            .filter(|i| named(i).starts_with(&self.query))
+            .collect();
+        order.extend(
+            all.iter()
+                .copied()
+                .filter(|i| !named(i).starts_with(&self.query) && named(i).contains(&self.query)),
+        );
+        order
     }
 
     /// The channel the list is on.
@@ -820,7 +1104,13 @@ impl ColumnList {
     }
 
     /// Move the cursor `by` rows through the rows as drawn, and stop at the ends.
+    /// On the settings the cursor moves and nothing is reported: a settings row
+    /// has no column to preview.
     fn step(&mut self, by: isize, out: &mut Vec<ListReport>) {
+        if self.tab == ListTab::Settings {
+            self.step_setting(by);
+            return;
+        }
         let (order, _) = self.order();
         let Some(last) = order.len().checked_sub(1) else {
             return;
@@ -834,9 +1124,60 @@ impl ColumnList {
         self.land(Some(order[next]), out);
     }
 
+    /// Move the settings cursor `by` rows through the rows as drawn, and stop at
+    /// the ends.
+    fn step_setting(&mut self, by: isize) {
+        let order = self.setting_order();
+        let Some(last) = order.len().checked_sub(1) else {
+            return;
+        };
+        let at = self.row.and_then(|r| order.iter().position(|i| *i == r));
+        let next = match at {
+            None if by > 0 => 0,
+            None => last,
+            Some(i) => i.saturating_add_signed(by).min(last),
+        };
+        self.row = Some(order[next]);
+        self.scroll = true;
+    }
+
+    /// `Tab`: turn the list between the channel's columns and its settings.
+    ///
+    /// A channel with no settings rows — colour's and the mark's — stays on its
+    /// columns. The query is kept across the turn and narrows the rows of the
+    /// tab it turns to. Turning to the settings reports [`ListReport::Turned`],
+    /// so the window backs out a preview that belongs to the columns; turning
+    /// back, the cursor goes where the columns' own rule puts it (the column the
+    /// channel holds, or the best match for a query still typed), and a column
+    /// that is not the held one is reported as a move, so the chart previews it
+    /// again.
+    fn turn(&mut self, out: &mut Vec<ListReport>) {
+        match self.tab {
+            ListTab::Columns if self.has_settings() => {
+                self.tab = ListTab::Settings;
+                self.row = self.setting_order().first().copied();
+                self.scroll = true;
+                out.push(ListReport::Turned(ListTab::Settings));
+            }
+            ListTab::Columns => {}
+            ListTab::Settings => {
+                self.tab = ListTab::Columns;
+                self.cursor = self.held();
+                self.scroll = true;
+                out.push(ListReport::Turned(ListTab::Columns));
+                self.requery(out);
+            }
+        }
+    }
+
     /// The query changed: the cursor goes to the best match, and with an empty
     /// query back to the column the channel holds.
     fn requery(&mut self, out: &mut Vec<ListReport>) {
+        if self.tab == ListTab::Settings {
+            self.row = self.setting_order().first().copied();
+            self.scroll = true;
+            return;
+        }
         let to = if self.query.is_empty() {
             self.held()
         } else {
@@ -848,6 +1189,11 @@ impl ColumnList {
 
     /// `Enter`, or a click on a row: keep the row under the cursor.
     fn keep(&mut self, out: &mut Vec<ListReport>) {
+        // A settings row is read and not yet set: `Enter` has no value to keep
+        // there until the cards that edit a row land.
+        if self.tab == ListTab::Settings {
+            return;
+        }
         if let Some(name) = self.cursor() {
             out.push(ListReport::Kept(name.to_string()));
             self.querying = false;
@@ -877,6 +1223,15 @@ impl ColumnList {
             self.querying = false;
             self.cursor = self.held();
             self.scroll = true;
+            // The tab is kept where the channel has it: x's settings to y's, and
+            // colour's list, which has no settings yet, on its columns.
+            if self.tab == ListTab::Settings {
+                if self.has_settings() {
+                    self.row = self.setting_order().first().copied();
+                } else {
+                    self.tab = ListTab::Columns;
+                }
+            }
         }
         out.push(if beside {
             ListReport::Beside(to)
@@ -903,9 +1258,14 @@ impl ColumnList {
         match verb {
             "move-shelf-next-row" => self.step(1, out),
             "move-shelf-prev-row" => self.step(-1, out),
+            // On a settings row `h` and `l` have no value to step yet: the
+            // channel beside is the columns' alone.
+            "move-shelf-left" if self.tab == ListTab::Settings => {}
+            "move-shelf-right" if self.tab == ListTab::Settings => {}
             "move-shelf-left" => self.go_beside(-1, out),
             "move-shelf-right" => self.go_beside(1, out),
             "narrow-shelf-list" => self.querying = true,
+            "turn-shelf-list" => self.turn(out),
             "keep-shelf-choice" => self.keep(out),
             "back-out-of-shelf" => self.back(out),
             "go-to-mark-cell" => self.go_to(ShelfChannel::Mark, false, out),
@@ -959,9 +1319,11 @@ impl ColumnList {
                 }
                 self.requery(out);
             }
-            egui::Key::Enter | egui::Key::Escape | egui::Key::ArrowUp | egui::Key::ArrowDown => {
-                self.resolve(key, out)
-            }
+            egui::Key::Enter
+            | egui::Key::Escape
+            | egui::Key::ArrowUp
+            | egui::Key::ArrowDown
+            | egui::Key::Tab => self.resolve(key, out),
             _ => {}
         }
     }
@@ -1011,6 +1373,18 @@ impl ColumnList {
     }
 }
 
+/// What the list drew above its rows, handed to the page that draws them.
+struct SettingsHead {
+    heading: egui::Rect,
+    heading_text: String,
+    heading_name: egui::Rect,
+    tabs: Option<TabsDrawn>,
+    query: egui::Rect,
+}
+
+/// What stands between the two words of the tab strip.
+const TAB_SEPARATOR: &str = "\u{b7}";
+
 /// One row of the list as it was drawn.
 #[derive(Clone, Debug)]
 pub struct ListRowDrawn {
@@ -1053,6 +1427,60 @@ pub struct ListDrawn {
     pub foot: egui::Rect,
     /// What a click decided this frame.
     pub reports: Vec<ListReport>,
+    /// The tab the list drew.
+    pub tab: ListTab,
+    /// The tab strip under the heading. `None` where the channel has no
+    /// settings to turn to, so no tab would name something `Tab` can reach.
+    pub tabs: Option<TabsDrawn>,
+    /// Each settings row, in the order drawn. Empty on the columns tab.
+    pub settings: Vec<SettingRowDrawn>,
+    /// The rule after the head rows, which a query typed takes away. `None` on
+    /// the columns tab.
+    pub rule: Option<egui::Rect>,
+    /// The foot's sentence for the row under the cursor, where the ink was
+    /// laid out. `None` on the columns tab, and with no row under the cursor.
+    pub sentence: Option<egui::Rect>,
+}
+
+/// One tab of the strip as it was drawn.
+#[derive(Clone, Debug)]
+pub struct TabDrawn {
+    /// Which tab the word names.
+    pub tab: ListTab,
+    /// Where the word's ink was laid out.
+    pub word: egui::Rect,
+    /// The bar under the word, in the channel's hue, on the open tab alone.
+    pub bar: Option<egui::Rect>,
+}
+
+/// The tab strip as it was drawn.
+#[derive(Clone, Debug)]
+pub struct TabsDrawn {
+    /// The strip's row, from the list's edge to its edge.
+    pub rect: egui::Rect,
+    /// Each tab, in the order drawn.
+    pub tabs: Vec<TabDrawn>,
+}
+
+/// One settings row as it was drawn.
+#[derive(Clone, Debug)]
+pub struct SettingRowDrawn {
+    /// The row's name.
+    pub name: &'static str,
+    /// The whole row.
+    pub rect: egui::Rect,
+    /// Where the name's ink was laid out.
+    pub name_rect: egui::Rect,
+    /// Where the value's ink was laid out.
+    pub value_rect: egui::Rect,
+    /// The marker at the trailing end: a hollow ring while the value is
+    /// brightfield's own, a filled dot while it is the analyst's.
+    pub marker: egui::Rect,
+    /// Where the word *auto* was laid out, on a row whose value is
+    /// brightfield's own.
+    pub auto_rect: Option<egui::Rect>,
+    /// The bar down the row's leading edge, on the row under the cursor.
+    pub bar: Option<egui::Rect>,
 }
 
 /// How wide the rug is on a numeric column's row, at the trailing end. The
@@ -1071,6 +1499,27 @@ const ROW_HINTS: [(&str, &str); 5] = [
     ("Enter", "keep"),
     ("Esc", "back"),
 ];
+
+/// The keys the foot prints on the settings: a row's value is read, not yet
+/// changed, so no key that would change it is printed.
+const SETTINGS_HINTS: [(&str, &str); 4] = [
+    ("/", "search"),
+    ("j k", "move"),
+    ("Tab", "columns"),
+    ("Esc", "back"),
+];
+
+/// The key the columns' foot adds where the channel has settings to turn to.
+const TURN_HINT: (&str, &str) = ("Tab", "settings");
+
+/// The radius of the marker at a settings row's trailing end.
+const MARKER_RADIUS: f32 = 3.0;
+
+/// The width and height of the box the marker sits in.
+const MARKER_BOX: f32 = 2.0 * MARKER_RADIUS;
+
+/// The height of the bar under the open tab.
+const TAB_BAR: f32 = 2.0;
 
 /// The keys the foot prints while the query has them.
 const QUERY_HINTS: [(&str, &str); 3] = [
@@ -1120,6 +1569,9 @@ impl ColumnList {
         );
         painter.galley(heading_name.min, galley, muted);
 
+        // The tab strip, where the channel has settings to turn to.
+        let tabs = self.has_settings().then(|| self.show_tabs(ui, mode));
+
         // The query line: a sunken field, ruled under in the focus ink while it
         // has the keys.
         let (line, _) =
@@ -1159,6 +1611,20 @@ impl ColumnList {
                     egui::Stroke::new(1.0, primary),
                 );
             }
+        }
+
+        if self.tab == ListTab::Settings {
+            return self.show_settings(
+                ui,
+                mode,
+                SettingsHead {
+                    heading,
+                    heading_text,
+                    heading_name,
+                    tabs,
+                    query: line,
+                },
+            );
         }
 
         // The rows: the matches, a divider, the rest.
@@ -1291,7 +1757,7 @@ impl ColumnList {
         }
         self.scroll = false;
 
-        let foot = self.show_foot(ui, mode);
+        let (foot, _) = self.show_foot(ui, mode, None);
         let rect =
             egui::Rect::from_min_max(heading.min, egui::pos2(heading.right(), foot.bottom()));
         painter.rect_stroke(
@@ -1318,17 +1784,295 @@ impl ColumnList {
             divider,
             foot,
             reports,
+            tab: ListTab::Columns,
+            tabs,
+            settings: Vec::new(),
+            rule: None,
+            sentence: None,
+        }
+    }
+
+    /// The tab strip: *columns · settings*, the open tab's word in the text ink
+    /// over a bar in the channel's hue, the other in a quieter ink, all over one
+    /// rule. It takes no pointer: `Tab` turns the list, and a strip that took the
+    /// pointer would be a control that took the keyboard with it.
+    fn show_tabs(&self, ui: &mut egui::Ui, mode: Mode) -> TabsDrawn {
+        let sem = semantic(mode.is_dark());
+        let painter = ui.painter().clone();
+        let width = ui.available_width();
+        let (strip, _) =
+            ui.allocate_exact_size(egui::vec2(width, spacing::ROW_GRID), egui::Sense::hover());
+        painter.line_segment(
+            [
+                egui::pos2(strip.left(), strip.bottom() - 0.5),
+                egui::pos2(strip.right(), strip.bottom() - 0.5),
+            ],
+            egui::Stroke::new(1.0, chrome::colour(sem.borders.subtle)),
+        );
+        let hue = chrome::colour(channel::hue(self.channel, mode));
+        let primary = chrome::colour(sem.text.primary);
+        let secondary = chrome::colour(sem.text.secondary);
+        let muted = chrome::colour(sem.text.muted);
+        let mut x = strip.left() + spacing::SPACE_4;
+        let mut tabs = Vec::new();
+        for (n, tab) in [ListTab::Columns, ListTab::Settings]
+            .into_iter()
+            .enumerate()
+        {
+            if n > 0 {
+                let dot = painter.layout_no_wrap(TAB_SEPARATOR.to_string(), ui_font(), muted);
+                x += spacing::SPACE_3;
+                let at = egui::pos2(x, strip.center().y - dot.size().y / 2.0);
+                x += dot.size().x + spacing::SPACE_3;
+                painter.galley(at, dot, muted);
+            }
+            let open = tab == self.tab;
+            let ink = if open { primary } else { secondary };
+            let galley = painter.layout_no_wrap(tab.word().to_string(), ui_font(), ink);
+            let word = egui::Rect::from_min_size(
+                egui::pos2(x, strip.center().y - galley.size().y / 2.0),
+                galley.size(),
+            );
+            painter.galley(word.min, galley, ink);
+            let bar = open.then(|| {
+                let bar = egui::Rect::from_min_max(
+                    egui::pos2(word.left() - spacing::SPACE_2, strip.bottom() - TAB_BAR),
+                    egui::pos2(word.right() + spacing::SPACE_2, strip.bottom()),
+                );
+                painter.rect_filled(bar, 0.0, hue);
+                bar
+            });
+            tabs.push(TabDrawn { tab, word, bar });
+            x = word.right();
+        }
+        TabsDrawn { rect: strip, tabs }
+    }
+
+    /// The settings page: the rows of the channel, each with its value and the
+    /// marker that says whether the value is brightfield's own, the foot's
+    /// sentence for the row under the cursor, and the keys.
+    ///
+    /// **A row reads its name, its value and a marker.** A value that is
+    /// brightfield's own is in muted ink, with the word *auto* and a hollow ring;
+    /// one that differs is in the text ink, with a filled dot. Nothing here
+    /// changes a value, so a click or the pointer over a row moves the cursor and
+    /// no more.
+    fn show_settings(&mut self, ui: &mut egui::Ui, mode: Mode, head: SettingsHead) -> ListDrawn {
+        let sem = semantic(mode.is_dark());
+        let b = control::binding(spacing::ROW_DENSE);
+        let painter = ui.painter().clone();
+        let width = ui.available_width();
+        let muted = chrome::colour(sem.text.muted);
+        let primary = chrome::colour(sem.text.primary);
+        let hue = chrome::colour(channel::hue(self.channel, mode));
+        let rows: Vec<SettingRow> = self.settings().to_vec();
+        let order = self.setting_order();
+
+        if order.is_empty() {
+            let (note, _) = ui.allocate_exact_size(egui::vec2(width, b.row), egui::Sense::hover());
+            let text = format!("no setting has \"{}\" in its name", self.query);
+            let galley = text_ink::fit(
+                &painter,
+                &text,
+                caption_font(),
+                width - 2.0 * spacing::SPACE_4,
+                muted,
+            );
+            let at = egui::pos2(
+                note.left() + spacing::SPACE_4,
+                note.center().y - galley.size().y / 2.0,
+            );
+            painter.galley(at, galley, muted);
+        }
+
+        // The names share a column as wide as the longest of the channel's, so
+        // the values stand in one line whichever rows a query leaves.
+        let name_column = rows
+            .iter()
+            .map(|r| {
+                painter
+                    .layout_no_wrap(r.name.to_string(), ui_font(), primary)
+                    .size()
+                    .x
+            })
+            .fold(0.0_f32, f32::max);
+        let moving = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
+        let mut drawn = Vec::with_capacity(order.len());
+        let mut clicked = None;
+        let mut pointed = None;
+        for &i in &order {
+            let row = &rows[i];
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(width, b.row), egui::Sense::click());
+            let on = self.row == Some(i);
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::SelectableLabel,
+                    true,
+                    on,
+                    row.name.to_string(),
+                )
+            });
+            let mut bar = None;
+            if on {
+                painter.rect_filled(rect, 0.0, chrome::colour(sem.rows.cursor_background));
+                let strip = egui::Rect::from_min_max(
+                    rect.left_top(),
+                    egui::pos2(rect.left() + control::ROW_BAR_WIDTH, rect.bottom()),
+                );
+                painter.rect_filled(strip, 0.0, hue);
+                bar = Some(strip);
+                if self.scroll {
+                    ui.scroll_to_rect(rect, None);
+                }
+            } else if response.hovered() {
+                painter.rect_filled(rect, 0.0, chrome::colour(sem.rows.hover_background));
+            }
+            if response.clicked() {
+                clicked = Some(i);
+            } else if moving && response.hovered() {
+                pointed = Some(i);
+            }
+            let content = egui::Rect::from_min_max(
+                egui::pos2(rect.left() + b.pad_x + spacing::SPACE_4, rect.top()),
+                egui::pos2(rect.right() - b.pad_x, rect.bottom()),
+            );
+
+            // The marker at the trailing end.
+            let centre = egui::pos2(content.right() - MARKER_RADIUS, rect.center().y);
+            let marker = egui::Rect::from_center_size(centre, egui::Vec2::splat(MARKER_BOX));
+            if row.set {
+                painter.circle_filled(centre, MARKER_RADIUS, primary);
+            } else {
+                painter.circle_stroke(
+                    centre,
+                    MARKER_RADIUS,
+                    egui::Stroke::new(1.0, chrome::colour(sem.borders.default_)),
+                );
+            }
+            let mut right = marker.left() - spacing::SPACE_3;
+
+            // The word *auto*, where the value is brightfield's own.
+            let auto_rect = (!row.set).then(|| {
+                let galley = painter.layout_no_wrap(AUTO.to_string(), caption_font(), muted);
+                let at = egui::Rect::from_min_size(
+                    egui::pos2(
+                        right - galley.size().x,
+                        rect.center().y - galley.size().y / 2.0,
+                    ),
+                    galley.size(),
+                );
+                painter.galley(at.min, galley, muted);
+                right = at.left() - spacing::SPACE_3;
+                at
+            });
+
+            // The name, then the value in what room is left.
+            let name_galley = painter.layout_no_wrap(row.name.to_string(), ui_font(), primary);
+            let name_rect = egui::Rect::from_min_size(
+                egui::pos2(content.left(), rect.center().y - name_galley.size().y / 2.0),
+                name_galley.size(),
+            );
+            painter.galley(name_rect.min, name_galley, primary);
+            let value_left = content.left() + name_column + spacing::SPACE_3;
+            let ink = if row.set { primary } else { muted };
+            let value = text_ink::fit(&painter, &row.value, ui_font(), right - value_left, ink);
+            let value_rect = egui::Rect::from_min_size(
+                egui::pos2(value_left, rect.center().y - value.size().y / 2.0),
+                value.size(),
+            );
+            painter.galley(value_rect.min, value, ink);
+            drawn.push(SettingRowDrawn {
+                name: row.name,
+                rect,
+                name_rect,
+                value_rect,
+                marker,
+                auto_rect,
+                bar,
+            });
+        }
+        self.scroll = false;
+
+        // A rule follows the head rows. A query typed takes it away: what is
+        // left is what was looked for, and nothing follows it.
+        let rule = self.query.is_empty().then(|| {
+            let gap = 2.0 * spacing::SPACE_2 + 1.0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(width, gap), egui::Sense::hover());
+            painter.line_segment(
+                [
+                    egui::pos2(rect.left() + spacing::SPACE_4, rect.center().y),
+                    egui::pos2(rect.right() - spacing::SPACE_4, rect.center().y),
+                ],
+                egui::Stroke::new(1.0, chrome::colour(sem.borders.subtle)),
+            );
+            rect
+        });
+
+        let sentence = self.setting_cursor().map(|r| r.says);
+        let (foot, said) = self.show_foot(ui, mode, sentence);
+        let rect = egui::Rect::from_min_max(
+            head.heading.min,
+            egui::pos2(head.heading.right(), foot.bottom()),
+        );
+        painter.rect_stroke(
+            rect,
+            0.0,
+            egui::Stroke::new(1.0, chrome::colour(sem.borders.focus)),
+            egui::StrokeKind::Inside,
+        );
+
+        // The pointer moves the cursor and a click leaves it there: no value
+        // is changed from here.
+        if let Some(i) = clicked.or(pointed) {
+            if self.row != Some(i) {
+                self.row = Some(i);
+                self.scroll = true;
+            }
+        }
+        ListDrawn {
+            rect,
+            heading: head.heading,
+            heading_text: head.heading_text,
+            heading_name: head.heading_name,
+            query: head.query,
+            rows: Vec::new(),
+            divider: None,
+            foot,
+            reports: Vec::new(),
+            tab: ListTab::Settings,
+            tabs: head.tabs,
+            settings: drawn,
+            rule,
+            sentence: said,
         }
     }
 
     /// The foot: a key chip and a word for each key the state the list is in
     /// answers, a pair to a unit and wrapped between pairs to the width.
-    fn show_foot(&self, ui: &mut egui::Ui, mode: Mode) -> egui::Rect {
-        let muted = chrome::colour(semantic(mode.is_dark()).text.muted);
+    ///
+    /// On the settings the foot opens with `sentence`, the one line of what the
+    /// row under the cursor does and the rule for its default, and returns where
+    /// its ink was laid out.
+    fn show_foot(
+        &self,
+        ui: &mut egui::Ui,
+        mode: Mode,
+        sentence: Option<&str>,
+    ) -> (egui::Rect, Option<egui::Rect>) {
+        let sem = semantic(mode.is_dark());
+        let muted = chrome::colour(sem.text.muted);
+        let mut columns_pairs = ROW_HINTS.to_vec();
+        if self.has_settings() {
+            // Before `Esc`, the last key of the columns' foot.
+            columns_pairs.insert(columns_pairs.len() - 1, TURN_HINT);
+        }
         let pairs: &[(&str, &str)] = if self.querying {
             &QUERY_HINTS
+        } else if self.tab == ListTab::Settings {
+            &SETTINGS_HINTS
         } else {
-            &ROW_HINTS
+            &columns_pairs
         };
         let avail = ui.available_rect_before_wrap();
         let room = avail.width() - 2.0 * spacing::SPACE_4;
@@ -1357,6 +2101,17 @@ impl ColumnList {
         }
 
         let mut top = avail.top() + spacing::SPACE_3;
+        let said = sentence.map(|text| {
+            let ink = chrome::colour(sem.text.secondary);
+            let galley = ui.painter().layout(text.to_owned(), ui_font(), ink, room);
+            let at = egui::Rect::from_min_size(
+                egui::pos2(avail.left() + spacing::SPACE_4, top),
+                galley.size(),
+            );
+            ui.painter().galley(at.min, galley, ink);
+            top = at.bottom() + spacing::SPACE_3;
+            at
+        });
         for row in rows {
             let at = egui::Rect::from_min_size(
                 egui::pos2(avail.left() + spacing::SPACE_4, top),
@@ -1378,7 +2133,7 @@ impl ColumnList {
         }
         let foot = egui::Rect::from_min_max(avail.min, egui::pos2(avail.right(), top));
         ui.allocate_rect(foot, egui::Sense::hover());
-        foot
+        (foot, said)
     }
 }
 

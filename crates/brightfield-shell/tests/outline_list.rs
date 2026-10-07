@@ -40,10 +40,12 @@ use brightfield_shell::protocol::{
     protocol_registry, ProtocolDoc, ProtocolModel, SpineRole, SpineRowDrawn, OUTLINE,
 };
 use brightfield_shell::shelf::{
-    Binding, ColumnList, ColumnListRequest, ListColumn, ListDrawn, ListReport, ShelfChannels,
-    QUERY_PLACEHOLDER,
+    Binding, ChannelSettings, ColumnList, ColumnListRequest, ListColumn, ListDrawn, ListReport,
+    ListTab, ShelfChannels, QUERY_PLACEHOLDER,
 };
 use brightfield_shell::text_ink::{self, DrawnText};
+use brightfield_spec::edit::plot_at_path;
+use brightfield_spec::parse::{parse_spec, Format};
 use brightfield_workbench::channel::ShelfChannel;
 use brightfield_workbench::chrome;
 use brightfield_workbench::ItemCtx;
@@ -143,8 +145,27 @@ fn request(channel: ShelfChannel) -> ColumnListRequest {
     }
 }
 
+/// What the hero's axes read when the plot's attributes are `attrs`, a block of
+/// top-level lines of the spec, as the window reads them off the live plot and
+/// hands them to the list.
+fn settings_of(attrs: &str, channels: &ShelfChannels) -> ChannelSettings {
+    let source = format!(
+        "data:\n  t:\n    - {{ a: 1 }}\nplot:\n  - mark: dot\n    data: {{ from: t }}\n    x: a\n    y: a\nwidth: 600\nheight: 300\n{attrs}\n"
+    );
+    let spec = parse_spec(&source, Format::Yaml)
+        .expect("the spec parses")
+        .spec;
+    let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
+    ChannelSettings::of_plot(&spec, plot, channels)
+}
+
+/// The list the window hands the Outline: opened on `request`, and given what
+/// the axes read, which here is brightfield's own on its three rows, so a column list
+/// is drawn as it is with a settings tab behind it.
 fn list(channel: ShelfChannel) -> ColumnList {
-    ColumnList::new(request(channel))
+    let mut list = ColumnList::new(request(channel));
+    list.set_settings(settings_of("", &channels()));
+    list
 }
 
 // ---------------------------------------------------------------------------
@@ -463,12 +484,14 @@ fn mixed_channels() -> ShelfChannels {
 }
 
 fn mixed_list() -> ColumnList {
-    ColumnList::new(ColumnListRequest {
+    let mut list = ColumnList::new(ColumnListRequest {
         tile: "hero".to_string(),
         channel: ShelfChannel::X,
         channels: mixed_channels(),
         columns: offered(&facts_of(&mixed())),
-    })
+    });
+    list.set_settings(settings_of("", &mixed_channels()));
+    list
 }
 
 /// The one-pixel-wide fills the frame painted inside `rug`, left to right: the
@@ -1093,15 +1116,23 @@ fn the_row_under_the_cursor_carries_a_three_point_bar_in_the_channels_hue() {
             );
             assert!(near(bar.left(), row.rect.left()), "{channel:?} {mode:?}");
             let hue = categorical(mode, slot);
+            // The strip's bar under the open tab is in the channel's hue as
+            // well, and belongs to the strip: it is the one fill in the hue
+            // that is not the row's.
+            let strip_bar = frame
+                .drawn
+                .tabs
+                .as_ref()
+                .and_then(|strip| strip.tabs.iter().find_map(|tab| tab.bar));
             let painted: Vec<egui::Rect> = fills(&frame)
                 .into_iter()
-                .filter(|(_, fill)| *fill == hue)
+                .filter(|(rect, fill)| *fill == hue && Some(*rect) != strip_bar)
                 .map(|(rect, _)| rect)
                 .collect();
             assert_eq!(
                 painted.len(),
                 1,
-                "{channel:?} {mode:?}: one fill in {hue:?}, the bar"
+                "{channel:?} {mode:?}: one fill in {hue:?} but the strip's, the bar"
             );
             assert!(
                 near(painted[0].width(), 3.0) && near(painted[0].left(), row.rect.left()),
@@ -1478,4 +1509,35 @@ fn the_list_with_one_numeric_row_among_others_light_matches_its_baseline() {
 #[test]
 fn the_list_with_one_numeric_row_among_others_dark_matches_its_baseline() {
     baseline_of("outline_list_mixed_dark", Mode::Dark, mixed_list(), None);
+}
+
+/// The Outline's list turned to x's settings, with a title and a scale the file
+/// sets and a format it leaves to the axis, so the list draws a row of each
+/// state.
+fn settings_list() -> ColumnList {
+    let mut list = ColumnList::new(request(ShelfChannel::X));
+    list.set_settings(settings_of("xLabel: Residents\nxScale: log", &channels()));
+    list.feed_events(&[key_event(egui::Key::Tab)]);
+    assert_eq!(list.tab(), ListTab::Settings, "Tab turned the list");
+    list
+}
+
+#[test]
+fn the_settings_list_light_matches_its_baseline() {
+    baseline_of(
+        "outline_list_settings_light",
+        Mode::Light,
+        settings_list(),
+        None,
+    );
+}
+
+#[test]
+fn the_settings_list_dark_matches_its_baseline() {
+    baseline_of(
+        "outline_list_settings_dark",
+        Mode::Dark,
+        settings_list(),
+        None,
+    );
 }
