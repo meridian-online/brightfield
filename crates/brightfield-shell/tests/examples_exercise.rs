@@ -283,16 +283,16 @@ fn an_example_draws_a_legend_when_its_file_holds_a_colour_legend_node() {
 /// none, by file name, in the order `example_specs` lists them. **Empty, and it
 /// stays empty:** a reader of the gallery has no analyst beside them to say what
 /// a colour means, so a new example with a colour scale carries the legend
-/// item. A name goes here only with the reason it is an exception written beside
-/// it, and the test below fails when a name here no longer belongs, so the list
+/// item. A name goes here with the reason it is an exception written beside it,
+/// and the test below fails when a name here no longer belongs, so the list
 /// cannot outlive the exception.
 const LEGENDLESS: &[&str] = &[];
 
-/// **An example whose colour scale calls for a legend declares one.** Every
-/// example composed, any whose plots have a fill scale a legend can draw and
-/// whose file holds no `legend: color` line is listed in [`LEGENDLESS`], so
-/// adding such an example fails here, and so does listing one that has since
-/// gained the item.
+/// **An example whose colour scale calls for a legend declares one.** The test
+/// composes the examples in `example_specs`, and any whose plots have a fill
+/// scale a legend can draw and whose file holds no `legend: color` line is
+/// listed in [`LEGENDLESS`], so adding such an example fails here, and so does
+/// listing one that has since gained the item.
 #[test]
 fn an_example_whose_colour_scale_calls_for_a_legend_declares_one() {
     let mut scaled = 0usize;
