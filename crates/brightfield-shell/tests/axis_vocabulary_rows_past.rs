@@ -17,14 +17,16 @@
 
 use std::path::PathBuf;
 
+use brightfield_conformance::deviations::load_deviations;
 use brightfield_engine::coordinator::Interaction;
 use brightfield_engine::SqlPredicate;
 use brightfield_render::ink::ChartInk;
-use brightfield_render::past_ends::{EndCounts, PastEnds};
+use brightfield_render::past_ends::{mark_counts_rows_past, EndCounts, PastEnds};
 use brightfield_render::VelloRenderer;
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::{compose_spec_in_mode, Composed, LiveDashboard};
 use brightfield_spec::analysis::ComponentPath;
+use brightfield_spec::vocab::MarkKind;
 use brightfield_sql::ir::ScalarValue;
 
 // ---------------------------------------------------------------------------
@@ -391,6 +393,66 @@ fn a_dot_beside_a_binned_mark_counts_its_own_rows() {
          \x20 - mark: dot\n    data: { from: pts }\n    x: a\n    y: b\n",
     ));
     assert_eq!(mixed.plots[0].rows_past.x, EndCounts { low: 0, high: 1 });
+}
+
+/// **`deviations.yaml` says which marks count and which do not, and its two
+/// lists are the code's**: every mark kind the vocabulary declares is named
+/// once, under the marks that count exactly when [`mark_counts_rows_past`]
+/// says it counts, and `DEVIATIONS.md` carries the entry.
+#[test]
+fn the_register_names_which_marks_count_as_the_code_does() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let registry = load_deviations(&root.join("deviations.yaml")).expect("the register loads");
+    let found: Vec<_> = registry
+        .iter()
+        .filter(|d| d.surface.contains("a count of the rows past an end"))
+        .collect();
+    assert_eq!(found.len(), 1, "one entry names the count: {found:?}");
+    let entry = found[0];
+
+    // The backticked names between the paragraph's colon and the full stop
+    // that ends its first sentence.
+    let named = |lead: &str| -> Vec<String> {
+        let paragraph = entry
+            .brightfield_behaviour
+            .split("\n\n")
+            .find(|p| p.trim_start().starts_with(lead))
+            .unwrap_or_else(|| panic!("the entry has a paragraph that opens `{lead}`"));
+        let after = &paragraph[paragraph.find(':').expect("a colon") + 1..];
+        let list = &after[..after.find('.').expect("a full stop")];
+        list.split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect()
+    };
+    let count = named("Marks that count");
+    let none = named("Marks that draw no count");
+    for kind in MarkKind::all() {
+        let wire = kind.wire_name().to_string();
+        let (counts, not) = (count.contains(&wire), none.contains(&wire));
+        assert!(
+            counts != not,
+            "`{wire}` is named once: count {counts}, no count {not}"
+        );
+        assert_eq!(
+            counts,
+            mark_counts_rows_past(*kind),
+            "`{wire}`: the register and the code disagree on whether it counts"
+        );
+    }
+    assert_eq!(
+        count.len() + none.len(),
+        MarkKind::all().len(),
+        "the register names a mark the vocabulary does not declare: {count:?} {none:?}"
+    );
+
+    let doc = std::fs::read_to_string(root.join("DEVIATIONS.md")).expect("DEVIATIONS.md");
+    assert!(
+        doc.contains(&format!("## {} — ", entry.id)),
+        "DEVIATIONS.md has no section for {}",
+        entry.id
+    );
 }
 
 // ---------------------------------------------------------------------------
