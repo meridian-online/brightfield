@@ -61,7 +61,10 @@ fn a_scheme_brightfield_does_not_draw_is_an_advisory_naming_the_key_and_the_valu
 }
 
 /// **AC2 and AC3.** Each name the renderer draws, a `$param`, and `null` leave
-/// the page with nothing to say about the key.
+/// the load diagnostics with nothing to say about the key. These are the
+/// parser's: a param that holds a name the renderer does not draw is named when
+/// the plot is composed, which the shell's `colour_vocabulary_scheme_warning`
+/// tests hold.
 #[test]
 fn a_drawn_scheme_a_param_and_null_say_nothing_to_the_page() {
     let drawn = [
