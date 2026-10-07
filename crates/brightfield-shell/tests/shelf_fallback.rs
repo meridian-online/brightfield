@@ -860,9 +860,9 @@ fn a_press_on_the_card_let_go_off_it_leaves_the_list_open() {
 }
 
 /// **The card's foot stands the design system's gap from the window's.** A window
-/// too short for the list leaves the card's foot `SPACE_4` off the window's,
-/// rule and all, in the light mode and in the dark. With no gap the card would
-/// run to the window's edge.
+/// too short for the list leaves the card's foot, its rule included, `SPACE_4`
+/// off the window's, in the light mode and in the dark. With no gap the card
+/// would run to the window's edge.
 #[test]
 fn a_card_taller_than_the_room_keeps_a_space_4_gap_from_the_windows_foot() {
     for mode in [Mode::Light, Mode::Dark] {
