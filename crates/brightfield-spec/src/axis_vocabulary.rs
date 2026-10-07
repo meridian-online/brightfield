@@ -49,6 +49,7 @@ pub const READ_AXIS_ATTRIBUTES: &[&str] = &[
     "xTickFormat",
     "xTicks",
     "xZero",
+    "xyDomain",
     "yDomain",
     "yGrid",
     "yInset",
@@ -75,5 +76,29 @@ pub fn unread_axis_attributes<'a>(
 ) -> Vec<&'a str> {
     keys.into_iter()
         .filter(|key| schema_names.contains(key) && !READ_AXIS_ATTRIBUTES.contains(key))
+        .collect()
+}
+
+/// [`unread_axis_attributes`] over a plot's keys with their values, which also
+/// names `xyDomain` when it holds Mosaic's `Fixed`.
+///
+/// `xyDomain` is on [`READ_AXIS_ATTRIBUTES`] for the two numbers it takes, and
+/// `xyDomain: Fixed` is a request this build still does not read
+/// (`deviations.yaml` DEV-0005), so a name-only judgement would stop naming it.
+/// The value decides, and the word is the one [`crate::layout::read_domains_in`]
+/// reads as no ends.
+pub fn unread_axis_entries<'a>(
+    entries: impl IntoIterator<Item = (&'a str, &'a crate::ast::SpecValue)>,
+    schema_names: &[&str],
+) -> Vec<&'a str> {
+    entries
+        .into_iter()
+        .filter(|(key, value)| {
+            schema_names.contains(key)
+                && (!READ_AXIS_ATTRIBUTES.contains(key)
+                    || (*key == "xyDomain"
+                        && matches!(value, crate::ast::SpecValue::String(word) if word == "Fixed")))
+        })
+        .map(|(key, _)| key)
         .collect()
 }

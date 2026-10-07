@@ -49,7 +49,8 @@ use brightfield_render::mark::{default_renderers_scaled, find_renderer, MarkRend
 use brightfield_render::sample_notice::{sample_band_margins, SampleFact};
 use brightfield_render::sample_policy;
 use brightfield_render::scale::{
-    ColourOverride, ColourScale, PinnedDomains, Scale, ScaleSet, SequentialScheme, ViewExtent,
+    written_ends_apply, ColourOverride, ColourScale, PinnedDomains, Scale, ScaleSet,
+    SequentialScheme, ViewExtent,
 };
 use brightfield_render::scene::{
     axis_ends_apply, axis_keys_apply, build_multi_mark_scene_pinned, colour_override_applies,
@@ -65,12 +66,12 @@ use brightfield_spec::analysis::{
 };
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
-    collect_plot_nodes, grid_switch, placed_plots, plot_label, resolve_axis_ends,
+    collect_plot_nodes, grid_switch, placed_plots, plot_label, read_domains_in, resolve_axis_ends,
     resolve_axis_reverse, resolve_colour_pivot, resolve_colour_reverse,
     resolve_colour_scale_diverging, resolve_colour_scheme_name, resolve_fixed_domains,
     resolve_grid_lines, resolve_plot_insets, resolve_plot_margins, resolve_plot_stack_offset,
-    resolve_tick_counts, resolve_tick_formats, AxisEnds, AxisFormat, AxisReverse, Rect,
-    StackOffset, TickCounts, TickFormats,
+    resolve_tick_counts, resolve_tick_formats, AxisEnds, AxisFormat, AxisReverse, DomainReading,
+    DomainReadings, PlotAxis, Rect, StackOffset, TickCounts, TickFormats,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, ParseWarning, Spec};
@@ -2379,7 +2380,17 @@ fn compose_from_results(
             .find(|(p, _)| *p == plot.path)
             .map(|(_, node)| resolve_fixed_domains(node))
             .unwrap_or_default();
-        let plot_pins = pins.get(&plot.path).cloned().unwrap_or_default();
+        let held_pins = pins.get(&plot.path).cloned().unwrap_or_default();
+        // The ends the spec wrote as two numbers, read from the spec this
+        // composition draws so a param that holds them is read as it stands
+        // now. They are laid over what the plot holds and are not stored with
+        // it: the next composition reads them again.
+        let written_ends = plot_nodes
+            .iter()
+            .find(|(p, _)| *p == plot.path)
+            .map(|(_, node)| read_domains_in(node, &spec.params))
+            .unwrap_or_default();
+        let plot_pins = held_pins.clone().with_written_ends(&written_ends);
 
         // What this plot's spec asked each positional axis's ticks to target
         // — `xTicks`/`yTicks`. A plot that asks for neither reads back its
@@ -2488,6 +2499,7 @@ fn compose_from_results(
                     tick_counts,
                     &tick_formats,
                     axis_reverse,
+                    &written_ends,
                     &scales,
                 ));
                 found
@@ -2500,7 +2512,7 @@ fn compose_from_results(
         }
 
         if !fixed.is_empty() {
-            let mut held = plot_pins;
+            let mut held = held_pins;
             held.capture(&scales, fixed);
             pins.insert(plot.path.clone(), held);
         }
@@ -2696,6 +2708,14 @@ fn crossed_tick_formats(
     out
 }
 
+/// The plot axis a scale channel is.
+fn plot_axis(channel: Channel) -> PlotAxis {
+    match channel {
+        Channel::X => PlotAxis::X,
+        _ => PlotAxis::Y,
+    }
+}
+
 /// The warnings for a plot's axis instructions that the axis they meet does not
 /// act on: `xZero`, `xNice` or `xTicks` (and the `y` of each) on an axis that
 /// does not follow it, `xTickFormat` (and `yTickFormat`) of either kind on an
@@ -2714,6 +2734,9 @@ fn crossed_tick_formats(
 /// instruction and says nothing. A plot with a projection says each key once,
 /// as changing nothing on a plot with a map projection, and says nothing of the
 /// kind of axis the key landed on, since there is none.
+// Each argument is resolved elsewhere from the plot and read here once, so a
+// struct would be a name for the argument list rather than for a thing.
+#[allow(clippy::too_many_arguments)]
 fn inert_axis_instructions(
     plot: &str,
     node: &PlotNode,
@@ -2721,6 +2744,7 @@ fn inert_axis_instructions(
     counts: TickCounts,
     formats: &TickFormats,
     reverse: AxisReverse,
+    written: &DomainReadings,
     scales: &ScaleSet,
 ) -> Vec<ParseWarning> {
     let projected = !axis_keys_apply(scales);
@@ -2760,13 +2784,39 @@ fn inert_axis_instructions(
             .get(channel)
             .and_then(|scale| Some((scale, axis_scale_word(scale)?)))
         {
+            // Two numbers written as this axis's ends: they fix a linear, log
+            // or symlog axis, and on any other kind they have no effect, which
+            // is named as `xZero` is on the same axis. Where they do fix the
+            // ends, `xZero` and `xNice` have no effect beside them.
+            let ends_fixed = match written.axis(plot_axis(channel)) {
+                DomainReading::Ends { key, .. } => {
+                    let applies = written_ends_apply(scale);
+                    if !applies {
+                        out.push(ParseWarning::AxisAttributeOnWrongAxis {
+                            attribute: (*key).to_string(),
+                            plot: plot.to_string(),
+                            axis: axis.to_string(),
+                        });
+                    }
+                    applies
+                }
+                DomainReading::Absent | DomainReading::Refused { .. } => false,
+            };
             for (key, set, applies) in [
                 (zero.0, zero.1, axis_ends_apply(scale)),
                 (nice.0, nice.1, axis_ends_apply(scale)),
                 (ticks.0, ticks.1, tick_count_applies(scale)),
                 (format.0, format.1, tick_format_applies(scale)),
             ] {
-                if set && !applies {
+                if !set {
+                    continue;
+                }
+                if ends_fixed && matches!(key, "xZero" | "xNice" | "yZero" | "yNice") {
+                    out.push(ParseWarning::AxisEndsOnFixedAxis {
+                        attribute: key.to_string(),
+                        plot: plot.to_string(),
+                    });
+                } else if !applies {
                     out.push(ParseWarning::AxisAttributeOnWrongAxis {
                         attribute: key.to_string(),
                         plot: plot.to_string(),

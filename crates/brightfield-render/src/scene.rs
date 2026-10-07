@@ -2,7 +2,9 @@
 //! into a single vello::Scene.
 
 use arrow::record_batch::RecordBatch;
-use brightfield_spec::layout::{AxisEnds, AxisReverse, GridLines, TickCounts, TickFormats};
+use brightfield_spec::layout::{
+    AxisEnd, AxisEnds, AxisReverse, GridLines, TickCounts, TickFormats,
+};
 use brightfield_spec::vocab::MarkKind;
 use kurbo::{Affine, BezPath, Circle, Rect, RoundedRect, Stroke};
 use peniko::Fill;
@@ -21,7 +23,8 @@ use crate::mark::{HighlightState, MarkRenderer};
 use crate::sample_notice::{render_sample_notice, SampleFact};
 use crate::scale::{
     apply_colour_override, apply_pinned_domains, infer_scales_in, infer_scales_multi_in,
-    order_categories, ColourOverride, PinnedDomains, Scale, ScaleSet, ViewExtent,
+    order_categories, written_ends_apply, ColourOverride, PinnedDomains, Scale, ScaleSet,
+    ViewExtent,
 };
 use crate::title::ResolvedTitles;
 
@@ -565,7 +568,9 @@ pub fn build_multi_mark_scene_with_domains(
 ///
 /// `axis_ends` lands after the pin, in Observable Plot's order: zero first, then
 /// round ends, on the domain the scale holds whether it inferred that domain or
-/// the spec fixed it. A pin is captured from the scales this function returns,
+/// the spec fixed it. An axis whose ends the file wrote as two numbers is the
+/// exception: those ends stay as written, and its request is dropped
+/// (`ends_left_to_written_pins`, which is private). A pin is captured from the scales this function returns,
 /// so a fixed domain is held with its ends already carried, and applying the
 /// same ends to it again leaves it as it is.
 ///
@@ -619,7 +624,9 @@ pub fn build_multi_mark_scene_pinned(
         &mut scales,
         &domains_yielding_to_navigation(domains, entries[0]),
     );
-    apply_pinned_domains(&mut scales, &pins_yielding_to_navigation(pins, entries[0]));
+    let pins = pins_yielding_to_navigation(pins, entries[0]);
+    apply_pinned_domains(&mut scales, &pins);
+    let axis_ends = ends_left_to_written_pins(axis_ends, &pins, &scales);
     apply_axis_ends(&mut scales, axis_ends, tick_counts, entries[0]);
     apply_axis_reverse(&mut scales, axis_reverse);
     // After `apply_unsampled_domains`, which puts a sampled plot's categories
@@ -867,6 +874,30 @@ fn domains_yielding_to_navigation(
     }
 }
 
+/// `ends` with the request dropped for each axis whose ends the file wrote as
+/// two numbers and the pin carried onto the axis: `xNice` or `xZero` beside an
+/// `xDomain` of two numbers leaves the ends as written. An axis the pin did not
+/// land on, a date axis or an axis of names, keeps its request, which that axis
+/// then does not act on as it does without the domain.
+/// [`written_ends_apply`] is the judge, and the composition warns through it.
+fn ends_left_to_written_pins(ends: AxisEnds, pins: &PinnedDomains, scales: &ScaleSet) -> AxisEnds {
+    let held = |written: bool, channel: Channel| {
+        written && scales.get(channel).is_some_and(written_ends_apply)
+    };
+    AxisEnds {
+        x: if held(pins.x_written, Channel::X) {
+            AxisEnd::default()
+        } else {
+            ends.x
+        },
+        y: if held(pins.y_written, Channel::Y) {
+            AxisEnd::default()
+        } else {
+            ends.y
+        },
+    }
+}
+
 /// `pins` with every axis the reader has navigated dropped.
 ///
 /// The view extent is already on the scale by the time a pin would be applied
@@ -879,6 +910,8 @@ fn pins_yielding_to_navigation(pins: &PinnedDomains, entry: &ChartData<'_>) -> P
     PinnedDomains {
         x: extent.x.is_none().then(|| pins.x.clone()).flatten(),
         y: extent.y.is_none().then(|| pins.y.clone()).flatten(),
+        x_written: extent.x.is_none() && pins.x_written,
+        y_written: extent.y.is_none() && pins.y_written,
     }
 }
 

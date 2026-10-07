@@ -487,12 +487,13 @@ pub enum ParseWarning {
     /// A plot, or `plotDefaults:`, set an axis attribute Mosaic's schema
     /// declares and this build does not read: `xTickRotate`, `yAxis`,
     /// `xLabelAnchor`, or one of the bare names that carry no `x` or `y` of their
-    /// own (`axis`, `align`, `padding`, `xyDomain`, `facetGrid`, `facetLabel`).
+    /// own (`axis`, `align`, `padding`, `facetGrid`, `facetLabel`, and `xyDomain`
+    /// set to Mosaic's `Fixed`, which this build does not read; two numbers it does).
     /// The plot draws as it does without the key. This names the key and the
     /// plot that carries it, so an author can tell a gap in brightfield from a
     /// typing mistake and trust the rest of the chart.
     ///
-    /// [`crate::axis_vocabulary::unread_axis_attributes`] is the sole judge, so
+    /// [`crate::axis_vocabulary::unread_axis_entries`] is the sole judge, so
     /// a resolver that learns a name narrows this warning in the same edit.
     UnreadAxisAttribute {
         /// The attribute key, as written.
@@ -581,6 +582,46 @@ pub enum ParseWarning {
         /// `brightfield_render::axis::axis_scale_word` words it: `log`,
         /// `symlog`, `date` or `category`.
         axis: String,
+    },
+
+    /// A plot's `xDomain`, `yDomain` or `xyDomain` held a value that is not two
+    /// numbers with the low end first: `[100, 0]`, `[0, "high"]`, `[0]`. The
+    /// axis draws as if the key were absent, with the domain its rows give, and
+    /// this names the key, the value as written and the plot. `Fixed` and a
+    /// `null` are not this: `Fixed` is Mosaic's own word and is read elsewhere.
+    ///
+    /// Raised by analysis, after the whole spec is built, because a `$param`
+    /// cannot be read before `params:` has been parsed and a plot inherits
+    /// `plotDefaults:` only once it is built: a `$param` holding two numbers
+    /// draws them and says nothing, one holding a bad literal is named as the
+    /// literal is, and one the file never declares or that holds a selection
+    /// holds no value and says nothing.
+    /// [`crate::layout::read_domains_in`] is the sole judge, and it is the
+    /// reading the pinned ends are taken from.
+    UnreadAxisEnds {
+        /// The attribute key: `xDomain`, `yDomain` or `xyDomain`.
+        attribute: String,
+        /// The value as written.
+        value: String,
+        /// The plot, as [`crate::layout::plot_label`] names one.
+        plot: String,
+    },
+
+    /// A plot sets `xNice`, `xZero`, `yNice` or `yZero` beside an `xDomain`,
+    /// `yDomain` or `xyDomain` of two numbers on the same axis. The ends the
+    /// file wrote stay as written, and the plot draws as it does without the
+    /// nice or zero key. Known once the data has typed the axis, as
+    /// [`ParseWarning::AxisAttributeOnWrongAxis`] is: two numbers fix the ends
+    /// of a linear, log or symlog axis and no other.
+    ///
+    /// `brightfield_render::scale::written_ends_apply` is the judge, and the
+    /// draw leaves the ends through it, so the warning and the drawing cannot
+    /// disagree.
+    AxisEndsOnFixedAxis {
+        /// The attribute key: `xZero`, `xNice` or the `y` of each.
+        attribute: String,
+        /// The plot that sets it, as [`crate::layout::plot_label`] names one.
+        plot: String,
     },
 
     /// A plot with a map projection sets an x or y axis instruction: `xReverse`,
@@ -963,6 +1004,18 @@ impl fmt::Display for ParseWarning {
                 f,
                 "plot {plot} sets `{attribute}`, which changes nothing on a {axis} axis — the plot draws as it does without it"
             ),
+            Self::UnreadAxisEnds {
+                attribute,
+                value,
+                plot,
+            } => write!(
+                f,
+                "plot {plot} sets `{attribute}: {value}`, which is not two numbers with the low end first — the axis draws the ends its rows give"
+            ),
+            Self::AxisEndsOnFixedAxis { attribute, plot } => write!(
+                f,
+                "plot {plot} sets `{attribute}`, which changes nothing on an axis with fixed ends — the axis keeps the ends the file wrote"
+            ),
             Self::AxisAttributeUnderProjection { attribute, plot } => write!(
                 f,
                 "plot {plot} sets `{attribute}`, which changes nothing on a plot with a map projection — the plot draws as it does without it"
@@ -1271,8 +1324,8 @@ impl Walker {
                     // An axis attribute no resolver reads is named here, once,
                     // for the same reason: each plot that inherits it would
                     // otherwise drop it in silence.
-                    for attribute in crate::axis_vocabulary::unread_axis_attributes(
-                        defaults.keys().map(String::as_str),
+                    for attribute in crate::axis_vocabulary::unread_axis_entries(
+                        defaults.iter().map(|(key, value)| (key.as_str(), value)),
                         crate::axis_vocabulary::SCHEMA_AXIS_ATTRIBUTES,
                     ) {
                         self.warnings.push(ParseWarning::UnreadAxisAttribute {
@@ -1751,8 +1804,8 @@ impl Walker {
         // The axis attributes this plot sets itself and no resolver reads,
         // taken before `plotDefaults:` fills in the rest: an inherited key was
         // named once, under `plotDefaults:`, and is not named again here.
-        let unread: Vec<String> = crate::axis_vocabulary::unread_axis_attributes(
-            attributes.keys().map(String::as_str),
+        let unread: Vec<String> = crate::axis_vocabulary::unread_axis_entries(
+            attributes.iter().map(|(key, value)| (key.as_str(), value)),
             crate::axis_vocabulary::SCHEMA_AXIS_ATTRIBUTES,
         )
         .into_iter()

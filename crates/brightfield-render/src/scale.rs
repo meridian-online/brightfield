@@ -12,7 +12,8 @@ use arrow::record_batch::RecordBatch;
 use brightfield_spec::ast::{ParamNode, PlotNode};
 use brightfield_spec::layout::{
     resolve_colour_domain, resolve_colour_range, resolve_colour_scale_quantize,
-    resolve_colour_steps, ColourDomain, FixedDomains, ScaleType, DEFAULT_COLOUR_STEPS,
+    resolve_colour_steps, ColourDomain, DomainReadings, FixedDomains, ScaleType,
+    DEFAULT_COLOUR_STEPS,
 };
 use indexmap::IndexMap;
 
@@ -1215,10 +1216,16 @@ impl PinnedDomain {
 /// is NOT read.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PinnedDomains {
-    /// The x axis's pin, once captured.
+    /// The x axis's pin, once captured, or the ends the file wrote.
     pub x: Option<PinnedDomain>,
-    /// The y axis's pin, once captured.
+    /// The y axis's pin, once captured, or the ends the file wrote.
     pub y: Option<PinnedDomain>,
+    /// The x pin is the two numbers the file wrote for it
+    /// ([`PinnedDomains::with_written_ends`]), and not a domain held from the
+    /// first composition.
+    pub x_written: bool,
+    /// The y pin is the two numbers the file wrote for it.
+    pub y_written: bool,
 }
 
 impl PinnedDomains {
@@ -1227,6 +1234,27 @@ impl PinnedDomains {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.x.is_none() && self.y.is_none()
+    }
+
+    /// These pins with each axis the file wrote two numbers for pinned to those
+    /// ends, over any domain held for it.
+    ///
+    /// Taken afresh each composition from [`brightfield_spec::layout::read_domains_in`]
+    /// and not stored with the pins a plot holds between compositions, so a
+    /// `$param` that holds the ends is read as it stands now. An axis the file
+    /// wrote no ends for is left as it was.
+    #[must_use]
+    pub fn with_written_ends(mut self, readings: &DomainReadings) -> Self {
+        for (reading, pin, written) in [
+            (&readings.x, &mut self.x, &mut self.x_written),
+            (&readings.y, &mut self.y, &mut self.y_written),
+        ] {
+            if let Some((lo, hi)) = reading.ends() {
+                *pin = Some(PinnedDomain::Linear(lo, hi));
+                *written = true;
+            }
+        }
+        self
     }
 
     /// Capture, from `scales`, each axis `request` asks to pin and this does not
@@ -1248,6 +1276,19 @@ impl PinnedDomains {
             *slot = scales.get(channel).and_then(PinnedDomain::of);
         }
     }
+}
+
+/// Whether two numbers written as an axis's ends fix the ends of the axis
+/// `scale` draws: a linear, log or symlog axis, whose domain is a numeric pair.
+/// A date axis's ends are instants and a band axis's are names, so two numbers
+/// change nothing on either.
+///
+/// It is the judge [`apply_pinned_domains`] draws through, since it asks the
+/// pin itself whether it lands, and the composition warns through it, so the
+/// ends the draw leaves unfixed are the ends that were named.
+#[must_use]
+pub fn written_ends_apply(scale: &Scale) -> bool {
+    PinnedDomain::Linear(0.0, 1.0).applied_to(scale).is_some()
 }
 
 /// Re-domain `scales`' positional channels onto `pins`, in place.
@@ -4030,7 +4071,7 @@ mod tests {
             &mut set,
             &PinnedDomains {
                 x: Some(pin),
-                y: None,
+                ..PinnedDomains::default()
             },
         );
         match set.get(Channel::X).expect("x scale kept") {
@@ -4078,7 +4119,7 @@ mod tests {
             &mut set,
             &PinnedDomains {
                 x: Some(pin),
-                y: None,
+                ..PinnedDomains::default()
             },
         );
         match set.get(Channel::X).expect("x scale kept") {
@@ -4133,7 +4174,7 @@ mod tests {
             &mut set,
             &PinnedDomains {
                 x: Some(PinnedDomain::Linear(0.0, 100.0)),
-                y: None,
+                ..PinnedDomains::default()
             },
         );
         match set.get(Channel::X).expect("x scale kept") {
@@ -4142,6 +4183,103 @@ mod tests {
             }
             other => panic!("expected the band scale to survive, got {other:?}"),
         }
+    }
+
+    /// **Two numbers fix a linear, log or symlog axis and no other.** A date
+    /// axis's ends are instants and a band axis's are names, so the judge the
+    /// draw and the warning both ask says no for them, and a colour ramp is not a
+    /// positional axis at all.
+    #[test]
+    fn written_ends_apply_to_a_numeric_axis_and_to_no_other() {
+        let linear = |kind: &str| match kind {
+            "linear" => Scale::Linear {
+                domain_min: 1.0,
+                domain_max: 9.0,
+                range_start: 0.0,
+                range_end: 100.0,
+            },
+            "log" => Scale::Log {
+                domain_min: 1.0,
+                domain_max: 9.0,
+                range_start: 0.0,
+                range_end: 100.0,
+            },
+            _ => Scale::Symlog {
+                domain_min: 1.0,
+                domain_max: 9.0,
+                range_start: 0.0,
+                range_end: 100.0,
+            },
+        };
+        for kind in ["linear", "log", "symlog"] {
+            assert!(written_ends_apply(&linear(kind)), "{kind}");
+        }
+        let time = Scale::Time {
+            domain_min_us: 0,
+            domain_max_us: 1_000_000,
+            range_start: 0.0,
+            range_end: 100.0,
+        };
+        let band = Scale::Band {
+            categories: vec!["a".into(), "b".into()],
+            range_start: 0.0,
+            range_end: 100.0,
+            padding: 0.1,
+        };
+        assert!(!written_ends_apply(&time), "a date axis takes no numbers");
+        assert!(!written_ends_apply(&band), "a band axis takes no numbers");
+    }
+
+    /// **The ends a file wrote are laid over the pins a plot holds, axis by
+    /// axis.** An axis the file wrote two numbers for is pinned to them and
+    /// marked as written, over whatever domain was held for it; an axis it wrote
+    /// nothing, or a refused value, for keeps the pin it held and is not marked.
+    #[test]
+    fn written_ends_are_laid_over_the_held_pins_per_axis() {
+        use brightfield_spec::layout::DomainReading;
+        let held = PinnedDomains {
+            x: Some(PinnedDomain::Linear(10.0, 20.0)),
+            y: Some(PinnedDomain::Linear(30.0, 40.0)),
+            ..PinnedDomains::default()
+        };
+
+        let x_written = held.clone().with_written_ends(&DomainReadings {
+            x: DomainReading::Ends {
+                key: "xDomain",
+                lo: 0.0,
+                hi: 100.0,
+            },
+            y: DomainReading::Absent,
+        });
+        assert_eq!(x_written.x, Some(PinnedDomain::Linear(0.0, 100.0)));
+        assert!(x_written.x_written);
+        assert_eq!(
+            x_written.y,
+            Some(PinnedDomain::Linear(30.0, 40.0)),
+            "y keeps the pin it held"
+        );
+        assert!(!x_written.y_written);
+
+        let refused = held.clone().with_written_ends(&DomainReadings {
+            x: DomainReading::Refused {
+                key: "xDomain",
+                value: "[100, 0]".to_string(),
+            },
+            y: DomainReading::Absent,
+        });
+        assert_eq!(refused, held, "a refused value changes no pin");
+
+        let from_nothing = PinnedDomains::default().with_written_ends(&DomainReadings {
+            x: DomainReading::Absent,
+            y: DomainReading::Ends {
+                key: "yDomain",
+                lo: -1.0,
+                hi: 1.0,
+            },
+        });
+        assert_eq!(from_nothing.x, None);
+        assert_eq!(from_nothing.y, Some(PinnedDomain::Linear(-1.0, 1.0)));
+        assert!(from_nothing.y_written && !from_nothing.x_written);
     }
 
     /// **Nothing pinned, nothing written.** The default path through
