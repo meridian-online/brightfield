@@ -98,8 +98,10 @@ fn a_scheme_brightfield_draws_raises_no_warning() {
     );
 }
 
-/// **AC2.** A `$param`, and `null`, are deferrals: no warning, whether or not
-/// the param holds a name the renderer draws.
+/// **AC2.** A `$param`, and `null`, are deferrals at parse time: no warning,
+/// whether or not the param holds a name the renderer draws. A param that holds
+/// a name it does not draw is named when the plot is composed, which the shell's
+/// `colour_vocabulary_scheme_warning` tests hold.
 #[test]
 fn a_param_and_null_raise_no_warning() {
     for (params, attrs, what) in [

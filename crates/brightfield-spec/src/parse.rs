@@ -657,11 +657,14 @@ pub enum ParseWarning {
     /// [`crate::layout::read_colour_scheme`], [`crate::layout::read_colour_scale`],
     /// [`crate::layout::colour_pivot`], [`crate::layout::colour_reverse_switch`]
     /// and [`crate::layout::read_colour_steps`] are the judges, and for a value written as a literal the renderer draws
-    /// exactly what they accept. A `$param` is read when the plot is drawn, so a
-    /// param holding a value no judge accepts draws the default and raises
-    /// nothing: the one case where the warning and the drawing differ. A later
-    /// colour key a build cannot read is another value of this one warning rather
-    /// than a new variant.
+    /// exactly what they accept. A `$param` is read when the plot is drawn, so the
+    /// parser raises nothing for one; a `colorScheme` param that holds a value
+    /// [`crate::layout::read_colour_scheme`] refuses is named when the plot is
+    /// composed, by [`crate::layout::param_held_colour_warnings`], as this
+    /// warning. A param holding a value no other colour key's judge accepts
+    /// draws the default and raises nothing: the case where the warning and the
+    /// drawing still differ. A later colour key a build cannot read is another
+    /// value of this one warning rather than a new variant.
     UnreadColourKey {
         /// The offending attribute key.
         attribute: String,
