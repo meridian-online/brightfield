@@ -1240,7 +1240,7 @@ impl PinnedDomains {
     /// ends, over any domain held for it.
     ///
     /// Taken afresh each composition from [`brightfield_spec::layout::read_domains_in`]
-    /// and never stored with the pins a plot holds between compositions, so a
+    /// and not stored with the pins a plot holds between compositions, so a
     /// `$param` that holds the ends is read as it stands now. An axis the file
     /// wrote no ends for is left as it was.
     #[must_use]

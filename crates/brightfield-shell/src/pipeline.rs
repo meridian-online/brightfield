@@ -2734,6 +2734,9 @@ fn plot_axis(channel: Channel) -> PlotAxis {
 /// instruction and says nothing. A plot with a projection says each key once,
 /// as changing nothing on a plot with a map projection, and says nothing of the
 /// kind of axis the key landed on, since there is none.
+// Each argument is resolved elsewhere from the plot and read here once, so a
+// struct would be a name for the argument list rather than for a thing.
+#[allow(clippy::too_many_arguments)]
 fn inert_axis_instructions(
     plot: &str,
     node: &PlotNode,
@@ -2782,9 +2785,9 @@ fn inert_axis_instructions(
             .and_then(|scale| Some((scale, axis_scale_word(scale)?)))
         {
             // Two numbers written as this axis's ends: they fix a linear, log
-            // or symlog axis, and on any other kind they change nothing, which
+            // or symlog axis, and on any other kind they have no effect, which
             // is named as `xZero` is on the same axis. Where they do fix the
-            // ends, `xZero` and `xNice` change nothing beside them.
+            // ends, `xZero` and `xNice` have no effect beside them.
             let ends_fixed = match written.axis(plot_axis(channel)) {
                 DomainReading::Ends { key, .. } => {
                     let applies = written_ends_apply(scale);

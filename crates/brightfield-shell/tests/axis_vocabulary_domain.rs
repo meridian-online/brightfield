@@ -1,14 +1,14 @@
 //! **A spec that sets `xDomain`, `yDomain` or `xyDomain` to two numbers fixes the
 //! ends of the axis it names.**
 //!
-//! `Fixed` was the only value read, so a plot drew each axis from its rows'
+//! `Fixed` was the one value read, so a plot drew each axis from its rows'
 //! lowest value to their highest whatever ends the file wrote, and an analyst who
 //! wanted every chart in a report on one axis, 0 to 100, could not have it.
 //!
 //! Assertions read two things, as the zero and round-ends file beside this one
 //! does. The domain of the scale the plot was composed against says what the axis
 //! ends are, and the path stream of the painted scene says the marks were drawn
-//! against that domain: a row past an end paints nothing inside the data area,
+//! against that domain: a row past an end puts no mark inside the data area,
 //! and a row inside one is where the fixed ends put it. What the page says is
 //! read from `Composed::diagnostics`, which is what the warning banner draws.
 //!
@@ -314,7 +314,11 @@ fn x_domain_of_two_numbers_fixes_the_x_axis_and_a_row_past_its_end_draws_nothing
         y_domain(&unset),
         "the key names x, so y keeps the rows' own ends"
     );
-    assert!(said(&asked).is_empty(), "two numbers say nothing: {:?}", said(&asked));
+    assert!(
+        said(&asked).is_empty(),
+        "two numbers say nothing: {:?}",
+        said(&asked)
+    );
 
     // A dot at 50 is painted where 0 to 100 puts it, and not where 4 to 150 does.
     let near = (
@@ -332,7 +336,7 @@ fn x_domain_of_two_numbers_fixes_the_x_axis_and_a_row_past_its_end_draws_nothing
         "fixture check: the rows' own ends put the dot somewhere else"
     );
 
-    // The row at 150 is past the end: nothing it paints is inside the data area,
+    // The row at 150 is past the end: no mark it paints is inside the data area,
     // so the plot paints inside it what the same rows without that row do.
     let within = compose_str(&DOTS_WITHIN.replace("ATTRS", "xDomain: [0, 100]"));
     assert_eq!(
@@ -395,7 +399,11 @@ fn fixed_and_no_key_draw_as_they_did_and_xy_domain_fixed_is_still_named() {
     let fixed = dots("xDomain: Fixed\nyDomain: Fixed");
     assert_eq!(x_domain(&fixed), (4.0, 150.0));
     assert_eq!(y_domain(&fixed), (3.0, 97.0));
-    assert_eq!(points(&fixed), points(&unset), "Fixed changes what is painted");
+    assert_eq!(
+        points(&fixed),
+        points(&unset),
+        "Fixed changes what is painted"
+    );
     assert!(said(&fixed).is_empty(), "{:?}", said(&fixed));
     assert!(said(&unset).is_empty(), "{:?}", said(&unset));
 
@@ -463,7 +471,15 @@ fn a_pair_of_ends_holds_through_a_brush() {
 fn a_domain_that_is_not_two_numbers_low_first_draws_without_the_key_and_is_named() {
     let unset = dots("");
     for key in ["xDomain", "yDomain", "xyDomain"] {
-        for value in ["[100, 0]", "[0, \"high\"]", "[0]", "[5, 5]", "[0, 50, 100]", "wide", "50"] {
+        for value in [
+            "[100, 0]",
+            "[0, \"high\"]",
+            "[0]",
+            "[5, 5]",
+            "[0, 50, 100]",
+            "wide",
+            "50",
+        ] {
             let asked = dots(&format!("{key}: {value}"));
             assert_eq!(
                 points(&asked),
@@ -489,10 +505,10 @@ fn a_domain_that_is_not_two_numbers_low_first_draws_without_the_key_and_is_named
 }
 
 /// **A `$param` holding two numbers draws them. A `$param` holding a bad literal
-/// gets that literal's warning. A `$param` the file never declares, or one that
-/// holds a selection, draws as if the key were absent and raises none.**
+/// gets that literal's warning. A `$param` the file does not declare, or one that
+/// holds a selection, draws as if the key were absent and raises no warning.**
 ///
-/// The page also says a param read only by a plot attribute "has no
+/// The page also says a param read by a plot attribute alone "has no
 /// subscribers", as it does for `colorDomain: $param`: the subscriber graph
 /// counts marks and legends and not plot attributes. That line is not this
 /// key's, so the arms read the lines that name a domain.
@@ -509,7 +525,11 @@ fn a_param_is_read_for_the_value_it_holds() {
     );
 
     let bad = dots_with_params("params:\n  ends: [100, 0]", "xDomain: $ends");
-    assert_eq!(points(&bad), points(&unset), "a param with bad ends draws them");
+    assert_eq!(
+        points(&bad),
+        points(&unset),
+        "a param with bad ends draws them"
+    );
     let lines: Vec<String> = said(&bad)
         .into_iter()
         .filter(|line| line.contains("Domain"))
@@ -544,7 +564,7 @@ fn a_param_is_read_for_the_value_it_holds() {
 // ---------------------------------------------------------------------------
 
 /// **Two numbers on a date axis, or an axis of names, are named by the page's
-/// warning as changing nothing on that axis, and the plot draws as it does
+/// warning as having no effect on that axis, and the plot draws as it does
 /// without the key.** The axis the key does not land on is unaffected.
 #[test]
 fn two_numbers_on_a_date_or_a_name_axis_are_named_as_changing_nothing() {
@@ -591,24 +611,56 @@ fn two_numbers_on_a_date_or_a_name_axis_are_named_as_changing_nothing() {
 // ---------------------------------------------------------------------------
 
 /// **`xNice` or `xZero` beside an `xDomain` of two numbers leaves the ends as
-/// written, and the page's warning names the key as changing nothing on an axis
+/// written, and the page's warning names the key as having no effect on an axis
 /// with fixed ends.** The same keys beside no domain move the ends, and beside a
 /// domain that was refused they still do.
 #[test]
 fn nice_and_zero_beside_written_ends_leave_the_ends_and_are_named() {
     // Without a domain the keys act on the rows' own ends: x runs 4 to 150, so
     // nice rounds it to 0 to 160 and zero starts it at 0; y runs 3 to 97.
-    assert_eq!(x_domain(&dots("xNice: true")), (0.0, 160.0), "fixture check");
-    assert_eq!(x_domain(&dots("xZero: true")), (0.0, 150.0), "fixture check");
-    assert_eq!(y_domain(&dots("yNice: true")), (0.0, 100.0), "fixture check");
+    assert_eq!(
+        x_domain(&dots("xNice: true")),
+        (0.0, 160.0),
+        "fixture check"
+    );
+    assert_eq!(
+        x_domain(&dots("xZero: true")),
+        (0.0, 150.0),
+        "fixture check"
+    );
+    assert_eq!(
+        y_domain(&dots("yNice: true")),
+        (0.0, 100.0),
+        "fixture check"
+    );
     assert_eq!(y_domain(&dots("yZero: true")), (0.0, 97.0), "fixture check");
 
     for (attrs, key, x, y) in [
         ("xDomain: [3, 97]\nxNice: true", "xNice", (3.0, 97.0), None),
-        ("xDomain: [10, 90]\nxZero: true", "xZero", (10.0, 90.0), None),
-        ("yDomain: [3, 97]\nyNice: true", "yNice", (4.0, 150.0), Some((3.0, 97.0))),
-        ("yDomain: [10, 90]\nyZero: true", "yZero", (4.0, 150.0), Some((10.0, 90.0))),
-        ("xyDomain: [3, 97]\nxNice: true", "xNice", (3.0, 97.0), Some((3.0, 97.0))),
+        (
+            "xDomain: [10, 90]\nxZero: true",
+            "xZero",
+            (10.0, 90.0),
+            None,
+        ),
+        (
+            "yDomain: [3, 97]\nyNice: true",
+            "yNice",
+            (4.0, 150.0),
+            Some((3.0, 97.0)),
+        ),
+        (
+            "yDomain: [10, 90]\nyZero: true",
+            "yZero",
+            (4.0, 150.0),
+            Some((10.0, 90.0)),
+        ),
+        (
+            "xyDomain: [3, 97]\nxNice: true",
+            "xNice",
+            (3.0, 97.0),
+            Some((3.0, 97.0)),
+        ),
     ] {
         let asked = dots(attrs);
         assert_eq!(x_domain(&asked), x, "`{attrs}`: the x ends moved");
@@ -632,10 +684,14 @@ fn nice_and_zero_beside_written_ends_leave_the_ends_and_are_named() {
     assert_eq!(y_domain(&other), (0.0, 100.0), "yNice acts on y");
     assert!(said(&other).is_empty(), "{:?}", said(&other));
 
-    // A refused domain fixes nothing, so the key beside it still acts and is not
-    // named as changing nothing.
+    // A refused domain fixes no ends, so the key beside it still acts and is not
+    // named as having no effect.
     let refused = dots("xDomain: [97, 3]\nxNice: true");
-    assert_eq!(x_domain(&refused), (0.0, 160.0), "xNice acts when the pair is refused");
+    assert_eq!(
+        x_domain(&refused),
+        (0.0, 160.0),
+        "xNice acts when the pair is refused"
+    );
     let lines = said(&refused);
     assert_eq!(lines.len(), 1, "only the refused pair is named: {lines:?}");
     assert!(lines[0].contains("`xDomain: [97, 3]`"), "{:?}", lines[0]);

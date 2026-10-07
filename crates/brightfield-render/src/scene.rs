@@ -570,7 +570,7 @@ pub fn build_multi_mark_scene_with_domains(
 /// round ends, on the domain the scale holds whether it inferred that domain or
 /// the spec fixed it. An axis whose ends the file wrote as two numbers is the
 /// exception: those ends stay as written, and its request is dropped
-/// ([`ends_left_to_written_pins`]). A pin is captured from the scales this function returns,
+/// (`ends_left_to_written_pins`, which is private). A pin is captured from the scales this function returns,
 /// so a fixed domain is held with its ends already carried, and applying the
 /// same ends to it again leaves it as it is.
 ///

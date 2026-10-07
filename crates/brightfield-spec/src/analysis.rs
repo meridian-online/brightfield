@@ -1411,7 +1411,7 @@ pub fn check_undrawn_scales(spec: &Spec) -> Vec<ParseWarning> {
 /// taken from — over each plot as built, so a `$param` is read through its
 /// declared value and a `plotDefaults:` domain is named at each plot that
 /// inherits it. A key that fixes ends, `Fixed`, a `null` and a `$param` that
-/// holds no value say nothing. `xyDomain` is named once for a plot, however
+/// holds no value raise no warning. `xyDomain` is named once for a plot, however
 /// many axes it landed on.
 #[must_use]
 pub fn check_unread_axis_ends(spec: &Spec) -> Vec<ParseWarning> {

@@ -821,7 +821,7 @@ pub fn resolve_fixed_domains(plot: &PlotNode) -> FixedDomains {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum DomainReading {
     /// No ends written: no key, a `null`, Mosaic's `Fixed` (which
-    /// [`resolve_fixed_domains`] reads), or a `$param` the file never declares
+    /// [`resolve_fixed_domains`] reads), or a `$param` the file does not declare
     /// or that holds a selection. The axis draws the domain its rows give.
     #[default]
     Absent,
@@ -920,7 +920,7 @@ fn domain_value_text(value: &SpecValue) -> String {
 ///
 /// An axis's own key shadows `xyDomain`: a file that writes `yDomain: Fixed`
 /// beside `xyDomain: [0, 1]` fixes y to the data's own domain and x to 0 to 1.
-/// A `$param` the file never declares, or one that holds a selection, holds no
+/// A `$param` the file does not declare, or one that holds a selection, holds no
 /// value, so the key reads as absent and `xyDomain` stands for that axis.
 /// `xyDomain: Fixed` reads as absent: `deviations.yaml` DEV-0005 records it as
 /// not read.
@@ -4473,7 +4473,7 @@ xDomain: [0, 100]
     }
 
     /// **Each axis is read on its own key, and `xyDomain` stands for an axis
-    /// whose own key says nothing.** An axis's own key wins, even when what it
+    /// whose own key writes no ends.** An axis's own key wins, even when what it
     /// says is `Fixed`, which is no ends: `yDomain: Fixed` beside
     /// `xyDomain: [0, 1]` leaves y to the rows.
     #[test]
@@ -4507,8 +4507,8 @@ xDomain: [0, 100]
 
     /// **`Fixed`, a `null`, and a `$param` with no value to read are no ends.**
     /// `Fixed` is [`resolve_fixed_domains`]'s, a param the file does not declare
-    /// or one that holds a selection has nothing to say, and none of them is
-    /// refused: a refusal is a warning.
+    /// or one that holds a selection writes no ends, and each of them reads as
+    /// absent and not as refused: a refusal is a warning.
     #[test]
     fn fixed_null_and_a_param_with_no_value_are_no_ends() {
         let mut params: IndexMap<String, ParamNode> = IndexMap::new();
@@ -4563,8 +4563,9 @@ xDomain: [0, 100]
 
     /// **A value that is not two finite numbers low first is refused, with the
     /// key and the value as the file wrote it.** High first, equal ends, a
-    /// string end, one end, three ends, an infinite end, a bare number and any
-    /// word but `Fixed`: none is read as a reversal, half a pair or a pin.
+    /// string end, one end, three ends, an infinite end, a bare number and a
+    /// word that is not `Fixed`: each is refused and not read as a reversal,
+    /// half a pair or a pin.
     #[test]
     fn a_value_that_is_not_two_numbers_low_first_is_refused_with_its_text() {
         let int = SpecValue::Integer;
