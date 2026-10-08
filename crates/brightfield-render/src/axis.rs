@@ -293,6 +293,32 @@ pub fn compute_ticks_formatted(
     }
 }
 
+/// **The text of the largest tick the axis `scale` draws under `format`**: the
+/// sample a settings row shows beside the format it names, so the analyst reads
+/// what the axis prints before keeping it.
+///
+/// It is the tick [`compute_ticks_formatted`] returns with the largest value, so
+/// it is the axis's own top tick (a number axis with a domain to 5,565 draws its
+/// top tick at 5,000, and that is what this reads, not the domain's end), and a
+/// target count or a format the plot changes moves it as it moves the axis.
+/// `None` where the axis draws no text a number or date format sets (an axis of
+/// names, a colour ramp), where `format` is a kind the axis drops
+/// ([`tick_format_crosses_axis`]), and where the axis has no ticks.
+#[must_use]
+pub fn top_tick_text(
+    scale: &Scale,
+    target_count: usize,
+    format: Option<&AxisFormat>,
+) -> Option<String> {
+    if !tick_format_applies(scale) || format.is_some_and(|f| tick_format_crosses_axis(scale, f)) {
+        return None;
+    }
+    compute_ticks_formatted(scale, target_count, format)
+        .into_iter()
+        .max_by(|a, b| a.value.total_cmp(&b.value))
+        .map(|tick| tick.label)
+}
+
 /// Turn tick VALUES into ticks, placing each one through the scale itself so
 /// the label and the bar it stands under cannot be positioned by two different
 /// rules. `text` is the format the plot asked for, if it asked.
@@ -1070,6 +1096,51 @@ mod tests {
             range_start: 40.0,
             range_end: 600.0,
         }
+    }
+
+    /// **The top tick's text is the text of the largest tick the axis draws, not
+    /// of the domain's end**: a domain to 5,565 stops its ticks at 5,000, and the
+    /// sample reads that tick under the format, with no format, and reads nothing
+    /// for a format of the wrong kind or an axis of names.
+    #[test]
+    fn the_top_tick_text_is_the_largest_drawn_tick_under_the_format() {
+        let scale = linear(0.0, 5565.0);
+        let number = |s: &str| AxisFormat::Number(NumberFormat::parse(s).expect("a number format"));
+        let drawn = labels_under(&scale, Some("%"));
+        assert_eq!(
+            top_tick_text(&scale, 5, Some(&number("%"))).as_deref(),
+            drawn.last().map(String::as_str),
+            "the sample is the last tick the axis draws under percent"
+        );
+        assert_eq!(
+            top_tick_text(&scale, 5, Some(&number(",f"))).as_deref(),
+            Some("5,000"),
+            "the top tick is 5,000, below the domain's end of 5,565"
+        );
+        assert_eq!(
+            top_tick_text(&scale, 5, None).as_deref(),
+            compute_ticks_formatted(&scale, 5, None)
+                .last()
+                .map(|t| t.label.as_str()),
+            "with no format the sample is the axis's own text"
+        );
+        let date = AxisFormat::Date(DateFormat::parse("%b").expect("a date format"));
+        assert_eq!(
+            top_tick_text(&scale, 5, Some(&date)),
+            None,
+            "a date format on a number axis is dropped"
+        );
+        let names = Scale::Band {
+            categories: vec!["a".into(), "b".into()],
+            range_start: 0.0,
+            range_end: 100.0,
+            padding: 0.1,
+        };
+        assert_eq!(
+            top_tick_text(&names, 5, Some(&number(",f"))),
+            None,
+            "names carry no number text"
+        );
     }
 
     /// AC2: with no precision named, the precision follows the tick step. An
