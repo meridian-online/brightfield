@@ -820,7 +820,7 @@ pub fn colour_legend_covers(spec: &Spec, plot_path: &str) -> bool {
 /// holds the plot and the legends, and each legend's index in it, in order.
 /// `None` when no colour legend is drawn under the plot.
 ///
-/// `below_legends` reads a legend as under a plot only when the two are
+/// `below_legends` reads a legend as under a plot when the two are
 /// entries of one `vconcat` and the legend is the later, so the plot's parent
 /// is the legends' too, and taking one out leaves the plot's index as it was.
 fn legends_below(spec: &Spec, plot_path: &str) -> Option<(String, Vec<usize>)> {
