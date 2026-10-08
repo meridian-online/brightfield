@@ -485,6 +485,89 @@ fn the_sample_is_the_top_drawn_tick_under_the_preset_and_not_the_columns_maximum
     );
 }
 
+/// Draw `list` once, as a rail 240 wide, and hand back the format row as it was
+/// drawn: where its chips, its sample and its field went.
+fn drawn_format_row(mut list: ColumnList) -> brightfield_shell::shelf::SettingRowDrawn {
+    let drawn = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let slot = drawn.clone();
+    let size = egui::vec2(WIDTH, 420.0);
+    let mut harness = Harness::builder()
+        .with_size(size)
+        .with_pixels_per_point(2.0)
+        .wgpu()
+        .build_ui(move |ui| {
+            design::apply(ui.ctx(), Mode::Light);
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                |ui| {
+                    *slot.borrow_mut() = Some(list.show(ui, Mode::Light));
+                },
+            );
+        });
+    harness.run();
+    let frame = drawn.borrow_mut().take().expect("the list was drawn");
+    frame
+        .settings
+        .into_iter()
+        .find(|row| row.name == FORMAT_ROW)
+        .expect("the format row was drawn")
+}
+
+/// **AC1, AC2.** The row's chips, sample and field in a drawn frame: a preset's
+/// chips and sample stand together; the sample is drawn whole or not at all, never
+/// clipped; the open field takes the chips away, though the row under it reads a
+/// preset that steps; and a custom value draws no chips, so its sample has the room.
+#[test]
+fn the_row_draws_its_sample_whole_and_gives_the_chips_up_to_a_field_and_to_custom() {
+    let drawn = drawn_to(35_682.0);
+
+    let short = drawn_format_row(list_on_format_drawn("xTickFormat: '~s'", &drawn));
+    assert!(
+        short.chips.is_some(),
+        "a preset draws the chips on the cursor row"
+    );
+    let sample = short.sample_rect.expect("the sample fits beside short");
+    assert!(
+        sample.left() > short.value_rect.right()
+            && sample.right() <= short.chips.expect("chips")[0].left(),
+        "the sample stands between the value and the chips"
+    );
+
+    let custom = drawn_format_row(list_on_format_drawn("xTickFormat: '$,.2f'", &drawn));
+    assert!(custom.chips.is_none(), "custom draws no chips");
+    let sample = custom
+        .sample_rect
+        .expect("custom's sample has the chips' room");
+    assert!(
+        sample.right() <= custom.marker.left(),
+        "the sample stays clear of the marker"
+    );
+
+    // A field opened on a preset by `l` from currency stands over a row that steps.
+    let mut currency = list_on_format_drawn("xTickFormat: '$,f'", &drawn);
+    currency.feed_events(&typed(egui::Key::L, "l"));
+    assert!(currency.field().is_some());
+    let open = drawn_format_row(currency);
+    assert!(open.field.is_some(), "the field was drawn");
+    assert!(
+        open.chips.is_none(),
+        "an open field has the keys, so the row draws no chips"
+    );
+    assert!(
+        open.sample_rect.is_none(),
+        "an open field draws no sample beside it"
+    );
+
+    // Where the sample does not fit whole beside the chips, none is drawn.
+    let narrow = drawn_to(35_682_000_000.0);
+    let long = drawn_format_row(list_on_format_drawn("xTickFormat: ',f'", &narrow));
+    assert!(long.chips.is_some());
+    assert!(
+        long.sample_rect.is_none(),
+        "a sample too wide for the room beside the chips is left out, not clipped"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The window.
 // ---------------------------------------------------------------------------
