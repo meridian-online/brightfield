@@ -88,7 +88,7 @@ use crate::interval_drag::IntervalDrags;
 use crate::navigation::{AxisLock, NavGesture, NavOutcome};
 use crate::one_step::ColumnFacts;
 use crate::pipeline::{Composed, IntervalControl, LiveDashboard};
-use crate::shelf::{Binding, ShelfChannels};
+use crate::shelf::{Binding, RowEdit, ShelfChannels};
 use crate::watch::FileWatcher;
 use brightfield_spec::layout::Rect as SpecRect;
 
@@ -2106,6 +2106,110 @@ impl ChartDoc {
         );
         self.pending_edits.extend(preview.edits);
         true
+    }
+
+    /// **Write one settings row of the plot's `channel` axis and draw the chart
+    /// at once**: a step of `h` `l`, a click on the row's value, a value typed
+    /// into a row, or the `⌫` that puts it back to auto.
+    ///
+    /// The write is the shelf's edit path ([`crate::shelf_edit::put_setting`]):
+    /// the value goes in as the type the key takes (a string, a switch, a
+    /// number), a value equal to brightfield's own comes out as the key taken
+    /// out, and the edit is applied as a fresh load applies it, so a title needs
+    /// no writer of its own. The edit is kept at once, joins the edits Save
+    /// writes, and is one `u` takes back; unlike a tile's switch it does not
+    /// seal the shelf's undo, so a `u` steps over it to the edits before it.
+    /// Returns whether the picture changed.
+    pub fn set_axis_row(&mut self, plot: usize, edit: &RowEdit) -> bool {
+        use crate::shelf::SettingValue;
+        use crate::shelf_edit::SettingWrite;
+        self.drop_shelf_preview();
+        self.return_to_now();
+        let Some((key, default)) =
+            crate::shelf::row_key(edit.channel, edit.row).zip(crate::shelf::row_default(edit.row))
+        else {
+            return false;
+        };
+        let Some(handle) = self.composed.plots.get(plot) else {
+            return false;
+        };
+        let path = ComponentPath(handle.path.clone());
+        let Some(live) = self.live.as_ref() else {
+            return false;
+        };
+        let before = live.spec().clone();
+        let write = match &edit.value {
+            SettingValue::Word(word) => SettingWrite::Value(SpecValue::String(word.clone())),
+            SettingValue::Switch(on) => SettingWrite::Value(SpecValue::Bool(*on)),
+            SettingValue::Count(n) => {
+                SettingWrite::Value(SpecValue::Integer(i64::try_from(*n).unwrap_or(i64::MAX)))
+            }
+            SettingValue::Auto => SettingWrite::Auto,
+        };
+        let mut spec = before.clone();
+        let applied = match crate::shelf_edit::put_setting(&mut spec, &path, key, &default, &write)
+        {
+            Ok(Some(applied)) => applied,
+            Ok(None) => return false,
+            Err(refusal) => {
+                self.interaction_fault = Some(ChartFault {
+                    title: SHELF_REFUSED.to_string(),
+                    detail: refusal.to_string(),
+                });
+                return false;
+            }
+        };
+        let was = Self::setting_text(&before, &path, edit.channel, edit.row);
+        let now = Self::setting_text(&spec, &path, edit.channel, edit.row);
+        match self.rebuild(spec) {
+            Ok((live, composed)) => {
+                self.live = Some(live);
+                self.composed = composed;
+                self.shelf_undo.push(
+                    before,
+                    KeptShelfEdit {
+                        words: format!(
+                            "{} {}: {was} \u{2192} {now}",
+                            edit.channel.word(),
+                            edit.row
+                        ),
+                        added: 1,
+                        unstep: None,
+                    },
+                );
+                self.pending_edits.push(applied);
+                self.canvas.invalidate();
+                true
+            }
+            Err(e) => {
+                self.interaction_fault = Some(ChartFault {
+                    title: ENGINE_REFUSED.to_string(),
+                    detail: e,
+                });
+                false
+            }
+        }
+    }
+
+    /// What `channel`'s settings row `row` reads on the plot at `path` in `spec`:
+    /// the words the shelf names an edit by.
+    fn setting_text(
+        spec: &brightfield_spec::ast::Spec,
+        path: &ComponentPath,
+        channel: ShelfChannel,
+        row: &str,
+    ) -> String {
+        edit::plot_at_path(spec, &path.0)
+            .and_then(|plot| {
+                let channels = ShelfChannels::of_plot(plot)?;
+                let settings = crate::shelf::ChannelSettings::of_plot(spec, plot, &channels);
+                settings
+                    .rows(channel)
+                    .iter()
+                    .find(|r| r.name == row)
+                    .map(|r| r.value.clone())
+            })
+            .unwrap_or_else(|| crate::shelf::AUTO.to_string())
     }
 
     /// **The shelf's words for putting `column` on `channel`**, from the spec

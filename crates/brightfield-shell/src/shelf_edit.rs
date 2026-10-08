@@ -196,6 +196,93 @@ pub fn put_column(
     Ok(edits)
 }
 
+/// What a settings row is written to: the analyst's value, or back to auto.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SettingWrite {
+    /// This value, typed as the key takes it: a string for a scale, a number for
+    /// a count of ticks, a switch for grid, zero and reverse.
+    Value(SpecValue),
+    /// Take the key out, so the plot draws brightfield's own.
+    Auto,
+}
+
+/// The key a pair of axis keys share, which stands in for the axis's own where
+/// the file names the pair once: `grid` sets `xGrid` and `yGrid` both.
+fn shared_key(key: &str) -> Option<&'static str> {
+    matches!(key, "xGrid" | "yGrid").then_some("grid")
+}
+
+/// **Write one settings row of the plot at `plot`**, editing `spec` in place,
+/// and return the [`ChartEdit`] applied, or `None` where the spec already reads
+/// as asked.
+///
+/// `key` is the plot attribute the row is written under and `default` is
+/// brightfield's own value for it. A value is the analyst's when it differs from
+/// `default`, so a value equal to it is written as the key taken out, and the
+/// file names nothing it does not need. Three cases write the default instead,
+/// as a value on the plot, because taking the key out would not bring the plot
+/// back to it:
+///
+/// - the file's `plotDefaults:` names the key, so a removal has no line of the
+///   plot's own to take out and the plot would read the default's value again;
+///   the plot's own value wins;
+/// - the value asked for is `default` and a key for both axes (`grid`) names a
+///   value that differs, which would stand once the axis's own key is gone.
+///
+/// [`SettingWrite::Auto`] is the `⌫` and takes the axis's own key out and
+/// leaves a key for both axes standing
+/// (`a_default_is_the_key_taken_out_and_backspace_leaves_the_both_axes_key_standing`):
+/// a plot that then reads that key's value reads it as set.
+///
+/// The edit is applied through [`edit::apply_for_fresh_load`], so a title is not
+/// refused for being launch-fixed chrome, and the caller loads the page again.
+///
+/// # Errors
+///
+/// [`ShelfRefusal::Edit`] when the plot path names no plot. `spec` is left as it
+/// was.
+pub fn put_setting(
+    spec: &mut Spec,
+    plot: &ComponentPath,
+    key: &str,
+    default: &SpecValue,
+    write: &SettingWrite,
+) -> Result<Option<ChartEdit>, ShelfRefusal> {
+    let target =
+        plot_at_path(spec, &plot.0).ok_or(ShelfRefusal::Edit(RefuseReason::PlotNotFound))?;
+    let own = target.attributes.get(key);
+    let inherited = spec.plot_defaults.0.contains_key(key);
+    let shared_differs = shared_key(key)
+        .and_then(|shared| target.attributes.get(shared))
+        .is_some_and(|value| value != default);
+    let set = |value: SpecValue| ChartEdit::SetPlotAttribute {
+        plot: plot.clone(),
+        key: key.to_string(),
+        value,
+    };
+    let edit = match write {
+        SettingWrite::Value(value) if value != default => {
+            (own != Some(value)).then(|| set(value.clone()))
+        }
+        SettingWrite::Value(_) if inherited || shared_differs => {
+            (own != Some(default)).then(|| set(default.clone()))
+        }
+        SettingWrite::Auto if inherited => (own != Some(default)).then(|| set(default.clone())),
+        SettingWrite::Value(_) | SettingWrite::Auto => {
+            own.is_some().then(|| ChartEdit::RemovePlotAttribute {
+                plot: plot.clone(),
+                key: key.to_string(),
+            })
+        }
+    };
+    if let Some(edit) = &edit {
+        let mut edited = spec.clone();
+        edit::apply_for_fresh_load(&mut edited, edit).map_err(ShelfRefusal::Edit)?;
+        *spec = edited;
+    }
+    Ok(edit)
+}
+
 /// **Put `column` on the colour of the plot at `plot`**, editing `spec` in
 /// place, and return the [`ChartEdit`]s applied, in the order they were
 /// applied.

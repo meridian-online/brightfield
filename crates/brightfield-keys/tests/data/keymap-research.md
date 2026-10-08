@@ -106,8 +106,7 @@ An open list takes letters as verbs (lazygit, Linear, Gmail), and `/` gives the 
 axis's list between its columns and its settings; on colour's and the mark's list it leaves the columns as they are.
 Motion and back-out are **View**-tier; keeping a choice sets a channel, so it is **Data**-tier, as
 `set-channel` is. `h` and `l` are the cell beside as drawn, left and right, and stop at the
-mark's cell rather than popping out, because Esc is the way out. On a settings row they do nothing until a row
-can be set, and the registry's help for each says so.
+mark's cell rather than popping out, because Esc is the way out. On a settings row they step the row's value instead of naming a cell: a scale from linear to log to symlog and a switch the other way, drawn at once, and the registry's help for each says so. `⌫` puts the row back to auto (`set-shelf-setting-to-auto`).
 
 | longname | key(s) | freq / mnem / conv | motor note |
 |----------|--------|--------------------|------------|
@@ -121,6 +120,7 @@ can be set, and the registry's help for each says so.
 | `move-shelf-right` | `l` · `right` | 5 / 4 / 5 | home-row `l` = right (vim), as drawn; the Protocol panel's `l` is likewise the node drawn to the right |
 | `narrow-shelf-list` | `/` | 4 / 4 / 5 | `/` = search/narrow (vim, less, lazygit); the query takes letters as text until Esc; the Workspace's `/` is `focus-jump` |
 | `turn-shelf-list` | `tab` | 4 / 4 / 4 | `Tab` = the next tab of the open list (browser tabs, IDE panes, lazygit's panels); the Shelf context keeps it apart from the Workspace's `focus-next-sibling`, and the list's tab strip prints the word it turns to |
+| `set-shelf-setting-to-auto` | `backspace` | 3 / 4 / 4 | backspace = take the value back out; the query takes it as an edit while it has the keys |
 | `keep-shelf-choice` | `enter` | 5 / 4 / 5 | enter = keep the row under the cursor, in the list and in the query (telescope, fzf); a Data verb |
 | `back-out-of-shelf` | `escape` | 5 / 4 / 5 | esc = back out one level (the Esc ladder): a value not kept, the query, the list, the shelf |
 

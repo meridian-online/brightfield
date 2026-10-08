@@ -832,7 +832,7 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::Navigation,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "On the band and on the columns, the cell to the left, stopping at the mark's cell; on a settings row it does nothing until a row can be set",
+            help: "On the band and on the columns, the cell to the left, stopping at the mark's cell; on a settings row, step its value back and draw the chart at once: scale from symlog to log to linear, a switch the other way, a row that does not apply left as it is",
             scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row h = left (vim), as drawn: mark, x, y, colour run left to right; stops at the mark rather than popping out, because Esc is the way out" }),
         },
         VerbEntry {
@@ -843,8 +843,19 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::Navigation,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "On the band and on the columns, the cell to the right, stopping at colour; on a settings row it does nothing until a row can be set",
+            help: "On the band and on the columns, the cell to the right, stopping at colour; on a settings row, step its value forward and draw the chart at once: scale from linear to log to symlog, a switch the other way, a row that does not apply left as it is",
             scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row l = right (vim), as drawn: mark, x, y, colour run left to right; the Protocol panel's l is likewise the node drawn to the right" }),
+        },
+        VerbEntry {
+            longname: "set-shelf-setting-to-auto",
+            tier: CommandTier::Data,
+            binding_specs: vec![shelf("backspace")],
+            scope_applicability: vec![View],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Put the settings row under the cursor back to auto: its key comes out of the file and the chart draws brightfield's own",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 4, motor_note: "backspace = take the value back out (the key that deletes in every text field); the query takes it as an edit while it has the keys, so the row answers only when the rows hold them" }),
         },
         VerbEntry {
             longname: "narrow-shelf-list",
@@ -1405,6 +1416,7 @@ mod tests {
             "move-shelf-prev-row",
             "move-shelf-left",
             "move-shelf-right",
+            "set-shelf-setting-to-auto",
             "narrow-shelf-list",
             "turn-shelf-list",
             "keep-shelf-choice",
@@ -1462,6 +1474,7 @@ mod tests {
             "put-column-on-y",
             "put-column-on-colour",
             "keep-shelf-choice",
+            "set-shelf-setting-to-auto",
             "step-back-to-version",
         ];
         expected.sort_unstable();
@@ -1602,6 +1615,8 @@ mod tests {
             ("left", "move-shelf-left"),
             ("l", "move-shelf-right"),
             ("right", "move-shelf-right"),
+            // A settings row put back to auto.
+            ("backspace", "set-shelf-setting-to-auto"),
             // Narrowing, keeping, and backing out one level.
             ("/", "narrow-shelf-list"),
             // The list turned: columns, settings.
