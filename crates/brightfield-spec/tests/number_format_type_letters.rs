@@ -44,7 +44,10 @@ fn a_specifier_with_no_type_names_none_and_is_not_refused_for_it() {
     for specifier in ["", ",", ".2", "+.1", "$,.2", "~"] {
         let parsed = NumberFormat::parse(specifier)
             .unwrap_or_else(|| panic!("the reader refused `{specifier}`"));
-        assert!(parsed.names_its_type(), "`{specifier}` has no type to refuse");
+        assert!(
+            parsed.names_its_type(),
+            "`{specifier}` has no type to refuse"
+        );
     }
 }
 

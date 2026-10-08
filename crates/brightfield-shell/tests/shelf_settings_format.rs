@@ -395,9 +395,8 @@ fn the_field_refuses_what_the_reader_takes_exactly_at_a_type_no_format_names() {
             NAMED.contains(letter),
             "the field over `{written}`: {kept:?}"
         );
-        assert_eq!(
+        assert!(
             NumberFormat::parse(&written).is_some(),
-            true,
             "the reader takes `{written}`"
         );
         let row = format_row(&format!("xTickFormat: '{written}'"), &ScaleSet::new());
