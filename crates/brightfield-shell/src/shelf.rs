@@ -64,8 +64,8 @@ use brightfield_render::scene::{axis_ends_apply, axis_keys_apply, axis_reverse_a
 use brightfield_spec::ast::{Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
 use brightfield_spec::layout::{
     read_tick_format, resolve_axis_ends, resolve_axis_reverse, resolve_axis_titles,
-    resolve_grid_lines, resolve_plot_scales_in, resolve_tick_counts, AxisTitle, ScaleType,
-    TickFormatReading, DEFAULT_TICK_COUNT,
+    resolve_grid_lines, resolve_plot_scales_in, resolve_tick_counts, tick_count_target, AxisTitle,
+    ScaleType, TickFormatReading, DEFAULT_TICK_COUNT, MAX_TICK_COUNT,
 };
 use brightfield_spec::vocab::is_colour_literal;
 use brightfield_workbench::channel::{self, ShelfChannel, BAND_HEIGHT};
@@ -744,6 +744,46 @@ const REVERSE_SAYS: &str = "Whether the axis runs from high to low, which auto r
 /// default.
 const TITLE_SAYS: &str = "The words along the axis, which auto takes from the column's name.";
 
+/// What the title row's field says when `Enter` finds no text typed in it.
+pub const TITLE_NEEDS_TEXT: &str = "a title needs text";
+
+/// The longest stretch of a refused count the sentence quotes back.
+const QUOTED_AT_MOST: usize = 16;
+
+/// **What the ticks row's field holds, read as a count**: a whole number the
+/// spec's own reader takes as a target
+/// ([`brightfield_spec::layout::tick_count_target`]), or the sentence that says
+/// why the row refuses it.
+///
+/// The judge is the reader's, not a range typed here, so a count the field keeps
+/// is a count the plot draws at: `0`, `2.5`, `abc` and a count past
+/// [`MAX_TICK_COUNT`] are refused for the one reason, that the axis cannot aim its
+/// ticks at them, and `the_field_and_the_reader_agree_over_what_is_a_count` asks
+/// both sides about each count from zero past the ceiling.
+///
+/// # Errors
+///
+/// The sentence the row prints under itself.
+pub fn ticks_count(text: &str) -> Result<usize, String> {
+    let typed = text.trim();
+    let count = typed.parse::<usize>().ok().filter(|n| {
+        i64::try_from(*n).is_ok_and(|n| tick_count_target(&SpecValue::Integer(n)).is_some())
+    });
+    count.ok_or_else(|| {
+        let takes = format!("ticks takes a whole number from 1 to {MAX_TICK_COUNT}");
+        if typed.is_empty() {
+            return takes;
+        }
+        let quoted: String = typed.chars().take(QUOTED_AT_MOST).collect();
+        let more = if typed.chars().count() > QUOTED_AT_MOST {
+            "\u{2026}"
+        } else {
+            ""
+        };
+        format!("{takes}, and \"{quoted}{more}\" is not one")
+    })
+}
+
 /// The foot's sentence for the scale row.
 const SCALE_SAYS: &str = "How values are spaced along the axis, which auto draws linear.";
 
@@ -784,7 +824,7 @@ const TICK_FORMAT_KEYS: [(ShelfChannel, &str); 2] = [
 pub enum SettingKind {
     /// One of a short list, stepped through by `h` and `l`: scale, format.
     Enumerated,
-    /// Text typed into the row: title.
+    /// Text typed into the row, in a field `Enter` opens: title and ticks.
     Typed,
 }
 
@@ -797,6 +837,8 @@ pub enum SettingValue {
     Switch(bool),
     /// A count of ticks.
     Count(usize),
+    /// Text typed into a row: the title's words.
+    Text(String),
     /// Back to brightfield's own: the key comes out of the file.
     Auto,
 }
@@ -816,8 +858,8 @@ pub struct RowEdit {
 pub const SCALE_STEPS: [&str; 3] = ["linear", "log", "symlog"];
 
 /// The plot attribute `row` of `axis` is written under, as Mosaic spells it, for
-/// the rows a step or a `⌫` writes: scale, ticks, grid, zero and reverse. The
-/// title and the format are the cards behind this one's.
+/// the rows a step, a typed value or a `⌫` writes: title, scale, ticks, grid, zero
+/// and reverse. The format is the card behind this one's.
 #[must_use]
 pub fn row_key(axis: ShelfChannel, row: &str) -> Option<&'static str> {
     let x = match axis {
@@ -826,6 +868,8 @@ pub fn row_key(axis: ShelfChannel, row: &str) -> Option<&'static str> {
         ShelfChannel::Mark | ShelfChannel::Colour => return None,
     };
     Some(match (row, x) {
+        (TITLE_ROW, true) => "xLabel",
+        (TITLE_ROW, false) => "yLabel",
         (SCALE_ROW, true) => "xScale",
         (SCALE_ROW, false) => "yScale",
         (TICKS_ROW, true) => "xTicks",
@@ -856,8 +900,9 @@ pub fn row_default(row: &str) -> Option<SpecValue> {
 
 impl SettingRow {
     /// Whether `h` and `l` step this row's value: a scale or a switch that
-    /// applies to the axis. The ticks, title and format take typed text, which
-    /// the cards behind this one give a field. A scale row that reads band or
+    /// applies to the axis. The ticks and the title take typed text, which
+    /// `Enter` opens a field for ([`RowField`]); the format's field is the card
+    /// behind this one's. A scale row that reads band or
     /// time does not step: the chart draws those two for names and dates, and
     /// the three it steps through are for numbers.
     #[must_use]
@@ -1287,9 +1332,14 @@ pub enum ListReport {
     /// to the settings; turning back, the list reports the column its cursor
     /// lands on as it does when the query moves it.
     Turned(ListTab),
-    /// A settings row was stepped, by `h` `l` or a click on its value, or put
-    /// back to auto by `⌫`: the window writes it to the plot.
+    /// A settings row was stepped, by `h` `l` or a click on its value, set to a
+    /// value typed into its field and kept by `Enter`, or put back to auto by
+    /// `⌫`: the window writes it to the plot.
     Set(RowEdit),
+    /// A typed row's field holds a value the chart can draw: draw it, without
+    /// keeping it. `None` takes the preview back, because the field was dropped,
+    /// emptied, or holds a value the row refuses.
+    Preview(Option<RowEdit>),
 }
 
 /// Which of its two states a channel's list is in: the table's columns, or
@@ -1311,6 +1361,25 @@ impl ListTab {
             Self::Settings => "settings",
         }
     }
+}
+
+/// **A typed settings row's field while it is open**: the title's words or the
+/// tick count, being typed.
+///
+/// The field opens on `Enter` with the row's value selected, so the first thing
+/// typed replaces it and `⌫` clears it. While it is open it has the keys, as the
+/// query line does: a letter is text, `Enter` keeps the value, `Esc` drops it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowField {
+    /// The row the field is on: `title` or `ticks`.
+    pub row: &'static str,
+    /// What has been typed.
+    pub text: String,
+    /// Whether the whole text is selected, which the first key typed replaces.
+    pub selected: bool,
+    /// The sentence the row prints under itself while the field holds a value
+    /// the row refuses, in words.
+    pub refusal: Option<String>,
 }
 
 /// The list of a channel's columns, with a query line.
@@ -1341,6 +1410,8 @@ pub struct ColumnList {
     settings: ChannelSettings,
     /// The settings row under the cursor, as an index into the channel's rows.
     row: Option<usize>,
+    /// The open field of a typed row, which has the keys while it is open.
+    field: Option<RowField>,
 }
 
 impl ColumnList {
@@ -1359,6 +1430,7 @@ impl ColumnList {
             tab: ListTab::Columns,
             settings: ChannelSettings::default(),
             row: None,
+            field: None,
         };
         list.cursor = list.held();
         list
@@ -1449,6 +1521,20 @@ impl ColumnList {
     #[must_use]
     pub fn querying(&self) -> bool {
         self.querying
+    }
+
+    /// The open field of a typed settings row, with what has been typed in it.
+    #[must_use]
+    pub fn field(&self) -> Option<&RowField> {
+        self.field.as_ref()
+    }
+
+    /// Whether text typed is taken as text: the query has the keys, or a typed
+    /// row's field is open. The window leaves every key of such a frame to the
+    /// list.
+    #[must_use]
+    pub fn typing(&self) -> bool {
+        self.querying || self.field.is_some()
     }
 
     /// The channels the plot now binds, after an edit the list did not make
@@ -1619,15 +1705,156 @@ impl ColumnList {
     fn keep(&mut self, out: &mut Vec<ListReport>) {
         // On a settings row `Enter` sets no value of its own, since a step is
         // kept as it is made; it ends the query's typing and leaves the rows it
-        // narrowed to, so `h` `l` and `⌫` reach the row it found.
+        // narrowed to, so `h` `l` and `⌫` reach the row it found. With no query
+        // typing it opens the field of a row that takes typed text.
         if self.tab == ListTab::Settings {
-            self.querying = false;
+            if !std::mem::take(&mut self.querying) {
+                self.open_field();
+            }
             return;
         }
         if let Some(name) = self.cursor() {
             out.push(ListReport::Kept(name.to_string()));
             self.querying = false;
         }
+    }
+
+    /// `Enter` on a row that takes typed text and applies to the axis: open its
+    /// field on the value the row reads, selected. A title the axis does not draw
+    /// opens on brightfield's own, the column's name, or on nothing where the
+    /// channel holds no column to name it from.
+    fn open_field(&mut self) {
+        let Some(row) = self.setting_cursor() else {
+            return;
+        };
+        if row.kind != SettingKind::Typed || row.reason.is_some() {
+            return;
+        }
+        let text = if row.name == TITLE_ROW && row.value == NO_TITLE {
+            match self.channels.binding(self.channel) {
+                Some(Binding::Column(name)) => name.clone(),
+                _ => String::new(),
+            }
+        } else {
+            row.value.clone()
+        };
+        self.field = Some(RowField {
+            row: row.name,
+            selected: !text.is_empty(),
+            text,
+            refusal: None,
+        });
+    }
+
+    /// What the open field holds, as the edit it would keep: the title's trimmed
+    /// words, or the count. `Err` carries the sentence for a value the row
+    /// refuses, and `Ok(None)` a field with no text in it to keep.
+    fn field_edit(&self) -> Result<Option<RowEdit>, String> {
+        let Some(field) = &self.field else {
+            return Ok(None);
+        };
+        let value = match field.row {
+            TITLE_ROW => {
+                let words = field.text.trim();
+                if words.is_empty() {
+                    return Ok(None);
+                }
+                SettingValue::Text(words.to_string())
+            }
+            _ => {
+                if field.text.trim().is_empty() {
+                    return Ok(None);
+                }
+                SettingValue::Count(ticks_count(&field.text)?)
+            }
+        };
+        Ok(Some(RowEdit {
+            channel: self.channel,
+            row: field.row,
+            value,
+        }))
+    }
+
+    /// The field's text changed: say what the chart should draw, and what the row
+    /// refuses. A value the row keeps is previewed on the axis as it is typed; a
+    /// value it refuses, or nothing, takes the preview back so the axis reads as
+    /// before. A title emptied on the way to its replacement is not refused
+    /// until `Enter`; a count that is not one is refused as it is typed.
+    fn refresh_field(&mut self, out: &mut Vec<ListReport>) {
+        let edit = self.field_edit();
+        if let Some(field) = self.field.as_mut() {
+            field.refusal = edit.as_ref().err().cloned();
+        }
+        out.push(ListReport::Preview(edit.ok().flatten()));
+    }
+
+    /// `Enter` in the open field: keep a value the row takes, and refuse the rest
+    /// under the row, leaving the field open.
+    fn keep_field(&mut self, out: &mut Vec<ListReport>) {
+        match self.field_edit() {
+            Ok(Some(edit)) => {
+                self.field = None;
+                out.push(ListReport::Set(edit));
+            }
+            Ok(None) => {
+                let sentence = match self.field.as_ref().map(|f| f.row) {
+                    Some(TITLE_ROW) => TITLE_NEEDS_TEXT.to_string(),
+                    _ => ticks_count("").unwrap_err(),
+                };
+                if let Some(field) = self.field.as_mut() {
+                    field.refusal = Some(sentence);
+                }
+            }
+            Err(sentence) => {
+                if let Some(field) = self.field.as_mut() {
+                    field.refusal = Some(sentence);
+                }
+            }
+        }
+    }
+
+    /// A key press while the field has the keys. `Enter` keeps, `Esc` drops the
+    /// field and the preview with it, `⌫` clears a selection and then takes the
+    /// last letter; every other key is left to the text it types.
+    fn field_press(
+        &mut self,
+        key: egui::Key,
+        modifiers: egui::Modifiers,
+        out: &mut Vec<ListReport>,
+    ) {
+        if !modifiers.is_none() {
+            return;
+        }
+        match key {
+            egui::Key::Enter => self.keep_field(out),
+            egui::Key::Escape => {
+                self.field = None;
+                out.push(ListReport::Preview(None));
+            }
+            egui::Key::Backspace => {
+                if let Some(field) = self.field.as_mut() {
+                    if std::mem::take(&mut field.selected) {
+                        field.text.clear();
+                    } else {
+                        field.text.pop();
+                    }
+                }
+                self.refresh_field(out);
+            }
+            _ => {}
+        }
+    }
+
+    /// Text typed while the field has the keys: the first of it replaces a
+    /// selection.
+    fn field_type(&mut self, text: &str, out: &mut Vec<ListReport>) {
+        if let Some(field) = self.field.as_mut() {
+            if std::mem::take(&mut field.selected) {
+                field.text.clear();
+            }
+            field.text.extend(text.chars().filter(|c| !c.is_control()));
+        }
+        self.refresh_field(out);
     }
 
     /// `h` or `l` on the settings: step the row under the cursor `by` values and
@@ -1766,6 +1993,10 @@ impl ColumnList {
     /// modifier, while the query has the keys, a letter is text, so the registry
     /// is asked only about the keys that are not one.
     fn press(&mut self, key: egui::Key, modifiers: egui::Modifiers, out: &mut Vec<ListReport>) {
+        if self.field.is_some() {
+            self.field_press(key, modifiers, out);
+            return;
+        }
         if let Some(token) = chord_token(key, modifiers) {
             self.resolve_token(token, out);
             return;
@@ -1829,6 +2060,7 @@ impl ColumnList {
                     self.press(*key, *modifiers, &mut out);
                     opened_by_key = !was && self.querying;
                 }
+                egui::Event::Text(text) if self.field.is_some() => self.field_type(text, &mut out),
                 egui::Event::Text(text) if self.querying => {
                     if std::mem::take(&mut opened_by_key) && text == "/" {
                         continue;
@@ -1950,8 +2182,12 @@ pub struct SettingRowDrawn {
     /// brightfield's own.
     pub auto_rect: Option<egui::Rect>,
     /// Where the reason was laid out, under the line, on a row that does not
-    /// apply to the axis.
+    /// apply to the axis; or the refusal, on a row whose open field holds a
+    /// value the row refuses.
     pub reason_rect: Option<egui::Rect>,
+    /// The sunken field the row's value is typed into, on the row whose field is
+    /// open.
+    pub field: Option<egui::Rect>,
     /// The bar down the row's leading edge, on the row under the cursor.
     pub bar: Option<egui::Rect>,
     /// Where the `←` and `→` chips were drawn, on the row under the cursor or
@@ -1986,6 +2222,9 @@ const SETTINGS_HINTS: [(&str, &str); 4] = [
     ("Tab", "columns"),
     ("Esc", "back"),
 ];
+
+/// The keys the foot prints while a typed row's field is open.
+const FIELD_HINTS: [(&str, &str); 2] = [("Enter", "keep"), ("Esc", "drop")];
 
 /// The key the columns' foot adds where the channel has settings to turn to.
 const TURN_HINT: (&str, &str) = ("Tab", "settings");
@@ -2176,10 +2415,14 @@ impl ColumnList {
             } else if response.hovered() {
                 painter.rect_filled(rect, 0.0, chrome::colour(sem.rows.hover_background));
             }
-            if response.clicked() {
-                clicked = Some(i);
-            } else if moving && response.hovered() {
-                pointed = Some(i);
+            // The open field has the keys and the cursor: the pointer neither
+            // moves off its row nor steps a value while it is typed into.
+            if self.field.is_none() {
+                if response.clicked() {
+                    clicked = Some(i);
+                } else if moving && response.hovered() {
+                    pointed = Some(i);
+                }
             }
             let content = egui::Rect::from_min_max(
                 egui::pos2(rect.left() + b.pad_x + spacing::SPACE_4, rect.top()),
@@ -2398,13 +2641,21 @@ impl ColumnList {
         let mut stepped: Option<(usize, isize)> = None;
         for &i in &order {
             let row = &rows[i];
+            // The field of a typed row, open on this row.
+            let field = self
+                .field
+                .as_ref()
+                .filter(|f| self.row == Some(i) && f.row == row.name);
             // A row that does not apply says why on a line of its own under the
-            // name and the value, in the room the row's content leaves.
-            let reason = row.reason.as_ref().map(|text| {
+            // name and the value, in the room the row's content leaves; a row
+            // whose field holds a value it refuses says so there, in full ink.
+            let refusal = field.and_then(|f| f.refusal.clone());
+            let said_in = if refusal.is_some() { primary } else { muted };
+            let reason = refusal.or_else(|| row.reason.clone()).map(|text| {
                 painter.layout(
-                    text.clone(),
+                    text,
                     caption_font(),
-                    muted,
+                    said_in,
                     width - 2.0 * spacing::SPACE_4 - 2.0 * b.pad_x,
                 )
             });
@@ -2490,7 +2741,7 @@ impl ColumnList {
                 egui::pos2(content.left() + name_column + spacing::SPACE_3, rect.top()),
                 egui::pos2(marker.left(), line.bottom()),
             );
-            if response.clicked() && row.steps() {
+            if response.clicked() && row.steps() && self.field.is_none() {
                 let at = response.interact_pointer_pos();
                 if at.is_some_and(|p| value_zone.contains(p)) {
                     let back = at.is_some_and(|p| chips.is_some_and(|[back, _]| back.contains(p)));
@@ -2499,7 +2750,7 @@ impl ColumnList {
             }
 
             // The word *auto*, where the value is brightfield's own.
-            let auto_rect = (!row.set).then(|| {
+            let auto_rect = (!row.set && field.is_none()).then(|| {
                 let galley = painter.layout_no_wrap(AUTO.to_string(), caption_font(), muted);
                 let at = egui::Rect::from_min_size(
                     egui::pos2(
@@ -2523,18 +2774,61 @@ impl ColumnList {
             painter.galley(name_rect.min, name_galley, name_ink);
             let value_left = content.left() + name_column + spacing::SPACE_3;
             let ink = if row.set && applies { primary } else { muted };
-            let value = text_ink::fit(&painter, &row.value, ui_font(), right - value_left, ink);
-            let value_rect = egui::Rect::from_min_size(
-                egui::pos2(value_left, line.center().y - value.size().y / 2.0),
-                value.size(),
-            );
-            painter.galley(value_rect.min, value, ink);
+            let (value_rect, field_rect) = if let Some(open) = field {
+                // The field: a sunken ground ruled under in the focus ink, the
+                // text in full ink with the selection's wash behind it while
+                // the whole is selected, and the caret after it.
+                let ground = egui::Rect::from_min_max(
+                    egui::pos2(value_left - spacing::SPACE_2, line.top() + 2.0),
+                    egui::pos2(right, line.bottom() - 2.0),
+                );
+                painter.rect_filled(ground, 0.0, chrome::colour(sem.surfaces.sunken));
+                let room = (ground.right() - spacing::SPACE_2 - value_left).max(0.0);
+                let typed = text_ink::fit(&painter, &open.text, ui_font(), room, primary);
+                let at = egui::Rect::from_min_size(
+                    egui::pos2(value_left, line.center().y - typed.size().y / 2.0),
+                    typed.size(),
+                );
+                if open.selected && !open.text.is_empty() {
+                    painter.rect_filled(
+                        at.expand2(egui::vec2(1.0, 1.0)),
+                        0.0,
+                        chrome::colour(sem.editor.selection),
+                    );
+                }
+                painter.galley(at.min, typed, primary);
+                painter.line_segment(
+                    [
+                        egui::pos2(at.right() + 1.0, at.top()),
+                        egui::pos2(at.right() + 1.0, at.bottom()),
+                    ],
+                    egui::Stroke::new(1.0, chrome::colour(sem.editor.caret)),
+                );
+                // The rule goes on last, over the selection's wash.
+                painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(ground.left(), ground.bottom() - 2.0),
+                        ground.right_bottom(),
+                    ),
+                    0.0,
+                    chrome::colour(sem.borders.focus),
+                );
+                (at, Some(ground))
+            } else {
+                let value = text_ink::fit(&painter, &row.value, ui_font(), right - value_left, ink);
+                let at = egui::Rect::from_min_size(
+                    egui::pos2(value_left, line.center().y - value.size().y / 2.0),
+                    value.size(),
+                );
+                painter.galley(at.min, value, ink);
+                (at, None)
+            };
             let reason_rect = reason.map(|galley| {
                 let at = egui::Rect::from_min_size(
                     egui::pos2(content.left(), line.bottom()),
                     galley.size(),
                 );
-                painter.galley(at.min, galley, muted);
+                painter.galley(at.min, galley, said_in);
                 at
             });
             drawn.push(SettingRowDrawn {
@@ -2545,6 +2839,7 @@ impl ColumnList {
                 marker,
                 auto_rect,
                 reason_rect,
+                field: field_rect,
                 bar,
                 chips,
                 value_zone,
@@ -2636,7 +2931,9 @@ impl ColumnList {
             // Before `Esc`, the last key of the columns' foot.
             columns_pairs.insert(columns_pairs.len() - 1, TURN_HINT);
         }
-        let pairs: &[(&str, &str)] = if self.querying {
+        let pairs: &[(&str, &str)] = if self.field.is_some() {
+            &FIELD_HINTS
+        } else if self.querying {
             &QUERY_HINTS
         } else if self.tab == ListTab::Settings {
             &SETTINGS_HINTS

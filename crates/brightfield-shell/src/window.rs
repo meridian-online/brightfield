@@ -102,7 +102,8 @@ use crate::protocol::{
     INSPECTOR as PROTOCOL_INSPECTOR, LOG, OUTLINE, QUALITY, STEPS,
 };
 use crate::shelf::{
-    BandDrawn, Binding, CardDrawn, ChannelSettings, ListReport, ListTab, ShelfBand, ShelfChannels,
+    BandDrawn, Binding, CardDrawn, ChannelSettings, ListReport, ListTab, RowEdit, ShelfBand,
+    ShelfChannels,
 };
 
 // ---------------------------------------------------------------------------
@@ -5498,7 +5499,7 @@ impl MeridianApp {
                 .doc
                 .model
                 .column_list()
-                .is_some_and(crate::shelf::ColumnList::querying);
+                .is_some_and(crate::shelf::ColumnList::typing);
             // egui reads `Tab` at the head of a pass, before any code of ours
             // runs, as a request to move focus to the next widget that takes
             // it. A key the shelf owns must not also be that: the widget that
@@ -5574,6 +5575,11 @@ impl MeridianApp {
     ///   with its cursor on the column the channel holds again.
     /// - `Tab` turned the list to the axis's settings: the preview is backed out
     ///   of, and the rows read the chart as it was kept.
+    /// - A typed settings row's field holds a value (the title's words, a tick
+    ///   count): the hero is drawn with it as a preview
+    ///   ([`ChartDoc::preview_axis_row`]), and of the previews in one batch the
+    ///   last is the one drawn; the field emptied, refused or dropped by `Esc`
+    ///   backs the preview out, and `Enter` keeps the value as a step is kept.
     fn shelf_apply(&mut self, reports: Vec<ListReport>) {
         let Some(band) = self.charts.shelf.band.as_mut() else {
             return;
@@ -5595,6 +5601,9 @@ impl MeridianApp {
         // Whether a settings row was written, so the open list reads the chart as
         // it is now.
         let mut rewrote = false;
+        // The last typed-row preview of the batch: `Some(None)` takes the preview
+        // back, `None` leaves the page as it is.
+        let mut previewed: Option<Option<RowEdit>> = None;
         for report in reports {
             match report {
                 ListReport::Moved(column) => {
@@ -5640,9 +5649,25 @@ impl MeridianApp {
                 // once the batch is read, below.
                 ListReport::Set(edit) => {
                     moved = None;
+                    previewed = None;
                     rewrote |= self.charts.doc.set_axis_row(HERO_PLOT, &edit);
                 }
+                // A typed row's field holds a value: drawn, not kept. Of the
+                // previews in one batch only the last is drawn, as of the moves.
+                ListReport::Preview(edit) => {
+                    moved = None;
+                    previewed = Some(edit);
+                }
             }
+        }
+        match previewed {
+            Some(Some(edit)) => {
+                self.charts.doc.preview_axis_row(HERO_PLOT, &edit);
+            }
+            Some(None) => {
+                self.charts.doc.drop_shelf_preview();
+            }
+            None => {}
         }
         if let Some((channel, column)) = moved {
             self.charts
