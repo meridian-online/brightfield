@@ -26,7 +26,9 @@
 //!
 //! **A cell marks what is set on its channel.** A dot follows the word while any
 //! one of the channel's settings rows is the analyst's, and the scale's name
-//! follows it (`x axis · log`) while the scale is not linear. The band is handed
+//! follows it (`x axis · log`) while the scale is not linear: log or symlog, or
+//! the band and time that an axis of names or of dates draws, which leave no
+//! dot since they are brightfield's own. The band is handed
 //! the rows by [`ShelfBand::set_settings`]; a band handed none, and a plot that
 //! sets nothing, draw the cell as it was drawn before there were marks.
 //!
@@ -372,7 +374,7 @@ impl ShelfBand {
         let set = rows.iter().any(|row| row.set);
         let scale = rows
             .iter()
-            .find(|row| row.name == SCALE_ROW && row.set)
+            .find(|row| row.name == SCALE_ROW && row.value != ScaleType::Linear.wire_name())
             .map(|row| row.value.clone());
         if let Some((on, column)) = &self.preview {
             if *on == channel {
@@ -745,6 +747,24 @@ const TITLE_SAYS: &str = "The words along the axis, which auto takes from the co
 /// The foot's sentence for the scale row.
 const SCALE_SAYS: &str = "How values are spaced along the axis, which auto draws linear.";
 
+/// The foot's sentence for the scale row of an axis of names, which the chart
+/// draws as a band scale.
+const SCALE_SAYS_BAND: &str =
+    "How values are spaced along the axis, which auto draws band for names.";
+
+/// The foot's sentence for the scale row of an axis of dates, which the chart
+/// draws as a time scale.
+const SCALE_SAYS_TIME: &str =
+    "How values are spaced along the axis, which auto draws time for dates.";
+
+/// What the scale row reads on an axis of names, which the chart draws as a
+/// band scale.
+pub const BAND_SCALE: &str = "band";
+
+/// What the scale row reads on an axis of dates, which the chart draws as a time
+/// scale.
+pub const TIME_SCALE: &str = "time";
+
 /// The foot's sentence for the format row.
 const FORMAT_SAYS: &str =
     "How a tick's number or date is written, which auto leaves to the axis's own tick text.";
@@ -837,10 +857,17 @@ pub fn row_default(row: &str) -> Option<SpecValue> {
 impl SettingRow {
     /// Whether `h` and `l` step this row's value: a scale or a switch that
     /// applies to the axis. The ticks, title and format take typed text, which
-    /// the cards behind this one give a field.
+    /// the cards behind this one give a field. A scale row that reads band or
+    /// time does not step: the chart draws those two for names and dates, and
+    /// the three it steps through are for numbers.
     #[must_use]
     pub fn steps(&self) -> bool {
-        self.reason.is_none() && matches!(self.name, SCALE_ROW | GRID_ROW | ZERO_ROW | REVERSE_ROW)
+        self.reason.is_none()
+            && match self.name {
+                SCALE_ROW => SCALE_STEPS.contains(&self.value.as_str()),
+                GRID_ROW | ZERO_ROW | REVERSE_ROW => true,
+                _ => false,
+            }
     }
 
     /// The value one step `by` from the row's own, or `None` where the row does
@@ -917,8 +944,9 @@ impl ChannelSettings {
     /// drawn as), and the format is the one the judge reads.
     ///
     /// **No scale has been drawn here, so no judge speaks**: a by-name row
-    /// carries no reason. A window hands the scales its chart was drawn against
-    /// to [`Self::of_plot_drawn`].
+    /// carries no reason, and an axis of names or dates reads the type the plot
+    /// resolves to. A window hands the scales its chart was drawn against to
+    /// [`Self::of_plot_drawn`], which reads such an axis as band or time.
     #[must_use]
     pub fn of_plot(spec: &Spec, plot: &PlotNode, channels: &ShelfChannels) -> Self {
         Self::of_plot_drawn(spec, plot, channels, &ScaleSet::new())
@@ -1007,6 +1035,19 @@ fn axis_rows(
         says,
         from: None,
     };
+    // The scale the chart draws: band for names and time for dates, which are
+    // brightfield's own choice and so leave the row unset, and otherwise the
+    // type the plot resolves to.
+    let channel = if axis == ShelfChannel::X {
+        Channel::X
+    } else {
+        Channel::Y
+    };
+    let (scale_value, scale_says) = match drawn.get(channel) {
+        Some(Scale::Band { .. }) => (BAND_SCALE, SCALE_SAYS_BAND),
+        Some(Scale::Time { .. }) => (TIME_SCALE, SCALE_SAYS_TIME),
+        _ => (scale.wire_name(), SCALE_SAYS),
+    };
     let mut rows = vec![
         row(
             TITLE_ROW,
@@ -1017,10 +1058,10 @@ fn axis_rows(
         ),
         row(
             SCALE_ROW,
-            scale.wire_name().to_string(),
+            scale_value.to_string(),
             scale != ScaleType::Linear,
             SettingKind::Enumerated,
-            SCALE_SAYS,
+            scale_says,
         ),
         row(
             FORMAT_ROW,
