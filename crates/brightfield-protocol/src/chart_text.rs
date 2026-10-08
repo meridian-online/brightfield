@@ -1,7 +1,7 @@
 //! A chart edit written into the chart file's own text.
 //!
 //! brightfield changes a chart by applying a [`ChartEdit`] to the parsed
-//! [`Spec`](brightfield_spec::Spec). [`serialise_spec`](brightfield_spec::serialise_spec)
+//! [`Spec`]. [`serialise_spec`]
 //! writes a whole spec afresh and keeps no comment, so it cannot put an edit
 //! into a file an analyst has read or written in. [`write_chart_edit`] writes
 //! the same edit into the text the spec was parsed from, as a change to one
@@ -47,6 +47,19 @@
 //!   back unchanged. Written back with [`ChartEdit::AddColourLegend`] the item
 //!   lands after the list's last item, so it returns to its place when it was
 //!   the last.
+//! - A [`ChartEdit::PlaceColourLegend`], the edit that moves a plot's colour
+//!   legend between its right, a band under it, and nowhere. Below is the
+//!   plot's keys nested under a `vconcat:` at their place by arcform's nest,
+//!   the plot given a `name:` when it had none, and a `legend: color` whose
+//!   `for:` names it appended to the `vconcat`; out from below is the legend
+//!   deleted and, when that leaves the plot alone in the `vconcat`, the plot's
+//!   lines lifted back into its place by arcform's lift. The nest and the lift
+//!   move each line with its comments, so a comment above a mark or at the end
+//!   of its line stays with it
+//!   (`each_legend_move_on_a_plot_in_a_concat_keeps_the_files_comments`). The
+//!   legend each move writes is the one the reducer made, in the whole-spec
+//!   serialiser's spelling; a comment on the legend's own lines is not kept.
+//!   Between right and none the move is the item edits' splice.
 //! - A [`ChartEdit::RemovePlotAttribute`], the edit that takes a map's
 //!   projection out. The key's line is taken out. By arcform's rule of comment
 //!   ownership a comment flush above the line, indented no deeper than it, is
@@ -55,6 +68,10 @@
 //!
 //! Change mark type, add mark and remove mark are refused by kind until each
 //! has a writer of its own.
+//!
+//! The splices are arcform's, so a placement move nests and lifts lines rather
+//! than writing them: `SpecEdit::Nest` and `SpecEdit::Lift`, at the arcform
+//! revision the workspace pins.
 //!
 //! **One gesture is several edits, written one at a time.** The shelf's edit
 //! on the generated map is a set channel on each of its two layers and a
@@ -80,10 +97,13 @@ use std::fmt;
 
 use arc::spec::{apply_yaml_edits, PathPart, SpecEdit};
 use brightfield_spec::edit::{
-    apply_for_fresh_load, colour_legend_item_indices, mark_item_index, plot_at_path, plot_route,
-    ChartEdit, RefuseReason,
+    apply_for_fresh_load, colour_legend_item_indices, colour_legends_below, mark_item_index,
+    plot_at_path, plot_path_after, plot_route, ChartEdit, LegendPlacement, RefuseReason,
 };
-use brightfield_spec::{parse_spec, serialise_value, Format, SpecValue};
+use brightfield_spec::layout::collect_legend_nodes;
+use brightfield_spec::{
+    parse_spec, serialise_spec, serialise_value, Component, Format, Spec, SpecValue,
+};
 
 /// Why [`write_chart_edit`] returned no text. Each variant's [`fmt::Display`]
 /// is the reason a surface shows.
@@ -180,9 +200,9 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
         ChartEdit::SetPlotAttribute { plot, key, .. }
         | ChartEdit::RemovePlotAttribute { plot, key } => (plot, key.as_str()),
         ChartEdit::SetChannel { plot, channel, .. } => (plot, channel.as_str()),
-        ChartEdit::AddColourLegend { plot } | ChartEdit::RemoveColourLegend { plot } => {
-            (plot, LEGEND_KEY)
-        }
+        ChartEdit::AddColourLegend { plot }
+        | ChartEdit::RemoveColourLegend { plot }
+        | ChartEdit::PlaceColourLegend { plot, .. } => (plot, LEGEND_KEY),
         ChartEdit::ChangeMarkType { .. }
         | ChartEdit::AddMark { .. }
         | ChartEdit::RemoveMark { .. } => {
@@ -260,38 +280,27 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
             splices
         }
         ChartEdit::AddColourLegend { .. } => {
-            let last = plot_at_path(&parsed, &plot.0)
-                .and_then(|p| p.items.len().checked_sub(1))
-                .ok_or_else(|| ChartTextRefusal::Splice {
-                    detail: "the plot's list has no item to place a legend after".to_string(),
-                })?;
-            let mut list = route;
-            list.push(PathPart::from("plot"));
-            let indent = item_indent(text, &list, last)?;
-            vec![vec![SpecEdit::Append {
-                path: list,
-                item: format!("{indent}- {COLOUR_LEGEND_ITEM}"),
-            }]]
+            vec![vec![append_legend_item(
+                text,
+                &parsed,
+                &plot.0,
+                route,
+                COLOUR_LEGEND_ITEM,
+            )?]]
         }
         ChartEdit::RemoveColourLegend { .. } => {
-            let items = plot_at_path(&parsed, &plot.0)
-                .map(colour_legend_item_indices)
-                .unwrap_or_default();
-            let mut list = route;
-            list.push(PathPart::from("plot"));
-            // Last item first: each edit in a batch sees the text the one
-            // before it left, so an item above the one being taken out has
-            // not moved when its turn comes.
-            let deletes = items
-                .into_iter()
-                .rev()
-                .map(|index| {
-                    let mut path = list.clone();
-                    path.push(PathPart::from(index));
-                    SpecEdit::Delete { path }
+            vec![delete_legend_items(&parsed, &plot.0, route)]
+        }
+        ChartEdit::PlaceColourLegend { at, .. } => {
+            let written = place_colour_legend(text, &parsed, &edited, edit, route, *at)?;
+            let reads_back = parse_spec(&written, Format::Yaml).ok().map(|out| out.spec);
+            return if reads_back.as_ref() == Some(&edited) {
+                Ok(written)
+            } else {
+                Err(ChartTextRefusal::ReadsBackDifferently {
+                    key: key.to_string(),
                 })
-                .collect();
-            vec![deletes]
+            };
         }
         ChartEdit::ChangeMarkType { .. }
         | ChartEdit::AddMark { .. }
@@ -324,6 +333,245 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
         }
     }
     Err(refusal)
+}
+
+/// The splice that appends `item`, the text after an item's `- `, to the
+/// `plot:` list of the plot at `route`, which is `plot_path` in `parsed`,
+/// indented as the list's own items are. Its later lines, if it has any, are
+/// indented two columns past the `- `.
+fn append_legend_item(
+    text: &str,
+    parsed: &Spec,
+    plot_path: &str,
+    route: Vec<PathPart>,
+    item: &str,
+) -> Result<SpecEdit, ChartTextRefusal> {
+    let last = plot_at_path(parsed, plot_path)
+        .and_then(|p| p.items.len().checked_sub(1))
+        .ok_or_else(|| ChartTextRefusal::Splice {
+            detail: "the plot's list has no item to place a legend after".to_string(),
+        })?;
+    let mut list = route;
+    list.push(PathPart::from("plot"));
+    let indent = item_indent(text, &list, last)?;
+    Ok(SpecEdit::Append {
+        path: list,
+        item: dashed(&indent, item),
+    })
+}
+
+/// `item`, an item's text after its `- `, written as an item of a block list
+/// whose dashes sit at `indent`.
+fn dashed(indent: &str, item: &str) -> String {
+    item.lines()
+        .enumerate()
+        .map(|(i, line)| match i {
+            0 => format!("{indent}- {line}"),
+            _ => format!("{indent}  {line}"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The splices that take each colour legend item out of the `plot:` list of
+/// the plot at `route`, which is `plot_path` in `parsed`.
+fn delete_legend_items(parsed: &Spec, plot_path: &str, route: Vec<PathPart>) -> Vec<SpecEdit> {
+    let items = plot_at_path(parsed, plot_path)
+        .map(colour_legend_item_indices)
+        .unwrap_or_default();
+    let mut list = route;
+    list.push(PathPart::from("plot"));
+    // Last item first: each edit in a batch sees the text the one before it
+    // left, so an item above the one being taken out has not moved when its
+    // turn comes.
+    items
+        .into_iter()
+        .rev()
+        .map(|index| {
+            let mut path = list.clone();
+            path.push(PathPart::from(index));
+            SpecEdit::Delete { path }
+        })
+        .collect()
+}
+
+/// The keys a chart file's root mapping holds for the spec rather than for its
+/// root component — the keys the parser's root walk takes before it reads the
+/// rest as the component (`parse.rs`, `walk_root`'s match).
+const SPEC_KEYS: &[&str] = &["meta", "data", "params", "config", "plotDefaults"];
+
+/// The key a below placement nests the plot's lines under.
+const VCONCAT_KEY: &str = "vconcat";
+
+/// [`ChartEdit::PlaceColourLegend`] written into `text`, which parses to
+/// `parsed`; `edited` is the spec the reducer made of `parsed`, and `route` is
+/// the plot's mapping.
+///
+/// The legend a move writes is the one in `edited`, spelled as the whole-spec
+/// serialiser spells it, so each option the legend carries arrives as the
+/// reducer carried it. A move between right and none is the item edit's
+/// splice.
+///
+/// - To below, each colour legend item of the plot's list is deleted, the
+///   plot is given its `name:` when it had none, its keys are nested under a
+///   `vconcat:` at their place with arcform's nest, and the legend is appended
+///   to the `vconcat` after the plot. The nest keeps every moved line's
+///   comment.
+/// - From below, each colour legend under the plot is deleted from the
+///   `vconcat`, and when that leaves the plot alone in it, arcform's lift puts
+///   the plot's lines in the `vconcat`'s place. The lift refuses a sequence of
+///   two items, which is why the deletes come first. To right, the item is then
+///   appended to the plot's list; to none, any colour legend item the plot
+///   still holds is deleted.
+fn place_colour_legend(
+    text: &str,
+    parsed: &Spec,
+    edited: &Spec,
+    edit: &ChartEdit,
+    route: Vec<PathPart>,
+    at: LegendPlacement,
+) -> Result<String, ChartTextRefusal> {
+    let plot_path = edit.plot_path();
+    let splice = |text: &str, edits: &[SpecEdit]| {
+        apply_yaml_edits(text, edits).map_err(|e| ChartTextRefusal::Splice {
+            detail: e.to_string(),
+        })
+    };
+    match (colour_legends_below(parsed, plot_path), at) {
+        (Some(_), LegendPlacement::Below) => Ok(text.to_string()),
+        (None, LegendPlacement::Right) => splice(
+            text,
+            &[append_legend_item(
+                text,
+                parsed,
+                plot_path,
+                route,
+                COLOUR_LEGEND_ITEM,
+            )?],
+        ),
+        (None, LegendPlacement::None) => {
+            splice(text, &delete_legend_items(parsed, plot_path, route))
+        }
+        (None, LegendPlacement::Below) => {
+            let mut edits = delete_legend_items(parsed, plot_path, route.clone());
+            let wrapped = format!("{plot_path}/vconcat[0]");
+            let name_of = |spec: &Spec, path: &str| {
+                plot_at_path(spec, path).and_then(|p| p.attributes.get("name").cloned())
+            };
+            let name = name_of(edited, &wrapped);
+            let mut keys = mapping_keys(text, &route);
+            if name != name_of(parsed, plot_path) {
+                let spelled = one_line("name", name.as_ref().unwrap_or(&SpecValue::Null))?;
+                edits.push(set_key(text, route.clone(), "name", spelled));
+                if !keys.iter().any(|k| k == "name") {
+                    keys.push("name".to_string());
+                }
+            }
+            edits.push(SpecEdit::Nest {
+                path: route.clone(),
+                keys,
+                under: VCONCAT_KEY.to_string(),
+            });
+            let nested = splice(text, &edits)?;
+            let legend = collect_legend_nodes(edited)
+                .into_iter()
+                .find(|(path, _)| *path == format!("{plot_path}/vconcat[1]"))
+                .map(|(_, legend)| Component::Legend(legend.clone()))
+                .ok_or_else(|| ChartTextRefusal::Splice {
+                    detail: "the edit made no legend under the plot".to_string(),
+                })?;
+            let mut concat = route;
+            concat.push(PathPart::from(VCONCAT_KEY));
+            let indent = item_indent(&nested, &concat, 0)?;
+            splice(
+                &nested,
+                &[SpecEdit::Append {
+                    path: concat,
+                    item: dashed(&indent, &component_text(legend)?),
+                }],
+            )
+        }
+        (Some(legends), LegendPlacement::Right | LegendPlacement::None) => {
+            let parent = route[..route.len().saturating_sub(2)].to_vec();
+            let mut concat = parent.clone();
+            concat.push(PathPart::from(VCONCAT_KEY));
+            let mut edits: Vec<SpecEdit> = legends
+                .iter()
+                .rev()
+                .map(|&index| {
+                    let mut path = concat.clone();
+                    path.push(PathPart::from(index));
+                    SpecEdit::Delete { path }
+                })
+                .collect();
+            let after = plot_path_after(parsed, edit);
+            let route = if after == plot_path {
+                route
+            } else {
+                edits.push(SpecEdit::Lift {
+                    path: parent.clone(),
+                    key: VCONCAT_KEY.to_string(),
+                });
+                parent
+            };
+            let moved = splice(text, &edits)?;
+            if at == LegendPlacement::None {
+                return splice(&moved, &delete_legend_items(parsed, plot_path, route));
+            }
+            let item = plot_at_path(edited, &after)
+                .and_then(|p| p.items.last())
+                .filter(|_| {
+                    plot_at_path(parsed, plot_path)
+                        .is_some_and(|p| colour_legend_item_indices(p).is_empty())
+                });
+            match item {
+                Some(item) => {
+                    let item = component_text(item.clone())?;
+                    splice(
+                        &moved,
+                        &[append_legend_item(&moved, parsed, plot_path, route, &item)?],
+                    )
+                }
+                None => Ok(moved),
+            }
+        }
+    }
+}
+
+/// The keys the mapping at `route` holds in `text`, in their order, but for the
+/// spec's own keys when `route` is the document's root: the lines of the
+/// component the mapping is.
+fn mapping_keys(text: &str, route: &[PathPart]) -> Vec<String> {
+    let Ok(mut node) = serde_yaml::from_str::<serde_yaml::Value>(text) else {
+        return Vec::new();
+    };
+    for part in route {
+        node = match part {
+            PathPart::Key(k) => node.get(k.as_str()).cloned().unwrap_or_default(),
+            PathPart::Index(i) => node.get(*i).cloned().unwrap_or_default(),
+        };
+    }
+    node.as_mapping()
+        .map(|m| {
+            m.keys()
+                .filter_map(serde_yaml::Value::as_str)
+                .filter(|k| !route.is_empty() || !SPEC_KEYS.contains(k))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `component` spelled as the whole-spec serialiser spells a root component:
+/// its discriminator's line, then each option's, with no trailing newline.
+fn component_text(component: Component) -> Result<String, ChartTextRefusal> {
+    let spec = Spec {
+        root: Some(component),
+        ..Spec::default()
+    };
+    serialise_spec(&spec)
+        .map(|text| text.trim_end().to_string())
+        .map_err(|detail| ChartTextRefusal::Splice { detail })
 }
 
 /// The key a colour legend item is written under, the one a refusal names.
