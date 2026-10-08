@@ -301,10 +301,7 @@ const ATTRIBUTE_READS: [(&str, &str); 9] = [
     ("yReverse: $r\n", "params:\n  r: true\n"),
     ("colorScheme: $s\n", "params:\n  s: viridis\n"),
     ("xDomain: $ends\n", "params:\n  ends: [0, 100]\n"),
-    (
-        "xDomain: [$lo, $hi]\n",
-        "params:\n  lo: 0\n  hi: 100\n",
-    ),
+    ("xDomain: [$lo, $hi]\n", "params:\n  lo: 0\n  hi: 100\n"),
     ("xDomain: [0, $hi]\n", "params:\n  hi: 100\n"),
 ];
 

@@ -614,10 +614,7 @@ fn a_param_only_a_plot_attribute_reads_is_not_called_an_orphan() {
     for (attrs, params) in [
         ("colorScheme: $s\n", "params:\n  s: viridis\n"),
         ("xDomain: $ends\n", "params:\n  ends: [0, 100]\n"),
-        (
-            "xDomain: [$lo, $hi]\n",
-            "params:\n  lo: 0\n  hi: 100\n",
-        ),
+        ("xDomain: [$lo, $hi]\n", "params:\n  lo: 0\n  hi: 100\n"),
     ] {
         let through = compose(params, "a", "b", attrs);
         assert_eq!(
@@ -630,12 +627,7 @@ fn a_param_only_a_plot_attribute_reads_is_not_called_an_orphan() {
 
     // The one in the plain `xTicks: $n` form the card names: `n` is read, the
     // param beside it that nothing reads is the only orphan the banner names.
-    let beside = compose(
-        "params:\n  n: 3\n  orphan: 9\n",
-        "a",
-        "b",
-        "xTicks: $n\n",
-    );
+    let beside = compose("params:\n  n: 3\n  orphan: 9\n", "a", "b", "xTicks: $n\n");
     let lines = orphan_lines(&beside);
     assert_eq!(lines.len(), 1, "one orphan is named; got {lines:?}");
     assert!(
@@ -656,15 +648,12 @@ fn a_param_only_a_plot_attribute_reads_is_not_called_an_orphan() {
 /// the key absent does.
 #[test]
 fn a_param_holding_a_param_raises_no_false_tick_count_line() {
-    let held = compose(
-        "params:\n  q: 3\n  p: $q\n",
-        "a",
-        "b",
-        "xTicks: $p\n",
-    );
+    let held = compose("params:\n  q: 3\n  p: $q\n", "a", "b", "xTicks: $p\n");
     let lines = held.diagnostics.lines();
     assert!(
-        lines.iter().all(|line| !line.contains("is not a whole number")),
+        lines
+            .iter()
+            .all(|line| !line.contains("is not a whole number")),
         "a param holding a param raises no tick-count line; got {lines:?}"
     );
     assert!(
