@@ -10,6 +10,7 @@
 //! alone (the spec and the text it writes), and the window (the chart it draws,
 //! the status band, the unsaved mark, the file Save writes).
 
+use brightfield_protocol::{write_chart_edit, ChartTextRefusal};
 use brightfield_render::channel::Channel;
 use brightfield_render::scale::{Scale, ScaleSet};
 use brightfield_shell::app::CHART;
@@ -23,7 +24,6 @@ use brightfield_shell::shelf_edit::{put_setting, SettingWrite};
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::text_ink;
 use brightfield_shell::window::{Boot, MeridianApp, SHELF_EDIT_STATUS_ID, UNSAVED_MARK};
-use brightfield_protocol::{write_chart_edit, ChartTextRefusal};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::{Spec, SpecValue};
 use brightfield_spec::edit::{plot_at_path, ChartEdit};
@@ -214,8 +214,14 @@ fn muted_zero() -> ColumnList {
 fn a_row_that_does_not_apply_changes_nothing_and_the_foot_gives_the_reason() {
     let mut list = muted_zero();
     find(&mut list, "zero");
-    let row = list.setting_cursor().expect("the cursor is on zero").clone();
-    let reason = row.reason.clone().expect("zero does not apply on a log axis");
+    let row = list
+        .setting_cursor()
+        .expect("the cursor is on zero")
+        .clone();
+    let reason = row
+        .reason
+        .clone()
+        .expect("zero does not apply on a log axis");
     for key in [
         egui::Key::H,
         egui::Key::L,
@@ -309,22 +315,43 @@ fn a_click_on_a_rows_value_steps_it_and_the_row_under_the_pointer_draws_chips() 
         stage.draw(&mut list, vec![]);
     }
     let rest = stage.draw(&mut list, vec![]);
-    let scale = rest.settings.iter().find(|r| r.name == SCALE_ROW).expect("scale row");
-    let title = rest.settings.iter().find(|r| r.name == "title").expect("title row");
+    let scale = rest
+        .settings
+        .iter()
+        .find(|r| r.name == SCALE_ROW)
+        .expect("scale row");
+    let title = rest
+        .settings
+        .iter()
+        .find(|r| r.name == "title")
+        .expect("title row");
     assert!(
         title.chips.is_none(),
         "the title row takes typed text and draws no chips"
     );
-    assert!(scale.chips.is_none(), "the scale row is not under the cursor or the pointer");
+    assert!(
+        scale.chips.is_none(),
+        "the scale row is not under the cursor or the pointer"
+    );
 
     // The pointer over the scale row: its chips are drawn.
     let value = scale.value_zone.center();
     let over = stage.draw(&mut list, vec![egui::Event::PointerMoved(value)]);
-    let over = stage.draw(&mut list, vec![]).settings.len().min(over.settings.len());
+    let over = stage
+        .draw(&mut list, vec![])
+        .settings
+        .len()
+        .min(over.settings.len());
     assert!(over > 0);
     let after = stage.draw(&mut list, vec![]);
-    let scale = after.settings.iter().find(|r| r.name == SCALE_ROW).expect("scale row");
-    let [back, forward] = scale.chips.expect("the row under the pointer draws its chips");
+    let scale = after
+        .settings
+        .iter()
+        .find(|r| r.name == SCALE_ROW)
+        .expect("scale row");
+    let [back, forward] = scale
+        .chips
+        .expect("the row under the pointer draws its chips");
     assert!(
         back.right() <= forward.left() && forward.right() <= scale.marker.left(),
         "the chips stand at the trailing edge, before the marker"
@@ -338,7 +365,11 @@ fn a_click_on_a_rows_value_steps_it_and_the_row_under_the_pointer_draws_chips() 
     ] {
         reports.extend(stage.draw(&mut list, events).reports);
     }
-    assert_eq!(reports, [set(SCALE_ROW, word("symlog"))], "a click on the value");
+    assert_eq!(
+        reports,
+        [set(SCALE_ROW, word("symlog"))],
+        "a click on the value"
+    );
 
     let back_at = back.center();
     let mut reports = Vec::new();
@@ -350,7 +381,11 @@ fn a_click_on_a_rows_value_steps_it_and_the_row_under_the_pointer_draws_chips() 
     ] {
         reports.extend(stage.draw(&mut list, events).reports);
     }
-    assert_eq!(reports, [set(SCALE_ROW, word("linear"))], "a click on the ← chip");
+    assert_eq!(
+        reports,
+        [set(SCALE_ROW, word("linear"))],
+        "a click on the ← chip"
+    );
 
     let name_at = scale.name_rect.center();
     let mut reports = Vec::new();
@@ -372,7 +407,9 @@ fn a_click_on_a_rows_value_steps_it_and_the_row_under_the_pointer_draws_chips() 
 const BASE: &str = "data:\n  t:\n    - { a: 1 }\nplot:\n  - mark: dot\n    data: { from: t }\n    x: a\n    y: a\nwidth: 600\nheight: 300\n";
 
 fn row_in(text: &str, name: &str) -> SettingRow {
-    let spec = parse_spec(text, Format::Yaml).expect("the text parses").spec;
+    let spec = parse_spec(text, Format::Yaml)
+        .expect("the text parses")
+        .spec;
     let plot = plot_at_path(&spec, "root").expect("the root plot");
     ChannelSettings::of_plot(&spec, plot, &channels())
         .rows(ShelfChannel::X)
@@ -390,9 +427,17 @@ fn through_save(
     default: &SpecValue,
     write: &SettingWrite,
 ) -> (Option<ChartEdit>, String) {
-    let mut spec = parse_spec(text, Format::Yaml).expect("the text parses").spec;
-    let edit = put_setting(&mut spec, &ComponentPath("root".to_string()), key, default, write)
-        .expect("the root plot takes the edit");
+    let mut spec = parse_spec(text, Format::Yaml)
+        .expect("the text parses")
+        .spec;
+    let edit = put_setting(
+        &mut spec,
+        &ComponentPath("root".to_string()),
+        key,
+        default,
+        write,
+    )
+    .expect("the root plot takes the edit");
     let written = edit.as_ref().map_or_else(
         || text.to_string(),
         |e| write_chart_edit(text, e).expect("Save places the edit"),
@@ -401,7 +446,9 @@ fn through_save(
 }
 
 fn attribute(text: &str, key: &str) -> Option<SpecValue> {
-    let spec = parse_spec(text, Format::Yaml).expect("the text parses").spec;
+    let spec = parse_spec(text, Format::Yaml)
+        .expect("the text parses")
+        .spec;
     plot_at_path(&spec, "root")
         .expect("the root plot")
         .attributes
@@ -419,7 +466,8 @@ fn a_number_and_a_switch_reach_the_file_as_their_type() {
         ("xZero", SpecValue::Bool(false), SpecValue::Bool(true)),
         ("xReverse", SpecValue::Bool(false), SpecValue::Bool(true)),
     ] {
-        let (edit, written) = through_save(BASE, key, &default, &SettingWrite::Value(value.clone()));
+        let (edit, written) =
+            through_save(BASE, key, &default, &SettingWrite::Value(value.clone()));
         assert!(edit.is_some(), "{key}: no edit was made");
         assert_eq!(
             attribute(&written, key),
@@ -435,7 +483,12 @@ fn a_number_and_a_switch_reach_the_file_as_their_type() {
 fn a_key_the_plot_inherits_from_plot_defaults_is_written_on_the_plot_and_wins() {
     let text = format!("plotDefaults:\n  xGrid: false\n{BASE}");
     let default = SpecValue::Bool(true);
-    let (edit, written) = through_save(&text, "xGrid", &default, &SettingWrite::Value(default.clone()));
+    let (edit, written) = through_save(
+        &text,
+        "xGrid",
+        &default,
+        &SettingWrite::Value(default.clone()),
+    );
     assert!(
         matches!(edit, Some(ChartEdit::SetPlotAttribute { .. })),
         "the default's own value is a write on the plot here, not a removal: {edit:?}"
@@ -468,18 +521,38 @@ fn a_key_the_plot_inherits_from_plot_defaults_is_written_on_the_plot_and_wins() 
 fn a_default_is_the_key_taken_out_and_backspace_leaves_the_both_axes_key_standing() {
     let text = format!("{BASE}xScale: log\n");
     let linear = SpecValue::String("linear".to_string());
-    let (edit, written) = through_save(&text, "xScale", &linear, &SettingWrite::Value(linear.clone()));
-    assert!(matches!(edit, Some(ChartEdit::RemovePlotAttribute { .. })), "{edit:?}");
-    assert!(!written.contains("xScale"), "linear is written as no key:\n{written}");
+    let (edit, written) = through_save(
+        &text,
+        "xScale",
+        &linear,
+        &SettingWrite::Value(linear.clone()),
+    );
+    assert!(
+        matches!(edit, Some(ChartEdit::RemovePlotAttribute { .. })),
+        "{edit:?}"
+    );
+    assert!(
+        !written.contains("xScale"),
+        "linear is written as no key:\n{written}"
+    );
     assert!(!row_in(&written, SCALE_ROW).set, "the row reads auto");
 
     let text = format!("{BASE}grid: false\nxGrid: true\n");
     assert_eq!(row_in(&text, GRID_ROW).value, "on");
     let on = SpecValue::Bool(true);
     let (edit, written) = through_save(&text, "xGrid", &on, &SettingWrite::Auto);
-    assert!(matches!(edit, Some(ChartEdit::RemovePlotAttribute { .. })), "{edit:?}");
-    assert!(!written.contains("xGrid"), "the plot's xGrid is out:\n{written}");
-    assert!(written.contains("grid: false"), "the bare grid stands:\n{written}");
+    assert!(
+        matches!(edit, Some(ChartEdit::RemovePlotAttribute { .. })),
+        "{edit:?}"
+    );
+    assert!(
+        !written.contains("xGrid"),
+        "the plot's xGrid is out:\n{written}"
+    );
+    assert!(
+        written.contains("grid: false"),
+        "the bare grid stands:\n{written}"
+    );
     let row = row_in(&written, GRID_ROW);
     assert_eq!(
         (row.value.as_str(), row.set, row.from),
@@ -493,7 +566,10 @@ fn a_default_is_the_key_taken_out_and_backspace_leaves_the_both_axes_key_standin
     );
     // Stepping grid on while `grid:` says off writes the axis's own `true`.
     let (edit, written) = through_save(&written, "xGrid", &on, &SettingWrite::Value(on.clone()));
-    assert!(matches!(edit, Some(ChartEdit::SetPlotAttribute { .. })), "{edit:?}");
+    assert!(
+        matches!(edit, Some(ChartEdit::SetPlotAttribute { .. })),
+        "{edit:?}"
+    );
     assert_eq!(attribute(&written, "xGrid"), Some(SpecValue::Bool(true)));
 }
 
@@ -560,7 +636,10 @@ impl Window {
             _root: root,
         };
         win.settle();
-        assert!(win.app.focus_pane(PaneKey::new(CHART)), "the pane takes focus");
+        assert!(
+            win.app.focus_pane(PaneKey::new(CHART)),
+            "the pane takes focus"
+        );
         win.settle();
         win
     }
@@ -630,7 +709,7 @@ impl Window {
 
     /// The cursor to the settings row `name`: from the top for a head row, by
     /// the query for a row found by name.
-    fn to_row(&mut self, name: &str) {
+    fn cursor_to_row(&mut self, name: &str) {
         if name == SCALE_ROW {
             self.type_letter(egui::Key::J, "j");
         } else {
@@ -668,7 +747,10 @@ impl Window {
 
     /// The scale the hero was last drawn against on x.
     fn drawn_x_scale(&self) -> Option<Scale> {
-        self.app.chart_doc().composed.plots[0].scales.get(Channel::X).cloned()
+        self.app.chart_doc().composed.plots[0]
+            .scales
+            .get(Channel::X)
+            .cloned()
     }
 
     fn marked_unsaved(&self) -> bool {
@@ -709,18 +791,21 @@ impl Window {
     /// Keep x's scale at log, its grid off and its reverse on, by the keys.
     fn log_then_grid_off_then_reverse_on(&mut self) {
         self.open_x_settings();
-        self.to_row("scale");
+        self.cursor_to_row("scale");
         self.type_letter(egui::Key::L, "l");
-        assert_eq!(self.attribute("xScale"), Some(SpecValue::String("log".into())));
+        assert_eq!(
+            self.attribute("xScale"),
+            Some(SpecValue::String("log".into()))
+        );
         assert!(
             matches!(self.drawn_x_scale(), Some(Scale::Log { .. })),
             "the chart did not draw the log scale at once"
         );
-        self.to_row("grid");
+        self.cursor_to_row("grid");
         self.type_letter(egui::Key::H, "h");
         assert_eq!(self.attribute("xGrid"), Some(SpecValue::Bool(false)));
         self.press(egui::Key::Escape);
-        self.to_row("reverse");
+        self.cursor_to_row("reverse");
         self.type_letter(egui::Key::L, "l");
         assert_eq!(self.attribute("xReverse"), Some(SpecValue::Bool(true)));
     }
@@ -739,7 +824,7 @@ fn u_steps_back_over_a_scale_a_grid_and_a_reverse_each_redrawn() {
     assert!(!win.marked_unsaved());
 
     win.open_x_settings();
-    win.to_row("scale");
+    win.cursor_to_row("scale");
     win.type_letter(egui::Key::L, "l");
     let key = brightfield_workbench::Verb::new("undo")
         .keys()
@@ -754,17 +839,24 @@ fn u_steps_back_over_a_scale_a_grid_and_a_reverse_each_redrawn() {
         .iter()
         .position(|(_, t)| t.contains(" rows"))
         .unwrap_or_else(|| panic!("the band drew no row count in {drawn:?}"));
-    assert!(at < counted, "the edit is not at the leading end: {drawn:?}");
+    assert!(
+        at < counted,
+        "the edit is not at the leading end: {drawn:?}"
+    );
     assert!(win.app.rail().drawn.contains(&SHELF_EDIT_STATUS_ID));
-    win.to_row("grid");
+    win.cursor_to_row("grid");
     win.type_letter(egui::Key::H, "h");
     win.press(egui::Key::Escape);
-    win.to_row("reverse");
+    win.cursor_to_row("reverse");
     win.type_letter(egui::Key::L, "l");
     assert!(win.marked_unsaved());
 
     win.type_letter(egui::Key::U, "u");
-    assert_eq!(win.attribute("xReverse"), None, "the first u restores reverse");
+    assert_eq!(
+        win.attribute("xReverse"),
+        None,
+        "the first u restores reverse"
+    );
     assert_eq!(win.attribute("xGrid"), Some(SpecValue::Bool(false)));
     win.type_letter(egui::Key::U, "u");
     assert_eq!(win.attribute("xGrid"), None, "the second u restores grid");
@@ -777,7 +869,11 @@ fn u_steps_back_over_a_scale_a_grid_and_a_reverse_each_redrawn() {
     );
     assert!(!win.marked_unsaved(), "the window is still marked unsaved");
     win.save();
-    assert_eq!(win.written(), before, "Save wrote a trace of the stepped values");
+    assert_eq!(
+        win.written(),
+        before,
+        "Save wrote a trace of the stepped values"
+    );
 }
 
 /// **AC7.** After Save the file and the chart both show each value set, and the
@@ -789,7 +885,11 @@ fn save_writes_each_value_set_and_none_for_a_row_stepped_back_to_auto() {
     win.log_then_grid_off_then_reverse_on();
     // Reverse back to brightfield's own: the row reads auto and the key goes.
     win.type_letter(egui::Key::H, "h");
-    assert_eq!(win.attribute("xReverse"), None, "stepped back, the key is out");
+    assert_eq!(
+        win.attribute("xReverse"),
+        None,
+        "stepped back, the key is out"
+    );
     // A count typed into a row reaches the file as a number.
     let ticks = RowEdit {
         channel: ShelfChannel::X,
@@ -802,19 +902,27 @@ fn save_writes_each_value_set_and_none_for_a_row_stepped_back_to_auto() {
     let written = win.written();
     let path = win.app.chart_doc().composed.plots[0].path.clone();
     let in_file = |key: &str| {
-        let spec = parse_spec(&written, Format::Yaml).expect("the file parses").spec;
+        let spec = parse_spec(&written, Format::Yaml)
+            .expect("the file parses")
+            .spec;
         plot_at_path(&spec, &path)
             .expect("the file holds the hero's plot")
             .attributes
             .get(key)
             .cloned()
     };
-    assert_eq!(in_file("xScale"), Some(SpecValue::String("log".into())), "{written}");
+    assert_eq!(
+        in_file("xScale"),
+        Some(SpecValue::String("log".into())),
+        "{written}"
+    );
     assert_eq!(in_file("xGrid"), Some(SpecValue::Bool(false)));
     assert_eq!(in_file("xTicks"), Some(SpecValue::Integer(3)));
     assert_eq!(in_file("xReverse"), None, "no key for auto:\n{written}");
     let reopened = |name: &str| {
-        let spec = parse_spec(&written, Format::Yaml).expect("the file parses").spec;
+        let spec = parse_spec(&written, Format::Yaml)
+            .expect("the file parses")
+            .spec;
         let plot = plot_at_path(&spec, &path).expect("the plot");
         let channels = brightfield_shell::shelf::ShelfChannels::of_plot(plot).expect("channels");
         ChannelSettings::of_plot(&spec, plot, &channels)
@@ -824,7 +932,16 @@ fn save_writes_each_value_set_and_none_for_a_row_stepped_back_to_auto() {
             .expect("the row")
             .clone()
     };
-    assert_eq!((reopened(SCALE_ROW).value, reopened(SCALE_ROW).set), ("log".to_string(), true));
-    assert_eq!((reopened(GRID_ROW).value, reopened(GRID_ROW).set), ("off".to_string(), true));
-    assert!(!reopened(REVERSE_ROW).set, "the row stepped back reads auto");
+    assert_eq!(
+        (reopened(SCALE_ROW).value, reopened(SCALE_ROW).set),
+        ("log".to_string(), true)
+    );
+    assert_eq!(
+        (reopened(GRID_ROW).value, reopened(GRID_ROW).set),
+        ("off".to_string(), true)
+    );
+    assert!(
+        !reopened(REVERSE_ROW).set,
+        "the row stepped back reads auto"
+    );
 }

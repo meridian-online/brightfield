@@ -852,7 +852,9 @@ impl SettingRow {
         }
         if self.name == SCALE_ROW {
             let at = SCALE_STEPS.iter().position(|w| *w == self.value)?;
-            let next = at.checked_add_signed(by).filter(|n| *n < SCALE_STEPS.len())?;
+            let next = at
+                .checked_add_signed(by)
+                .filter(|n| *n < SCALE_STEPS.len())?;
             return Some(SettingValue::Word(SCALE_STEPS[next].to_string()));
         }
         Some(SettingValue::Switch(self.value != ON))

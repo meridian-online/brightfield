@@ -5,8 +5,8 @@
 //! the hero drawn again from the spec it was kept onto. It acts with the list
 //! open, with the band holding the keys and with the pane holding them, and
 //! `⌘Z` acts from the list's query line, where a bare letter is text. The status
-//! band names the last kept column in the shelf's words after the row count it
-//! leads with, with the key beside it, and a click there sends the same verb. A
+//! band names the last kept column in the shelf's words at its leading end,
+//! before the row count, with the key beside it, and a click there sends the same verb. A
 //! Save puts what it wrote beyond the reach of `u`.
 //!
 //! Every assertion reads what a frame drew: the hero's composition, the text the

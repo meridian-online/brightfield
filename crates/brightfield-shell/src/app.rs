@@ -2125,8 +2125,8 @@ impl ChartDoc {
         use crate::shelf_edit::SettingWrite;
         self.drop_shelf_preview();
         self.return_to_now();
-        let Some((key, default)) = crate::shelf::row_key(edit.channel, edit.row)
-            .zip(crate::shelf::row_default(edit.row))
+        let Some((key, default)) =
+            crate::shelf::row_key(edit.channel, edit.row).zip(crate::shelf::row_default(edit.row))
         else {
             return false;
         };
