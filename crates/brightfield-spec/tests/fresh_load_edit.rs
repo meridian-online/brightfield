@@ -957,10 +957,10 @@ fn a_legend_moved_out_from_below_leaves_the_other_plots_legend_where_it_is() {
 }
 
 /// **Each placement is spelled by `wire_name`, and the command log prints that
-/// word.** A `Below` summary was asserted alone, so a changed word for `Right`
-/// or `None` left every test green. `wire_name` is also the word the legend
-/// row's three values are named by (its own doc), so the word is pinned
-/// itself and not only through the log line.
+/// word.** A `Below` summary was asserted on its own, so a changed word for
+/// `Right` or `None` left the suite green. `wire_name` is also the word the
+/// legend row's three values are named by (its own doc), so the word is
+/// asserted on `wire_name` itself as well as through the log line.
 #[test]
 fn each_placement_is_spelled_by_wire_name_and_the_command_log_prints_it() {
     for (at, word) in [
