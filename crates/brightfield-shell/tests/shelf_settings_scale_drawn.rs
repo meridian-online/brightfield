@@ -1,20 +1,23 @@
 //! **The scale row of an axis of names or dates reads the scale the chart draws,
 //! band or time, and stays unset.**
 //!
-//! Until now the row read the type the plot resolves to, which is `linear`,
-//! `log` or `symlog` and never the band or time scale a chart draws over names
-//! or dates, so an analyst read `linear` over an axis that is not. The row now
-//! reads what the chart was drawn against. It stays *auto* with no dot, since
-//! band and time are brightfield's own choice there and a value is the
-//! analyst's only when it differs from brightfield's own. The cell carrying the
-//! scale's name is `shelf_band.rs`; the window handing the list the scales its
-//! chart was drawn against is `shelf_settings_window.rs`.
+//! The row used to read the type the plot resolves to, which is `linear`, `log`
+//! or `symlog`, so an analyst read `linear` over an axis of names or of dates,
+//! which the chart draws as a band or a time scale. The row now reads what the
+//! chart was drawn against
+//! (`an_axis_of_names_reads_band_and_an_axis_of_dates_reads_time`). It stays
+//! *auto* with no dot, since band and time are brightfield's own choice there
+//! and a value is the analyst's when it differs from brightfield's own
+//! (`a_band_or_time_row_is_not_set_because_it_is_brightfields_own_choice`).
+//! The cell carrying the scale's name is `shelf_band.rs`; the window handing
+//! the list the scales its chart was drawn against is
+//! `shelf_settings_window.rs`.
 //!
-//! Every reading is at the altitude its claim lives at. What the row reads and
+//! Each reading is at the altitude its claim lives at. What the row reads and
 //! whether it is set are read off the rows `ChannelSettings` builds from a
 //! scale set. What `h` and `l` do is read off the reports a list answers a key
-//! with, since a write the list never reports is a write the chart never gets.
-//! The sentence under the cursor is read as the foot builds it.
+//! with, since a write the list does not report is a write the chart does not
+//! get. The sentence under the cursor is read as the foot builds it.
 
 use brightfield_render::channel::Channel;
 use brightfield_render::scale::{Scale, ScaleSet};
