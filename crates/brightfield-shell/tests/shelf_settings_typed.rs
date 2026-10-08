@@ -186,8 +186,8 @@ fn enter_keeps_the_typed_title_and_closes_the_field() {
     assert_eq!(list.tab(), ListTab::Settings, "the list stays on its rows");
 }
 
-/// **AC1.** `Esc` drops the preview and the field, and only the field: the list
-/// stays open on its rows, and a second `Esc` is the one that backs out.
+/// **AC1.** `Esc` drops the preview and the field and leaves the list open on
+/// its rows; a second `Esc`, with no field open, is the one that backs out.
 #[test]
 fn esc_drops_the_preview_and_the_field_and_leaves_the_list_open() {
     let mut list = list_over("");
@@ -688,9 +688,9 @@ fn a_title_is_previewed_on_the_axis_dropped_by_esc_and_kept_by_enter() {
 }
 
 /// **AC1.** `Enter` on an emptied title, in the window, is refused with the
-/// field open, the axis as it was and nothing written.
+/// field open, the axis as it was and no edit added.
 #[test]
-fn an_emptied_title_is_refused_in_the_window_and_writes_nothing() {
+fn an_emptied_title_is_refused_in_the_window_and_adds_no_edit() {
     let mut win = Window::housing("title-empty");
     let edit_before = win.last_edit();
     win.press(egui::Key::Enter);

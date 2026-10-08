@@ -744,7 +744,7 @@ const REVERSE_SAYS: &str = "Whether the axis runs from high to low, which auto r
 /// default.
 const TITLE_SAYS: &str = "The words along the axis, which auto takes from the column's name.";
 
-/// What the title row's field says when `Enter` finds nothing typed in it.
+/// What the title row's field says when `Enter` finds no text typed in it.
 pub const TITLE_NEEDS_TEXT: &str = "a title needs text";
 
 /// The longest stretch of a refused count the sentence quotes back.
@@ -757,8 +757,9 @@ const QUOTED_AT_MOST: usize = 16;
 ///
 /// The judge is the reader's, not a range typed here, so a count the field keeps
 /// is a count the plot draws at: `0`, `2.5`, `abc` and a count past
-/// [`MAX_TICK_COUNT`] are all refused for the one reason, that the axis cannot aim
-/// its ticks at them.
+/// [`MAX_TICK_COUNT`] are refused for the one reason, that the axis cannot aim its
+/// ticks at them, and `the_field_and_the_reader_agree_over_what_is_a_count` asks
+/// both sides about each count from zero past the ceiling.
 ///
 /// # Errors
 ///
@@ -1745,7 +1746,7 @@ impl ColumnList {
 
     /// What the open field holds, as the edit it would keep: the title's trimmed
     /// words, or the count. `Err` carries the sentence for a value the row
-    /// refuses, and `Ok(None)` a field with nothing in it to keep.
+    /// refuses, and `Ok(None)` a field with no text in it to keep.
     fn field_edit(&self) -> Result<Option<RowEdit>, String> {
         let Some(field) = &self.field else {
             return Ok(None);
