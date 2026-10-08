@@ -910,10 +910,13 @@ fn short() -> ColumnList {
     list_on_format_drawn("xTickFormat: '~s'", &drawn_to(35_682.0))
 }
 
-/// The format row with the custom field open on `,d`, selected.
+/// The format row over a file's `,d`, which no preset writes, with `Enter` having
+/// opened the field on it: the specifier selected, in the sunken field ruled in the
+/// focus ink, and the foot printing what the field takes and the two keys.
 fn custom_open() -> ColumnList {
-    let mut list = list_on_format_drawn("xTickFormat: ',f'", &drawn_to(35_682.0));
-    list.feed_events(&[key_event(egui::Key::Enter), text(",d")]);
+    let mut list = list_on_format_drawn("xTickFormat: ',d'", &drawn_to(35_682.0));
+    list.feed_events(&[key_event(egui::Key::Enter)]);
+    assert_eq!(list.field(), Some(&field(",d", true, None)));
     list
 }
 

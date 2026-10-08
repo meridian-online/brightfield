@@ -2431,10 +2431,6 @@ const SETTINGS_HINTS: [(&str, &str); 4] = [
     ("Esc", "back"),
 ];
 
-/// The narrowest room, in points, the format row's sample is drawn into: less
-/// than this and the sample is left out rather than clipped to a stub.
-const SAMPLE_ROOM_AT_LEAST: f32 = 24.0;
-
 /// The keys the foot prints while a typed row's field is open.
 const FIELD_HINTS: [(&str, &str); 2] = [("Enter", "keep"), ("Esc", "drop")];
 
@@ -2931,24 +2927,29 @@ impl ColumnList {
 
             // The `←` `→` chips, on the row under the cursor or the pointer where
             // `h` and `l` step it: at the trailing edge, beside the marker.
-            let chips = (row.steps() && (on || response.hovered())).then(|| {
-                let gap = spacing::SPACE_2;
-                let size = egui::vec2(2.0 * chip.x + gap, chip.y);
-                let at = egui::Rect::from_min_size(
-                    egui::pos2(right - size.x, line.center().y - size.y / 2.0),
-                    size,
-                );
-                let mut pair = ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(at)
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                );
-                pair.spacing_mut().item_spacing.x = gap;
-                let back = key_chip(&mut pair, "\u{2190}").rect;
-                let forward = key_chip(&mut pair, "\u{2192}").rect;
-                right = back.left() - spacing::SPACE_3;
-                [back, forward]
-            });
+            // A format that reads custom draws none, as the frames draw it: the
+            // room goes to its sample, and the foot says what `h` and `l` do.
+            let own_specifier = row.name == FORMAT_ROW && row.value == CUSTOM_FORMAT;
+            let chips =
+                (row.steps() && field.is_none() && !own_specifier && (on || response.hovered()))
+                    .then(|| {
+                        let gap = spacing::SPACE_2;
+                        let size = egui::vec2(2.0 * chip.x + gap, chip.y);
+                        let at = egui::Rect::from_min_size(
+                            egui::pos2(right - size.x, line.center().y - size.y / 2.0),
+                            size,
+                        );
+                        let mut pair = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(at)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+                        pair.spacing_mut().item_spacing.x = gap;
+                        let back = key_chip(&mut pair, "\u{2190}").rect;
+                        let forward = key_chip(&mut pair, "\u{2192}").rect;
+                        right = back.left() - spacing::SPACE_3;
+                        [back, forward]
+                    });
             let value_zone = egui::Rect::from_min_max(
                 egui::pos2(content.left() + name_column + spacing::SPACE_3, rect.top()),
                 egui::pos2(marker.left(), line.bottom()),
@@ -3035,8 +3036,10 @@ impl ColumnList {
                 painter.galley(at.min, value, ink);
                 (at, None)
             };
-            // The format's sample, muted, after the value; it gives way to the
-            // chips and the word *auto*, which have taken their room off `right`.
+            // The format's sample, muted, after the value. It gives way to the
+            // chips and the word *auto*, which have taken their room off `right`,
+            // and is left out where it does not fit whole: a clipped sample reads
+            // as a different number.
             let sample_rect = row
                 .format
                 .as_ref()
@@ -3044,9 +3047,8 @@ impl ColumnList {
                 .filter(|_| field_rect.is_none())
                 .and_then(|text| {
                     let left = value_rect.right() + spacing::SPACE_3;
-                    let room = right - left;
-                    (room >= SAMPLE_ROOM_AT_LEAST).then(|| {
-                        let galley = text_ink::fit(&painter, text, ui_font(), room, muted);
+                    let galley = painter.layout_no_wrap(text.clone(), caption_font(), muted);
+                    (galley.size().x <= right - left).then(|| {
                         let at = egui::Rect::from_min_size(
                             egui::pos2(left, line.center().y - galley.size().y / 2.0),
                             galley.size(),

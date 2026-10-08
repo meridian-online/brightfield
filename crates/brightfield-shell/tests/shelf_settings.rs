@@ -685,11 +685,41 @@ fn a_row_is_set_by_value_so_a_written_linear_reads_auto_and_a_log_reads_set() {
             true,
         ),
         ("", ShelfChannel::X, FORMAT_ROW, AUTO, false),
-        ("xTickFormat: ',d'", ShelfChannel::X, FORMAT_ROW, "custom", true),
-        ("xTickFormat: ',f'", ShelfChannel::X, FORMAT_ROW, "number", true),
-        ("xTickFormat: '~s'", ShelfChannel::X, FORMAT_ROW, "short", true),
-        ("yTickFormat: '%'", ShelfChannel::Y, FORMAT_ROW, "percent", true),
-        ("yTickFormat: '$,f'", ShelfChannel::Y, FORMAT_ROW, "currency", true),
+        (
+            "xTickFormat: ',d'",
+            ShelfChannel::X,
+            FORMAT_ROW,
+            "custom",
+            true,
+        ),
+        (
+            "xTickFormat: ',f'",
+            ShelfChannel::X,
+            FORMAT_ROW,
+            "number",
+            true,
+        ),
+        (
+            "xTickFormat: '~s'",
+            ShelfChannel::X,
+            FORMAT_ROW,
+            "short",
+            true,
+        ),
+        (
+            "yTickFormat: '%'",
+            ShelfChannel::Y,
+            FORMAT_ROW,
+            "percent",
+            true,
+        ),
+        (
+            "yTickFormat: '$,f'",
+            ShelfChannel::Y,
+            FORMAT_ROW,
+            "currency",
+            true,
+        ),
     ];
     for (attrs, channel, name, value, set) in cases {
         let row = row_of(attrs, channel, name);
@@ -815,10 +845,7 @@ fn a_format_row_agrees_with_the_reader_over_what_is_a_format() {
                 }
             );
             if !reader_takes {
-                assert_eq!(
-                    row.value, AUTO,
-                    "`{attrs}`: a refused format reads auto"
-                );
+                assert_eq!(row.value, AUTO, "`{attrs}`: a refused format reads auto");
             }
             // The other axis's row is untouched by this key.
             let other = if channel == ShelfChannel::X {
