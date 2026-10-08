@@ -565,8 +565,8 @@ fn the_status_band_names_the_last_kept_column_and_a_click_takes_it_back() {
         .position(|(_, t)| t.contains(" rows"))
         .unwrap_or_else(|| panic!("the band drew no row count in {drawn:?}"));
     assert!(
-        counted < at,
-        "the edit is not named after the row count: {drawn:?}"
+        at < counted,
+        "the edit is not named at the band's leading end, before the row count: {drawn:?}"
     );
 
     win.keep_value_on_colour();

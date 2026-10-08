@@ -1574,9 +1574,11 @@ impl ColumnList {
 
     /// `Enter`, or a click on a row: keep the row under the cursor.
     fn keep(&mut self, out: &mut Vec<ListReport>) {
-        // A settings row is read and not yet set: `Enter` has no value to keep
-        // there until the cards that edit a row land.
+        // On a settings row `Enter` sets no value of its own, since a step is
+        // kept as it is made; it ends the query's typing and leaves the rows it
+        // narrowed to, so `h` `l` and `⌫` reach the row it found.
         if self.tab == ListTab::Settings {
+            self.querying = false;
             return;
         }
         if let Some(name) = self.cursor() {
@@ -1744,6 +1746,11 @@ impl ColumnList {
             | egui::Key::ArrowUp
             | egui::Key::ArrowDown
             | egui::Key::Tab => self.resolve(key, out),
+            // The arrows step a settings row from the query, where `h` and `l`
+            // are text.
+            egui::Key::ArrowLeft | egui::Key::ArrowRight if self.tab == ListTab::Settings => {
+                self.resolve(key, out);
+            }
             _ => {}
         }
     }
@@ -1929,13 +1936,10 @@ const ROW_HINTS: [(&str, &str); 5] = [
     ("Esc", "back"),
 ];
 
-/// The keys the foot prints on the settings: the keys that move the cursor and
-/// the two that change the row under it.
-const SETTINGS_HINTS: [(&str, &str); 6] = [
+/// The keys the foot prints on the settings.
+const SETTINGS_HINTS: [(&str, &str); 4] = [
     ("/", "search"),
     ("j k", "move"),
-    ("h l", "change"),
-    ("\u{232b}", "auto"),
     ("Tab", "columns"),
     ("Esc", "back"),
 ];
@@ -2662,7 +2666,8 @@ impl ColumnList {
 /// What the foot reads under the cursor's row: the reason the row does not
 /// apply where it carries one, else what the row does, with the key it is read
 /// from where that is not the axis's own.
-fn foot_sentence(row: &SettingRow) -> String {
+#[must_use]
+pub fn foot_sentence(row: &SettingRow) -> String {
     if let Some(reason) = &row.reason {
         let mut chars = reason.chars();
         let first = chars.next().map(|c| c.to_uppercase().to_string());
