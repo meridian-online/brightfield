@@ -716,7 +716,6 @@ impl Window {
             matches!(self.drawn_x_scale(), Some(Scale::Log { .. })),
             "the chart did not draw the log scale at once"
         );
-        self.press(egui::Key::Escape);
         self.to_row("grid");
         self.type_letter(egui::Key::H, "h");
         assert_eq!(self.attribute("xGrid"), Some(SpecValue::Bool(false)));
@@ -757,7 +756,6 @@ fn u_steps_back_over_a_scale_a_grid_and_a_reverse_each_redrawn() {
         .unwrap_or_else(|| panic!("the band drew no row count in {drawn:?}"));
     assert!(at < counted, "the edit is not at the leading end: {drawn:?}");
     assert!(win.app.rail().drawn.contains(&SHELF_EDIT_STATUS_ID));
-    win.press(egui::Key::Escape);
     win.to_row("grid");
     win.type_letter(egui::Key::H, "h");
     win.press(egui::Key::Escape);
@@ -802,15 +800,22 @@ fn save_writes_each_value_set_and_none_for_a_row_stepped_back_to_auto() {
     assert_eq!(win.attribute("xTicks"), Some(SpecValue::Integer(3)));
     win.save();
     let written = win.written();
-    assert_eq!(attribute(&written, "xScale"), Some(SpecValue::String("log".into())), "{written}");
-    assert_eq!(attribute(&written, "xGrid"), Some(SpecValue::Bool(false)));
-    assert_eq!(attribute(&written, "xTicks"), Some(SpecValue::Integer(3)));
-    assert!(!written.contains("xReverse"), "no key for auto:\n{written}");
+    let path = win.app.chart_doc().composed.plots[0].path.clone();
+    let in_file = |key: &str| {
+        let spec = parse_spec(&written, Format::Yaml).expect("the file parses").spec;
+        plot_at_path(&spec, &path)
+            .expect("the file holds the hero's plot")
+            .attributes
+            .get(key)
+            .cloned()
+    };
+    assert_eq!(in_file("xScale"), Some(SpecValue::String("log".into())), "{written}");
+    assert_eq!(in_file("xGrid"), Some(SpecValue::Bool(false)));
+    assert_eq!(in_file("xTicks"), Some(SpecValue::Integer(3)));
+    assert_eq!(in_file("xReverse"), None, "no key for auto:\n{written}");
     let reopened = |name: &str| {
         let spec = parse_spec(&written, Format::Yaml).expect("the file parses").spec;
-        let plot = plot_at_path(&spec, "root")
-            .or_else(|| plot_at_path(&spec, &win.app.chart_doc().composed.plots[0].path))
-            .expect("the plot");
+        let plot = plot_at_path(&spec, &path).expect("the plot");
         let channels = brightfield_shell::shelf::ShelfChannels::of_plot(plot).expect("channels");
         ChannelSettings::of_plot(&spec, plot, &channels)
             .rows(ShelfChannel::X)
