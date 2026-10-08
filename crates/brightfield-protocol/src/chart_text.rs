@@ -699,3 +699,56 @@ fn current_value(text: &str, route: &[PathPart], key: &str) -> Option<serde_yaml
     }
     node.get(key).cloned()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use brightfield_spec::analysis::ComponentPath;
+
+    /// A plot with its colour legend under it, in a `vconcat`.
+    const BELOW: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b
+vconcat:
+  - plot:
+      - mark: dot   # the points
+        data: { from: t }
+        x: a
+        fill: b
+    name: scatter
+  - legend: color
+    for: scatter
+";
+
+    /// **A move to below, asked of a plot whose legend is already below, is
+    /// answered with the text it was given, byte for byte.** [`write_chart_edit`]
+    /// answers that move at its equal-spec return, before it calls
+    /// [`place_colour_legend`], so this arm is read here by calling the
+    /// function itself.
+    #[test]
+    fn the_already_below_arm_returns_the_text_it_was_given() {
+        let parsed = parse_spec(BELOW, Format::Yaml).expect("parses").spec;
+        let plot = "root/vconcat[0]";
+        let edit = ChartEdit::PlaceColourLegend {
+            plot: ComponentPath(plot.to_string()),
+            at: LegendPlacement::Below,
+        };
+        let route: Vec<PathPart> = plot_route(&parsed, plot)
+            .expect("the fixture holds the plot")
+            .into_iter()
+            .flat_map(|(concat, index)| [PathPart::from(concat), PathPart::from(index)])
+            .collect();
+
+        let written = place_colour_legend(
+            BELOW,
+            &parsed,
+            &parsed,
+            &edit,
+            route,
+            LegendPlacement::Below,
+        )
+        .expect("the arm answers");
+
+        assert_eq!(written, BELOW);
+    }
+}
