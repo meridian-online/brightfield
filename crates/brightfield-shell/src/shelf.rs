@@ -2780,14 +2780,6 @@ impl ColumnList {
                     egui::pos2(right, line.bottom() - 2.0),
                 );
                 painter.rect_filled(ground, 0.0, chrome::colour(sem.surfaces.sunken));
-                painter.rect_filled(
-                    egui::Rect::from_min_max(
-                        egui::pos2(ground.left(), ground.bottom() - 2.0),
-                        ground.right_bottom(),
-                    ),
-                    0.0,
-                    chrome::colour(sem.borders.focus),
-                );
                 let room = (ground.right() - spacing::SPACE_2 - value_left).max(0.0);
                 let typed = text_ink::fit(&painter, &open.text, ui_font(), room, primary);
                 let at = egui::Rect::from_min_size(
@@ -2808,6 +2800,15 @@ impl ColumnList {
                         egui::pos2(at.right() + 1.0, at.bottom()),
                     ],
                     egui::Stroke::new(1.0, chrome::colour(sem.editor.caret)),
+                );
+                // The rule goes on last, over the selection's wash.
+                painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(ground.left(), ground.bottom() - 2.0),
+                        ground.right_bottom(),
+                    ),
+                    0.0,
+                    chrome::colour(sem.borders.focus),
                 );
                 (at, Some(ground))
             } else {
