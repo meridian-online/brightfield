@@ -5575,6 +5575,11 @@ impl MeridianApp {
     ///   with its cursor on the column the channel holds again.
     /// - `Tab` turned the list to the axis's settings: the preview is backed out
     ///   of, and the rows read the chart as it was kept.
+    /// - A typed settings row's field holds a value (the title's words, a tick
+    ///   count): the hero is drawn with it as a preview
+    ///   ([`ChartDoc::preview_axis_row`]), of the batch's last only; the field
+    ///   emptied, refused or dropped by `Esc` backs the preview out, and `Enter`
+    ///   keeps the value as a step is kept.
     fn shelf_apply(&mut self, reports: Vec<ListReport>) {
         let Some(band) = self.charts.shelf.band.as_mut() else {
             return;

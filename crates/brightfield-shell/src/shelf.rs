@@ -824,7 +824,7 @@ const TICK_FORMAT_KEYS: [(ShelfChannel, &str); 2] = [
 pub enum SettingKind {
     /// One of a short list, stepped through by `h` and `l`: scale, format.
     Enumerated,
-    /// Text typed into the row: title.
+    /// Text typed into the row, in a field `Enter` opens: title and ticks.
     Typed,
 }
 
@@ -900,8 +900,9 @@ pub fn row_default(row: &str) -> Option<SpecValue> {
 
 impl SettingRow {
     /// Whether `h` and `l` step this row's value: a scale or a switch that
-    /// applies to the axis. The ticks, title and format take typed text, which
-    /// the cards behind this one give a field. A scale row that reads band or
+    /// applies to the axis. The ticks and the title take typed text, which
+    /// `Enter` opens a field for ([`RowField`]); the format's field is the card
+    /// behind this one's. A scale row that reads band or
     /// time does not step: the chart draws those two for names and dates, and
     /// the three it steps through are for numbers.
     #[must_use]
@@ -1331,8 +1332,9 @@ pub enum ListReport {
     /// to the settings; turning back, the list reports the column its cursor
     /// lands on as it does when the query moves it.
     Turned(ListTab),
-    /// A settings row was stepped, by `h` `l` or a click on its value, or put
-    /// back to auto by `⌫`: the window writes it to the plot.
+    /// A settings row was stepped, by `h` `l` or a click on its value, set to a
+    /// value typed into its field and kept by `Enter`, or put back to auto by
+    /// `⌫`: the window writes it to the plot.
     Set(RowEdit),
     /// A typed row's field holds a value the chart can draw: draw it, without
     /// keeping it. `None` takes the preview back, because the field was dropped,
