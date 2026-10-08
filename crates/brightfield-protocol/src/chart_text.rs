@@ -520,7 +520,10 @@ fn place_colour_legend(
             }
             let item = plot_at_path(edited, &after)
                 .and_then(|p| p.items.last())
-                .filter(|_| plot_at_path(parsed, plot_path).is_some_and(|p| colour_legend_item_indices(p).is_empty()));
+                .filter(|_| {
+                    plot_at_path(parsed, plot_path)
+                        .is_some_and(|p| colour_legend_item_indices(p).is_empty())
+                });
             match item {
                 Some(item) => {
                     let item = component_text(item.clone())?;

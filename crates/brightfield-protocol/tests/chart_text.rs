@@ -6,7 +6,9 @@
 
 use brightfield_protocol::{write_chart_edit, ChartTextRefusal};
 use brightfield_spec::analysis::ComponentPath;
-use brightfield_spec::edit::{self, apply, plot_path_after, ChartEdit, LegendPlacement, RefuseReason};
+use brightfield_spec::edit::{
+    self, apply, plot_path_after, ChartEdit, LegendPlacement, RefuseReason,
+};
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, Format, Spec, SpecValue};
 

@@ -830,7 +830,10 @@ fn legends_below(spec: &Spec, plot_path: &str) -> Option<(String, Vec<usize>)> {
         .filter_map(|below| {
             let (holder, step) = below.legend_path.rsplit_once('/')?;
             (holder == parent).then_some(())?;
-            step.strip_prefix("vconcat[")?.strip_suffix(']')?.parse().ok()
+            step.strip_prefix("vconcat[")?
+                .strip_suffix(']')?
+                .parse()
+                .ok()
         })
         .collect();
     (!legends.is_empty()).then(|| (parent.to_string(), legends))
@@ -857,9 +860,7 @@ pub fn fresh_plot_name(spec: &Spec) -> String {
             collect_legend_nodes(spec)
                 .into_iter()
                 .filter_map(|(_, legend)| match legend.options.get("for") {
-                    Some(ValueOrParamRef::Value(SpecValue::String(named))) => {
-                        Some(named.as_str())
-                    }
+                    Some(ValueOrParamRef::Value(SpecValue::String(named))) => Some(named.as_str()),
                     _ => None,
                 }),
         )
@@ -982,7 +983,8 @@ fn place_colour_legend(spec: &mut Spec, plot_path: &str, at: LegendPlacement) {
                     options.insert(key, value);
                 }
             }
-            let plot = std::mem::replace(slot, Component::VConcat(ConcatNode { items: Vec::new() }));
+            let plot =
+                std::mem::replace(slot, Component::VConcat(ConcatNode { items: Vec::new() }));
             *slot = Component::VConcat(ConcatNode {
                 items: vec![plot, colour_legend(options)],
             });

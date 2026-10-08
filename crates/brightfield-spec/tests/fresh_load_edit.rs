@@ -15,9 +15,9 @@ use brightfield_spec::edit::{
     plot_path_after, ChartEdit, LegendPlacement, RefuseReason,
 };
 use brightfield_spec::layout::collect_legend_nodes;
-use indexmap::IndexMap;
 use brightfield_spec::vocab::LegendChannel;
 use brightfield_spec::{parse_spec, Format, Spec};
+use indexmap::IndexMap;
 
 /// The generated map's shape: a ghost dot layer and a subset dot layer, each
 /// binding its own x and y, and the projection at plot level with no axis
@@ -589,11 +589,7 @@ fn text_value(s: &str) -> ValueOrParamRef<SpecValue> {
 /// `spec`'s root plot with its colour legend items taken out and `name:` set,
 /// in a `vconcat` with a colour legend `for:` that name carrying `options` —
 /// the shape a move to below writes, built here from its parts.
-fn wrapped(
-    spec: &Spec,
-    name: &str,
-    options: IndexMap<String, ValueOrParamRef<SpecValue>>,
-) -> Spec {
+fn wrapped(spec: &Spec, name: &str, options: IndexMap<String, ValueOrParamRef<SpecValue>>) -> Spec {
     let mut out = spec.clone();
     let Some(Component::Plot(mut plot)) = out.root.take() else {
         panic!("the fixture's root is a plot");
@@ -800,7 +796,11 @@ fn a_move_to_none_from_below_unwraps_the_plot_and_a_move_below_from_none_wraps_i
             .any(|c| matches!(c, Component::Legend(l) if l.channel == LegendChannel::Color)),
         "the plot holds a colour legend item"
     );
-    assert_eq!(collect_legend_nodes(&none), Vec::new(), "a standalone legend stayed");
+    assert_eq!(
+        collect_legend_nodes(&none),
+        Vec::new(),
+        "a standalone legend stayed"
+    );
     assert_eq!(plot_path_after(&below, &to_none), "root");
 
     let again = placed(&none, &place("root", LegendPlacement::Below));
