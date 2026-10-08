@@ -1676,20 +1676,12 @@ impl ColumnList {
         match verb {
             "move-shelf-next-row" => self.step(1, out),
             "move-shelf-prev-row" => self.step(-1, out),
-            // On a settings row `h` and `l` step the value: the channel beside
-            // is the columns' alone, and the step verbs are the settings'.
-            "move-shelf-left" | "move-shelf-right" if self.tab == ListTab::Settings => {
-                return false
-            }
+            // On a settings row `h` and `l` step the value, and on the columns
+            // they name the channel beside.
+            "move-shelf-left" if self.tab == ListTab::Settings => self.step_row(-1, out),
+            "move-shelf-right" if self.tab == ListTab::Settings => self.step_row(1, out),
             "move-shelf-left" => self.go_beside(-1, out),
             "move-shelf-right" => self.go_beside(1, out),
-            "step-shelf-setting-back" | "step-shelf-setting-forward"
-                if self.tab != ListTab::Settings =>
-            {
-                return false
-            }
-            "step-shelf-setting-back" => self.step_row(-1, out),
-            "step-shelf-setting-forward" => self.step_row(1, out),
             "set-shelf-setting-to-auto" if self.tab != ListTab::Settings => return false,
             "set-shelf-setting-to-auto" => self.row_to_auto(out),
             "narrow-shelf-list" => self.querying = true,
