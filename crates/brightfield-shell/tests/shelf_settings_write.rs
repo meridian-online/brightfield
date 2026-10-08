@@ -209,7 +209,7 @@ fn muted_zero() -> ColumnList {
 }
 
 /// **AC1.** On a row drawn muted as not applying, `h`, `l`, `←`, `→`, `Enter`
-/// and `⌫` change nothing, and the foot reads the reason.
+/// and `⌫` report no write, and the foot reads the reason.
 #[test]
 fn a_row_that_does_not_apply_changes_nothing_and_the_foot_gives_the_reason() {
     let mut list = muted_zero();
@@ -478,7 +478,7 @@ fn a_number_and_a_switch_reach_the_file_as_their_type() {
 }
 
 /// **AC2.** A key the plot takes from `plotDefaults` is written on the plot and
-/// the plot's value wins, where a removal could not be written at all.
+/// the plot's value wins, where Save refuses a removal of the key.
 #[test]
 fn a_key_the_plot_inherits_from_plot_defaults_is_written_on_the_plot_and_wins() {
     let text = format!("plotDefaults:\n  xGrid: false\n{BASE}");

@@ -230,7 +230,9 @@ fn shared_key(key: &str) -> Option<&'static str> {
 ///   value that differs, which would stand once the axis's own key is gone.
 ///
 /// [`SettingWrite::Auto`] is the `⌫` and takes the axis's own key out and
-/// nothing else: a plot that then reads another key's value reads it as set.
+/// leaves a key for both axes standing
+/// (`a_default_is_the_key_taken_out_and_backspace_leaves_the_both_axes_key_standing`):
+/// a plot that then reads that key's value reads it as set.
 ///
 /// The edit is applied through [`edit::apply_for_fresh_load`], so a title is not
 /// refused for being launch-fixed chrome, and the caller loads the page again.
