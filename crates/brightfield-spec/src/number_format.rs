@@ -30,9 +30,10 @@ const SI_PREFIXES: [&str; 17] = [
 /// The sign d3-format prints in front of a negative number.
 const MINUS: &str = "\u{2212}";
 
-/// The types d3-format formats by name. Any other letter is an alias for
-/// `.12~g`, and `n` is `,g`.
-const NAMED_TYPES: &str = "%bcdefgoprsXx";
+/// The types d3-format names, `n` among them, which is `,g`. Any other letter
+/// is an alias for `.12~g`: the reader takes it, as d3-format does, and
+/// [`NumberFormat::names_its_type`] is how an editor tells it from a type.
+const NAMED_TYPES: &str = "%bcdefgnoprsXx";
 
 /// How the padding of a `width` sits against the number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,6 +218,22 @@ impl NumberFormat {
             trim,
             ty,
         })
+    }
+
+    /// The letters d3-format names a type by, `n` among them: `%`, `b`, `c`, `d`,
+    /// `e`, `f`, `g`, `n`, `o`, `p`, `r`, `s`, `X` and `x`.
+    pub const TYPE_LETTERS: &'static str = NAMED_TYPES;
+
+    /// Whether the specifier's type is one d3-format names, or is left empty.
+    ///
+    /// [`Self::parse`] reads a letter that names no type (`q` in `.2q`) as
+    /// `.12~g`, as d3-format does, so a hand-edited file still draws. That is the
+    /// reader's judgement and this is the editor's: a letter no format names is a
+    /// typo far more often than a wish, so a field that keeps a specifier asks
+    /// this and refuses the ones that answer no.
+    #[must_use]
+    pub fn names_its_type(&self) -> bool {
+        self.ty.is_none_or(|c| NAMED_TYPES.contains(c))
     }
 
     /// Whether this specifier names a precision (`.2s`) rather than leaving it
