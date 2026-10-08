@@ -1630,3 +1630,65 @@ fn a_muted_row_with_its_reason_dark_matches_its_baseline() {
         Some("zero"),
     );
 }
+
+/// The settings list over a plot that sets `xScale: log`, drawn against a linear
+/// axis so every row applies, with the cursor `down` rows from the top.
+fn stepped_to_log_list(down: usize) -> ColumnList {
+    let mut list = settings_over_scale(
+        "xScale: log",
+        Scale::Linear {
+            domain_min: 0.0,
+            domain_max: 10.0,
+            range_start: 0.0,
+            range_end: 100.0,
+        },
+    );
+    for _ in 0..down {
+        list.feed_events(&[key_event(egui::Key::J)]);
+    }
+    list
+}
+
+/// The scale row stepped to log, the cursor on the row above it: the value in
+/// full ink and the set dot at the trailing edge, with no chips on the row.
+#[test]
+fn a_scale_row_stepped_to_log_light_matches_its_baseline() {
+    baseline_of(
+        "shelf_settings_scale_log_light",
+        Mode::Light,
+        stepped_to_log_list(0),
+        None,
+    );
+}
+
+#[test]
+fn a_scale_row_stepped_to_log_dark_matches_its_baseline() {
+    baseline_of(
+        "shelf_settings_scale_log_dark",
+        Mode::Dark,
+        stepped_to_log_list(0),
+        None,
+    );
+}
+
+/// The cursor on the scale row, which is set to log: its `←` `→` chips stand at
+/// the row's trailing edge beside the set dot, the value in full ink.
+#[test]
+fn the_cursors_row_with_its_chips_light_matches_its_baseline() {
+    baseline_of(
+        "shelf_settings_chips_light",
+        Mode::Light,
+        stepped_to_log_list(1),
+        None,
+    );
+}
+
+#[test]
+fn the_cursors_row_with_its_chips_dark_matches_its_baseline() {
+    baseline_of(
+        "shelf_settings_chips_dark",
+        Mode::Dark,
+        stepped_to_log_list(1),
+        None,
+    );
+}
