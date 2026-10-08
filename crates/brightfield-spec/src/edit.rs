@@ -820,16 +820,16 @@ pub fn colour_legend_covers(spec: &Spec, plot_path: &str) -> bool {
 /// holds the plot and the legends, and each legend's index in it, in order.
 /// `None` when no colour legend is drawn under the plot.
 ///
-/// Each legend sits after the plot in the same `vconcat`, so taking one out
-/// leaves the plot's index as it was.
+/// `below_legends` reads a legend as under a plot only when the two are
+/// entries of one `vconcat` and the legend is the later, so the plot's parent
+/// is the legends' too, and taking one out leaves the plot's index as it was.
 fn legends_below(spec: &Spec, plot_path: &str) -> Option<(String, Vec<usize>)> {
     let (parent, _) = plot_path.rsplit_once('/')?;
     let legends: Vec<usize> = below_legends(spec, Rect::new(0.0, 0.0, 0.0, 0.0))
         .into_iter()
         .filter(|below| below.plot_path == plot_path)
         .filter_map(|below| {
-            let (holder, step) = below.legend_path.rsplit_once('/')?;
-            (holder == parent).then_some(())?;
+            let (_, step) = below.legend_path.rsplit_once('/')?;
             step.strip_prefix("vconcat[")?
                 .strip_suffix(']')?
                 .parse()

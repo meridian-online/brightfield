@@ -1459,3 +1459,49 @@ fn a_channel_set_on_the_plot_at_its_path_after_a_move_below_is_written() {
     );
     assert_eq!(parse(&written), spec);
 }
+
+/// **A plot drawn below that also holds a colour legend item is left with one
+/// legend to the right, or none.** The file is not one a move writes, but an
+/// analyst can write it: to right takes the standalone legend out and does not
+/// write a second item, and to none takes both out.
+#[test]
+fn a_plot_below_that_also_holds_an_item_is_left_with_one_legend_or_none() {
+    let text = "\
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        fill: c
+      - legend: color
+    name: scatter
+  - legend: color
+    for: scatter
+";
+    let plot = "root/vconcat[0]";
+    assert_written(
+        text,
+        &place(plot, LegendPlacement::Right),
+        "\
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    fill: c
+  - legend: color
+name: scatter
+",
+    );
+    assert_written(
+        text,
+        &place(plot, LegendPlacement::None),
+        "\
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    fill: c
+name: scatter
+",
+    );
+}

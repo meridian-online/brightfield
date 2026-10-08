@@ -1,7 +1,7 @@
 //! A chart edit written into the chart file's own text.
 //!
 //! brightfield changes a chart by applying a [`ChartEdit`] to the parsed
-//! [`Spec`](brightfield_spec::Spec). [`serialise_spec`](brightfield_spec::serialise_spec)
+//! [`Spec`]. [`serialise_spec`]
 //! writes a whole spec afresh and keeps no comment, so it cannot put an edit
 //! into a file an analyst has read or written in. [`write_chart_edit`] writes
 //! the same edit into the text the spec was parsed from, as a change to one
