@@ -6,7 +6,7 @@
 
 use brightfield_protocol::{write_chart_edit, ChartTextRefusal};
 use brightfield_spec::analysis::ComponentPath;
-use brightfield_spec::edit::{self, apply, ChartEdit, RefuseReason};
+use brightfield_spec::edit::{self, apply, plot_path_after, ChartEdit, LegendPlacement, RefuseReason};
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, Format, Spec, SpecValue};
 
@@ -1108,4 +1108,352 @@ fn taking_a_colour_legend_off_a_flow_list_is_refused() {
         matches!(&refusal, ChartTextRefusal::Splice { .. }),
         "the refusal is {refusal:?}, not arcform's own for a flow collection"
     );
+}
+
+fn place(plot: &str, at: LegendPlacement) -> ChartEdit {
+    ChartEdit::PlaceColourLegend {
+        plot: ComponentPath(plot.to_string()),
+        at,
+    }
+}
+
+/// A chart file whose root is the plot, with its legend to the right: a
+/// comment at the head of the file, a comment on the plot's mark, a comment at
+/// the end of a mark's line, and a legend item carrying an option.
+const PLOT_AT_ROOT: &str = "\
+# Income against value, coloured by age.
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+plot:
+  # the points
+  - mark: dot
+    data: { from: t }
+    x: a   # income, in tens of thousands
+    y: b
+    fill: c
+  - legend: color
+    label: Age
+width: 300
+";
+
+/// [`PLOT_AT_ROOT`] with its legend below.
+const PLOT_AT_ROOT_BELOW: &str = "\
+# Income against value, coloured by age.
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+vconcat:
+  - plot:
+      # the points
+      - mark: dot
+        data: { from: t }
+        x: a   # income, in tens of thousands
+        y: b
+        fill: c
+    width: 300
+    name: chart
+  - legend: color
+    for: chart
+    label: Age
+";
+
+/// [`PLOT_AT_ROOT_BELOW`] with its legend to the right again: the file it
+/// started as, with the name the move to below gave the plot.
+const PLOT_AT_ROOT_RIGHT_AGAIN: &str = "\
+# Income against value, coloured by age.
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+plot:
+  # the points
+  - mark: dot
+    data: { from: t }
+    x: a   # income, in tens of thousands
+    y: b
+    fill: c
+  - legend: color
+    label: Age
+width: 300
+name: chart
+";
+
+/// [`PLOT_AT_ROOT_BELOW`] with no legend.
+const PLOT_AT_ROOT_NONE: &str = "\
+# Income against value, coloured by age.
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+plot:
+  # the points
+  - mark: dot
+    data: { from: t }
+    x: a   # income, in tens of thousands
+    y: b
+    fill: c
+width: 300
+name: chart
+";
+
+/// [`PLOT_AT_ROOT_NONE`] with its legend below: the legend carries only its
+/// `for:`, since there was no item to carry options from.
+const PLOT_AT_ROOT_NONE_BELOW: &str = "\
+# Income against value, coloured by age.
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+vconcat:
+  - plot:
+      # the points
+      - mark: dot
+        data: { from: t }
+        x: a   # income, in tens of thousands
+        y: b
+        fill: c
+    width: 300
+    name: chart
+  - legend: color
+    for: chart
+";
+
+/// A chart file where the plot is an entry of an `hconcat`, with its legend to
+/// the right, the same three comments, a comment above the entry, and a second
+/// plot that holds the name `chart`.
+const PLOT_IN_CONCAT: &str = "\
+# Two views of one table.
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+hconcat:
+  # the scatter
+  - plot:
+      # the points
+      - mark: dot
+        data: { from: t }
+        x: a   # income
+        y: b
+        fill: c
+      - legend: color
+    width: 300
+  - plot:
+      - mark: line
+        data: { from: t }
+        x: a
+        y: b
+    name: chart
+";
+
+/// [`PLOT_IN_CONCAT`] with the first plot's legend below. `chart` is the other
+/// plot's, so this one is `chart-2`.
+const PLOT_IN_CONCAT_BELOW: &str = "\
+# Two views of one table.
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+hconcat:
+  # the scatter
+  - vconcat:
+      - plot:
+          # the points
+          - mark: dot
+            data: { from: t }
+            x: a   # income
+            y: b
+            fill: c
+        width: 300
+        name: chart-2
+      - legend: color
+        for: chart-2
+  - plot:
+      - mark: line
+        data: { from: t }
+        x: a
+        y: b
+    name: chart
+";
+
+/// [`PLOT_IN_CONCAT_BELOW`] with the legend to the right again.
+const PLOT_IN_CONCAT_RIGHT_AGAIN: &str = "\
+# Two views of one table.
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+hconcat:
+  # the scatter
+  - plot:
+      # the points
+      - mark: dot
+        data: { from: t }
+        x: a   # income
+        y: b
+        fill: c
+      - legend: color
+    width: 300
+    name: chart-2
+  - plot:
+      - mark: line
+        data: { from: t }
+        x: a
+        y: b
+    name: chart
+";
+
+/// [`PLOT_IN_CONCAT_BELOW`] with no legend.
+const PLOT_IN_CONCAT_NONE: &str = "\
+# Two views of one table.
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+hconcat:
+  # the scatter
+  - plot:
+      # the points
+      - mark: dot
+        data: { from: t }
+        x: a   # income
+        y: b
+        fill: c
+    width: 300
+    name: chart-2
+  - plot:
+      - mark: line
+        data: { from: t }
+        x: a
+        y: b
+    name: chart
+";
+
+/// `edit` written into `before` is `expected` byte for byte, and the text reads
+/// back as the spec the fresh-load reducer makes of `before`'s parse.
+fn assert_written(before: &str, edit: &ChartEdit, expected: &str) {
+    let written = write_chart_edit(before, edit).unwrap_or_else(|e| panic!("{edit:?}: {e}"));
+    assert_eq!(written, expected, "{edit:?}");
+    assert_eq!(parse(&written), applied_fresh(before, edit), "{edit:?}");
+}
+
+/// **Each move, written into a chart file whose root is the plot, keeps the
+/// comment at the head of the file, the comment on the plot's mark and the
+/// comment at the end of the mark's line, and the text parses to the spec the
+/// edit made.** Right to below, below back to right, below to none, and none to
+/// below, each a whole file compared byte for byte.
+#[test]
+fn each_legend_move_on_a_plot_at_the_root_keeps_the_files_comments() {
+    assert_written(
+        PLOT_AT_ROOT,
+        &place("root", LegendPlacement::Below),
+        PLOT_AT_ROOT_BELOW,
+    );
+    assert_written(
+        PLOT_AT_ROOT_BELOW,
+        &place("root/vconcat[0]", LegendPlacement::Right),
+        PLOT_AT_ROOT_RIGHT_AGAIN,
+    );
+    assert_written(
+        PLOT_AT_ROOT_BELOW,
+        &place("root/vconcat[0]", LegendPlacement::None),
+        PLOT_AT_ROOT_NONE,
+    );
+    assert_written(
+        PLOT_AT_ROOT_NONE,
+        &place("root", LegendPlacement::Below),
+        PLOT_AT_ROOT_NONE_BELOW,
+    );
+}
+
+/// **The same four moves on a plot that is an entry of an `hconcat`**, where
+/// the `vconcat` takes the entry's place under the comment above it, and the
+/// plot is named past the name the other plot holds.
+#[test]
+fn each_legend_move_on_a_plot_in_a_concat_keeps_the_files_comments() {
+    assert_written(
+        PLOT_IN_CONCAT,
+        &place("root/hconcat[0]", LegendPlacement::Below),
+        PLOT_IN_CONCAT_BELOW,
+    );
+    assert_written(
+        PLOT_IN_CONCAT_BELOW,
+        &place("root/hconcat[0]/vconcat[0]", LegendPlacement::Right),
+        PLOT_IN_CONCAT_RIGHT_AGAIN,
+    );
+    assert_written(
+        PLOT_IN_CONCAT_BELOW,
+        &place("root/hconcat[0]/vconcat[0]", LegendPlacement::None),
+        PLOT_IN_CONCAT_NONE,
+    );
+    assert_written(
+        PLOT_IN_CONCAT_NONE,
+        &place("root/hconcat[0]", LegendPlacement::Below),
+        PLOT_IN_CONCAT_BELOW,
+    );
+}
+
+/// **From below on a `vconcat` that holds another entry, the move to right
+/// takes the standalone legend out and puts the item in the plot, and the
+/// other entry and the `vconcat` stay where they were.**
+#[test]
+fn a_legend_moved_right_beside_another_entry_leaves_the_vconcat_in_the_text() {
+    let text = "\
+vconcat:
+  - plot:
+      - mark: dot   # the points
+        data: { from: t }
+        x: a
+        fill: c
+    name: scatter
+  - legend: color
+    for: scatter
+    label: Age
+  # the trend
+  - plot:
+      - mark: line
+        data: { from: t }
+        x: a
+        y: b
+";
+    let expected = "\
+vconcat:
+  - plot:
+      - mark: dot   # the points
+        data: { from: t }
+        x: a
+        fill: c
+      - legend: color
+        label: Age
+    name: scatter
+  # the trend
+  - plot:
+      - mark: line
+        data: { from: t }
+        x: a
+        y: b
+";
+    assert_written(
+        text,
+        &place("root/vconcat[0]", LegendPlacement::Right),
+        expected,
+    );
+}
+
+/// **After a move to below, a set channel of `x` addressed to the plot at its
+/// new path applies through the fresh-load reducer the shelf uses and is
+/// written, and the text parses to both changes.** The reload gate would
+/// refuse the rebind, which changes the derived axis title; the fresh-load
+/// reducer does not.
+#[test]
+fn a_channel_set_on_the_plot_at_its_path_after_a_move_below_is_written() {
+    let below = place("root", LegendPlacement::Below);
+    let moved = plot_path_after(&parse(PLOT_AT_ROOT), &below);
+    assert_eq!(moved, "root/vconcat[0]");
+    let rebind = channel(&moved, 0, "x", "c");
+
+    let mut spec = parse(PLOT_AT_ROOT);
+    edit::apply_for_fresh_load(&mut spec, &below).expect("the move applies");
+    assert_eq!(
+        apply(&mut spec.clone(), &rebind),
+        Err(RefuseReason::WouldChangeAxisTitle),
+        "the reload gate accepts the rebind, so the test cannot tell the fresh-load reducer from it"
+    );
+    edit::apply_for_fresh_load(&mut spec, &rebind).expect("the rebind applies");
+
+    let written = write_all(PLOT_AT_ROOT, &[below, rebind]);
+
+    assert_eq!(
+        written,
+        PLOT_AT_ROOT_BELOW.replace(
+            "x: a   # income, in tens of thousands",
+            "x: c   # income, in tens of thousands"
+        )
+    );
+    assert_eq!(parse(&written), spec);
 }

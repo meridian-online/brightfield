@@ -47,6 +47,19 @@
 //!   back unchanged. Written back with [`ChartEdit::AddColourLegend`] the item
 //!   lands after the list's last item, so it returns to its place when it was
 //!   the last.
+//! - A [`ChartEdit::PlaceColourLegend`], the edit that moves a plot's colour
+//!   legend between its right, a band under it, and nowhere. Below is the
+//!   plot's keys nested under a `vconcat:` at their place by arcform's nest,
+//!   the plot given a `name:` when it had none, and a `legend: color` whose
+//!   `for:` names it appended to the `vconcat`; out from below is the legend
+//!   deleted and, when that leaves the plot alone in the `vconcat`, the plot's
+//!   lines lifted back into its place by arcform's lift. The nest and the lift
+//!   move each line with its comments, so a comment above a mark or at the end
+//!   of its line stays with it
+//!   (`each_legend_move_on_a_plot_in_a_concat_keeps_the_files_comments`). The
+//!   legend each move writes is the one the reducer made, in the whole-spec
+//!   serialiser's spelling; a comment on the legend's own lines is not kept.
+//!   Between right and none the move is the item edits' splice.
 //! - A [`ChartEdit::RemovePlotAttribute`], the edit that takes a map's
 //!   projection out. The key's line is taken out. By arcform's rule of comment
 //!   ownership a comment flush above the line, indented no deeper than it, is
@@ -55,6 +68,10 @@
 //!
 //! Change mark type, add mark and remove mark are refused by kind until each
 //! has a writer of its own.
+//!
+//! The splices are arcform's, so a placement move nests and lifts lines rather
+//! than writing them: `SpecEdit::Nest` and `SpecEdit::Lift`, at the arcform
+//! revision the workspace pins.
 //!
 //! **One gesture is several edits, written one at a time.** The shelf's edit
 //! on the generated map is a set channel on each of its two layers and a
