@@ -2243,6 +2243,10 @@ impl ColumnList {
     pub fn feed_events(&mut self, events: &[egui::Event]) -> Vec<ListReport> {
         let mut out = Vec::new();
         let mut opened_by_key = false;
+        // Whether the last key was the `l` that stepped onto the format's custom
+        // and opened its field: the `l` text that follows it in the frame is the
+        // same keystroke and is not typed into the field it opened.
+        let mut stepped_into_field = false;
         for event in events {
             match event {
                 egui::Event::Key {
@@ -2251,11 +2255,17 @@ impl ColumnList {
                     modifiers,
                     ..
                 } => {
-                    let was = self.querying;
+                    let (was, had_field) = (self.querying, self.field.is_some());
                     self.press(*key, *modifiers, &mut out);
                     opened_by_key = !was && self.querying;
+                    stepped_into_field = !had_field && self.field.is_some() && *key == egui::Key::L;
                 }
-                egui::Event::Text(text) if self.field.is_some() => self.field_type(text, &mut out),
+                egui::Event::Text(text) if self.field.is_some() => {
+                    if std::mem::take(&mut stepped_into_field) && text == "l" {
+                        continue;
+                    }
+                    self.field_type(text, &mut out);
+                }
                 egui::Event::Text(text) if self.querying => {
                     if std::mem::take(&mut opened_by_key) && text == "/" {
                         continue;
