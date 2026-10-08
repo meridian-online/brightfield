@@ -1618,8 +1618,10 @@ pub fn resolve_colour_domain(
 /// The parser reads `$n` as a recorded deferral and says nothing, because it has
 /// not yet seen the value the param will hold; the value is known where the
 /// params are, when the plot is composed, and again after each write. A
-/// selection, a param nobody declared, a held value the judge reads, and a key
-/// written as a literal (named at parse time) raise nothing here.
+/// selection, a param nobody declared, a param that holds a param (a deferral,
+/// as a literal `$name` is: `a_param_holding_a_param_raises_no_warning_and_reads_as_the_key_absent`),
+/// a held value the judge reads, and a key written as a literal (named at parse
+/// time) raise nothing here.
 ///
 /// Each arm asks the judge the resolver reads the key through, and builds the
 /// variant the parser builds, with the value text the parser shows, so the
