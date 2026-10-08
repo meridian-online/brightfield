@@ -175,8 +175,8 @@ pub enum ChartEdit {
     },
     /// Put the focused plot's colour legend at `at`: to the right of the
     /// plot's picture, under it, or nowhere. Count-stable, and targets no
-    /// mark. Unlike every other edit it can change the tree the plot sits in,
-    /// so a later edit finds the plot at [`plot_path_after`]'s path.
+    /// mark. It can change the tree the plot sits in, which no other kind
+    /// does, so a later edit finds the plot at [`plot_path_after`]'s path.
     ///
     /// Right is a `legend: color` item of the plot, the item
     /// [`ChartEdit::AddColourLegend`] writes. Below is the one shape a Mosaic
@@ -841,8 +841,8 @@ fn legends_below(spec: &Spec, plot_path: &str) -> Option<(String, Vec<usize>)> {
 
 /// The index of each colour legend drawn under the plot at `plot_path`, in the
 /// `vconcat` that holds the plot: the concat [`plot_route`]'s last step names.
-/// `None` when no colour legend is drawn under the plot, which is every
-/// placement but [`LegendPlacement::Below`].
+/// `None` when no colour legend is drawn under the plot: the plot's
+/// placement is [`LegendPlacement::Right`] or [`LegendPlacement::None`].
 #[must_use]
 pub fn colour_legends_below(spec: &Spec, plot_path: &str) -> Option<Vec<usize>> {
     legends_below(spec, plot_path).map(|(_, legends)| legends)

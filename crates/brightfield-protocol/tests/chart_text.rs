@@ -1193,8 +1193,8 @@ width: 300
 name: chart
 ";
 
-/// [`PLOT_AT_ROOT_NONE`] with its legend below: the legend carries only its
-/// `for:`, since there was no item to carry options from.
+/// [`PLOT_AT_ROOT_NONE`] with its legend below: the legend carries its `for:`
+/// and no other option, since there was no item to carry options from.
 const PLOT_AT_ROOT_NONE_BELOW: &str = "\
 # Income against value, coloured by age.
 data:
