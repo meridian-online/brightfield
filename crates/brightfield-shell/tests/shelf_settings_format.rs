@@ -304,7 +304,8 @@ fn a_specifier_no_preset_matches_reads_as_custom_and_the_foot_says_what_h_and_l_
 }
 
 /// **AC4.** A type letter d3-format does not name is refused under the row, naming
-/// the letters it takes, and the field stays open: `Enter` keeps nothing.
+/// the letters it takes, and the field stays open: `Enter` keeps no refused
+/// specifier.
 #[test]
 fn a_type_letter_d3_format_does_not_name_is_refused_naming_the_letters_and_stays_open() {
     let mut list = list_on_format("xTickFormat: ',f'");

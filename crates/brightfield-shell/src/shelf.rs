@@ -862,11 +862,11 @@ const FORMAT_FIELD_SAYS: &str =
 /// reads it, or the sentence that says why the row refuses it.
 ///
 /// The judge is the spec's own, so a specifier the field keeps is one the axis
-/// draws: [`NumberFormat::parse`] says whether the text is a specifier at all, and
+/// draws: [`NumberFormat::parse`] says whether the text is a specifier, and
 /// [`NumberFormat::names_its_type`] whether its type is a letter d3-format names,
 /// which the reader does not ask because it draws an unknown letter as `.12~g`.
-/// `a_format_field_refuses_what_is_no_specifier_and_a_type_no_format_names` asks
-/// both about each letter.
+/// `the_field_refuses_what_the_reader_takes_exactly_at_a_type_no_format_names`
+/// asks both about each letter.
 ///
 /// # Errors
 ///
@@ -1099,7 +1099,8 @@ pub struct SettingRow {
     /// axis's own.
     pub from: Option<&'static str>,
     /// What only the format row knows: the key it writes, the specifier the file
-    /// holds, and the sample. `None` on every other row.
+    /// holds, and the sample. `None` on the title, ticks, grid, zero and reverse
+    /// rows and on the scale row.
     pub format: Option<FormatFacts>,
 }
 

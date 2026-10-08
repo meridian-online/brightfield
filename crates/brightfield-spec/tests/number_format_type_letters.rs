@@ -51,8 +51,9 @@ fn a_specifier_with_no_type_names_none_and_is_not_refused_for_it() {
     }
 }
 
-/// **The list the refusal prints is the list the judgement keeps**: the crate's
-/// letters are the fourteen, in the order a sentence can name them.
+/// **The list the refusal prints is the list the judgement keeps**: the letters the
+/// crate prints are the fourteen the judgement names, and each is held to name
+/// its type.
 #[test]
 fn the_type_letters_the_crate_prints_are_the_ones_it_accepts() {
     let printed: Vec<char> = NumberFormat::TYPE_LETTERS.chars().collect();
