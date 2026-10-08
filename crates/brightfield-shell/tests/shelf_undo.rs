@@ -534,7 +534,7 @@ fn save_after_taking_back_the_colour_writes_the_x_edit_alone() {
 }
 
 /// **AC4.** The status band names the last kept column in the shelf's words,
-/// after the row count it leads with and with the key beside it; a second kept
+/// at its leading end, before the row count, with the key beside it; a second kept
 /// column is named in place of the first; and a click on the line takes the
 /// column back, which names the one before.
 #[test]
