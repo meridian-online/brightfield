@@ -312,6 +312,12 @@ fn collect_subscribers(component: &Component, path: &str, graph: &mut Subscriber
             }
         }
         Component::Plot(p) => {
+            // A param a plot attribute names (`xTicks: $n`, `xDomain: [$lo, $hi]`)
+            // is read by the plot, so it is not dead. The path is not a mark's,
+            // so the engine's mark-only dispatch leaves it alone.
+            for (key, value) in &p.attributes {
+                collect_spec_value_subscribers(value, &format!("{path}/plot/{key}"), graph);
+            }
             for (i, item) in p.items.iter().enumerate() {
                 collect_subscribers(item, &format!("{path}/plot[{i}]"), graph);
             }

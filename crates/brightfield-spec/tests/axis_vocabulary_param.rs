@@ -15,6 +15,7 @@
 //! because a fixture whose default is the value asked for would pass without the
 //! param being read.
 
+use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::layout::{
     collect_plot_nodes, param_held_axis_warnings, resolve_axis_ends_in, resolve_axis_reverse_in,
     resolve_grid_lines_in, resolve_tick_counts_in, resolve_tick_formats_in,
@@ -270,6 +271,100 @@ fn a_literal_key_is_named_by_the_parser_and_not_again_through_params() {
         assert!(
             held_warnings(&literal).is_empty(),
             "{key}: {value} is named at parse time and has no param to name again"
+        );
+    }
+}
+
+/// The names a spec's analysis calls dead: declared, and read by nothing.
+fn dead_params(out: &ParseOutput) -> Vec<String> {
+    let analysis = analyse_spec(&out.spec).expect("the spec analyses");
+    let mut dead: Vec<String> = analysis
+        .warnings
+        .iter()
+        .filter_map(|w| match w {
+            ParseWarning::DeadParam { name } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    dead.sort();
+    dead
+}
+
+/// A plot attribute that reads a param, and the params block that declares what
+/// it reads. The attribute is a scalar, or an array of params, or an array
+/// that holds one.
+const ATTRIBUTE_READS: [(&str, &str); 9] = [
+    ("xTicks: $n\n", "params:\n  n: 3\n"),
+    ("yTickFormat: $f\n", "params:\n  f: \".1f\"\n"),
+    ("grid: $g\n", "params:\n  g: false\n"),
+    ("xZero: $z\n", "params:\n  z: true\n"),
+    ("yReverse: $r\n", "params:\n  r: true\n"),
+    ("colorScheme: $s\n", "params:\n  s: viridis\n"),
+    ("xDomain: $ends\n", "params:\n  ends: [0, 100]\n"),
+    (
+        "xDomain: [$lo, $hi]\n",
+        "params:\n  lo: 0\n  hi: 100\n",
+    ),
+    ("xDomain: [0, $hi]\n", "params:\n  hi: 100\n"),
+];
+
+/// **AC1.** A param that only a plot attribute reads is read: the subscriber
+/// graph lists the attribute against it, and the analysis does not call it dead.
+#[test]
+fn a_param_only_a_plot_attribute_reads_has_a_subscriber_and_is_not_dead() {
+    for (attrs, params) in ATTRIBUTE_READS {
+        let out = parsed(params, attrs);
+        let analysis = analyse_spec(&out.spec).expect("the spec analyses");
+        for name in out.spec.params.keys() {
+            let subscribers = analysis.subscriber_graph.get(name).map_or(0, Vec::len);
+            assert!(
+                attrs.contains(&format!("${name}")),
+                "the fixture's attribute `{}` reads `{name}`",
+                attrs.trim()
+            );
+            assert_eq!(
+                subscribers,
+                1,
+                "`{}` is the one reader of `{name}`",
+                attrs.trim()
+            );
+        }
+        assert_eq!(
+            dead_params(&out),
+            Vec::<String>::new(),
+            "`{}` reads every param it declares, so none is dead",
+            attrs.trim()
+        );
+    }
+}
+
+/// **AC1.** A declared param nothing reads is still called dead, beside one a
+/// plot attribute reads, so reading the attributes did not silence the line.
+#[test]
+fn a_declared_param_nothing_reads_is_still_dead_beside_one_a_plot_attribute_reads() {
+    let out = parsed("params:\n  n: 3\n  orphan: 9\n", "xTicks: $n\n");
+    assert_eq!(dead_params(&out), vec!["orphan".to_string()]);
+    let none = parsed("params:\n  orphan: 9\n", "");
+    assert_eq!(dead_params(&none), vec!["orphan".to_string()]);
+}
+
+/// **AC2.** A param that holds a param is a deferral: the key raises no warning
+/// through it, for each of the six groups and both axes, and it reads as the key
+/// absent, as a param nobody declared does.
+#[test]
+fn a_param_holding_a_param_raises_no_warning_and_reads_as_the_key_absent() {
+    let none = read(&parsed("", ""));
+    for (key, _, _) in READ {
+        let out = parsed("params:\n  q: 3\n  p: $q\n", &format!("{key}: $p\n"));
+        assert_eq!(
+            held_warnings(&out),
+            Vec::<ParseWarning>::new(),
+            "{key} through a param that holds a param raises nothing"
+        );
+        assert_eq!(
+            read(&out),
+            none,
+            "{key} through a param that holds a param reads as the key absent"
         );
     }
 }

@@ -85,19 +85,28 @@ fn drawn(composed: &Composed) -> String {
 /// What the load said about a plot attribute, one line per diagnostic: the
 /// banner's `plot ...` lines.
 ///
-/// The banner also says `param ... has no subscribers` of a param that only a
-/// plot attribute reads, and says it as readily of `colorReverse`, `colorScheme`
-/// and `xDomain`, which already read through params, as of these six keys. That
-/// line is about how the subscriber graph counts a reader, not about what a key
-/// holds, and it is kept out of the comparison so that a param on one of these
-/// keys and the same value written in the file are compared on what the plot
-/// says of the key.
+/// The banner's `param ... has no subscribers` line is a different diagnostic,
+/// about whether anything reads a param, and is kept out of this comparison so
+/// that a param on one of these keys and the same value written in the file are
+/// compared on what the plot says of the key. [`orphan_lines`] reads it, and
+/// `a_param_only_a_plot_attribute_reads_is_not_called_an_orphan` pins that a
+/// plot attribute is a reader.
 fn said(composed: &Composed) -> Vec<String> {
     composed
         .diagnostics
         .lines()
         .into_iter()
         .filter(|line| line.starts_with("plot `"))
+        .collect()
+}
+
+/// The banner's lines that call a param an orphan: `param ... has no subscribers`.
+fn orphan_lines(composed: &Composed) -> Vec<String> {
+    composed
+        .diagnostics
+        .lines()
+        .into_iter()
+        .filter(|line| line.contains("has no subscribers"))
         .collect()
 }
 
@@ -580,5 +589,92 @@ fn a_plot_that_gives_none_of_the_keys_through_a_param_draws_as_it_did() {
         said(&bare).is_empty(),
         "a plot with no keys says nothing; got {:?}",
         said(&bare)
+    );
+}
+
+/// **AC1.** A param that only a plot attribute reads is read: the banner does not
+/// say `has no subscribers` of it, for each of the six groups and both axes and
+/// for the keys that already read through params, and a declared param nothing
+/// reads still gets the line.
+#[test]
+fn a_param_only_a_plot_attribute_reads_is_not_called_an_orphan() {
+    for case in &CASES {
+        let through = compose(case.params, case.x, case.y, case.through);
+        assert_eq!(
+            orphan_lines(&through),
+            Vec::<String>::new(),
+            "{}: the plot attribute `{}` reads its param, so the param has a subscriber",
+            case.label,
+            case.through.trim()
+        );
+    }
+
+    // A key read through a param before the six: a scheme, and an axis's ends as
+    // a param or as an array holding params.
+    for (attrs, params) in [
+        ("colorScheme: $s\n", "params:\n  s: viridis\n"),
+        ("xDomain: $ends\n", "params:\n  ends: [0, 100]\n"),
+        (
+            "xDomain: [$lo, $hi]\n",
+            "params:\n  lo: 0\n  hi: 100\n",
+        ),
+    ] {
+        let through = compose(params, "a", "b", attrs);
+        assert_eq!(
+            orphan_lines(&through),
+            Vec::<String>::new(),
+            "`{}` reads its params, so none has no subscribers",
+            attrs.trim()
+        );
+    }
+
+    // The one in the plain `xTicks: $n` form the card names: `n` is read, the
+    // param beside it that nothing reads is the only orphan the banner names.
+    let beside = compose(
+        "params:\n  n: 3\n  orphan: 9\n",
+        "a",
+        "b",
+        "xTicks: $n\n",
+    );
+    let lines = orphan_lines(&beside);
+    assert_eq!(lines.len(), 1, "one orphan is named; got {lines:?}");
+    assert!(
+        lines[0].contains("`orphan`"),
+        "the orphan named is the declared param nothing reads; got {lines:?}"
+    );
+    let alone = compose("params:\n  orphan: 9\n", "a", "b", "");
+    assert_eq!(
+        orphan_lines(&alone).len(),
+        1,
+        "a declared param nothing reads is named; got {:?}",
+        orphan_lines(&alone)
+    );
+}
+
+/// **AC2.** A param that holds a param is a deferral, so the tick count it is
+/// given through raises no `is not a whole number` line, and the plot draws as
+/// the key absent does.
+#[test]
+fn a_param_holding_a_param_raises_no_false_tick_count_line() {
+    let held = compose(
+        "params:\n  q: 3\n  p: $q\n",
+        "a",
+        "b",
+        "xTicks: $p\n",
+    );
+    let lines = held.diagnostics.lines();
+    assert!(
+        lines.iter().all(|line| !line.contains("is not a whole number")),
+        "a param holding a param raises no tick-count line; got {lines:?}"
+    );
+    assert!(
+        said(&held).iter().all(|line| !line.contains("`xTicks`")),
+        "xTicks through a param holding a param is not named; got {:?}",
+        said(&held)
+    );
+    assert_eq!(
+        drawn(&held),
+        drawn(&compose("", "a", "b", "")),
+        "the key reads as absent through a param holding a param"
     );
 }
