@@ -590,9 +590,11 @@ fn tab_on_colours_or_the_marks_list_leaves_it_on_its_columns() {
     }
 }
 
-/// **`h`, `l`, the arrows beside them and `Enter` are inert on a settings row**,
-/// until the card that edits a row lands; `j` and `k` move the cursor and report
-/// nothing, because a settings row has no column to preview.
+/// **`h`, `l` and the arrows beside them are inert on the title row, and `Enter`
+/// is inert on the scale row**, which takes no typed text; `j` and `k` move the
+/// cursor and report no preview, because a settings row has no column to
+/// preview. `Enter` on a row that does take typed text opens its field, which
+/// `shelf_settings_typed.rs` reads.
 #[test]
 fn h_l_and_enter_do_nothing_on_a_settings_row_and_j_k_move_the_cursor_silently() {
     let mut list = list(ShelfChannel::X);
@@ -605,7 +607,6 @@ fn h_l_and_enter_do_nothing_on_a_settings_row_and_j_k_move_the_cursor_silently()
         typed(egui::Key::L, "l"),
         vec![key_event(egui::Key::ArrowLeft)],
         vec![key_event(egui::Key::ArrowRight)],
-        vec![key_event(egui::Key::Enter)],
     ] {
         let reports = list.feed_events(&events);
         assert!(reports.is_empty(), "{events:?} reported {reports:?}");
@@ -615,6 +616,16 @@ fn h_l_and_enter_do_nothing_on_a_settings_row_and_j_k_move_the_cursor_silently()
 
     let reports = list.feed_events(&typed(egui::Key::J, "j"));
     assert!(reports.is_empty(), "j reported {reports:?}");
+    assert_eq!(list.setting_cursor().map(|r| r.name), Some(SCALE_ROW));
+    let reports = list.feed_events(&[key_event(egui::Key::Enter)]);
+    assert!(
+        reports.is_empty(),
+        "Enter on the scale row reported {reports:?}"
+    );
+    assert!(
+        list.field().is_none(),
+        "Enter opened a field on the scale row"
+    );
     assert_eq!(list.setting_cursor().map(|r| r.name), Some(SCALE_ROW));
     list.feed_events(&typed(egui::Key::J, "j"));
     list.feed_events(&typed(egui::Key::J, "j"));
