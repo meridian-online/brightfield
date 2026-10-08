@@ -24,8 +24,12 @@
 use indexmap::IndexMap;
 
 use crate::analysis::ComponentPath;
-use crate::ast::{Component, LegendNode, Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
-use crate::layout::{collect_legend_nodes, collect_plot_nodes, resolve_axis_titles, AxisTitle};
+use crate::ast::{
+    Component, ConcatNode, LegendNode, Mark, PlotNode, Spec, SpecValue, ValueOrParamRef,
+};
+use crate::layout::{
+    below_legends, collect_legend_nodes, collect_plot_nodes, resolve_axis_titles, AxisTitle, Rect,
+};
 use crate::vocab::{LegendChannel, MarkKind};
 
 /// Positional channel keys inherited by an added mark from the plot's primary
@@ -46,11 +50,14 @@ const INHERITED_CHANNELS: &[&str] = &["x", "y", "x1", "x2", "y1", "y2"];
 /// [`ChartEdit::SetPlotAttribute`] and [`ChartEdit::RemovePlotAttribute`]
 /// target the plot's own attribute map instead, and
 /// [`ChartEdit::AddColourLegend`] and [`ChartEdit::RemoveColourLegend`] put a
-/// legend into the plot's list of items and take it out. [`ChartEdit::AddMark`]
+/// legend into the plot's list of items and take it out, and
+/// [`ChartEdit::PlaceColourLegend`] moves it between the plot's items, a
+/// `vconcat` under the plot, and out of the file. [`ChartEdit::AddMark`]
 /// and [`ChartEdit::RemoveMark`] are count-CHANGING; [`ChartEdit::ChangeMarkType`],
 /// [`ChartEdit::SetChannel`], [`ChartEdit::SetPlotAttribute`],
-/// [`ChartEdit::RemovePlotAttribute`], [`ChartEdit::AddColourLegend`] and
-/// [`ChartEdit::RemoveColourLegend`] are count-STABLE. The transient apply
+/// [`ChartEdit::RemovePlotAttribute`], [`ChartEdit::AddColourLegend`],
+/// [`ChartEdit::RemoveColourLegend`] and [`ChartEdit::PlaceColourLegend`] are
+/// count-STABLE. The transient apply
 /// treats the two groups differently (the coordinator flat-index rebuild). The
 /// count is the plot's marks: a legend is not one.
 #[derive(Debug, Clone, PartialEq)]
@@ -166,6 +173,66 @@ pub enum ChartEdit {
         /// Plot-node path of the focused plot.
         plot: ComponentPath,
     },
+    /// Put the focused plot's colour legend at `at`: to the right of the
+    /// plot's picture, under it, or nowhere. Count-stable, and targets no
+    /// mark. Unlike every other edit it can change the tree the plot sits in,
+    /// so a later edit finds the plot at [`plot_path_after`]'s path.
+    ///
+    /// Right is a `legend: color` item of the plot, the item
+    /// [`ChartEdit::AddColourLegend`] writes. Below is the one shape a Mosaic
+    /// file has for a legend under its plot: a `vconcat` whose entries are the
+    /// plot, carrying a `name:`, and a `legend: color` whose `for:` is that
+    /// name. A plot is below when [`crate::layout::below_legends`] reads it so,
+    /// which is the rule the page draws the band by, so the edit and the page
+    /// agree on what below is.
+    ///
+    /// To below, the plot's colour legend items come out, and at the plot's
+    /// place a `vconcat` of two entries goes in: the plot, and the standalone
+    /// legend carrying each option the first item carried. A plot with no
+    /// `name:` is given one no plot of the file holds and no legend's `for:`
+    /// names ([`fresh_plot_name`]); a plot with one keeps it.
+    ///
+    /// From below, each colour legend drawn under the plot is taken out of its
+    /// `vconcat`, and when that leaves the plot the `vconcat`'s one entry, the
+    /// plot takes the `vconcat`'s place. A `vconcat` that holds another entry
+    /// keeps it and stays where it was. To right, the item then goes back
+    /// among the plot's items, after the last of them, carrying the first
+    /// standalone legend's options but its `for:`. The name the plot was given
+    /// stays, so right to below and back is the spec as it was but for that
+    /// name, when the item was the plot's last.
+    ///
+    /// A plot already at `at` is left equal.
+    PlaceColourLegend {
+        /// Plot-node path of the focused plot.
+        plot: ComponentPath,
+        /// Where the plot's colour legend goes.
+        at: LegendPlacement,
+    },
+}
+
+/// Where a plot's colour legend is drawn, as the legend row's three values
+/// name it, and as [`ChartEdit::PlaceColourLegend`] writes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegendPlacement {
+    /// A `legend: color` item of the plot, drawn to the right of its picture.
+    Right,
+    /// A `vconcat` of the named plot and a `legend: color` whose `for:` names
+    /// it, drawn in a band under the plot.
+    Below,
+    /// No colour legend for the plot.
+    None,
+}
+
+impl LegendPlacement {
+    /// The value as the command log and the legend row spell it.
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            LegendPlacement::Right => "right",
+            LegendPlacement::Below => "below",
+            LegendPlacement::None => "none",
+        }
+    }
 }
 
 impl ChartEdit {
@@ -180,7 +247,8 @@ impl ChartEdit {
             | ChartEdit::SetPlotAttribute { plot, .. }
             | ChartEdit::RemovePlotAttribute { plot, .. }
             | ChartEdit::AddColourLegend { plot }
-            | ChartEdit::RemoveColourLegend { plot } => plot.0.as_str(),
+            | ChartEdit::RemoveColourLegend { plot }
+            | ChartEdit::PlaceColourLegend { plot, .. } => plot.0.as_str(),
         }
     }
 
@@ -198,6 +266,7 @@ impl ChartEdit {
             ChartEdit::RemovePlotAttribute { .. } => "remove-plot-attribute",
             ChartEdit::AddColourLegend { .. } => "add-colour-legend",
             ChartEdit::RemoveColourLegend { .. } => "remove-colour-legend",
+            ChartEdit::PlaceColourLegend { .. } => "place-colour-legend",
         }
     }
 
@@ -226,7 +295,8 @@ impl ChartEdit {
             | ChartEdit::SetPlotAttribute { .. }
             | ChartEdit::RemovePlotAttribute { .. }
             | ChartEdit::AddColourLegend { .. }
-            | ChartEdit::RemoveColourLegend { .. } => 0,
+            | ChartEdit::RemoveColourLegend { .. }
+            | ChartEdit::PlaceColourLegend { .. } => 0,
         }
     }
 
@@ -253,6 +323,7 @@ impl ChartEdit {
                 other => format!("{kind}: {key} -> {other:?}"),
             },
             ChartEdit::RemovePlotAttribute { key, .. } => format!("{kind}: {key}"),
+            ChartEdit::PlaceColourLegend { at, .. } => format!("{kind}: {}", at.wire_name()),
         }
     }
 }
@@ -288,6 +359,11 @@ pub enum RefuseReason {
     /// INLINE colour fill with no referencing legend stays clean (not captured by
     /// the gate); v1 refuses only the legend-referenced case.
     WouldChangeLegend,
+    /// Moving a plot's colour legend under it, or out from under it, adds or
+    /// takes out a standalone legend in a `vconcat` and changes the plot's
+    /// rect — a `same_layout` divergence a reload can't hot-apply. A page
+    /// loaded afresh lays the band out again ([`apply_for_fresh_load`]).
+    WouldChangeLayout,
 }
 
 impl RefuseReason {
@@ -308,6 +384,9 @@ impl RefuseReason {
             }
             RefuseReason::WouldChangeLegend => {
                 "would change a colour legend's scale (remove the standalone legend, or edit its plot's colour, first)"
+            }
+            RefuseReason::WouldChangeLayout => {
+                "would move a colour legend into or out of the band under its plot (the page has to be laid out again)"
             }
         }
     }
@@ -358,6 +437,10 @@ pub fn apply_for_fresh_load(spec: &mut Spec, edit: &ChartEdit) -> Result<(), Ref
 /// the app directly — [`apply`] gates first — but shared with the classifier,
 /// which applies it to a CLONE to compute the post-edit chrome signature.
 fn apply_unchecked(spec: &mut Spec, edit: &ChartEdit) {
+    if let ChartEdit::PlaceColourLegend { plot, at } = edit {
+        place_colour_legend(spec, &plot.0, *at);
+        return;
+    }
     let Some(p) = plot_at_path_mut(spec, edit.plot_path()) else {
         return;
     };
@@ -434,6 +517,9 @@ fn apply_unchecked(spec: &mut Spec, edit: &ChartEdit) {
                 p.items.remove(item);
             }
         }
+        // Placed above, before the plot is looked up: the edit reaches past
+        // the plot into the tree it sits in.
+        ChartEdit::PlaceColourLegend { .. } => {}
     }
 }
 
@@ -460,6 +546,16 @@ fn apply_unchecked(spec: &mut Spec, edit: &ChartEdit) {
 /// over-refuse, which is the safe side (never a silent bounce).
 pub fn classify_edit(spec: &Spec, edit: &ChartEdit) -> Result<(), RefuseReason> {
     let plot = check_target(spec, edit)?;
+
+    // A move into or out of the band under the plot is a change of layout,
+    // and it moves the plot, so the clone below would not find it at the
+    // edit's path. Between right and none the plot stays where it is and the
+    // comparison below holds, as it does for the item edits.
+    if let ChartEdit::PlaceColourLegend { plot, at } = edit {
+        if legends_below(spec, &plot.0).is_some() != (*at == LegendPlacement::Below) {
+            return Err(RefuseReason::WouldChangeLayout);
+        }
+    }
 
     // Apply the edit to a clone ONCE — both the colour-legend gate and the
     // inset/title chrome comparison diff the launch-fixed chrome against it.
@@ -717,6 +813,240 @@ pub fn colour_legend_covers(spec: &Spec, plot_path: &str) -> bool {
                 Some(ValueOrParamRef::Value(SpecValue::String(named))) if named == name
             )
     })
+}
+
+/// The plot's colour legends drawn under it, as
+/// [`crate::layout::below_legends`] reads them: the path of the `vconcat` that
+/// holds the plot and the legends, and each legend's index in it, in order.
+/// `None` when no colour legend is drawn under the plot.
+///
+/// Each legend sits after the plot in the same `vconcat`, so taking one out
+/// leaves the plot's index as it was.
+fn legends_below(spec: &Spec, plot_path: &str) -> Option<(String, Vec<usize>)> {
+    let (parent, _) = plot_path.rsplit_once('/')?;
+    let legends: Vec<usize> = below_legends(spec, Rect::new(0.0, 0.0, 0.0, 0.0))
+        .into_iter()
+        .filter(|below| below.plot_path == plot_path)
+        .filter_map(|below| {
+            let (holder, step) = below.legend_path.rsplit_once('/')?;
+            (holder == parent).then_some(())?;
+            step.strip_prefix("vconcat[")?.strip_suffix(']')?.parse().ok()
+        })
+        .collect();
+    (!legends.is_empty()).then(|| (parent.to_string(), legends))
+}
+
+/// The index of each colour legend drawn under the plot at `plot_path`, in the
+/// `vconcat` that holds the plot: the concat [`plot_route`]'s last step names.
+/// `None` when no colour legend is drawn under the plot, which is every
+/// placement but [`LegendPlacement::Below`].
+#[must_use]
+pub fn colour_legends_below(spec: &Spec, plot_path: &str) -> Option<Vec<usize>> {
+    legends_below(spec, plot_path).map(|(_, legends)| legends)
+}
+
+/// A `name:` for a plot that has none: one no plot of `spec` holds and no
+/// legend's `for:` names, so a legend written `for:` it is drawn for that plot
+/// alone. `chart`, then `chart-2`, `chart-3` and on.
+#[must_use]
+pub fn fresh_plot_name(spec: &Spec) -> String {
+    let named: Vec<&str> = collect_plot_nodes(spec)
+        .into_iter()
+        .filter_map(|(_, plot)| plot_name(plot))
+        .chain(
+            collect_legend_nodes(spec)
+                .into_iter()
+                .filter_map(|(_, legend)| match legend.options.get("for") {
+                    Some(ValueOrParamRef::Value(SpecValue::String(named))) => {
+                        Some(named.as_str())
+                    }
+                    _ => None,
+                }),
+        )
+        .collect();
+    let mut n = 1;
+    loop {
+        let name = if n == 1 {
+            "chart".to_string()
+        } else {
+            format!("chart-{n}")
+        };
+        if !named.contains(&name.as_str()) {
+            return name;
+        }
+        n += 1;
+    }
+}
+
+/// The path of the plot `edit` targets once `edit` is applied to `spec`: the
+/// path the edit names, but for a [`ChartEdit::PlaceColourLegend`] that moves
+/// the plot. A move to below puts the plot first in a new `vconcat` at its
+/// place, `root` becoming `root/vconcat[0]`; a move from below that leaves the
+/// `vconcat` the plot alone puts the plot in the `vconcat`'s place, and the
+/// reverse holds. An edit the reducer would refuse names the path it names.
+#[must_use]
+pub fn plot_path_after(spec: &Spec, edit: &ChartEdit) -> String {
+    let path = edit.plot_path();
+    let ChartEdit::PlaceColourLegend { at, .. } = edit else {
+        return path.to_string();
+    };
+    match (legends_below(spec, path), at) {
+        (None, LegendPlacement::Below) if plot_at_path(spec, path).is_some() => {
+            format!("{path}/vconcat[0]")
+        }
+        (Some((parent, legends)), LegendPlacement::Right | LegendPlacement::None)
+            if concat_len(spec, &parent) == Some(legends.len() + 1) =>
+        {
+            parent
+        }
+        _ => path.to_string(),
+    }
+}
+
+/// The number of entries of the concat at component path `path`.
+fn concat_len(spec: &Spec, path: &str) -> Option<usize> {
+    match component_at(spec, path)? {
+        Component::HConcat(c) | Component::VConcat(c) => Some(c.items.len()),
+        _ => None,
+    }
+}
+
+/// [`ChartEdit::PlaceColourLegend`]'s mutation; its doc says what each move
+/// leaves.
+fn place_colour_legend(spec: &mut Spec, plot_path: &str, at: LegendPlacement) {
+    match (legends_below(spec, plot_path), at) {
+        (Some(_), LegendPlacement::Below) => {}
+        (Some((parent, legends)), LegendPlacement::Right | LegendPlacement::None) => {
+            let Some(Component::VConcat(concat)) = component_at_mut(spec, &parent) else {
+                return;
+            };
+            let options = match &concat.items[legends[0]] {
+                Component::Legend(legend) => legend.options.clone(),
+                _ => IndexMap::new(),
+            };
+            for &index in legends.iter().rev() {
+                concat.items.remove(index);
+            }
+            let plot_path = if concat.items.len() == 1 {
+                let plot = concat.items.remove(0);
+                if let Some(slot) = component_at_mut(spec, &parent) {
+                    *slot = plot;
+                }
+                parent
+            } else {
+                plot_path.to_string()
+            };
+            let Some(p) = plot_at_path_mut(spec, &plot_path) else {
+                return;
+            };
+            if at == LegendPlacement::Right {
+                if !holds_colour_legend(p) {
+                    let mut options = options;
+                    options.shift_remove("for");
+                    p.items.push(colour_legend(options));
+                }
+            } else {
+                p.items.retain(|c| !is_colour_legend(c));
+            }
+        }
+        (None, LegendPlacement::Below) => {
+            let fresh = fresh_plot_name(spec);
+            let Some(slot) = component_at_mut(spec, plot_path) else {
+                return;
+            };
+            let Component::Plot(p) = slot else {
+                return;
+            };
+            let carried = p.items.iter().find_map(|c| match c {
+                Component::Legend(l) if l.channel == LegendChannel::Color => {
+                    Some(l.options.clone())
+                }
+                _ => None,
+            });
+            p.items.retain(|c| !is_colour_legend(c));
+            let name = match plot_name(p) {
+                Some(name) => name.to_string(),
+                None => {
+                    p.attributes
+                        .insert("name".to_string(), SpecValue::String(fresh.clone()));
+                    fresh
+                }
+            };
+            let mut options = IndexMap::new();
+            options.insert(
+                "for".to_string(),
+                ValueOrParamRef::Value(SpecValue::String(name)),
+            );
+            for (key, value) in carried.unwrap_or_default() {
+                if key != "for" {
+                    options.insert(key, value);
+                }
+            }
+            let plot = std::mem::replace(slot, Component::VConcat(ConcatNode { items: Vec::new() }));
+            *slot = Component::VConcat(ConcatNode {
+                items: vec![plot, colour_legend(options)],
+            });
+        }
+        (None, LegendPlacement::Right) => {
+            if let Some(p) = plot_at_path_mut(spec, plot_path) {
+                if !holds_colour_legend(p) {
+                    p.items.push(colour_legend(IndexMap::new()));
+                }
+            }
+        }
+        (None, LegendPlacement::None) => {
+            if let Some(p) = plot_at_path_mut(spec, plot_path) {
+                p.items.retain(|c| !is_colour_legend(c));
+            }
+        }
+    }
+}
+
+/// A `legend: color` component carrying `options`.
+fn colour_legend(options: IndexMap<String, ValueOrParamRef<SpecValue>>) -> Component {
+    Component::Legend(LegendNode {
+        channel: LegendChannel::Color,
+        status: LegendChannel::Color.status(),
+        options,
+    })
+}
+
+/// The component at component path `path` (`root`, `root/hconcat[1]`,
+/// `root/hconcat[1]/vconcat[0]`), the path scheme [`plot_at_path`] reads,
+/// whatever kind of component it is.
+fn component_at<'a>(spec: &'a Spec, path: &str) -> Option<&'a Component> {
+    let mut node = spec.root.as_ref()?;
+    for step in path.strip_prefix("root")?.split('/').skip(1) {
+        let (key, index) = concat_step(step)?;
+        node = match (key, node) {
+            ("hconcat", Component::HConcat(c)) | ("vconcat", Component::VConcat(c)) => {
+                c.items.get(index)?
+            }
+            _ => return None,
+        };
+    }
+    Some(node)
+}
+
+/// Mutable twin of [`component_at`].
+fn component_at_mut<'a>(spec: &'a mut Spec, path: &str) -> Option<&'a mut Component> {
+    let mut node = spec.root.as_mut()?;
+    for step in path.strip_prefix("root")?.split('/').skip(1) {
+        let (key, index) = concat_step(step)?;
+        node = match (key, node) {
+            ("hconcat", Component::HConcat(c)) | ("vconcat", Component::VConcat(c)) => {
+                c.items.get_mut(index)?
+            }
+            _ => return None,
+        };
+    }
+    Some(node)
+}
+
+/// One step of a component path, `vconcat[2]`, as its concat key and index.
+fn concat_step(step: &str) -> Option<(&str, usize)> {
+    let (key, rest) = step.split_once('[')?;
+    Some((key, rest.strip_suffix(']')?.parse().ok()?))
 }
 
 /// The number of colour-encoded plots in a spec — the count `resolve_legends`
