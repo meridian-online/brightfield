@@ -652,6 +652,7 @@ fn key_token(key: egui::Key) -> Option<&'static str> {
         Key::Enter => "enter",
         Key::Escape => "escape",
         Key::Tab => "tab",
+        Key::Backspace => "backspace",
         _ => return None,
     })
 }
@@ -767,6 +768,97 @@ pub enum SettingKind {
     Typed,
 }
 
+/// What a settings row is set to by a step or a `⌫`, in the terms the row reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SettingValue {
+    /// A scale's wire name: `log`.
+    Word(String),
+    /// A switch: grid, zero or reverse.
+    Switch(bool),
+    /// A count of ticks.
+    Count(usize),
+    /// Back to brightfield's own: the key comes out of the file.
+    Auto,
+}
+
+/// One write a settings row asked for: which row of which axis, and to what.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowEdit {
+    /// The axis the row belongs to.
+    pub channel: ShelfChannel,
+    /// The row's name: `scale`.
+    pub row: &'static str,
+    /// What the row is set to.
+    pub value: SettingValue,
+}
+
+/// The scale names a scale row steps through, in the order `l` steps them.
+pub const SCALE_STEPS: [&str; 3] = ["linear", "log", "symlog"];
+
+/// The plot attribute `row` of `axis` is written under, as Mosaic spells it, for
+/// the rows a step or a `⌫` writes: scale, ticks, grid, zero and reverse. The
+/// title and the format are the cards behind this one's.
+#[must_use]
+pub fn row_key(axis: ShelfChannel, row: &str) -> Option<&'static str> {
+    let x = match axis {
+        ShelfChannel::X => true,
+        ShelfChannel::Y => false,
+        ShelfChannel::Mark | ShelfChannel::Colour => return None,
+    };
+    Some(match (row, x) {
+        (SCALE_ROW, true) => "xScale",
+        (SCALE_ROW, false) => "yScale",
+        (TICKS_ROW, true) => "xTicks",
+        (TICKS_ROW, false) => "yTicks",
+        (GRID_ROW, true) => "xGrid",
+        (GRID_ROW, false) => "yGrid",
+        (ZERO_ROW, true) => "xZero",
+        (ZERO_ROW, false) => "yZero",
+        (REVERSE_ROW, true) => "xReverse",
+        (REVERSE_ROW, false) => "yReverse",
+        _ => return None,
+    })
+}
+
+/// brightfield's own value for `row`, as the plot attribute holds it: the value
+/// a row reads *auto* at. `None` for a row with no attribute of the kind a step
+/// or a `⌫` writes.
+#[must_use]
+pub fn row_default(row: &str) -> Option<SpecValue> {
+    Some(match row {
+        SCALE_ROW => SpecValue::String("linear".to_string()),
+        TICKS_ROW => SpecValue::Integer(i64::try_from(DEFAULT_TICK_COUNT).unwrap_or(5)),
+        GRID_ROW => SpecValue::Bool(true),
+        ZERO_ROW | REVERSE_ROW => SpecValue::Bool(false),
+        _ => return None,
+    })
+}
+
+impl SettingRow {
+    /// Whether `h` and `l` step this row's value: a scale or a switch that
+    /// applies to the axis. The ticks, title and format take typed text, which
+    /// the cards behind this one give a field.
+    #[must_use]
+    pub fn steps(&self) -> bool {
+        self.reason.is_none() && matches!(self.name, SCALE_ROW | GRID_ROW | ZERO_ROW | REVERSE_ROW)
+    }
+
+    /// The value one step `by` from the row's own, or `None` where the row does
+    /// not step or stands at the end of its values. A switch turns over.
+    #[must_use]
+    pub fn stepped(&self, by: isize) -> Option<SettingValue> {
+        if !self.steps() {
+            return None;
+        }
+        if self.name == SCALE_ROW {
+            let at = SCALE_STEPS.iter().position(|w| *w == self.value)?;
+            let next = at.checked_add_signed(by).filter(|n| *n < SCALE_STEPS.len())?;
+            return Some(SettingValue::Word(SCALE_STEPS[next].to_string()));
+        }
+        Some(SettingValue::Switch(self.value != ON))
+    }
+}
+
 /// One row of a channel's settings list: what it is called, what it reads, and
 /// whether the value is the analyst's.
 ///
@@ -797,6 +889,11 @@ pub struct SettingRow {
     /// The one sentence the list's foot reads under the cursor: what the row
     /// does, and the rule for its default.
     pub says: &'static str,
+    /// The key the value is read from where the axis's own key is absent and a
+    /// key for both axes stands in for it: `grid` for a row of the grid. The
+    /// foot says so, and `⌫` on the row cannot take it out, since it is not the
+    /// axis's own.
+    pub from: Option<&'static str>,
 }
 
 /// The settings rows of the channels that have any: x and y. Colour's and the
@@ -906,6 +1003,7 @@ fn axis_rows(
         by_name: false,
         kind,
         says,
+        from: None,
     };
     let mut rows = vec![
         row(
@@ -984,7 +1082,12 @@ fn by_name_rows(plot: &PlotNode, axis: ShelfChannel, drawn: &ScaleSet) -> [Setti
         by_name: true,
         kind,
         says,
+        from: None,
     };
+    let grid_key = if x { "xGrid" } else { "yGrid" };
+    let grid_from = (!plot.attributes.contains_key(grid_key)
+        && plot.attributes.contains_key("grid"))
+    .then_some("grid");
 
     let ticks_reason = if projected {
         Some(PROJECTED.to_string())
@@ -1009,14 +1112,17 @@ fn by_name_rows(plot: &PlotNode, axis: ShelfChannel, drawn: &ScaleSet) -> [Setti
             TICKS_SAYS,
             ticks_reason,
         ),
-        row(
-            GRID_ROW,
-            word(grid),
-            !grid,
-            SettingKind::Enumerated,
-            GRID_SAYS,
-            projected.then(|| PROJECTED.to_string()),
-        ),
+        SettingRow {
+            from: grid_from,
+            ..row(
+                GRID_ROW,
+                word(grid),
+                !grid,
+                SettingKind::Enumerated,
+                GRID_SAYS,
+                projected.then(|| PROJECTED.to_string()),
+            )
+        },
         row(
             ZERO_ROW,
             word(zero),
@@ -1138,6 +1244,9 @@ pub enum ListReport {
     /// to the settings; turning back, the list reports the column its cursor
     /// lands on as it does when the query moves it.
     Turned(ListTab),
+    /// A settings row was stepped, by `h` `l` or a click on its value, or put
+    /// back to auto by `⌫`: the window writes it to the plot.
+    Set(RowEdit),
 }
 
 /// Which of its two states a channel's list is in: the table's columns, or
@@ -1476,6 +1585,39 @@ impl ColumnList {
         }
     }
 
+    /// `h` or `l` on the settings: step the row under the cursor `by` values and
+    /// report the write. A row that does not apply, one that takes typed text,
+    /// and a scale at the end of its values report nothing.
+    fn step_row(&mut self, by: isize, out: &mut Vec<ListReport>) {
+        let Some(row) = self.setting_cursor() else {
+            return;
+        };
+        if let Some(value) = row.stepped(by) {
+            let name = row.name;
+            out.push(ListReport::Set(RowEdit {
+                channel: self.channel,
+                row: name,
+                value,
+            }));
+        }
+    }
+
+    /// `⌫` on the settings: put the row under the cursor back to auto. A row that
+    /// does not apply reports nothing.
+    fn row_to_auto(&mut self, out: &mut Vec<ListReport>) {
+        let Some(row) = self.setting_cursor() else {
+            return;
+        };
+        if row.reason.is_none() && row_key(self.channel, row.name).is_some() {
+            let name = row.name;
+            out.push(ListReport::Set(RowEdit {
+                channel: self.channel,
+                row: name,
+                value: SettingValue::Auto,
+            }));
+        }
+    }
+
     /// `Esc`: clear the query first, and with the query empty, back out of the
     /// list: `esc_with_the_query_empty_reports_backing_out`.
     fn back(&mut self, out: &mut Vec<ListReport>) {
@@ -1534,12 +1676,22 @@ impl ColumnList {
         match verb {
             "move-shelf-next-row" => self.step(1, out),
             "move-shelf-prev-row" => self.step(-1, out),
-            // On a settings row `h` and `l` have no value to step yet: the
-            // channel beside is the columns' alone.
-            "move-shelf-left" if self.tab == ListTab::Settings => {}
-            "move-shelf-right" if self.tab == ListTab::Settings => {}
+            // On a settings row `h` and `l` step the value: the channel beside
+            // is the columns' alone, and the step verbs are the settings'.
+            "move-shelf-left" | "move-shelf-right" if self.tab == ListTab::Settings => {
+                return false
+            }
             "move-shelf-left" => self.go_beside(-1, out),
             "move-shelf-right" => self.go_beside(1, out),
+            "step-shelf-setting-back" | "step-shelf-setting-forward"
+                if self.tab != ListTab::Settings =>
+            {
+                return false
+            }
+            "step-shelf-setting-back" => self.step_row(-1, out),
+            "step-shelf-setting-forward" => self.step_row(1, out),
+            "set-shelf-setting-to-auto" if self.tab != ListTab::Settings => return false,
+            "set-shelf-setting-to-auto" => self.row_to_auto(out),
             "narrow-shelf-list" => self.querying = true,
             "turn-shelf-list" => self.turn(out),
             "keep-shelf-choice" => self.keep(out),
@@ -1760,6 +1912,12 @@ pub struct SettingRowDrawn {
     pub reason_rect: Option<egui::Rect>,
     /// The bar down the row's leading edge, on the row under the cursor.
     pub bar: Option<egui::Rect>,
+    /// Where the `←` and `→` chips were drawn, on the row under the cursor or
+    /// the pointer where the row steps.
+    pub chips: Option<[egui::Rect; 2]>,
+    /// The part of the row a click steps: from the value's leading edge to the
+    /// marker.
+    pub value_zone: egui::Rect,
 }
 
 /// How wide the rug is on a numeric column's row, at the trailing end. The
@@ -1779,11 +1937,13 @@ const ROW_HINTS: [(&str, &str); 5] = [
     ("Esc", "back"),
 ];
 
-/// The keys the foot prints on the settings: a row's value is read, not yet
-/// changed, so no key that would change it is printed.
-const SETTINGS_HINTS: [(&str, &str); 4] = [
+/// The keys the foot prints on the settings: the keys that move the cursor and
+/// the two that change the row under it.
+const SETTINGS_HINTS: [(&str, &str); 6] = [
     ("/", "search"),
     ("j k", "move"),
+    ("h l", "change"),
+    ("\u{232b}", "auto"),
     ("Tab", "columns"),
     ("Esc", "back"),
 ];
@@ -2181,9 +2341,22 @@ impl ColumnList {
             })
             .fold(0.0_f32, f32::max);
         let moving = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
+        // What one chip of the `←` `→` pair measures, laid out unseen, so the pair
+        // is placed at the row's trailing edge before it is drawn.
+        let chip = {
+            let at = egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(1000.0, 1000.0));
+            let mut unseen = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(at)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .invisible(),
+            );
+            key_chip(&mut unseen, "\u{2190}").rect.size()
+        };
         let mut drawn = Vec::with_capacity(order.len());
         let mut clicked = None;
         let mut pointed = None;
+        let mut stepped: Option<(usize, isize)> = None;
         for &i in &order {
             let row = &rows[i];
             // A row that does not apply says why on a line of its own under the
@@ -2254,6 +2427,38 @@ impl ColumnList {
             }
             let mut right = marker.left() - spacing::SPACE_3;
 
+            // The `←` `→` chips, on the row under the cursor or the pointer where
+            // `h` and `l` step it: at the trailing edge, beside the marker.
+            let chips = (row.steps() && (on || response.hovered())).then(|| {
+                let gap = spacing::SPACE_2;
+                let size = egui::vec2(2.0 * chip.x + gap, chip.y);
+                let at = egui::Rect::from_min_size(
+                    egui::pos2(right - size.x, line.center().y - size.y / 2.0),
+                    size,
+                );
+                let mut pair = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(at)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                pair.spacing_mut().item_spacing.x = gap;
+                let back = key_chip(&mut pair, "\u{2190}").rect;
+                let forward = key_chip(&mut pair, "\u{2192}").rect;
+                right = back.left() - spacing::SPACE_3;
+                [back, forward]
+            });
+            let value_zone = egui::Rect::from_min_max(
+                egui::pos2(content.left() + name_column + spacing::SPACE_3, rect.top()),
+                egui::pos2(marker.left(), line.bottom()),
+            );
+            if response.clicked() && row.steps() {
+                let at = response.interact_pointer_pos();
+                if at.is_some_and(|p| value_zone.contains(p)) {
+                    let back = at.is_some_and(|p| chips.is_some_and(|[back, _]| back.contains(p)));
+                    stepped = Some((i, if back { -1 } else { 1 }));
+                }
+            }
+
             // The word *auto*, where the value is brightfield's own.
             let auto_rect = (!row.set).then(|| {
                 let galley = painter.layout_no_wrap(AUTO.to_string(), caption_font(), muted);
@@ -2302,6 +2507,8 @@ impl ColumnList {
                 auto_rect,
                 reason_rect,
                 bar,
+                chips,
+                value_zone,
             });
         }
         self.scroll = false;
@@ -2321,8 +2528,8 @@ impl ColumnList {
             rect
         });
 
-        let sentence = self.setting_cursor().map(|r| r.says);
-        let (foot, said) = self.show_foot(ui, mode, sentence);
+        let sentence = self.setting_cursor().map(foot_sentence);
+        let (foot, said) = self.show_foot(ui, mode, sentence.as_deref());
         let rect = egui::Rect::from_min_max(
             head.heading.min,
             egui::pos2(head.heading.right(), foot.bottom()),
@@ -2334,12 +2541,23 @@ impl ColumnList {
             egui::StrokeKind::Inside,
         );
 
-        // The pointer moves the cursor and a click leaves it there: no value
-        // is changed from here.
+        // The pointer moves the cursor and a click leaves it there; a click on
+        // the value of a row that steps does what `l` does, and the chip of `←`
+        // what `h` does.
         if let Some(i) = clicked.or(pointed) {
             if self.row != Some(i) {
                 self.row = Some(i);
                 self.scroll = true;
+            }
+        }
+        let mut reports = Vec::new();
+        if let Some((i, by)) = stepped {
+            if let Some(value) = rows[i].stepped(by) {
+                reports.push(ListReport::Set(RowEdit {
+                    channel: self.channel,
+                    row: rows[i].name,
+                    value,
+                }));
             }
         }
         ListDrawn {
@@ -2351,7 +2569,7 @@ impl ColumnList {
             rows: Vec::new(),
             divider: None,
             foot,
-            reports: Vec::new(),
+            reports,
             tab: ListTab::Settings,
             tabs: head.tabs,
             settings: drawn,
@@ -2446,6 +2664,21 @@ impl ColumnList {
         let foot = egui::Rect::from_min_max(avail.min, egui::pos2(avail.right(), top));
         ui.allocate_rect(foot, egui::Sense::hover());
         (foot, said)
+    }
+}
+
+/// What the foot reads under the cursor's row: the reason the row does not
+/// apply where it carries one, else what the row does, with the key it is read
+/// from where that is not the axis's own.
+fn foot_sentence(row: &SettingRow) -> String {
+    if let Some(reason) = &row.reason {
+        let mut chars = reason.chars();
+        let first = chars.next().map(|c| c.to_uppercase().to_string());
+        return format!("{}{}.", first.unwrap_or_default(), chars.as_str());
+    }
+    match row.from {
+        Some(from) => format!("Read from {from}, which sets both axes. {}", row.says),
+        None => row.says.to_string(),
     }
 }
 

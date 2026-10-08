@@ -5592,6 +5592,9 @@ impl MeridianApp {
         // Whether the batch asked to take back the last kept column, done once
         // the batch is read for the reason `close` is.
         let mut undo = false;
+        // Whether a settings row was written, so the open list reads the chart as
+        // it is now.
+        let mut rewrote = false;
         for report in reports {
             match report {
                 ListReport::Moved(column) => {
@@ -5632,6 +5635,13 @@ impl MeridianApp {
                     self.charts.doc.drop_shelf_preview();
                 }
                 ListReport::Turned(ListTab::Columns) => {}
+                // A settings row stepped, clicked or put back to auto: written to
+                // the plot and drawn at once. The list is handed the rows again
+                // once the batch is read, below.
+                ListReport::Set(edit) => {
+                    moved = None;
+                    rewrote |= self.charts.doc.set_axis_row(HERO_PLOT, &edit);
+                }
             }
         }
         if let Some((channel, column)) = moved {
@@ -5641,6 +5651,9 @@ impl MeridianApp {
         }
         if undo {
             self.shelf_undo();
+        }
+        if rewrote {
+            self.rebind_shelf();
         }
         if close {
             self.protocol.doc.model.close_column_list();
@@ -8429,7 +8442,7 @@ fn last_shelf_edit_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
     };
     Some(StatusEntry {
         id: SHELF_EDIT_STATUS_ID,
-        side: StatusSide::Trailing,
+        side: StatusSide::Leading,
         text,
         tone: Tone::Neutral,
         hide: HideAffordance::Verb(verb),

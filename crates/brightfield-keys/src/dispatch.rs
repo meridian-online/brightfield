@@ -192,11 +192,11 @@ mod tests {
         // leaked into the shelf's dispatch context would add a second verb.
         assert_eq!(
             t.resolves("h", DispatchContext::ShelfFocused),
-            vec!["move-shelf-left"]
+            vec!["move-shelf-left", "step-shelf-setting-back"]
         );
         assert_eq!(
             t.resolves("l", DispatchContext::ShelfFocused),
-            vec!["move-shelf-right"]
+            vec!["move-shelf-right", "step-shelf-setting-forward"]
         );
         assert_eq!(
             t.resolves("h", DispatchContext::CanvasFocused),
