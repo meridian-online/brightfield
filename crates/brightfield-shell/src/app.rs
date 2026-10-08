@@ -638,8 +638,11 @@ impl NormaliseSwitchDrawn {
 struct ShelfPreview {
     /// The channel the column is drawn on.
     channel: ShelfChannel,
-    /// The column under the list's cursor.
+    /// The column under the list's cursor. Empty where [`Self::row`] is held.
     column: String,
+    /// The settings row of `channel`'s axis whose typed value is drawn, when the
+    /// preview is a row's and not a column's.
+    row: Option<&'static str>,
     /// The edits that put it there, onto the kept spec, in the order
     /// [`crate::shelf_edit`] made them: what keeping it adds to the edits Save
     /// writes.
@@ -1994,7 +1997,7 @@ impl ChartDoc {
         if self
             .shelf_preview
             .as_ref()
-            .is_some_and(|p| p.channel == channel && p.column == column)
+            .is_some_and(|p| p.row.is_none() && p.channel == channel && p.column == column)
         {
             return false;
         }
@@ -2037,6 +2040,21 @@ impl ChartDoc {
             // The kept spec already has the column there.
             return self.drop_shelf_preview();
         }
+        self.install_shelf_preview(spec, channel, column.to_string(), None, edits)
+    }
+
+    /// **Draw the page loaded from `spec` as the shelf's preview**, keeping the
+    /// page it replaces so backing out puts it back as it stood: the tail a
+    /// column's preview and a typed row's share. A spec the engine will not load
+    /// puts the kept page back and says why in [`Self::chart_fault`].
+    fn install_shelf_preview(
+        &mut self,
+        spec: brightfield_spec::ast::Spec,
+        channel: ShelfChannel,
+        column: String,
+        row: Option<&'static str>,
+        edits: Vec<ChartEdit>,
+    ) -> bool {
         match self.rebuild(spec) {
             Ok((live, composed)) => {
                 let shown_live = self.live.replace(live);
@@ -2052,7 +2070,8 @@ impl ChartDoc {
                 };
                 self.shelf_preview = Some(ShelfPreview {
                     channel,
-                    column: column.to_string(),
+                    column,
+                    row,
                     edits,
                     kept,
                 });
@@ -2121,15 +2140,8 @@ impl ChartDoc {
     /// seal the shelf's undo, so a `u` steps over it to the edits before it.
     /// Returns whether the picture changed.
     pub fn set_axis_row(&mut self, plot: usize, edit: &RowEdit) -> bool {
-        use crate::shelf::SettingValue;
-        use crate::shelf_edit::SettingWrite;
         self.drop_shelf_preview();
         self.return_to_now();
-        let Some((key, default)) =
-            crate::shelf::row_key(edit.channel, edit.row).zip(crate::shelf::row_default(edit.row))
-        else {
-            return false;
-        };
         let Some(handle) = self.composed.plots.get(plot) else {
             return false;
         };
@@ -2138,18 +2150,8 @@ impl ChartDoc {
             return false;
         };
         let before = live.spec().clone();
-        let write = match &edit.value {
-            SettingValue::Word(word) => SettingWrite::Value(SpecValue::String(word.clone())),
-            SettingValue::Switch(on) => SettingWrite::Value(SpecValue::Bool(*on)),
-            SettingValue::Count(n) => {
-                SettingWrite::Value(SpecValue::Integer(i64::try_from(*n).unwrap_or(i64::MAX)))
-            }
-            SettingValue::Auto => SettingWrite::Auto,
-        };
-        let mut spec = before.clone();
-        let applied = match crate::shelf_edit::put_setting(&mut spec, &path, key, &default, &write)
-        {
-            Ok(Some(applied)) => applied,
+        let (spec, applied) = match Self::axis_row_written(&before, &path, edit) {
+            Ok(Some(written)) => written,
             Ok(None) => return false,
             Err(refusal) => {
                 self.interaction_fault = Some(ChartFault {
@@ -2188,6 +2190,115 @@ impl ChartDoc {
                 });
                 false
             }
+        }
+    }
+
+    /// **Draw the plot at `plot` with a settings row set to what is being typed
+    /// into it, as a preview**: the title's words or the tick count, drawn on the
+    /// axis as they are typed, with nothing added to the edits Save writes and
+    /// the window not marked unsaved.
+    ///
+    /// The value is written onto the **kept** spec by the path [`Self::set_axis_row`]
+    /// keeps it by, so what the preview draws is what keeping it draws, and a
+    /// value typed after another previews the new one alone. A value that is no
+    /// edit — brightfield's own, or what the file already says — puts the kept
+    /// page back, which is how a field typed back to the title the axis already
+    /// has draws the chart as it was. Returns whether the page drawn changed.
+    pub fn preview_axis_row(&mut self, plot: usize, edit: &RowEdit) -> bool {
+        self.return_to_now();
+        let Some(path) = self
+            .composed
+            .plots
+            .get(plot)
+            .map(|h| ComponentPath(h.path.clone()))
+        else {
+            return false;
+        };
+        let kept_spec = match (&self.shelf_preview, &self.live) {
+            (Some(preview), _) => preview.kept.0.spec().clone(),
+            (None, Some(live)) => live.spec().clone(),
+            (None, None) => return false,
+        };
+        match Self::axis_row_written(&kept_spec, &path, edit) {
+            Ok(Some((spec, applied))) => self.install_shelf_preview(
+                spec,
+                edit.channel,
+                String::new(),
+                Some(edit.row),
+                vec![applied],
+            ),
+            Ok(None) => self.drop_shelf_preview(),
+            Err(refusal) => {
+                self.drop_shelf_preview();
+                self.interaction_fault = Some(ChartFault {
+                    title: SHELF_REFUSED.to_string(),
+                    detail: refusal.to_string(),
+                });
+                false
+            }
+        }
+    }
+
+    /// `edit` written onto `before`, the plot at `path`: the spec it makes and the
+    /// edit applied, or `None` where the spec already reads as asked or the row
+    /// has no key to write.
+    ///
+    /// The value goes in as the type the key takes, and one equal to brightfield's
+    /// own comes out as the key taken out. For the title brightfield's own is the
+    /// column's name, which only the plot knows, so it is read off the plot's
+    /// binding; a plot that binds no column has no derived title, and no typed
+    /// words equal it.
+    fn axis_row_written(
+        before: &brightfield_spec::ast::Spec,
+        path: &ComponentPath,
+        edit: &RowEdit,
+    ) -> Result<Option<(brightfield_spec::ast::Spec, ChartEdit)>, crate::shelf_edit::ShelfRefusal>
+    {
+        use crate::shelf::SettingValue;
+        use crate::shelf_edit::SettingWrite;
+        let Some(key) = crate::shelf::row_key(edit.channel, edit.row) else {
+            return Ok(None);
+        };
+        let default = if edit.row == crate::shelf::TITLE_ROW {
+            SpecValue::String(Self::derived_title(before, path, edit.channel).unwrap_or_default())
+        } else if let Some(default) = crate::shelf::row_default(edit.row) {
+            default
+        } else {
+            return Ok(None);
+        };
+        let write = match &edit.value {
+            SettingValue::Word(word) => SettingWrite::Value(SpecValue::String(word.clone())),
+            SettingValue::Text(words) => SettingWrite::Value(SpecValue::String(words.clone())),
+            SettingValue::Switch(on) => SettingWrite::Value(SpecValue::Bool(*on)),
+            SettingValue::Count(n) => {
+                SettingWrite::Value(SpecValue::Integer(i64::try_from(*n).unwrap_or(i64::MAX)))
+            }
+            SettingValue::Auto => SettingWrite::Auto,
+        };
+        let mut spec = before.clone();
+        Ok(
+            crate::shelf_edit::put_setting(&mut spec, path, key, &default, &write)?
+                .map(|applied| (spec, applied)),
+        )
+    }
+
+    /// The title brightfield draws on `channel`'s axis of the plot at `path` when
+    /// the file names none: the name of the column the axis holds.
+    fn derived_title(
+        spec: &brightfield_spec::ast::Spec,
+        path: &ComponentPath,
+        channel: ShelfChannel,
+    ) -> Option<String> {
+        let plot = edit::plot_at_path(spec, &path.0)?;
+        let channels = ShelfChannels::of_plot(plot)?;
+        let held = match channel {
+            ShelfChannel::X => channels.x,
+            ShelfChannel::Y => channels.y,
+            ShelfChannel::Colour | ShelfChannel::Mark => return None,
+        };
+        match held {
+            Binding::Column(name) => Some(name),
+            Binding::Unset | Binding::Expression => None,
         }
     }
 
