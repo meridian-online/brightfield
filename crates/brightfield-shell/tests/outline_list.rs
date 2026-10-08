@@ -1692,3 +1692,74 @@ fn the_cursors_row_with_its_chips_dark_matches_its_baseline() {
         None,
     );
 }
+
+/// The settings list over a plot that draws `scale` on both axes and writes
+/// nothing, the cursor on the scale row.
+fn drawn_scale_list(scale: Scale) -> ColumnList {
+    let mut list = settings_over_scale("", scale);
+    list.feed_events(&[key_event(egui::Key::J)]);
+    list
+}
+
+fn names_scale() -> Scale {
+    Scale::Band {
+        categories: vec!["inland".to_string(), "coast".to_string()],
+        range_start: 0.0,
+        range_end: 100.0,
+        padding: 0.1,
+    }
+}
+
+fn dates_scale() -> Scale {
+    Scale::Time {
+        domain_min_us: 0,
+        domain_max_us: 86_400_000_000,
+        range_start: 0.0,
+        range_end: 100.0,
+    }
+}
+
+/// The scale row of an axis of names, the cursor on it: it reads `band` in the
+/// muted ink of a row at brightfield's own value, with the word *auto*, a ring
+/// and no chips, and the foot says auto draws band for names.
+#[test]
+fn a_scale_row_over_an_axis_of_names_light_matches_its_baseline() {
+    baseline_of(
+        "shelf_settings_scale_band_light",
+        Mode::Light,
+        drawn_scale_list(names_scale()),
+        None,
+    );
+}
+
+#[test]
+fn a_scale_row_over_an_axis_of_names_dark_matches_its_baseline() {
+    baseline_of(
+        "shelf_settings_scale_band_dark",
+        Mode::Dark,
+        drawn_scale_list(names_scale()),
+        None,
+    );
+}
+
+/// The scale row of an axis of dates, the cursor on it: `time`, drawn as the
+/// row of names is.
+#[test]
+fn a_scale_row_over_an_axis_of_dates_light_matches_its_baseline() {
+    baseline_of(
+        "shelf_settings_scale_time_light",
+        Mode::Light,
+        drawn_scale_list(dates_scale()),
+        None,
+    );
+}
+
+#[test]
+fn a_scale_row_over_an_axis_of_dates_dark_matches_its_baseline() {
+    baseline_of(
+        "shelf_settings_scale_time_dark",
+        Mode::Dark,
+        drawn_scale_list(dates_scale()),
+        None,
+    );
+}
