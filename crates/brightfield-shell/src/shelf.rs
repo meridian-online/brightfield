@@ -907,7 +907,8 @@ const TICK_FORMAT_KEYS: [(ShelfChannel, &str); 2] = [
 pub enum SettingKind {
     /// One of a short list, stepped through by `h` and `l`: scale, format.
     Enumerated,
-    /// Text typed into the row, in a field `Enter` opens: title and ticks.
+    /// Text typed into the row, in a field `Enter` opens: title and ticks. The
+    /// format is enumerated and opens the same field behind its presets.
     Typed,
 }
 

@@ -832,7 +832,7 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::Navigation,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "On the band and on the columns, the cell to the left, stopping at the mark's cell; on a settings row, step its value back and draw the chart at once: scale from symlog to log to linear, a switch the other way, a row that does not apply left as it is",
+            help: "On the band and on the columns, the cell to the left, stopping at the mark's cell; on a settings row, step its value back and draw the chart at once: scale from symlog to log to linear, format from custom back through its presets to auto, a switch the other way, a row that does not apply left as it is",
             scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row h = left (vim), as drawn: mark, x, y, colour run left to right; stops at the mark rather than popping out, because Esc is the way out" }),
         },
         VerbEntry {
@@ -843,7 +843,7 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::Navigation,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "On the band and on the columns, the cell to the right, stopping at colour; on a settings row, step its value forward and draw the chart at once: scale from linear to log to symlog, a switch the other way, a row that does not apply left as it is",
+            help: "On the band and on the columns, the cell to the right, stopping at colour; on a settings row, step its value forward and draw the chart at once: scale from linear to log to symlog, format from auto through its presets to custom, which opens a field, a switch the other way, a row that does not apply left as it is",
             scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row l = right (vim), as drawn: mark, x, y, colour run left to right; the Protocol panel's l is likewise the node drawn to the right" }),
         },
         VerbEntry {
