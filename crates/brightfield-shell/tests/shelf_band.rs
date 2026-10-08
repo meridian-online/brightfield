@@ -32,6 +32,8 @@ use std::path::PathBuf;
 
 use brightfield_engine::{ColumnProfile, ProfileOutcome};
 use brightfield_keys::registry::{registry, BindingContext};
+use brightfield_render::channel::Channel;
+use brightfield_render::scale::{Scale, ScaleSet};
 use brightfield_shell::data_file::{self, OpenedFile};
 use brightfield_shell::design::{self, Mode};
 use brightfield_shell::shelf::{
@@ -1271,6 +1273,91 @@ fn the_scale_name_follows_the_word_while_the_scale_is_not_linear() {
         ShelfChannel::Mark,
         ShelfChannel::Mark.word()
     ));
+}
+
+/// The band over the generated map's channels, handed what `attrs` set, read
+/// against the scales its chart was drawn with: `x` and `y`.
+fn band_drawn_with(attrs: &str, x: Scale, y: Scale) -> ShelfBand {
+    let source = format!(
+        "data:\n  t:\n    - {{ a: 1 }}\nplot:\n  - mark: dot\n    data: {{ from: t }}\n    x: a\n    y: a\nwidth: 600\nheight: 300\n{attrs}\n"
+    );
+    let spec = parse_spec(&source, Format::Yaml)
+        .expect("the spec parses")
+        .spec;
+    let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
+    let mut drawn = ScaleSet::new();
+    drawn.insert(Channel::X, x);
+    drawn.insert(Channel::Y, y);
+    let mut band = ShelfBand::new(map_channels());
+    band.set_settings(ChannelSettings::of_plot_drawn(
+        &spec,
+        plot,
+        &map_channels(),
+        &drawn,
+    ));
+    band
+}
+
+/// **The cell of an axis of names or of dates carries the scale's name and no
+/// dot**: `x axis · band` and `y axis · time`, since the chart draws those two
+/// there of itself and a dot marks only what the analyst set. The other cells
+/// keep their words, and a numeric axis beside a band one reads as it did.
+#[test]
+fn the_cell_of_an_axis_of_names_or_dates_carries_band_or_time_and_no_dot() {
+    let stage = Stage::new(Mode::Light, WIDTH);
+    let (x, y) = (ShelfChannel::X.word(), ShelfChannel::Y.word());
+    let names = Scale::Band {
+        categories: vec!["inland".to_string(), "coast".to_string()],
+        range_start: 0.0,
+        range_end: 100.0,
+        padding: 0.1,
+    };
+    let dates = Scale::Time {
+        domain_min_us: 0,
+        domain_max_us: 86_400_000_000,
+        range_start: 0.0,
+        range_end: 100.0,
+    };
+    let numbers = Scale::Linear {
+        domain_min: 0.0,
+        domain_max: 10.0,
+        range_start: 0.0,
+        range_end: 100.0,
+    };
+    let frame = stage.draw(&mut band_drawn_with("", names.clone(), dates.clone()));
+    for (channel, said) in [
+        (ShelfChannel::X, format!("{x} · band")),
+        (ShelfChannel::Y, format!("{y} · time")),
+        (ShelfChannel::Mark, ShelfChannel::Mark.word().to_string()),
+    ] {
+        assert!(
+            has_text(&frame, channel, &said),
+            "{channel:?}'s cell reads {said:?}: {:?}",
+            texts_in(&frame, frame.drawn.cells[channel.index()])
+                .iter()
+                .map(|t| t.text.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+    for channel in ShelfChannel::ALL {
+        let dots = dots_in(&frame, frame.drawn.cells[channel.index()]);
+        assert!(
+            dots.is_empty(),
+            "{channel:?}'s cell carries a dot: {dots:?}"
+        );
+    }
+
+    // A numeric axis beside a band one reads as it did, and a set row beside it
+    // still marks only its own cell.
+    let frame = stage.draw(&mut band_drawn_with("yScale: log", names, numbers));
+    assert!(has_text(&frame, ShelfChannel::X, &format!("{x} · band")));
+    assert!(has_text(&frame, ShelfChannel::Y, &format!("{y} · log")));
+    assert!(dots_in(&frame, frame.drawn.cells[ShelfChannel::X.index()]).is_empty());
+    assert_eq!(
+        dots_in(&frame, frame.drawn.cells[ShelfChannel::Y.index()]).len(),
+        1,
+        "y's log is the analyst's and marks y's cell"
+    );
 }
 
 /// **The dot and the scale's name leave the word *preview* its room**: a
