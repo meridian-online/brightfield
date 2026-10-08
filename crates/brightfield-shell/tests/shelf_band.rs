@@ -35,7 +35,8 @@ use brightfield_keys::registry::{registry, BindingContext};
 use brightfield_shell::data_file::{self, OpenedFile};
 use brightfield_shell::design::{self, Mode};
 use brightfield_shell::shelf::{
-    cell_key, BandDrawn, Binding, ShelfBand, ShelfChannels, ADD_A_COLUMN, AN_EXPRESSION, PREVIEW,
+    cell_key, BandDrawn, Binding, ChannelSettings, ShelfBand, ShelfChannels, ADD_A_COLUMN,
+    AN_EXPRESSION, PREVIEW,
 };
 use brightfield_shell::shelf_edit::{put_colour, put_column};
 use brightfield_shell::text_ink::{self, DrawnText};
@@ -43,6 +44,7 @@ use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::{Component, Spec, SpecValue, ValueOrParamRef};
 use brightfield_spec::edit::{self, plot_at_path, ChartEdit};
 use brightfield_spec::layout::PlotAxis;
+use brightfield_spec::parse::{parse_spec, Format};
 use brightfield_spec::vocab::is_colour_literal;
 use brightfield_workbench::channel::ShelfChannel;
 use brightfield_workbench::chrome;
@@ -1095,4 +1097,281 @@ fn the_x_cell_open_and_previewing_a_column_dark_matches_its_baseline() {
         Mode::Dark,
         Some((ShelfChannel::X, "median_income")),
     );
+}
+
+// ---------------------------------------------------------------------------
+// What a cell marks: the dot of a value set, and the scale's name.
+// ---------------------------------------------------------------------------
+
+/// What the map's axes read when the plot's attributes are `attrs`, a block of
+/// top-level lines of a one-plot spec, as the window reads them off the live
+/// plot and hands them to the band.
+fn settings_of(attrs: &str) -> ChannelSettings {
+    let source = format!(
+        "data:\n  t:\n    - {{ a: 1 }}\nplot:\n  - mark: dot\n    data: {{ from: t }}\n    x: a\n    y: a\nwidth: 600\nheight: 300\n{attrs}\n"
+    );
+    let spec = parse_spec(&source, Format::Yaml)
+        .expect("the spec parses")
+        .spec;
+    let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
+    ChannelSettings::of_plot(&spec, plot, &map_channels())
+}
+
+/// The band over the generated map's channels, handed what `attrs` set.
+fn band_with(attrs: &str) -> ShelfBand {
+    let mut band = ShelfBand::new(map_channels());
+    band.set_settings(settings_of(attrs));
+    band
+}
+
+/// Every filled circle the frame painted inside `cell`: its centre, its radius
+/// and its fill.
+fn dots_in(frame: &Frame, cell: egui::Rect) -> Vec<(egui::Pos2, f32, egui::Color32)> {
+    leaves(frame)
+        .into_iter()
+        .filter_map(|s| match s {
+            Shape::Circle(c) if cell.contains(c.center) && c.fill != egui::Color32::TRANSPARENT => {
+                Some((c.center, c.radius, c.fill))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// What a frame holds that a mark on a cell would change: the text and where
+/// its ink sits, the filled rectangles, the chevrons and the filled circles.
+#[allow(clippy::type_complexity)]
+fn drawing_of(
+    frame: &Frame,
+) -> (
+    Vec<(String, egui::Rect)>,
+    Vec<(egui::Rect, egui::Color32)>,
+    Vec<egui::Rect>,
+    Vec<(egui::Pos2, f32, egui::Color32)>,
+) {
+    let whole = egui::Rect::EVERYTHING;
+    (
+        frame
+            .texts
+            .iter()
+            .map(|t| (t.text.clone(), t.ink))
+            .collect(),
+        fills(frame),
+        paths(frame),
+        dots_in(frame, whole),
+    )
+}
+
+/// One attribute that sets each of an axis's rows, head and by name, spelled for
+/// the axis's letter.
+const ROW_KEYS: [&str; 7] = [
+    "Label: Residents",
+    "Scale: log",
+    "TickFormat: .2s",
+    "Ticks: 8",
+    "Grid: false",
+    "Zero: true",
+    "Reverse: true",
+];
+
+/// **A cell carries a dot while any one of its channel's rows is set, whichever
+/// row it is**, the three head rows and the four found by name, and only on the
+/// cell of the channel whose key was written. The dot is a filled circle in the
+/// text ink on the word's line, to the right of the word.
+#[test]
+fn a_cell_carries_a_dot_while_any_one_of_its_channels_rows_is_set_and_no_other_cell_does() {
+    let stage = Stage::new(Mode::Light, WIDTH);
+    let ink = chrome::colour(semantic(false).text.primary);
+    for channel in [ShelfChannel::X, ShelfChannel::Y] {
+        let letter = if channel == ShelfChannel::X { "x" } else { "y" };
+        for key in ROW_KEYS {
+            let attrs = format!("{letter}{key}");
+            let mut band = band_with(&attrs);
+            let frame = stage.draw(&mut band);
+            for other in ShelfChannel::ALL {
+                let dots = dots_in(&frame, frame.drawn.cells[other.index()]);
+                if other != channel {
+                    assert!(
+                        dots.is_empty(),
+                        "`{attrs}` marks {other:?}'s cell: {dots:?}"
+                    );
+                    continue;
+                }
+                assert_eq!(dots.len(), 1, "`{attrs}` marks {channel:?}'s cell once");
+                let (centre, _, fill) = dots[0];
+                assert_eq!(fill, ink, "the dot is in the text ink");
+                let word = frame.texts.iter().find(|t| {
+                    frame.drawn.cells[channel.index()].contains(t.ink.center())
+                        && t.text.starts_with(channel.word())
+                });
+                let word = word.expect("the cell's word");
+                assert!(
+                    centre.x > word.ink.right(),
+                    "the dot ({centre:?}) follows the word ({:?})",
+                    word.ink
+                );
+                assert!(
+                    (centre.y - word.ink.center().y).abs() < 2.0,
+                    "the dot stands on the word's line"
+                );
+            }
+        }
+    }
+}
+
+/// **A plot that sets nothing draws the band as a band handed no settings does**,
+/// and so does one that writes brightfield's own value of every key: a cell is
+/// marked by a value that differs, not by a key that is written.
+#[test]
+fn a_plot_with_nothing_set_draws_the_band_as_it_does_with_no_settings() {
+    let stage = Stage::new(Mode::Light, WIDTH);
+    let bare = drawing_of(&stage.draw(&mut ShelfBand::new(map_channels())));
+    assert!(
+        bare.3.is_empty(),
+        "a band with no settings paints no dot: {:?}",
+        bare.3
+    );
+    let written = "xScale: linear\nxTicks: 5\nxGrid: true\nxZero: false\nxReverse: false";
+    for attrs in ["", written] {
+        let drawn = drawing_of(&stage.draw(&mut band_with(attrs)));
+        assert_eq!(drawn, bare, "`{attrs}` draws as a band with no settings");
+    }
+}
+
+/// **The scale's name follows the channel's word while the scale is not linear**,
+/// and nothing follows a linear one: `x axis · log`, `y axis · symlog`, `x axis`.
+#[test]
+fn the_scale_name_follows_the_word_while_the_scale_is_not_linear() {
+    let stage = Stage::new(Mode::Light, WIDTH);
+    let (x, y) = (ShelfChannel::X.word(), ShelfChannel::Y.word());
+    let cases = [
+        ("xScale: log", ShelfChannel::X, format!("{x} · log")),
+        ("xScale: symlog", ShelfChannel::X, format!("{x} · symlog")),
+        ("yScale: log", ShelfChannel::Y, format!("{y} · log")),
+        ("xScale: linear", ShelfChannel::X, x.to_string()),
+        ("xGrid: false", ShelfChannel::X, x.to_string()),
+        ("", ShelfChannel::X, x.to_string()),
+    ];
+    for (attrs, channel, said) in cases {
+        let frame = stage.draw(&mut band_with(attrs));
+        assert!(
+            has_text(&frame, channel, &said),
+            "`{attrs}` reads {said:?} in {channel:?}'s cell: {:?}",
+            texts_in(&frame, frame.drawn.cells[channel.index()])
+                .iter()
+                .map(|t| t.text.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+    // The other cells keep their words: an axis's scale marks its own cell.
+    let frame = stage.draw(&mut band_with("xScale: log"));
+    assert!(has_text(&frame, ShelfChannel::Y, y));
+    assert!(has_text(
+        &frame,
+        ShelfChannel::Mark,
+        ShelfChannel::Mark.word()
+    ));
+}
+
+/// **The dot and the scale's name leave the word *preview* its room**: a
+/// previewed column on a cell with both marks reads the word, the scale, the dot
+/// and *preview* in that order, none over another.
+#[test]
+fn a_previewed_cell_with_a_dot_and_a_scale_reads_word_dot_and_preview_in_order() {
+    // Wide enough that the cell has the room for all three.
+    let stage = Stage::new(Mode::Light, 1100.0);
+    let mut band = band_with("xScale: log");
+    band.activate(ShelfChannel::X);
+    band.set_preview(ShelfChannel::X, "median_income");
+    let frame = stage.draw(&mut band);
+    assert!(frame.collisions.is_none(), "{:?}", frame.collisions);
+    let cell = frame.drawn.cells[ShelfChannel::X.index()];
+    let word = text_in(
+        &frame,
+        ShelfChannel::X,
+        &format!("{} · log", ShelfChannel::X.word()),
+    );
+    let preview = text_in(&frame, ShelfChannel::X, PREVIEW);
+    let dots = dots_in(&frame, cell);
+    assert_eq!(dots.len(), 1);
+    let (centre, radius, _) = dots[0];
+    assert!(
+        word.ink.right() < centre.x - radius,
+        "the dot follows the word"
+    );
+    assert!(
+        centre.x + radius < preview.ink.left(),
+        "the word preview follows the dot"
+    );
+}
+
+/// **The word *preview* stands clear of the dot at each width the cell takes**:
+/// the preview is drawn where the word and the dot leave it the room, and left
+/// out where they do not, so that it is never drawn over the dot. The widths are
+/// scanned in steps finer than the dot and its gap, and the scan has to meet
+/// both a width that holds the preview and one that does not.
+#[test]
+fn a_previewed_cell_keeps_the_word_preview_clear_of_the_dot_at_each_width() {
+    let (mut drawn_at, mut left_out_at) = (0, 0);
+    for width in (400..=1100).step_by(6) {
+        let stage = Stage::new(Mode::Light, width as f32);
+        let mut band = band_with("xScale: log");
+        band.activate(ShelfChannel::X);
+        band.set_preview(ShelfChannel::X, "median_income");
+        let frame = stage.draw(&mut band);
+        let cell = frame.drawn.cells[ShelfChannel::X.index()];
+        let Some(preview) = texts_in(&frame, cell)
+            .into_iter()
+            .find(|t| t.text == PREVIEW)
+        else {
+            left_out_at += 1;
+            continue;
+        };
+        drawn_at += 1;
+        for (centre, radius, _) in dots_in(&frame, cell) {
+            assert!(
+                centre.x + radius < preview.ink.left(),
+                "at {width} the word preview ({:?}) is over the dot ({centre:?})",
+                preview.ink
+            );
+        }
+    }
+    assert!(
+        drawn_at > 0 && left_out_at > 0,
+        "the scan met {drawn_at} widths with the preview and {left_out_at} without"
+    );
+}
+
+/// The band over the generated map with a scale and a value set, through the wgpu
+/// renderer, compared with the committed baseline `name`.
+fn marked_baseline(name: &str, mode: Mode) {
+    let mut band = band_with("xScale: log\nyGrid: false");
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(WIDTH, HEIGHT))
+        .with_pixels_per_point(2.0)
+        .wgpu()
+        .build_ui(move |ui| {
+            design::apply(ui.ctx(), mode);
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(WIDTH, HEIGHT),
+                )),
+                |ui| {
+                    band.show(ui, mode);
+                },
+            );
+        });
+    harness.run();
+    harness.snapshot_options(name, &options());
+}
+
+#[test]
+fn the_band_with_a_scale_and_a_value_set_light_matches_its_baseline() {
+    marked_baseline("shelf_band_marked_light", Mode::Light);
+}
+
+#[test]
+fn the_band_with_a_scale_and_a_value_set_dark_matches_its_baseline() {
+    marked_baseline("shelf_band_marked_dark", Mode::Dark);
 }
