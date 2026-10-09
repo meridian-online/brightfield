@@ -298,3 +298,10 @@ fn sample_rate_admits_only_powers_of_two() {
     let coarse = SampleRate::from_exponent(fine.exponent() - 1).unwrap();
     assert_eq!(coarse.modulus(), 32);
 }
+
+// A test that fails on purpose, to show that a red test in a default-threads
+// shard turns the check named `test` red. This commit is never merged.
+#[test]
+fn deliberate_failure_in_a_default_threads_target() {
+    panic!("deliberate failure: a default-threads shard must go red and so must the check named test");
+}
