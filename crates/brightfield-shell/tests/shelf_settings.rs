@@ -881,7 +881,7 @@ fn the_foot_carries_one_sentence_for_the_row_under_the_cursor() {
     let sentences = [
         "The words along the axis, which auto takes from the column's name.",
         "How values are spaced along the axis, which auto draws linear.",
-        "How a tick's number or date is written, which auto leaves to the axis's own tick text.",
+        "How a tick's number or date is written, which auto leaves to the axis's own tick text. Takes: auto, number, short, percent, currency, custom.",
     ];
     for (n, said) in sentences.into_iter().enumerate() {
         let frame = stage.draw(&mut list);

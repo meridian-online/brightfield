@@ -804,7 +804,7 @@ pub const TIME_SCALE: &str = "time";
 
 /// The foot's sentence for the format row.
 const FORMAT_SAYS: &str =
-    "How a tick's number is written, which auto leaves to the axis's own tick text.";
+    "How a tick's number or date is written, which auto leaves to the axis's own tick text.";
 
 /// What the format row reads while its specifier is no preset's: the one the
 /// field holds, or a file's.
