@@ -16,8 +16,8 @@
 use brightfield_shell::app::CHART;
 use brightfield_shell::design::Mode;
 use brightfield_shell::shelf::{
-    CardDrawn, ListTab, FORMAT_ROW, GRID_ROW, REVERSE_ROW, SCALE_ROW, TICKS_ROW, TITLE_ROW,
-    ZERO_ROW,
+    CardDrawn, ListTab, FORMAT_ROW, GRID_ROW, RANGE_ROW, REVERSE_ROW, SCALE_ROW, TICKS_ROW,
+    TITLE_ROW, ZERO_ROW,
 };
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::text_ink;
@@ -409,7 +409,7 @@ fn with_the_rail_shut_tab_turns_the_hung_card_to_the_settings_and_its_keys_act_o
     assert_eq!(list.tab, ListTab::Settings, "the card drew the settings");
     assert_eq!(
         list.settings.iter().map(|r| r.name).collect::<Vec<_>>(),
-        [TITLE_ROW, SCALE_ROW, FORMAT_ROW],
+        [TITLE_ROW, SCALE_ROW, RANGE_ROW, FORMAT_ROW],
         "the card's rows are the Outline's"
     );
     assert!(list.rule.is_some() && list.sentence.is_some());
@@ -469,7 +469,7 @@ fn the_window_judges_the_by_name_rows_against_the_scales_the_hero_was_drawn_with
             .expect("a list is open")
             .settings()
             .to_vec();
-        for name in [TICKS_ROW, GRID_ROW, ZERO_ROW, REVERSE_ROW] {
+        for name in [RANGE_ROW, TICKS_ROW, GRID_ROW, ZERO_ROW, REVERSE_ROW] {
             let row = rows.iter().find(|r| r.name == name).expect("the row");
             assert!(
                 row.reason.is_some(),

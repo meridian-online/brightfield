@@ -114,7 +114,7 @@ fn format_row(attrs: &str, drawn: &ScaleSet) -> SettingRow {
 }
 
 /// A list on x's settings over a plot that writes `attrs`, drawn to `drawn`, the
-/// cursor on the format row, which is the third.
+/// cursor on the format row, reached by its name.
 fn list_on_format_drawn(attrs: &str, drawn: &ScaleSet) -> ColumnList {
     let mut list = ColumnList::new(ColumnListRequest {
         tile: "hero".to_string(),
@@ -130,9 +130,15 @@ fn list_on_format_drawn(attrs: &str, drawn: &ScaleSet) -> ColumnList {
     list.feed_events(&[key_event(egui::Key::Tab)]);
     assert_eq!(list.tab(), ListTab::Settings, "Tab turned the list");
     assert_eq!(list.setting_cursor().map(|r| r.name), Some(TITLE_ROW));
-    list.feed_events(&typed(egui::Key::J, "j"));
-    list.feed_events(&typed(egui::Key::J, "j"));
-    assert_eq!(list.setting_cursor().map(|r| r.name), Some(FORMAT_ROW));
+    while list.setting_cursor().map(|r| r.name) != Some(FORMAT_ROW) {
+        let was = list.setting_cursor().map(|r| r.name);
+        list.feed_events(&typed(egui::Key::J, "j"));
+        assert_ne!(
+            list.setting_cursor().map(|r| r.name),
+            was,
+            "`j` stopped before the format row"
+        );
+    }
     list
 }
 
@@ -642,13 +648,15 @@ impl Window {
             Some(ListTab::Settings),
             "Tab did not turn x's list to its settings"
         );
-        win.type_letter(egui::Key::J, "j");
-        win.type_letter(egui::Key::J, "j");
-        assert_eq!(
-            win.list().setting_cursor().map(|r| r.name),
-            Some(FORMAT_ROW),
-            "two steps down from the title reach the format row"
-        );
+        while win.list().setting_cursor().map(|r| r.name) != Some(FORMAT_ROW) {
+            let was = win.list().setting_cursor().map(|r| r.name);
+            win.type_letter(egui::Key::J, "j");
+            assert_ne!(
+                win.list().setting_cursor().map(|r| r.name),
+                was,
+                "`j` stopped before the format row"
+            );
+        }
         win
     }
 
