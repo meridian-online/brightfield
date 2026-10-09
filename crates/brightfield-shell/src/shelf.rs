@@ -2625,8 +2625,10 @@ impl ColumnList {
             } else if response.hovered() {
                 painter.rect_filled(rect, 0.0, chrome::colour(sem.rows.hover_background));
             }
-            // The open field has the keys and the cursor: the pointer neither
-            // moves off its row nor steps a value while it is typed into.
+            // The columns list's guard. A field opens on the settings list
+            // alone, so `self.field` is none here; the guard that keeps the
+            // pointer off an open field is the settings list's, in
+            // `show_settings`.
             if self.field.is_none() {
                 if response.clicked() {
                     clicked = Some(i);
@@ -2901,10 +2903,17 @@ impl ColumnList {
             } else if response.hovered() {
                 painter.rect_filled(rect, 0.0, chrome::colour(sem.rows.hover_background));
             }
-            if response.clicked() {
-                clicked = Some(i);
-            } else if moving && response.hovered() {
-                pointed = Some(i);
+            // The settings list's own guard: while a title, ticks or format
+            // field is open, the pointer does not move the cursor off the
+            // field's row, which would hide the field while its text still
+            // took keys. The value click below carries the same condition for
+            // a step.
+            if self.field.is_none() {
+                if response.clicked() {
+                    clicked = Some(i);
+                } else if moving && response.hovered() {
+                    pointed = Some(i);
+                }
             }
             let content = egui::Rect::from_min_max(
                 egui::pos2(rect.left() + b.pad_x + spacing::SPACE_4, rect.top()),
