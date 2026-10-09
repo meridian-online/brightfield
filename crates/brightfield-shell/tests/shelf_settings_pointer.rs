@@ -15,7 +15,7 @@
 use brightfield_shell::design::{self, Mode};
 use brightfield_shell::shelf::{
     Binding, ChannelSettings, ColumnList, ColumnListRequest, ListColumn, ListDrawn, ListReport,
-    ListTab, SettingRowDrawn, ShelfChannels, GRID_ROW, TICKS_ROW, TITLE_ROW,
+    ListTab, SettingRowDrawn, ShelfChannels, FORMAT_ROW, SCALE_ROW, TITLE_ROW,
 };
 use brightfield_shell::text_ink;
 use brightfield_spec::edit::plot_at_path;
@@ -176,7 +176,10 @@ fn row<'a>(frame: &'a Frame, name: &str) -> &'a SettingRowDrawn {
         .settings
         .iter()
         .find(|r| r.name == name)
-        .unwrap_or_else(|| panic!("the list drew no {name} row"))
+        .unwrap_or_else(|| {
+            let drawn: Vec<_> = frame.drawn.settings.iter().map(|r| r.name).collect();
+            panic!("the list drew no {name} row, only {drawn:?}")
+        })
 }
 
 /// A point on `name`'s row where the name's ink stands: a click here is on the
@@ -226,13 +229,13 @@ fn a_pointer_moved_over_another_row_moves_the_cursor_when_no_field_is_open() {
     let mut list = list_on_the_settings();
     let first = stage.settle(&mut list);
     stage.rest(&mut list, on_the_name(&first, TITLE_ROW));
-    let frame = stage.glide(&mut list, on_the_name(&first, TICKS_ROW));
+    let frame = stage.glide(&mut list, on_the_name(&first, FORMAT_ROW));
     assert_eq!(
         list.setting_cursor().map(|r| r.name),
-        Some(TICKS_ROW),
-        "the pointer moved the cursor to the ticks row"
+        Some(FORMAT_ROW),
+        "the pointer moved the cursor to the format row"
     );
-    assert!(row(&frame, TICKS_ROW).bar.is_some());
+    assert!(row(&frame, FORMAT_ROW).bar.is_some());
 }
 
 /// **AC1.** With the title field open, a pointer moved over another row leaves
@@ -243,7 +246,7 @@ fn a_pointer_moved_over_another_row_leaves_the_cursor_and_the_open_field_where_t
     let stage = Stage::new();
     let (mut list, frame) = open_on_the_title(&stage);
 
-    for over in [TICKS_ROW, GRID_ROW] {
+    for over in [FORMAT_ROW, SCALE_ROW] {
         let at = on_the_name(&frame, over);
         let after = stage.glide(&mut list, at);
         assert_eq!(
@@ -290,13 +293,13 @@ fn a_click_on_the_value_of_a_row_that_steps_steps_it_when_no_field_is_open() {
     let stage = Stage::new();
     let mut list = list_on_the_settings();
     let first = stage.settle(&mut list);
-    let (_, reports) = stage.click(&mut list, on_the_value(&first, GRID_ROW));
-    assert_eq!(list.setting_cursor().map(|r| r.name), Some(GRID_ROW));
+    let (_, reports) = stage.click(&mut list, on_the_value(&first, SCALE_ROW));
+    assert_eq!(list.setting_cursor().map(|r| r.name), Some(SCALE_ROW));
     assert!(
         reports
             .iter()
-            .any(|r| matches!(r, ListReport::Set(e) if e.row == GRID_ROW)),
-        "the click stepped the grid row, answered with {reports:?}"
+            .any(|r| matches!(r, ListReport::Set(e) if e.row == SCALE_ROW)),
+        "the click stepped the scale row, answered with {reports:?}"
     );
 }
 
@@ -307,7 +310,7 @@ fn a_click_on_another_row_with_a_field_open_leaves_the_cursor_and_the_field() {
     let stage = Stage::new();
     let (mut list, frame) = open_on_the_title(&stage);
 
-    for over in [TICKS_ROW, GRID_ROW] {
+    for over in [FORMAT_ROW, SCALE_ROW] {
         let (after, reports) = stage.click(&mut list, on_the_name(&frame, over));
         assert_eq!(
             list.setting_cursor().map(|r| r.name),
@@ -335,15 +338,15 @@ fn a_click_on_the_value_of_a_row_that_steps_with_a_field_open_steps_nothing() {
     assert!(
         list.settings()
             .iter()
-            .any(|r| r.name == GRID_ROW && r.steps()),
-        "the grid row is one that steps"
+            .any(|r| r.name == SCALE_ROW && r.steps()),
+        "the scale row is one that steps"
     );
 
-    let (after, reports) = stage.click(&mut list, on_the_value(&frame, GRID_ROW));
+    let (after, reports) = stage.click(&mut list, on_the_value(&frame, SCALE_ROW));
     assert_eq!(
         reports,
         [],
-        "a click on the grid row's value reported a step"
+        "a click on the scale row's value reported a step"
     );
     assert_eq!(
         list.setting_cursor().map(|r| r.name),
