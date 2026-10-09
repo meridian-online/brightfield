@@ -861,3 +861,117 @@ fn the_reload_gate_refuses_a_move_into_or_out_of_the_band() {
     assert_eq!(edit.kind_name(), "place-colour-legend");
     assert_eq!(edit.summary(), "place-colour-legend: below");
 }
+
+/// Two plots in one `vconcat`, each with its own colour legend drawn under it:
+/// plot, legend, plot, legend. The legends carry different labels, so a legend
+/// read as the other plot's shows in the options a move carries.
+const TWO_BELOW: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        fill: c
+    name: first
+  - legend: color
+    for: first
+    label: First
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: b
+        fill: c
+    name: second
+  - legend: color
+    for: second
+    label: Second
+";
+
+/// [`TWO_BELOW`] with the second plot's legend to its right: the first plot's
+/// legend stays under the first plot, and the item carries the second legend's
+/// own label.
+const TWO_BELOW_SECOND_RIGHT: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        fill: c
+    name: first
+  - legend: color
+    for: first
+    label: First
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: b
+        fill: c
+      - legend: color
+        label: Second
+    name: second
+";
+
+/// [`TWO_BELOW`] with the second plot's legend taken out.
+const TWO_BELOW_SECOND_NONE: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        fill: c
+    name: first
+  - legend: color
+    for: first
+    label: First
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: b
+        fill: c
+    name: second
+";
+
+/// **A move of one plot's legend out from below takes that plot's legend and
+/// no other.** With two plots each carrying a legend below, moving the second
+/// plot's legend to right or to none leaves the first plot's legend under the
+/// first plot, and the second plot gets the options of its own legend and not
+/// the first's.
+#[test]
+fn a_legend_moved_out_from_below_leaves_the_other_plots_legend_where_it_is() {
+    let spec = parse(TWO_BELOW);
+
+    assert_eq!(
+        placed(&spec, &place("root/vconcat[2]", LegendPlacement::Right)),
+        parse(TWO_BELOW_SECOND_RIGHT)
+    );
+    assert_eq!(
+        placed(&spec, &place("root/vconcat[2]", LegendPlacement::None)),
+        parse(TWO_BELOW_SECOND_NONE)
+    );
+}
+
+/// **Each placement is spelled by `wire_name`, and the command log prints that
+/// word.** A `Below` summary was asserted on its own, so a changed word for
+/// `Right` or `None` left the suite green. `wire_name` is also the word the
+/// legend row's three values are named by (its own doc), so the word is
+/// asserted on `wire_name` itself as well as through the log line.
+#[test]
+fn each_placement_is_spelled_by_wire_name_and_the_command_log_prints_it() {
+    for (at, word) in [
+        (LegendPlacement::Right, "right"),
+        (LegendPlacement::Below, "below"),
+        (LegendPlacement::None, "none"),
+    ] {
+        assert_eq!(at.wire_name(), word);
+        assert_eq!(
+            place("root", at).summary(),
+            format!("place-colour-legend: {word}")
+        );
+    }
+}

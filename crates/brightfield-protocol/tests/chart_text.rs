@@ -1505,3 +1505,214 @@ name: scatter
 ",
     );
 }
+
+/// Two plots in one `vconcat`, each with its own colour legend drawn under it:
+/// plot, legend, plot, legend. The legends carry different labels, so a legend
+/// read as the other plot's shows in what a move writes.
+const TWO_BELOW: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        fill: c
+    name: first
+  - legend: color
+    for: first
+    label: First
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: b
+        fill: c
+    name: second
+  - legend: color
+    for: second
+    label: Second
+";
+
+/// [`TWO_BELOW`] with the second plot's legend to its right.
+const TWO_BELOW_SECOND_RIGHT: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        fill: c
+    name: first
+  - legend: color
+    for: first
+    label: First
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: b
+        fill: c
+      - legend: color
+        label: Second
+    name: second
+";
+
+/// [`TWO_BELOW`] with the second plot's legend taken out.
+const TWO_BELOW_SECOND_NONE: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        fill: c
+    name: first
+  - legend: color
+    for: first
+    label: First
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: b
+        fill: c
+    name: second
+";
+
+/// **Moving one plot's legend out from below deletes that plot's legend from
+/// the text and no other.** The first plot's legend stays under the first plot,
+/// and the second plot's item carries the second legend's own label.
+#[test]
+fn a_legend_moved_out_from_below_leaves_the_other_plots_legend_in_the_text() {
+    assert_written(
+        TWO_BELOW,
+        &place("root/vconcat[2]", LegendPlacement::Right),
+        TWO_BELOW_SECOND_RIGHT,
+    );
+    assert_written(
+        TWO_BELOW,
+        &place("root/vconcat[2]", LegendPlacement::None),
+        TWO_BELOW_SECOND_NONE,
+    );
+}
+
+/// **A move to where the legend already is writes the text it was given, byte
+/// for byte**, comments and all, and a plot among others is left alone.
+#[test]
+fn a_move_below_from_below_writes_the_text_unchanged() {
+    assert_written(
+        PLOT_AT_ROOT_BELOW,
+        &place("root/vconcat[0]", LegendPlacement::Below),
+        PLOT_AT_ROOT_BELOW,
+    );
+    assert_written(
+        TWO_BELOW,
+        &place("root/vconcat[2]", LegendPlacement::Below),
+        TWO_BELOW,
+    );
+}
+
+/// A chart file whose root is the plot, with a key of each kind the spec holds
+/// at the root beside the plot's own: `meta`, `data`, `params`, `config` and
+/// `plotDefaults`, each with a comment on a line of its own.
+const SPEC_KEYS_AT_ROOT: &str = "\
+meta:
+  title: Income against value   # the heading
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+params:
+  brush: { select: crossfilter }
+config:
+  background: \"#ffffff\"
+plotDefaults:
+  height: 200
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+    fill: c
+  - legend: color
+    label: Age
+width: 300
+";
+
+/// [`SPEC_KEYS_AT_ROOT`] with the legend below: the five keys stay at the root
+/// where they were, and the plot's own lines are what the `vconcat` holds.
+const SPEC_KEYS_AT_ROOT_BELOW: &str = "\
+meta:
+  title: Income against value   # the heading
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+params:
+  brush: { select: crossfilter }
+config:
+  background: \"#ffffff\"
+plotDefaults:
+  height: 200
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+        fill: c
+    width: 300
+    name: chart
+  - legend: color
+    for: chart
+    label: Age
+";
+
+/// **A move to below, on a plot at the root, nests the plot's lines and leaves
+/// each of the spec's own root keys where it was.** A key read as the plot's
+/// would be nested under the `vconcat` and the file would no longer parse to
+/// the chart it was.
+#[test]
+fn a_move_below_on_a_plot_at_the_root_leaves_the_specs_root_keys_in_place() {
+    assert_written(
+        SPEC_KEYS_AT_ROOT,
+        &place("root", LegendPlacement::Below),
+        SPEC_KEYS_AT_ROOT_BELOW,
+    );
+}
+
+/// Two plots that share their marks by a YAML alias: the second reads the
+/// first's list, legend item and all.
+const SHARED_MARKS: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+hconcat:
+  - plot: &marks
+      - mark: dot
+        data: { from: t }
+        x: a
+        fill: c
+      - legend: color
+    name: left
+  - plot: *marks
+    name: right
+";
+
+/// **A placement whose splice writes a file that reads back as a different
+/// chart is refused, and nothing is written.** Taking the legend item out of
+/// the list the second plot shares takes it out of both plots, and the reducer
+/// took it out of the first alone.
+#[test]
+fn a_placement_whose_splice_reads_back_differently_is_refused() {
+    let edit = place("root/hconcat[0]", LegendPlacement::None);
+    let reducer_made = applied_fresh(SHARED_MARKS, &edit);
+    assert_ne!(
+        reducer_made,
+        parse(SHARED_MARKS),
+        "the move changes the first plot"
+    );
+
+    let refusal =
+        write_chart_edit(SHARED_MARKS, &edit).expect_err("the shared list is not written");
+
+    assert!(
+        matches!(&refusal, ChartTextRefusal::ReadsBackDifferently { key } if key == "legend"),
+        "the refusal is {refusal:?}"
+    );
+}
