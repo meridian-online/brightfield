@@ -57,7 +57,7 @@ use std::sync::OnceLock;
 
 use brightfield_keys::dispatch::{resolution_table, DispatchContext, ResolutionTable};
 use brightfield_keys::registry::{keymap_bindings, registry, BindingContext};
-use brightfield_render::axis::{axis_kind, tick_count_applies, AxisKind};
+use brightfield_render::axis::{axis_kind, tick_count_applies, top_tick_text, AxisKind};
 use brightfield_render::channel::Channel;
 use brightfield_render::scale::{Scale, ScaleSet};
 use brightfield_render::scene::{axis_ends_apply, axis_keys_apply, axis_reverse_applies};
@@ -67,6 +67,7 @@ use brightfield_spec::layout::{
     resolve_grid_lines, resolve_plot_scales_in, resolve_tick_counts, tick_count_target, AxisTitle,
     ScaleType, TickFormatReading, DEFAULT_TICK_COUNT, MAX_TICK_COUNT,
 };
+use brightfield_spec::number_format::NumberFormat;
 use brightfield_spec::vocab::is_colour_literal;
 use brightfield_workbench::channel::{self, ShelfChannel, BAND_HEIGHT};
 use brightfield_workbench::chrome;
@@ -697,10 +698,6 @@ pub const AUTO: &str = "auto";
 /// it, or the channel holds no column to name it from.
 pub const NO_TITLE: &str = "none";
 
-/// What a format row reads while the file names no format the axis reads: the
-/// axis draws its own tick text.
-pub const TICK_TEXT: &str = "tick text";
-
 /// The name of the title row.
 pub const TITLE_ROW: &str = "title";
 
@@ -809,6 +806,92 @@ pub const TIME_SCALE: &str = "time";
 const FORMAT_SAYS: &str =
     "How a tick's number or date is written, which auto leaves to the axis's own tick text.";
 
+/// What the format row reads while its specifier is no preset's: the one the
+/// field holds, or a file's.
+pub const CUSTOM_FORMAT: &str = "custom";
+
+/// The presets the format row steps through, in the order `l` steps them, and
+/// the specifier each writes. `auto` writes none: it takes the key out. Custom
+/// is last and has no specifier of its own: it is the field's.
+///
+/// Number writes `,f` and currency `$,f`, because with no type d3-format takes
+/// one significant digit from the step and a population axis would print
+/// `1e+4`; short is `~s` and percent `%`.
+pub const FORMAT_PRESETS: [(&str, Option<&str>); 6] = [
+    (AUTO, None),
+    ("number", Some(",f")),
+    ("short", Some("~s")),
+    ("percent", Some("%")),
+    ("currency", Some("$,f")),
+    (CUSTOM_FORMAT, None),
+];
+
+/// The preset a specifier written to the file reads as: its name where a preset
+/// writes exactly it, and custom where none does.
+#[must_use]
+pub fn format_preset(specifier: &str) -> &'static str {
+    FORMAT_PRESETS
+        .iter()
+        .find(|(_, writes)| *writes == Some(specifier))
+        .map_or(CUSTOM_FORMAT, |(name, _)| *name)
+}
+
+/// The names of the presets, as the foot lists them: `auto, number, short, ...`.
+fn format_preset_names() -> String {
+    FORMAT_PRESETS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The letters a specifier's type may be, spaced as a sentence names them.
+fn type_letters() -> String {
+    NumberFormat::TYPE_LETTERS
+        .chars()
+        .map(String::from)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// What the format row's field says under the row while it is open.
+const FORMAT_FIELD_SAYS: &str =
+    "A d3-format specifier of your own, such as $,.2f or ~s. Enter keeps it.";
+
+/// **What the format row's field holds, read as a specifier**: the text as d3-format
+/// reads it, or the sentence that says why the row refuses it.
+///
+/// The judge is the spec's own, so a specifier the field keeps is one the axis
+/// draws: [`NumberFormat::parse`] says whether the text is a specifier, and
+/// [`NumberFormat::names_its_type`] whether its type is a letter d3-format names,
+/// which the reader does not ask because it draws an unknown letter as `.12~g`.
+/// `the_field_refuses_what_the_reader_takes_exactly_at_a_type_no_format_names`
+/// asks both about each letter.
+///
+/// # Errors
+///
+/// The sentence the row prints under itself.
+pub fn format_specifier(text: &str) -> Result<String, String> {
+    let letters = type_letters();
+    let takes = format!("a format takes a d3-format specifier, whose type is one of {letters}");
+    if text.is_empty() {
+        return Err(takes);
+    }
+    let quoted: String = text.chars().take(QUOTED_AT_MOST).collect();
+    let more = if text.chars().count() > QUOTED_AT_MOST {
+        "\u{2026}"
+    } else {
+        ""
+    };
+    match NumberFormat::parse(text) {
+        None => Err(format!("\"{quoted}{more}\" is not a specifier; {takes}")),
+        Some(format) if !format.names_its_type() => Err(format!(
+            "\"{quoted}{more}\" ends in a type d3-format does not name; it takes {letters}"
+        )),
+        Some(_) => Ok(text.to_string()),
+    }
+}
+
 /// The plot attribute each axis's tick format is written under, which
 /// [`brightfield_spec::layout::resolve_tick_formats`] reads. The row reads the
 /// same key through the same judge, and
@@ -824,7 +907,8 @@ const TICK_FORMAT_KEYS: [(ShelfChannel, &str); 2] = [
 pub enum SettingKind {
     /// One of a short list, stepped through by `h` and `l`: scale, format.
     Enumerated,
-    /// Text typed into the row, in a field `Enter` opens: title and ticks.
+    /// Text typed into the row, in a field `Enter` opens: title and ticks. The
+    /// format is enumerated and opens the same field behind its presets.
     Typed,
 }
 
@@ -858,8 +942,8 @@ pub struct RowEdit {
 pub const SCALE_STEPS: [&str; 3] = ["linear", "log", "symlog"];
 
 /// The plot attribute `row` of `axis` is written under, as Mosaic spells it, for
-/// the rows a step, a typed value or a `⌫` writes: title, scale, ticks, grid, zero
-/// and reverse. The format is the card behind this one's.
+/// the rows a step, a typed value or a `⌫` writes: title, scale, format, ticks,
+/// grid, zero and reverse.
 #[must_use]
 pub fn row_key(axis: ShelfChannel, row: &str) -> Option<&'static str> {
     let x = match axis {
@@ -870,6 +954,8 @@ pub fn row_key(axis: ShelfChannel, row: &str) -> Option<&'static str> {
     Some(match (row, x) {
         (TITLE_ROW, true) => "xLabel",
         (TITLE_ROW, false) => "yLabel",
+        (FORMAT_ROW, true) => "xTickFormat",
+        (FORMAT_ROW, false) => "yTickFormat",
         (SCALE_ROW, true) => "xScale",
         (SCALE_ROW, false) => "yScale",
         (TICKS_ROW, true) => "xTicks",
@@ -891,6 +977,8 @@ pub fn row_key(axis: ShelfChannel, row: &str) -> Option<&'static str> {
 pub fn row_default(row: &str) -> Option<SpecValue> {
     Some(match row {
         SCALE_ROW => SpecValue::String("linear".to_string()),
+        // Mosaic's own, no format: the axis draws its own tick text.
+        FORMAT_ROW => SpecValue::Null,
         TICKS_ROW => SpecValue::Integer(i64::try_from(DEFAULT_TICK_COUNT).unwrap_or(5)),
         GRID_ROW => SpecValue::Bool(true),
         ZERO_ROW | REVERSE_ROW => SpecValue::Bool(false),
@@ -898,11 +986,21 @@ pub fn row_default(row: &str) -> Option<SpecValue> {
     })
 }
 
+/// What a step of `h` or `l` does to a row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RowStep {
+    /// Write this value.
+    Set(SettingValue),
+    /// Open the row's field on the specifier it reads: the step landed on the
+    /// format's custom, which has no value of its own to write.
+    Field,
+}
+
 impl SettingRow {
-    /// Whether `h` and `l` step this row's value: a scale or a switch that
-    /// applies to the axis. The ticks and the title take typed text, which
-    /// `Enter` opens a field for ([`RowField`]); the format's field is the card
-    /// behind this one's. A scale row that reads band or
+    /// Whether `h` and `l` step this row's value: a scale, a format or a switch
+    /// that applies to the axis. The ticks and the title take typed text, which
+    /// `Enter` opens a field for ([`RowField`]), and so does the format, behind its
+    /// presets. A scale row that reads band or
     /// time does not step: the chart draws those two for names and dates, and
     /// the three it steps through are for numbers.
     #[must_use]
@@ -910,16 +1008,48 @@ impl SettingRow {
         self.reason.is_none()
             && match self.name {
                 SCALE_ROW => SCALE_STEPS.contains(&self.value.as_str()),
-                GRID_ROW | ZERO_ROW | REVERSE_ROW => true,
+                FORMAT_ROW | GRID_ROW | ZERO_ROW | REVERSE_ROW => true,
                 _ => false,
             }
+    }
+
+    /// Whether `Enter` opens a field on this row: the rows that take typed text
+    /// and the format, which takes it behind its presets.
+    #[must_use]
+    pub fn takes_field(&self) -> bool {
+        self.reason.is_none() && (self.kind == SettingKind::Typed || self.name == FORMAT_ROW)
+    }
+
+    /// What one step `by` from the row's own does, or `None` where the row does
+    /// not step or stands at the end of its values. The format steps through its
+    /// presets: the first takes the key out, the next four write their specifier,
+    /// and a step that lands on custom opens the field.
+    #[must_use]
+    pub fn step_to(&self, by: isize) -> Option<RowStep> {
+        if self.name != FORMAT_ROW {
+            return self.stepped(by).map(RowStep::Set);
+        }
+        if !self.steps() {
+            return None;
+        }
+        let at = FORMAT_PRESETS
+            .iter()
+            .position(|(name, _)| *name == self.value)?;
+        let next = at
+            .checked_add_signed(by)
+            .filter(|n| *n < FORMAT_PRESETS.len())?;
+        Some(match FORMAT_PRESETS[next] {
+            (_, Some(writes)) => RowStep::Set(SettingValue::Text(writes.to_string())),
+            (CUSTOM_FORMAT, None) => RowStep::Field,
+            (_, None) => RowStep::Set(SettingValue::Auto),
+        })
     }
 
     /// The value one step `by` from the row's own, or `None` where the row does
     /// not step or stands at the end of its values. A switch turns over.
     #[must_use]
     pub fn stepped(&self, by: isize) -> Option<SettingValue> {
-        if !self.steps() {
+        if !self.steps() || self.name == FORMAT_ROW {
             return None;
         }
         if self.name == SCALE_ROW {
@@ -968,6 +1098,25 @@ pub struct SettingRow {
     /// foot says so, and `⌫` on the row cannot take it out, since it is not the
     /// axis's own.
     pub from: Option<&'static str>,
+    /// What only the format row knows: the key it writes, the specifier the file
+    /// holds, and the sample. `None` on the title, ticks, grid, zero and reverse
+    /// rows and on the scale row.
+    pub format: Option<FormatFacts>,
+}
+
+/// What the format row carries beyond its value, read from the plot and the scale
+/// the chart was drawn against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FormatFacts {
+    /// The plot attribute the row writes: `xTickFormat`.
+    pub key: &'static str,
+    /// The specifier the file holds for the axis, where it names a format the
+    /// axis reads. The row's value is the preset it equals, or custom.
+    pub specifier: Option<String>,
+    /// What the axis's largest drawn tick prints as under the row's format, drawn
+    /// in muted ink beside the value. `None` where no scale has been drawn, or the
+    /// axis draws no text a number format sets.
+    pub sample: Option<String>,
 }
 
 /// The settings rows of the channels that have any: x and y. Colour's and the
@@ -1066,10 +1215,19 @@ fn axis_rows(
         .find(|(channel, _)| *channel == axis)
         .map(|(_, key)| *key);
     let written = format_key.and_then(|key| plot.attributes.get(key));
-    let (format_value, format_set) = match (written.map(read_tick_format), written) {
-        (Some(TickFormatReading::Format(_)), Some(SpecValue::String(text))) => (text.clone(), true),
-        _ => (TICK_TEXT.to_string(), false),
-    };
+    // The format the file names and the axis reads, and the specifier it names
+    // it by: a preset's name where a preset writes exactly it, and custom where
+    // none does, a date format included.
+    let (format_value, format_set, format_read, specifier) =
+        match (written.map(read_tick_format), written) {
+            (Some(TickFormatReading::Format(read)), Some(SpecValue::String(text))) => (
+                format_preset(text).to_string(),
+                true,
+                Some(read),
+                Some(text.clone()),
+            ),
+            _ => (AUTO.to_string(), false, None, None),
+        };
     let row = |name, value, set, kind, says| SettingRow {
         name,
         value,
@@ -1079,6 +1237,7 @@ fn axis_rows(
         kind,
         says,
         from: None,
+        format: None,
     };
     // The scale the chart draws: band for names and time for dates, which are
     // brightfield's own choice and so leave the row unset, and otherwise the
@@ -1108,13 +1267,31 @@ fn axis_rows(
             SettingKind::Enumerated,
             scale_says,
         ),
-        row(
-            FORMAT_ROW,
-            format_value,
-            format_set,
-            SettingKind::Enumerated,
-            FORMAT_SAYS,
-        ),
+        SettingRow {
+            format: format_key.map(|key| FormatFacts {
+                key,
+                specifier,
+                // The axis's own top tick, which the same call the chart was
+                // drawn through reads off the scale it was drawn against: no
+                // scale drawn, no sample.
+                sample: drawn.get(channel).and_then(|scale| {
+                    let target = resolve_tick_counts(plot);
+                    let target = if axis == ShelfChannel::X {
+                        target.x_target()
+                    } else {
+                        target.y_target()
+                    };
+                    top_tick_text(scale, target, format_read.as_ref())
+                }),
+            }),
+            ..row(
+                FORMAT_ROW,
+                format_value,
+                format_set,
+                SettingKind::Enumerated,
+                FORMAT_SAYS,
+            )
+        },
     ];
     rows.extend(by_name_rows(plot, axis, drawn));
     rows
@@ -1171,6 +1348,7 @@ fn by_name_rows(plot: &PlotNode, axis: ShelfChannel, drawn: &ScaleSet) -> [Setti
         kind,
         says,
         from: None,
+        format: None,
     };
     let grid_key = if x { "xGrid" } else { "yGrid" };
     let grid_from = (!plot.attributes.contains_key(grid_key)
@@ -1202,6 +1380,7 @@ fn by_name_rows(plot: &PlotNode, axis: ShelfChannel, drawn: &ScaleSet) -> [Setti
         ),
         SettingRow {
             from: grid_from,
+            format: None,
             ..row(
                 GRID_ROW,
                 word(grid),
@@ -1727,10 +1906,17 @@ impl ColumnList {
         let Some(row) = self.setting_cursor() else {
             return;
         };
-        if row.kind != SettingKind::Typed || row.reason.is_some() {
+        if !row.takes_field() {
             return;
         }
-        let text = if row.name == TITLE_ROW && row.value == NO_TITLE {
+        let text = if row.name == FORMAT_ROW {
+            // The specifier the file holds, which every preset is one of; auto
+            // holds none, so its field opens empty.
+            row.format
+                .as_ref()
+                .and_then(|facts| facts.specifier.clone())
+                .unwrap_or_default()
+        } else if row.name == TITLE_ROW && row.value == NO_TITLE {
             match self.channels.binding(self.channel) {
                 Some(Binding::Column(name)) => name.clone(),
                 _ => String::new(),
@@ -1760,6 +1946,12 @@ impl ColumnList {
                     return Ok(None);
                 }
                 SettingValue::Text(words.to_string())
+            }
+            FORMAT_ROW => {
+                if field.text.is_empty() {
+                    return Ok(None);
+                }
+                SettingValue::Text(format_specifier(&field.text)?)
             }
             _ => {
                 if field.text.trim().is_empty() {
@@ -1799,6 +1991,7 @@ impl ColumnList {
             Ok(None) => {
                 let sentence = match self.field.as_ref().map(|f| f.row) {
                     Some(TITLE_ROW) => TITLE_NEEDS_TEXT.to_string(),
+                    Some(FORMAT_ROW) => format_specifier("").unwrap_err(),
                     _ => ticks_count("").unwrap_err(),
                 };
                 if let Some(field) = self.field.as_mut() {
@@ -1864,13 +2057,17 @@ impl ColumnList {
         let Some(row) = self.setting_cursor() else {
             return;
         };
-        if let Some(value) = row.stepped(by) {
-            let name = row.name;
-            out.push(ListReport::Set(RowEdit {
-                channel: self.channel,
-                row: name,
-                value,
-            }));
+        let (name, step) = (row.name, row.step_to(by));
+        match step {
+            Some(RowStep::Set(value)) => {
+                out.push(ListReport::Set(RowEdit {
+                    channel: self.channel,
+                    row: name,
+                    value,
+                }));
+            }
+            Some(RowStep::Field) => self.open_field(),
+            None => {}
         }
     }
 
@@ -2048,6 +2245,10 @@ impl ColumnList {
     pub fn feed_events(&mut self, events: &[egui::Event]) -> Vec<ListReport> {
         let mut out = Vec::new();
         let mut opened_by_key = false;
+        // Whether the last key was the `l` that stepped onto the format's custom
+        // and opened its field: the `l` text that follows it in the frame is the
+        // same keystroke and is not typed into the field it opened.
+        let mut stepped_into_field = false;
         for event in events {
             match event {
                 egui::Event::Key {
@@ -2056,11 +2257,17 @@ impl ColumnList {
                     modifiers,
                     ..
                 } => {
-                    let was = self.querying;
+                    let (was, had_field) = (self.querying, self.field.is_some());
                     self.press(*key, *modifiers, &mut out);
                     opened_by_key = !was && self.querying;
+                    stepped_into_field = !had_field && self.field.is_some() && *key == egui::Key::L;
                 }
-                egui::Event::Text(text) if self.field.is_some() => self.field_type(text, &mut out),
+                egui::Event::Text(text) if self.field.is_some() => {
+                    if std::mem::take(&mut stepped_into_field) && text == "l" {
+                        continue;
+                    }
+                    self.field_type(text, &mut out);
+                }
                 egui::Event::Text(text) if self.querying => {
                     if std::mem::take(&mut opened_by_key) && text == "/" {
                         continue;
@@ -2188,6 +2395,9 @@ pub struct SettingRowDrawn {
     /// The sunken field the row's value is typed into, on the row whose field is
     /// open.
     pub field: Option<egui::Rect>,
+    /// Where the format row's sample was drawn, beside its value, in muted ink,
+    /// where the room the chips and the word *auto* leave holds it.
+    pub sample_rect: Option<egui::Rect>,
     /// The bar down the row's leading edge, on the row under the cursor.
     pub bar: Option<egui::Rect>,
     /// Where the `←` and `→` chips were drawn, on the row under the cursor or
@@ -2719,24 +2929,29 @@ impl ColumnList {
 
             // The `←` `→` chips, on the row under the cursor or the pointer where
             // `h` and `l` step it: at the trailing edge, beside the marker.
-            let chips = (row.steps() && (on || response.hovered())).then(|| {
-                let gap = spacing::SPACE_2;
-                let size = egui::vec2(2.0 * chip.x + gap, chip.y);
-                let at = egui::Rect::from_min_size(
-                    egui::pos2(right - size.x, line.center().y - size.y / 2.0),
-                    size,
-                );
-                let mut pair = ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(at)
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                );
-                pair.spacing_mut().item_spacing.x = gap;
-                let back = key_chip(&mut pair, "\u{2190}").rect;
-                let forward = key_chip(&mut pair, "\u{2192}").rect;
-                right = back.left() - spacing::SPACE_3;
-                [back, forward]
-            });
+            // A format that reads custom draws none, as the frames draw it: the
+            // room goes to its sample, and the foot says what `h` and `l` do.
+            let own_specifier = row.name == FORMAT_ROW && row.value == CUSTOM_FORMAT;
+            let chips =
+                (row.steps() && field.is_none() && !own_specifier && (on || response.hovered()))
+                    .then(|| {
+                        let gap = spacing::SPACE_2;
+                        let size = egui::vec2(2.0 * chip.x + gap, chip.y);
+                        let at = egui::Rect::from_min_size(
+                            egui::pos2(right - size.x, line.center().y - size.y / 2.0),
+                            size,
+                        );
+                        let mut pair = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(at)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+                        pair.spacing_mut().item_spacing.x = gap;
+                        let back = key_chip(&mut pair, "\u{2190}").rect;
+                        let forward = key_chip(&mut pair, "\u{2192}").rect;
+                        right = back.left() - spacing::SPACE_3;
+                        [back, forward]
+                    });
             let value_zone = egui::Rect::from_min_max(
                 egui::pos2(content.left() + name_column + spacing::SPACE_3, rect.top()),
                 egui::pos2(marker.left(), line.bottom()),
@@ -2823,6 +3038,27 @@ impl ColumnList {
                 painter.galley(at.min, value, ink);
                 (at, None)
             };
+            // The format's sample, muted, after the value. It gives way to the
+            // chips and the word *auto*, which have taken their room off `right`,
+            // and is left out where it does not fit whole: a clipped sample reads
+            // as a different number.
+            let sample_rect = row
+                .format
+                .as_ref()
+                .and_then(|facts| facts.sample.as_ref())
+                .filter(|_| field_rect.is_none())
+                .and_then(|text| {
+                    let left = value_rect.right() + spacing::SPACE_3;
+                    let galley = painter.layout_no_wrap(text.clone(), caption_font(), muted);
+                    (galley.size().x <= right - left).then(|| {
+                        let at = egui::Rect::from_min_size(
+                            egui::pos2(left, line.center().y - galley.size().y / 2.0),
+                            galley.size(),
+                        );
+                        painter.galley(at.min, galley, muted);
+                        at
+                    })
+                });
             let reason_rect = reason.map(|galley| {
                 let at = egui::Rect::from_min_size(
                     egui::pos2(content.left(), line.bottom()),
@@ -2840,6 +3076,7 @@ impl ColumnList {
                 auto_rect,
                 reason_rect,
                 field: field_rect,
+                sample_rect,
                 bar,
                 chips,
                 value_zone,
@@ -2862,7 +3099,14 @@ impl ColumnList {
             rect
         });
 
-        let sentence = self.setting_cursor().map(foot_sentence);
+        let sentence = self.setting_cursor().map(|row| {
+            let typing = self.field.as_ref().is_some_and(|f| f.row == row.name);
+            if typing && row.name == FORMAT_ROW {
+                FORMAT_FIELD_SAYS.to_string()
+            } else {
+                foot_sentence(row)
+            }
+        });
         let (foot, said) = self.show_foot(ui, mode, sentence.as_deref());
         let rect = egui::Rect::from_min_max(
             head.heading.min,
@@ -2886,12 +3130,14 @@ impl ColumnList {
         }
         let mut reports = Vec::new();
         if let Some((i, by)) = stepped {
-            if let Some(value) = rows[i].stepped(by) {
-                reports.push(ListReport::Set(RowEdit {
+            match rows[i].step_to(by) {
+                Some(RowStep::Set(value)) => reports.push(ListReport::Set(RowEdit {
                     channel: self.channel,
                     row: rows[i].name,
                     value,
-                }));
+                })),
+                Some(RowStep::Field) => self.open_field(),
+                None => {}
             }
         }
         ListDrawn {
@@ -3013,10 +3259,31 @@ pub fn foot_sentence(row: &SettingRow) -> String {
         let first = chars.next().map(|c| c.to_uppercase().to_string());
         return format!("{}{}.", first.unwrap_or_default(), chars.as_str());
     }
+    if let Some(facts) = &row.format {
+        return format_foot(row, facts);
+    }
     match row.from {
         Some(from) => format!("Read from {from}, which sets both axes. {}", row.says),
         None => row.says.to_string(),
     }
+}
+
+/// What the foot reads on the format row: its sentence, the presets it steps
+/// through, the specifier the file gets, and for a specifier no preset writes, what
+/// `h` and `l` would do to it.
+fn format_foot(row: &SettingRow, facts: &FormatFacts) -> String {
+    let mut foot = format!("{} Takes: {}.", row.says, format_preset_names());
+    let Some(specifier) = &facts.specifier else {
+        return foot;
+    };
+    foot.push_str(&format!(" Writes {}: \"{specifier}\".", facts.key));
+    if row.value == CUSTOM_FORMAT {
+        let before = FORMAT_PRESETS[FORMAT_PRESETS.len() - 2].0;
+        foot.push_str(&format!(
+            " h leaves \"{specifier}\" for {before}, l has nowhere to go; u takes the change back."
+        ));
+    }
+    foot
 }
 
 /// One key of the foot: its chip, and the word for what it does.

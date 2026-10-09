@@ -27,7 +27,7 @@ use brightfield_shell::design::{self, Mode};
 use brightfield_shell::shelf::{
     Binding, ChannelSettings, ColumnList, ColumnListRequest, ListColumn, ListDrawn, ListReport,
     ListTab, SettingRow, ShelfChannels, AUTO, FORMAT_ROW, NO_TITLE, SCALE_ROW, TICKS_ROW,
-    TICK_TEXT, TITLE_ROW,
+    TITLE_ROW,
 };
 use brightfield_shell::text_ink::{self, DrawnText};
 use brightfield_spec::edit::plot_at_path;
@@ -684,8 +684,42 @@ fn a_row_is_set_by_value_so_a_written_linear_reads_auto_and_a_log_reads_set() {
             "Residents",
             true,
         ),
-        ("", ShelfChannel::X, FORMAT_ROW, TICK_TEXT, false),
-        ("xTickFormat: ',d'", ShelfChannel::X, FORMAT_ROW, ",d", true),
+        ("", ShelfChannel::X, FORMAT_ROW, AUTO, false),
+        (
+            "xTickFormat: ',d'",
+            ShelfChannel::X,
+            FORMAT_ROW,
+            "custom",
+            true,
+        ),
+        (
+            "xTickFormat: ',f'",
+            ShelfChannel::X,
+            FORMAT_ROW,
+            "number",
+            true,
+        ),
+        (
+            "xTickFormat: '~s'",
+            ShelfChannel::X,
+            FORMAT_ROW,
+            "short",
+            true,
+        ),
+        (
+            "yTickFormat: '%'",
+            ShelfChannel::Y,
+            FORMAT_ROW,
+            "percent",
+            true,
+        ),
+        (
+            "yTickFormat: '$,f'",
+            ShelfChannel::Y,
+            FORMAT_ROW,
+            "currency",
+            true,
+        ),
     ];
     for (attrs, channel, name, value, set) in cases {
         let row = row_of(attrs, channel, name);
@@ -717,7 +751,7 @@ fn an_auto_row_draws_muted_ink_and_a_ring_and_a_set_row_draws_full_ink_and_a_dot
         for (row, set, value) in [
             (&rows[0], true, "Residents"),
             (&rows[1], true, "log"),
-            (&rows[2], false, TICK_TEXT),
+            (&rows[2], false, AUTO),
         ] {
             let name = row.name;
             assert_eq!(
@@ -811,10 +845,7 @@ fn a_format_row_agrees_with_the_reader_over_what_is_a_format() {
                 }
             );
             if !reader_takes {
-                assert_eq!(
-                    row.value, TICK_TEXT,
-                    "`{attrs}`: a refused format reads tick text"
-                );
+                assert_eq!(row.value, AUTO, "`{attrs}`: a refused format reads auto");
             }
             // The other axis's row is untouched by this key.
             let other = if channel == ShelfChannel::X {
@@ -850,7 +881,7 @@ fn the_foot_carries_one_sentence_for_the_row_under_the_cursor() {
     let sentences = [
         "The words along the axis, which auto takes from the column's name.",
         "How values are spaced along the axis, which auto draws linear.",
-        "How a tick's number or date is written, which auto leaves to the axis's own tick text.",
+        "How a tick's number or date is written, which auto leaves to the axis's own tick text. Takes: auto, number, short, percent, currency, custom.",
     ];
     for (n, said) in sentences.into_iter().enumerate() {
         let frame = stage.draw(&mut list);

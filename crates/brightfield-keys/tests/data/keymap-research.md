@@ -106,7 +106,7 @@ An open list takes letters as verbs (lazygit, Linear, Gmail), and `/` gives the 
 axis's list between its columns and its settings; on colour's and the mark's list it leaves the columns as they are.
 Motion and back-out are **View**-tier; keeping a choice sets a channel, so it is **Data**-tier, as
 `set-channel` is. `h` and `l` are the cell beside as drawn, left and right, and stop at the
-mark's cell rather than popping out, because Esc is the way out. On a settings row they step the row's value instead of naming a cell: a scale from linear to log to symlog and a switch the other way, drawn at once, and the registry's help for each says so. `⌫` puts the row back to auto (`set-shelf-setting-to-auto`).
+mark's cell rather than popping out, because Esc is the way out. On a settings row they step the row's value instead of naming a cell: a scale from linear to log to symlog, a format from auto through its presets to custom, and a switch the other way, drawn at once, and the registry's help for each says so. `⌫` puts the row back to auto (`set-shelf-setting-to-auto`).
 
 | longname | key(s) | freq / mnem / conv | motor note |
 |----------|--------|--------------------|------------|
