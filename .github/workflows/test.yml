@@ -53,10 +53,24 @@ jobs:
     # ---------------------------------------------------------------------
     runs-on: macos-15
     # The ceiling is each shard's own, from its `timeout` in the matrix below.
-    # 45 is a first figure, set before any run under the shard split existed:
-    # the thirty-minute target and half again. Replace each with 1.25 times
-    # that shard's slowest of three runs made under the split, read from each
-    # run's job list, and name those runs in this comment.
+    # Each is 1.25 times that shard's slowest of three warm runs made under the
+    # split, rounded up to a whole minute. The three runs are the three
+    # attempts of run 37903443493 (commit b212fc8), and a shard's time is its
+    # job's start to its end in that attempt's job list, in minutes:
+    #
+    #   shard         attempt 1  attempt 2  attempt 3   ceiling
+    #   one-thread-1       21.1       18.0       20.1        27
+    #   one-thread-2       18.1       20.5       28.5        36
+    #   default-1          18.8       17.7       16.4        24
+    #   default-2          18.8       15.1       16.1        24
+    #   default-3          13.0       12.2       16.2        21
+    #
+    # A warm run restores the cache `main` saved. A run that restores none
+    # compiles every dependency: the one run made that way (run 37898248271,
+    # before the cache key was set) took 26.8 to 34.1 minutes on four of its
+    # shards, and these ceilings are not sized for it. Raise them for any run
+    # that is expected to restore no cache, and derive them again from three
+    # warm runs when the shards change.
     timeout-minutes: ${{ matrix.timeout }}
 
     # `fail-fast: false` because a red shard must not cancel the others: a run
@@ -72,15 +86,15 @@ jobs:
       matrix:
         include:
           - name: one-thread-1
-            timeout: 45
+            timeout: 27
           - name: one-thread-2
-            timeout: 45
+            timeout: 36
           - name: default-1
-            timeout: 45
+            timeout: 24
           - name: default-2
-            timeout: 45
+            timeout: 24
           - name: default-3
-            timeout: 45
+            timeout: 21
 
     env:
       # How many of the shards above, counted from the first, run the
