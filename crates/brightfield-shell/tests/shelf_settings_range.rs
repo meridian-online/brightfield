@@ -377,7 +377,10 @@ fn a_typed_pair_previews_on_the_axis_and_a_low_above_the_high_does_not() {
     };
     assert_eq!((ends.lo, ends.hi), (20.0, 95.0));
 
-    list.feed_events(&[key_event(egui::Key::Backspace), key_event(egui::Key::Backspace)]);
+    list.feed_events(&[
+        key_event(egui::Key::Backspace),
+        key_event(egui::Key::Backspace),
+    ]);
     let reports = list.feed_events(&[typed("99")]);
     assert!(
         !reports
