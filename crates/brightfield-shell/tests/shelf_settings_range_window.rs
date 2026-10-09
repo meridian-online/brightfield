@@ -311,7 +311,12 @@ fn a_high_at_or_below_the_low_keeps_nothing_in_the_window() {
     win.press(egui::Key::Enter);
     win.type_text("5");
     win.press(egui::Key::Enter);
-    assert!(win.list().field().is_some(), "the edit stays open");
+    let refusal = win
+        .list()
+        .field()
+        .and_then(|f| f.refusal.clone())
+        .expect("the open field says why it refuses");
+    assert!(refusal.contains("the high end must be above"), "{refusal}");
     assert_eq!(win.attribute("xDomain"), None);
     assert_eq!(win.x_ends(), rows);
 }
