@@ -1298,7 +1298,9 @@ pub fn log_ends_refused(lo: f64) -> bool {
 /// ends the draw leaves unfixed are the ends that were named.
 #[must_use]
 pub fn written_ends_apply(scale: &Scale) -> bool {
-    PinnedDomain::Linear(0.0, 1.0).applied_to(scale).is_some()
+    // A pair above zero, since a log axis leaves ends that reach zero and this
+    // asks the kind of axis, not the ends.
+    PinnedDomain::Linear(1.0, 2.0).applied_to(scale).is_some()
 }
 
 /// Re-domain `scales`' positional channels onto `pins`, in place.
