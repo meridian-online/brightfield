@@ -2301,6 +2301,18 @@ impl ChartDoc {
             SettingValue::Auto => SettingWrite::Auto,
         };
         let mut spec = before.clone();
+        // `⌫` on the range row takes the axis's ends out wherever the file holds
+        // them: a pair under `xyDomain` is handed to the other axis, which the
+        // axis's own key does not name.
+        if edit.row == crate::shelf::RANGE_ROW && write == SettingWrite::Auto {
+            let axis = match edit.channel {
+                ShelfChannel::X => PlotAxis::X,
+                ShelfChannel::Y => PlotAxis::Y,
+                ShelfChannel::Mark | ShelfChannel::Colour => return Ok(None),
+            };
+            let edits = crate::shelf_edit::put_range_to_auto(&mut spec, path, axis)?;
+            return Ok((!edits.is_empty()).then_some((spec, edits)));
+        }
         let Some(applied) = crate::shelf_edit::put_setting(&mut spec, path, key, &default, &write)?
         else {
             return Ok(None);
