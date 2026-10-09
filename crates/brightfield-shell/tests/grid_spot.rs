@@ -1011,3 +1011,10 @@ fn no_chrome_ink_is_drawn_inside_the_heros_data_area() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// A test that fails on purpose, to show that a red test in a one-thread shard
+// turns the check named `test` red. This commit is never merged.
+#[test]
+fn deliberate_failure_in_a_one_thread_target() {
+    panic!("deliberate failure: a one-thread shard must go red and so must the check named test");
+}
