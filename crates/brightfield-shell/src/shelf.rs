@@ -2625,8 +2625,8 @@ impl ColumnList {
             } else if response.hovered() {
                 painter.rect_filled(rect, 0.0, chrome::colour(sem.rows.hover_background));
             }
-            // The columns list's guard. A field opens on the settings list
-            // alone, so `self.field` is none here; the guard that keeps the
+            // The columns list's guard. `open_field` runs from the settings
+            // tab, so `self.field` is none here; the guard that keeps the
             // pointer off an open field is the settings list's, in
             // `show_settings`.
             if self.field.is_none() {

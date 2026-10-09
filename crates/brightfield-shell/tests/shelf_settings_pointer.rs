@@ -1,14 +1,14 @@
 //! **With a typed row's field open on the settings list, the pointer leaves the
 //! cursor, the field and the value where they are.**
 //!
-//! A field is drawn only on the row under the cursor, so a pointer that moved the
+//! A field is drawn on the row under the cursor, so a pointer that moved the
 //! cursor to another row would hide the field while its text still took keys, and
 //! `Enter` would keep a title the analyst could not see. The list is drawn here
 //! under the events a mouse brings, a movement a frame and a click as a press
 //! frame and a release frame, and each assertion reads what the frame drew or
 //! what the list holds after it.
 //!
-//! Every refusal has its control: the same movement or click with no field open
+//! Each refusal has its control: the same movement or click with no field open
 //! does what it did before, so a pointer the harness never delivered cannot read
 //! as one the list ignored.
 
@@ -70,8 +70,7 @@ fn list_on_the_settings() -> ColumnList {
     list
 }
 
-/// What a stage's frame drew, with the words printed in the foot and every
-/// report the frames since the last read answered with.
+/// What a stage's frame drew, with the words printed in the foot.
 struct Frame {
     drawn: ListDrawn,
     foot_words: Vec<String>,
@@ -147,8 +146,8 @@ impl Stage {
         self.settle(list)
     }
 
-    /// A click at `at`: the pointer to it, a press, a release. The reports every
-    /// one of those frames answered with.
+    /// A click at `at`: the pointer to it, a settled frame, a press, a release.
+    /// The release's frame, and the reports the four frames answered with.
     fn click(&self, list: &mut ColumnList, at: egui::Pos2) -> (Frame, Vec<ListReport>) {
         let button = |pressed| egui::Event::PointerButton {
             pos: at,
