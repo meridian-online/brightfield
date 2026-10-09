@@ -1152,7 +1152,7 @@ impl PinnedDomain {
                     range_end,
                     ..
                 },
-            ) => Some(Scale::Log {
+            ) if !log_ends_refused(*lo) => Some(Scale::Log {
                 domain_min: *lo,
                 domain_max: *hi,
                 range_start: *range_start,
@@ -1276,6 +1276,16 @@ impl PinnedDomains {
             *slot = scales.get(channel).and_then(PinnedDomain::of);
         }
     }
+}
+
+/// Whether a log axis refuses ends whose low end is `lo`: a log axis does not
+/// reach zero or go below it, and ends through zero draw an axis of unlabeled
+/// ticks with every mark against one edge. It is the judge [`apply_pinned_domains`]
+/// leaves such ends through, so the axis runs over its rows, and the warning and
+/// the shelf's range row ask it too.
+#[must_use]
+pub fn log_ends_refused(lo: f64) -> bool {
+    lo <= 0.0
 }
 
 /// Whether two numbers written as an axis's ends fix the ends of the axis

@@ -1039,6 +1039,10 @@ pub struct ChartDoc {
     /// `no marks rendered successfully`; that is the mechanism, not the event,
     /// and the caller is the only place with enough context to say the event.
     interaction_fault: Option<ChartFault>,
+    /// The sentence the status band says while the shelf's range row refuses a
+    /// range the axis cannot draw. Set by the window from the list's report and
+    /// taken away by the next thing the list reports.
+    shelf_refusal: Option<String>,
     /// The edits made to the live spec since the last Save, in the order they
     /// were made — what [`Self::has_unsaved_edit`] reads, and what
     /// [`Self::save_chart_beside`] places into the text on disk.
@@ -1240,6 +1244,7 @@ impl ChartDoc {
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
             interaction_fault: None,
+            shelf_refusal: None,
             pending_edits: Vec::new(),
             versions: crate::versions::Versions::default(),
             version_shown: None,
@@ -1297,6 +1302,7 @@ impl ChartDoc {
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
             interaction_fault: None,
+            shelf_refusal: None,
             pending_edits: Vec::new(),
             versions: crate::versions::Versions::default(),
             version_shown: None,
@@ -2114,7 +2120,11 @@ impl ChartDoc {
             return false;
         }
         let before = preview.kept.0.spec();
-        let words = self.shelf_words(plot, channel, before, column);
+        let words = format!(
+            "{}{}",
+            self.shelf_words(plot, channel, before, column),
+            self.range_note(plot, channel, before, &preview.edits)
+        );
         self.shelf_undo.push(
             before.clone(),
             KeptShelfEdit {
@@ -2138,6 +2148,8 @@ impl ChartDoc {
     /// no writer of its own. The edit is kept at once, joins the edits Save
     /// writes, and is one `u` takes back; unlike a tile's switch it does not
     /// seal the shelf's undo, so a `u` steps over it to the edits before it.
+    /// A scale change on the axis puts a range the file set back to auto in the
+    /// same edit, so the one `u` takes both back.
     /// Returns whether the picture changed.
     pub fn set_axis_row(&mut self, plot: usize, edit: &RowEdit) -> bool {
         self.drop_shelf_preview();
@@ -2163,6 +2175,13 @@ impl ChartDoc {
         };
         let was = Self::setting_text(&before, &path, edit.channel, edit.row);
         let now = Self::setting_text(&spec, &path, edit.channel, edit.row);
+        let range_note = if applied.len() > 1 {
+            let ends = Self::setting_text(&before, &path, edit.channel, crate::shelf::RANGE_ROW);
+            format!(", and its range {ends} \u{2192} auto")
+        } else {
+            String::new()
+        };
+        let added = applied.len();
         match self.rebuild(spec) {
             Ok((live, composed)) => {
                 self.live = Some(live);
@@ -2171,15 +2190,15 @@ impl ChartDoc {
                     before,
                     KeptShelfEdit {
                         words: format!(
-                            "{} {}: {was} \u{2192} {now}",
+                            "{} {}: {was} \u{2192} {now}{range_note}",
                             edit.channel.word(),
                             edit.row
                         ),
-                        added: 1,
+                        added,
                         unstep: None,
                     },
                 );
-                self.pending_edits.push(applied);
+                self.pending_edits.extend(applied);
                 self.canvas.invalidate();
                 true
             }
@@ -2225,7 +2244,7 @@ impl ChartDoc {
                 edit.channel,
                 String::new(),
                 Some(edit.row),
-                vec![applied],
+                applied,
             ),
             Ok(None) => self.drop_shelf_preview(),
             Err(refusal) => {
@@ -2252,8 +2271,10 @@ impl ChartDoc {
         before: &brightfield_spec::ast::Spec,
         path: &ComponentPath,
         edit: &RowEdit,
-    ) -> Result<Option<(brightfield_spec::ast::Spec, ChartEdit)>, crate::shelf_edit::ShelfRefusal>
-    {
+    ) -> Result<
+        Option<(brightfield_spec::ast::Spec, Vec<ChartEdit>)>,
+        crate::shelf_edit::ShelfRefusal,
+    > {
         use crate::shelf::SettingValue;
         use crate::shelf_edit::SettingWrite;
         let Some(key) = crate::shelf::row_key(edit.channel, edit.row) else {
@@ -2273,13 +2294,59 @@ impl ChartDoc {
             SettingValue::Count(n) => {
                 SettingWrite::Value(SpecValue::Integer(i64::try_from(*n).unwrap_or(i64::MAX)))
             }
+            SettingValue::Ends(ends) => SettingWrite::Value(SpecValue::Array(vec![
+                crate::shelf_edit::number_value(ends.lo),
+                crate::shelf_edit::number_value(ends.hi),
+            ])),
             SettingValue::Auto => SettingWrite::Auto,
         };
         let mut spec = before.clone();
-        Ok(
-            crate::shelf_edit::put_setting(&mut spec, path, key, &default, &write)?
-                .map(|applied| (spec, applied)),
-        )
+        let Some(applied) = crate::shelf_edit::put_setting(&mut spec, path, key, &default, &write)?
+        else {
+            return Ok(None);
+        };
+        let mut edits = vec![applied];
+        // A scale change puts a range the file set back to auto, in the same edit.
+        if edit.row == crate::shelf::SCALE_ROW {
+            let axis = match edit.channel {
+                ShelfChannel::X => Some(PlotAxis::X),
+                ShelfChannel::Y => Some(PlotAxis::Y),
+                ShelfChannel::Mark | ShelfChannel::Colour => None,
+            };
+            if let Some(axis) = axis {
+                edits.extend(crate::shelf_edit::put_range_to_auto(&mut spec, path, axis)?);
+            }
+        }
+        Ok(Some((spec, edits)))
+    }
+
+    /// The words that add a range put back to auto to an edit's, from the spec
+    /// `before` it: empty where `edits` take no range out.
+    fn range_note(
+        &self,
+        plot: usize,
+        channel: ShelfChannel,
+        before: &brightfield_spec::ast::Spec,
+        edits: &[ChartEdit],
+    ) -> String {
+        let cleared = edits.iter().any(|e| match e {
+            ChartEdit::RemovePlotAttribute { key, .. }
+            | ChartEdit::SetPlotAttribute { key, .. } => key.ends_with("Domain"),
+            _ => false,
+        });
+        let Some(handle) = self.composed.plots.get(plot) else {
+            return String::new();
+        };
+        if !cleared {
+            return String::new();
+        }
+        let ends = Self::setting_text(
+            before,
+            &ComponentPath(handle.path.clone()),
+            channel,
+            crate::shelf::RANGE_ROW,
+        );
+        format!(", and its range {ends} \u{2192} auto")
     }
 
     /// The title brightfield draws on `channel`'s axis of the plot at `path` when
@@ -2400,6 +2467,17 @@ impl ChartDoc {
                 None
             }
         }
+    }
+
+    /// The sentence the status band says while the range row refuses a range.
+    #[must_use]
+    pub fn shelf_refusal(&self) -> Option<&str> {
+        self.shelf_refusal.as_deref()
+    }
+
+    /// Say, or stop saying, the sentence a refused range row leaves for the band.
+    pub fn set_shelf_refusal(&mut self, sentence: Option<String>) {
+        self.shelf_refusal = sentence;
     }
 
     /// The last column kept from the shelf since the last Save, in the shelf's

@@ -158,6 +158,7 @@ fn field(typed: &str, selected: bool, refusal: Option<&str>) -> RowField {
         text: typed.to_string(),
         selected,
         refusal: refusal.map(str::to_string),
+        ends: None,
     }
 }
 
