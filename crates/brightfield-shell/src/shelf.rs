@@ -1240,7 +1240,8 @@ pub struct SettingRow {
     /// holds, and the sample. `None` on the title, ticks, grid, zero and reverse
     /// rows and on the scale row.
     pub format: Option<FormatFacts>,
-    /// What only the range row knows. `None` on every other row.
+    /// What only the range row knows. `None` on the title, scale, format, ticks,
+    /// grid, zero and reverse rows.
     pub range: Option<RangeFacts>,
 }
 
@@ -1755,7 +1756,7 @@ pub struct RowField {
     /// The sentence the row prints under itself while the field holds a value
     /// the row refuses, in words.
     pub refusal: Option<String>,
-    /// The range row's second field. `None` on every other row.
+    /// The range row's second field. `None` on a row that holds one field.
     pub ends: Option<EndFields>,
 }
 

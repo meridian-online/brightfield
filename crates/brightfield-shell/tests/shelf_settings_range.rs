@@ -202,7 +202,7 @@ fn a_high_at_or_below_the_low_is_refused_and_the_edit_stays_open() {
 }
 
 /// **AC6.** A log axis refuses a low end at zero as it is typed: the row says why
-/// under itself, `Enter` reports it for the status band, and nothing is kept.
+/// under itself, `Enter` reports it for the status band, and no edit is kept.
 #[test]
 fn a_log_axis_refuses_a_range_through_zero() {
     let mut list = list_on_range("xScale: log", &log(1.0, 1000.0));
@@ -295,8 +295,8 @@ fn map() -> ScaleSet {
 }
 
 /// **AC3.** On an axis of dates, an axis of names and a map the row carries its
-/// reason, reads no value in full ink, and `Enter` on it opens no field and keeps
-/// nothing, even where the file holds a pair.
+/// reason, and `Enter` on it opens no field and keeps no edit, even where the
+/// file holds a pair.
 #[test]
 fn on_dates_names_and_a_map_the_row_carries_its_reason_and_enter_changes_nothing() {
     let cases = [

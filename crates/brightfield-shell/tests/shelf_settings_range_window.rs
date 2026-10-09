@@ -263,7 +263,7 @@ fn typed_ends_preview_on_the_axis_are_kept_as_xdomain_and_backspace_takes_them_o
     win.open_x_settings();
     let rows = win.x_ends();
     assert_eq!(win.attribute("xDomain"), None);
-    assert_eq!(win.range_row().1, false, "the row reads auto");
+    assert!(!win.range_row().1, "the row reads auto");
 
     win.cursor_to(RANGE_ROW);
     win.press(egui::Key::Enter);
@@ -294,7 +294,7 @@ fn typed_ends_preview_on_the_axis_are_kept_as_xdomain_and_backspace_takes_them_o
     win.press(egui::Key::Backspace);
     assert_eq!(win.attribute("xDomain"), None, "\u{232b} took the key out");
     assert_eq!(win.x_ends(), rows, "and the axis runs over its rows again");
-    assert_eq!(win.range_row().1, false);
+    assert!(!win.range_row().1);
 }
 
 /// **AC2.** A high at or below the low is refused under the row and nothing is
@@ -343,7 +343,7 @@ fn a_scale_change_puts_a_set_range_back_to_auto_and_one_u_restores_both() {
         None,
         "the range went with the scale"
     );
-    assert_eq!(win.range_row().1, false, "the row reads auto");
+    assert!(!win.range_row().1, "the row reads auto");
     let said = win.status_text();
     assert!(
         said.iter().any(|t| t.contains(
