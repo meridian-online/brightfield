@@ -24,7 +24,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
+  # THE SUITE, IN SHARDS. The two cargo test steps used to run one after the
+  # other on one runner, and a pull request waited an hour for them. Each shard
+  # below runs its share of the targets on its own runner, and the job named
+  # `test` after it gathers them.
+  shard:
+    name: test shard ${{ matrix.name }}
     # ---------------------------------------------------------------------
     # One canonical runner, on purpose.
     #
@@ -47,14 +52,54 @@ jobs:
     # kittest.toml — do NOT blanket-loosen the floor to make it green.
     # ---------------------------------------------------------------------
     runs-on: macos-15
-    # 1.25 times the slowest of the last ten `main` runs of this job that ran
-    # to a verdict or to the ceiling, read from each run's job list on
-    # 2026-10-05: the slowest, 60.4 minutes, is a run stopped at the previous
-    # 60-minute ceiling, so its true length is longer and the margin is a floor.
-    # This figure was derived before the GPU-sharing targets ran apart from
-    # the rest (the two `cargo test` steps below); derive the next ceiling
-    # from the job list of runs made under the split, not from this comment.
-    timeout-minutes: 80
+    # The ceiling is each shard's own, from its `timeout` in the matrix below.
+    # Each is 1.25 times that shard's slowest of three warm runs made under the
+    # split, rounded up to a whole minute. The three runs are the three
+    # attempts of run 37903443493 (commit b212fc8), and a shard's time is its
+    # job's start to its end in that attempt's job list, in minutes:
+    #
+    #   shard         attempt 1  attempt 2  attempt 3   ceiling
+    #   one-thread-1       21.1       18.0       20.1        27
+    #   one-thread-2       18.1       20.5       28.5        36
+    #   default-1          18.8       17.7       16.4        24
+    #   default-2          18.8       15.1       16.1        24
+    #   default-3          13.0       12.2       16.2        21
+    #
+    # A warm run restores the cache `main` saved. A run that restores none
+    # compiles every dependency: the one run made that way (run 37898248271,
+    # before the cache key was set) took 26.8 to 34.1 minutes on four of its
+    # shards, and these ceilings are not sized for it. Raise them for any run
+    # that is expected to restore no cache, and derive them again from three
+    # warm runs when the shards change.
+    timeout-minutes: ${{ matrix.timeout }}
+
+    # `fail-fast: false` because a red shard must not cancel the others: a run
+    # reports every red shard, as the second `cargo test` step used to run
+    # after a red first one. The first `one-thread` shards in the list run the
+    # GPU-bound targets, and every shard after them runs the rest: the plan
+    # step below reads that split from the shard's place in this list, so a
+    # shard added or removed here changes the partition and loses no target.
+    # A shard's `name` starts with its role, and the plan step refuses one that
+    # does not.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: one-thread-1
+            timeout: 27
+          - name: one-thread-2
+            timeout: 36
+          - name: default-1
+            timeout: 24
+          - name: default-2
+            timeout: 24
+          - name: default-3
+            timeout: 21
+
+    env:
+      # How many of the shards above, counted from the first, run the
+      # one-thread group. The plan step reads it.
+      ONE_THREAD_SHARDS: 2
 
     steps:
       - uses: actions/checkout@v4
@@ -103,7 +148,17 @@ jobs:
 
       # Caches ~/.cargo (registry + git checkouts, which matter here: the
       # design-system and arcform pins are git dependencies) plus ./target.
+      #
+      # `shared-key: test` because the action keys the cache on the job's id
+      # unless told a key: this job was called `test` when `main` saved the
+      # caches that are on the repository, and is `shard` now, so without a
+      # key every shard misses them and builds every dependency from nothing.
+      # The first run of this job as shards did exactly that, and its
+      # compile alone took 13 minutes 57 seconds on a shard. All the shards
+      # build the same dependencies, so they share one key.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
 
       # Frees disk on the macOS runner before ANY of this job's cargo builds,
       # not just the pin-staleness step below. It moved here, ahead of the
@@ -126,6 +181,12 @@ jobs:
       # runner image has already dropped or renamed should not turn a
       # disk-reclaim step into a red gate, it should just mean less was
       # freed, which the before/after `df -h` below still shows.
+      #
+      # Every shard pays this step, so its length is paid once per shard. It
+      # took 6.3 minutes on `main` run 37873286168, one step in a job that took
+      # 62.8, when it measured each directory with `du` before removing it and
+      # removed them one after another. The removals now run side by side and
+      # nothing is measured first; the before/after `df -h` is the measure.
       - name: reclaim disk before this job's cargo builds
         shell: bash
         run: |
@@ -136,18 +197,20 @@ jobs:
           for app in /Applications/Xcode_*.app; do
             [ -d "$app" ] || continue
             [ "$app" = "/Applications/Xcode_16.4.app" ] && continue
-            echo "removing $app ($(du -sh "$app" 2>/dev/null | cut -f1))"
-            sudo rm -rf "$app" || true
+            echo "removing $app"
+            (sudo rm -rf "$app" || true) &
           done
 
           for path in "$HOME/Library/Android" /Library/Developer/CoreSimulator/Profiles/Runtimes; do
             if [ -e "$path" ]; then
-              echo "removing $path ($(du -sh "$path" 2>/dev/null | cut -f1))"
-              sudo rm -rf "$path" || true
+              echo "removing $path"
+              (sudo rm -rf "$path" || true) &
             else
               echo "$path not present on this runner image"
             fi
           done
+
+          wait
 
           echo "--- disk after reclaiming:"
           df -h /
@@ -174,11 +237,14 @@ jobs:
           "$engine" --version
           echo "ARC_DUCKDB_BIN=${engine}" >> "$GITHUB_ENV"
 
-      # THE WORKSPACE SUITE, IN TWO STEPS: the targets that share the GPU run
+      # THE WORKSPACE SUITE, IN SHARDS: the targets that share the GPU run
       # alone on one thread, and every other target runs under cargo's default
       # threads (one per core). The whole workspace used to run on one thread
       # because a few targets need it, which made every target that needs no
-      # device wait in line behind them.
+      # device wait in line behind them; it then ran as those two groups one
+      # after the other on one runner, and a pull request waited for the sum.
+      # Now the first `ONE_THREAD_SHARDS` shards share the one-thread group and
+      # the rest share the other, each target on exactly one shard.
       #
       # WHY ONE THREAD, TWO KINDS. The shell's pixel and snapshot targets
       # render through a wgpu device, and under cargo's default threads their
@@ -197,24 +263,23 @@ jobs:
       # twice), with the status band reading "spec changed on disk" where it
       # expects "240 of 240 rows", and passed all 10 tests on one thread.
       #
-      # THE LIST IS THESE COMMENT LINES. Both steps read every line below that
-      # begins `serial-targets:` out of this file, so the names a reader sees
-      # here are the names that run on one thread and the comment cannot
+      # THE LIST IS THESE COMMENT LINES. The plan step reads every line below
+      # that begins `serial-targets:` out of this file, so the names a reader
+      # sees here are the names that run on one thread and the comment cannot
       # disagree with the step. A target on no list runs on default threads,
       # so a new target that opens a device belongs on the first group; the
       # sign it was left off is a test that fails at default threads and
-      # passes when run alone. Each step refuses to run when the list is
-      # empty, and the second refuses a name that is not exactly one cargo
-      # test target.
+      # passes when run alone. The plan step refuses to run when the list is
+      # empty, and refuses a name that is not exactly one cargo test target.
       #
-      # Every crate's `--lib` unit tests run in this step too, though only
-      # brightfield-shell's opens a device. Cargo cannot select one crate's
-      # library without `--exclude` or `-p`, and each of those rebuilt
-      # dependencies the workspace build already holds (measured 2026-10-07:
-      # `--exclude brightfield-shell --lib` rebuilt 23 units, `-p
-      # brightfield-model --lib` 81). That rebuild is the one the pin-staleness
-      # step's comment below describes, and this runner has no disk to spare
-      # for a second copy.
+      # Every crate's `--lib` unit tests run in the one-thread group too,
+      # though only brightfield-shell's opens a device, as one item on one
+      # shard. Cargo cannot select one crate's library without `--exclude` or
+      # `-p`, and each of those rebuilt dependencies the workspace build
+      # already holds (measured 2026-10-07: `--exclude brightfield-shell --lib`
+      # rebuilt 23 units, `-p brightfield-model --lib` 81). That rebuild is the
+      # one the pin-staleness step's comment below describes, and this runner
+      # has no disk to spare for a second copy.
       #
       # First group, the targets that open a device:
       # serial-targets: automatic_sample axis_vocabulary_rows_past banded_bar_ink
@@ -232,70 +297,192 @@ jobs:
       # serial-targets: shelf_band shelf_band_window shelf_edit shelf_fallback
       # serial-targets: snapshot sorted_bar_ink surfaces versions_panel
       # serial-targets: versions_step_back workflow_graph_baseline
-      # Second group, the target that opens none and needs one thread anyway:
-      # serial-targets: grid_spot
+      # Second group, the targets that open none and need one thread anyway:
+      # serial-targets: grid_spot region_gate
+      # `region_gate` is here because of the shard split: its tests write the
+      # bundled dataset to `target/tmp/config/datasets`, and `materialise`
+      # (crates/brightfield-shell/src/starts.rs) names the staging file by
+      # process id alone, so two of its tests at once share one staging name
+      # and the second rename finds no file. In the one job a one-thread
+      # target had already written the dataset by the time this one ran; on
+      # the first run as shards, `region_gate` was the first target to write
+      # it on its shard, at default threads, and failed that way (run
+      # 37898248271, shard default-1).
+      #
+      # THE PARTITION. The plan step packs the one-thread targets onto the
+      # one-thread shards and every other target onto the other shards, the
+      # longest first, each onto the shard with the fewest seconds so far.
+      # Every shard computes the same packing from this file and from `cargo
+      # metadata`, runs only its own part, and prints all of them, so each
+      # target runs on exactly one shard and a target nobody weighed still
+      # runs. The seconds are the `target-seconds:` lines below: the length of
+      # each target's `test result:` on `main` run 37873286168, for every
+      # target of 20 seconds or more, plus four stand-ins. `@lib`, `@bins` and
+      # `@doc` are the three groups cargo selects by flag and not by name, and
+      # `@protocols` is the two steps that run after the suite on the last
+      # shard. A target with no line counts as 2 seconds. A figure gone stale
+      # makes one shard longer than the others and loses no target.
+      # target-seconds: @bins=18 @doc=2 @lib=38 @protocols=30
+      # target-seconds: automatic_sample=42 axis_vocabulary_rows_past=28
+      # target-seconds: canvas_pane_group=54 chart_save_close_asks=24
+      # target-seconds: chart_save_reopens_chart=25
+      # target-seconds: chart_save_reopens_relative=44
+      # target-seconds: chart_save_writes_chart=29 close_question_baseline=26
+      # target-seconds: close_question_keeps_unsaved=34 colour_literals=41
+      # target-seconds: dashboard_baseline=113 examples_exercise=38
+      # target-seconds: front_door=71 grid_spot=40 legend_short_chart=31
+      # target-seconds: navigation_extent=22 navigator_spine=30
+      # target-seconds: open_materialise=74 protocol_frame_crop=22
+      # target-seconds: sampled_export=76 saved_protocol_working_directory=25
+      # target-seconds: shelf_band_window=46 shelf_column_route=63
+      # target-seconds: shelf_fallback=81 shelf_rebind=95 shelf_save=70
+      # target-seconds: shelf_settings_format=35 shelf_settings_typed=107
+      # target-seconds: shelf_settings_write=40 shelf_undo=139 surfaces=126
+      # target-seconds: tile_scale_switch=20 versions_panel=87
+      # target-seconds: versions_step_back=131 workflow_graph_baseline=20
       #
       # `--locked` because Cargo.lock is tracked: without it CI would happily
       # re-resolve around the committed lock and go green on a dependency graph
       # nobody reviewed, and lockfile drift would never be caught. With it, a
       # stale lock is a hard error here.
-      - name: cargo test, the GPU-bound targets on one thread
+      - name: plan this shard's targets
         shell: bash
+        env:
+          SHARD_NAME: ${{ matrix.name }}
+          SHARD_INDEX: ${{ strategy.job-index }}
+          SHARD_TOTAL: ${{ strategy.job-total }}
         run: |
           set -eu
           serial=$(sed -n 's/^ *# serial-targets: *//p' .github/workflows/test.yml | tr -s '[:space:]' ' ')
           if [ -z "$serial" ]; then
-            echo "::error title=no serial targets::no line of .github/workflows/test.yml begins 'serial-targets:'. The GPU-bound targets are listed in those lines; without them this step would run no one-thread target and the next step would run every target in parallel."
+            echo "::error title=no serial targets::no line of .github/workflows/test.yml begins 'serial-targets:'. The GPU-bound targets are listed in those lines; without them no shard would run a one-thread target and every target would run in parallel."
             exit 1
           fi
-          read -r -a names <<<"$serial"
-          args=()
-          for t in "${names[@]}"; do
-            args+=(--test "$t")
-          done
-          cargo test --locked --workspace --lib "${args[@]}" -- --test-threads=1
+          target_seconds=$(sed -n 's/^ *# target-seconds: *//p' .github/workflows/test.yml | tr -s '[:space:]' ' ')
+          cargo metadata --locked --no-deps --format-version 1 > "${RUNNER_TEMP}/metadata.json"
+          SERIAL="$serial" TARGET_SECONDS="$target_seconds" python3 - <<'PY'
+          import json
+          import os
+          import sys
 
-      # Every other target, on cargo's default threads. It is not gated on the
-      # step above passing, so a red there still reports these too; a
-      # cancelled run stops both. The targets are the whole workspace's test
-      # targets minus the serial list above, read from `cargo metadata`, so a
-      # new target runs here until someone lists it. `--workspace` on every
-      # command, never `--exclude` or `-p`, so each reuses the build above.
-      - name: cargo test, every other target on cargo's default threads
-        if: ${{ !cancelled() }}
-        shell: bash
-        run: |
-          set -eu
-          serial=$(sed -n 's/^ *# serial-targets: *//p' .github/workflows/test.yml | tr -s '[:space:]' ' ')
-          if [ -z "$serial" ]; then
-            echo "::error title=no serial targets::no line of .github/workflows/test.yml begins 'serial-targets:'. Running on would put the GPU-bound targets on default threads."
-            exit 1
-          fi
-          all=$(cargo metadata --locked --no-deps --format-version 1 | python3 -c '
-          import json, sys
-          for package in json.load(sys.stdin)["packages"]:
+
+          def refuse(title, message):
+              print(f"::error title={title}::{message}")
+              sys.exit(1)
+
+
+          index = int(os.environ["SHARD_INDEX"])
+          total = int(os.environ["SHARD_TOTAL"])
+          one_thread_shards = int(os.environ["ONE_THREAD_SHARDS"])
+          default_shards = total - one_thread_shards
+          if one_thread_shards < 1 or default_shards < 1:
+              refuse("a group has no shard", f"the matrix has {total} shard(s) and ONE_THREAD_SHARDS is {one_thread_shards}; each group needs a shard, or its targets would run nowhere.")
+
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "metadata.json")) as handle:
+              metadata = json.load(handle)
+          matches = {}
+          for package in metadata["packages"]:
               for target in package["targets"]:
                   if "test" in target["kind"]:
-                      print(target["name"])
-          ')
-          read -r -a names <<<"$serial"
-          for t in "${names[@]}"; do
-            n=$(grep -cx -- "$t" <<<"$all" || true)
-            if [ "$n" -ne 1 ]; then
-              echo "::error title=a serial target is not one test target::'$t' is named in a serial-targets line and matches ${n} cargo test targets; it was renamed, deleted, or shares its name with another crate's target, which a --test name cannot tell apart."
-              exit 1
-            fi
-          done
-          args=()
-          while read -r t; do
-            case " $serial " in
-              *" $t "*) ;;
-              *) args+=(--test "$t") ;;
-            esac
-          done < <(sort -u <<<"$all")
-          cargo test --locked --workspace --bins "${args[@]}"
-          cargo test --locked --workspace --doc
+                      matches[target["name"]] = matches.get(target["name"], 0) + 1
 
+          serial = os.environ["SERIAL"].split()
+          for name in serial:
+              if matches.get(name, 0) != 1:
+                  refuse("a serial target is not one test target", f"'{name}' is named in a serial-targets line and matches {matches.get(name, 0)} cargo test targets; it was renamed, deleted, or shares its name with another crate's target, which a --test name cannot tell apart.")
+
+          seconds = {}
+          for word in os.environ["TARGET_SECONDS"].split():
+              name, _, value = word.partition("=")
+              try:
+                  seconds[name] = float(value)
+              except ValueError:
+                  refuse("a target-seconds entry is not name=seconds", f"'{word}' in a line of .github/workflows/test.yml that begins 'target-seconds:'.")
+          unweighed = 2.0
+
+
+          def pack(items, shards, preload):
+              loads = [0.0] * shards
+              loads[-1] += preload
+              parts = [[] for _ in range(shards)]
+              for item in sorted(items, key=lambda i: (-seconds.get(i, unweighed), i)):
+                  part = min(range(shards), key=lambda p: (loads[p], p))
+                  parts[part].append(item)
+                  loads[part] += seconds.get(item, unweighed)
+              return parts, loads
+
+
+          names = sorted(matches)
+          one_thread_items = [n for n in names if n in serial] + ["@lib"]
+          default_items = [n for n in names if n not in serial] + ["@bins", "@doc"]
+          if index < one_thread_shards:
+              role, part, shards = "one-thread", index, one_thread_shards
+              parts, loads = pack(one_thread_items, shards, 0.0)
+          else:
+              role, part, shards = "default", index - one_thread_shards, default_shards
+              parts, loads = pack(default_items, shards, seconds.get("@protocols", unweighed))
+          if not os.environ["SHARD_NAME"].startswith(role):
+              refuse("a shard's name disagrees with its role", f"shard {index} of {total} is named '{os.environ['SHARD_NAME']}' and runs the {role} group; the first {one_thread_shards} shards in the matrix run the one-thread group and the rest run the other.")
+
+          for number, (members, load) in enumerate(zip(parts, loads)):
+              here = "  <- this shard" if number == part else ""
+              print(f"{role} part {number + 1} of {shards}: {len(members)} item(s), about {load:.0f} s{here}")
+          mine = parts[part]
+          print(f"this shard runs, in {role} part {part + 1} of {shards}:")
+          print("  " + " ".join(mine))
+
+          flags = {"@lib": "--lib", "@bins": "--bins"}
+          args = [flags[i] for i in mine if i in flags]
+          for item in mine:
+              if not item.startswith("@"):
+                  args += ["--test", item]
+          protocols = "true" if role == "default" and part == shards - 1 else "false"
+          doc = "true" if "@doc" in mine else "false"
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write(f"SHARD_ROLE={role}\n")
+              env.write(f"SHARD_CARGO_ARGS={' '.join(args)}\n")
+              env.write(f"SHARD_DOC={doc}\n")
+              env.write(f"SHARD_PROTOCOLS={protocols}\n")
+          PY
+
+      # This shard's one-thread targets, when it is a one-thread shard.
+      - name: cargo test, this shard's GPU-bound targets on one thread
+        if: ${{ env.SHARD_ROLE == 'one-thread' }}
+        shell: bash
+        run: |
+          set -eu
+          read -r -a args <<<"$SHARD_CARGO_ARGS"
+          if [ "${#args[@]}" -eq 0 ]; then
+            echo "no target was planned for this shard"
+            exit 0
+          fi
+          cargo test --locked --workspace "${args[@]}" -- --test-threads=1
+
+      # This shard's other targets, on cargo's default threads, when it is one
+      # of the other shards. `--workspace` on every command, never `--exclude`
+      # or `-p`, so each reuses the build above it. `--doc` cannot be combined
+      # with a target flag, so it is its own command on the shard that holds it.
+      # The empty case matters: `cargo test --workspace` with no target flag
+      # runs every target in the workspace.
+      - name: cargo test, this shard's other targets on cargo's default threads
+        if: ${{ env.SHARD_ROLE == 'default' }}
+        shell: bash
+        run: |
+          set -eu
+          read -r -a args <<<"$SHARD_CARGO_ARGS"
+          if [ "${#args[@]}" -gt 0 ]; then
+            cargo test --locked --workspace "${args[@]}"
+          fi
+          if [ "$SHARD_DOC" = true ]; then
+            cargo test --locked --workspace --doc
+          fi
+
+      # THE PIN-STALENESS CHECK AND THE CONFORMANCE SCOREBOARD run after the
+      # suite on the last of the default-threads shards, `default-3` today, and
+      # on no other: the plan step sets `SHARD_PROTOCOLS` from the shard's place
+      # in the matrix, so adding or removing a shard moves them to the new last
+      # one and neither is ever left without a shard.
+      #
       # THE PIN-STALENESS CHECK. Its own step with its own pass/fail, for the
       # same reason the conformance scoreboard below is one: the number that
       # matters — how many shipped Protocols the pinned `arc` could load — is
@@ -352,6 +539,7 @@ jobs:
       #
       # `--locked` for the same reason the suite above uses it.
       - name: shipped Protocols load through the pinned arc
+        if: ${{ env.SHARD_PROTOCOLS == 'true' }}
         shell: bash
         env:
           OPEN_ANALYTICS_DIR: ${{ github.workspace }}/.sibling/open-analytics
@@ -420,20 +608,52 @@ jobs:
       #
       # `--locked` for the same reason the suite above uses it.
       - name: conformance cell counts
+        if: ${{ env.SHARD_PROTOCOLS == 'true' }}
         run: cargo run --locked --bin conformance -- --layers 1,2,3,4 --corpus curated
 
       # On failure, hand back what the pixel tier actually rendered plus its
       # perceptual diff, so a red visual gate is diagnosable without a Mac.
+      # One artifact per shard, because upload-artifact refuses a name two
+      # shards of a run both use.
       - name: upload snapshot diffs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: kittest-snapshot-output
+          name: kittest-snapshot-output-${{ matrix.name }}
           path: |
             crates/**/tests/snapshots/**/*.new.png
             crates/**/tests/snapshots/**/*.diff.png
           if-no-files-found: ignore
           retention-days: 7
+
+  # THE CHECK NAMED `test`. It keeps the name of the one job that ran the whole
+  # suite before the split, so whatever watches a check called `test` still
+  # reads the suite, and it is green only when every shard above is.
+  # `always()` because a job whose `needs` failed, was skipped or was cancelled
+  # is skipped itself unless told otherwise, and a skipped check reads as
+  # passing: `test` must be red then, not absent. The result of a matrix job is
+  # `success` only when every one of its shards succeeded; any other value, a
+  # skipped or cancelled shard included, is not green. It runs on a Linux
+  # runner because it does one string comparison and should not take a macOS
+  # slot from a shard.
+  test:
+    name: test
+    needs: shard
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: every test shard is green
+        shell: bash
+        env:
+          SHARDS_RESULT: ${{ needs.shard.result }}
+        run: |
+          set -eu
+          echo "the test shards finished as: ${SHARDS_RESULT}"
+          if [ "$SHARDS_RESULT" != "success" ]; then
+            echo "::error title=a test shard is not green::the test shards finished as '${SHARDS_RESULT}', not 'success'. Open the red shard: its log names the failing test."
+            exit 1
+          fi
 
   # The disk-image half of scripts/check-artifact-type-source-selftest.sh.
   #
