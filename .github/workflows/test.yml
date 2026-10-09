@@ -134,7 +134,17 @@ jobs:
 
       # Caches ~/.cargo (registry + git checkouts, which matter here: the
       # design-system and arcform pins are git dependencies) plus ./target.
+      #
+      # `shared-key: test` because the action keys the cache on the job's id
+      # unless told a key: this job was called `test` when `main` saved the
+      # caches that are on the repository, and is `shard` now, so without a
+      # key every shard misses them and builds every dependency from nothing.
+      # The first run of this job as shards did exactly that, and its
+      # compile alone took 13 minutes 57 seconds on a shard. All the shards
+      # build the same dependencies, so they share one key.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
 
       # Frees disk on the macOS runner before ANY of this job's cargo builds,
       # not just the pin-staleness step below. It moved here, ahead of the
@@ -273,8 +283,17 @@ jobs:
       # serial-targets: shelf_band shelf_band_window shelf_edit shelf_fallback
       # serial-targets: snapshot sorted_bar_ink surfaces versions_panel
       # serial-targets: versions_step_back workflow_graph_baseline
-      # Second group, the target that opens none and needs one thread anyway:
-      # serial-targets: grid_spot
+      # Second group, the targets that open none and need one thread anyway:
+      # serial-targets: grid_spot region_gate
+      # `region_gate` is here because of the shard split: its tests write the
+      # bundled dataset to `target/tmp/config/datasets`, and `materialise`
+      # (crates/brightfield-shell/src/starts.rs) names the staging file by
+      # process id alone, so two of its tests at once share one staging name
+      # and the second rename finds no file. In the one job a one-thread
+      # target had already written the dataset by the time this one ran; on
+      # the first run as shards, `region_gate` was the first target to write
+      # it on its shard, at default threads, and failed that way (run
+      # 37898248271, shard default-1).
       #
       # THE PARTITION. The plan step packs the one-thread targets onto the
       # one-thread shards and every other target onto the other shards, the
