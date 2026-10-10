@@ -49,6 +49,9 @@ const ORIGIN: egui::Pos2 = egui::pos2(12.0, 9.0);
 /// is blue, gold, teal, red, violet, orange, plum, green, counted from zero.
 const TEAL: usize = 2;
 const VIOLET: usize = 4;
+/// Colour's slot, read from the design system's order and not from the
+/// function that assigns it: orange.
+const COLOUR_SLOT: usize = 5;
 
 /// What the heading reads over x's list in the tile the fixture names.
 const X_HEADING: &str = "OUTLINE   \u{b7}   x axis of hero";
@@ -546,11 +549,11 @@ fn esc_clears_the_query_and_then_backs_out_of_the_settings_as_of_the_columns() {
     assert_eq!(reports, [ListReport::BackedOut]);
 }
 
-/// **From x's settings `y` opens y's settings, and `c` names colour, whose list
-/// has no settings and so goes to its columns.** The rows are the new channel's,
-/// drawn in its hue.
+/// **From x's settings `y` opens y's settings, and `c` opens colour's, whose
+/// head rows are scheme and reverse.** The rows are the new channel's, drawn in
+/// its hue.
 #[test]
-fn from_the_x_settings_y_opens_the_y_settings_and_c_leaves_for_the_colour_columns() {
+fn from_the_x_settings_y_opens_the_y_settings_and_c_opens_the_colour_settings() {
     for mode in [Mode::Light, Mode::Dark] {
         let stage = Stage::new(mode);
         // y's title is its own column's name, so the rows tell the channels
@@ -586,38 +589,48 @@ fn from_the_x_settings_y_opens_the_y_settings_and_c_leaves_for_the_colour_column
         assert_eq!(list.channel(), ShelfChannel::Colour);
         assert_eq!(
             list.tab(),
-            ListTab::Columns,
-            "{mode:?}: colour has no settings to stay on"
+            ListTab::Settings,
+            "{mode:?}: the tab is kept to colour's settings"
         );
-        assert_eq!(list.cursor(), Some("median_income"));
         let colour = stage.draw(&mut list);
+        assert_eq!(
+            drawn_rows(&colour),
+            ["scheme", "reverse"],
+            "{mode:?}: the rows are colour's"
+        );
+        let strip = colour
+            .drawn
+            .tabs
+            .as_ref()
+            .expect("colour's list draws a strip");
+        let bar = strip
+            .tabs
+            .iter()
+            .find_map(|t| t.bar)
+            .expect("an open tab is underlined");
         assert!(
-            colour.drawn.tabs.is_none(),
-            "{mode:?}: no strip names a tab `Tab` cannot reach"
+            fills(&colour).contains(&(bar, categorical(mode, COLOUR_SLOT))),
+            "{mode:?}: the bar is in colour's hue"
         );
     }
 }
 
-/// **`Tab` on colour's or the mark's cell leaves the list on its columns**, and
-/// draws no strip, as there is no second tab for a strip to name.
+/// **`Tab` on the mark's cell leaves the list on its columns**, and draws no
+/// strip, as there is no second tab for a strip to name. Colour's turns to its
+/// settings, which `shelf_settings_colour.rs` reads.
 #[test]
-fn tab_on_colours_or_the_marks_list_leaves_it_on_its_columns() {
+fn tab_on_the_marks_list_leaves_it_on_its_columns() {
     let stage = Stage::new(Mode::Light);
-    for channel in [ShelfChannel::Colour, ShelfChannel::Mark] {
-        let mut list = list(channel);
-        let reports = list.feed_events(&tab());
-        assert!(
-            reports.is_empty(),
-            "{channel:?}: Tab reports nothing: {reports:?}"
-        );
-        assert_eq!(list.tab(), ListTab::Columns, "{channel:?}");
-        let frame = stage.draw(&mut list);
-        assert!(frame.drawn.tabs.is_none(), "{channel:?}: no strip is drawn");
-        assert!(
-            frame.drawn.settings.is_empty() && !frame.drawn.rows.is_empty(),
-            "{channel:?}: the columns are still listed"
-        );
-    }
+    let mut list = list(ShelfChannel::Mark);
+    let reports = list.feed_events(&tab());
+    assert!(reports.is_empty(), "Tab reports nothing: {reports:?}");
+    assert_eq!(list.tab(), ListTab::Columns);
+    let frame = stage.draw(&mut list);
+    assert!(frame.drawn.tabs.is_none(), "no strip is drawn");
+    assert!(
+        frame.drawn.settings.is_empty() && !frame.drawn.rows.is_empty(),
+        "the columns are still listed"
+    );
 }
 
 /// **`h`, `l` and the arrows beside them are inert on the title row, and `Enter`
