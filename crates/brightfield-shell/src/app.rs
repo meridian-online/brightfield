@@ -2302,7 +2302,24 @@ impl ChartDoc {
         } else {
             return Ok(None);
         };
+        // `⌫` on colour's scheme row names viridis where the plot names a scheme
+        // and is no edit where it names none: a saved file names the scheme it
+        // is drawn in, since brightfield's default is not Mosaic's.
+        if edit.row == crate::shelf::SCHEME_ROW && edit.value == SettingValue::Auto {
+            let names_one =
+                edit::plot_at_path(before, &path.0).is_some_and(|p| p.attributes.contains_key(key));
+            if !names_one {
+                return Ok(None);
+            }
+        }
         let write = match &edit.value {
+            SettingValue::Auto if edit.row == crate::shelf::SCHEME_ROW => {
+                SettingWrite::Value(SpecValue::String(
+                    brightfield_render::scale::SequentialScheme::default()
+                        .wire_name()
+                        .to_string(),
+                ))
+            }
             SettingValue::Word(word) => SettingWrite::Value(SpecValue::String(word.clone())),
             SettingValue::Text(words) => SettingWrite::Value(SpecValue::String(words.clone())),
             SettingValue::Switch(on) => SettingWrite::Value(SpecValue::Bool(*on)),

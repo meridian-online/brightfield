@@ -44,8 +44,8 @@
 //!
 //! The keys are the registry's, in its Shelf context: `m` `x` `y` `c` go to a
 //! cell, `h` `l` (and the arrows) move to the cell beside and stop at the
-//! mark's cell on the left and at colour on the right, `Tab` turns an axis's
-//! list between its columns and its settings, and `Esc` leaves the open cell.
+//! mark's cell on the left and at colour on the right, `Tab` turns the list of x,
+//! y or colour between its columns and its settings, and `Esc` leaves the open cell.
 //! The keycap a cell prints is read from the registry's binding for
 //! the verb that goes to it, so a key moved there moves on the band.
 //! `the_cell_keys_printed_on_the_band_are_the_registrys` holds it. The list of
@@ -59,17 +59,20 @@ use brightfield_keys::dispatch::{resolution_table, DispatchContext, ResolutionTa
 use brightfield_keys::registry::{keymap_bindings, registry, BindingContext};
 use brightfield_render::axis::{axis_kind, tick_count_applies, top_tick_text, AxisKind};
 use brightfield_render::channel::Channel;
-use brightfield_render::scale::{log_ends_refused, Scale, ScaleSet};
-use brightfield_render::scene::{axis_ends_apply, axis_keys_apply, axis_reverse_applies};
+use brightfield_render::scale::{log_ends_refused, ramp_at, Scale, ScaleSet, SequentialScheme};
+use brightfield_render::scene::{
+    axis_ends_apply, axis_keys_apply, axis_reverse_applies, colour_reverse_applies,
+};
 use brightfield_spec::ast::{Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
 use brightfield_spec::layout::{read_domains_in, DomainReading};
 use brightfield_spec::layout::{
     read_tick_format, resolve_axis_ends, resolve_axis_reverse, resolve_axis_titles,
-    resolve_grid_lines, resolve_plot_scales_in, resolve_tick_counts, tick_count_target, AxisTitle,
-    ScaleType, TickFormatReading, DEFAULT_TICK_COUNT, MAX_TICK_COUNT,
+    resolve_colour_reverse, resolve_colour_scheme_name, resolve_grid_lines, resolve_plot_scales_in,
+    resolve_tick_counts, tick_count_target, AxisTitle, ScaleType, TickFormatReading,
+    DEFAULT_TICK_COUNT, MAX_TICK_COUNT,
 };
 use brightfield_spec::number_format::NumberFormat;
-use brightfield_spec::vocab::is_colour_literal;
+use brightfield_spec::vocab::{is_colour_literal, MarkKind};
 use brightfield_workbench::channel::{self, ShelfChannel, BAND_HEIGHT};
 use brightfield_workbench::chrome;
 use meridian_design::{control, radius, semantic, spacing, typography, Elevation};
@@ -220,8 +223,9 @@ pub struct ShelfBand {
     channels: ShelfChannels,
     active: Option<ShelfChannel>,
     preview: Option<(ShelfChannel, String)>,
-    /// What the axes' settings read, which a cell marks: a dot while any of its
-    /// channel's rows is set, and the scale's name while it is not linear.
+    /// What the axes' and colour's settings read, which a cell marks: a dot while
+    /// any of its channel's rows is set, and the scale's name while it is not
+    /// linear.
     settings: ChannelSettings,
 }
 
@@ -237,7 +241,8 @@ impl ShelfBand {
         }
     }
 
-    /// Hand the band what the axes' settings read, as the plot's spec changes.
+    /// Hand the band what the settings of x, y and colour read, as the plot's spec
+    /// changes.
     /// A band handed none, or a plot that sets nothing, draws its cells with no
     /// mark on them.
     pub fn set_settings(&mut self, settings: ChannelSettings) {
@@ -850,8 +855,12 @@ pub const GRID_ROW: &str = "grid";
 /// The name of the zero row, which is found by typing it.
 pub const ZERO_ROW: &str = "zero";
 
-/// The name of the reverse row, which is found by typing it.
+/// The name of the reverse row, which is found by typing it on an axis and is a
+/// head row on colour.
 pub const REVERSE_ROW: &str = "reverse";
+
+/// The name of colour's scheme row.
+pub const SCHEME_ROW: &str = "scheme";
 
 /// What a switch row reads while the key is on.
 pub const ON: &str = "on";
@@ -870,6 +879,32 @@ const ZERO_SAYS: &str = "Whether the axis reaches zero, which auto leaves to the
 
 /// The foot's sentence for the reverse row.
 const REVERSE_SAYS: &str = "Whether the axis runs from high to low, which auto runs low to high.";
+
+/// The foot's sentence for colour's scheme row.
+const SCHEME_SAYS: &str = "The ramp a number's colour runs along, which auto draws as viridis.";
+
+/// The foot's sentence for colour's reverse row.
+const COLOUR_REVERSE_SAYS: &str =
+    "Whether colour runs the other way, a ramp from its far end and names from the last, which auto does not.";
+
+/// Why the scheme row does not apply to a colour that paints names.
+const SCHEME_NAMES: &str =
+    "a column of names takes the categorical set, which has no ramp to choose";
+
+/// Why colour's reverse row does not apply to a chart that draws no dot.
+const COLOUR_REVERSE_DOTS: &str =
+    "only a dot's colour runs the other way, and this chart draws none";
+
+/// The schemes colour's scheme row offers and steps through, in the order
+/// `SequentialScheme::ALL` visits them: every scheme the renderer draws but
+/// the diverging one, which is a pivot's colour and not a ramp to choose.
+#[must_use]
+pub fn scheme_strip() -> Vec<SequentialScheme> {
+    SequentialScheme::ALL
+        .into_iter()
+        .filter(|scheme| *scheme != SequentialScheme::Rdbu)
+        .collect()
+}
 
 /// The foot's sentence for the title row: what it does, and the rule for its
 /// default.
@@ -1079,13 +1114,20 @@ pub const SCALE_STEPS: [&str; 3] = ["linear", "log", "symlog"];
 
 /// The plot attribute `row` of `axis` is written under, as Mosaic spells it, for
 /// the rows a step, a typed value or a `⌫` writes: title, scale, format, ticks,
-/// grid, zero and reverse.
+/// grid, zero and reverse of an axis, and scheme and reverse of colour.
 #[must_use]
 pub fn row_key(axis: ShelfChannel, row: &str) -> Option<&'static str> {
     let x = match axis {
         ShelfChannel::X => true,
         ShelfChannel::Y => false,
-        ShelfChannel::Mark | ShelfChannel::Colour => return None,
+        ShelfChannel::Colour => {
+            return match row {
+                SCHEME_ROW => Some("colorScheme"),
+                REVERSE_ROW => Some("colorReverse"),
+                _ => None,
+            }
+        }
+        ShelfChannel::Mark => return None,
     };
     Some(match (row, x) {
         (TITLE_ROW, true) => "xLabel",
@@ -1117,6 +1159,10 @@ pub fn row_default(row: &str) -> Option<SpecValue> {
         SCALE_ROW => SpecValue::String("linear".to_string()),
         // Mosaic's own, no format: the axis draws its own tick text.
         FORMAT_ROW | RANGE_ROW => SpecValue::Null,
+        // No value of the scheme is the one a file leaves out: brightfield's
+        // default is not Mosaic's, so a saved file names viridis, and a default
+        // no value equals is what makes every scheme written by name.
+        SCHEME_ROW => SpecValue::Null,
         TICKS_ROW => SpecValue::Integer(i64::try_from(DEFAULT_TICK_COUNT).unwrap_or(5)),
         GRID_ROW => SpecValue::Bool(true),
         ZERO_ROW | REVERSE_ROW => SpecValue::Bool(false),
@@ -1146,7 +1192,7 @@ impl SettingRow {
         self.reason.is_none()
             && match self.name {
                 SCALE_ROW => SCALE_STEPS.contains(&self.value.as_str()),
-                FORMAT_ROW | GRID_ROW | ZERO_ROW | REVERSE_ROW => true,
+                FORMAT_ROW | GRID_ROW | ZERO_ROW | REVERSE_ROW | SCHEME_ROW => true,
                 _ => false,
             }
     }
@@ -1196,6 +1242,18 @@ impl SettingRow {
                 .checked_add_signed(by)
                 .filter(|n| *n < SCALE_STEPS.len())?;
             return Some(SettingValue::Word(SCALE_STEPS[next].to_string()));
+        }
+        if self.name == SCHEME_ROW {
+            // Along the order the renderer visits the schemes in, stopping at
+            // the ends of the strip. A scheme off the strip (rdbu, which a file
+            // may name) steps from where it stands in that order.
+            let at = SequentialScheme::ALL
+                .iter()
+                .position(|s| s.wire_name() == self.value)?;
+            let next = SequentialScheme::ALL.get(at.checked_add_signed(by)?)?;
+            return scheme_strip()
+                .contains(next)
+                .then(|| SettingValue::Word(next.wire_name().to_string()));
         }
         Some(SettingValue::Switch(self.value != ON))
     }
@@ -1261,13 +1319,13 @@ pub struct FormatFacts {
     pub sample: Option<String>,
 }
 
-/// The settings rows of the channels that have any: x and y. Colour's and the
-/// mark's are not built, so they have no rows, and `Tab` leaves their list on
-/// its columns.
+/// The settings rows of the channels that have any: x, y and colour. The mark's
+/// are not built, so it has no rows, and `Tab` leaves its list on its columns.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChannelSettings {
     x: Vec<SettingRow>,
     y: Vec<SettingRow>,
+    colour: Vec<SettingRow>,
 }
 
 impl ChannelSettings {
@@ -1298,6 +1356,32 @@ impl ChannelSettings {
         channels: &ShelfChannels,
         drawn: &ScaleSet,
     ) -> Self {
+        Self::build(spec, plot, channels, drawn, None)
+    }
+
+    /// [`Self::of_plot_drawn`] with the marks `plot` drew, which colour's
+    /// reverse row is judged by: the render crate's `colour_reverse_applies`
+    /// says whether a dot is among them. **Without the marks no judge speaks**
+    /// and the row carries no reason, as the axes' by-name rows carry none while
+    /// nothing has been drawn.
+    #[must_use]
+    pub fn of_plot_marked(
+        spec: &Spec,
+        plot: &PlotNode,
+        channels: &ShelfChannels,
+        drawn: &ScaleSet,
+        marks: &[MarkKind],
+    ) -> Self {
+        Self::build(spec, plot, channels, drawn, Some(marks))
+    }
+
+    fn build(
+        spec: &Spec,
+        plot: &PlotNode,
+        channels: &ShelfChannels,
+        drawn: &ScaleSet,
+        marks: Option<&[MarkKind]>,
+    ) -> Self {
         let titles = resolve_axis_titles(plot);
         let scales = resolve_plot_scales_in(plot, &spec.params);
         let domains = read_domains_in(plot, &spec.params);
@@ -1320,6 +1404,7 @@ impl ChannelSettings {
                 drawn,
                 &domains.y,
             ),
+            colour: colour_rows(spec, plot, drawn, marks),
         }
     }
 
@@ -1330,9 +1415,65 @@ impl ChannelSettings {
         match channel {
             ShelfChannel::X => &self.x,
             ShelfChannel::Y => &self.y,
-            ShelfChannel::Mark | ShelfChannel::Colour => &[],
+            ShelfChannel::Colour => &self.colour,
+            ShelfChannel::Mark => &[],
         }
     }
+}
+
+/// The rows of colour: the head rows scheme and reverse, in that order, each
+/// reading *auto* or the value the plot sets.
+///
+/// The scheme reads the name the resolver gives, and a name this build cannot
+/// draw, like none, reads viridis, which is what the plot draws. It is the
+/// analyst's when it is any other. **It does not apply to a colour that paints
+/// names**, which the chart draws as a categorical scale with no ramp, so the
+/// row is muted with its reason while the fill scale drawn is one. Reverse
+/// reads the switch the resolver gives and applies to a colour of either kind,
+/// reversing a ramp or the order of the categories; the render crate's
+/// `colour_reverse_applies` says it does not when no dot is among `marks`, and
+/// no judge speaks while `marks` are not handed in.
+fn colour_rows(
+    spec: &Spec,
+    plot: &PlotNode,
+    drawn: &ScaleSet,
+    marks: Option<&[MarkKind]>,
+) -> Vec<SettingRow> {
+    let scheme = resolve_colour_scheme_name(plot, &spec.params)
+        .and_then(SequentialScheme::from_wire)
+        .unwrap_or_default();
+    let reverse = resolve_colour_reverse(plot, &spec.params);
+    let names = matches!(drawn.get(Channel::Fill), Some(Scale::Colour { .. }));
+    let row = |name, value, set, says, reason| SettingRow {
+        name,
+        value,
+        set,
+        reason,
+        by_name: false,
+        kind: SettingKind::Enumerated,
+        says,
+        from: None,
+        format: None,
+        range: None,
+    };
+    vec![
+        row(
+            SCHEME_ROW,
+            scheme.wire_name().to_string(),
+            scheme != SequentialScheme::default(),
+            SCHEME_SAYS,
+            names.then(|| SCHEME_NAMES.to_string()),
+        ),
+        row(
+            REVERSE_ROW,
+            if reverse { ON } else { OFF }.to_string(),
+            reverse,
+            COLOUR_REVERSE_SAYS,
+            marks
+                .is_some_and(|marks| !colour_reverse_applies(marks))
+                .then(|| COLOUR_REVERSE_DOTS.to_string()),
+        ),
+    ]
 }
 
 /// The rows of one axis: the head rows, title, scale, range and format, in that
@@ -1802,8 +1943,8 @@ pub struct ColumnList {
     scroll: bool,
     /// Which list is showing: the columns, or the channel's settings.
     tab: ListTab,
-    /// What the axes' settings read, handed in by the window, which holds the
-    /// plot. Empty until [`Self::set_settings`], and then a channel with no
+    /// What the settings of x, y and colour read, handed in by the window, which
+    /// holds the plot. Empty until [`Self::set_settings`], and then a channel with no
     /// rows has no settings tab.
     settings: ChannelSettings,
     /// The settings row under the cursor, as an index into the channel's rows.
@@ -1834,7 +1975,7 @@ impl ColumnList {
         list
     }
 
-    /// Hand the list what the axes' settings read. The cursor's row stays where
+    /// Hand the list what the settings of x, y and colour read. The cursor's row stays where
     /// it is, as an index, and moves to the first row if the rows are fewer.
     pub fn set_settings(&mut self, settings: ChannelSettings) {
         self.settings = settings;
@@ -2074,8 +2215,8 @@ impl ColumnList {
 
     /// `Tab`: turn the list between the channel's columns and its settings.
     ///
-    /// A channel with no settings rows — colour's and the mark's — stays on its
-    /// columns. The query is kept across the turn and narrows the rows of the
+    /// A channel with no settings rows — the mark's, and any channel the list was
+    /// handed none for — stays on its columns. The query is kept across the turn and narrows the rows of the
     /// tab it turns to. Turning to the settings reports [`ListReport::Turned`],
     /// so the window backs out a preview that belongs to the columns; turning
     /// back, the cursor goes where the columns' own rule puts it (the column the
@@ -2470,8 +2611,8 @@ impl ColumnList {
             self.querying = false;
             self.cursor = self.held();
             self.scroll = true;
-            // The tab is kept where the channel has it: x's settings to y's, and
-            // colour's list, which has no settings yet, on its columns.
+            // The tab is kept where the channel has it: x's settings to y's, and to
+            // colour's; a channel the list holds no rows for is left on its columns.
             if self.tab == ListTab::Settings {
                 if self.has_settings() {
                     self.row = self.setting_order().first().copied();
@@ -2766,6 +2907,118 @@ pub struct SettingRowDrawn {
     /// The part of the row a click steps: from the value's leading edge to the
     /// marker.
     pub value_zone: egui::Rect,
+    /// The ramp painted before the scheme's name, on the scheme row where it
+    /// applies.
+    pub ramp: Option<egui::Rect>,
+    /// The schemes the strip under the scheme row offers, in the order drawn,
+    /// while the cursor is on the row. Empty on every other row.
+    pub schemes: Vec<SchemeDrawn>,
+}
+
+/// One scheme of the strip under colour's scheme row as it was drawn.
+#[derive(Clone, Debug)]
+pub struct SchemeDrawn {
+    /// The scheme the ramp and the name stand for, which a click on either
+    /// writes.
+    pub scheme: SequentialScheme,
+    /// The ramp painted.
+    pub ramp: egui::Rect,
+    /// Where the scheme's name was laid out.
+    pub name: egui::Rect,
+    /// The ring in colour's hue round the ramp, on the scheme the plot is drawn
+    /// in and on no other.
+    pub ring: Option<egui::Rect>,
+}
+
+/// How wide the ramp painted for a scheme is, and how many strips it is sampled
+/// into: one for each point.
+const RAMP_WIDTH: f32 = 28.0;
+
+/// How high the ramp painted for a scheme is.
+const RAMP_HEIGHT: f32 = 10.0;
+
+/// How far the ring stands off a ramp, and how thick it is.
+const RING_GAP: f32 = 1.5;
+const RING_WIDTH: f32 = 1.5;
+
+/// Paint `scheme`'s ramp into `rect`, its low end at the left: one flat strip
+/// for each point of the width, each sampled along the scheme's stops, so the
+/// first strip is the first stop and the last is the last, exactly. A mesh and
+/// not a run of rectangles, so no seam shows between the strips.
+fn paint_ramp(painter: &egui::Painter, rect: egui::Rect, scheme: SequentialScheme) {
+    let stops = scheme.stops();
+    let strips = rect.width().round().max(2.0) as usize;
+    let step = rect.width() / strips as f32;
+    let mut mesh = egui::Mesh::default();
+    for i in 0..strips {
+        let left = rect.left() + step * i as f32;
+        let strip = egui::Rect::from_min_max(
+            egui::pos2(left, rect.top()),
+            egui::pos2(left + step, rect.bottom()),
+        );
+        mesh.add_colored_rect(
+            strip,
+            crate::legend::chart_ink(ramp_at(&stops, i as f64 / (strips - 1) as f64)),
+        );
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/// One scheme of the strip, laid out: where its ramp and its name stand from the
+/// strip's top left.
+struct StripItem {
+    scheme: SequentialScheme,
+    ramp_at: egui::Vec2,
+    name_at: egui::Vec2,
+    name: std::sync::Arc<egui::Galley>,
+}
+
+/// The strip laid out: each scheme as a ramp and its name, wrapped onto more
+/// lines where the room is narrow, and the height it takes.
+struct StripLayout {
+    items: Vec<StripItem>,
+    height: f32,
+}
+
+/// Lay `schemes` out as a ramp and a name each, in `room` points, with the ink
+/// `ink` gives each name. An item that does not fit the line it is on begins the
+/// next, so a rail as narrow as the list's least shows one scheme on a line.
+fn layout_strip(
+    painter: &egui::Painter,
+    schemes: &[SequentialScheme],
+    room: f32,
+    ink: impl Fn(SequentialScheme) -> egui::Color32,
+) -> StripLayout {
+    // The ring stands off the ramp by this much on every side.
+    let ring = RING_GAP + RING_WIDTH;
+    let mut items = Vec::with_capacity(schemes.len());
+    let (mut x, mut y, mut tall) = (0.0_f32, 0.0_f32, 0.0_f32);
+    for &scheme in schemes {
+        let name = painter.layout_no_wrap(scheme.wire_name().to_string(), ui_font(), ink(scheme));
+        let wide = ring + RAMP_WIDTH + spacing::SPACE_2 + name.size().x;
+        let high = name.size().y.max(RAMP_HEIGHT + 2.0 * ring);
+        if x > 0.0 && x + wide > room {
+            x = 0.0;
+            y += tall + spacing::SPACE_1;
+            tall = 0.0;
+        }
+        let middle = y + high / 2.0;
+        items.push(StripItem {
+            scheme,
+            ramp_at: egui::vec2(x + ring, middle - RAMP_HEIGHT / 2.0),
+            name_at: egui::vec2(
+                x + ring + RAMP_WIDTH + spacing::SPACE_2,
+                middle - name.size().y / 2.0,
+            ),
+            name,
+        });
+        x += wide + spacing::SPACE_4;
+        tall = tall.max(high);
+    }
+    StripLayout {
+        items,
+        height: y + tall,
+    }
 }
 
 /// How wide the rug is on a numeric column's row, at the trailing end. The
@@ -3211,6 +3464,9 @@ impl ColumnList {
         let mut clicked = None;
         let mut pointed = None;
         let mut stepped: Option<(usize, isize)> = None;
+        // The ramp of the strip a click landed on, with the row it belongs to.
+        let mut picked: Option<(usize, SequentialScheme)> = None;
+        let offered = scheme_strip();
         for &i in &order {
             let row = &rows[i];
             // The field of a typed row, open on this row.
@@ -3237,12 +3493,35 @@ impl ColumnList {
             let reason_height = reason
                 .as_ref()
                 .map_or(0.0, |g| g.size().y + spacing::SPACE_2);
+            let on = self.row == Some(i);
+            // The scheme the scheme row reads, where it applies: drawn as a ramp
+            // before its name. While the cursor is on the row, a second line
+            // offers each scheme as a ramp and its name, laid out before the row
+            // is allocated so the row is as high as the strip needs.
+            let scheme = (row.name == SCHEME_ROW && row.reason.is_none())
+                .then(|| SequentialScheme::from_wire(&row.value))
+                .flatten();
+            let offer = scheme
+                .filter(|_| on && self.field.is_none())
+                .map(|current| {
+                    let room = width - 2.0 * (b.pad_x + spacing::SPACE_4);
+                    let ink = |scheme| {
+                        if scheme == current {
+                            primary
+                        } else {
+                            chrome::colour(sem.text.secondary)
+                        }
+                    };
+                    (current, layout_strip(&painter, &offered, room, ink))
+                });
+            let offer_height = offer
+                .as_ref()
+                .map_or(0.0, |(_, layout)| layout.height + 2.0 * spacing::SPACE_2);
             let (rect, response) = ui.allocate_exact_size(
-                egui::vec2(width, b.row + reason_height),
+                egui::vec2(width, b.row + reason_height + offer_height),
                 egui::Sense::click(),
             );
             let line = egui::Rect::from_min_size(rect.min, egui::vec2(width, b.row));
-            let on = self.row == Some(i);
             response.widget_info(|| {
                 egui::WidgetInfo::selected(
                     egui::WidgetType::SelectableLabel,
@@ -3334,6 +3613,54 @@ impl ColumnList {
                     let back = at.is_some_and(|p| chips.is_some_and(|[back, _]| back.contains(p)));
                     stepped = Some((i, if back { -1 } else { 1 }));
                 }
+            }
+            // The strip is placed under the line, in the room the row grew by.
+            let strip_origin = egui::pos2(content.left(), line.bottom() + spacing::SPACE_2);
+            let ramps: Vec<SchemeDrawn> = offer
+                .as_ref()
+                .map(|(current, layout)| {
+                    layout
+                        .items
+                        .iter()
+                        .map(|item| {
+                            let ramp = egui::Rect::from_min_size(
+                                strip_origin + item.ramp_at,
+                                egui::vec2(RAMP_WIDTH, RAMP_HEIGHT),
+                            );
+                            paint_ramp(&painter, ramp, item.scheme);
+                            let name = egui::Rect::from_min_size(
+                                strip_origin + item.name_at,
+                                item.name.size(),
+                            );
+                            painter.galley(name.min, item.name.clone(), primary);
+                            let ring = (item.scheme == *current).then(|| {
+                                let ring = ramp.expand(RING_GAP + RING_WIDTH);
+                                painter.rect_stroke(
+                                    ring,
+                                    0.0,
+                                    egui::Stroke::new(RING_WIDTH, hue),
+                                    egui::StrokeKind::Inside,
+                                );
+                                ring
+                            });
+                            SchemeDrawn {
+                                scheme: item.scheme,
+                                ramp,
+                                name,
+                                ring,
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if response.clicked() && self.field.is_none() {
+                let at = response.interact_pointer_pos();
+                picked = at.and_then(|p| {
+                    ramps
+                        .iter()
+                        .find(|r| r.ramp.union(r.name).expand(RING_GAP).contains(p))
+                        .map(|r| (i, r.scheme))
+                });
             }
 
             // The word *auto*, where the value is brightfield's own.
@@ -3443,14 +3770,25 @@ impl ColumnList {
                 };
                 (at, Some(ground))
             } else {
-                let value = text_ink::fit(&painter, &row.value, ui_font(), right - value_left, ink);
+                // The scheme row paints its ramp before the name.
+                let text_left =
+                    scheme.map_or(value_left, |_| value_left + RAMP_WIDTH + spacing::SPACE_2);
+                let value = text_ink::fit(&painter, &row.value, ui_font(), right - text_left, ink);
                 let at = egui::Rect::from_min_size(
-                    egui::pos2(value_left, line.center().y - value.size().y / 2.0),
+                    egui::pos2(text_left, line.center().y - value.size().y / 2.0),
                     value.size(),
                 );
                 painter.galley(at.min, value, ink);
                 (at, None)
             };
+            let ramp = scheme.map(|scheme| {
+                let at = egui::Rect::from_min_size(
+                    egui::pos2(value_left, line.center().y - RAMP_HEIGHT / 2.0),
+                    egui::vec2(RAMP_WIDTH, RAMP_HEIGHT),
+                );
+                paint_ramp(&painter, at, scheme);
+                at
+            });
             // The format's sample, muted, after the value. It gives way to the
             // chips and the word *auto*, which have taken their room off `right`,
             // and is left out where it does not fit whole: a clipped sample reads
@@ -3493,6 +3831,8 @@ impl ColumnList {
                 bar,
                 chips,
                 value_zone,
+                ramp,
+                schemes: ramps,
             });
         }
         self.scroll = false;
@@ -3542,7 +3882,13 @@ impl ColumnList {
             }
         }
         let mut reports = Vec::new();
-        if let Some((i, by)) = stepped {
+        if let Some((i, scheme)) = picked {
+            reports.push(ListReport::Set(RowEdit {
+                channel: self.channel,
+                row: rows[i].name,
+                value: SettingValue::Word(scheme.wire_name().to_string()),
+            }));
+        } else if let Some((i, by)) = stepped {
             match rows[i].step_to(by) {
                 Some(RowStep::Set(value)) => reports.push(ListReport::Set(RowEdit {
                     channel: self.channel,

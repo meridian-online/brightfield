@@ -10097,22 +10097,25 @@ fn hero_shelf_channels(doc: &ChartDoc) -> Option<ShelfChannels> {
     ShelfChannels::of_plot(plot)
 }
 
-/// What the hero's axes read on their settings lists, from the live spec at the
-/// hero's path: the values the plot resolves to, with `channels` saying what
-/// each axis holds, so a title can be told from the column's own name.
+/// What the hero's axes and colour read on their settings lists, from the live
+/// spec at the hero's path: the values the plot resolves to, with `channels`
+/// saying what each axis holds, so a title can be told from the column's own
+/// name.
 ///
 /// The rows found by name are judged against the scales the hero was drawn
 /// against, which the composed plot holds, so a row the render crate says does
-/// not apply to the axis it drew carries its reason.
+/// not apply to the axis it drew carries its reason. Colour's are judged by the
+/// same scales and by the marks the hero drew.
 fn hero_axis_settings(doc: &ChartDoc, channels: &ShelfChannels) -> Option<ChannelSettings> {
     let hero = doc.composed.plots.get(HERO_PLOT)?;
     let spec = doc.live_dashboard()?.spec();
     let plot = brightfield_spec::edit::plot_at_path(spec, &hero.path)?;
-    Some(ChannelSettings::of_plot_drawn(
+    Some(ChannelSettings::of_plot_marked(
         spec,
         plot,
         channels,
         &hero.scales,
+        &hero.marks,
     ))
 }
 
