@@ -11,7 +11,7 @@ description = "The repository's gate as one command: `cargo xtask ci` runs what 
 [dependencies]
 # Read for one thing: the test targets in `cargo metadata`, which decide how
 # the test steps split the suite. Already in the lock for six other members.
-serde_json = "1"
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

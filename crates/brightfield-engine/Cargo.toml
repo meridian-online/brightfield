@@ -8,8 +8,8 @@ repository.workspace = true
 description = "In-process DuckDB execution engine for Mosaic spec pipelines"
 
 [dependencies]
-brightfield-spec = { path = "../brightfield-spec" }
-brightfield-sql = { path = "../brightfield-sql" }
+brightfield-spec = { workspace = true }
+brightfield-sql = { workspace = true }
 # `parquet` links DuckDB's Parquet reader into the binary. Without it
 # `read_parquet` is an extension DuckDB autoinstalls on first use — downloaded
 # from extensions.duckdb.org into ~/.duckdb — so a local Parquet opened on a
@@ -18,9 +18,19 @@ brightfield-sql = { path = "../brightfield-sql" }
 # a bundled Parquet whose whole promise is that it needs neither.
 # `the_local_starts_open_with_the_network_denied_and_a_cold_extension_cache` in
 # the shell's `tests/front_door.rs` reddens when this feature is off.
-duckdb = { version = "1", features = ["bundled", "parquet"] }
-serde_json = "1"
-thiserror = "2"
+duckdb = { workspace = true, features = ["parquet"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 
-[lints]
-workspace = true
+# The workspace's lints, restated: a member's `[lints]` table either inherits the
+# workspace's whole table or carries its own, never both. The one difference is
+# `unsafe_code`, `deny` here and `forbid` in the workspace, because `forbid` cannot
+# be relaxed by the `#[allow(unsafe_code)]` on the one function that calls DuckDB's
+# C API (`condition_statement_count` in `src/lib.rs`).
+[lints.rust]
+unused_must_use = "warn"
+missing_docs = "allow"
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "allow", priority = -1 }
