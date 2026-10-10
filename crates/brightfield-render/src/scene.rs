@@ -2089,9 +2089,15 @@ mod tests {
             &scales,
         );
 
-        let (x, y) = (axes.x.expect("x drew an axis"), axes.y.expect("y drew an axis"));
+        let (x, y) = (
+            axes.x.expect("x drew an axis"),
+            axes.y.expect("y drew an axis"),
+        );
         let parts = [x.title, x.labels, y.title, y.labels];
-        assert!(parts.iter().all(Option::is_some), "titled and labelled: {parts:?}");
+        assert!(
+            parts.iter().all(Option::is_some),
+            "titled and labelled: {parts:?}"
+        );
         let runs = &scene.encoding().resources.glyph_runs;
         assert!(!runs.is_empty(), "fixture check: the scene drew text");
         for run in runs {
@@ -2105,8 +2111,16 @@ mod tests {
             );
         }
         let layout = &data.layout;
-        assert_eq!(x.line.y1, layout.plot_y_end() + 5.0, "x's line ends at its labels");
-        assert_eq!(y.line.x1, layout.plot_x_start() + 8.0, "y's line reaches 8 px in");
+        assert_eq!(
+            x.line.y1,
+            layout.plot_y_end() + 5.0,
+            "x's line ends at its labels"
+        );
+        assert_eq!(
+            y.line.x1,
+            layout.plot_x_start() + 8.0,
+            "y's line reaches 8 px in"
+        );
     }
 
     /// A plot that draws no frame draws no axis, and so reports none; the same

@@ -77,6 +77,7 @@ use crate::legend;
 use crate::navigation::{self, verb::RESET_EXTENT};
 use crate::pipeline::{GestureBinding, HoverLayer, PlotHandle};
 use crate::starts;
+use crate::window::HERO_PLOT;
 
 /// The predicate readout's status-entry id — the handle a headless test asserts
 /// the readout by, and the name the rail records in [`chrome::StatusDrawn`]
@@ -335,6 +336,10 @@ struct Pan {
 /// The chart pane. See the module docs for what this one type replaces.
 pub struct ChartItem {
     drag: Option<Drag>,
+    /// The axis part a press landed on, until the button comes up. The press
+    /// is the canvas's no longer (no brush starts from it), and the click is
+    /// asked of the window on the release, if the pointer is still on the part.
+    axis_press: Option<crate::pipeline::AxisHit>,
     /// Whether the primary button was down over the raster last frame — the
     /// edge detector the drag state machine runs on.
     was_down: bool,
@@ -378,6 +383,7 @@ impl ChartItem {
     pub fn new() -> Self {
         Self {
             drag: None,
+            axis_press: None,
             was_down: false,
             pan: None,
             was_secondary_down: false,
@@ -522,10 +528,7 @@ impl ChartItem {
                     // brush starts from a title. Asked before the brush is,
                     // because a press that opened a row is not also a sweep.
                     let axis = axis_target_under(doc, plot, p);
-                    if let Some(hit) = axis {
-                        doc.request_axis(hit);
-                        repaint = true;
-                    }
+                    self.axis_press = axis;
                     let handle = &doc.composed.plots[plot];
                     if axis.is_none() && handle.gesture.is_some() && doc.is_live() {
                         // A press inside the plot's own committed rectangle
@@ -560,6 +563,23 @@ impl ChartItem {
         }
         let released = !down && self.was_down;
         self.was_down = down;
+        // **The click on an axis part is the release**, as a button's is, and
+        // it is asked of the window then rather than on the press: the list it
+        // opens is drawn, with the navigator rail shut, as a card that backs out
+        // of any click it sees land off it, and a list opened on the press frame
+        // would see this very click's release. The pointer must still be on the
+        // part the press began on.
+        if released {
+            if let Some(pressed) = self.axis_press.take() {
+                let still = pointer.and_then(|p| axis_target_under(doc, HERO_PLOT, p));
+                if still
+                    .is_some_and(|hit| (hit.channel, hit.part) == (pressed.channel, pressed.part))
+                {
+                    doc.request_axis(pressed);
+                    repaint = true;
+                }
+            }
+        }
 
         // ---------------------------------------------------------------
         // Navigation: the frame moves on every sample, the data re-queries
@@ -778,7 +798,7 @@ fn axis_target_under(
     plot: usize,
     p: kurbo::Point,
 ) -> Option<crate::pipeline::AxisHit> {
-    if !doc.axis_targets_live || plot != crate::window::HERO_PLOT {
+    if !doc.axis_targets_live || plot != HERO_PLOT {
         return None;
     }
     let hit = doc.composed.plots.get(plot)?.axis_part_at(p)?;

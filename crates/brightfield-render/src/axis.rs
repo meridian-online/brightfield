@@ -2445,7 +2445,11 @@ mod tests {
         );
 
         let origins = drawn_run_origins(&scene);
-        assert_eq!(origins.len(), ticks.len() + 1, "a run per label and the title");
+        assert_eq!(
+            origins.len(),
+            ticks.len() + 1,
+            "a run per label and the title"
+        );
         for at in &origins {
             assert!(
                 labels.contains(*at) || title.contains(*at),
@@ -2478,7 +2482,13 @@ mod tests {
         };
         let ticks = compute_ticks(&scale, 5);
         let mut scene = Scene::new();
-        let axis = render_y_axis(&mut scene, &layout, &ticks, Some("Travelers"), ChartInk::LIGHT);
+        let axis = render_y_axis(
+            &mut scene,
+            &layout,
+            &ticks,
+            Some("Travelers"),
+            ChartInk::LIGHT,
+        );
 
         let x = layout.plot_x_start();
         assert_eq!(
@@ -2515,7 +2525,11 @@ mod tests {
         );
 
         let origins = drawn_run_origins(&scene);
-        assert_eq!(origins.len(), ticks.len() + 1, "a run per label and the title");
+        assert_eq!(
+            origins.len(),
+            ticks.len() + 1,
+            "a run per label and the title"
+        );
         for at in &origins {
             assert!(
                 labels.contains(*at) || title.contains(*at),
