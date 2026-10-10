@@ -219,12 +219,36 @@ impl Window {
         Some((list.channel(), list.tab(), list.setting_cursor()?.name))
     }
 
-    /// A press on x's tick labels and a drag into the plot, the button left
-    /// down: the point pressed, the point dragged to, and the ink the canvas's
-    /// brush records for the sweep, which is `None` when the press never reached
-    /// the canvas.
-    fn sweep_from_x_labels(&mut self) -> (egui::Pos2, egui::Pos2, Option<egui::Rect>) {
-        let press = self.part(Channel::X, AxisPart::Labels);
+    /// Two points three pixels inside the data area along x's line, found by
+    /// resting the pointer along it: one where the hover reads a dot, and one
+    /// where it reads none.
+    fn dot_and_gap_on_x_line(&mut self) -> (egui::Pos2, egui::Pos2) {
+        let axis = self.hero().axes.x.expect("x drew an axis");
+        let y = axis.line.y1 - 5.0 - 3.0;
+        let mut on_mark = None;
+        let mut off_mark = None;
+        let mut x = axis.line.x0 + 2.0;
+        while x < axis.line.x1 && (on_mark.is_none() || off_mark.is_none()) {
+            let at = self.at(kurbo::Point::new(x, y));
+            self.point(at);
+            let read = self.app.chart_doc().hover_readout.is_some();
+            match (read, on_mark.is_some(), off_mark.is_some()) {
+                (true, false, _) => on_mark = Some(at),
+                (false, _, false) => off_mark = Some(at),
+                _ => {}
+            }
+            x += 6.0;
+        }
+        (
+            on_mark.expect("fixture check: a dot lies 3 px inside the data area at the x line"),
+            off_mark.expect("fixture check: some of that strip has no dot under it"),
+        )
+    }
+
+    /// A press at `press` and a drag into the plot, the button left down: the
+    /// point dragged to, and the ink the canvas's brush records for the sweep,
+    /// which is `None` when the press never reached the canvas.
+    fn sweep_from(&mut self, press: egui::Pos2) -> (egui::Pos2, Option<egui::Rect>) {
         let area = self.hero().data_area();
         let tile = self.hero().rect;
         let to = self.tile_origin()
@@ -238,7 +262,7 @@ impl Window {
         self.run(vec![egui::Event::PointerMoved(midway)]);
         self.run(vec![egui::Event::PointerMoved(to)]);
         // Read with the button still down: the ink is an uncommitted sweep's.
-        (press, to, self.app.chart_doc().gesture_ink)
+        (to, self.app.chart_doc().gesture_ink)
     }
 }
 
@@ -317,27 +341,7 @@ fn with_the_rail_shut_the_hung_card_opens_on_the_same_row() {
 #[test]
 fn a_mark_in_the_axis_lines_reach_takes_the_click_and_the_settings_stay_shut() {
     let mut win = Window::open();
-    let axis = win.hero().axes.x.expect("x drew an axis");
-    // Three pixels inside the data area, along the whole of x's line.
-    let y = axis.line.y1 - 5.0 - 3.0;
-    let mut on_mark = None;
-    let mut off_mark = None;
-    let mut x = axis.line.x0 + 2.0;
-    while x < axis.line.x1 && (on_mark.is_none() || off_mark.is_none()) {
-        let at = win.at(kurbo::Point::new(x, y));
-        win.point(at);
-        let read = win.app.chart_doc().hover_readout.is_some();
-        match (read, on_mark.is_some(), off_mark.is_some()) {
-            (true, false, _) => on_mark = Some(at),
-            (false, _, false) => off_mark = Some(at),
-            _ => {}
-        }
-        x += 6.0;
-    }
-    let (on_mark, off_mark) = (
-        on_mark.expect("fixture check: a dot lies 3 px inside the data area at the x line"),
-        off_mark.expect("fixture check: some of that strip has no dot under it"),
-    );
+    let (on_mark, off_mark) = win.dot_and_gap_on_x_line();
 
     win.click(on_mark);
     assert_eq!(
@@ -351,6 +355,32 @@ fn a_mark_in_the_axis_lines_reach_takes_the_click_and_the_settings_stay_shut() {
         Some((ShelfChannel::X, ListTab::Settings, RANGE_ROW)),
         "the control: the same strip with no dot under the pointer at {off_mark:?}"
     );
+}
+
+/// The other half of the same rule: a press on that dot is the canvas's, so the
+/// canvas hears it. A drag from the dot records the canvas's brush ink, which an
+/// axis press never does, and then the same drag from the strip where no dot is
+/// records none.
+#[test]
+fn a_press_on_a_mark_in_the_axis_lines_reach_starts_the_canvas_brush() {
+    let mut win = Window::open();
+    let (on_mark, off_mark) = win.dot_and_gap_on_x_line();
+
+    let (to, ink) = win.sweep_from(off_mark);
+    assert_eq!(
+        ink, None,
+        "the control: a press on the strip where no dot is at {off_mark:?} is an axis press, which starts no brush"
+    );
+    win.run(vec![button(to, false)]);
+    win.settle();
+
+    let (to, ink) = win.sweep_from(on_mark);
+    let ink = ink.expect("a press on a dot 3 px inside the data area started the canvas's brush");
+    assert!(
+        ink.width() > 1.0,
+        "the drag from {on_mark:?} to {to:?} recorded {ink:?}, which does not follow the pointer"
+    );
+    win.run(vec![button(to, false)]);
 }
 
 /// A window that draws no shelf band has no axes that are targets, and a click
@@ -426,7 +456,8 @@ fn with_no_band_drawn_a_press_on_an_axis_part_starts_the_canvas_brush() {
     );
     assert!(!win.app.chart_doc().axis_targets_live);
 
-    let (press, to, ink) = win.sweep_from_x_labels();
+    let press = win.part(Channel::X, AxisPart::Labels);
+    let (to, ink) = win.sweep_from(press);
     let ink = ink.expect("a press on x's labels started the canvas's brush");
     assert!(
         ink.width() > 1.0,
@@ -468,7 +499,8 @@ fn a_bandless_picture_opened_in_a_banded_window_keeps_the_canvas_brush() {
         "the axes were targets with no band drawn after the swap"
     );
 
-    let (press, to, ink) = win.sweep_from_x_labels();
+    let press = win.part(Channel::X, AxisPart::Labels);
+    let (to, ink) = win.sweep_from(press);
     let ink = ink.expect("a press on x's labels started the canvas's brush after the swap");
     assert!(
         ink.width() > 1.0,
