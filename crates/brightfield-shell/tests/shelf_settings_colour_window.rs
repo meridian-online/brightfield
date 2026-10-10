@@ -886,18 +886,23 @@ fn saved_and_opened_again_the_chart_its_legend_and_the_file_show_each_value() {
 /// edit where it names none; `⌫` on reverse takes the key out.**
 #[test]
 fn backspace_names_viridis_only_where_a_scheme_is_named_and_takes_reverse_out() {
-    // Where the plot names none: no edit.
+    // Where the plot names none, as the opened dashboard's map does until a
+    // number column is kept on colour (keeping one writes the scheme with it):
+    // no edit, and the title stays unmarked.
     let mut win = Window::housing("backspace-none");
-    win.keep_on_colour(VALUE);
     win.open_colour_settings();
-    let unsaved = win.unsaved();
+    assert_eq!(
+        win.unsaved(),
+        0,
+        "fixture check: the opened chart holds no edit"
+    );
     win.press(egui::Key::Backspace);
     assert_eq!(
         win.unsaved(),
-        unsaved,
+        0,
         "⌫ on a plot that names no scheme is no edit"
     );
-    assert_eq!(win.fill_stops(), SequentialScheme::Viridis.stops());
+    assert!(!win.marked_unsaved(), "and the title is not marked");
 
     // Where it names one: viridis, by name, and reverse's key out.
     let mut win = Window::housing("backspace-named");
