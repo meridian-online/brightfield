@@ -3828,7 +3828,7 @@ fn read_distributions(batches: &[RecordBatch], asks: &[DistributionAsk]) -> Vec<
 /// A condition holding a NUL byte cannot reach DuckDB's C API at all, and is
 /// reported as unparseable in this function's words rather than DuckDB's.
 // The one `unsafe` in the workspace. The `duckdb` crate's own `prepare` calls
-// `duckdb_extract_statements` too, and then runs every statement before the last;
+// `duckdb_extract_statements` too, and then runs the statements before the last;
 // this probe must run none of them, so the C API is called directly. The SAFETY
 // comment on the block below gives the contract the call upholds.
 #[allow(unsafe_code)]
