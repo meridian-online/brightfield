@@ -126,6 +126,7 @@ fn field(row: &'static str, typed: &str, selected: bool, refusal: Option<&str>) 
         text: typed.to_string(),
         selected,
         refusal: refusal.map(str::to_string),
+        ends: None,
     }
 }
 

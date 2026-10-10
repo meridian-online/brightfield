@@ -1152,7 +1152,7 @@ impl PinnedDomain {
                     range_end,
                     ..
                 },
-            ) => Some(Scale::Log {
+            ) if !log_ends_refused(*lo) => Some(Scale::Log {
                 domain_min: *lo,
                 domain_max: *hi,
                 range_start: *range_start,
@@ -1278,6 +1278,16 @@ impl PinnedDomains {
     }
 }
 
+/// Whether a log axis refuses ends whose low end is `lo`: a log axis does not
+/// reach zero or go below it, and ends through zero draw an axis of unlabeled
+/// ticks with every mark against one edge. It is the judge [`apply_pinned_domains`]
+/// leaves such ends through, so the axis runs over its rows, and the warning and
+/// the shelf's range row ask it too.
+#[must_use]
+pub fn log_ends_refused(lo: f64) -> bool {
+    lo <= 0.0
+}
+
 /// Whether two numbers written as an axis's ends fix the ends of the axis
 /// `scale` draws: a linear, log or symlog axis, whose domain is a numeric pair.
 /// A date axis's ends are instants and a band axis's are names, so two numbers
@@ -1288,7 +1298,9 @@ impl PinnedDomains {
 /// ends the draw leaves unfixed are the ends that were named.
 #[must_use]
 pub fn written_ends_apply(scale: &Scale) -> bool {
-    PinnedDomain::Linear(0.0, 1.0).applied_to(scale).is_some()
+    // A pair above zero, since a log axis leaves ends that reach zero and this
+    // asks the kind of axis, not the ends.
+    PinnedDomain::Linear(1.0, 2.0).applied_to(scale).is_some()
 }
 
 /// Re-domain `scales`' positional channels onto `pins`, in place.

@@ -262,6 +262,13 @@ const RAIL_IDS: &[(&str, Owner, Reach)] = &[
         ),
     ),
     (
+        "shelf-range-refused",
+        Owner::One("<window>"),
+        Reach::Declared(
+            "needs a log axis and a low end at zero typed into the range row; `tests/shelf_settings_range_window.rs` reads it",
+        ),
+    ),
+    (
         "gallery-status-rail-predicate",
         Owner::One("<dev gallery>"),
         Reach::Declared("a specimen handed to `chrome::status_rail`, never to a Subject"),

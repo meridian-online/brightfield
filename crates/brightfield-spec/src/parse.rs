@@ -624,6 +624,19 @@ pub enum ParseWarning {
         plot: String,
     },
 
+    /// A plot's `xDomain`, `yDomain` or `xyDomain` wrote two ends that reach zero
+    /// or go below it on an axis drawn as a log scale, which cannot draw them: the
+    /// axis runs over its rows. `brightfield_render::scale::log_ends_refused` is
+    /// the judge, and the draw leaves the ends through it.
+    AxisEndsThroughZeroOnLog {
+        /// The attribute key that wrote the ends.
+        attribute: String,
+        /// The ends as written, `[0, 100]`.
+        value: String,
+        /// The plot that sets them, as [`crate::layout::plot_label`] names one.
+        plot: String,
+    },
+
     /// A plot with a map projection sets an x or y axis instruction: `xReverse`,
     /// `xZero` or `xNice` with a request, `xTicks` with a count, `xTickFormat`
     /// with a format this build reads, or `xGrid` or the bare `grid` with
@@ -1018,6 +1031,14 @@ impl fmt::Display for ParseWarning {
             Self::AxisEndsOnFixedAxis { attribute, plot } => write!(
                 f,
                 "plot {plot} sets `{attribute}`, which changes nothing on an axis with fixed ends — the axis keeps the ends the file wrote"
+            ),
+            Self::AxisEndsThroughZeroOnLog {
+                attribute,
+                value,
+                plot,
+            } => write!(
+                f,
+                "plot {plot} sets `{attribute}: {value}`, which a log axis cannot draw because it does not reach zero — the axis runs over its rows"
             ),
             Self::AxisAttributeUnderProjection { attribute, plot } => write!(
                 f,

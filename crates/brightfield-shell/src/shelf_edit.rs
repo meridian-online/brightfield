@@ -169,6 +169,9 @@ pub fn put_column(
     for e in &edits {
         edit::apply_for_fresh_load(&mut edited, e).map_err(ShelfRefusal::Edit)?;
     }
+    // A new column on the axis puts a range the file set for the old one back to
+    // auto, which the same edit list carries so one `u` takes both back.
+    let changed = !edits.is_empty();
     if let Some((lon, lat)) = pair {
         let after =
             plot_at_path(&edited, &plot.0).ok_or(ShelfRefusal::Edit(RefuseReason::PlotNotFound))?;
@@ -192,6 +195,89 @@ pub fn put_column(
         }
     }
 
+    if changed {
+        edits.extend(put_range_to_auto(&mut edited, plot, axis)?);
+    }
+    *spec = edited;
+    Ok(edits)
+}
+
+/// The plot attribute an axis's range is written under, as Mosaic spells it.
+#[must_use]
+pub fn range_key(axis: PlotAxis) -> &'static str {
+    match axis {
+        PlotAxis::X => "xDomain",
+        PlotAxis::Y => "yDomain",
+    }
+}
+
+/// A number as the file spells it: a whole number as an integer, so `0` is not
+/// written `0.0`.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)]
+pub fn number_value(n: f64) -> SpecValue {
+    if n.fract() == 0.0 && n.abs() < 1e15 {
+        SpecValue::Integer(n as i64)
+    } else {
+        SpecValue::Float(n)
+    }
+}
+
+/// **Put the range of `axis` of the plot at `plot` back to auto**, editing `spec`
+/// in place, and return the edits applied: none where the file sets no two ends
+/// for the axis.
+///
+/// The axis's own key comes out. A pair held under `xyDomain` stands for both
+/// axes, so it is handed to the other axis under that axis's own key, unless the
+/// other axis holds one, and then taken out.
+///
+/// # Errors
+///
+/// [`ShelfRefusal::Edit`] when the plot path names no plot. `spec` is left as it
+/// was.
+pub fn put_range_to_auto(
+    spec: &mut Spec,
+    plot: &ComponentPath,
+    axis: PlotAxis,
+) -> Result<Vec<ChartEdit>, ShelfRefusal> {
+    let target =
+        plot_at_path(spec, &plot.0).ok_or(ShelfRefusal::Edit(RefuseReason::PlotNotFound))?;
+    let readings = brightfield_spec::layout::read_domains_in(target, &spec.params);
+    let brightfield_spec::layout::DomainReading::Ends { key, lo, hi } = readings.axis(axis) else {
+        return Ok(Vec::new());
+    };
+    let mut edited = spec.clone();
+    let mut edits = Vec::new();
+    if *key == "xyDomain" {
+        let other = match axis {
+            PlotAxis::X => PlotAxis::Y,
+            PlotAxis::Y => PlotAxis::X,
+        };
+        let mut shared = Vec::new();
+        if !target.attributes.contains_key(range_key(other)) {
+            shared.push(ChartEdit::SetPlotAttribute {
+                plot: plot.clone(),
+                key: range_key(other).to_string(),
+                value: SpecValue::Array(vec![number_value(*lo), number_value(*hi)]),
+            });
+        }
+        shared.push(ChartEdit::RemovePlotAttribute {
+            plot: plot.clone(),
+            key: "xyDomain".to_string(),
+        });
+        for e in shared {
+            edit::apply_for_fresh_load(&mut edited, &e).map_err(ShelfRefusal::Edit)?;
+            edits.push(e);
+        }
+    } else if let Some(e) = put_setting(
+        &mut edited,
+        plot,
+        key,
+        &SpecValue::Null,
+        &SettingWrite::Auto,
+    )? {
+        edits.push(e);
+    }
     *spec = edited;
     Ok(edits)
 }

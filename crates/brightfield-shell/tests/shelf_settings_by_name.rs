@@ -2,7 +2,7 @@
 //! row the render crate's judges say does not apply is drawn muted with the
 //! reason.**
 //!
-//! `shelf_settings.rs` holds the head rows, title, scale and format, and the
+//! `shelf_settings.rs` holds the head rows, title, scale, range and format, and the
 //! list's keys. This file holds the four rows the list does not show until a
 //! query names them. The band's cell, which carries the dot and the scale's
 //! name, is `shelf_band.rs`; the window handing the list the scales its chart
@@ -32,8 +32,8 @@ use brightfield_render::scene::{axis_ends_apply, axis_keys_apply, axis_reverse_a
 use brightfield_shell::design::{self, Mode};
 use brightfield_shell::shelf::{
     Binding, ChannelSettings, ColumnList, ColumnListRequest, ListColumn, ListDrawn, ListTab,
-    SettingRow, ShelfChannels, AUTO, FORMAT_ROW, GRID_ROW, OFF, ON, REVERSE_ROW, SCALE_ROW,
-    TICKS_ROW, TITLE_ROW, ZERO_ROW,
+    SettingRow, ShelfChannels, AUTO, FORMAT_ROW, GRID_ROW, OFF, ON, RANGE_ROW, REVERSE_ROW,
+    SCALE_ROW, TICKS_ROW, TITLE_ROW, ZERO_ROW,
 };
 use brightfield_shell::text_ink::{self, DrawnText};
 use brightfield_spec::edit::plot_at_path;
@@ -53,6 +53,10 @@ const ORIGIN: egui::Pos2 = egui::pos2(12.0, 9.0);
 
 /// The four rows found by name, in the order the list keeps them.
 const BY_NAME: [&str; 4] = [TICKS_ROW, GRID_ROW, ZERO_ROW, REVERSE_ROW];
+
+/// The head rows of an axis's list, top to bottom, which a query lists and which
+/// an empty query lists alone.
+const HEAD_ROWS: [&str; 4] = [TITLE_ROW, SCALE_ROW, RANGE_ROW, FORMAT_ROW];
 
 // ---------------------------------------------------------------------------
 // The fixture: a table, the channels the tile takes, and the scales it drew.
@@ -369,7 +373,7 @@ fn drawn_rows(frame: &Frame) -> Vec<&str> {
 // AC1: found by name, and each reading auto or its set value.
 // ---------------------------------------------------------------------------
 
-/// **With the query empty an axis's list shows its three head rows and none of
+/// **With the query empty an axis's list shows its four head rows and none of
 /// the four found by name**, on either axis, whatever the axis draws, so a row
 /// that does not apply is not offered either. The four are there to be found:
 /// each axis holds them behind the head rows, flagged by name.
@@ -389,7 +393,7 @@ fn with_the_query_empty_the_list_shows_its_head_rows_and_no_by_name_row() {
             let frame = stage.rest(&mut list);
             assert_eq!(
                 drawn_rows(&frame),
-                [TITLE_ROW, SCALE_ROW, FORMAT_ROW],
+                HEAD_ROWS,
                 "{channel:?} over {word} lists its head rows alone"
             );
             let rows = settings_of("", drawn).rows(channel).to_vec();
@@ -398,7 +402,7 @@ fn with_the_query_empty_the_list_shows_its_head_rows_and_no_by_name_row() {
             assert!(
                 rows.iter()
                     .filter(|r| !r.by_name)
-                    .all(|r| [TITLE_ROW, SCALE_ROW, FORMAT_ROW].contains(&r.name)),
+                    .all(|r| HEAD_ROWS.contains(&r.name)),
                 "no head row is flagged as found by name"
             );
         }
@@ -545,6 +549,8 @@ fn a_row_carries_a_reason_exactly_where_the_render_judge_says_it_does_not_apply(
                 "reverse on {channel:?} over {word}"
             );
             assert!(reasons(GRID_ROW).is_none(), "grid over {word} applies");
+            // The range row is left to its own file: an axis of names and an axis
+            // of dates give it a reason.
             for name in [TITLE_ROW, SCALE_ROW, FORMAT_ROW] {
                 assert!(reasons(name).is_none(), "{name} over {word} applies");
             }
@@ -660,7 +666,7 @@ fn a_letter_lists_the_head_and_by_name_rows_that_hold_it_beginning_with_it_first
     let frame = stage.draw(&mut list);
     assert_eq!(
         drawn_rows(&frame),
-        [TITLE_ROW, SCALE_ROW, FORMAT_ROW],
+        HEAD_ROWS,
         "Esc clears the query and the by-name rows go with it"
     );
     assert_eq!(list.setting_cursor().map(|r| r.name), Some(TITLE_ROW));

@@ -5604,6 +5604,9 @@ impl MeridianApp {
         // The last typed-row preview of the batch: `Some(None)` takes the preview
         // back, `None` leaves the page as it is.
         let mut previewed: Option<Option<RowEdit>> = None;
+        // The sentence the range row refused a range with, said by the status band
+        // until the list reports anything else.
+        let mut refused: Option<String> = None;
         for report in reports {
             match report {
                 ListReport::Moved(column) => {
@@ -5658,8 +5661,14 @@ impl MeridianApp {
                     moved = None;
                     previewed = Some(edit);
                 }
+                ListReport::Refused(sentence) => {
+                    moved = None;
+                    previewed = Some(None);
+                    refused = Some(sentence);
+                }
             }
         }
+        self.charts.doc.set_shelf_refusal(refused);
         match previewed {
             Some(Some(edit)) => {
                 self.charts.doc.preview_axis_row(HERO_PLOT, &edit);
@@ -6688,6 +6697,15 @@ impl MeridianApp {
         if !graph_on_canvas {
             if let Some(edit) = last_shelf_edit_status_entry(&self.charts.doc) {
                 entries.push(edit);
+            }
+            if let Some(sentence) = self.charts.doc.shelf_refusal() {
+                entries.push(StatusEntry {
+                    id: SHELF_REFUSAL_STATUS_ID,
+                    side: StatusSide::Leading,
+                    text: sentence.to_string(),
+                    tone: Tone::Warning,
+                    hide: HideAffordance::WithRail,
+                });
             }
         }
         // The cursor's address leads the band, after the idle line is decided
@@ -8473,6 +8491,9 @@ fn last_shelf_edit_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
         hide: HideAffordance::Verb(verb),
     })
 }
+
+/// The stable id of the status band's line naming a range the shelf refused.
+pub const SHELF_REFUSAL_STATUS_ID: &str = "shelf-range-refused";
 
 /// The stable id `last_shelf_edit_status_entry` writes — the handle a test
 /// reads the line by.

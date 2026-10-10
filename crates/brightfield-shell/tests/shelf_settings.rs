@@ -26,8 +26,8 @@
 use brightfield_shell::design::{self, Mode};
 use brightfield_shell::shelf::{
     Binding, ChannelSettings, ColumnList, ColumnListRequest, ListColumn, ListDrawn, ListReport,
-    ListTab, SettingRow, ShelfChannels, AUTO, FORMAT_ROW, NO_TITLE, SCALE_ROW, TICKS_ROW,
-    TITLE_ROW,
+    ListTab, SettingRow, SettingRowDrawn, ShelfChannels, AUTO, FORMAT_ROW, NO_TITLE, RANGE_ROW,
+    SCALE_ROW, TICKS_ROW, TITLE_ROW,
 };
 use brightfield_shell::text_ink::{self, DrawnText};
 use brightfield_spec::edit::plot_at_path;
@@ -312,6 +312,36 @@ fn drawn_rows(frame: &Frame) -> Vec<&str> {
     frame.drawn.settings.iter().map(|r| r.name).collect()
 }
 
+/// The head rows of an axis's settings, top to bottom. The one test that pins
+/// their order reads them as a literal; every other test reaches a row by its
+/// name, so a row added to the head moves none of them.
+const HEAD_ROWS: [&str; 4] = [TITLE_ROW, SCALE_ROW, RANGE_ROW, FORMAT_ROW];
+
+/// Step the cursor down with `j` until it reads `name`.
+fn cursor_down_to(list: &mut ColumnList, name: &str) {
+    for _ in 0..HEAD_ROWS.len() {
+        if list.setting_cursor().map(|r| r.name) == Some(name) {
+            return;
+        }
+        list.feed_events(&typed(egui::Key::J, "j"));
+    }
+    assert_eq!(
+        list.setting_cursor().map(|r| r.name),
+        Some(name),
+        "`j` did not reach the row"
+    );
+}
+
+/// The row a frame drew under `name`.
+fn drawn_row<'a>(frame: &'a Frame, name: &str) -> &'a SettingRowDrawn {
+    frame
+        .drawn
+        .settings
+        .iter()
+        .find(|r| r.name == name)
+        .unwrap_or_else(|| panic!("no row named {name} was drawn"))
+}
+
 // ---------------------------------------------------------------------------
 // AC1: Tab turns the list, and the list's head says what it is.
 // ---------------------------------------------------------------------------
@@ -418,22 +448,22 @@ fn the_settings_list_is_headed_with_the_channel_and_the_tile_and_a_strip_of_two_
     }
 }
 
-/// **The head rows are title, scale and format, in that order, and a rule follows
-/// them.** No column row is drawn on the settings tab.
+/// **The head rows are title, scale, range and format, in that order, and a rule
+/// follows them.** No column row is drawn on the settings tab.
 #[test]
-fn the_head_rows_are_title_scale_and_format_in_that_order_and_a_rule_follows_them() {
+fn the_head_rows_are_title_scale_range_and_format_in_that_order_and_a_rule_follows_them() {
     let stage = Stage::new(Mode::Light);
     let mut list = list(ShelfChannel::X);
     let frame = stage.settings(&mut list);
     assert_eq!(
         drawn_rows(&frame),
-        [TITLE_ROW, SCALE_ROW, FORMAT_ROW],
-        "the rows, top to bottom"
+        ["title", "scale", "range", "format"],
+        "the rows, top to bottom, in the words an analyst reads"
     );
     assert_eq!(
-        [TITLE_ROW, SCALE_ROW, FORMAT_ROW],
-        ["title", "scale", "format"],
-        "the names are the words an analyst reads"
+        HEAD_ROWS,
+        ["title", "scale", "range", "format"],
+        "the names the other tests reach the rows by are the same words"
     );
     let tops: Vec<f32> = frame.drawn.settings.iter().map(|r| r.rect.top()).collect();
     assert!(
@@ -534,7 +564,7 @@ fn from_the_x_settings_y_opens_the_y_settings_and_c_leaves_for_the_colour_column
         assert_eq!(list.channel(), ShelfChannel::Y);
         assert_eq!(list.tab(), ListTab::Settings, "{mode:?}: the tab is kept");
         let y = stage.draw(&mut list);
-        assert_eq!(drawn_rows(&y), [TITLE_ROW, SCALE_ROW, FORMAT_ROW]);
+        assert_eq!(drawn_rows(&y), HEAD_ROWS);
         assert_eq!(
             texts_in(&y, y.drawn.settings[0].value_rect),
             ["latitude"],
@@ -627,8 +657,9 @@ fn h_l_and_enter_do_nothing_on_a_settings_row_and_j_k_move_the_cursor_silently()
         "Enter opened a field on the scale row"
     );
     assert_eq!(list.setting_cursor().map(|r| r.name), Some(SCALE_ROW));
-    list.feed_events(&typed(egui::Key::J, "j"));
-    list.feed_events(&typed(egui::Key::J, "j"));
+    for _ in 0..HEAD_ROWS.len() * 2 {
+        list.feed_events(&typed(egui::Key::J, "j"));
+    }
     assert_eq!(
         list.setting_cursor().map(|r| r.name),
         Some(FORMAT_ROW),
@@ -636,7 +667,7 @@ fn h_l_and_enter_do_nothing_on_a_settings_row_and_j_k_move_the_cursor_silently()
     );
     let reports = list.feed_events(&typed(egui::Key::K, "k"));
     assert!(reports.is_empty(), "k reported {reports:?}");
-    assert_eq!(list.setting_cursor().map(|r| r.name), Some(SCALE_ROW));
+    assert_eq!(list.setting_cursor().map(|r| r.name), Some(RANGE_ROW));
 }
 
 // ---------------------------------------------------------------------------
@@ -744,19 +775,21 @@ fn an_auto_row_draws_muted_ink_and_a_ring_and_a_set_row_draws_full_ink_and_a_dot
         let primary = chrome::colour(sem.text.primary);
         let ring = chrome::colour(sem.borders.default_);
 
-        // Title and scale are the analyst's, the format is brightfield's own.
+        // Title and scale are the analyst's, the range and the format are
+        // brightfield's own. Nothing is drawn, so the range has no ends to show
+        // and the word *auto* stands alone.
         let mut list = list_with(ShelfChannel::X, "xLabel: Residents\nxScale: log");
         let frame = stage.settings(&mut list);
-        let rows = &frame.drawn.settings;
         for (row, set, value) in [
-            (&rows[0], true, "Residents"),
-            (&rows[1], true, "log"),
-            (&rows[2], false, AUTO),
+            (drawn_row(&frame, TITLE_ROW), true, &["Residents"][..]),
+            (drawn_row(&frame, SCALE_ROW), true, &["log"][..]),
+            (drawn_row(&frame, RANGE_ROW), false, &[][..]),
+            (drawn_row(&frame, FORMAT_ROW), false, &[AUTO][..]),
         ] {
             let name = row.name;
             assert_eq!(
                 texts_in(&frame, row.value_rect),
-                [value],
+                value,
                 "{mode:?} {name}: the value read"
             );
             assert_eq!(
@@ -879,24 +912,37 @@ fn the_foot_carries_one_sentence_for_the_row_under_the_cursor() {
     stage.settings(&mut list);
 
     let sentences = [
-        "The words along the axis, which auto takes from the column's name.",
-        "How values are spaced along the axis, which auto draws linear.",
-        "How a tick's number or date is written, which auto leaves to the axis's own tick text. Takes: auto, number, short, percent, currency, custom.",
+        (
+            TITLE_ROW,
+            "The words along the axis, which auto takes from the column's name.",
+        ),
+        (
+            SCALE_ROW,
+            "How values are spaced along the axis, which auto draws linear.",
+        ),
+        (
+            RANGE_ROW,
+            "The two numbers the axis runs between, which auto leaves to the rows.",
+        ),
+        (
+            FORMAT_ROW,
+            "How a tick's number or date is written, which auto leaves to the axis's own tick text. Takes: auto, number, short, percent, currency, custom.",
+        ),
     ];
-    for (n, said) in sentences.into_iter().enumerate() {
+    for (row, said) in sentences {
+        cursor_down_to(&mut list, row);
         let frame = stage.draw(&mut list);
         let sentence = frame.drawn.sentence.expect("a row is under the cursor");
-        assert_eq!(texts_in(&frame, sentence), [said], "row {n}");
+        assert_eq!(texts_in(&frame, sentence), [said], "{row} row");
         assert!(
             said.contains(AUTO),
-            "row {n}: the sentence says what auto is"
+            "{row} row: the sentence says what auto is"
         );
         assert!(
             sentence.top() >= frame.drawn.foot.top() - 0.01
                 && sentence.bottom() <= frame.drawn.foot.bottom() + 0.01,
-            "row {n}: the sentence stands in the foot"
+            "{row} row: the sentence stands in the foot"
         );
-        list.feed_events(&typed(egui::Key::J, "j"));
     }
 }
 

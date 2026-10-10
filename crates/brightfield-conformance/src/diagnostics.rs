@@ -284,6 +284,7 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         | ParseWarning::UndrawnScale { attribute, .. }
         | ParseWarning::UnreadAxisEnds { attribute, .. }
         | ParseWarning::AxisEndsOnFixedAxis { attribute, .. }
+        | ParseWarning::AxisEndsThroughZeroOnLog { attribute, .. }
         | ParseWarning::UnreadAxisAttribute { attribute, .. } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
         ParseWarning::AspectRatioWithProjection { mark }
@@ -338,6 +339,7 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::UndrawnScale { .. }
         | ParseWarning::UnreadAxisEnds { .. }
         | ParseWarning::AxisEndsOnFixedAxis { .. }
+        | ParseWarning::AxisEndsThroughZeroOnLog { .. }
         | ParseWarning::UnreadAxisAttribute { .. } => "plot",
         ParseWarning::UnknownAggregate { .. }
         | ParseWarning::UnconsumedChannelTransform { .. }

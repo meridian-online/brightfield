@@ -2857,7 +2857,7 @@ fn inert_axis_instructions(
             // is named as `xZero` is on the same axis. Where they do fix the
             // ends, `xZero` and `xNice` have no effect beside them.
             let ends_fixed = match written.axis(plot_axis(channel)) {
-                DomainReading::Ends { key, .. } => {
+                DomainReading::Ends { key, lo, hi } => {
                     let applies = written_ends_apply(scale);
                     if !applies {
                         out.push(ParseWarning::AxisAttributeOnWrongAxis {
@@ -2866,7 +2866,19 @@ fn inert_axis_instructions(
                             axis: axis.to_string(),
                         });
                     }
-                    applies
+                    // A log axis takes no ends through zero, which the draw leaves
+                    // through the same judge: the axis runs over its rows.
+                    let refused = applies
+                        && matches!(scale, brightfield_render::scale::Scale::Log { .. })
+                        && brightfield_render::scale::log_ends_refused(*lo);
+                    if refused {
+                        out.push(ParseWarning::AxisEndsThroughZeroOnLog {
+                            attribute: (*key).to_string(),
+                            value: format!("[{lo}, {hi}]"),
+                            plot: plot.to_string(),
+                        });
+                    }
+                    applies && !refused
                 }
                 DomainReading::Absent | DomainReading::Refused { .. } => false,
             };

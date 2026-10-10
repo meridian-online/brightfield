@@ -59,9 +59,10 @@ use brightfield_keys::dispatch::{resolution_table, DispatchContext, ResolutionTa
 use brightfield_keys::registry::{keymap_bindings, registry, BindingContext};
 use brightfield_render::axis::{axis_kind, tick_count_applies, top_tick_text, AxisKind};
 use brightfield_render::channel::Channel;
-use brightfield_render::scale::{Scale, ScaleSet};
+use brightfield_render::scale::{log_ends_refused, Scale, ScaleSet};
 use brightfield_render::scene::{axis_ends_apply, axis_keys_apply, axis_reverse_applies};
 use brightfield_spec::ast::{Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
+use brightfield_spec::layout::{read_domains_in, DomainReading};
 use brightfield_spec::layout::{
     read_tick_format, resolve_axis_ends, resolve_axis_reverse, resolve_axis_titles,
     resolve_grid_lines, resolve_plot_scales_in, resolve_tick_counts, tick_count_target, AxisTitle,
@@ -707,6 +708,139 @@ pub const SCALE_ROW: &str = "scale";
 /// The name of the format row.
 pub const FORMAT_ROW: &str = "format";
 
+/// The name of the range row.
+pub const RANGE_ROW: &str = "range";
+
+/// The foot's sentence for the range row.
+const RANGE_SAYS: &str = "The two numbers the axis runs between, which auto leaves to the rows.";
+
+/// Why the range row does not apply to an axis of names.
+const RANGE_NAMES: &str = "an axis of names has no ends to set";
+
+/// Why the range row does not apply to an axis of dates, whose reader is not cut.
+const RANGE_DATES: &str = "a range on a date axis is not read yet";
+
+/// What the refusal of a range through zero on a log axis begins with.
+pub const LOG_CANNOT: &str = "a log axis cannot include zero or cross it";
+
+/// **The two ends of a range**, low first and finite by construction, so the
+/// equality the row model derives is total.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ends {
+    /// The low end.
+    pub lo: f64,
+    /// The high end, above the low.
+    pub hi: f64,
+}
+
+// `Ends::new` admits finite numbers alone, so no end is NaN and `==` is reflexive.
+impl Eq for Ends {}
+
+impl Ends {
+    /// The ends `lo` and `hi`, where both are finite and the low is below the high.
+    #[must_use]
+    pub fn new(lo: f64, hi: f64) -> Option<Self> {
+        (lo.is_finite() && hi.is_finite() && lo < hi).then_some(Self { lo, hi })
+    }
+}
+
+/// An end as the row writes it: no trailing zeros, and no exponent.
+#[must_use]
+pub fn end_text(n: f64) -> String {
+    let fixed = format!("{n:.10}");
+    let trimmed = fixed.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() || trimmed == "-" || trimmed == "-0" {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// The two ends as the row reads them: `0 \u{2013} 100`.
+fn ends_text(ends: Ends) -> String {
+    format!("{} \u{2013} {}", end_text(ends.lo), end_text(ends.hi))
+}
+
+/// **What a range field holds, read as an end**: a finite number, or the sentence
+/// that says why the row refuses it.
+///
+/// # Errors
+///
+/// The sentence the row prints under itself.
+pub fn end_number(text: &str) -> Result<f64, String> {
+    let typed = text.trim();
+    typed
+        .parse::<f64>()
+        .ok()
+        .filter(|n| n.is_finite())
+        .ok_or_else(|| {
+            let takes = "a range takes numbers";
+            if typed.is_empty() {
+                return takes.to_string();
+            }
+            let quoted: String = typed.chars().take(QUOTED_AT_MOST).collect();
+            let more = if typed.chars().count() > QUOTED_AT_MOST {
+                "\u{2026}"
+            } else {
+                ""
+            };
+            format!("{takes}, and \"{quoted}{more}\" is not one")
+        })
+}
+
+/// The sentence for a low end a log axis cannot draw.
+fn log_refusal(lo: f64) -> String {
+    format!("{LOG_CANNOT}, and {} is not above zero", end_text(lo))
+}
+
+/// What only the range row knows: the ends the axis was drawn over, the ends the
+/// file sets, and whether the axis is a log scale.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RangeFacts {
+    /// The plot attribute the row writes: `xDomain`.
+    pub key: &'static str,
+    /// The ends the axis was drawn over, where a scale has been drawn that has
+    /// two numbers for them.
+    pub drawn: Option<Ends>,
+    /// The ends the file sets for the axis.
+    pub set: Option<Ends>,
+    /// Whether the axis is a log scale, which takes no ends through zero.
+    pub log: bool,
+}
+
+impl RangeFacts {
+    /// Why the ends the file sets cannot be drawn, where the axis is a log scale
+    /// and they reach zero: the row says so and the axis runs over its rows.
+    #[must_use]
+    pub fn flag(&self) -> Option<String> {
+        let set = self.set?;
+        (self.log && log_ends_refused(set.lo))
+            .then(|| format!("{LOG_CANNOT}, so {} is not drawn", ends_text(set)))
+    }
+}
+
+/// The two numbers an axis was drawn over, for a scale that has them.
+fn drawn_ends(scale: &Scale) -> Option<Ends> {
+    match scale {
+        Scale::Linear {
+            domain_min,
+            domain_max,
+            ..
+        }
+        | Scale::Log {
+            domain_min,
+            domain_max,
+            ..
+        }
+        | Scale::Symlog {
+            domain_min,
+            domain_max,
+            ..
+        } => Ends::new(*domain_min, *domain_max),
+        _ => None,
+    }
+}
+
 /// The name of the ticks row, which is found by typing it.
 pub const TICKS_ROW: &str = "ticks";
 
@@ -923,6 +1057,8 @@ pub enum SettingValue {
     Count(usize),
     /// Text typed into a row: the title's words.
     Text(String),
+    /// The two ends of a range, low first.
+    Ends(Ends),
     /// Back to brightfield's own: the key comes out of the file.
     Auto,
 }
@@ -958,6 +1094,8 @@ pub fn row_key(axis: ShelfChannel, row: &str) -> Option<&'static str> {
         (FORMAT_ROW, false) => "yTickFormat",
         (SCALE_ROW, true) => "xScale",
         (SCALE_ROW, false) => "yScale",
+        (RANGE_ROW, true) => "xDomain",
+        (RANGE_ROW, false) => "yDomain",
         (TICKS_ROW, true) => "xTicks",
         (TICKS_ROW, false) => "yTicks",
         (GRID_ROW, true) => "xGrid",
@@ -978,7 +1116,7 @@ pub fn row_default(row: &str) -> Option<SpecValue> {
     Some(match row {
         SCALE_ROW => SpecValue::String("linear".to_string()),
         // Mosaic's own, no format: the axis draws its own tick text.
-        FORMAT_ROW => SpecValue::Null,
+        FORMAT_ROW | RANGE_ROW => SpecValue::Null,
         TICKS_ROW => SpecValue::Integer(i64::try_from(DEFAULT_TICK_COUNT).unwrap_or(5)),
         GRID_ROW => SpecValue::Bool(true),
         ZERO_ROW | REVERSE_ROW => SpecValue::Bool(false),
@@ -1082,8 +1220,9 @@ pub struct SettingRow {
     /// The judges are the render crate's own and are asked, not re-derived:
     /// `axis_ends_apply` for zero, `tick_count_applies` for ticks,
     /// `axis_reverse_applies` for reverse, and `axis_keys_apply` for ticks, grid
-    /// and zero under a map projection. The three head rows apply to every axis,
-    /// so none carries one.
+    /// and zero under a map projection, and the range row's own reasons on an axis
+    /// of dates, an axis of names and a map. The title, scale and format rows apply
+    /// to an axis of any kind, so none carries one.
     pub reason: Option<String>,
     /// Whether the row is listed only where the query names it: ticks, grid,
     /// zero and reverse. A head row is listed with no query as well.
@@ -1102,6 +1241,9 @@ pub struct SettingRow {
     /// holds, and the sample. `None` on the title, ticks, grid, zero and reverse
     /// rows and on the scale row.
     pub format: Option<FormatFacts>,
+    /// What only the range row knows. `None` on the title, scale, format, ticks,
+    /// grid, zero and reverse rows.
+    pub range: Option<RangeFacts>,
 }
 
 /// What the format row carries beyond its value, read from the plot and the scale
@@ -1158,6 +1300,7 @@ impl ChannelSettings {
     ) -> Self {
         let titles = resolve_axis_titles(plot);
         let scales = resolve_plot_scales_in(plot, &spec.params);
+        let domains = read_domains_in(plot, &spec.params);
         Self {
             x: axis_rows(
                 plot,
@@ -1166,6 +1309,7 @@ impl ChannelSettings {
                 scales.x,
                 &channels.x,
                 drawn,
+                &domains.x,
             ),
             y: axis_rows(
                 plot,
@@ -1174,6 +1318,7 @@ impl ChannelSettings {
                 scales.y,
                 &channels.y,
                 drawn,
+                &domains.y,
             ),
         }
     }
@@ -1190,8 +1335,8 @@ impl ChannelSettings {
     }
 }
 
-/// The rows of one axis: the head rows, title, scale and format, in that order,
-/// and the four found by name, ticks, grid, zero and reverse, behind them.
+/// The rows of one axis: the head rows, title, scale, range and format, in that
+/// order, and the four found by name, ticks, grid, zero and reverse, behind them.
 fn axis_rows(
     plot: &PlotNode,
     axis: ShelfChannel,
@@ -1199,6 +1344,7 @@ fn axis_rows(
     scale: ScaleType,
     binding: &Binding,
     drawn: &ScaleSet,
+    domain: &DomainReading,
 ) -> Vec<SettingRow> {
     // brightfield's own title is the name of the column the axis holds.
     let derived = match binding {
@@ -1238,6 +1384,7 @@ fn axis_rows(
         says,
         from: None,
         format: None,
+        range: None,
     };
     // The scale the chart draws: band for names and time for dates, which are
     // brightfield's own choice and so leave the row unset, and otherwise the
@@ -1251,6 +1398,52 @@ fn axis_rows(
         Some(Scale::Band { .. }) => (BAND_SCALE, SCALE_SAYS_BAND),
         Some(Scale::Time { .. }) => (TIME_SCALE, SCALE_SAYS_TIME),
         _ => (scale.wire_name(), SCALE_SAYS),
+    };
+    // The range: the file's two ends, or the ends the axis was drawn over, which
+    // an axis of names, an axis of dates and a map do not take.
+    let scale_drawn = drawn.get(channel);
+    let set_ends = match domain {
+        DomainReading::Ends { lo, hi, .. } => Ends::new(*lo, *hi),
+        _ => None,
+    };
+    let range_from = match domain {
+        DomainReading::Ends {
+            key: "xyDomain", ..
+        } => Some("xyDomain"),
+        _ => None,
+    };
+    let range_reason = if axis_keys_apply(drawn) {
+        match scale_drawn {
+            Some(named @ Scale::Band { .. })
+                if matches!(axis_kind(named), Some(AxisKind::Date)) =>
+            {
+                Some(RANGE_DATES.to_string())
+            }
+            Some(Scale::Band { .. }) => Some(RANGE_NAMES.to_string()),
+            Some(Scale::Time { .. }) => Some(RANGE_DATES.to_string()),
+            _ => None,
+        }
+    } else {
+        Some(PROJECTED.to_string())
+    };
+    let drawn_over = scale_drawn.and_then(drawn_ends);
+    let range_row = SettingRow {
+        reason: range_reason,
+        from: range_from,
+        range: Some(RangeFacts {
+            key: row_key(axis, RANGE_ROW).unwrap_or("xDomain"),
+            drawn: drawn_over,
+            set: set_ends,
+            log: matches!(scale_drawn, Some(Scale::Log { .. }))
+                || (scale_drawn.is_none() && scale == ScaleType::Log),
+        }),
+        ..row(
+            RANGE_ROW,
+            set_ends.or(drawn_over).map_or_else(String::new, ends_text),
+            set_ends.is_some(),
+            SettingKind::Typed,
+            RANGE_SAYS,
+        )
     };
     let mut rows = vec![
         row(
@@ -1267,6 +1460,7 @@ fn axis_rows(
             SettingKind::Enumerated,
             scale_says,
         ),
+        range_row,
         SettingRow {
             format: format_key.map(|key| FormatFacts {
                 key,
@@ -1349,6 +1543,7 @@ fn by_name_rows(plot: &PlotNode, axis: ShelfChannel, drawn: &ScaleSet) -> [Setti
         says,
         from: None,
         format: None,
+        range: None,
     };
     let grid_key = if x { "xGrid" } else { "yGrid" };
     let grid_from = (!plot.attributes.contains_key(grid_key)
@@ -1519,6 +1714,9 @@ pub enum ListReport {
     /// keeping it. `None` takes the preview back, because the field was dropped,
     /// emptied, or holds a value the row refuses.
     Preview(Option<RowEdit>),
+    /// The range row refused a range the axis cannot draw, and the field stays
+    /// open: the status band says the sentence.
+    Refused(String),
 }
 
 /// Which of its two states a channel's list is in: the table's columns, or
@@ -1559,6 +1757,27 @@ pub struct RowField {
     /// The sentence the row prints under itself while the field holds a value
     /// the row refuses, in words.
     pub refusal: Option<String>,
+    /// The range row's second field. `None` on a row that holds one field.
+    pub ends: Option<EndFields>,
+}
+
+/// Which end of a range the open field is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum End {
+    /// The low end, which opens first.
+    Low,
+    /// The high end, which `Enter` on the low moves to.
+    High,
+}
+
+/// **The range row's two fields**: [`RowField::text`] holds the end under the
+/// caret, and this holds the text of the other, so both are drawn side by side.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EndFields {
+    /// The end the caret is in.
+    pub on: End,
+    /// What the other field holds.
+    pub other: String,
 }
 
 /// The list of a channel's columns, with a query line.
@@ -1909,6 +2128,29 @@ impl ColumnList {
         if !row.takes_field() {
             return;
         }
+        if row.name == RANGE_ROW {
+            // Both ends open at once, on the ends the axis runs over, with the low
+            // selected.
+            let shown = row
+                .range
+                .as_ref()
+                .and_then(|facts| facts.set.or(facts.drawn));
+            let (low, high) = shown.map_or_else(
+                || (String::new(), String::new()),
+                |ends| (end_text(ends.lo), end_text(ends.hi)),
+            );
+            self.field = Some(RowField {
+                row: RANGE_ROW,
+                selected: !low.is_empty(),
+                text: low,
+                refusal: None,
+                ends: Some(EndFields {
+                    on: End::Low,
+                    other: high,
+                }),
+            });
+            return;
+        }
         let text = if row.name == FORMAT_ROW {
             // The specifier the file holds, which every preset is one of; auto
             // holds none, so its field opens empty.
@@ -1929,6 +2171,7 @@ impl ColumnList {
             selected: !text.is_empty(),
             text,
             refusal: None,
+            ends: None,
         });
     }
 
@@ -1953,6 +2196,7 @@ impl ColumnList {
                 }
                 SettingValue::Text(format_specifier(&field.text)?)
             }
+            RANGE_ROW => return self.range_edit(),
             _ => {
                 if field.text.trim().is_empty() {
                     return Ok(None);
@@ -1965,6 +2209,90 @@ impl ColumnList {
             row: field.row,
             value,
         }))
+    }
+
+    /// What the range row's two fields hold, as the edit they would keep: the two
+    /// ends, low first. `Err` is the sentence for an end the row refuses: not a
+    /// number, a high end at or below the low, or an end a log axis cannot draw.
+    /// A low end typed above the high is no edit and no refusal, since the high is
+    /// asked next.
+    fn range_edit(&self) -> Result<Option<RowEdit>, String> {
+        let Some(field) = &self.field else {
+            return Ok(None);
+        };
+        let Some(fields) = &field.ends else {
+            return Ok(None);
+        };
+        if field.text.trim().is_empty() {
+            return Ok(None);
+        }
+        let typed = end_number(&field.text)?;
+        let other = end_number(&fields.other).ok();
+        let log = self
+            .setting_cursor()
+            .and_then(|row| row.range.as_ref())
+            .is_some_and(|facts| facts.log);
+        let (lo, hi) = match fields.on {
+            End::Low => {
+                if log && log_ends_refused(typed) {
+                    return Err(log_refusal(typed));
+                }
+                (Some(typed), other)
+            }
+            End::High => (other, Some(typed)),
+        };
+        let (Some(lo), Some(hi)) = (lo, hi) else {
+            return Ok(None);
+        };
+        if fields.on == End::High && hi <= lo {
+            return Err(format!(
+                "the high end must be above the low end, and {} is not above {}",
+                end_text(hi),
+                end_text(lo)
+            ));
+        }
+        if log && log_ends_refused(lo) {
+            return Err(log_refusal(lo));
+        }
+        Ok(Ends::new(lo, hi).map(|ends| RowEdit {
+            channel: self.channel,
+            row: RANGE_ROW,
+            value: SettingValue::Ends(ends),
+        }))
+    }
+
+    /// `Enter` in the range row's low field: keep the low as typed and move to the
+    /// high, with the drawn high selected. A low that is no number, or that a log
+    /// axis cannot draw, is refused under the row and the field stays on it.
+    fn keep_low(&mut self, out: &mut Vec<ListReport>) {
+        let log = self
+            .setting_cursor()
+            .and_then(|row| row.range.as_ref())
+            .is_some_and(|facts| facts.log);
+        let Some(field) = self.field.as_mut() else {
+            return;
+        };
+        let low = match end_number(&field.text) {
+            Ok(low) => low,
+            Err(sentence) => {
+                field.refusal = Some(sentence);
+                return;
+            }
+        };
+        if log && log_ends_refused(low) {
+            let sentence = log_refusal(low);
+            field.refusal = Some(sentence.clone());
+            out.push(ListReport::Refused(sentence));
+            return;
+        }
+        if let Some(fields) = field.ends.as_mut() {
+            let high = std::mem::replace(&mut fields.other, field.text.clone());
+            fields.on = End::High;
+            field.selected = !high.is_empty();
+            field.text = high;
+            field.refusal = None;
+        }
+        out.push(ListReport::Preview(self.field_edit().ok().flatten()));
     }
 
     /// The field's text changed: say what the chart should draw, and what the row
@@ -1983,6 +2311,15 @@ impl ColumnList {
     /// `Enter` in the open field: keep a value the row takes, and refuse the rest
     /// under the row, leaving the field open.
     fn keep_field(&mut self, out: &mut Vec<ListReport>) {
+        if self
+            .field
+            .as_ref()
+            .and_then(|f| f.ends.as_ref())
+            .is_some_and(|fields| fields.on == End::Low)
+        {
+            self.keep_low(out);
+            return;
+        }
         match self.field_edit() {
             Ok(Some(edit)) => {
                 self.field = None;
@@ -1992,6 +2329,7 @@ impl ColumnList {
                 let sentence = match self.field.as_ref().map(|f| f.row) {
                     Some(TITLE_ROW) => TITLE_NEEDS_TEXT.to_string(),
                     Some(FORMAT_ROW) => format_specifier("").unwrap_err(),
+                    Some(RANGE_ROW) => end_number("").unwrap_err(),
                     _ => ticks_count("").unwrap_err(),
                 };
                 if let Some(field) = self.field.as_mut() {
@@ -1999,6 +2337,9 @@ impl ColumnList {
                 }
             }
             Err(sentence) => {
+                if sentence.starts_with(LOG_CANNOT) {
+                    out.push(ListReport::Refused(sentence.clone()));
+                }
                 if let Some(field) = self.field.as_mut() {
                     field.refusal = Some(sentence);
                 }
@@ -2863,14 +3204,17 @@ impl ColumnList {
             // whose field holds a value it refuses says so there, in full ink.
             let refusal = field.and_then(|f| f.refusal.clone());
             let said_in = if refusal.is_some() { primary } else { muted };
-            let reason = refusal.or_else(|| row.reason.clone()).map(|text| {
-                painter.layout(
-                    text,
-                    caption_font(),
-                    said_in,
-                    width - 2.0 * spacing::SPACE_4 - 2.0 * b.pad_x,
-                )
-            });
+            let reason = refusal
+                .or_else(|| row.reason.clone())
+                .or_else(|| row.range.as_ref().and_then(RangeFacts::flag))
+                .map(|text| {
+                    painter.layout(
+                        text,
+                        caption_font(),
+                        said_in,
+                        width - 2.0 * spacing::SPACE_4 - 2.0 * b.pad_x,
+                    )
+                });
             let reason_height = reason
                 .as_ref()
                 .map_or(0.0, |g| g.size().y + spacing::SPACE_2);
@@ -2999,44 +3343,85 @@ impl ColumnList {
             let value_left = content.left() + name_column + spacing::SPACE_3;
             let ink = if row.set && applies { primary } else { muted };
             let (value_rect, field_rect) = if let Some(open) = field {
-                // The field: a sunken ground ruled under in the focus ink, the
-                // text in full ink with the selection's wash behind it while
-                // the whole is selected, and the caret after it.
+                // A field: a sunken ground ruled under in the focus ink, the text in
+                // full ink with the selection's wash behind it while the whole is
+                // selected, and the caret after it. The range row draws two, low and
+                // high, with the dash between, and the caret in the one that has the
+                // keys.
                 let ground = egui::Rect::from_min_max(
                     egui::pos2(value_left - spacing::SPACE_2, line.top() + 2.0),
                     egui::pos2(right, line.bottom() - 2.0),
                 );
-                painter.rect_filled(ground, 0.0, chrome::colour(sem.surfaces.sunken));
-                let room = (ground.right() - spacing::SPACE_2 - value_left).max(0.0);
-                let typed = text_ink::fit(&painter, &open.text, ui_font(), room, primary);
-                let at = egui::Rect::from_min_size(
-                    egui::pos2(value_left, line.center().y - typed.size().y / 2.0),
-                    typed.size(),
-                );
-                if open.selected && !open.text.is_empty() {
-                    painter.rect_filled(
-                        at.expand2(egui::vec2(1.0, 1.0)),
-                        0.0,
-                        chrome::colour(sem.editor.selection),
+                let paint = |ground: egui::Rect, text: &str, selected: bool, active: bool| {
+                    painter.rect_filled(ground, 0.0, chrome::colour(sem.surfaces.sunken));
+                    let left = ground.left() + spacing::SPACE_2;
+                    let room = (ground.right() - spacing::SPACE_2 - left).max(0.0);
+                    let typed = text_ink::fit(&painter, text, ui_font(), room, primary);
+                    let at = egui::Rect::from_min_size(
+                        egui::pos2(left, line.center().y - typed.size().y / 2.0),
+                        typed.size(),
                     );
-                }
-                painter.galley(at.min, typed, primary);
-                painter.line_segment(
-                    [
-                        egui::pos2(at.right() + 1.0, at.top()),
-                        egui::pos2(at.right() + 1.0, at.bottom()),
-                    ],
-                    egui::Stroke::new(1.0, chrome::colour(sem.editor.caret)),
-                );
-                // The rule goes on last, over the selection's wash.
-                painter.rect_filled(
-                    egui::Rect::from_min_max(
-                        egui::pos2(ground.left(), ground.bottom() - 2.0),
+                    if active && selected && !text.is_empty() {
+                        painter.rect_filled(
+                            at.expand2(egui::vec2(1.0, 1.0)),
+                            0.0,
+                            chrome::colour(sem.editor.selection),
+                        );
+                    }
+                    painter.galley(at.min, typed, primary);
+                    if active {
+                        painter.line_segment(
+                            [
+                                egui::pos2(at.right() + 1.0, at.top()),
+                                egui::pos2(at.right() + 1.0, at.bottom()),
+                            ],
+                            egui::Stroke::new(1.0, chrome::colour(sem.editor.caret)),
+                        );
+                        // The rule goes on last, over the selection's wash.
+                        painter.rect_filled(
+                            egui::Rect::from_min_max(
+                                egui::pos2(ground.left(), ground.bottom() - 2.0),
+                                ground.right_bottom(),
+                            ),
+                            0.0,
+                            chrome::colour(sem.borders.focus),
+                        );
+                    }
+                    at
+                };
+                let at = if let Some(fields) = &open.ends {
+                    let dash = painter.layout_no_wrap("\u{2013}".to_string(), ui_font(), muted);
+                    let half =
+                        ((ground.width() - dash.size().x - 2.0 * spacing::SPACE_2) / 2.0).max(0.0);
+                    let low_ground = egui::Rect::from_min_max(
+                        ground.left_top(),
+                        egui::pos2(ground.left() + half, ground.bottom()),
+                    );
+                    let high_ground = egui::Rect::from_min_max(
+                        egui::pos2(ground.right() - half, ground.top()),
                         ground.right_bottom(),
-                    ),
-                    0.0,
-                    chrome::colour(sem.borders.focus),
-                );
+                    );
+                    let dash_at = egui::pos2(
+                        ground.center().x - dash.size().x / 2.0,
+                        line.center().y - dash.size().y / 2.0,
+                    );
+                    painter.galley(dash_at, dash, muted);
+                    let on_low = fields.on == End::Low;
+                    let (low_text, high_text) = if on_low {
+                        (open.text.as_str(), fields.other.as_str())
+                    } else {
+                        (fields.other.as_str(), open.text.as_str())
+                    };
+                    let low_at = paint(low_ground, low_text, open.selected, on_low);
+                    let high_at = paint(high_ground, high_text, open.selected, !on_low);
+                    if on_low {
+                        low_at
+                    } else {
+                        high_at
+                    }
+                } else {
+                    paint(ground, &open.text, open.selected, true)
+                };
                 (at, Some(ground))
             } else {
                 let value = text_ink::fit(&painter, &row.value, ui_font(), right - value_left, ink);
