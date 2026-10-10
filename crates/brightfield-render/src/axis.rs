@@ -2421,7 +2421,7 @@ mod tests {
             axis.line,
             Rect::new(
                 layout.plot_x_start(),
-                y - LINE_REACH,
+                y - 8.0,
                 layout.plot_x_end(),
                 y + TICK_LENGTH
             ),
@@ -2496,7 +2496,7 @@ mod tests {
             Rect::new(
                 x - TICK_LENGTH - 3.0,
                 layout.plot_y_start(),
-                x + LINE_REACH,
+                x + 8.0,
                 layout.plot_y_end()
             ),
             "the line's strip reaches 8 px right into the data area and left to the labels"
