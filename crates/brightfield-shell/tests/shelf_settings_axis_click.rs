@@ -28,6 +28,21 @@ fn housing() -> std::path::PathBuf {
         .join("tests/data/california_housing_sample.csv")
 }
 
+/// The crossfilter example, whose hero is a dot plot with an x-range brush. A
+/// window over it holds a chart and no data grid, so it carves no shelf band.
+fn crossfilter_boot(live_dashboard: bool) -> Boot {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/crossfilter.yaml");
+    let (live, composed) =
+        live_spec(path.to_str().expect("utf-8 path")).expect("the example loads live");
+    let mut boot = Boot::charts(composed);
+    if live_dashboard {
+        boot.live = Some(live);
+        boot.spec_path = Some(path);
+    }
+    boot
+}
+
 fn key_down(key: egui::Key) -> egui::Event {
     egui::Event::Key {
         key,
@@ -331,17 +346,12 @@ fn with_no_band_drawn_the_axes_are_not_targets() {
 }
 
 /// A document with no live dashboard behind it, a picture shown as published,
-/// has no spec for the band to read, so it draws no band and its axes are not
-/// targets: a click on x's tick labels opens nothing. The handle reports a
-/// part at the point clicked, so the click is aimed at a real part and the
-/// missing dashboard is what keeps it the canvas's.
+/// has no band and no axes that are targets: a click on x's tick labels opens
+/// nothing. The handle reports a part at the point clicked, so the click is aimed
+/// at a real part and the absence of a band is what keeps it the canvas's.
 #[test]
 fn a_document_with_no_live_dashboard_has_no_axis_targets() {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/crossfilter.yaml");
-    let (_, composed) =
-        live_spec(path.to_str().expect("utf-8 path")).expect("the example loads live");
-    let mut win = Window::over(Boot::charts(composed));
+    let mut win = Window::over(crossfilter_boot(false));
     assert!(
         win.app.chart_doc().live_dashboard().is_none(),
         "fixture check: nothing is live behind this document"
@@ -365,6 +375,54 @@ fn a_document_with_no_live_dashboard_has_no_axis_targets() {
     assert!(
         !win.app.chart_doc().axis_targets_live,
         "the axes are targets where a band is drawn, and none is drawn here"
+    );
+}
+
+/// With no band drawn, a press on an axis part is the canvas's as it is today: a
+/// press on x's tick labels and a drag into the plot sweeps the plot's x-range
+/// brush. Were the axes targets without a band, the press would be an axis press,
+/// which starts no brush, and the drag would record no ink.
+#[test]
+fn with_no_band_drawn_a_press_on_an_axis_part_starts_the_canvas_brush() {
+    let mut win = Window::over(crossfilter_boot(true));
+    win.app.set_shelf_band_drawn(false);
+    win.settle();
+    assert!(
+        win.app.chart_doc().live_dashboard().is_some(),
+        "fixture check: a live dashboard, so a press can start a brush"
+    );
+    assert!(!win.app.chart_doc().axis_targets_live);
+
+    let press = win.part(Channel::X, AxisPart::Labels);
+    let area = win.hero().data_area();
+    let tile = win.hero().rect;
+    let to = win.tile_origin()
+        + egui::vec2(
+            (area.x - tile.x + area.width * 0.75) as f32,
+            (area.y - tile.y + area.height * 0.5) as f32,
+        );
+    let midway = press + (to - press) * 0.5;
+    win.run(vec![egui::Event::PointerMoved(press)]);
+    win.run(vec![button(press, true)]);
+    win.run(vec![egui::Event::PointerMoved(midway)]);
+    win.run(vec![egui::Event::PointerMoved(to)]);
+
+    // Read with the button still down: the ink is an uncommitted sweep's.
+    let ink = win
+        .app
+        .chart_doc()
+        .gesture_ink
+        .expect("a press on x's labels started the canvas's brush");
+    assert!(
+        ink.width() > 1.0,
+        "the drag from {press:?} to {to:?} recorded {ink:?}, which does not follow the pointer"
+    );
+    win.run(vec![button(to, false)]);
+    win.settle();
+    assert_eq!(
+        win.open_row(),
+        None,
+        "a sweep from an axis part opened settings"
     );
 }
 

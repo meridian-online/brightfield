@@ -2546,10 +2546,12 @@ mod tests {
         let mut scene = Scene::new();
         let bare = render_x_axis(&mut scene, &layout, &[], None, ChartInk::LIGHT);
         assert_eq!((bare.title, bare.labels), (None, None));
+        let empty_x = render_x_axis(&mut scene, &layout, &[], Some(""), ChartInk::LIGHT);
+        assert_eq!((empty_x.title, empty_x.labels), (None, None));
         let empty = render_y_axis(&mut scene, &layout, &[], Some(""), ChartInk::LIGHT);
         assert_eq!((empty.title, empty.labels), (None, None));
         assert!(
-            bare.line.area() > 0.0 && empty.line.area() > 0.0,
+            bare.line.area() > 0.0 && empty_x.line.area() > 0.0 && empty.line.area() > 0.0,
             "the line is there to click even with nothing else drawn"
         );
     }
