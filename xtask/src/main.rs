@@ -25,7 +25,7 @@ mod shard;
 mod steps;
 mod workflows;
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::ExitCode;
 
 use runner::{run_in_order, Outcome, Row};
@@ -68,7 +68,10 @@ fn main() -> ExitCode {
         }
     };
     let ctx = Ctx {
-        root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."),
+        root: Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap_or(Path::new(".."))
+            .to_path_buf(),
         cargo: std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
     };
     match invocation {
