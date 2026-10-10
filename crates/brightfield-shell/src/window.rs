@@ -4041,6 +4041,14 @@ impl MeridianApp {
         // at all and the grid pane is placed somewhere else. Without it the
         // pane would draw whatever band the last canvas frame asked for.
         self.charts.doc.grid_density = None;
+        // **The hero's axes are targets only on a frame that draws the band, so
+        // the flag is cleared here, for every canvas branch.** The band is
+        // carved by the two pane-group layouts alone; a frame that draws one
+        // picture, a node's grid, the graph or the door never reaches
+        // `carve_shelf_band`, and a flag left standing from a banded frame would
+        // have the axes of a bandless picture take a press the canvas should
+        // hear.
+        self.charts.doc.axis_targets_live = false;
 
         // The document's file watcher: poll on its own cadence, keep frames
         // coming while anything is watched (a poll nobody runs watches
@@ -10041,9 +10049,6 @@ fn carve_shelf_band(
     mode: Mode,
 ) -> egui::Rect {
     charts.shelf.drawn = None;
-    // The axes are targets where the band is drawn and nowhere else; this frame
-    // has drawn no band yet, so they are not.
-    charts.doc.axis_targets_live = false;
     if !charts.shelf.enabled {
         return body;
     }
@@ -10072,6 +10077,8 @@ fn carve_shelf_band(
         None => band.clear_preview(),
     }
     charts.shelf.drawn = Some(band.show(&mut child, mode));
+    // The axes are targets for the rest of this frame; `draw` clears the flag at
+    // the head of the next.
     charts.doc.axis_targets_live = true;
     charts.shelf.tile = title.to_string();
     egui::Rect::from_min_max(egui::pos2(body.left(), body.top() + height), body.max)

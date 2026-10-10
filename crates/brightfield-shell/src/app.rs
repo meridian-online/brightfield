@@ -928,11 +928,11 @@ pub struct ChartDoc {
     /// pane's gesture machine, and false on every frame nobody claims it.
     pub wheel_taken: bool,
     /// **Whether the hero's axes are click targets this frame.** The window
-    /// writes it when it carves the shelf band: an axis is a way into its
-    /// settings only where the band is drawn, because the band and the axes are
-    /// authoring chrome and a capture, or a dashboard shown for reading, draws
-    /// neither. False means a click on an axis is the canvas's, as it was before
-    /// the axes were targets.
+    /// clears it at the head of every frame and sets it when it has drawn the
+    /// shelf band: an axis is a way into its settings only where the band is
+    /// drawn, because the band and the axes are authoring chrome and a capture,
+    /// or a dashboard shown for reading, draws neither. False means a click on
+    /// an axis is the canvas's, as it was before the axes were targets.
     pub axis_targets_live: bool,
     /// The axis part a press landed on, waiting for the window, which opens that
     /// axis's settings on the part's row. Written by the chart pane's gesture

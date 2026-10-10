@@ -31,16 +31,27 @@ fn housing() -> std::path::PathBuf {
 /// The crossfilter example, whose hero is a dot plot with an x-range brush. A
 /// window over it holds a chart and no data grid, so it carves no shelf band.
 fn crossfilter_boot(live_dashboard: bool) -> Boot {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/crossfilter.yaml");
-    let (live, composed) =
-        live_spec(path.to_str().expect("utf-8 path")).expect("the example loads live");
+    let path = crossfilter_path();
+    let (live, composed) = crossfilter_live();
     let mut boot = Boot::charts(composed);
     if live_dashboard {
         boot.live = Some(live);
         boot.spec_path = Some(path);
     }
     boot
+}
+
+fn crossfilter_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/crossfilter.yaml")
+}
+
+/// The crossfilter example loaded live: the session behind it and the composed
+/// page.
+fn crossfilter_live() -> (
+    brightfield_shell::pipeline::LiveDashboard,
+    brightfield_shell::pipeline::Composed,
+) {
+    live_spec(crossfilter_path().to_str().expect("utf-8 path")).expect("the example loads live")
 }
 
 fn key_down(key: egui::Key) -> egui::Event {
@@ -206,6 +217,28 @@ impl Window {
     fn open_row(&self) -> Option<(ShelfChannel, ListTab, &'static str)> {
         let list = self.list()?;
         Some((list.channel(), list.tab(), list.setting_cursor()?.name))
+    }
+
+    /// A press on x's tick labels and a drag into the plot, the button left
+    /// down: the point pressed, the point dragged to, and the ink the canvas's
+    /// brush records for the sweep, which is `None` when the press never reached
+    /// the canvas.
+    fn sweep_from_x_labels(&mut self) -> (egui::Pos2, egui::Pos2, Option<egui::Rect>) {
+        let press = self.part(Channel::X, AxisPart::Labels);
+        let area = self.hero().data_area();
+        let tile = self.hero().rect;
+        let to = self.tile_origin()
+            + egui::vec2(
+                (area.x - tile.x + area.width * 0.75) as f32,
+                (area.y - tile.y + area.height * 0.5) as f32,
+            );
+        let midway = press + (to - press) * 0.5;
+        self.run(vec![egui::Event::PointerMoved(press)]);
+        self.run(vec![button(press, true)]);
+        self.run(vec![egui::Event::PointerMoved(midway)]);
+        self.run(vec![egui::Event::PointerMoved(to)]);
+        // Read with the button still down: the ink is an uncommitted sweep's.
+        (press, to, self.app.chart_doc().gesture_ink)
     }
 }
 
@@ -393,26 +426,50 @@ fn with_no_band_drawn_a_press_on_an_axis_part_starts_the_canvas_brush() {
     );
     assert!(!win.app.chart_doc().axis_targets_live);
 
-    let press = win.part(Channel::X, AxisPart::Labels);
-    let area = win.hero().data_area();
-    let tile = win.hero().rect;
-    let to = win.tile_origin()
-        + egui::vec2(
-            (area.x - tile.x + area.width * 0.75) as f32,
-            (area.y - tile.y + area.height * 0.5) as f32,
-        );
-    let midway = press + (to - press) * 0.5;
-    win.run(vec![egui::Event::PointerMoved(press)]);
-    win.run(vec![button(press, true)]);
-    win.run(vec![egui::Event::PointerMoved(midway)]);
-    win.run(vec![egui::Event::PointerMoved(to)]);
+    let (press, to, ink) = win.sweep_from_x_labels();
+    let ink = ink.expect("a press on x's labels started the canvas's brush");
+    assert!(
+        ink.width() > 1.0,
+        "the drag from {press:?} to {to:?} recorded {ink:?}, which does not follow the pointer"
+    );
+    win.run(vec![button(to, false)]);
+    win.settle();
+    assert_eq!(
+        win.open_row(),
+        None,
+        "a sweep from an axis part opened settings"
+    );
+}
 
-    // Read with the button still down: the ink is an uncommitted sweep's.
-    let ink = win
-        .app
-        .chart_doc()
-        .gesture_ink
-        .expect("a press on x's labels started the canvas's brush");
+/// A window that drew the band and then takes a picture that draws none hands
+/// the picture's axes back to the canvas. The band is carved by the pane-group
+/// layouts only, so a frame of one picture never reaches the code that sets the
+/// flag, and a flag left standing from the banded frame would have a press on
+/// x's tick labels taken as an axis press the canvas never hears: no brush.
+/// The document is swapped in the two calls a start opening makes.
+#[test]
+fn a_bandless_picture_opened_in_a_banded_window_keeps_the_canvas_brush() {
+    let mut win = Window::open();
+    assert!(
+        win.app.chart_doc().axis_targets_live && win.app.shelf_drawn().is_some(),
+        "fixture check: the window drew the band, so the axes were targets"
+    );
+
+    let (live, composed) = crossfilter_live();
+    win.app.open_chart(composed);
+    win.app.chart_doc_mut().attach_live(live);
+    win.settle();
+    assert!(
+        win.app.shelf_drawn().is_none() && win.app.chart_doc().stacked_tiles().is_none(),
+        "fixture check: the swapped-in picture is one pane and draws no band"
+    );
+    assert!(
+        !win.app.chart_doc().axis_targets_live,
+        "the axes were targets with no band drawn after the swap"
+    );
+
+    let (press, to, ink) = win.sweep_from_x_labels();
+    let ink = ink.expect("a press on x's labels started the canvas's brush after the swap");
     assert!(
         ink.width() > 1.0,
         "the drag from {press:?} to {to:?} recorded {ink:?}, which does not follow the pointer"
