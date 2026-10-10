@@ -12,7 +12,7 @@ use vello::Scene;
 
 use crate::axis::{
     compute_ticks, compute_ticks_formatted, nice_linear_domain, render_plot_title, render_x_axis,
-    render_y_axis,
+    render_y_axis, PlotAxes,
 };
 use crate::channel::{Channel, ChannelMap};
 use crate::grid::{render_x_grid, render_y_grid};
@@ -1243,6 +1243,70 @@ fn infer_multi_mark_scales(entries: &[&ChartData<'_>], ink: ChartInk) -> ScaleSe
     scales
 }
 
+/// Draw a plot's two positional axes into `scene` and say where their parts
+/// are: the one routine the drawn scene and [`plot_axis_targets`] both run, so
+/// what a pointer is told is an axis's title, labels and line is what was drawn.
+fn draw_axes(
+    scene: &mut Scene,
+    layout: &ChartLayout,
+    scales: &ScaleSet,
+    titles: &ResolvedTitles,
+    tick_counts: TickCounts,
+    tick_formats: &TickFormats,
+    ink: ChartInk,
+) -> PlotAxes {
+    let x = scales.get(Channel::X).map(|x_scale| {
+        let x_ticks =
+            compute_ticks_formatted(x_scale, tick_counts.x_target(), tick_formats.x.as_ref());
+        render_x_axis(scene, layout, &x_ticks, titles.x.as_deref(), ink)
+    });
+    let y = scales.get(Channel::Y).map(|y_scale| {
+        let y_ticks =
+            compute_ticks_formatted(y_scale, tick_counts.y_target(), tick_formats.y.as_ref());
+        render_y_axis(scene, layout, &y_ticks, titles.y.as_deref(), ink)
+    });
+    PlotAxes { x, y }
+}
+
+/// **Where each part of a plot's axes is**, for the shell to aim a pointer at.
+///
+/// The extents are those of the axes [`build_multi_mark_scene_pinned`] draws
+/// from the same `entries`, `titles`, `tick_counts`, `tick_formats` and `scales`:
+/// this runs the routine that draws them into a scene it throws away, so a
+/// label the draw thins, nudges, rotates or drops is reported as drawn. A plot
+/// that draws no frame (a geo mark) draws no axis and reports none, and so does
+/// a plot with no scale on a channel.
+///
+/// The rects are in the plot's own scene, the tile's top-left corner at the
+/// origin.
+#[must_use]
+pub fn plot_axis_targets(
+    entries: &[&ChartData<'_>],
+    titles: &ResolvedTitles,
+    tick_counts: TickCounts,
+    tick_formats: &TickFormats,
+    scales: &ScaleSet,
+) -> PlotAxes {
+    let Some(first) = entries.first() else {
+        return PlotAxes::default();
+    };
+    if entries
+        .iter()
+        .any(|e| e.renderer.suppresses_frame(e.channel_map))
+    {
+        return PlotAxes::default();
+    }
+    draw_axes(
+        &mut Scene::new(),
+        &first.layout,
+        scales,
+        titles,
+        tick_counts,
+        tick_formats,
+        scales.ink(),
+    )
+}
+
 /// Draw a multi-mark plot's background, grid, marks, axes, and inline legend
 /// against an ALREADY-RESOLVED `scales`. The shared drawing half of
 /// [`build_multi_mark_scene`] (which infers `scales` first) and
@@ -1310,16 +1374,15 @@ fn draw_multi_mark_scene(
     // Axes (on top of marks), each carrying its resolved title (Derive already
     // resolved to a field name upstream; None = suppressed / underivable).
     if !suppress_frame {
-        if let Some(x_scale) = scales.get(Channel::X) {
-            let x_ticks =
-                compute_ticks_formatted(x_scale, tick_counts.x_target(), tick_formats.x.as_ref());
-            render_x_axis(&mut scene, layout, &x_ticks, titles.x.as_deref(), ink);
-        }
-        if let Some(y_scale) = scales.get(Channel::Y) {
-            let y_ticks =
-                compute_ticks_formatted(y_scale, tick_counts.y_target(), tick_formats.y.as_ref());
-            render_y_axis(&mut scene, layout, &y_ticks, titles.y.as_deref(), ink);
-        }
+        draw_axes(
+            &mut scene,
+            layout,
+            scales,
+            titles,
+            tick_counts,
+            &tick_formats,
+            ink,
+        );
     }
     if let Some(graticule) = &graticule {
         let (meridians, parallels) = graticule.edge_ticks();

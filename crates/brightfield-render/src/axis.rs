@@ -6,7 +6,7 @@
 use brightfield_spec::date_format::{iso_date_micros, DateFormat};
 use brightfield_spec::layout::AxisFormat;
 use brightfield_spec::number_format::{NumberFormat, TickFormat};
-use kurbo::{Affine, Line, Point};
+use kurbo::{Affine, Line, Point, Rect};
 use vello::Scene;
 
 use crate::ink::ChartInk;
@@ -25,6 +25,47 @@ pub struct Tick {
     pub label: String,
     /// Pixel position along the axis.
     pub position: f64,
+}
+
+/// How far an axis line's target reaches into the data area, in pixels. Only
+/// 5 px (`TICK_LENGTH`) lie between an x axis and its labels, which is too few
+/// to hit with a pointer, so the line's strip takes this much of the plot above
+/// it. The reach is a place a pointer may be read and draws nothing.
+pub const LINE_REACH: f64 = 8.0;
+
+/// How far below its baseline a run of text hangs, as a fraction of its size.
+const DESCENT: f64 = 0.25;
+
+/// **The three parts of one axis a pointer can land on**, each a rect in the
+/// plot's own scene, whose origin is the tile's top-left corner.
+///
+/// Reported by the code that draws the axis, from the labels it actually drew:
+/// a label thinned away, dropped to fit the tile or rotated is the extent it was
+/// drawn at, and a rect restated elsewhere could not follow it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AxisTargets {
+    /// The title's text box. `None` when the axis drew no title.
+    pub title: Option<Rect>,
+    /// The tick labels' strip: the union of the labels drawn. `None` when the
+    /// axis drew none.
+    pub labels: Option<Rect>,
+    /// The axis line with its tick marks, reaching [`LINE_REACH`] into the data
+    /// area and ending where the labels begin.
+    pub line: Rect,
+}
+
+/// What a plot's axes reported, one per positional channel it draws.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PlotAxes {
+    /// The x axis's parts. `None` when the plot draws no x axis.
+    pub x: Option<AxisTargets>,
+    /// The y axis's parts. `None` when the plot draws no y axis.
+    pub y: Option<AxisTargets>,
+}
+
+/// `rect` joined to what `into` already covers.
+fn cover(into: &mut Option<Rect>, rect: Rect) {
+    *into = Some(into.map_or(rect, |held| held.union(rect)));
 }
 
 // The tick and axis inks are [`ChartInk::tick`] and [`ChartInk::axis`] — the
@@ -742,16 +783,34 @@ fn thinned_x_ticks(ticks: &[Tick], size: f32, tile_width: f64) -> Vec<&Tick> {
 /// crate carries no dependency on that composition;
 /// `label_clearance_rejects_a_gap_narrower_than_the_minimum` (this module)
 /// pins the neighbour-clearance floor the same nudge must not erase.
+///
+/// Returns the axis's [`AxisTargets`]: the title's text box, the strip the
+/// labels drawn cover and the axis line's strip, each read off what this call
+/// drew.
 pub fn render_x_axis(
     scene: &mut Scene,
     layout: &ChartLayout,
     ticks: &[Tick],
     title: Option<&str>,
     ink: ChartInk,
-) {
+) -> AxisTargets {
     let y = layout.plot_y_end();
     let tile_width = layout.width;
     let stroke = kurbo::Stroke::new(1.0);
+    let mut labels: Option<Rect> = None;
+    // A horizontal run of tick text, centred on `centre`, that hangs from the
+    // band's top edge (the tick marks' end).
+    let horizontal = |labels: &mut Option<Rect>, centre: f64, width: f64| {
+        cover(
+            labels,
+            Rect::new(
+                centre - width / 2.0,
+                y + TICK_LENGTH,
+                centre + width / 2.0,
+                y + TICK_LENGTH + f64::from(LABEL_SIZE) * (1.0 + DESCENT),
+            ),
+        );
+    };
 
     // Axis line.
     let axis_line = Line::new(
@@ -789,6 +848,9 @@ pub fn render_x_axis(
                 ink.label,
                 TextAnchor::Middle,
             );
+            if !tick.label.is_empty() {
+                horizontal(&mut labels, centre, width);
+            }
         }
     } else {
         // Even the two end labels collide horizontally. Rotating helps when
@@ -827,6 +889,20 @@ pub fn render_x_axis(
                     ink.label,
                     TextAnchor::End,
                 );
+                if !tick.label.is_empty() {
+                    // The run reads upward from its pivot, ascent to the
+                    // pivot's left and descent to its right.
+                    let near = y + TICK_LENGTH + ROTATED_LABEL_GAP;
+                    cover(
+                        &mut labels,
+                        Rect::new(
+                            pivot - f64::from(LABEL_SIZE),
+                            near,
+                            pivot + f64::from(LABEL_SIZE) * DESCENT,
+                            near + measure_width(&tick.label, LABEL_SIZE),
+                        ),
+                    );
+                }
             }
         } else {
             // No room to rotate into without running past the tile's own
@@ -848,6 +924,9 @@ pub fn render_x_axis(
                     ink.label,
                     TextAnchor::Middle,
                 );
+                if !solo.label.is_empty() {
+                    horizontal(&mut labels, centre, width);
+                }
             }
             // Wider than the tile on its own: dropped, same as the thinned
             // branch above — the tick marks and (when present) the title
@@ -856,30 +935,56 @@ pub fn render_x_axis(
     }
 
     // Axis title, centred below the tick-label band.
+    let mut title_box = None;
     if let Some(title) = title {
+        let centre = (layout.plot_x_start() + layout.plot_x_end()) / 2.0;
+        let baseline = x_title_baseline(layout);
         draw_text(
             scene,
             title,
-            (layout.plot_x_start() + layout.plot_x_end()) / 2.0,
-            x_title_baseline(layout),
+            centre,
+            baseline,
             TITLE_SIZE,
             ink.title,
             TextAnchor::Middle,
         );
+        if !title.is_empty() {
+            let half = measure_width(title, TITLE_SIZE) / 2.0;
+            title_box = Some(Rect::new(
+                centre - half,
+                baseline - f64::from(TITLE_SIZE),
+                centre + half,
+                baseline + f64::from(TITLE_SIZE) * DESCENT,
+            ));
+        }
+    }
+
+    AxisTargets {
+        title: title_box,
+        labels,
+        line: Rect::new(
+            layout.plot_x_start(),
+            y - LINE_REACH,
+            layout.plot_x_end(),
+            y + TICK_LENGTH,
+        ),
     }
 }
 
 /// Render the y-axis into the scene. `title`, when `Some`, is drawn rotated a
 /// quarter-turn up the (grown) left margin, left of the tick labels.
+///
+/// Returns the axis's [`AxisTargets`], read off what this call drew.
 pub fn render_y_axis(
     scene: &mut Scene,
     layout: &ChartLayout,
     ticks: &[Tick],
     title: Option<&str>,
     ink: ChartInk,
-) {
+) -> AxisTargets {
     let x = layout.plot_x_start();
     let stroke = kurbo::Stroke::new(1.0);
+    let mut labels: Option<Rect> = None;
 
     // Axis line.
     let axis_line = Line::new(
@@ -897,28 +1002,65 @@ pub fn render_y_axis(
         scene.stroke(&stroke, Affine::IDENTITY, ink.tick, None, &tick_line);
 
         // Label, right-aligned in the left margin and vertically centred on the tick.
+        let right = x - TICK_LENGTH - 3.0;
+        let baseline = tick.position + f64::from(LABEL_SIZE) / 3.0;
         draw_text(
             scene,
             &tick.label,
-            x - TICK_LENGTH - 3.0,
-            tick.position + f64::from(LABEL_SIZE) / 3.0,
+            right,
+            baseline,
             LABEL_SIZE,
             ink.label,
             TextAnchor::End,
         );
+        if !tick.label.is_empty() {
+            cover(
+                &mut labels,
+                Rect::new(
+                    right - measure_width(&tick.label, LABEL_SIZE),
+                    baseline - f64::from(LABEL_SIZE),
+                    right,
+                    baseline + f64::from(LABEL_SIZE) * DESCENT,
+                ),
+            );
+        }
     }
 
     // Axis title, rotated bottom-to-top and centred on the plot height.
+    let mut title_box = None;
     if let Some(title) = title {
+        let centre = (layout.plot_y_start() + layout.plot_y_end()) / 2.0;
         draw_text_rotated(
             scene,
             title,
             Y_TITLE_X,
-            (layout.plot_y_start() + layout.plot_y_end()) / 2.0,
+            centre,
             TITLE_SIZE,
             ink.title,
             TextAnchor::Middle,
         );
+        if !title.is_empty() {
+            // The run reads upward from its pivot: ascent to the pivot's left,
+            // descent to its right, the run centred on the plot's height.
+            let half = measure_width(title, TITLE_SIZE) / 2.0;
+            title_box = Some(Rect::new(
+                Y_TITLE_X - f64::from(TITLE_SIZE),
+                centre - half,
+                Y_TITLE_X + f64::from(TITLE_SIZE) * DESCENT,
+                centre + half,
+            ));
+        }
+    }
+
+    AxisTargets {
+        title: title_box,
+        labels,
+        line: Rect::new(
+            x - TICK_LENGTH - 3.0,
+            layout.plot_y_start(),
+            x + LINE_REACH,
+            layout.plot_y_end(),
+        ),
     }
 }
 
