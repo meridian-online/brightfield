@@ -72,6 +72,23 @@ where
     rows
 }
 
+/// Run one step, as `--step <name>` does. Unlike a full run, a step that runs
+/// only in CI runs here too, since a workflow is what names a step.
+pub fn run_named<F>(step: &Step, run: F) -> Row
+where
+    F: FnOnce(&Step) -> Result<(), String>,
+{
+    let started = Instant::now();
+    let outcome = match run(step) {
+        Ok(()) => Outcome::Passed(started.elapsed()),
+        Err(reason) => Outcome::Failed(started.elapsed(), reason),
+    };
+    Row {
+        name: step.name,
+        outcome,
+    }
+}
+
 /// True when no row failed.
 pub fn passed(rows: &[Row]) -> bool {
     !rows
@@ -102,7 +119,8 @@ pub fn summary(rows: &[Row], steps: &[Step]) -> String {
                 "  not run here; see below".to_owned(),
             ),
         };
-        let _ = writeln!(out, "  {word:<8} {time:>8}  {:<width$}{note}", row.name);
+        let line = format!("  {word:<8} {time:>8}  {:<width$}{note}", row.name);
+        let _ = writeln!(out, "{}", line.trim_end());
     }
     for step in steps {
         if let Some(why) = step.only_in_ci {
@@ -224,6 +242,26 @@ mod tests {
         assert_eq!(rows[1].outcome, Outcome::OnlyInCi("it reads the event"));
         assert!(matches!(rows[2].outcome, Outcome::Passed(_)));
         assert!(passed(&rows));
+    }
+
+    #[test]
+    fn naming_a_ci_only_step_runs_it_and_reports_what_it_returned() {
+        let mut started = false;
+        let row = run_named(&ci_only("d"), |_| {
+            started = true;
+            Ok(())
+        });
+        assert!(
+            started,
+            "a step named on the command line runs even when it is CI-only"
+        );
+        assert!(matches!(row.outcome, Outcome::Passed(_)));
+        let row = run_named(&ci_only("d"), |_| Err("the scan found a name".to_owned()));
+        assert!(
+            matches!(&row.outcome, Outcome::Failed(_, reason) if reason == "the scan found a name"),
+            "{:?}",
+            row.outcome
+        );
     }
 
     #[test]

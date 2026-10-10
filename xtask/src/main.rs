@@ -101,8 +101,10 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             };
             eprintln!("==> {}: {}", step.name, step.runs);
-            let rows = run_in_order(std::slice::from_ref(step), |s| (s.run)(&ctx));
-            finish(&rows, std::slice::from_ref(step))
+            // A step named here runs even when it runs only in CI: a workflow
+            // is what names one, and CI is where it was asked for.
+            let rows = vec![runner::run_named(step, |s| (s.run)(&ctx))];
+            finish(&rows, &[])
         }
         Invocation::All => {
             let total = STEPS.len();
