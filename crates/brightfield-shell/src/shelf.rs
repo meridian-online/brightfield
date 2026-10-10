@@ -1095,7 +1095,11 @@ pub enum SettingValue {
     Text(String),
     /// The two ends of a range, low first.
     Ends(Ends),
-    /// Back to brightfield's own: the key comes out of the file.
+    /// Back to brightfield's own: the key comes out of the file. Colour's scheme
+    /// row is the exception, since brightfield's default there is not Mosaic's:
+    /// the window answers it by naming viridis, and with no edit where the plot
+    /// names no scheme
+    /// (`backspace_names_viridis_only_where_a_scheme_is_named_and_takes_reverse_out`).
     Auto,
 }
 

@@ -854,7 +854,7 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::SpecEdit,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "Put the settings row under the cursor back to auto: its key comes out of the file and the chart draws brightfield's own",
+            help: "Put the settings row under the cursor back to auto: its key comes out of the file and the chart draws brightfield's own; on colour's scheme row it names viridis instead, since a file names the scheme the chart draws in, and is no edit where the plot names none",
             scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 4, motor_note: "backspace = take the value back out (the key that deletes in every text field); the query takes it as an edit while it has the keys, so the row answers only when the rows hold them" }),
         },
         VerbEntry {
