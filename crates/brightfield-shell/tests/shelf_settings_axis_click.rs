@@ -15,7 +15,7 @@
 use brightfield_render::channel::Channel;
 use brightfield_shell::app::CHART;
 use brightfield_shell::design::Mode;
-use brightfield_shell::pipeline::{AxisPart, PlotHandle};
+use brightfield_shell::pipeline::{live_spec, AxisPart, PlotHandle};
 use brightfield_shell::shelf::{ColumnList, ListTab, FORMAT_ROW, RANGE_ROW, TITLE_ROW};
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -59,6 +59,13 @@ impl Window {
     fn open() -> Self {
         let boot =
             Boot::data_file(housing().to_str().expect("utf-8 path")).expect("the sample opens");
+        let mut win = Self::over(boot);
+        win.keep_income_on_x();
+        win
+    }
+
+    /// One headless window over `boot`, settled, the hero's pane focused.
+    fn over(boot: Boot) -> Self {
         let mut win = Self {
             app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light),
             ctx: egui::Context::default(),
@@ -70,7 +77,6 @@ impl Window {
             "the pane takes focus"
         );
         win.settle();
-        win.keep_income_on_x();
         win
     }
 
@@ -321,6 +327,44 @@ fn with_no_band_drawn_the_axes_are_not_targets() {
         win.open_row(),
         Some((ShelfChannel::X, ListTab::Settings, RANGE_ROW)),
         "the control: the same click with the band drawn"
+    );
+}
+
+/// A document with no live dashboard behind it, a picture shown as published,
+/// has no spec for the band to read, so it draws no band and its axes are not
+/// targets: a click on x's tick labels opens nothing. The handle reports a
+/// part at the point clicked, so the click is aimed at a real part and the
+/// missing dashboard is what keeps it the canvas's.
+#[test]
+fn a_document_with_no_live_dashboard_has_no_axis_targets() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/crossfilter.yaml");
+    let (_, composed) =
+        live_spec(path.to_str().expect("utf-8 path")).expect("the example loads live");
+    let mut win = Window::over(Boot::charts(composed));
+    assert!(
+        win.app.chart_doc().live_dashboard().is_none(),
+        "fixture check: nothing is live behind this document"
+    );
+
+    let hero = win.hero();
+    let labels = hero.axes.x.and_then(|x| x.labels).expect("x drew labels");
+    let page = kurbo::Point::new(
+        hero.rect.x + labels.center().x,
+        hero.rect.y + labels.center().y,
+    );
+    assert_eq!(
+        hero.axis_part_at(page).map(|hit| (hit.channel, hit.part)),
+        Some((Channel::X, AxisPart::Labels)),
+        "fixture check: the point clicked is on x's labels"
+    );
+
+    let at = win.part(Channel::X, AxisPart::Labels);
+    win.click(at);
+    assert_eq!(win.open_row(), None, "a click opened settings at {at:?}");
+    assert!(
+        !win.app.chart_doc().axis_targets_live,
+        "the axes are targets where a band is drawn, and none is drawn here"
     );
 }
 
