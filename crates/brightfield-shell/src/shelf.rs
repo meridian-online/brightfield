@@ -896,8 +896,9 @@ const COLOUR_REVERSE_DOTS: &str =
     "only a dot's colour runs the other way, and this chart draws none";
 
 /// The schemes colour's scheme row offers and steps through, in the order
-/// `SequentialScheme::ALL` visits them: every scheme the renderer draws but
-/// the diverging one, which is a pivot's colour and not a ramp to choose.
+/// `SequentialScheme::ALL` visits them, less the diverging one, which is a
+/// pivot's colour and not a ramp to choose
+/// (`the_strip_is_the_renderers_schemes_but_the_diverging_one`).
 #[must_use]
 pub fn scheme_strip() -> Vec<SequentialScheme> {
     SequentialScheme::ALL

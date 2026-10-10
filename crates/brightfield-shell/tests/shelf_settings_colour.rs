@@ -832,8 +832,7 @@ fn h_and_l_step_the_scheme_along_the_strip_and_stop_at_its_ends() {
 }
 
 /// **AC2.** `⌫` on the scheme row reports a step back to auto, which the window
-/// answers with viridis or no edit; `h` and `l` on a row that does not apply
-/// report nothing.
+/// answers with viridis or no edit.
 #[test]
 fn backspace_on_the_scheme_row_reports_auto() {
     for attrs in ["", "colorScheme: blues"] {
