@@ -800,12 +800,15 @@ fn a_narrow_rail_wraps_the_strip_onto_more_lines_and_nothing_leaves_the_list() {
 // The keys and the pointer.
 // ---------------------------------------------------------------------------
 
+/// One case of the scheme row's steps: the plot's attributes, the key pressed,
+/// and the scheme the step writes, where it writes one.
+type StepCase = (&'static str, fn() -> Vec<egui::Event>, Option<&'static str>);
+
 /// **AC2.** `h` and `l` step the scheme along the strip and stop at its ends.
 /// A step back to viridis writes viridis by name, not `auto`.
 #[test]
 fn h_and_l_step_the_scheme_along_the_strip_and_stop_at_its_ends() {
-    // (attrs, key, what the step writes)
-    let cases: [(&str, fn() -> Vec<egui::Event>, Option<&str>); 12] = [
+    let cases: [StepCase; 12] = [
         ("", l, Some("blues")),
         ("", h, None),
         ("colorScheme: viridis", l, Some("blues")),
