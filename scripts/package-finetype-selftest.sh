@@ -11,8 +11,9 @@
 #
 # It also proves the ORDERING. The bundle is read before the compiler is
 # invoked, so a bad bundle costs a second rather than a ten-minute release
-# build — and, more to the point, so this file can run on the toolchain-free
-# hygiene runner at all. Every failing case asserts `== build` never appeared.
+# build — and, more to the point, so this file needs no compiler build and
+# runs in the hygiene job beside the other packaging self-tests. Every failing
+# case asserts `== build` never appeared.
 #
 # THE PIN CASE IS THE SUBTLE ONE. It overrides the pin with a tag the fixture
 # deliberately does not carry, so a package.sh that compared a hardcoded

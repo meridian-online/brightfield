@@ -21,8 +21,10 @@
 # block below sets out: the host triple has to come from somewhere other than
 # the code under test, and `rustc -vV` is that somewhere. Both CI jobs that run
 # this file install the pinned toolchain for it, and neither did before —
-# public-hygiene.yml gives it a job of its own so the scan it sits beside stays
-# toolchain-free, and test.yml's job installs the same pin. It is no longer a
+# public-hygiene.yml gave it a job of its own so the scan it sits beside could
+# stay toolchain-free; that scan now installs the pin too, to build
+# `cargo xtask ci`, and the job stays a check of its own. test.yml's job
+# installs the same pin. It is no longer a
 # file that runs on a runner without one, and the sentences that said otherwise
 # went with the change rather than after it.
 #

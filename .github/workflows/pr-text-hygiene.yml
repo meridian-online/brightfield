@@ -10,9 +10,16 @@ name: PR text hygiene
 # measured-figures and packaging self-tests among them — on every typo fix in
 # a description. Here it costs a checkout and a `git grep`.
 #
-# The two are deliberately the same one command, not two implementations of
-# one idea. If this file ever disagrees with the step in public-hygiene.yml,
-# this file is wrong.
+# The two run the same script over the same text, not two implementations of
+# one idea: public-hygiene.yml's step calls `cargo xtask ci --step pr-text`,
+# which writes the title and body to a file and runs the line below. If this
+# file ever disagrees with that step, this file is wrong.
+#
+# This is the one check on a pull request's rollup that calls a script rather
+# than a step of `cargo xtask ci`. It re-runs on every edit of a description,
+# where a toolchain install and a build would cost more than the scan, and the
+# text it reads exists only in the event, so the command has no local form of
+# it to keep in step with; the command's summary says the same.
 #
 # Measured 2026-08-19: a private milestone identifier reached this
 # repository's own pull request text; the lane noticed and edited it out
