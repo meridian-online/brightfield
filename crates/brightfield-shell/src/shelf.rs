@@ -1220,8 +1220,9 @@ pub struct SettingRow {
     /// The judges are the render crate's own and are asked, not re-derived:
     /// `axis_ends_apply` for zero, `tick_count_applies` for ticks,
     /// `axis_reverse_applies` for reverse, and `axis_keys_apply` for ticks, grid
-    /// and zero under a map projection. The three head rows apply to every axis,
-    /// so none carries one.
+    /// and zero under a map projection, and the range row's own reasons on an axis
+    /// of dates, an axis of names and a map. The title, scale and format rows apply
+    /// to an axis of any kind, so none carries one.
     pub reason: Option<String>,
     /// Whether the row is listed only where the query names it: ticks, grid,
     /// zero and reverse. A head row is listed with no query as well.
@@ -1334,8 +1335,8 @@ impl ChannelSettings {
     }
 }
 
-/// The rows of one axis: the head rows, title, scale and format, in that order,
-/// and the four found by name, ticks, grid, zero and reverse, behind them.
+/// The rows of one axis: the head rows, title, scale, range and format, in that
+/// order, and the four found by name, ticks, grid, zero and reverse, behind them.
 fn axis_rows(
     plot: &PlotNode,
     axis: ShelfChannel,

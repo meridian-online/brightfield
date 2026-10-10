@@ -1166,9 +1166,10 @@ fn drawing_of(
 
 /// One attribute that sets each of an axis's rows, head and by name, spelled for
 /// the axis's letter.
-const ROW_KEYS: [&str; 7] = [
+const ROW_KEYS: [&str; 8] = [
     "Label: Residents",
     "Scale: log",
+    "Domain: [10, 90]",
     "TickFormat: .2s",
     "Ticks: 8",
     "Grid: false",
@@ -1177,7 +1178,7 @@ const ROW_KEYS: [&str; 7] = [
 ];
 
 /// **A cell carries a dot while any one of its channel's rows is set, whichever
-/// row it is**, the three head rows and the four found by name, and only on the
+/// row it is**, the four head rows and the four found by name, and only on the
 /// cell of the channel whose key was written. The dot is a filled circle in the
 /// text ink on the word's line, to the right of the word.
 #[test]

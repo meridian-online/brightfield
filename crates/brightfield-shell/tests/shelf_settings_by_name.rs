@@ -2,7 +2,7 @@
 //! row the render crate's judges say does not apply is drawn muted with the
 //! reason.**
 //!
-//! `shelf_settings.rs` holds the head rows, title, scale and format, and the
+//! `shelf_settings.rs` holds the head rows, title, scale, range and format, and the
 //! list's keys. This file holds the four rows the list does not show until a
 //! query names them. The band's cell, which carries the dot and the scale's
 //! name, is `shelf_band.rs`; the window handing the list the scales its chart
