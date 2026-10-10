@@ -1848,6 +1848,25 @@ impl ColumnList {
         }
     }
 
+    /// **Turn the list to the channel's settings with the cursor on `row`**, as
+    /// `Tab` and then `j` for each row down would: a click on a part of the
+    /// axis lands on the row that part belongs to. The query and an open field
+    /// are dropped, because the rows it narrowed to are not the ones the click
+    /// asked for. Says whether the channel has a settings row of that name; a
+    /// channel without one stays on the tab it was on.
+    pub fn open_on_row(&mut self, row: &str) -> bool {
+        let Some(at) = self.settings().iter().position(|r| r.name == row) else {
+            return false;
+        };
+        self.query.clear();
+        self.querying = false;
+        self.field = None;
+        self.tab = ListTab::Settings;
+        self.row = Some(at);
+        self.scroll = true;
+        true
+    }
+
     /// The tab the list is on.
     #[must_use]
     pub fn tab(&self) -> ListTab {

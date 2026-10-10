@@ -927,6 +927,17 @@ pub struct ChartDoc {
     /// the same time. Written by the canvas each frame, read by the chart
     /// pane's gesture machine, and false on every frame nobody claims it.
     pub wheel_taken: bool,
+    /// **Whether the hero's axes are click targets this frame.** The window
+    /// writes it when it carves the shelf band: an axis is a way into its
+    /// settings only where the band is drawn, because the band and the axes are
+    /// authoring chrome and a capture, or a dashboard shown for reading, draws
+    /// neither. False means a click on an axis is the canvas's, as it was before
+    /// the axes were targets.
+    pub axis_targets_live: bool,
+    /// The axis part a press landed on, waiting for the window, which opens that
+    /// axis's settings on the part's row. Written by the chart pane's gesture
+    /// machine, taken by [`Self::take_axis_request`].
+    axis_request: Option<crate::pipeline::AxisHit>,
     /// The rect the raster was presented into last frame, in window-space
     /// logical points — the box the legend must never enter. Recorded for the
     /// reason [`Self::viewport`] is: the no-legend-overlaps-data exercise
@@ -1224,6 +1235,8 @@ impl ChartDoc {
             gesture_latched: false,
             gesture_ink: None,
             wheel_taken: false,
+            axis_targets_live: false,
+            axis_request: None,
             raster_rect: None,
             legend_rect: None,
             scale_switches: Vec::new(),
@@ -1282,6 +1295,8 @@ impl ChartDoc {
             gesture_latched: false,
             gesture_ink: None,
             wheel_taken: false,
+            axis_targets_live: false,
+            axis_request: None,
             raster_rect: None,
             legend_rect: None,
             scale_switches: Vec::new(),
@@ -3406,6 +3421,16 @@ impl ChartDoc {
     #[must_use]
     pub fn tile_columns(&self) -> &[ColumnFacts] {
         &self.tile_columns
+    }
+
+    /// Ask the window to open the settings of the axis part `hit` names.
+    pub fn request_axis(&mut self, hit: crate::pipeline::AxisHit) {
+        self.axis_request = Some(hit);
+    }
+
+    /// The axis part a press landed on since the window last asked, once.
+    pub fn take_axis_request(&mut self) -> Option<crate::pipeline::AxisHit> {
+        self.axis_request.take()
     }
 
     /// Select the column tile `plot` draws. Out-of-range indices select

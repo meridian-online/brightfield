@@ -1989,6 +1989,15 @@ impl ProtocolModel {
         }
     }
 
+    /// Turn the open list to its settings with the cursor on `row`
+    /// ([`ColumnList::open_on_row`]). Says whether it did; false when no list is
+    /// open or its channel has no such row.
+    pub fn open_column_list_on_row(&mut self, row: &str) -> bool {
+        self.column_list
+            .as_mut()
+            .is_some_and(|list| list.open_on_row(row))
+    }
+
     /// Close the list: the Outline draws its plain column rows again.
     pub fn close_column_list(&mut self) {
         self.column_list = None;

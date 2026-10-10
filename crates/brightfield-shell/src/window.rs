@@ -5432,6 +5432,14 @@ impl MeridianApp {
             self.charts.shelf.holds = true;
             self.shelf_sync_list();
         }
+        // A click on a part of an axis is the same way in again, on that part's
+        // row. It is taken whether or not a band was drawn, so a request made on
+        // a frame the band was not drawn on is not held for a later one.
+        if let Some(hit) = self.charts.doc.take_axis_request() {
+            if last.is_some() {
+                self.shelf_open_axis(hit);
+            }
+        }
         if self.ws().focus() == Some(PaneKey::new(OUTLINE))
             && self.protocol.doc.model.column_list().is_some()
         {
@@ -5510,6 +5518,38 @@ impl MeridianApp {
                 ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
             }
             ctx.input_mut(|i| i.events.retain(|e| !shelf_owns(e, querying)));
+        }
+    }
+
+    /// **Open the settings of the axis a click landed on, on the row its part
+    /// belongs to**: the title to `title`, the tick labels to `format`, the axis
+    /// line to `range`. It is the way `x` or `y`, `Tab` and the `j`s down to the
+    /// row would go: the pane is focused, the band holds the keys and has the
+    /// channel's cell open, and the list is turned to the settings with its
+    /// cursor on the row. A preview of a column belongs to the columns, so it is
+    /// backed out of, as `Tab` backs it out. With the navigator rail shut the
+    /// list is the card hung from the cell, which draws the same list.
+    fn shelf_open_axis(&mut self, hit: crate::pipeline::AxisHit) {
+        use brightfield_render::channel::Channel;
+        let channel = match hit.channel {
+            Channel::X => ShelfChannel::X,
+            Channel::Y => ShelfChannel::Y,
+            _ => return,
+        };
+        let row = match hit.part {
+            crate::pipeline::AxisPart::Title => crate::shelf::TITLE_ROW,
+            crate::pipeline::AxisPart::Labels => crate::shelf::FORMAT_ROW,
+            crate::pipeline::AxisPart::Line => crate::shelf::RANGE_ROW,
+        };
+        let Some(band) = self.charts.shelf.band.as_mut() else {
+            return;
+        };
+        band.activate(channel);
+        self.ws_mut().set_focus(PaneKey::new(CHART));
+        self.charts.shelf.holds = true;
+        self.shelf_sync_list();
+        if self.protocol.doc.model.open_column_list_on_row(row) {
+            self.charts.doc.drop_shelf_preview();
         }
     }
 
@@ -10001,6 +10041,9 @@ fn carve_shelf_band(
     mode: Mode,
 ) -> egui::Rect {
     charts.shelf.drawn = None;
+    // The axes are targets where the band is drawn and nowhere else; this frame
+    // has drawn no band yet, so they are not.
+    charts.doc.axis_targets_live = false;
     if !charts.shelf.enabled {
         return body;
     }
@@ -10029,6 +10072,7 @@ fn carve_shelf_band(
         None => band.clear_preview(),
     }
     charts.shelf.drawn = Some(band.show(&mut child, mode));
+    charts.doc.axis_targets_live = true;
     charts.shelf.tile = title.to_string();
     egui::Rect::from_min_max(egui::pos2(body.left(), body.top() + height), body.max)
 }
@@ -10038,7 +10082,7 @@ fn carve_shelf_band(
 /// The hero's plot, as an index into the page's plots: the first the page
 /// composes, which is the plot the band reads its channels from and the plot a
 /// column the shelf's list previews or keeps is put on.
-const HERO_PLOT: usize = 0;
+pub(crate) const HERO_PLOT: usize = 0;
 
 fn hero_shelf_channels(doc: &ChartDoc) -> Option<ShelfChannels> {
     let path = &doc.composed.plots.get(HERO_PLOT)?.path;
