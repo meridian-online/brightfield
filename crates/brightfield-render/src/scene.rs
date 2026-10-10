@@ -2044,6 +2044,115 @@ mod tests {
         );
     }
 
+    /// A plot's axes are reported from the routine that drew them: each part
+    /// reported for a titled dot plot holds the runs the built scene drew, and a
+    /// plot that draws no frame reports no axis at all.
+    #[test]
+    fn plot_axis_targets_reports_the_axes_the_scene_drew() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let dot = DotRenderer::default();
+        let data = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &dot,
+            layout: ChartLayout::new(400.0, 300.0),
+            view_extent: None,
+            highlight: None,
+            sample: None,
+            beyond_frame: false,
+        };
+        let titles = ResolvedTitles {
+            x: Some("x".into()),
+            y: Some("y".into()),
+            plot: None,
+        };
+        let (scene, scales) = build_multi_mark_scene(&[&data], false, &titles);
+        let axes = plot_axis_targets(
+            &[&data],
+            &titles,
+            TickCounts::default(),
+            &TickFormats::default(),
+            &scales,
+        );
+
+        let (x, y) = (axes.x.expect("x drew an axis"), axes.y.expect("y drew an axis"));
+        let parts = [x.title, x.labels, y.title, y.labels];
+        assert!(parts.iter().all(Option::is_some), "titled and labelled: {parts:?}");
+        let runs = &scene.encoding().resources.glyph_runs;
+        assert!(!runs.is_empty(), "fixture check: the scene drew text");
+        for run in runs {
+            let at = kurbo::Point::new(
+                f64::from(run.transform.translation[0]),
+                f64::from(run.transform.translation[1]),
+            );
+            assert!(
+                parts.iter().flatten().any(|r| r.contains(at)),
+                "a run drawn from {at:?} is in no reported part: {parts:?}"
+            );
+        }
+        let layout = &data.layout;
+        assert_eq!(x.line.y1, layout.plot_y_end() + 5.0, "x's line ends at its labels");
+        assert_eq!(y.line.x1, layout.plot_x_start() + 8.0, "y's line reaches 8 px in");
+    }
+
+    /// A plot that draws no frame draws no axis, and so reports none; the same
+    /// layout with a cartesian mark reports both.
+    #[test]
+    fn a_plot_with_no_frame_reports_no_axis() {
+        let square = r#"{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}"#;
+        let geo_schema = Arc::new(Schema::new(vec![Field::new("geom", DataType::Utf8, true)]));
+        let geo_batch =
+            RecordBatch::try_new(geo_schema, vec![Arc::new(StringArray::from(vec![square]))])
+                .unwrap();
+        let geo_cm = ChannelMap::new();
+        let geo = GeoRenderer::default();
+        let geo_data = ChartData {
+            batch: &geo_batch,
+            channel_map: &geo_cm,
+            renderer: &geo,
+            layout: ChartLayout::new(400.0, 300.0),
+            view_extent: None,
+            highlight: None,
+            sample: None,
+            beyond_frame: false,
+        };
+        let titles = ResolvedTitles::default();
+        let (_, scales) = build_multi_mark_scene(&[&geo_data], false, &titles);
+        let axes = plot_axis_targets(
+            &[&geo_data],
+            &titles,
+            TickCounts::default(),
+            &TickFormats::default(),
+            &scales,
+        );
+        assert_eq!(axes, PlotAxes::default(), "a geo plot draws no axis");
+        assert_eq!(
+            plot_axis_targets(
+                &[],
+                &titles,
+                TickCounts::default(),
+                &TickFormats::default(),
+                &ScaleSet::new(),
+            ),
+            PlotAxes::default(),
+            "no entries, no axis"
+        );
+    }
+
     // a frame-suppressing mark (geo) drops the grid + axes for the
     // whole plot, so a geo basemap scene carries only the background + the
     // projected feature outline — no grid/axis ink — while a cartesian plot's

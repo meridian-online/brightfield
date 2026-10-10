@@ -2367,4 +2367,233 @@ mod tests {
             "a gap exactly at LABEL_CLEARANCE should read as clear"
         );
     }
+
+    // ------------------------------------------------------------------
+    // Where each axis part is — the extents the draw reports.
+    // ------------------------------------------------------------------
+
+    /// The point each glyph run was drawn from, as the scene encodes it: a run's
+    /// translation is where its first glyph's baseline starts (a rotated run,
+    /// its pivot).
+    fn drawn_run_origins(scene: &Scene) -> Vec<Point> {
+        scene
+            .encoding()
+            .resources
+            .glyph_runs
+            .iter()
+            .map(|run| {
+                Point::new(
+                    f64::from(run.transform.translation[0]),
+                    f64::from(run.transform.translation[1]),
+                )
+            })
+            .collect()
+    }
+
+    fn linear_x(layout: &ChartLayout) -> Scale {
+        Scale::Linear {
+            domain_min: 0.0,
+            domain_max: 100.0,
+            range_start: layout.plot_x_start(),
+            range_end: layout.plot_x_end(),
+        }
+    }
+
+    /// The x axis reports its line reaching `LINE_REACH` into the data area and
+    /// ending where its labels begin, its labels in the strip under the tick
+    /// marks and its title under them, centred and as wide as it was drawn; and
+    /// every run the scene holds was drawn from inside one of the rects.
+    #[test]
+    fn the_x_axis_reports_where_it_drew_its_line_labels_and_title() {
+        let layout = ChartLayout::new(640.0, 480.0);
+        let ticks = compute_ticks(&linear_x(&layout), 5);
+        let mut scene = Scene::new();
+        let axis = render_x_axis(
+            &mut scene,
+            &layout,
+            &ticks,
+            Some("Arrival Delay"),
+            ChartInk::LIGHT,
+        );
+
+        let y = layout.plot_y_end();
+        assert_eq!(
+            axis.line,
+            Rect::new(
+                layout.plot_x_start(),
+                y - LINE_REACH,
+                layout.plot_x_end(),
+                y + TICK_LENGTH
+            ),
+            "the line's strip reaches 8 px up into the data area and down to the labels"
+        );
+        let labels = axis.labels.expect("the ticks were labelled");
+        let title = axis.title.expect("the axis was titled");
+        assert_eq!(
+            labels.y0, axis.line.y1,
+            "the labels begin where the line's strip ends"
+        );
+        assert!(
+            title.y0 >= labels.y1,
+            "the title ({title:?}) is under the labels ({labels:?})"
+        );
+        let centre = (layout.plot_x_start() + layout.plot_x_end()) / 2.0;
+        assert!((title.center().x - centre).abs() < 1e-9, "centred");
+        assert!(
+            (title.width() - measure_width("Arrival Delay", TITLE_SIZE)).abs() < 1e-9,
+            "as wide as the text drew"
+        );
+
+        let origins = drawn_run_origins(&scene);
+        assert_eq!(origins.len(), ticks.len() + 1, "a run per label and the title");
+        for at in &origins {
+            assert!(
+                labels.contains(*at) || title.contains(*at),
+                "a run drawn from {at:?} lies in neither the labels {labels:?} nor the title {title:?}"
+            );
+        }
+        assert_eq!(
+            origins.iter().filter(|at| labels.contains(**at)).count(),
+            ticks.len(),
+            "every label was drawn inside the strip reported for them"
+        );
+    }
+
+    /// The y axis reports its line reaching `LINE_REACH` into the data area on
+    /// one side and ending at its labels on the other, its labels to the left of
+    /// the tick marks and its rotated title left of them.
+    #[test]
+    fn the_y_axis_reports_where_it_drew_its_line_labels_and_title() {
+        // The left margin a titled plot grows, so the title has its own band.
+        let margins = Margins {
+            left: 64.0,
+            ..Margins::default()
+        };
+        let layout = ChartLayout::with_margins_and_insets(640.0, 480.0, margins, Insets::default());
+        let scale = Scale::Linear {
+            domain_min: 0.0,
+            domain_max: 100.0,
+            range_start: layout.plot_y_end(),
+            range_end: layout.plot_y_start(),
+        };
+        let ticks = compute_ticks(&scale, 5);
+        let mut scene = Scene::new();
+        let axis = render_y_axis(&mut scene, &layout, &ticks, Some("Travelers"), ChartInk::LIGHT);
+
+        let x = layout.plot_x_start();
+        assert_eq!(
+            axis.line,
+            Rect::new(
+                x - TICK_LENGTH - 3.0,
+                layout.plot_y_start(),
+                x + LINE_REACH,
+                layout.plot_y_end()
+            ),
+            "the line's strip reaches 8 px right into the data area and left to the labels"
+        );
+        let labels = axis.labels.expect("the ticks were labelled");
+        let title = axis.title.expect("the axis was titled");
+        assert_eq!(
+            labels.x1, axis.line.x0,
+            "the labels end where the line's strip begins"
+        );
+        assert!(
+            title.x1 <= labels.x0,
+            "the title ({title:?}) is left of the labels ({labels:?})"
+        );
+        let widest = ticks
+            .iter()
+            .map(|t| measure_width(&t.label, LABEL_SIZE))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            (labels.width() - widest).abs() < 1e-9,
+            "the strip is as wide as the widest label"
+        );
+        assert!(
+            (title.height() - measure_width("Travelers", TITLE_SIZE)).abs() < 1e-9,
+            "a rotated title runs as long as the text is wide"
+        );
+
+        let origins = drawn_run_origins(&scene);
+        assert_eq!(origins.len(), ticks.len() + 1, "a run per label and the title");
+        for at in &origins {
+            assert!(
+                labels.contains(*at) || title.contains(*at),
+                "a run drawn from {at:?} lies in neither the labels {labels:?} nor the title {title:?}"
+            );
+        }
+    }
+
+    /// An axis that drew no title or no labels reports none, and an empty title
+    /// is none: there is no text to click on.
+    #[test]
+    fn an_axis_reports_no_part_it_did_not_draw() {
+        let layout = ChartLayout::new(640.0, 480.0);
+        let mut scene = Scene::new();
+        let bare = render_x_axis(&mut scene, &layout, &[], None, ChartInk::LIGHT);
+        assert_eq!((bare.title, bare.labels), (None, None));
+        let empty = render_y_axis(&mut scene, &layout, &[], Some(""), ChartInk::LIGHT);
+        assert_eq!((empty.title, empty.labels), (None, None));
+        assert!(
+            bare.line.area() > 0.0 && empty.line.area() > 0.0,
+            "the line is there to click even with nothing else drawn"
+        );
+    }
+
+    /// Labels the axis thinned away are not in the strip it reports: the strip
+    /// is the union of the labels drawn, which `thinned_x_ticks` picks.
+    #[test]
+    fn a_thinned_x_axis_reports_only_the_labels_it_kept() {
+        let layout = ChartLayout::new(400.0, 300.0);
+        let ticks: Vec<Tick> = (0..10)
+            .map(|i| Tick {
+                value: f64::from(i),
+                label: "1,000,000".into(),
+                position: layout.plot_x_start() + 30.0 * f64::from(i),
+            })
+            .collect();
+        let kept = thinned_x_ticks(&ticks, LABEL_SIZE, layout.width);
+        assert!(
+            kept.len() < ticks.len(),
+            "fixture check: this crowding thins the axis"
+        );
+
+        let mut scene = Scene::new();
+        let axis = render_x_axis(&mut scene, &layout, &ticks, None, ChartInk::LIGHT);
+        let labels = axis.labels.expect("labels drawn");
+        let width = measure_width("1,000,000", LABEL_SIZE);
+        let first = kept.first().expect("kept").position;
+        let last = kept.last().expect("kept").position;
+        assert!((labels.x0 - (first - width / 2.0)).abs() < 1e-9);
+        assert!((labels.x1 - (last + width / 2.0)).abs() < 1e-9);
+        assert_eq!(drawn_run_origins(&scene).len(), kept.len());
+    }
+
+    /// An axis that rotates its labels reports the rotated runs' extent: as tall
+    /// as the longest label is wide, not one line of text.
+    #[test]
+    fn a_rotated_x_axis_reports_the_height_of_its_rotated_labels() {
+        let margins = Margins {
+            bottom: 100.0,
+            ..Margins::default()
+        };
+        let layout = ChartLayout::with_margins_and_insets(132.0, 300.0, margins, Insets::default());
+        let ticks = compute_ticks(&fixture_day_scale(&layout), 5);
+        let mut scene = Scene::new();
+        let axis = render_x_axis(&mut scene, &layout, &ticks, None, ChartInk::LIGHT);
+        assert!(scene_has_quarter_turn(&scene), "fixture check: rotated");
+
+        let labels = axis.labels.expect("labels drawn");
+        let widest = ticks
+            .iter()
+            .map(|t| measure_width(&t.label, LABEL_SIZE))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            (labels.height() - widest).abs() < 1e-9,
+            "{labels:?} is not as tall as the widest label, {widest}"
+        );
+        for at in drawn_run_origins(&scene) {
+            assert!(labels.contains(at), "{at:?} is outside {labels:?}");
+        }
+    }
 }
