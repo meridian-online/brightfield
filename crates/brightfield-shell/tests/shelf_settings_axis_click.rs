@@ -247,7 +247,7 @@ impl Window {
 
     /// A press at `press` and a drag into the plot, the button left down: the
     /// point dragged to, and the ink the canvas's brush records for the sweep,
-    /// which is `None` when the press never reached the canvas.
+    /// which is `None` when the press did not reach the canvas.
     fn sweep_from(&mut self, press: egui::Pos2) -> (egui::Pos2, Option<egui::Rect>) {
         let area = self.hero().data_area();
         let tile = self.hero().rect;
