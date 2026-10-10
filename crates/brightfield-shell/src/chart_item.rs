@@ -77,6 +77,7 @@ use crate::legend;
 use crate::navigation::{self, verb::RESET_EXTENT};
 use crate::pipeline::{GestureBinding, HoverLayer, PlotHandle};
 use crate::starts;
+use crate::window::HERO_PLOT;
 
 /// The predicate readout's status-entry id — the handle a headless test asserts
 /// the readout by, and the name the rail records in [`chrome::StatusDrawn`]
@@ -335,6 +336,10 @@ struct Pan {
 /// The chart pane. See the module docs for what this one type replaces.
 pub struct ChartItem {
     drag: Option<Drag>,
+    /// The axis part a press landed on, until the button comes up. The press
+    /// is the canvas's no longer (no brush starts from it), and the click is
+    /// asked of the window on the release, if the pointer is still on the part.
+    axis_press: Option<crate::pipeline::AxisHit>,
     /// Whether the primary button was down over the raster last frame — the
     /// edge detector the drag state machine runs on.
     was_down: bool,
@@ -378,6 +383,7 @@ impl ChartItem {
     pub fn new() -> Self {
         Self {
             drag: None,
+            axis_press: None,
             was_down: false,
             pan: None,
             was_secondary_down: false,
@@ -517,8 +523,14 @@ impl ChartItem {
                     // the selection is left empty — see
                     // `ChartDoc::select_tile`.
                     doc.select_tile(plot);
+                    // **A press on an axis part is a way into that axis's
+                    // settings**, and the canvas under it never hears it: no
+                    // brush starts from a title. Asked before the brush is,
+                    // because a press that opened a row is not also a sweep.
+                    let axis = axis_target_under(doc, plot, p);
+                    self.axis_press = axis;
                     let handle = &doc.composed.plots[plot];
-                    if handle.gesture.is_some() && doc.is_live() {
+                    if axis.is_none() && handle.gesture.is_some() && doc.is_live() {
                         // A press inside the plot's own committed rectangle
                         // moves it instead of starting a fresh sweep. Gated on
                         // `GestureClass::Interval`, so a point-toggle binding —
@@ -551,6 +563,23 @@ impl ChartItem {
         }
         let released = !down && self.was_down;
         self.was_down = down;
+        // **The click on an axis part is the release**, as a button's is, and
+        // it is asked of the window then rather than on the press: the list it
+        // opens is drawn, with the navigator rail shut, as a card that backs out
+        // of any click it sees land off it, and a list opened on the press frame
+        // would see this very click's release. The pointer must still be on the
+        // part the press began on.
+        if released {
+            if let Some(pressed) = self.axis_press.take() {
+                let still = pointer.and_then(|p| axis_target_under(doc, HERO_PLOT, p));
+                if still
+                    .is_some_and(|hit| (hit.channel, hit.part) == (pressed.channel, pressed.part))
+                {
+                    doc.request_axis(pressed);
+                    repaint = true;
+                }
+            }
+        }
 
         // ---------------------------------------------------------------
         // Navigation: the frame moves on every sample, the data re-queries
@@ -753,6 +782,45 @@ impl ChartItem {
             },
         )
     }
+}
+
+/// **The axis part a press at `p` is a click on**, or `None` when the press is
+/// the canvas's.
+///
+/// The hero's axes are targets while the window draws the shelf band
+/// ([`ChartDoc::axis_targets_live`]) and not otherwise: the band and the axes are authoring
+/// chrome, and a document shown without the band keeps a click on an axis as it
+/// was. The title and the tick labels lie outside the data area. The axis line's
+/// strip reaches into it, and there **a mark under the pointer is the click's
+/// before the axis is**: a press the marks would take is left to them.
+fn axis_target_under(
+    doc: &mut ChartDoc,
+    plot: usize,
+    p: kurbo::Point,
+) -> Option<crate::pipeline::AxisHit> {
+    if !doc.axis_targets_live || plot != HERO_PLOT {
+        return None;
+    }
+    let hit = doc.composed.plots.get(plot)?.axis_part_at(p)?;
+    if hit.in_data_area && mark_under(doc, plot, p) {
+        return None;
+    }
+    Some(hit)
+}
+
+/// Whether a mark of `plot` is under `p` (page-local logical pixels): the
+/// category slot a point click would select, or a row the hover reads within
+/// [`HOVER_RADIUS`] of it.
+fn mark_under(doc: &mut ChartDoc, plot: usize, p: kurbo::Point) -> bool {
+    let handle = &doc.composed.plots[plot];
+    if let Some(binding) = &handle.gesture {
+        if gesture_for(binding.kind) == GestureClass::Point
+            && point_predicate(binding, handle, p).is_some()
+        {
+            return true;
+        }
+    }
+    hover_read(doc, p, egui::Pos2::ZERO).is_some()
 }
 
 /// **What the mark under `p` is**, as one engine query returning one row.
@@ -2257,6 +2325,7 @@ mod tests {
             committed_rect: None,
             legend_declared: false,
             legend_below: None,
+            axes: brightfield_render::axis::PlotAxes::default(),
         }
     }
 

@@ -12,7 +12,7 @@ use vello::Scene;
 
 use crate::axis::{
     compute_ticks, compute_ticks_formatted, nice_linear_domain, render_plot_title, render_x_axis,
-    render_y_axis,
+    render_y_axis, PlotAxes,
 };
 use crate::channel::{Channel, ChannelMap};
 use crate::grid::{render_x_grid, render_y_grid};
@@ -1243,6 +1243,70 @@ fn infer_multi_mark_scales(entries: &[&ChartData<'_>], ink: ChartInk) -> ScaleSe
     scales
 }
 
+/// Draw a plot's two positional axes into `scene` and say where their parts
+/// are: the one routine the drawn scene and [`plot_axis_targets`] both run, so
+/// what a pointer is told is an axis's title, labels and line is what was drawn.
+fn draw_axes(
+    scene: &mut Scene,
+    layout: &ChartLayout,
+    scales: &ScaleSet,
+    titles: &ResolvedTitles,
+    tick_counts: TickCounts,
+    tick_formats: &TickFormats,
+    ink: ChartInk,
+) -> PlotAxes {
+    let x = scales.get(Channel::X).map(|x_scale| {
+        let x_ticks =
+            compute_ticks_formatted(x_scale, tick_counts.x_target(), tick_formats.x.as_ref());
+        render_x_axis(scene, layout, &x_ticks, titles.x.as_deref(), ink)
+    });
+    let y = scales.get(Channel::Y).map(|y_scale| {
+        let y_ticks =
+            compute_ticks_formatted(y_scale, tick_counts.y_target(), tick_formats.y.as_ref());
+        render_y_axis(scene, layout, &y_ticks, titles.y.as_deref(), ink)
+    });
+    PlotAxes { x, y }
+}
+
+/// **Where each part of a plot's axes is**, for the shell to aim a pointer at.
+///
+/// The extents are those of the axes [`build_multi_mark_scene_pinned`] draws
+/// from the same `entries`, `titles`, `tick_counts`, `tick_formats` and `scales`:
+/// this runs the routine that draws them into a scene it throws away, so a
+/// label the draw thins, nudges, rotates or drops is reported as drawn. A plot
+/// that draws no frame (a geo mark) draws no axis and reports none, and so does
+/// a plot with no scale on a channel.
+///
+/// The rects are in the plot's own scene, the tile's top-left corner at the
+/// origin.
+#[must_use]
+pub fn plot_axis_targets(
+    entries: &[&ChartData<'_>],
+    titles: &ResolvedTitles,
+    tick_counts: TickCounts,
+    tick_formats: &TickFormats,
+    scales: &ScaleSet,
+) -> PlotAxes {
+    let Some(first) = entries.first() else {
+        return PlotAxes::default();
+    };
+    if entries
+        .iter()
+        .any(|e| e.renderer.suppresses_frame(e.channel_map))
+    {
+        return PlotAxes::default();
+    }
+    draw_axes(
+        &mut Scene::new(),
+        &first.layout,
+        scales,
+        titles,
+        tick_counts,
+        tick_formats,
+        scales.ink(),
+    )
+}
+
 /// Draw a multi-mark plot's background, grid, marks, axes, and inline legend
 /// against an ALREADY-RESOLVED `scales`. The shared drawing half of
 /// [`build_multi_mark_scene`] (which infers `scales` first) and
@@ -1310,16 +1374,15 @@ fn draw_multi_mark_scene(
     // Axes (on top of marks), each carrying its resolved title (Derive already
     // resolved to a field name upstream; None = suppressed / underivable).
     if !suppress_frame {
-        if let Some(x_scale) = scales.get(Channel::X) {
-            let x_ticks =
-                compute_ticks_formatted(x_scale, tick_counts.x_target(), tick_formats.x.as_ref());
-            render_x_axis(&mut scene, layout, &x_ticks, titles.x.as_deref(), ink);
-        }
-        if let Some(y_scale) = scales.get(Channel::Y) {
-            let y_ticks =
-                compute_ticks_formatted(y_scale, tick_counts.y_target(), tick_formats.y.as_ref());
-            render_y_axis(&mut scene, layout, &y_ticks, titles.y.as_deref(), ink);
-        }
+        draw_axes(
+            &mut scene,
+            layout,
+            scales,
+            titles,
+            tick_counts,
+            &tick_formats,
+            ink,
+        );
     }
     if let Some(graticule) = &graticule {
         let (meridians, parallels) = graticule.edge_ticks();
@@ -1978,6 +2041,129 @@ mod tests {
         assert!(
             n_with > n_without,
             "suppressing the inline legend must drop its swatch/panel fills: {n_with} !> {n_without}"
+        );
+    }
+
+    /// A plot's axes are reported from the routine that drew them: each part
+    /// reported for a titled dot plot holds the runs the built scene drew, and a
+    /// plot that draws no frame reports no axis at all.
+    #[test]
+    fn plot_axis_targets_reports_the_axes_the_scene_drew() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let dot = DotRenderer::default();
+        let data = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &dot,
+            layout: ChartLayout::new(400.0, 300.0),
+            view_extent: None,
+            highlight: None,
+            sample: None,
+            beyond_frame: false,
+        };
+        let titles = ResolvedTitles {
+            x: Some("x".into()),
+            y: Some("y".into()),
+            plot: None,
+        };
+        let (scene, scales) = build_multi_mark_scene(&[&data], false, &titles);
+        let axes = plot_axis_targets(
+            &[&data],
+            &titles,
+            TickCounts::default(),
+            &TickFormats::default(),
+            &scales,
+        );
+
+        let (x, y) = (
+            axes.x.expect("x drew an axis"),
+            axes.y.expect("y drew an axis"),
+        );
+        let parts = [x.title, x.labels, y.title, y.labels];
+        assert!(
+            parts.iter().all(Option::is_some),
+            "titled and labelled: {parts:?}"
+        );
+        let runs = &scene.encoding().resources.glyph_runs;
+        assert!(!runs.is_empty(), "fixture check: the scene drew text");
+        for run in runs {
+            let at = kurbo::Point::new(
+                f64::from(run.transform.translation[0]),
+                f64::from(run.transform.translation[1]),
+            );
+            assert!(
+                parts.iter().flatten().any(|r| r.contains(at)),
+                "a run drawn from {at:?} is in no reported part: {parts:?}"
+            );
+        }
+        let layout = &data.layout;
+        assert_eq!(
+            x.line.y1,
+            layout.plot_y_end() + 5.0,
+            "x's line ends at its labels"
+        );
+        assert_eq!(
+            y.line.x1,
+            layout.plot_x_start() + 8.0,
+            "y's line reaches 8 px in"
+        );
+    }
+
+    /// A plot that draws no frame draws no axis, and so reports none; the same
+    /// layout with a cartesian mark reports both.
+    #[test]
+    fn a_plot_with_no_frame_reports_no_axis() {
+        let square = r#"{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}"#;
+        let geo_schema = Arc::new(Schema::new(vec![Field::new("geom", DataType::Utf8, true)]));
+        let geo_batch =
+            RecordBatch::try_new(geo_schema, vec![Arc::new(StringArray::from(vec![square]))])
+                .unwrap();
+        let geo_cm = ChannelMap::new();
+        let geo = GeoRenderer::default();
+        let geo_data = ChartData {
+            batch: &geo_batch,
+            channel_map: &geo_cm,
+            renderer: &geo,
+            layout: ChartLayout::new(400.0, 300.0),
+            view_extent: None,
+            highlight: None,
+            sample: None,
+            beyond_frame: false,
+        };
+        let titles = ResolvedTitles::default();
+        let (_, scales) = build_multi_mark_scene(&[&geo_data], false, &titles);
+        let axes = plot_axis_targets(
+            &[&geo_data],
+            &titles,
+            TickCounts::default(),
+            &TickFormats::default(),
+            &scales,
+        );
+        assert_eq!(axes, PlotAxes::default(), "a geo plot draws no axis");
+        assert_eq!(
+            plot_axis_targets(
+                &[],
+                &titles,
+                TickCounts::default(),
+                &TickFormats::default(),
+                &ScaleSet::new(),
+            ),
+            PlotAxes::default(),
+            "no entries, no axis"
         );
     }
 

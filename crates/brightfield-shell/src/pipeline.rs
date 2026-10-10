@@ -38,7 +38,7 @@ use brightfield_engine::{
 };
 use brightfield_render::axis::{
     axis_kind, axis_scale_word, tick_count_applies, tick_format_applies, tick_format_crosses_axis,
-    AxisKind,
+    AxisKind, AxisTargets, PlotAxes,
 };
 use brightfield_render::canvas_host::SurfaceRect;
 use brightfield_render::channel::{Channel, ChannelMap};
@@ -58,8 +58,8 @@ use brightfield_render::scale::{
 };
 use brightfield_render::scene::{
     axis_ends_apply, axis_keys_apply, build_multi_mark_scene_pinned, colour_override_applies,
-    colour_reverse_applies, compose_dashboard, unrestorable_under_sampling, written_ends_held,
-    ChartData, UnsampledDomains,
+    colour_reverse_applies, compose_dashboard, plot_axis_targets, unrestorable_under_sampling,
+    written_ends_held, ChartData, UnsampledDomains,
 };
 use brightfield_render::selection::{
     committed_selection_rect, render_committed_selection, CommittedSelection, Selected,
@@ -233,9 +233,78 @@ pub struct PlotHandle {
     /// pane draws the legend into the rect and reserves nothing beside the plot.
     /// Set by the crate-private `legend::declare_legends`, `None` until then.
     pub legend_below: Option<Rect>,
+    /// **Where each part of this plot's axes is drawn** — the title, the tick
+    /// labels and the axis line of x and of y, as the render crate reports them
+    /// from the axes it drew. In the plot's own scene, the tile's top-left corner
+    /// at the origin, so [`Self::rect`] places them on the page; nothing in the
+    /// shell works an axis's layout out for itself. A plot that draws no axis
+    /// carries none. Read by [`Self::axis_part_at`].
+    pub axes: PlotAxes,
+}
+
+/// One of the three parts of an axis a pointer can land on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AxisPart {
+    /// The axis's title.
+    Title,
+    /// The axis's tick labels.
+    Labels,
+    /// The axis line with its tick marks, and the reach it has into the data area.
+    Line,
+}
+
+/// The axis part under a point, and whether the point is inside the data area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AxisHit {
+    /// The channel whose axis it is: [`Channel::X`] or [`Channel::Y`].
+    pub channel: Channel,
+    /// Which part of that axis.
+    pub part: AxisPart,
+    /// Whether the point is inside [`PlotHandle::data_area`]. The axis line's
+    /// strip reaches into it, and a mark may be under the pointer there; a mark
+    /// is the click's before an axis is.
+    pub in_data_area: bool,
 }
 
 impl PlotHandle {
+    /// **The axis part under `p`**, a point on the same plane as [`Self::rect`],
+    /// or `None` when it is on no part.
+    ///
+    /// Tried in this order: x's title, x's labels, x's line, then y's, so where
+    /// two parts overlap, as the two lines' reaches do at the plot's lower-left
+    /// corner, x has it. The title and the labels are outside the data area; the
+    /// line's strip reaches into it and `in_data_area` says whether `p` is there.
+    #[must_use]
+    pub fn axis_part_at(&self, p: kurbo::Point) -> Option<AxisHit> {
+        let local = kurbo::Point::new(p.x - self.rect.x, p.y - self.rect.y);
+        let area = self.data_area();
+        let in_data_area = p.x >= area.x
+            && p.x <= area.x + area.width
+            && p.y >= area.y
+            && p.y <= area.y + area.height;
+        let part_of = |axis: &AxisTargets| {
+            if axis.title.is_some_and(|r| r.contains(local)) {
+                Some(AxisPart::Title)
+            } else if axis.labels.is_some_and(|r| r.contains(local)) {
+                Some(AxisPart::Labels)
+            } else if axis.line.contains(local) {
+                Some(AxisPart::Line)
+            } else {
+                None
+            }
+        };
+        [(Channel::X, self.axes.x), (Channel::Y, self.axes.y)]
+            .into_iter()
+            .find_map(|(channel, axis)| {
+                let part = part_of(&axis?)?;
+                Some(AxisHit {
+                    channel,
+                    part,
+                    in_data_area,
+                })
+            })
+    }
+
     /// **The plot's data area**, on the same plane as [`Self::rect`]: the
     /// placed allocation less the margins its [`Self::layout`] was drawn with,
     /// which hold the tick labels and the axis and plot titles. What a gesture
@@ -2526,6 +2595,9 @@ fn compose_from_results(
             colour_reverse,
             ink,
         );
+        // Where the axes just drawn put their title, labels and line, taken
+        // from the routine that drew them and kept on the plot's handle.
+        let axes = plot_axis_targets(&refs, &titles, tick_counts, &tick_formats, &scales);
         // The rows past each end the draw held at the file's numbers, counted
         // over the marks that draw rows and drawn at that end. Taken here, on
         // every composition, so a re-present after a brush counts the rows the
@@ -2653,6 +2725,7 @@ fn compose_from_results(
             committed_rect: None,
             legend_declared: false,
             legend_below: None,
+            axes,
         });
     }
     crate::legend::declare_legends(spec, viewport, &mut plots);
