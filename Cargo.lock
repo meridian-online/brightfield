@@ -646,7 +646,7 @@ dependencies = [
  "serde",
  "serde_yaml",
  "sqlparser 0.61.0",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -753,7 +753,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

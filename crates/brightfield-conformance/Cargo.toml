@@ -8,13 +8,13 @@ repository.workspace = true
 description = "Portability contract between Mosaic web specs and brightfield: preflight SupportReport, deviation registry, layered conformance runner."
 
 [dependencies]
-brightfield-spec = { path = "../brightfield-spec" }
-brightfield-sql = { path = "../brightfield-sql" }
-serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
-thiserror = "1"
-indexmap = { version = "2", features = ["serde"] }
-sqlparser = { version = "0.61", features = ["visitor"] }
+brightfield-spec = { workspace = true }
+brightfield-sql = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+sqlparser = { workspace = true }
 
 # No miette — library boundary discipline inherited from brightfield-spec.
 

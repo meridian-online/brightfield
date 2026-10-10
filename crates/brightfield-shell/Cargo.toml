@@ -14,11 +14,11 @@ default-run = "brightfield-shell"
 
 [dependencies]
 # The framework-free render/host seam + Vello renderer + scene builders.
-brightfield-render = { path = "../brightfield-render" }
+brightfield-render = { workspace = true }
 # Spec -> engine -> executed marks -> Vello scene pipeline (all framework-free).
-brightfield-engine = { path = "../brightfield-engine" }
-brightfield-spec = { path = "../brightfield-spec" }
-brightfield-sql = { path = "../brightfield-sql" }
+brightfield-engine = { workspace = true }
+brightfield-spec = { workspace = true }
+brightfield-sql = { workspace = true }
 # The portability contract: the preflight walk answering "which parts of this
 # spec can we not draw", and the LoadDiagnostics value carrying that answer
 # beside every warning the parse and the analysis produced. This crate was a
@@ -26,14 +26,14 @@ brightfield-sql = { path = "../brightfield-sql" }
 # fully-built mechanism came to tell the user nothing.
 brightfield-conformance = { path = "../brightfield-conformance" }
 # Meridian design tokens.
-meridian-design = { git = "https://github.com/meridian-online/design", rev = "194322fe70b84e336d9910f78a7afa409d073e82" }
+meridian-design = { workspace = true }
 # The egui emitter of those tokens (the design repo's third thin emitter): the
 # `Style`/`Visuals`/font bridge and `Mode`, re-exported under this crate's
 # `design` module so `brightfield_shell::design::…` call sites are unchanged.
 # The bridge used to live in brightfield-shell/src/design.rs; it now lives here,
 # which is where ADR 0003/0011 always said an emitter belongs. A `[patch]` in
 # the workspace root points both design crates at a side-by-side clone.
-meridian-egui = { git = "https://github.com/meridian-online/design", rev = "194322fe70b84e336d9910f78a7afa409d073e82" }
+meridian-egui = { workspace = true }
 
 # VERSION LOCK — egui 0.35 rides wgpu 29, the same wgpu major Vello 0.9 uses, so
 # `egui_wgpu`'s wgpu and `vello::wgpu` resolve to ONE crate instance and therefore
@@ -41,24 +41,24 @@ meridian-egui = { git = "https://github.com/meridian-online/design", rev = "1943
 # samples directly, with no second device and no CPU readback. Two wgpu majors in
 # the graph would make the device types incompatible and force the readback back.
 # Bump egui and vello TOGETHER, and only to versions that still share a wgpu major.
-egui = "0.35"
+egui = { workspace = true }
 eframe = { version = "0.35", default-features = false, features = ["wgpu"] }
 egui-wgpu = "0.35"
 
-vello = { version = "0.9", features = ["wgpu"] }
-kurbo = "0.13"
-peniko = "0.6"
-pollster = "0.4"
+vello = { workspace = true, features = ["wgpu"] }
+kurbo = { workspace = true }
+peniko = { workspace = true }
+pollster = { workspace = true }
 image = "0.25"
 # RecordBatch + batch concat for the mark-execution pipeline.
-arrow = { version = "58", default-features = false }
+arrow = { workspace = true }
 # --script ndjson parsing for the headless shot's scripted RawInput.
-serde_json = "1"
+serde_json = { workspace = true }
 # The local time zone's offset at an instant, for the Versions panel's *when*
 # (`today 14:02`). Already in the graph, with `clock` on; named
 # here so the shell reads it directly, and with no default features so it adds
 # nothing the graph did not hold.
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { workspace = true }
 # `serde` is egui_tiles' only feature and its default, and it is the whole of
 # what makes a dock layout persistable. This crate builds a `Tree` and never
 # serialises one, so `default-features = false` was costing it nothing today
@@ -66,21 +66,21 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Matched anyway, because the shell is about to take the workbench's layout
 # persistence over and a dependency that opts out of the feature its successor
 # is built on is a trap laid for the increment after this one.
-egui_tiles = { version = "0.16", features = ["serde"] }
-brightfield-protocol = { version = "0.1.0", path = "../brightfield-protocol" }
-# The runner behind the ledger strip's Run control — `crate::run`. The SAME
-# package and rev `brightfield-protocol` links for its spec loader (the two
-# entries unify to one build), with `cli` on for the one item it adds:
+egui_tiles = { workspace = true, features = ["serde"] }
+brightfield-protocol = { workspace = true }
+# The runner behind the ledger strip's Run control — `crate::run`. The workspace's
+# one `arc`, the package and rev `brightfield-protocol` links for its spec loader,
+# with `cli` on for the one item it adds:
 # `arc::cli_main`, arc's own binary entry point. That item parses the calling
 # process's argv, reads its working directory and ends the process on an error,
 # so nothing in this crate calls it on a thread of the window: `main` hands a
 # child process of this same binary to it, started with
 # `run::RUNNER_ENV` set, and the window waits on that child from a worker.
 # What `cli` adds to the build is clap; `http-fetch`, the other half of it, was
-# already on. BUMPING moves this rev with `brightfield-protocol`'s, in lockstep —
-# README §"The arcform dependency".
-arc = { git = "https://github.com/meridian-online/arcform", rev = "f0561cd255e010e12a6ae82edc0b70785c3d19fc", default-features = false, features = ["cli", "http-fetch"] }
-brightfield-keys = { version = "0.1.0", path = "../brightfield-keys" }
+# already on. The rev is on `arc` in the workspace root's `[workspace.dependencies]`,
+# and BUMPING is README §"The arcform dependency".
+arc = { workspace = true, features = ["cli"] }
+brightfield-keys = { workspace = true }
 # The framework-free argument collector the argument-prompt overlay drives —
 # consumed read-only, like the keys registry above.
 brightfield-model = { version = "0.1.0", path = "../brightfield-model" }
@@ -134,11 +134,11 @@ egui_kittest = { version = "0.35", features = ["wgpu", "snapshot"] }
 # Writes the Parquet fixture `tests/data_file.rs` opens — the same DuckDB the
 # engine reads it back with, so the gate cannot pass because a second writer's
 # idea of Parquet happens to match. Not a new crate in the graph: it is
-# brightfield-engine's own dependency, on the same version line and the same
+# brightfield-engine's own dependency, on the workspace's one version line and the same
 # `bundled` and `parquet` features (features unify, so this declaration adds no
 # build) — `parquet` stated here too so this test-side writer is not relying on
 # the engine's declaration to have its reader.
-duckdb = { version = "1", features = ["bundled", "parquet"] }
+duckdb = { workspace = true, features = ["parquet"] }
 # Reads the bundled gallery dataset back against the SHA-256 its own
 # Frictionless descriptor declares — `the_bundled_dataset_is_the_bytes_its_
 # descriptor_declares` in `tests/front_door.rs`. Not a new crate in the graph:
