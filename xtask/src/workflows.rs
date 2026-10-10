@@ -9,7 +9,8 @@
 //! * a workflow that a pull request triggers calling a gate script or cargo
 //!   directly rather than through the command, which CI would run and a local
 //!   run would not. The two calls that are not gates are named in
-//!   `DIRECT_CALLS_ALLOWED`, each with its reason.
+//!   `DIRECT_CALLS_ALLOWED`, and the one such workflow that stays outside the
+//!   command is named in `WORKFLOWS_OUTSIDE_THE_COMMAND`, each with its reason.
 //!
 //! The reader is line-based rather than a YAML parser: it reads `run:` values
 //! (a single line, or a block scalar's more-indented lines) and the `on:`
@@ -40,11 +41,17 @@ pub const DIRECT_CALLS_ALLOWED: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// Workflows a pull request can trigger that call scripts directly and stay
+/// outside the command, by file name, with the reason.
+pub const WORKFLOWS_OUTSIDE_THE_COMMAND: &[(&str, &str)] = &[(
+    "brew-install-branch.yml",
+    "it runs only on a pull request that changes packaging or the formula, builds the release binary and installs it through Homebrew; that is not a step to run on a person's machine before each commit, and release.yml runs the installed-copy check on a tag",
+)];
+
 /// Every `.yml` and `.yaml` file in `.github/workflows`, sorted by path.
 pub fn read_all(root: &Path) -> Result<Vec<Workflow>, String> {
     let dir = root.join(".github/workflows");
-    let entries =
-        fs::read_dir(&dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
+    let entries = fs::read_dir(&dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
     let mut workflows = Vec::new();
     for entry in entries {
         let path = entry
@@ -211,7 +218,10 @@ pub fn coverage(steps: &[&str], workflows: &[Workflow]) -> Vec<String> {
     let mut invoked: Vec<String> = Vec::new();
     for workflow in workflows {
         let file = workflow.path.rsplit('/').next().unwrap_or(&workflow.path);
-        let on_pull_request = runs_on_pull_request(&workflow.text);
+        let outside = WORKFLOWS_OUTSIDE_THE_COMMAND
+            .iter()
+            .any(|(name, _)| *name == file);
+        let checked = runs_on_pull_request(&workflow.text) && !outside;
         for (line_no, line) in run_lines(&workflow.text) {
             for name in invoked_steps(&line) {
                 if !steps.contains(&name.as_str()) {
@@ -222,7 +232,7 @@ pub fn coverage(steps: &[&str], workflows: &[Workflow]) -> Vec<String> {
                 }
                 invoked.push(name);
             }
-            if !on_pull_request {
+            if !checked {
                 continue;
             }
             if let Some(call) = direct_gate_call(&line) {
@@ -259,7 +269,8 @@ mod tests {
         }
     }
 
-    const PR: &str = "on:\n  push:\n    branches: [main]\n  pull_request:\n\njobs:\n  a:\n    steps:\n";
+    const PR: &str =
+        "on:\n  push:\n    branches: [main]\n  pull_request:\n\njobs:\n  a:\n    steps:\n";
 
     #[test]
     fn run_values_are_read_in_both_forms_and_comments_are_left_out() {
@@ -267,7 +278,12 @@ mod tests {
         let lines: Vec<String> = run_lines(text).into_iter().map(|(_, l)| l).collect();
         assert_eq!(
             lines,
-            ["cargo xtask ci --step fmt", "git fetch origin main", "cargo xtask ci --step clippy", "echo done"]
+            [
+                "cargo xtask ci --step fmt",
+                "git fetch origin main",
+                "cargo xtask ci --step clippy",
+                "echo done"
+            ]
         );
     }
 
@@ -300,7 +316,10 @@ mod tests {
 
     #[test]
     fn a_carried_step_no_workflow_invokes_is_reported_by_name() {
-        let files = [workflow("a.yml", &format!("{PR}      - run: cargo xtask ci --step one\n"))];
+        let files = [workflow(
+            "a.yml",
+            &format!("{PR}      - run: cargo xtask ci --step one\n"),
+        )];
         let problems = coverage(&["one", "orphan"], &files);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("'orphan'") && problems[0].contains("invoked by no workflow"));
@@ -311,7 +330,11 @@ mod tests {
         let files = [workflow("a.yml", &format!("{PR}      - run: cargo xtask ci --step one\n      - run: cargo xtask ci --step ghost\n"))];
         let problems = coverage(&["one"], &files);
         assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].starts_with(".github/workflows/a.yml:10 "), "{}", problems[0]);
+        assert!(
+            problems[0].starts_with(".github/workflows/a.yml:10 "),
+            "{}",
+            problems[0]
+        );
         assert!(problems[0].contains("'ghost'") && problems[0].contains("does not carry"));
     }
 
@@ -324,16 +347,46 @@ mod tests {
         assert!(problems[1].contains("cargo test --workspace"));
 
         let tag_only = "on:\n  push:\n    tags: ['v*']\njobs:\n  a:\n    steps:\n      - run: ./scripts/package.sh\n";
-        let files = [workflow("a.yml", &format!("{PR}      - run: cargo xtask ci --step one\n")), workflow("release.yml", tag_only)];
+        let files = [
+            workflow(
+                "a.yml",
+                &format!("{PR}      - run: cargo xtask ci --step one\n"),
+            ),
+            workflow("release.yml", tag_only),
+        ];
         assert_eq!(coverage(&["one"], &files), Vec::<String>::new());
     }
 
     #[test]
+    fn a_workflow_named_outside_the_command_may_call_scripts_and_no_other_may() {
+        let direct = format!("{PR}      - run: scripts/package.sh \"$TAG\" aarch64-apple-darwin\n");
+        let named = workflow("brew-install-branch.yml", &direct);
+        let other = workflow("brew-install-other.yml", &direct);
+        let carried = workflow(
+            "a.yml",
+            &format!("{PR}      - run: cargo xtask ci --step one\n"),
+        );
+        assert_eq!(coverage(&["one"], &[named, carried]), Vec::<String>::new());
+        let carried = workflow(
+            "a.yml",
+            &format!("{PR}      - run: cargo xtask ci --step one\n"),
+        );
+        assert_eq!(coverage(&["one"], &[other, carried]).len(), 1);
+    }
+
+    #[test]
     fn the_allowed_direct_calls_pass_only_in_the_file_they_are_allowed_in() {
-        let fetch = "      - run: |\n          engine=$(scripts/fetch-duckdb-cli.sh \"$host\" dir)\n";
-        let in_test = workflow("test.yml", &format!("{PR}{fetch}      - run: cargo xtask ci --step one\n"));
+        let fetch =
+            "      - run: |\n          engine=$(scripts/fetch-duckdb-cli.sh \"$host\" dir)\n";
+        let in_test = workflow(
+            "test.yml",
+            &format!("{PR}{fetch}      - run: cargo xtask ci --step one\n"),
+        );
         assert_eq!(coverage(&["one"], &[in_test]), Vec::<String>::new());
-        let elsewhere = workflow("lint.yml", &format!("{PR}{fetch}      - run: cargo xtask ci --step one\n"));
+        let elsewhere = workflow(
+            "lint.yml",
+            &format!("{PR}{fetch}      - run: cargo xtask ci --step one\n"),
+        );
         assert_eq!(coverage(&["one"], &[elsewhere]).len(), 1);
     }
 

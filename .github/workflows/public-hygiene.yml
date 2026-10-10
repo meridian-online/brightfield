@@ -8,17 +8,21 @@ on:
 # Deliberately a workflow of its own rather than a job inside `test`:
 #
 # * `test` runs on `macos-15` with a long ceiling and a cold-ish build.
-#   The `planning-identifiers` job below needs no toolchain, no cache and no
-#   build — it is `git grep` over tracked files and finishes in seconds. It
-#   should be the first thing to go red, and it should still report when the
-#   Rust suite is queued or cancelled.
+#   The `planning-identifiers` job below builds nothing of the workspace: its
+#   checks are `git grep` and short scripts over tracked files, and the one
+#   compile it makes is the `xtask` crate that runs them, which has a single
+#   dependency. It should be the first thing to go red, and it should still
+#   report when the Rust suite is queued or cancelled.
 # * `test` cancels in-progress runs per ref. That job is cheap enough that it
 #   never needs cancelling, and a leak must be reported on every pushed commit.
 #
-# The `artifact-type-source` job at the foot of this file is the exception and
-# is a separate job for exactly that reason: it installs a Rust toolchain,
-# which the scan above must not have to wait behind. Its own comment argues
+# The `artifact-type-source` job at the foot of this file is a separate job
+# because its check reads the host triple from rustc; its own comment argues
 # why it needs one.
+#
+# Each step calls one step of `cargo xtask ci` by name, the command a local
+# run uses, so these jobs run what that command runs, and a step name the
+# command does not carry fails here with a line naming it.
 jobs:
   planning-identifiers:
     runs-on: ubuntu-latest
@@ -30,17 +34,28 @@ jobs:
       # creates `refs/remotes/origin/<base>`, so the range step would hit its
       # own "does not resolve to anything" error on every pull request — loud
       # rather than silent, but still a gate that never ran. Full history here
-      # is seconds, not minutes: this job needs no toolchain and no build.
+      # is seconds, not minutes: this job builds only the command.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # The toolchain the command is built with, the same pin as test.yml,
+      # lint.yml and release.yml. The steps below build the `xtask` crate and
+      # nothing else of the workspace.
+      - uses: dtolnay/rust-toolchain@1.95.0
+
+      # The command's own reading of the workflow files: every step it carries
+      # is invoked by a workflow, no workflow invokes a step it lacks, and no
+      # workflow a pull request triggers calls a gate around it.
+      - name: the command and the workflows agree
+        run: cargo xtask ci --step workflow-coverage
 
       # The gate's own regression test runs FIRST. A hygiene gate fails silently
       # in both directions — it can stop matching, or start matching honest
       # prose — so "the gate still works" has to be checked before "the tree is
       # clean" means anything.
       - name: hygiene gate self-test
-        run: ./scripts/check-public-hygiene-selftest.sh
+        run: cargo xtask ci --step public-hygiene-selftest
 
       # No `working-directory`. The gate cd's to the repo root itself, so its
       # scan is the whole repository rather than one directory — workspace
@@ -48,7 +63,7 @@ jobs:
       # allowlist, which quotes the strings it exists to permit, and whatever
       # `git grep -I` treats as binary.
       - name: private planning identifiers
-        run: ./scripts/check-public-hygiene.sh
+        run: cargo xtask ci --step public-hygiene
 
       # The two surfaces the step above cannot see: a commit's own message, and
       # a pull request's title and body. Same rule list,
@@ -56,7 +71,7 @@ jobs:
       # rules is how the second surface came to be uncovered while the first
       # was gated.
       - name: history hygiene gate self-test
-        run: ./scripts/check-history-hygiene-selftest.sh
+        run: cargo xtask ci --step history-hygiene-selftest
 
       # Scoped to NEW history only: the commits this push or pull request adds,
       # never the whole repository's past. This repository carries commits
@@ -70,16 +85,19 @@ jobs:
       # branch, computed locally rather than trusted from the event payload, so
       # a pull request opened against a moving target is still scanned for
       # exactly its own commits. On a push to `main` — after a merge — the base
-      # is the previous tip, so only what just landed is scanned.
+      # is the previous tip, so only what just landed is scanned. The base
+      # reaches the step in HISTORY_BASE; a local run without it scans from the
+      # merge base with origin/main.
       - name: private references in commit messages
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             git fetch --no-tags origin "${{ github.event.pull_request.base.ref }}"
-            BASE_SHA="$(git merge-base HEAD "origin/${{ github.event.pull_request.base.ref }}")"
+            HISTORY_BASE="$(git merge-base HEAD "origin/${{ github.event.pull_request.base.ref }}")"
           else
-            BASE_SHA="${{ github.event.before }}"
+            HISTORY_BASE="${{ github.event.before }}"
           fi
-          ./scripts/check-history-hygiene.sh --range "$BASE_SHA..HEAD"
+          export HISTORY_BASE
+          cargo xtask ci --step commit-messages
 
       # The pull request's own text, which is not in the repository and so is
       # in neither scan above. Passed through the environment rather than
@@ -90,26 +108,25 @@ jobs:
       # This reads the body AS OF THE EVENT THAT STARTED THIS RUN. A body
       # edited afterwards is covered by
       # .github/workflows/pr-text-hygiene.yml, which triggers on `edited` and
-      # runs this same step; that trigger is not here because it would
-      # re-run every step in this job on every typo fix in a description.
+      # runs the same scan; that trigger is not here because it would re-run
+      # every step in this job on every typo fix in a description. This is the
+      # step a local `cargo xtask ci` lists as running only in CI.
       - name: private references in the pull request title and body
         if: github.event_name == 'pull_request'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: |
-          printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" >"$RUNNER_TEMP/pr-text.txt"
-          ./scripts/check-history-hygiene.sh --text "$RUNNER_TEMP/pr-text.txt"
+        run: cargo xtask ci --step pr-text
 
       # Second honesty gate, same shape: upstream Mosaic performance figures
       # must not be restated as this project's own. Our numbers live in
       # benchmarks/results/, measured by the committed harness. Self-test
       # first, for the same reason as above.
       - name: borrowed-benchmarks gate self-test
-        run: ./scripts/check-borrowed-benchmarks-selftest.sh
+        run: cargo xtask ci --step borrowed-benchmarks-selftest
 
       - name: borrowed benchmark figures
-        run: ./scripts/check-borrowed-benchmarks.sh
+        run: cargo xtask ci --step borrowed-benchmarks
 
       # Third honesty gate: a promise about performance at scale has to say
       # which marks it holds for. Interaction cost stops tracking row count for
@@ -124,10 +141,10 @@ jobs:
       # file enumeration, so a scan that has stopped reading files reddens here
       # rather than passing over a tree full of them.
       - name: scale-claims gate self-test
-        run: ./scripts/check-scale-claims.py --self-test
+        run: cargo xtask ci --step scale-claims-selftest
 
       - name: unqualified scale claims
-        run: ./scripts/check-scale-claims.py
+        run: cargo xtask ci --step scale-claims
 
       # Fourth: our OWN measured figures, restated in prose where nothing keeps
       # them in step with the record. The borrowed-benchmarks gate above stops
@@ -140,19 +157,20 @@ jobs:
       # self-test reaches it only through the cases that run the script as a
       # process over a copy of the checkout and read its exit code.
       - name: measured-figures gate self-test
-        run: ./scripts/check-measured-figures.py --self-test
+        run: cargo xtask ci --step measured-figures-selftest
 
       - name: measured figures match the record
-        run: ./scripts/check-measured-figures.py
+        run: cargo xtask ci --step measured-figures
 
       # Release-packaging honesty, same cheap-shell shape: package.sh must
       # refuse to build an artifact whose tag disagrees with the crate version.
       # The self-test exercises both directions and runs no compiler (the guard
       # fails before rustc/cargo; the pass path stubs them), so it belongs in
-      # this toolchain-free job rather than in the tagged release workflow —
+      # this job, whose checks run no compiler, rather than in the tagged
+      # release workflow —
       # where it would only ever run after a tag, too late to catch the mismatch.
       - name: package version-guard self-test
-        run: ./scripts/package-version-guard-selftest.sh
+        run: cargo xtask ci --step package-version-guard-selftest
 
       # The bundled-extension guard, for the same reason and by the same
       # argument. It is called from two places that both run only on a release
@@ -163,7 +181,7 @@ jobs:
       # toolchain, no network and no real extension: its fixtures are a few
       # hundred bytes of synthesised DuckDB metadata trailer.
       - name: bundled-extension guard self-test
-        run: ./scripts/check-bundled-extension-selftest.sh
+        run: cargo xtask ci --step bundled-extension-selftest
 
       # THE TYPE SOURCE. These are here for the same reason the two above are:
       # the checks they exercise run on a tag and nowhere else. That is the
@@ -180,10 +198,10 @@ jobs:
       # so a consumer that quietly kept a literal is caught while the pin still
       # reads as reviewed.
       - name: the FineType pin's consumers agree — self-test
-        run: ./scripts/check-finetype-pin-selftest.sh
+        run: cargo xtask ci --step finetype-pin-selftest
 
       - name: the FineType pin's consumers agree
-        run: ./scripts/check-finetype-pin.sh
+        run: cargo xtask ci --step finetype-pin
 
       # The step above establishes that the read-back script is NAMED in
       # release.yml. Four edits satisfy that and remove the protection — a
@@ -194,29 +212,29 @@ jobs:
       # which artefacts were opened, with which arguments, and whether a refusal
       # stops the job.
       #
-      # Toolchain-free, which is why it belongs in this job: it asks
+      # It runs no compiler, which is why it belongs in this job: it asks
       # scripts/check-artifact-type-source.sh which artefact shapes it can open,
       # and that answer comes from a `case` on the filename, before the script
       # reads a host triple from rustc. The `.dmg` cases report "a .dmg can only
       # be attached on macOS" here and are still classified as artefacts the
       # release must load-verify, which is the answer that matters.
       - name: the release reads back what it publishes — self-test
-        run: ./scripts/check-release-readback.py --self-test
+        run: cargo xtask ci --step release-readback-selftest
 
       - name: the release reads back what it publishes
-        run: ./scripts/check-release-readback.py
+        run: cargo xtask ci --step release-readback
 
       # The fetch, against a loopback server holding fixture assets. Url
       # construction, curl, sidecar parse, digest comparison, unpack and
       # assembly all run; only the host differs from a release.
       - name: FineType bundle fetch — self-test
-        run: ./scripts/fetch-finetype-bundle-selftest.sh
+        run: cargo xtask ci --step fetch-finetype-bundle-selftest
 
       # Packaging, not the check inside it. A deliberate platform, ABI or
       # version mismatch must fail the packaging RUN, before the compiler is
       # invoked — which is also what lets this run on a runner with no Rust.
       - name: packaging refuses a bundle that would not load — self-test
-        run: ./scripts/package-finetype-selftest.sh
+        run: cargo xtask ci --step package-finetype-selftest
 
       # The tap formula's install block, on the generator that writes it. The
       # release workflow rewrites Formula/brightfield.rb wholesale on every tag
@@ -225,7 +243,7 @@ jobs:
       # generator, requires the check to accept what it wrote, and requires it
       # to refuse both of the ways the install block can be wrong.
       - name: the tap formula installs the tarball's tree — self-test
-        run: ./scripts/check-formula-layout-selftest.sh
+        run: cargo xtask ci --step formula-layout-selftest
 
       # The formula-asset check is the odd one here: only its self-test can run
       # on a pull request, because the check itself addresses a published
@@ -239,7 +257,7 @@ jobs:
       # network beyond localhost and no toolchain — that a wrong checksum and an
       # unresolvable url each still turn it red.
       - name: formula-asset check self-test
-        run: ./scripts/check-formula-asset-selftest.sh
+        run: cargo xtask ci --step formula-asset-selftest
 
       # The installed-copy check is the same shape as the one above: it needs a
       # published release and a real Homebrew, so it runs from release.yml on a
@@ -252,10 +270,12 @@ jobs:
       # the check cannot tell which release it is looking at. It also reads
       # release.yml for the job that puts that failure in the release run.
       - name: installed-copy check self-test
-        run: ./scripts/check-brew-install-selftest.sh
+        run: cargo xtask ci --step brew-install-selftest
 
-  # THE ONE GATE IN THIS WORKFLOW THAT NEEDS A RUST TOOLCHAIN, and it is a job
-  # of its own so that the scan above keeps the property its comment claims.
+  # THE ONE GATE IN THIS WORKFLOW WHOSE CHECK READS RUSTC. It became a job of
+  # its own so the scan above could run with no toolchain; that scan installs
+  # one now, to build the command, and this job stays its own check on a pull
+  # request's rollup, named for the artefact it reads.
   #
   # scripts/check-artifact-type-source.sh reads the host triple from `rustc -vV`
   # AND from a uname table and refuses when they disagree, so it exits rather
@@ -264,9 +284,7 @@ jobs:
   # test chose: changing one arm of that table used to leave every case in that
   # self-test green, the structural pins included, while a real release printed
   # `== not run` for the artefact people download. rustc is load-bearing on
-  # both sides and neither side has a
-  # toolchain-free substitute, which is why this job exists rather than the step
-  # staying in the scan above.
+  # both sides and neither side has a substitute that does without it.
   #
   # THE TOOLCHAIN STEP IS EXPLICIT, not inherited. A `rustc` that is merely
   # preinstalled on the runner image is a dependency nothing in this repository
@@ -284,4 +302,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
-      - run: ./scripts/check-artifact-type-source-selftest.sh
+      - run: cargo xtask ci --step artifact-type-source-selftest

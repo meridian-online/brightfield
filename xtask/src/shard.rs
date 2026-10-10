@@ -136,7 +136,12 @@ pub fn test_targets(metadata_json: &str) -> Result<BTreeMap<String, usize>, Stri
 /// The shard this process is, from the environment `test.yml` sets, or `None`
 /// when none of the four variables is set, which is a local run.
 pub fn shard_from_env(get: impl Fn(&str) -> Option<String>) -> Result<Option<Shard>, String> {
-    const VARS: [&str; 4] = ["SHARD_NAME", "SHARD_INDEX", "SHARD_TOTAL", "ONE_THREAD_SHARDS"];
+    const VARS: [&str; 4] = [
+        "SHARD_NAME",
+        "SHARD_INDEX",
+        "SHARD_TOTAL",
+        "ONE_THREAD_SHARDS",
+    ];
     let values: Vec<Option<String>> = VARS.iter().map(|v| get(v)).collect();
     if values.iter().all(Option::is_none) {
         return Ok(None);
@@ -256,10 +261,22 @@ pub fn select(
         ));
     }
     let (role, part, parts, items, preload) = if shard.index < shard.one_thread {
-        (Role::OneThread, shard.index, shard.one_thread, one_thread_items, 0.0)
+        (
+            Role::OneThread,
+            shard.index,
+            shard.one_thread,
+            one_thread_items,
+            0.0,
+        )
     } else {
         let part = shard.index - shard.one_thread;
-        (Role::Default, part, default_shards, default_items, protocols_seconds)
+        (
+            Role::Default,
+            part,
+            default_shards,
+            default_items,
+            protocols_seconds,
+        )
     };
     if !shard.name.starts_with(role.word()) {
         return Err(format!(
@@ -274,7 +291,11 @@ pub fn select(
     let (packed, loads) = pack(&items, parts, preload, seconds);
     let mut report = Vec::new();
     for (number, (members, load)) in packed.iter().zip(&loads).enumerate() {
-        let here = if number == part { "  <- this shard" } else { "" };
+        let here = if number == part {
+            "  <- this shard"
+        } else {
+            ""
+        };
         report.push(format!(
             "{} part {} of {parts}: {} item(s), about {load:.0} s{here}",
             role.word(),
@@ -283,7 +304,11 @@ pub fn select(
         ));
     }
     let mine = packed[part].clone();
-    report.push(format!("this shard runs, in {} part {} of {parts}:", role.word(), part + 1));
+    report.push(format!(
+        "this shard runs, in {} part {} of {parts}:",
+        role.word(),
+        part + 1
+    ));
     report.push(format!("  {}", mine.join(" ")));
     let chosen = Some(Part {
         items: mine,
@@ -336,7 +361,9 @@ mod tests {
 
     #[test]
     fn an_empty_serial_list_and_a_malformed_figure_are_refused() {
-        assert!(read_lists("# target-seconds: a=1\n").unwrap_err().contains("serial-targets"));
+        assert!(read_lists("# target-seconds: a=1\n")
+            .unwrap_err()
+            .contains("serial-targets"));
         assert!(read_lists("# serial-targets: a\n# target-seconds: a=x\n")
             .unwrap_err()
             .contains("'a=x'"));
@@ -357,7 +384,9 @@ mod tests {
     fn a_partial_shard_environment_is_refused_and_none_is_a_local_run() {
         assert_eq!(shard_from_env(|_| None).unwrap(), None);
         let partial = shard_from_env(|v| (v == "SHARD_NAME").then(|| "default-1".to_owned()));
-        assert!(partial.unwrap_err().contains("SHARD_INDEX, SHARD_TOTAL, ONE_THREAD_SHARDS is not set"));
+        assert!(partial
+            .unwrap_err()
+            .contains("SHARD_INDEX, SHARD_TOTAL, ONE_THREAD_SHARDS is not set"));
         let full = shard_from_env(|v| {
             Some(match v {
                 "SHARD_NAME" => "default-1".to_owned(),
@@ -371,13 +400,19 @@ mod tests {
 
     #[test]
     fn packing_places_the_longest_first_on_the_lightest_part() {
-        let seconds: HashMap<String, f64> =
-            [("a", 10.0), ("b", 8.0), ("c", 3.0)].iter().map(|(k, v)| ((*k).to_owned(), *v)).collect();
+        let seconds: HashMap<String, f64> = [("a", 10.0), ("b", 8.0), ("c", 3.0)]
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), *v))
+            .collect();
         let (parts, loads) = pack(&strings(&["c", "a", "b", "d"]), 2, 0.0, &seconds);
         assert_eq!(parts, [strings(&["a", "d"]), strings(&["b", "c"])]);
         assert_eq!(loads, [12.0, 11.0]);
         let (parts, _) = pack(&strings(&["a", "b"]), 2, 20.0, &seconds);
-        assert_eq!(parts, [strings(&["a", "b"]), Vec::<String>::new()], "the preload starts on the last part");
+        assert_eq!(
+            parts,
+            [strings(&["a", "b"]), Vec::<String>::new()],
+            "the preload starts on the last part"
+        );
     }
 
     #[test]
@@ -392,7 +427,10 @@ mod tests {
             strings(&["--test", "gpu_a", "--test", "gpu_b", "--test", "gpu_c", "--lib"])
         );
         let other = sel.default.unwrap();
-        assert_eq!(other.items, strings(&["plain_a", "plain_b", "@bins", "@doc"]));
+        assert_eq!(
+            other.items,
+            strings(&["plain_a", "plain_b", "@bins", "@doc"])
+        );
         assert!(other.doc());
         assert!(sel.protocols);
     }
@@ -401,19 +439,35 @@ mod tests {
     fn every_item_runs_on_exactly_one_shard_and_only_the_last_default_shard_runs_the_protocols() {
         let (serial, seconds) = read_lists(YML).unwrap();
         let found = targets(&["gpu_a", "gpu_b", "gpu_c", "plain_a", "plain_b", "plain_c"]);
-        let names = ["one-thread-1", "one-thread-2", "default-1", "default-2", "default-3"];
+        let names = [
+            "one-thread-1",
+            "one-thread-2",
+            "default-1",
+            "default-2",
+            "default-3",
+        ];
         let mut seen: Vec<String> = Vec::new();
         let mut protocols = Vec::new();
         for (index, name) in names.iter().enumerate() {
             let sel = select(&serial, &seconds, &found, Some(&shard(name, index))).unwrap();
-            assert!(sel.one_thread.is_some() != sel.default.is_some(), "a shard runs one group");
+            assert!(
+                sel.one_thread.is_some() != sel.default.is_some(),
+                "a shard runs one group"
+            );
             if index < 2 {
                 assert!(sel.one_thread.is_some(), "{name} runs the one-thread group");
             }
-            seen.extend(sel.one_thread.into_iter().chain(sel.default).flat_map(|p| p.items));
+            seen.extend(
+                sel.one_thread
+                    .into_iter()
+                    .chain(sel.default)
+                    .flat_map(|p| p.items),
+            );
             protocols.push(sel.protocols);
         }
-        let mut expected = strings(&["gpu_a", "gpu_b", "gpu_c", "@lib", "plain_a", "plain_b", "plain_c", "@bins", "@doc"]);
+        let mut expected = strings(&[
+            "gpu_a", "gpu_b", "gpu_c", "@lib", "plain_a", "plain_b", "plain_c", "@bins", "@doc",
+        ]);
         seen.sort();
         expected.sort();
         assert_eq!(seen, expected);
@@ -424,10 +478,14 @@ mod tests {
     fn a_serial_name_that_is_not_one_target_and_a_misnamed_shard_are_refused() {
         let (serial, seconds) = read_lists(YML).unwrap();
         let missing = targets(&["gpu_a", "gpu_b"]);
-        assert!(select(&serial, &seconds, &missing, None).unwrap_err().contains("'gpu_c'"));
+        assert!(select(&serial, &seconds, &missing, None)
+            .unwrap_err()
+            .contains("'gpu_c'"));
         let mut twice = targets(&["gpu_a", "gpu_b", "gpu_c"]);
         twice.insert("gpu_b".to_owned(), 2);
-        assert!(select(&serial, &seconds, &twice, None).unwrap_err().contains("matches 2"));
+        assert!(select(&serial, &seconds, &twice, None)
+            .unwrap_err()
+            .contains("matches 2"));
         let found = targets(&["gpu_a", "gpu_b", "gpu_c"]);
         let wrong = select(&serial, &seconds, &found, Some(&shard("default-1", 0)));
         assert!(wrong.unwrap_err().contains("runs the one-thread group"));

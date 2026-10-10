@@ -75,7 +75,11 @@ fn main() -> ExitCode {
         Invocation::List => {
             let width = STEPS.iter().map(|s| s.name.len()).max().unwrap_or(0);
             for step in STEPS {
-                let tag = if step.only_in_ci.is_some() { "  (CI only)" } else { "" };
+                let tag = if step.only_in_ci.is_some() {
+                    "  (CI only)"
+                } else {
+                    ""
+                };
                 println!("{:<width$}  {}{tag}", step.name, step.runs);
             }
             ExitCode::SUCCESS
@@ -135,8 +139,14 @@ mod tests {
     #[test]
     fn the_command_line_reads_a_full_run_one_step_and_the_list() {
         assert_eq!(parse(&words("ci")), Ok(Invocation::All));
-        assert_eq!(parse(&words("ci --step fmt")), Ok(Invocation::One("fmt".to_owned())));
-        assert_eq!(parse(&words("ci --step=doc")), Ok(Invocation::One("doc".to_owned())));
+        assert_eq!(
+            parse(&words("ci --step fmt")),
+            Ok(Invocation::One("fmt".to_owned()))
+        );
+        assert_eq!(
+            parse(&words("ci --step=doc")),
+            Ok(Invocation::One("doc".to_owned()))
+        );
         assert_eq!(parse(&words("ci --list")), Ok(Invocation::List));
         assert!(parse(&words("ci --step")).is_err());
         assert!(parse(&words("lint")).is_err());

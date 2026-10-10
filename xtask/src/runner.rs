@@ -96,7 +96,11 @@ pub fn summary(rows: &[Row], steps: &[Step]) -> String {
                 ("FAILED", wall(*took), format!("  {reason}"))
             }
             Outcome::Skipped => ("skipped", String::new(), String::new()),
-            Outcome::OnlyInCi(_) => ("ci only", String::new(), "  not run here; see below".to_owned()),
+            Outcome::OnlyInCi(_) => (
+                "ci only",
+                String::new(),
+                "  not run here; see below".to_owned(),
+            ),
         };
         let _ = writeln!(out, "  {word:<8} {time:>8}  {:<width$}{note}", row.name);
     }
@@ -126,7 +130,11 @@ pub fn summary(rows: &[Row], steps: &[Step]) -> String {
             );
         }
         None => {
-            let _ = writeln!(out, "all {ran} step(s) that run here passed, {} in all", wall(total));
+            let _ = writeln!(
+                out,
+                "all {ran} step(s) that run here passed, {} in all",
+                wall(total)
+            );
         }
     }
     out
@@ -207,7 +215,11 @@ mod tests {
             started.push(s.name);
             Ok(())
         });
-        assert_eq!(started, ["a", "c"], "a CI-only step does not start in a full run");
+        assert_eq!(
+            started,
+            ["a", "c"],
+            "a CI-only step does not start in a full run"
+        );
         assert!(matches!(rows[0].outcome, Outcome::Passed(_)));
         assert_eq!(rows[1].outcome, Outcome::OnlyInCi("it reads the event"));
         assert!(matches!(rows[2].outcome, Outcome::Passed(_)));
@@ -216,7 +228,12 @@ mod tests {
 
     #[test]
     fn the_summary_names_each_step_in_order_the_failed_one_and_the_ci_only_reason() {
-        let steps = [step("first"), step("second"), ci_only("third"), step("fourth")];
+        let steps = [
+            step("first"),
+            step("second"),
+            ci_only("third"),
+            step("fourth"),
+        ];
         let rows = vec![
             Row {
                 name: "first",
@@ -238,7 +255,11 @@ mod tests {
         let text = summary(&rows, &steps);
         let lines: Vec<&str> = text.lines().collect();
         assert!(lines[1].contains("ok") && lines[1].contains("1.5s") && lines[1].contains("first"));
-        assert!(lines[2].contains("FAILED") && lines[2].contains("1m 15s") && lines[2].contains("second"));
+        assert!(
+            lines[2].contains("FAILED")
+                && lines[2].contains("1m 15s")
+                && lines[2].contains("second")
+        );
         assert!(lines[2].contains("exit status: 1"));
         assert!(lines[3].contains("skipped") && lines[3].contains("third"));
         assert!(lines[4].contains("skipped") && lines[4].contains("fourth"));

@@ -26,6 +26,10 @@ env:
 # then a site-by-site rustdoc triage in which every finding is fixed and no
 # `#[allow]` was added at all. Each gate is green on arrival, not aspirational —
 # and each has been watched fail on a deliberately broken tree before landing.
+#
+# Each step below calls one step of `cargo xtask ci` by name, the command a
+# local run uses, so this job runs what that command runs and a step name the
+# command does not carry fails here with a line naming it.
 jobs:
   fmt-clippy:
     # macos-15, matching `test`, and NOT the ubuntu-latest that `public-hygiene`
@@ -60,7 +64,7 @@ jobs:
       # `fmt` first: it builds nothing, so a formatting slip reports before
       # clippy has checked a single crate.
       - name: cargo fmt --all --check
-        run: cargo fmt --all --check
+        run: cargo xtask ci --step fmt
 
       # `--all-targets` so tests, benches and examples are linted too. This is
       # load-bearing: the deny-by-default lint that used to make clippy exit 101
@@ -70,7 +74,7 @@ jobs:
       # NOT `--locked`, deliberately: `test` already fails on lockfile drift, so
       # repeating it here would only report the same problem twice.
       - name: cargo clippy --workspace --all-targets -D warnings
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo xtask ci --step clippy
 
       # The release profile, type-checked. Every other gate in this repo builds
       # with `debug_assertions` on, so a reference to an item that only exists
@@ -92,7 +96,7 @@ jobs:
       # not just the shell, because the hazard is a profile difference and any
       # crate can carry one.
       - name: cargo check --release (the profile the application ships as)
-        run: cargo check --release --workspace
+        run: cargo xtask ci --step check-release
 
       # rustdoc, for the one thing the four gates above cannot see: a doc link
       # that names something which does not exist. `cargo doc` resolves every
@@ -108,6 +112,8 @@ jobs:
       # against the contract.
       #
       # `--no-deps` so a warning in a dependency's docs cannot redden this repo.
+      # The step sets `RUSTDOCFLAGS: -D warnings` itself, so a local run of it
+      # is held to the same flag.
       #
       # `--document-private-items` is not decoration, and it is the stricter of
       # the two forms this could take. Measured on the tree this gate landed
@@ -137,9 +143,7 @@ jobs:
       # private, rather than the helper being made public to satisfy a link —
       # doc links do not get to widen an API.
       - name: cargo doc (intra-doc links must resolve)
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc --workspace --no-deps --document-private-items
+        run: cargo xtask ci --step doc
 
       # `cargo doc` resolves what a comment writes AS a link. It says nothing
       # about the same claim written as prose — "`brightfield-sql`'s
@@ -155,10 +159,10 @@ jobs:
       - name: comment citations resolve
         run: |
           git fetch --no-tags --unshallow origin main || git fetch --no-tags origin main
-          scripts/check-comment-citations.py
+          cargo xtask ci --step comment-citations
 
       # The gate proves it can still fail, every run. This repo already carries
       # checkers that report without gating; the way that happens is that
       # nobody notices the day detection quietly stopped working.
       - name: comment citations — self-test
-        run: scripts/check-comment-citations.py --self-test
+        run: cargo xtask ci --step comment-citations-selftest

@@ -338,7 +338,7 @@ pub static STEPS: &[Step] = &[
         run: |c| c.script("scripts/check-artifact-type-source-selftest.sh", &[]),
     },
     Step {
-        name: "packaged-artifact-staging-selftest",
+        name: "package-artifact-staging-selftest",
         runs: "./scripts/package-artifact-staging-selftest.sh",
         only_in_ci: None,
         run: |c| c.script("scripts/package-artifact-staging-selftest.sh", &[]),
@@ -359,7 +359,10 @@ fn workflow_coverage(ctx: &Ctx) -> Result<(), String> {
         );
         Ok(())
     } else {
-        Err(format!("{} disagreement(s) between the command and the workflow files, listed above", problems.len()))
+        Err(format!(
+            "{} disagreement(s) between the command and the workflow files, listed above",
+            problems.len()
+        ))
     }
 }
 
@@ -383,7 +386,8 @@ fn commit_messages(ctx: &Ctx) -> Result<(), String> {
 }
 
 fn pr_text(ctx: &Ctx) -> Result<(), String> {
-    let (Some(title), Some(body)) = (std::env::var_os("PR_TITLE"), std::env::var_os("PR_BODY")) else {
+    let (Some(title), Some(body)) = (std::env::var_os("PR_TITLE"), std::env::var_os("PR_BODY"))
+    else {
         return Err("pr-text reads the pull request's title and body from PR_TITLE and PR_BODY, which a pull request's workflow sets from its event; neither is set here".to_owned());
     };
     let file = ctx.scratch()?.join("pr-text.txt");
@@ -397,10 +401,18 @@ fn pr_text(ctx: &Ctx) -> Result<(), String> {
 }
 
 fn doc(ctx: &Ctx) -> Result<(), String> {
-    let args = ["doc", "--workspace", "--no-deps", "--document-private-items"];
+    let args = [
+        "doc",
+        "--workspace",
+        "--no-deps",
+        "--document-private-items",
+    ];
     let mut command = ctx.cargo(&args);
     command.env("RUSTDOCFLAGS", "-D warnings");
-    run(command, "RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items")
+    run(
+        command,
+        "RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items",
+    )
 }
 
 fn cargo_deny(ctx: &Ctx, check: &str) -> Result<(), String> {
@@ -411,7 +423,10 @@ fn cargo_deny(ctx: &Ctx, check: &str) -> Result<(), String> {
         .status()
         .is_ok_and(|status| status.success());
     if !installed {
-        return Err("cargo-deny is not installed: run `cargo install --locked cargo-deny`, then run again".to_owned());
+        return Err(
+            "cargo-deny is not installed: run `cargo install --locked cargo-deny`, then run again"
+                .to_owned(),
+        );
     }
     ctx.run_cargo(&[
         "deny",
@@ -438,7 +453,10 @@ fn selection(ctx: &Ctx) -> Result<shard::Selection, String> {
         .output()
         .map_err(|e| format!("could not start cargo metadata: {e}"))?;
     if !output.status.success() {
-        return Err(format!("`cargo metadata --locked --no-deps` exited with {}", output.status));
+        return Err(format!(
+            "`cargo metadata --locked --no-deps` exited with {}",
+            output.status
+        ));
     }
     let targets = shard::test_targets(&String::from_utf8_lossy(&output.stdout))?;
     let shard = shard::shard_from_env(|var| std::env::var(var).ok())?;
@@ -500,7 +518,9 @@ fn cargo_test(ctx: &Ctx, engine: &Path, args: &[String], threads_one: bool) -> R
 
 fn test_one_thread(ctx: &Ctx) -> Result<(), String> {
     let Some(part) = selection(ctx)?.one_thread else {
-        println!("this shard runs the default-threads group; test-one-thread has nothing to run on it");
+        println!(
+            "this shard runs the default-threads group; test-one-thread has nothing to run on it"
+        );
         return Ok(());
     };
     for line in &part.report {
@@ -609,8 +629,11 @@ fn sibling_manifests(ctx: &Ctx) -> Result<(), String> {
         let _ = ctx.command("df").args(["-h", "/"]).status();
     };
     disk("before");
-    let log = File::create(&log_path).map_err(|e| format!("cannot create {}: {e}", log_path.display()))?;
-    let log_err = log.try_clone().map_err(|e| format!("cannot reopen {}: {e}", log_path.display()))?;
+    let log = File::create(&log_path)
+        .map_err(|e| format!("cannot create {}: {e}", log_path.display()))?;
+    let log_err = log
+        .try_clone()
+        .map_err(|e| format!("cannot reopen {}: {e}", log_path.display()))?;
     let status = ctx
         .cargo(&[
             "test",
@@ -629,7 +652,8 @@ fn sibling_manifests(ctx: &Ctx) -> Result<(), String> {
         .stderr(log_err)
         .status()
         .map_err(|e| format!("could not start cargo test: {e}"))?;
-    let text = fs::read_to_string(&log_path).map_err(|e| format!("cannot read {}: {e}", log_path.display()))?;
+    let text = fs::read_to_string(&log_path)
+        .map_err(|e| format!("cannot read {}: {e}", log_path.display()))?;
     print!("{text}");
     disk("after");
     let ran = executed_count(&text);
@@ -645,7 +669,9 @@ fn sibling_manifests(ctx: &Ctx) -> Result<(), String> {
     if ran < floor {
         let message = format!("expected at least {floor} ignored test(s) to execute in sibling_manifests, {ran} executed: the filter matched nothing, or a covered test was renamed, deleted or un-ignored. A green run here would prove nothing");
         report_error("executed too few tests", &message);
-        failures.push(format!("{ran} of at least {floor} sibling-manifest tests executed"));
+        failures.push(format!(
+            "{ran} of at least {floor} sibling-manifest tests executed"
+        ));
     }
     if failures.is_empty() {
         println!("{ran} sibling-manifest test(s) executed and passed (floor {floor})");
