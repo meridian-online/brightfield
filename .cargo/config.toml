@@ -1,0 +1,7 @@
+# `cargo xtask ci` is the repository's gate: the steps a pull request's checks
+# run, in order, from one command. See xtask/src/main.rs.
+#
+# `--locked` because Cargo.lock is tracked and every cargo step in CI runs
+# locked; the command that runs them should not re-resolve on its way in.
+[alias]
+xtask = "run --locked --quiet --package xtask --"
