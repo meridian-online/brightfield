@@ -8,20 +8,20 @@ repository.workspace = true
 description = "Framework-free chart interaction logic: brush/click/widget commit paths, chart state, and the live cross-filter coordinator"
 
 [dependencies]
-brightfield-render = { path = "../brightfield-render" }
-brightfield-engine = { path = "../brightfield-engine" }
-brightfield-spec = { path = "../brightfield-spec" }
-brightfield-sql = { path = "../brightfield-sql" }
-vello = "0.9"
-kurbo = "0.13"
-peniko = "0.6"
+brightfield-render = { workspace = true }
+brightfield-engine = { workspace = true }
+brightfield-spec = { workspace = true }
+brightfield-sql = { workspace = true }
+vello = { workspace = true }
+kurbo = { workspace = true }
+peniko = { workspace = true }
 
 [features]
 gpu-tests = []
 
 [dev-dependencies]
-indexmap = "2"
-arrow = { version = "58", default-features = false }
+indexmap = { workspace = true }
+arrow = { workspace = true }
 
 [lints]
 workspace = true
