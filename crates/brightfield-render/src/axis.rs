@@ -27,9 +27,9 @@ pub struct Tick {
     pub position: f64,
 }
 
-/// How far an axis line's target reaches into the data area, in pixels. Only
-/// 5 px (`TICK_LENGTH`) lie between an x axis and its labels, which is too few
-/// to hit with a pointer, so the line's strip takes this much of the plot above
+/// How far an axis line's target reaches into the data area, in pixels. The
+/// 5 px (`TICK_LENGTH`) between an x axis and its labels are too few to hit with
+/// a pointer, so the line's strip takes this much of the plot above
 /// it. The reach is a place a pointer may be read and draws nothing.
 pub const LINE_REACH: f64 = 8.0;
 
@@ -47,7 +47,7 @@ pub struct AxisTargets {
     /// The title's text box. `None` when the axis drew no title.
     pub title: Option<Rect>,
     /// The tick labels' strip: the union of the labels drawn. `None` when the
-    /// axis drew none.
+    /// axis drew no label.
     pub labels: Option<Rect>,
     /// The axis line with its tick marks, reaching [`LINE_REACH`] into the data
     /// area and ending where the labels begin.

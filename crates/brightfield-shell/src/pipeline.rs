@@ -260,15 +260,15 @@ pub struct AxisHit {
     pub channel: Channel,
     /// Which part of that axis.
     pub part: AxisPart,
-    /// Whether the point is inside [`PlotHandle::data_area`], which only the
-    /// axis line's reach can be: a mark may be under the pointer there, and a
-    /// mark is the click's before an axis is.
+    /// Whether the point is inside [`PlotHandle::data_area`]. The axis line's
+    /// strip reaches into it, and a mark may be under the pointer there; a mark
+    /// is the click's before an axis is.
     pub in_data_area: bool,
 }
 
 impl PlotHandle {
     /// **The axis part under `p`**, a point on the same plane as [`Self::rect`],
-    /// or `None` when it is on none.
+    /// or `None` when it is on no part.
     ///
     /// Tried in this order: x's title, x's labels, x's line, then y's, so where
     /// two parts overlap, as the two lines' reaches do at the plot's lower-left

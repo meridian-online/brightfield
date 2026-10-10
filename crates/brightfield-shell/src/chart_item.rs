@@ -787,8 +787,8 @@ impl ChartItem {
 /// **The axis part a press at `p` is a click on**, or `None` when the press is
 /// the canvas's.
 ///
-/// Only the hero's axes are targets, and only while the window draws the shelf
-/// band ([`ChartDoc::axis_targets_live`]): the band and the axes are authoring
+/// The hero's axes are targets while the window draws the shelf band
+/// ([`ChartDoc::axis_targets_live`]) and not otherwise: the band and the axes are authoring
 /// chrome, and a document shown without the band keeps a click on an axis as it
 /// was. The title and the tick labels lie outside the data area. The axis line's
 /// strip reaches into it, and there **a mark under the pointer is the click's
