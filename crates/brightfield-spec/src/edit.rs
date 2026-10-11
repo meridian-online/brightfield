@@ -1060,7 +1060,7 @@ fn count_colour_encoded_plots(spec: &Spec) -> usize {
         .count()
 }
 
-/// Visit every standalone [`LegendNode`] under a component subtree.
+/// Visit each standalone [`LegendNode`] under a component subtree.
 fn for_each_legend(component: Option<&Component>, f: &mut impl FnMut(&LegendNode)) {
     let Some(component) = component else { return };
     match component {
