@@ -38,3 +38,6 @@
 # deterministic pure functions of the row index, regenerated on demand by
 # `cargo run --release -p brightfield-bench`. Only results are committed.
 /benchmarks/.data
+# roborev snapshots
+/.roborev/
+.kata.local.toml
