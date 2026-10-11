@@ -40,4 +40,5 @@
 /benchmarks/.data
 # roborev snapshots
 /.roborev/
+# Kata per-machine overrides
 .kata.local.toml
