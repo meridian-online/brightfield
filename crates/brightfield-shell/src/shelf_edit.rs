@@ -318,7 +318,9 @@ fn shared_key(key: &str) -> Option<&'static str> {
 /// [`SettingWrite::Auto`] is the `⌫` and takes the axis's own key out and
 /// leaves a key for both axes standing
 /// (`a_default_is_the_key_taken_out_and_backspace_leaves_the_both_axes_key_standing`):
-/// a plot that then reads that key's value reads it as set.
+/// a plot that then reads that key's value reads it as set. Colour's scheme row
+/// never reaches it: the window writes viridis by name in its place
+/// (`backspace_names_viridis_only_where_a_scheme_is_named_and_takes_reverse_out`).
 ///
 /// The edit is applied through [`edit::apply_for_fresh_load`], so a title is not
 /// refused for being launch-fixed chrome, and the caller loads the page again.

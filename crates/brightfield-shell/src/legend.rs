@@ -1079,7 +1079,7 @@ fn format_domain(v: f64) -> String {
 /// chrome's one colour boundary. The value is the **chart's** ink, used raw:
 /// remapping it through a semantic token would let the swatch and the raster
 /// disagree.
-fn chart_ink(c: [f32; 4]) -> egui::Color32 {
+pub(crate) fn chart_ink(c: [f32; 4]) -> egui::Color32 {
     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     egui::Color32::from_rgba_unmultiplied(q(c[0]), q(c[1]), q(c[2]), q(c[3]))
 }

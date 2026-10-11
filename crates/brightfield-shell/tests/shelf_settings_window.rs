@@ -16,8 +16,8 @@
 use brightfield_shell::app::CHART;
 use brightfield_shell::design::Mode;
 use brightfield_shell::shelf::{
-    CardDrawn, ListTab, FORMAT_ROW, GRID_ROW, RANGE_ROW, REVERSE_ROW, SCALE_ROW, TICKS_ROW,
-    TITLE_ROW, ZERO_ROW,
+    CardDrawn, ListTab, FORMAT_ROW, GRID_ROW, RANGE_ROW, REVERSE_ROW, SCALE_ROW, SCHEME_ROW,
+    TICKS_ROW, TITLE_ROW, ZERO_ROW,
 };
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::text_ink;
@@ -317,10 +317,10 @@ fn the_settings_read_the_chart_as_kept_and_esc_leaves_as_it_does_from_the_column
     assert!(!from_settings.keyboard_taken());
 }
 
-/// **From x's settings `y` opens y's settings, and `Tab` on colour's cell leaves
-/// the list on its columns.**
+/// **From x's settings `y` opens y's settings, and `Tab` on colour's cell turns
+/// its list to colour's own.**
 #[test]
-fn from_the_x_settings_y_opens_the_y_settings_and_tab_on_colour_stays_on_the_columns() {
+fn from_the_x_settings_y_opens_the_y_settings_and_tab_on_colour_turns_to_its_settings() {
     let mut win = Window::open();
     win.open_cell(egui::Key::X, "x");
     win.press(egui::Key::Tab);
@@ -345,20 +345,28 @@ fn from_the_x_settings_y_opens_the_y_settings_and_tab_on_colour_stays_on_the_col
     let mut win = Window::open();
     win.open_cell(egui::Key::C, "c");
     assert_eq!(win.list_channel(), Some(ShelfChannel::Colour));
-    let held = win.cursor();
+    assert_eq!(win.list_tab(), Some(ListTab::Columns));
     win.press(egui::Key::Tab);
     assert_eq!(
         win.list_tab(),
-        Some(ListTab::Columns),
-        "colour's list has no settings to turn to"
+        Some(ListTab::Settings),
+        "colour's list has settings to turn to"
     );
-    assert_eq!(win.cursor(), held, "the cursor is where it was");
+    assert_eq!(
+        win.setting_cursor(),
+        Some(SCHEME_ROW),
+        "the cursor is on colour's first row"
+    );
     assert!(
         !win.keyboard_taken(),
         "Tab on colour's cell gave a widget the keyboard"
     );
     win.type_letter(egui::Key::J, "j");
-    assert_ne!(win.cursor(), held, "j still reaches colour's list");
+    assert_eq!(
+        win.setting_cursor(),
+        Some(REVERSE_ROW),
+        "j still reaches colour's second row"
+    );
 }
 
 /// **A column the cursor is previewing belongs to the columns: turned to the

@@ -1980,7 +1980,7 @@ impl ProtocolModel {
         }
     }
 
-    /// Hand the open list what the axes' settings read, which the window reads
+    /// Hand the open list what the settings of x, y and colour read, which the window reads
     /// from the plot the list belongs to ([`ColumnList::set_settings`]). Nothing
     /// when no list is open.
     pub fn set_column_list_settings(&mut self, settings: ChannelSettings) {
