@@ -2060,11 +2060,11 @@ vconcat:
         );
     }
 
-    /// `plot_render_context` re-derives a plot's highlight
-    /// `otherwise` style + map projection from the swapped
-    /// spec + analysis, so a mark rebuild carries them instead of `None`.
+    /// `plot_highlight_style` derives a plot's highlight `otherwise` style from
+    /// the highlight bindings, and `MarkProjection::of` derives its map projection
+    /// from the plot node, so a mark rebuild carries both instead of `None`.
     #[test]
-    fn plot_render_context_derives_highlight_and_projection() {
+    fn highlight_style_and_projection_derive_from_the_plot() {
         use brightfield_spec::analysis::HighlightStyle as SpecHl;
         use brightfield_spec::{parse_spec, Format};
 
