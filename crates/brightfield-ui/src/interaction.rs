@@ -1456,7 +1456,7 @@ mod tests {
         );
     }
 
-    /// Review finding 1: a MISSED mouse-up during a grab (the `!button_held`
+    /// A MISSED mouse-up during a grab (the `!button_held`
     /// pointer_move arm, which holds no coordinator and can't re-dispatch) must
     /// DISCARD the in-flight move — reverting to the ANCHOR (pre-drag) rect — so
     /// the overlay and the live filter stay consistent, NOT collapse to the moved
@@ -1499,7 +1499,7 @@ mod tests {
         ));
     }
 
-    /// Review finding 2: an Esc / cross-filter clear arriving MID-DRAG must drop
+    /// An Esc / cross-filter clear arriving MID-DRAG must drop
     /// the in-flight `Dragging` overlay too (else the filter retracts while the
     /// grey rect stays drawn). `has_persistent_selection` — the predicate
     /// `clear_persistent_selection` delegates to — is true for Selected AND

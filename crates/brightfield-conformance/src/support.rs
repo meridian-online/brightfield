@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn dfconf_preflight_legend_channel_gates_renderability() {
-        // Review (F1): ComponentKind::Legend is Implemented, but only
+        // ComponentKind::Legend is Implemented, but only
         // the `color` channel renders — `legend: symbol` / `legend: opacity`
         // are still unrenderable (LegendChannel Unimplemented), so the legend
         // arm must consult the CHANNEL status, not just the component's.
