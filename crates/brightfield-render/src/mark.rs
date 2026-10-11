@@ -46,8 +46,8 @@ impl From<&brightfield_spec::analysis::HighlightStyle> for HighlightStyle {
     /// Resolve a spec-side highlight `otherwise` style (CSS-hex colour strings)
     /// into the render style (parsed `Color`s). Shared by app assembly
     /// AND the command-log mark rebuild, so a re-queried mark dims
-    /// identically after a structural edit / undo (finding 1/2/4 — a rebuild that
-    /// dropped this silently killed highlight dimming).
+    /// identically after a structural edit / undo (a rebuild that dropped this
+    /// silently killed highlight dimming).
     fn from(style: &brightfield_spec::analysis::HighlightStyle) -> Self {
         HighlightStyle {
             opacity: style.opacity,
@@ -5566,7 +5566,7 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
 /// **A projection is deliberately not among these.** It rides on the
 /// [`ChannelMap`], which a rebuild path constructs from the mark and its plot —
 /// held for the count-changing rebuild by
-/// `findings124_geo_projection_survives_count_changing_rebuild` — so it cannot
+/// `geo_projection_survives_count_changing_rebuild` — so it cannot
 /// be dropped by a rebuild that forgets to thread it, which is what a colour
 /// cycle over a geo choropleth used to do, reverting an Albers
 /// basemap to the plate carrée until restart.
@@ -7855,7 +7855,7 @@ mod tests {
         assert_eq!(scales.get(Channel::X).unwrap().domain_max(), Some(50.0));
     }
 
-    // Regression (review finding, major): a raster's augment_scales MERGES into the
+    // Regression: a raster's augment_scales MERGES into the
     // shared Fill scale instead of clobbering it — a sibling's categorical Colour
     // survives, and two rasters union their zero-anchored domains.
     #[test]
@@ -7933,7 +7933,7 @@ mod tests {
         }
     }
 
-    // Regression (review finding): render samples the ramp position in the Fill
+    // Regression: render samples the ramp position in the Fill
     // ramp's OWN domain, not the local batch max — so the RASTER_MIN_T floor and
     // the colours hold when a smaller raster shares a larger unioned domain.
     #[test]

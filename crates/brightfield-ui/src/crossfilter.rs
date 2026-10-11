@@ -156,7 +156,7 @@ impl MarkInput {
         );
         // Re-gate highlight to the NEW kind: a retype to a non-honouring kind
         // drops the style; to a honouring kind keeps the plot's `otherwise`
-        // style so a brush-to-dim survives the retype (finding 1/2/4).
+        // style so a brush-to-dim survives the retype.
         self.highlight_style = mark_honours_highlight(new_kind)
             .then_some(plot_hl)
             .flatten();
@@ -607,7 +607,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
         cx: &mut H::Cx,
     ) -> bool {
         // Capture the highlight bindings BEFORE reload_spec MOVES `analysis`, so a
-        // rebuilt mark keeps its dimming (finding 1/2/4).
+        // rebuilt mark keeps its dimming.
         let highlight_bindings = analysis.highlight_bindings.clone();
         self.session.reload_spec(spec.clone(), analysis);
 
@@ -693,7 +693,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
         let pi = self.plots.iter().position(|p| p.path == plot_path)?;
 
         // Capture the re-analysis inputs a mark rebuild needs BEFORE `reload_spec`
-        // MOVES `analysis` (finding 1/2/4): the highlight bindings + the affected
+        // MOVES `analysis`: the highlight bindings + the affected
         // plot's highlight `otherwise` style and its resolved projection, so a
         // rebuilt/retyped mark keeps its dimming and its map instead of silently
         // reverting to no-highlight / unprojected.
@@ -714,7 +714,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
             self.rebuild_marks_and_maps(&spec, &highlight_bindings, &plot_path);
         } else {
             // (3, count-stable) In-place mutate the mark at the edit's ORDINAL
-            // (finding 7 — was hardcoded `.first()`) then re-execute.
+            // rather than assuming the first mark, then re-execute.
             let plot_hl = affected_hl.clone();
             if let Some(&mi) = self.plots[pi].mark_indices.get(edit.mark_ordinal()) {
                 match edit {
@@ -756,7 +756,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
         }
 
         // (2b) Validate the coordinator's flat mark space AGREES with the engine's
-        // rebuilt mark_index_map (finding 5 — the engine map is the source of
+        // rebuilt mark_index_map (the engine map is the source of
         // truth; both walk the shared collect_plot_nodes order so they must match).
         self.assert_engine_mark_agreement();
 
@@ -765,7 +765,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
         // stale launch domain (a channel/kind rebind is neither a subset nor a
         // param-widen). Preserve the launch Fill ramp's cycled scheme.
         //
-        // KNOWN DIVERGENCE (finding 6): `fresh_plot_scales` infers from the
+        // KNOWN DIVERGENCE: `fresh_plot_scales` infers from the
         // CURRENT batches, which are selection-FILTERED if a cross-plot brush /
         // legend selection is active when the edit runs — so the reset anchor can
         // reflect the filtered domain rather than the full one. Accepted in v1
@@ -779,7 +779,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
     }
 
     /// Validate the coordinator's flat mark space agrees with the engine session's
-    /// rebuilt `mark_index_map` (finding 5). The engine builds its map
+    /// rebuilt `mark_index_map`. The engine builds its map
     /// from ITS OWN depth-first walk (`build_mark_index_map` → `collect_marks_with_path`),
     /// while the coordinator rebuilds from `collect_plot_nodes`; the two walks
     /// agree on mark ORDER only for the non-nested plot / hconcat / vconcat
@@ -852,7 +852,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
     /// verbatim (their paths/positions are unchanged); the affected plot's marks
     /// are rebuilt fresh from the mutated spec (`ChannelMap::from_mark` +
     /// `configured_renderer` at the plot's scheme, re-deriving highlight style +
-    /// projection from `highlight_bindings` + the plot node — finding 1/2/4). The
+    /// projection from `highlight_bindings` + the plot node). The
     /// new flat order matches the engine's `build_mark_index_map` (depth-first plot
     /// order, contiguous per-plot marks) for the non-nested layouts the live
     /// coordinator drives.
@@ -1357,8 +1357,8 @@ fn has_sequential_fill(scales: &ScaleSet) -> bool {
 /// Marks in UNAFFECTED plots are MOVED verbatim (their batches / renderers /
 /// channels / highlight / projection preserved by position, so a later gesture
 /// re-scenes them exactly); the affected plot's marks are rebuilt fresh from the
-/// spec, re-deriving highlight style + projection from its render context
-/// (finding 1/2/4). Extracted from the coordinator so the count-changing
+/// spec, re-deriving highlight style + projection from its render context.
+/// Extracted from the coordinator so the count-changing
 /// integrity is unit-testable WITHOUT a window (a headless test has no host
 /// reactive cell to hand a `LivePlot`) — mirroring the
 /// `apply_slider` / `apply_spec_edit_data` data-half split.
@@ -1425,7 +1425,7 @@ fn rebuild_flat_index_space(
 }
 
 /// The per-plot render context a mark rebuild must re-derive from the swapped
-/// spec + analysis (finding 1/2/4): the plot's highlight `otherwise` style.
+/// spec + analysis: the plot's highlight `otherwise` style.
 /// Mirrors app assembly (main.rs) so a re-queried mark carries the SAME
 /// highlight it launched with — a rebuild that reset it to `None` silently
 /// killed dashboard-wide highlight dimming.
@@ -1449,7 +1449,7 @@ fn plot_highlight_style(
 /// plot's scheme + highlight style. `highlight_style` is applied to the
 /// honouring families (`mark_honours_highlight`) and to no others; the plot's
 /// projection is gated by mark kind inside `ChannelMap::from_mark_in`. Both
-/// gates are held by `findings124_build_fresh_mark_input_gates_by_kind`. Used by
+/// gates are held by `build_fresh_mark_input_gates_by_kind`. Used by
 /// the
 /// count-changing rebuild + the undo full-reload path.
 fn build_fresh_mark_input(
@@ -2060,11 +2060,11 @@ vconcat:
         );
     }
 
-    /// Finding 1/2/4: `plot_render_context` re-derives a plot's highlight
+    /// `plot_render_context` re-derives a plot's highlight
     /// `otherwise` style + map projection from the swapped
     /// spec + analysis, so a mark rebuild carries them instead of `None`.
     #[test]
-    fn findings124_plot_render_context_derives_highlight_and_projection() {
+    fn plot_render_context_derives_highlight_and_projection() {
         use brightfield_spec::analysis::HighlightStyle as SpecHl;
         use brightfield_spec::{parse_spec, Format};
 
@@ -2125,12 +2125,12 @@ plot:
         );
     }
 
-    /// Finding 1/2/4: `build_fresh_mark_input` gates highlight by the honouring
+    /// `build_fresh_mark_input` gates highlight by the honouring
     /// families and projection by geo — the two gates app-assembly applies, so a
     /// rebuilt honouring mark dims and a rebuilt geo mark keeps its projection,
     /// while a non-honouring mark never wrongly carries a highlight style.
     #[test]
-    fn findings124_build_fresh_mark_input_gates_by_kind() {
+    fn build_fresh_mark_input_gates_by_kind() {
         use brightfield_spec::ast::Mark;
         use brightfield_spec::vocab::MarkKind as K;
         use brightfield_spec::{parse_spec, Format};
@@ -2202,7 +2202,7 @@ plot:
 
         // A geo mark carries the plot's projection on its channel map — and it
         // must be the ALBERS the plot named, not the equirectangular default:
-        // the finding-1/2/4 regression was a rebuild dropping the projection,
+        // the regression this pins was a rebuild dropping the projection,
         // which `unwrap_or_default()` silently masks as equirectangular.
         let geo = build_fresh_mark_input(&mk(K::Geo), albers, SequentialScheme::default(), None);
         assert_eq!(
@@ -2222,12 +2222,12 @@ plot:
         );
     }
 
-    /// Finding 1/2/4 (the defect surface): a count-changing rebuild (the
+    /// A count-changing rebuild (the
     /// RemoveMark / AddMark path) must carry the affected plot's highlight style
     /// onto its rebuilt honouring marks — the pre-fix rebuild hardcoded `None`,
     /// silently killing dashboard-wide dimming on the card's OWN `d` verb.
     #[test]
-    fn findings124_highlight_survives_count_changing_rebuild() {
+    fn highlight_survives_count_changing_rebuild() {
         use brightfield_spec::analysis::HighlightStyle as SpecHl;
         use brightfield_spec::{parse_spec, Format};
         // plot0 carries TWO honouring dots (so a RemoveMark leaves one); plot1 one.
@@ -2297,7 +2297,7 @@ vconcat:
         }
     }
 
-    /// Finding 1/2/4 (the geo half, with teeth): a count-changing rebuild of a
+    /// Geo half: a count-changing rebuild of a
     /// geo plot must re-derive the ALBERS projection from the swapped spec — the
     /// pre-fix rebuild passed `projection: None`, so the rebuilt renderer fell
     /// back through `unwrap_or_default()` to equirectangular, silently reverting a
@@ -2305,7 +2305,7 @@ vconcat:
     /// renderer's `projection()` seam distinguishes Albers from that default, so
     /// this assertion (unlike a bare `is_some()`) actually pins the fix.
     #[test]
-    fn findings124_geo_projection_survives_count_changing_rebuild() {
+    fn geo_projection_survives_count_changing_rebuild() {
         use brightfield_spec::{parse_spec, Format};
         // A geo plot carrying `projectionType: albers` and TWO geo marks (so a
         // RemoveMark leaves one). The rebuild reads only the mark kind + the
@@ -2424,7 +2424,7 @@ projectionType: albers
         (batch, channels)
     }
 
-    /// Regression (review finding): a live plot re-render honours the app's
+    /// Regression: a live plot re-render honours the app's
     /// inline-legend suppression instead of hardcoding it on. `render_plot_scene`
     /// (the Entity-free core `build_plot_scene` calls) draws the inline gradient
     /// legend for a raster plot when `draw_inline_legend` is true, and omits it

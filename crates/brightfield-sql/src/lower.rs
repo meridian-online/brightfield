@@ -2595,7 +2595,7 @@ mod tests {
         assert!(HexbinLowerer.lower(&m, &ctx).is_err());
     }
 
-    /// F3 (review): a degenerate axis maps to the plot MIDPOINT, not NULL —
+    /// A degenerate axis maps to the plot MIDPOINT, not NULL —
     /// `nullif` is gone, replaced by a CASE that yields `plot/2` (fallback
     /// 580×350 → 290 / 175) when the span is 0, so binning still emits real
     /// centres instead of the whole mark vanishing on a NULL centre.
@@ -2616,7 +2616,7 @@ mod tests {
         );
     }
 
-    /// F4 (review): a `data: { filter }` scopes BOTH the binned rows AND the
+    /// A `data: { filter }` scopes BOTH the binned rows AND the
     /// extent subqueries — otherwise binning over the unfiltered extent shifts
     /// every centre and filtered-out rows still widen the plot.
     #[test]
@@ -2723,7 +2723,7 @@ mod tests {
         assert!(sql.contains("GROUP BY 1, 2"), "{sql}");
     }
 
-    /// F4 (review): a self-aggregating cell honours `data: { filter }` — the
+    /// A self-aggregating cell honours `data: { filter }` — the
     /// predicate is ANDed onto the row NULL-guard so aggregated counts exclude
     /// filtered rows. (Cell has no pixel extents, so the row WHERE is the only
     /// site.)

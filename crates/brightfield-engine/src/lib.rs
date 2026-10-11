@@ -1310,7 +1310,7 @@ impl Session {
     /// The flat mark index a `ComponentPath` string resolves to under the
     /// CURRENT spec, if any — the engine `mark_index_map` is the
     /// single source of truth for the flat mark space after a
-    /// [`Session::reload_spec`] renumbers it (finding 5). Mirrors the lookup
+    /// [`Session::reload_spec`] renumbers it. Mirrors the lookup
     /// `propagate_selection` / `execute_mark` dispatch use internally; the
     /// tests pin a rebuilt mark still resolves to its original path.
     #[must_use]
@@ -1322,7 +1322,7 @@ impl Session {
     /// mark-index space size. After a [`Session::reload_spec`] the coordinator's
     /// count-changing refresh reconciles its own `marks.len()` against this so a
     /// cardinality disagreement (a coordinator bug) is caught rather than routing
-    /// a later gesture to the wrong mark (finding 5, `assert_engine_mark_agreement`).
+    /// a later gesture to the wrong mark (`assert_engine_mark_agreement`).
     #[must_use]
     pub fn mark_count(&self) -> usize {
         self.mark_index_map.len()
@@ -5795,7 +5795,7 @@ plot:
         assert!((counts.iter().sum::<f64>() - 4.0).abs() < 1e-9);
     }
 
-    /// F3 (review): a DEGENERATE x axis (every point shares an x value) bins to
+    /// A DEGENERATE x axis (every point shares an x value) bins to
     /// real centres at the constant x — a vertical line of hexes — instead of a
     /// NULL centre that the renderer skips (blank mark). Before the fix,
     /// `nullif(span,0)` made px NULL and cube-round coupled q/r so BOTH centres
@@ -5847,7 +5847,7 @@ height: 150
         );
     }
 
-    /// F3 (review): a SINGLE-ROW source (both axes degenerate) bins to one hex at
+    /// A SINGLE-ROW source (both axes degenerate) bins to one hex at
     /// the plot midpoint mapping — one real centre, not NULL.
     #[test]
     fn f3_hexbin_single_row_still_bins() {
@@ -5880,7 +5880,7 @@ height: 150
         assert!((counts[0] - 1.0).abs() < 1e-9, "count 1");
     }
 
-    /// F4 (review): a hexbin honours `data: { filter }` — filtered-out rows are
+    /// A hexbin honours `data: { filter }` — filtered-out rows are
     /// excluded from BOTH the aggregated counts and the binning extent. Two of
     /// five points fail `y > 10`; they must not appear as a hex near their (0, *)
     /// location, and the total count is 3, not 5.
@@ -5923,7 +5923,7 @@ height: 150
         );
     }
 
-    /// F4 (review): a self-aggregating cell honours `data: { filter }` — filtered
+    /// A self-aggregating cell honours `data: { filter }` — filtered
     /// rows are excluded from the grouped counts.
     #[test]
     fn f4_self_aggregating_cell_data_filter_excludes_rows() {

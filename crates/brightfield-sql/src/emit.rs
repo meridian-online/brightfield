@@ -711,9 +711,8 @@ fn collect_plot_groups_in(
 
 /// Emit a query for a single mark in the spec.
 ///
-/// `param_values` carries current runtime values for param substitution
-/// (closes the `_param_values` review finding). `None` falls
-/// back to `Prepared` mode with `?` placeholders.
+/// `param_values` carries current runtime values for param substitution.
+/// `None` falls back to `Prepared` mode with `?` placeholders.
 ///
 /// `selection_predicates` carries per-contributor predicates for any selection
 /// the mark's `filter_by` references (v2 runtime coordinator). The

@@ -5203,7 +5203,7 @@ plot:
         }
     }
 
-    /// F2 (review): a Mosaic `{sql: …}` channel-transform expression is NOT a
+    /// A Mosaic `{sql: …}` channel-transform expression is NOT a
     /// typo'd aggregate — the vendored specs that carry `r: {sql: 'POW(10, mag)'}`
     /// must parse with ZERO `UnknownAggregate` warnings (the warning is
     /// author-facing via the app's stderr).
