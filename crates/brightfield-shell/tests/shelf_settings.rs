@@ -595,7 +595,7 @@ fn from_the_x_settings_y_opens_the_y_settings_and_c_opens_the_colour_settings() 
         let colour = stage.draw(&mut list);
         assert_eq!(
             drawn_rows(&colour),
-            ["scheme", "reverse"],
+            ["scheme", "scale", "reverse"],
             "{mode:?}: the rows are colour's"
         );
         let strip = colour
