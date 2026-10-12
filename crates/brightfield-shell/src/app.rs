@@ -2341,6 +2341,28 @@ impl ChartDoc {
                 return Ok((!edits.is_empty()).then_some((spec, edits)));
             }
         }
+        // Colour's legend row places the legend. Right is what the colour edit
+        // writes, so a file with no legend node is given one at the right
+        // rather than the choice being dropped as a default.
+        if edit.channel == ShelfChannel::Colour && edit.row == crate::shelf::LEGEND_ROW {
+            let at = match &edit.value {
+                SettingValue::Word(word) => edit::LegendPlacement::from_wire(word),
+                SettingValue::Auto => Some(edit::LegendPlacement::Right),
+                _ => None,
+            };
+            let Some(at) = at else { return Ok(None) };
+            if edit::colour_legend_placement(before, &path.0) == at {
+                return Ok(None);
+            }
+            let mut spec = before.clone();
+            let placed = ChartEdit::PlaceColourLegend {
+                plot: path.clone(),
+                at,
+            };
+            edit::apply_for_fresh_load(&mut spec, &placed)
+                .map_err(crate::shelf_edit::ShelfRefusal::Edit)?;
+            return Ok(Some((spec, vec![placed])));
+        }
         let Some(key) = crate::shelf::row_key(edit.channel, edit.row) else {
             return Ok(None);
         };
@@ -2484,7 +2506,8 @@ impl ChartDoc {
         edit::plot_at_path(spec, &path.0)
             .and_then(|plot| {
                 let channels = ShelfChannels::of_plot(plot)?;
-                let settings = crate::shelf::ChannelSettings::of_plot(spec, plot, &channels);
+                let settings =
+                    crate::shelf::ChannelSettings::of_plot(spec, plot, &path.0, &channels);
                 settings
                     .rows(channel)
                     .iter()

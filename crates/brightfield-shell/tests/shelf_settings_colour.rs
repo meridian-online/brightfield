@@ -28,7 +28,7 @@ use brightfield_shell::shelf::{
     diverging_strip, foot_sentence, scheme_strip, Binding, ChannelSettings, ColourScaleWrite,
     ColumnList, ColumnListRequest, Ends, ListColumn, ListDrawn, ListReport, ListTab, Number,
     RowEdit, SchemeDrawn, SettingRow, SettingRowDrawn, SettingValue, ShelfChannels, DOMAIN_ROW,
-    OFF, ON, PIVOT_ROW, REVERSE_ROW, SCALE_ROW, SCHEME_ROW, STEPS_ROW,
+    LEGEND_ROW, OFF, ON, PIVOT_ROW, REVERSE_ROW, SCALE_ROW, SCHEME_ROW, STEPS_ROW,
 };
 use brightfield_shell::text_ink::{self, DrawnText};
 use brightfield_spec::edit::plot_at_path;
@@ -124,8 +124,10 @@ fn settings_over(attrs: &str, drawn: &ScaleSet, marks: Option<&[MarkKind]>) -> C
         .spec;
     let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
     match marks {
-        Some(marks) => ChannelSettings::of_plot_marked(&spec, plot, &channels(), drawn, marks),
-        None => ChannelSettings::of_plot_drawn(&spec, plot, &channels(), drawn),
+        Some(marks) => {
+            ChannelSettings::of_plot_marked(&spec, plot, "root", &channels(), drawn, marks)
+        }
+        None => ChannelSettings::of_plot_drawn(&spec, plot, "root", &channels(), drawn),
     }
 }
 
@@ -422,7 +424,7 @@ fn colours_settings_have_the_head_rows_scheme_scale_and_reverse_in_that_order() 
                 .filter(|r| !r.by_name)
                 .map(|r| r.name)
                 .collect::<Vec<_>>(),
-            [SCHEME_ROW, SCALE_ROW, REVERSE_ROW],
+            [SCHEME_ROW, SCALE_ROW, LEGEND_ROW, REVERSE_ROW],
             "`{attrs}`"
         );
         assert_eq!(
@@ -443,7 +445,7 @@ fn colours_settings_have_the_head_rows_scheme_scale_and_reverse_in_that_order() 
                 .iter()
                 .map(|r| r.name)
                 .collect::<Vec<_>>(),
-            [SCHEME_ROW, SCALE_ROW, REVERSE_ROW],
+            [SCHEME_ROW, SCALE_ROW, LEGEND_ROW, REVERSE_ROW],
             "the list draws the head rows and no more"
         );
         assert_eq!(list.setting_cursor().map(|r| r.name), Some(SCHEME_ROW));
@@ -551,6 +553,12 @@ fn the_foot_prints_the_sentence_of_the_row_under_the_cursor() {
     let scale = row_of("", SCALE_ROW);
     assert_eq!(sentence(&frame), foot_sentence(&scale));
     assert!(scale.says.contains("Auto"), "{:?}", scale.says);
+
+    list.feed_events(&j());
+    let frame = stage.draw(&mut list);
+    let legend = row_of("", LEGEND_ROW);
+    assert_eq!(sentence(&frame), foot_sentence(&legend));
+    assert!(legend.says.contains("Auto"), "{:?}", legend.says);
 
     list.feed_events(&j());
     let frame = stage.draw(&mut list);
@@ -731,6 +739,7 @@ fn a_scheme_off_the_strip_rings_none_and_the_strip_goes_with_the_cursor() {
     let mut list = turned("colorScheme: blues");
     let on = stage.draw(&mut list);
     let tall = drawn_row(&on, SCHEME_ROW).rect.height();
+    list.feed_events(&j());
     list.feed_events(&j());
     list.feed_events(&j());
     assert_eq!(list.setting_cursor().map(|r| r.name), Some(REVERSE_ROW));
@@ -926,6 +935,7 @@ fn the_reverse_row_switches_by_h_l_and_a_click() {
         let mut list = turned(attrs);
         list.feed_events(&j());
         list.feed_events(&j());
+        list.feed_events(&j());
         assert_eq!(list.setting_cursor().map(|r| r.name), Some(REVERSE_ROW));
         let on = attrs.contains("true");
         let reports = list.feed_events(&if key == "l" { l() } else { h() });
@@ -937,6 +947,7 @@ fn the_reverse_row_switches_by_h_l_and_a_click() {
     }
     for (attrs, on) in [("", false), ("colorReverse: true", true)] {
         let mut list = turned(attrs);
+        list.feed_events(&j());
         list.feed_events(&j());
         list.feed_events(&j());
         let frame = stage.draw(&mut list);
@@ -1055,6 +1066,7 @@ fn on_a_colour_of_names_the_scheme_row_is_muted_with_its_reason_and_reverse_acts
     // Reverse acts.
     list.feed_events(&j());
     list.feed_events(&j());
+    list.feed_events(&j());
     assert_eq!(
         list.feed_events(&l()),
         [set(REVERSE_ROW, SettingValue::Switch(true))]
@@ -1110,6 +1122,7 @@ fn reverse_is_muted_only_where_the_judge_says_no_dot_is_drawn() {
         &ramp_scales(),
         Some(&[MarkKind::Cell]),
     ));
+    list.feed_events(&j());
     list.feed_events(&j());
     list.feed_events(&j());
     for events in [l(), h(), backspace()] {
@@ -1203,6 +1216,7 @@ fn colour_row(attrs: &str, name: &str, drawn: &ScaleSet) -> SettingRow {
     ChannelSettings::of_plot_profiled(
         &spec,
         plot,
+        "root",
         &channels(),
         drawn,
         &[MarkKind::Dot],
@@ -1215,6 +1229,46 @@ fn colour_row(attrs: &str, name: &str, drawn: &ScaleSet) -> SettingRow {
     .clone()
 }
 
+/// **The legend row reads where the file puts the legend, steps through right,
+/// below and none, and carries the dot for the two that are not auto.**
+#[test]
+fn the_legend_row_steps_right_below_none_and_dots_the_two_that_are_not_auto() {
+    let none = row_of("", LEGEND_ROW);
+    assert_eq!(
+        none.value, "none",
+        "a plot with no legend node has no legend"
+    );
+    assert!(none.set, "none carries the dot");
+    assert!(none.steps() && !none.by_name);
+    assert_eq!(none.stepped(1), None, "none is the last step");
+    assert_eq!(
+        none.stepped(-1),
+        Some(SettingValue::Word("below".to_string()))
+    );
+    let below = SettingRow {
+        value: "below".to_string(),
+        ..none.clone()
+    };
+    assert_eq!(
+        below.stepped(1),
+        Some(SettingValue::Word("none".to_string()))
+    );
+    assert_eq!(
+        below.stepped(-1),
+        Some(SettingValue::Word("right".to_string()))
+    );
+    let right = SettingRow {
+        value: "right".to_string(),
+        set: false,
+        ..none
+    };
+    assert_eq!(right.stepped(-1), None, "right is the first step");
+    assert_eq!(
+        right.stepped(1),
+        Some(SettingValue::Word("below".to_string()))
+    );
+}
+
 #[test]
 fn colours_head_rows_are_scheme_scale_and_reverse() {
     let settings = settings_over("", &ramp_scales(), Some(&[MarkKind::Dot]));
@@ -1224,7 +1278,7 @@ fn colours_head_rows_are_scheme_scale_and_reverse() {
         .filter(|r| !r.by_name)
         .map(|r| r.name)
         .collect();
-    assert_eq!(head, ["scheme", "scale", "reverse"]);
+    assert_eq!(head, ["scheme", "scale", "legend", "reverse"]);
 }
 
 #[test]
@@ -1364,6 +1418,7 @@ fn profiled_settings(attrs: &str, drawn: &ScaleSet) -> ChannelSettings {
     ChannelSettings::of_plot_profiled(
         &spec,
         plot,
+        "root",
         &channels(),
         drawn,
         &[MarkKind::Dot],

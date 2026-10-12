@@ -88,7 +88,7 @@ fn settings_of(attrs: &str, drawn: &ScaleSet) -> ChannelSettings {
         .expect("the spec parses")
         .spec;
     let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
-    ChannelSettings::of_plot_drawn(&spec, plot, &channels(), drawn)
+    ChannelSettings::of_plot_drawn(&spec, plot, "root", &channels(), drawn)
 }
 
 /// The scale row of `channel`, as the plot with `attrs` reads against `drawn`.

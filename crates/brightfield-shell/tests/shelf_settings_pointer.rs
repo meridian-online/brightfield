@@ -63,7 +63,7 @@ fn list_on_the_settings() -> ColumnList {
         .expect("the spec parses")
         .spec;
     let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
-    list.set_settings(ChannelSettings::of_plot(&spec, plot, &channels()));
+    list.set_settings(ChannelSettings::of_plot(&spec, plot, "root", &channels()));
     list.feed_events(&[key_event(egui::Key::Tab)]);
     assert_eq!(list.tab(), ListTab::Settings, "Tab turned the list");
     assert_eq!(list.setting_cursor().map(|r| r.name), Some(TITLE_ROW));

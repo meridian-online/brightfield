@@ -233,6 +233,17 @@ impl LegendPlacement {
             LegendPlacement::None => "none",
         }
     }
+
+    /// The placement a [`Self::wire_name`] spells, or `None` for any other word.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        match word {
+            "right" => Some(LegendPlacement::Right),
+            "below" => Some(LegendPlacement::Below),
+            "none" => Some(LegendPlacement::None),
+            _ => None,
+        }
+    }
 }
 
 impl ChartEdit {
@@ -846,6 +857,21 @@ fn legends_below(spec: &Spec, plot_path: &str) -> Option<(String, Vec<usize>)> {
 #[must_use]
 pub fn colour_legends_below(spec: &Spec, plot_path: &str) -> Option<Vec<usize>> {
     legends_below(spec, plot_path).map(|(_, legends)| legends)
+}
+
+/// Where the plot at `plot_path` has its colour legend, as the file places it:
+/// a `legend: color` whose `for:` names the plot and sits under it is below, an
+/// item of the plot or any other legend that covers it is at the right, and no
+/// node is none.
+#[must_use]
+pub fn colour_legend_placement(spec: &Spec, plot_path: &str) -> LegendPlacement {
+    if colour_legends_below(spec, plot_path).is_some() {
+        LegendPlacement::Below
+    } else if colour_legend_covers(spec, plot_path) {
+        LegendPlacement::Right
+    } else {
+        LegendPlacement::None
+    }
 }
 
 /// A `name:` for a plot that has none: one no plot of `spec` holds and no
@@ -2573,5 +2599,63 @@ height: 400
         assert_eq!(edit.plot_path(), "root");
         assert_eq!(edit.kind_name(), "remove-plot-attribute");
         assert_eq!(edit.summary(), "remove-plot-attribute: yScale");
+    }
+
+    #[test]
+    fn a_plots_legend_placement_is_read_off_the_file() {
+        const AT_RIGHT: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+    fill: c
+  - legend: color
+width: 300
+";
+        const BELOW: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+        fill: c
+    width: 300
+    name: chart
+  - legend: color
+    for: chart
+";
+        const NONE: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b, 3 AS c
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+    fill: c
+width: 300
+";
+        for (text, path, want) in [
+            (AT_RIGHT, "root", LegendPlacement::Right),
+            (BELOW, "root/vconcat[0]", LegendPlacement::Below),
+            (NONE, "root", LegendPlacement::None),
+        ] {
+            let spec = parse(text);
+            assert_eq!(colour_legend_placement(&spec, path), want, "{text}");
+        }
+        for at in [
+            LegendPlacement::Right,
+            LegendPlacement::Below,
+            LegendPlacement::None,
+        ] {
+            assert_eq!(LegendPlacement::from_wire(at.wire_name()), Some(at));
+        }
+        assert_eq!(LegendPlacement::from_wire("left"), None);
     }
 }

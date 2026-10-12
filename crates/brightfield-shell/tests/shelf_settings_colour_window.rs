@@ -23,8 +23,8 @@ use brightfield_shell::app::CHART;
 use brightfield_shell::design::Mode;
 use brightfield_shell::legend::{self, LegendSpec};
 use brightfield_shell::shelf::{
-    CardDrawn, ListTab, SchemeDrawn, SettingRow, SettingRowDrawn, DOMAIN_ROW, REVERSE_ROW,
-    SCALE_ROW, SCHEME_ROW,
+    CardDrawn, ListTab, SchemeDrawn, SettingRow, SettingRowDrawn, DOMAIN_ROW, LEGEND_ROW,
+    REVERSE_ROW, SCALE_ROW, SCHEME_ROW,
 };
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::text_ink;
@@ -271,6 +271,17 @@ impl Window {
         assert_eq!(self.setting_cursor(), Some(SCHEME_ROW));
     }
 
+    /// Walk the open list's cursor down to the settings row `name`.
+    fn move_to_row(&mut self, name: &str) {
+        for _ in 0..12 {
+            if self.setting_cursor() == Some(name) {
+                return;
+            }
+            self.type_letter(egui::Key::J, "j");
+        }
+        panic!("the settings cursor did not reach {name}");
+    }
+
     fn list_tab(&self) -> Option<ListTab> {
         self.app.protocol_model().column_list().map(|l| l.tab())
     }
@@ -505,10 +516,10 @@ fn tab_on_colour_shows_scheme_then_reverse_each_auto_with_the_foot() {
     win.open_colour_settings();
     assert_eq!(
         win.row_names(),
-        [SCHEME_ROW, SCALE_ROW, REVERSE_ROW],
+        [SCHEME_ROW, SCALE_ROW, LEGEND_ROW, REVERSE_ROW],
         "colour's head rows, in order"
     );
-    for row in [SCHEME_ROW, SCALE_ROW, REVERSE_ROW] {
+    for row in [SCHEME_ROW, SCALE_ROW, LEGEND_ROW, REVERSE_ROW] {
         assert!(
             !win.row(row).set,
             "{row} reads brightfield's own on a plot that sets nothing"
@@ -530,7 +541,7 @@ fn tab_on_colour_shows_scheme_then_reverse_each_auto_with_the_foot() {
             .iter()
             .map(|r| r.name)
             .collect::<Vec<_>>(),
-        [SCHEME_ROW, SCALE_ROW, REVERSE_ROW],
+        [SCHEME_ROW, SCALE_ROW, LEGEND_ROW, REVERSE_ROW],
         "the card draws the scheme, scale and reverse rows"
     );
     let sentence = shut.card().list.sentence.expect("the foot drew a sentence");
@@ -542,6 +553,8 @@ fn tab_on_colour_shows_scheme_then_reverse_each_auto_with_the_foot() {
     shut.type_letter(egui::Key::J, "j");
     assert_eq!(shut.setting_cursor(), Some(SCALE_ROW));
     shut.type_letter(egui::Key::J, "j");
+    assert_eq!(shut.setting_cursor(), Some(LEGEND_ROW));
+    shut.type_letter(egui::Key::J, "j");
     assert_eq!(shut.setting_cursor(), Some(REVERSE_ROW));
     let sentence = shut.card().list.sentence.expect("the foot drew a sentence");
     assert_eq!(
@@ -549,6 +562,64 @@ fn tab_on_colour_shows_scheme_then_reverse_each_auto_with_the_foot() {
         "Whether colour runs the other way, a ramp from its far end and names from the last, which auto does not.",
         "the foot follows the cursor to the reverse row"
     );
+}
+
+/// **`l` on the legend row moves the legend below the plot and then off the
+/// page, and the rows keep reading the plot**: the plot's path changes when it
+/// is wrapped in a `vconcat`, and the list is rebuilt for the plot where it now
+/// is.
+#[test]
+fn the_legend_row_moves_the_legend_below_and_the_list_still_reads_the_plot() {
+    let mut win = Window::housing("legend-below");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(LEGEND_ROW);
+    assert_eq!(win.row(LEGEND_ROW).value, "right");
+    assert!(!win.row(LEGEND_ROW).set);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(LEGEND_ROW).value, "below");
+    assert!(win.row(LEGEND_ROW).set, "below carries the dot");
+    assert_eq!(
+        win.row(SCALE_ROW).value,
+        "linear",
+        "the rows still read the plot"
+    );
+    assert!(
+        win.hero().legend_below.is_some(),
+        "the legend is under the plot"
+    );
+    win.save();
+    let text = win.chart_text();
+    assert!(
+        text.contains("for: "),
+        "below is a legend for the plot: {text}"
+    );
+
+    win.open_colour_settings();
+    win.move_to_row(LEGEND_ROW);
+    assert_eq!(
+        win.row(LEGEND_ROW).value,
+        "below",
+        "the file's placement is read"
+    );
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(LEGEND_ROW).value, "none");
+    assert!(win.hero().legend_below.is_none());
+    win.save();
+    let text = win.chart_text();
+    assert!(!text.contains("legend: color"), "{text}");
+
+    // Back to the right on a file that holds no legend writes one.
+    win.open_colour_settings();
+    win.move_to_row(LEGEND_ROW);
+    win.type_letter(egui::Key::H, "h");
+    win.type_letter(egui::Key::H, "h");
+    assert_eq!(win.row(LEGEND_ROW).value, "right");
+    assert!(!win.row(LEGEND_ROW).set);
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("legend: color"), "{text}");
+    assert!(!text.contains("for: "), "{text}");
 }
 
 /// **`l` on the scale row steps it to diverging and writes the auto pivot**: the
@@ -786,8 +857,7 @@ fn reverse_switches_by_h_l_and_a_click_and_the_hero_and_its_legend_run_end_for_e
         "fixture check: blues, not reversed"
     );
 
-    win.type_letter(egui::Key::J, "j");
-    win.type_letter(egui::Key::J, "j");
+    win.move_to_row(REVERSE_ROW);
     assert_eq!(win.setting_cursor(), Some(REVERSE_ROW));
     assert_eq!(win.row(REVERSE_ROW).value, "off");
 
@@ -864,8 +934,7 @@ fn on_a_column_of_names_the_scheme_row_is_muted_and_reverse_reverses_the_categor
     assert_eq!(win.unsaved(), unsaved, "l on a muted row is no edit");
     assert_eq!(win.fill_categories(), (categories.clone(), palette.clone()));
 
-    win.type_letter(egui::Key::J, "j");
-    win.type_letter(egui::Key::J, "j");
+    win.move_to_row(REVERSE_ROW);
     assert_eq!(win.setting_cursor(), Some(REVERSE_ROW));
     assert!(
         win.row(REVERSE_ROW).reason.is_none(),
@@ -942,8 +1011,7 @@ fn saved_and_opened_again_the_chart_its_legend_and_the_file_show_each_value() {
             step_to(&mut win, scheme);
         }
         if reversed {
-            win.type_letter(egui::Key::J, "j");
-            win.type_letter(egui::Key::J, "j");
+            win.move_to_row(REVERSE_ROW);
             win.type_letter(egui::Key::L, "l");
         }
         let mut stops = scheme.stops();
@@ -1032,8 +1100,7 @@ fn backspace_names_viridis_only_where_a_scheme_is_named_and_takes_reverse_out() 
     win.keep_on_colour(VALUE);
     win.open_colour_settings();
     win.type_letter(egui::Key::L, "l");
-    win.type_letter(egui::Key::J, "j");
-    win.type_letter(egui::Key::J, "j");
+    win.move_to_row(REVERSE_ROW);
     win.type_letter(egui::Key::L, "l");
     assert_eq!(win.row(REVERSE_ROW).value, "on");
     win.press(egui::Key::Backspace);
@@ -1043,8 +1110,9 @@ fn backspace_names_viridis_only_where_a_scheme_is_named_and_takes_reverse_out() 
         "⌫ on reverse switched it off"
     );
     assert_eq!(win.fill_stops(), SequentialScheme::Blues.stops());
-    win.type_letter(egui::Key::K, "k");
-    win.type_letter(egui::Key::K, "k");
+    for _ in 0..3 {
+        win.type_letter(egui::Key::K, "k");
+    }
     assert_eq!(win.setting_cursor(), Some(SCHEME_ROW));
     win.press(egui::Key::Backspace);
     assert_eq!(win.row(SCHEME_ROW).value, "viridis");

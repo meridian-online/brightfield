@@ -99,7 +99,7 @@ fn settings_of(attrs: &str, channels: &ShelfChannels) -> ChannelSettings {
         .expect("the spec parses")
         .spec;
     let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
-    ChannelSettings::of_plot(&spec, plot, channels)
+    ChannelSettings::of_plot(&spec, plot, "root", channels)
 }
 
 /// A list on `channel`, handed what the plot with `attrs` reads.
@@ -595,7 +595,7 @@ fn from_the_x_settings_y_opens_the_y_settings_and_c_opens_the_colour_settings() 
         let colour = stage.draw(&mut list);
         assert_eq!(
             drawn_rows(&colour),
-            ["scheme", "scale", "reverse"],
+            ["scheme", "scale", "legend", "reverse"],
             "{mode:?}: the rows are colour's"
         );
         let strip = colour

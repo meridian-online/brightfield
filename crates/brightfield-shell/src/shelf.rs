@@ -64,6 +64,7 @@ use brightfield_render::scene::{
     axis_ends_apply, axis_keys_apply, axis_reverse_applies, colour_reverse_applies,
 };
 use brightfield_spec::ast::{Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
+use brightfield_spec::edit::colour_legend_placement;
 use brightfield_spec::layout::{
     colour_domain, read_tick_format, resolve_axis_ends, resolve_axis_reverse, resolve_axis_titles,
     resolve_colour_pivot, resolve_colour_reverse, resolve_colour_scale_diverging,
@@ -895,6 +896,12 @@ pub const ZERO_ROW: &str = "zero";
 /// The name of the reverse row, which is found by typing it on an axis and is a
 /// head row on colour.
 pub const REVERSE_ROW: &str = "reverse";
+/// The name of colour's legend row, a head row.
+pub const LEGEND_ROW: &str = "legend";
+/// Where the legend row steps the legend, in the order `l` steps them.
+pub const LEGEND_STEPS: [&str; 3] = ["right", "below", "none"];
+const LEGEND_SAYS: &str = "Where the chart's colour legend is drawn: at its right, \
+    below it, or not at all. Auto is right.";
 
 /// The name of colour's scheme row.
 pub const SCHEME_ROW: &str = "scheme";
@@ -1406,7 +1413,7 @@ impl SettingRow {
                     COLOUR_SCALE_STEPS.contains(&self.value.as_str())
                 }
                 SCALE_ROW => SCALE_STEPS.contains(&self.value.as_str()),
-                FORMAT_ROW | GRID_ROW | ZERO_ROW | REVERSE_ROW | SCHEME_ROW => true,
+                FORMAT_ROW | GRID_ROW | ZERO_ROW | REVERSE_ROW | SCHEME_ROW | LEGEND_ROW => true,
                 DOMAIN_ROW => matches!(self.value.as_str(), AUTO | FIXED_DOMAIN),
                 _ => false,
             }
@@ -1463,6 +1470,13 @@ impl SettingRow {
                 (FIXED_DOMAIN, -1) => Some(SettingValue::Auto),
                 _ => None,
             };
+        }
+        if self.name == LEGEND_ROW {
+            let at = LEGEND_STEPS.iter().position(|w| *w == self.value)?;
+            let next = at
+                .checked_add_signed(by)
+                .filter(|n| *n < LEGEND_STEPS.len())?;
+            return Some(SettingValue::Word(LEGEND_STEPS[next].to_string()));
         }
         if self.name == SCALE_ROW && self.colour.is_some() {
             let at = COLOUR_SCALE_STEPS.iter().position(|w| *w == self.value)?;
@@ -1644,7 +1658,9 @@ pub struct ChannelSettings {
 
 impl ChannelSettings {
     /// The rows of `plot`'s two axes, with `channels` saying what each axis
-    /// holds and `spec` the params a lifted scale name resolves through.
+    /// holds and `spec` the params a lifted scale name resolves through. `path`
+    /// is where `plot` stands in `spec`, which colour's legend row reads its
+    /// placement by.
     ///
     /// Each value is the resolved one: the title is the resolver's
     /// override, suppression or derivation, the scale is the type the plot
@@ -1656,8 +1672,8 @@ impl ChannelSettings {
     /// resolves to. A window hands the scales its chart was drawn against to
     /// [`Self::of_plot_drawn`], which reads such an axis as band or time.
     #[must_use]
-    pub fn of_plot(spec: &Spec, plot: &PlotNode, channels: &ShelfChannels) -> Self {
-        Self::of_plot_drawn(spec, plot, channels, &ScaleSet::new())
+    pub fn of_plot(spec: &Spec, plot: &PlotNode, path: &str, channels: &ShelfChannels) -> Self {
+        Self::of_plot_drawn(spec, plot, path, channels, &ScaleSet::new())
     }
 
     /// [`Self::of_plot`] with the scales `plot` was drawn against, which the
@@ -1667,10 +1683,11 @@ impl ChannelSettings {
     pub fn of_plot_drawn(
         spec: &Spec,
         plot: &PlotNode,
+        path: &str,
         channels: &ShelfChannels,
         drawn: &ScaleSet,
     ) -> Self {
-        Self::build(spec, plot, channels, drawn, None, None)
+        Self::build(spec, plot, path, channels, drawn, None, None)
     }
 
     /// [`Self::of_plot_drawn`] with the marks `plot` drew, which colour's
@@ -1682,11 +1699,12 @@ impl ChannelSettings {
     pub fn of_plot_marked(
         spec: &Spec,
         plot: &PlotNode,
+        path: &str,
         channels: &ShelfChannels,
         drawn: &ScaleSet,
         marks: &[MarkKind],
     ) -> Self {
-        Self::build(spec, plot, channels, drawn, Some(marks), None)
+        Self::build(spec, plot, path, channels, drawn, Some(marks), None)
     }
 
     /// [`Self::of_plot_marked`] with the load-time profile of colour's column,
@@ -1696,17 +1714,19 @@ impl ChannelSettings {
     pub fn of_plot_profiled(
         spec: &Spec,
         plot: &PlotNode,
+        path: &str,
         channels: &ShelfChannels,
         drawn: &ScaleSet,
         marks: &[MarkKind],
         moments: Option<&ColumnMoments>,
     ) -> Self {
-        Self::build(spec, plot, channels, drawn, Some(marks), moments)
+        Self::build(spec, plot, path, channels, drawn, Some(marks), moments)
     }
 
     fn build(
         spec: &Spec,
         plot: &PlotNode,
+        path: &str,
         channels: &ShelfChannels,
         drawn: &ScaleSet,
         marks: Option<&[MarkKind]>,
@@ -1734,7 +1754,15 @@ impl ChannelSettings {
                 drawn,
                 &domains.y,
             ),
-            colour: colour_rows(spec, plot, drawn, marks, moments),
+            colour: colour_rows(
+                spec,
+                plot,
+                path,
+                channels.colour != Binding::Unset,
+                drawn,
+                marks,
+                moments,
+            ),
         }
     }
 
@@ -1751,8 +1779,8 @@ impl ChannelSettings {
     }
 }
 
-/// The rows of colour: the head rows scheme and reverse, in that order, each
-/// reading *auto* or the value the plot sets.
+/// The rows of colour: the head rows scheme, scale, legend and reverse, in that
+/// order, each reading *auto* or the value the plot sets.
 ///
 /// The scheme reads the name the resolver gives, and a name this build cannot
 /// draw, like none, reads viridis, which is what the plot draws. It is the
@@ -1766,6 +1794,8 @@ impl ChannelSettings {
 fn colour_rows(
     spec: &Spec,
     plot: &PlotNode,
+    path: &str,
+    bound: bool,
     drawn: &ScaleSet,
     marks: Option<&[MarkKind]>,
     moments: Option<&ColumnMoments>,
@@ -1927,9 +1957,23 @@ fn colour_rows(
             names.then(|| DOMAIN_NAMES.to_string()),
         )
     };
+    // A plot that paints nothing by colour has no legend to place, so it reads
+    // as the auto it would be given.
+    let placed = if bound {
+        colour_legend_placement(spec, path).wire_name()
+    } else {
+        LEGEND_STEPS[0]
+    };
     vec![
         scheme_row,
         scale,
+        row(
+            LEGEND_ROW,
+            placed.to_string(),
+            placed != LEGEND_STEPS[0],
+            LEGEND_SAYS,
+            None,
+        ),
         row(
             REVERSE_ROW,
             if reverse { ON } else { OFF }.to_string(),

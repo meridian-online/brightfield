@@ -164,7 +164,7 @@ fn settings_over(attrs: &str, channels: &ShelfChannels, drawn: &ScaleSet) -> Cha
         .expect("the spec parses")
         .spec;
     let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
-    ChannelSettings::of_plot_drawn(&spec, plot, channels, drawn)
+    ChannelSettings::of_plot_drawn(&spec, plot, "root", channels, drawn)
 }
 
 /// The list the window hands the Outline: opened on `request`, and given what

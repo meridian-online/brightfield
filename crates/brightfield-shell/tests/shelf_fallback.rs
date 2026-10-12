@@ -1136,7 +1136,7 @@ fn settings_of(attrs: &str, channels: &ShelfChannels) -> ChannelSettings {
         .expect("the spec parses")
         .spec;
     let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
-    ChannelSettings::of_plot(&spec, plot, channels)
+    ChannelSettings::of_plot(&spec, plot, "root", channels)
 }
 
 /// The card's list over the housing columns, as the window hands it: x's, with

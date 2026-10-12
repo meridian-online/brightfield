@@ -10149,6 +10149,7 @@ fn hero_axis_settings(
     Some(ChannelSettings::of_plot_profiled(
         spec,
         plot,
+        &hero.path,
         channels,
         &hero.scales,
         &hero.marks,
