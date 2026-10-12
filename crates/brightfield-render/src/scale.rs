@@ -1319,7 +1319,7 @@ pub fn apply_colour_pin(scales: &mut ScaleSet, pins: &PinnedDomains) {
 
 impl PinnedDomains {
     /// Whether nothing is pinned — the state of every plot whose spec asks for
-    /// no pin. A set holding only a colour pin is not empty, though
+    /// no pin. A set holding a colour pin alone is not empty, though
     /// [`apply_pinned_domains`], which reads the positional pins, is a no-op on it.
     #[must_use]
     pub fn is_empty(&self) -> bool {

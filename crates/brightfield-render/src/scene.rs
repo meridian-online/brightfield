@@ -633,10 +633,10 @@ pub fn build_multi_mark_scene_pinned(
     // back in their own order, so the file's domain and colours win there as they
     // do on a complete plot; and before the reversal, which turns what the file
     // wrote.
-    // The colour pin goes in first: a file holds either `Fixed` or two ends under
-    // `colorDomain`, never both, so the pin and the override's written domain
-    // cannot both act, and the steps the override cuts then divide the pinned
-    // domain.
+    // The colour pin goes in first: a file holds `Fixed` or two ends under
+    // `colorDomain`, not both at once, so the pin and the override's written
+    // domain do not compete, and the steps the override cuts then divide the
+    // pinned domain.
     apply_colour_pin(&mut scales, &pins);
     apply_colour_override(&mut scales, colour_override);
     apply_colour_reverse(&mut scales, colour_reverse);
