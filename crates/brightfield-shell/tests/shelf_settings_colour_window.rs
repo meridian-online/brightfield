@@ -23,8 +23,8 @@ use brightfield_shell::app::CHART;
 use brightfield_shell::design::Mode;
 use brightfield_shell::legend::{self, LegendSpec};
 use brightfield_shell::shelf::{
-    CardDrawn, ListTab, SchemeDrawn, SettingRow, SettingRowDrawn, REVERSE_ROW, SCALE_ROW,
-    SCHEME_ROW,
+    CardDrawn, ListTab, SchemeDrawn, SettingRow, SettingRowDrawn, DOMAIN_ROW, REVERSE_ROW,
+    SCALE_ROW, SCHEME_ROW,
 };
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::text_ink;
@@ -1107,4 +1107,28 @@ fn esc_in_the_pivot_field_puts_the_heros_pivot_back() {
     assert_eq!(pivot(&win), 1234.0, "the typed pivot is previewed");
     win.press(egui::Key::Escape);
     assert_eq!(pivot(&win), before, "Esc put the pivot back");
+}
+
+/// **Stepping the domain row to fixed writes `colorDomain: Fixed`**, with its
+/// capital, which is the word Mosaic reads.
+#[test]
+fn stepping_the_domain_row_to_fixed_writes_colordomain_fixed() {
+    let mut win = Window::housing("domain-fixed");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::Slash, "/");
+    for (key, text) in [
+        (egui::Key::D, "d"),
+        (egui::Key::O, "o"),
+        (egui::Key::M, "m"),
+    ] {
+        win.type_letter(key, text);
+    }
+    assert_eq!(win.setting_cursor(), Some(DOMAIN_ROW));
+    win.press(egui::Key::Enter);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(DOMAIN_ROW).value, "fixed");
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorDomain: Fixed"), "{text}");
 }

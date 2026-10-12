@@ -26,9 +26,9 @@ use brightfield_render::scale::{ramp_at, Scale, ScaleSet, SequentialScheme};
 use brightfield_shell::design::{self, Mode};
 use brightfield_shell::shelf::{
     diverging_strip, foot_sentence, scheme_strip, Binding, ChannelSettings, ColourScaleWrite,
-    ColumnList, ColumnListRequest, ListColumn, ListDrawn, ListReport, ListTab, Number, RowEdit,
-    SchemeDrawn, SettingRow, SettingRowDrawn, SettingValue, ShelfChannels, OFF, ON, PIVOT_ROW,
-    REVERSE_ROW, SCALE_ROW, SCHEME_ROW, STEPS_ROW,
+    ColumnList, ColumnListRequest, Ends, ListColumn, ListDrawn, ListReport, ListTab, Number,
+    RowEdit, SchemeDrawn, SettingRow, SettingRowDrawn, SettingValue, ShelfChannels, DOMAIN_ROW,
+    OFF, ON, PIVOT_ROW, REVERSE_ROW, SCALE_ROW, SCHEME_ROW, STEPS_ROW,
 };
 use brightfield_shell::text_ink::{self, DrawnText};
 use brightfield_spec::edit::plot_at_path;
@@ -430,7 +430,7 @@ fn colours_settings_have_the_head_rows_scheme_scale_and_reverse_in_that_order() 
                 .filter(|r| r.by_name)
                 .map(|r| r.name)
                 .collect::<Vec<_>>(),
-            [PIVOT_ROW, STEPS_ROW],
+            [PIVOT_ROW, STEPS_ROW, DOMAIN_ROW],
             "`{attrs}`: found by name"
         );
         let mut list = turned(attrs);
@@ -1793,5 +1793,68 @@ fn resetting_a_diverging_scheme_leaves_an_analysts_colours_and_writes_the_pair_e
     assert!(
         !named && range.is_some(),
         "the pair is written where none is"
+    );
+}
+
+#[test]
+fn the_domain_row_reads_auto_with_the_drawn_ends_fixed_or_two_ends() {
+    let auto = colour_row("", DOMAIN_ROW, &ramp_scales());
+    assert_eq!((auto.value.as_str(), auto.set), ("auto", false));
+    assert_eq!(
+        auto.range.as_ref().and_then(|r| r.drawn),
+        Ends::new(0.0, 10.0)
+    );
+    let fixed = colour_row("colorDomain: Fixed", DOMAIN_ROW, &ramp_scales());
+    assert_eq!((fixed.value.as_str(), fixed.set), ("fixed", true));
+    let ends = colour_row("colorDomain: [0, 4]", DOMAIN_ROW, &ramp_scales());
+    assert_eq!((ends.value.as_str(), ends.set), ("0 \u{2013} 4", true));
+    assert!(ends.by_name);
+}
+
+#[test]
+fn the_domain_row_steps_between_auto_and_fixed() {
+    let auto = colour_row("", DOMAIN_ROW, &ramp_scales());
+    assert_eq!(auto.stepped(1), Some(SettingValue::Word("fixed".into())));
+    let fixed = colour_row("colorDomain: Fixed", DOMAIN_ROW, &ramp_scales());
+    assert_eq!(fixed.stepped(-1), Some(SettingValue::Auto));
+}
+
+#[test]
+fn the_domain_row_is_muted_on_a_colour_of_names() {
+    assert!(colour_row("", DOMAIN_ROW, &names_scales()).reason.is_some());
+}
+
+/// The domain row found by name with the cursor on it, reading auto: the ends
+/// the colours were drawn over follow it, muted.
+fn domain_row_list() -> ColumnList {
+    let mut list = turned_over(profiled_settings("", &ramp_scales()));
+    list.feed_events(&typed(egui::Key::Slash, "/"));
+    for (key, letter) in [
+        (egui::Key::D, "d"),
+        (egui::Key::O, "o"),
+        (egui::Key::M, "m"),
+    ] {
+        list.feed_events(&typed(key, letter));
+    }
+    list.feed_events(&enter());
+    assert_eq!(list.setting_cursor().map(|r| r.name), Some(DOMAIN_ROW));
+    list
+}
+
+#[test]
+fn colours_domain_row_light_matches_its_baseline() {
+    baseline_of(
+        domain_row_list(),
+        "shelf_settings_colour_domain_row_light",
+        Mode::Light,
+    );
+}
+
+#[test]
+fn colours_domain_row_dark_matches_its_baseline() {
+    baseline_of(
+        domain_row_list(),
+        "shelf_settings_colour_domain_row_dark",
+        Mode::Dark,
     );
 }

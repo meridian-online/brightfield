@@ -18,10 +18,13 @@ use std::path::PathBuf;
 use brightfield_engine::{ColumnProfile, ProfileOutcome};
 use brightfield_protocol::write_chart_edit;
 use brightfield_shell::data_file;
-use brightfield_shell::shelf::{ColourScaleWrite, Number};
-use brightfield_shell::shelf_edit::{put_colour, put_colour_scale, put_column};
+use brightfield_shell::shelf::{auto_pivot, ColourScaleWrite, Number};
+use brightfield_shell::shelf_edit::{
+    number_value, put_colour, put_colour_scale, put_column, put_setting, SettingWrite,
+};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::{Spec, SpecValue};
+use brightfield_spec::edit::plot_at_path;
 use brightfield_spec::edit::ChartEdit;
 use brightfield_spec::layout::PlotAxis;
 use brightfield_spec::{parse_spec, Format};
@@ -494,5 +497,47 @@ fn the_colour_lines_are_written_among_a_files_comments_and_leave_them() {
             .spec,
         spec,
         "the text reads back as the spec the shelf made"
+    );
+}
+
+#[test]
+fn a_new_column_on_colour_takes_a_set_domain_out_and_re_reads_the_pivot() {
+    let mut opened = open("colour_domain_reset");
+    put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .unwrap();
+    put_colour_scale(
+        &mut opened.spec,
+        &opened.hero,
+        &ColourScaleWrite::Diverging {
+            pivot: Number::new(2.0),
+        },
+    )
+    .unwrap();
+    put_setting(
+        &mut opened.spec,
+        &opened.hero,
+        "colorDomain",
+        &SpecValue::Null,
+        &SettingWrite::Value(SpecValue::String("Fixed".into())),
+    )
+    .unwrap();
+
+    put_colour(&mut opened.spec, &opened.hero, "house_age", &opened.table).unwrap();
+    let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+    assert!(!plot.attributes.contains_key("colorDomain"));
+    let age = opened
+        .table
+        .iter()
+        .find(|p| p.name == "house_age")
+        .and_then(|p| p.moments.as_ref())
+        .unwrap();
+    assert_eq!(
+        plot.attributes.get("colorPivot"),
+        Some(&number_value(auto_pivot(age)))
     );
 }

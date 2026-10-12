@@ -64,15 +64,15 @@ use brightfield_render::scene::{
     axis_ends_apply, axis_keys_apply, axis_reverse_applies, colour_reverse_applies,
 };
 use brightfield_spec::ast::{Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
-use brightfield_spec::layout::{read_domains_in, DomainReading};
 use brightfield_spec::layout::{
-    read_tick_format, resolve_axis_ends, resolve_axis_reverse, resolve_axis_titles,
+    colour_domain, read_tick_format, resolve_axis_ends, resolve_axis_reverse, resolve_axis_titles,
     resolve_colour_pivot, resolve_colour_reverse, resolve_colour_scale_diverging,
     resolve_colour_scale_quantize, resolve_colour_scheme_name, resolve_colour_steps,
     resolve_grid_lines, resolve_plot_scales_in, resolve_tick_counts, tick_count_target, AxisTitle,
-    ScaleType, TickFormatReading, DEFAULT_COLOUR_STEPS, DEFAULT_TICK_COUNT, MAX_COLOUR_STEPS,
-    MAX_TICK_COUNT,
+    ColourDomain, ScaleType, TickFormatReading, DEFAULT_COLOUR_STEPS, DEFAULT_TICK_COUNT,
+    MAX_COLOUR_STEPS, MAX_TICK_COUNT,
 };
+use brightfield_spec::layout::{read_domains_in, DomainReading};
 use brightfield_spec::number_format::NumberFormat;
 use brightfield_spec::vocab::{is_colour_literal, MarkKind};
 use brightfield_workbench::channel::{self, ShelfChannel, BAND_HEIGHT};
@@ -905,6 +905,19 @@ pub const PIVOT_ROW: &str = "pivot";
 /// The name of colour's steps row, found by typing it.
 pub const STEPS_ROW: &str = "steps";
 
+/// The name of colour's domain row, found by typing it.
+pub const DOMAIN_ROW: &str = "domain";
+
+/// The domain row's word for `colorDomain: Fixed`.
+pub const FIXED_DOMAIN: &str = "fixed";
+
+/// The foot's sentence for colour's domain row.
+const DOMAIN_SAYS: &str = "The two values the colours run between. Auto fits \
+    the rows drawn, so a sweep elsewhere re-fits them; fixed holds the first draw's.";
+
+/// Why the domain row does not apply to a colour of names.
+const DOMAIN_NAMES: &str = "a colour of names has no ends to set";
+
 /// The values colour's scale row steps through, in the order `l` steps them.
 /// `steps` is Mosaic's `quantize`.
 pub const COLOUR_SCALE_STEPS: [&str; 3] = ["linear", "diverging", "steps"];
@@ -1067,7 +1080,15 @@ fn quoted_back(typed: &str) -> String {
 /// pivot gives way to the bare number where the row is too narrow for both the
 /// word and the chips.
 fn scale_parameter(row: &SettingRow) -> Option<Vec<String>> {
-    if row.name != SCALE_ROW || row.reason.is_some() {
+    if row.reason.is_some() {
+        return None;
+    }
+    if row.name == DOMAIN_ROW {
+        // An auto domain shows the ends the colours were drawn over.
+        let drawn = row.range.as_ref()?.drawn?;
+        return (row.value == AUTO).then(|| vec![ends_text(drawn)]);
+    }
+    if row.name != SCALE_ROW {
         return None;
     }
     let facts = row.colour.as_ref()?;
@@ -1309,6 +1330,7 @@ pub fn row_key(axis: ShelfChannel, row: &str) -> Option<&'static str> {
                 REVERSE_ROW => Some("colorReverse"),
                 PIVOT_ROW => Some("colorPivot"),
                 STEPS_ROW => Some("colorN"),
+                DOMAIN_ROW => Some("colorDomain"),
                 _ => None,
             }
         }
@@ -1343,7 +1365,7 @@ pub fn row_default(row: &str) -> Option<SpecValue> {
     Some(match row {
         SCALE_ROW => SpecValue::String("linear".to_string()),
         // Mosaic's own, no format: the axis draws its own tick text.
-        FORMAT_ROW | RANGE_ROW => SpecValue::Null,
+        FORMAT_ROW | RANGE_ROW | DOMAIN_ROW => SpecValue::Null,
         // No value of the scheme is the one a file leaves out: brightfield's
         // default is not Mosaic's, so a saved file names viridis, and a default
         // no value equals is what makes every scheme written by name.
@@ -1384,6 +1406,7 @@ impl SettingRow {
                 }
                 SCALE_ROW => SCALE_STEPS.contains(&self.value.as_str()),
                 FORMAT_ROW | GRID_ROW | ZERO_ROW | REVERSE_ROW | SCHEME_ROW => true,
+                DOMAIN_ROW => matches!(self.value.as_str(), AUTO | FIXED_DOMAIN),
                 _ => false,
             }
     }
@@ -1432,6 +1455,13 @@ impl SettingRow {
     pub fn stepped(&self, by: isize) -> Option<SettingValue> {
         if !self.steps() || self.name == FORMAT_ROW {
             return None;
+        }
+        if self.name == DOMAIN_ROW {
+            return match (self.value.as_str(), by.signum()) {
+                (AUTO, 1) => Some(SettingValue::Word(FIXED_DOMAIN.to_string())),
+                (FIXED_DOMAIN, -1) => Some(SettingValue::Auto),
+                _ => None,
+            };
         }
         if self.name == SCALE_ROW && self.colour.is_some() {
             let at = COLOUR_SCALE_STEPS.iter().position(|w| *w == self.value)?;
@@ -1847,6 +1877,55 @@ fn colour_rows(
             names.then(|| SCHEME_NAMES.to_string()),
         )
     };
+    let fixed = matches!(
+        plot.attributes.get("colorDomain"),
+        Some(SpecValue::String(word)) if word == "Fixed"
+    );
+    let set_ends = match plot.attributes.get("colorDomain").and_then(colour_domain) {
+        Some(ColourDomain::Ends(lo, hi)) => Ends::new(lo, hi),
+        _ => None,
+    };
+    let drawn_ends = match drawn.get(Channel::Fill) {
+        Some(
+            Scale::Sequential {
+                domain_min,
+                domain_max,
+                ..
+            }
+            | Scale::Diverging {
+                domain_min,
+                domain_max,
+                ..
+            }
+            | Scale::Quantized {
+                domain_min,
+                domain_max,
+                ..
+            },
+        ) => Ends::new(*domain_min, *domain_max),
+        _ => None,
+    };
+    let domain = SettingRow {
+        by_name: true,
+        kind: SettingKind::Typed,
+        range: Some(RangeFacts {
+            key: "colorDomain",
+            drawn: drawn_ends,
+            set: set_ends,
+            log: false,
+        }),
+        ..row(
+            DOMAIN_ROW,
+            match (fixed, set_ends) {
+                (true, _) => FIXED_DOMAIN.to_string(),
+                (false, Some(ends)) => ends_text(ends),
+                (false, None) => AUTO.to_string(),
+            },
+            fixed || set_ends.is_some(),
+            DOMAIN_SAYS,
+            names.then(|| DOMAIN_NAMES.to_string()),
+        )
+    };
     vec![
         scheme_row,
         scale,
@@ -1861,6 +1940,7 @@ fn colour_rows(
         ),
         pivot,
         steps,
+        domain,
     ]
 }
 
@@ -2678,7 +2758,7 @@ impl ColumnList {
         if !row.takes_field() {
             return;
         }
-        if row.name == RANGE_ROW {
+        if row.range.is_some() {
             // Both ends open at once, on the ends the axis runs over, with the low
             // selected.
             let shown = row
@@ -2690,7 +2770,7 @@ impl ColumnList {
                 |ends| (end_text(ends.lo), end_text(ends.hi)),
             );
             self.field = Some(RowField {
-                row: RANGE_ROW,
+                row: row.name,
                 selected: !low.is_empty(),
                 text: low,
                 refusal: None,
@@ -2766,7 +2846,7 @@ impl ColumnList {
                 }
                 SettingValue::Text(format_specifier(&field.text)?)
             }
-            RANGE_ROW => return self.range_edit(),
+            RANGE_ROW | DOMAIN_ROW => return self.range_edit(),
             PIVOT_ROW => {
                 if field.text.trim().is_empty() {
                     return Ok(None);
@@ -2838,7 +2918,7 @@ impl ColumnList {
         }
         Ok(Ends::new(lo, hi).map(|ends| RowEdit {
             channel: self.channel,
-            row: RANGE_ROW,
+            row: field.row,
             value: SettingValue::Ends(ends),
         }))
     }
@@ -2911,7 +2991,7 @@ impl ColumnList {
                 let sentence = match self.field.as_ref().map(|f| f.row) {
                     Some(TITLE_ROW) => TITLE_NEEDS_TEXT.to_string(),
                     Some(FORMAT_ROW) => format_specifier("").unwrap_err(),
-                    Some(RANGE_ROW) => end_number("").unwrap_err(),
+                    Some(RANGE_ROW | DOMAIN_ROW) => end_number("").unwrap_err(),
                     Some(PIVOT_ROW) => pivot_number("").unwrap_err(),
                     Some(STEPS_ROW) => steps_count("").unwrap_err(),
                     _ => ticks_count("").unwrap_err(),

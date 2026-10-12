@@ -63,11 +63,11 @@ use brightfield_spec::ast::{
     Component, Mark, MarkData, PlotNode, Spec, SpecValue, ValueOrParamRef,
 };
 use brightfield_spec::edit::{self, plot_at_path, ChartEdit, RefuseReason};
-use brightfield_spec::layout::PlotAxis;
+use brightfield_spec::layout::{resolve_colour_scale_diverging, PlotAxis};
 
 use crate::chart_kinds::{type_base, POINT_MAP_PROJECTION};
 use crate::dashboard::coordinate_pair;
-use crate::shelf::ColourScaleWrite;
+use crate::shelf::{auto_pivot, ColourScaleWrite};
 
 /// The plot attribute a map is drawn through, as Mosaic spells it.
 const PROJECTION_KEY: &str = "projectionType";
@@ -463,6 +463,34 @@ pub fn put_colour(
             key: SCHEME_KEY.to_string(),
             value: SpecValue::String(SequentialScheme::default().wire_name().to_string()),
         });
+    }
+
+    // A domain and a pivot belong to the column they were set against: a new
+    // column takes a set domain out and a diverging scale's pivot is read afresh.
+    if !edits.is_empty() {
+        if target.attributes.contains_key("colorDomain") {
+            edits.push(ChartEdit::RemovePlotAttribute {
+                plot: plot.clone(),
+                key: "colorDomain".to_string(),
+            });
+        }
+        if resolve_colour_scale_diverging(target, &spec.params) {
+            let moments = table
+                .iter()
+                .find(|c| c.name == column)
+                .and_then(|c| c.moments.as_ref());
+            edits.push(match moments {
+                Some(moments) => ChartEdit::SetPlotAttribute {
+                    plot: plot.clone(),
+                    key: "colorPivot".to_string(),
+                    value: number_value(auto_pivot(moments)),
+                },
+                None => ChartEdit::RemovePlotAttribute {
+                    plot: plot.clone(),
+                    key: "colorPivot".to_string(),
+                },
+            });
+        }
     }
 
     // The edits go onto a copy first, so a refusal part-way leaves the spec

@@ -2369,6 +2369,12 @@ impl ChartDoc {
                         .to_string(),
                 ))
             }
+            // Mosaic reads `Fixed` with its capital.
+            SettingValue::Word(word)
+                if edit.row == crate::shelf::DOMAIN_ROW && word == crate::shelf::FIXED_DOMAIN =>
+            {
+                SettingWrite::Value(SpecValue::String("Fixed".to_string()))
+            }
             SettingValue::Word(word) => SettingWrite::Value(SpecValue::String(word.clone())),
             SettingValue::Text(words) => SettingWrite::Value(SpecValue::String(words.clone())),
             SettingValue::Switch(on) => SettingWrite::Value(SpecValue::Bool(*on)),
