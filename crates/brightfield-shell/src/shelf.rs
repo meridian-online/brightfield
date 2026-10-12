@@ -67,9 +67,10 @@ use brightfield_spec::ast::{Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
 use brightfield_spec::layout::{read_domains_in, DomainReading};
 use brightfield_spec::layout::{
     read_tick_format, resolve_axis_ends, resolve_axis_reverse, resolve_axis_titles,
-    resolve_colour_reverse, resolve_colour_scheme_name, resolve_grid_lines, resolve_plot_scales_in,
-    resolve_tick_counts, tick_count_target, AxisTitle, ScaleType, TickFormatReading,
-    DEFAULT_TICK_COUNT, MAX_TICK_COUNT,
+    resolve_colour_pivot, resolve_colour_reverse, resolve_colour_scale_diverging,
+    resolve_colour_scale_quantize, resolve_colour_scheme_name, resolve_colour_steps,
+    resolve_grid_lines, resolve_plot_scales_in, resolve_tick_counts, tick_count_target, AxisTitle,
+    ScaleType, TickFormatReading, DEFAULT_COLOUR_STEPS, DEFAULT_TICK_COUNT, MAX_TICK_COUNT,
 };
 use brightfield_spec::number_format::NumberFormat;
 use brightfield_spec::vocab::{is_colour_literal, MarkKind};
@@ -749,6 +750,41 @@ impl Ends {
     }
 }
 
+/// A finite number a row writes: a pivot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Number(f64);
+
+// `Number::new` admits finite numbers alone, so `==` is reflexive.
+impl Eq for Number {}
+
+impl Number {
+    /// `n`, where it is finite.
+    #[must_use]
+    pub fn new(n: f64) -> Option<Self> {
+        n.is_finite().then_some(Self(n))
+    }
+
+    /// The number.
+    #[must_use]
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+/// What a step on colour's scale row writes: the scale, with the parameter it
+/// carries named in the file, since Mosaic's own pivot is 0 and its steps are
+/// rounded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ColourScaleWrite {
+    /// One ramp: `colorScale`, `colorPivot` and `colorN` come out.
+    Linear,
+    /// Diverging about `pivot`. `None` where no auto pivot is known, and then
+    /// none is written and the chart picks its own.
+    Diverging { pivot: Option<Number> },
+    /// Stepped in `count` colours.
+    Steps { count: usize },
+}
+
 /// An end as the row writes it: no trailing zeros, and no exponent.
 #[must_use]
 pub fn end_text(n: f64) -> String {
@@ -861,6 +897,36 @@ pub const REVERSE_ROW: &str = "reverse";
 
 /// The name of colour's scheme row.
 pub const SCHEME_ROW: &str = "scheme";
+
+/// The name of colour's pivot row, found by typing it.
+pub const PIVOT_ROW: &str = "pivot";
+
+/// The name of colour's steps row, found by typing it.
+pub const STEPS_ROW: &str = "steps";
+
+/// The values colour's scale row steps through, in the order `l` steps them.
+/// `steps` is Mosaic's `quantize`.
+pub const COLOUR_SCALE_STEPS: [&str; 3] = ["linear", "diverging", "steps"];
+
+/// The foot's sentence for colour's scale row.
+const COLOUR_SCALE_SAYS: &str = "How values map onto colours: along one ramp, \
+    diverging either side of a pivot, or cut into steps. Auto is linear.";
+
+/// The foot's sentence for colour's pivot row.
+const PIVOT_SAYS: &str = "The value at the middle of a diverging scale. Auto is \
+    0 where the column crosses it, else the column's median.";
+
+/// The foot's sentence for colour's steps row.
+const STEPS_SAYS: &str = "How many colours a stepped scale cuts the values into. Auto is 5.";
+
+/// Why the pivot row does not apply to a scale that is not diverging.
+const PIVOT_OFF: &str = "pivot applies to a diverging scale";
+
+/// Why the steps row does not apply to a scale that is not stepped.
+const STEPS_OFF: &str = "steps applies to a stepped scale";
+
+/// Why the scale row does not apply to a colour that paints names.
+const SCALE_NAMES: &str = "a colour of names has no scale to choose";
 
 /// What a switch row reads while the key is on.
 pub const ON: &str = "on";
@@ -1095,6 +1161,10 @@ pub enum SettingValue {
     Text(String),
     /// The two ends of a range, low first.
     Ends(Ends),
+    /// Colour's scale, with the pivot or count it carries.
+    ColourScale(ColourScaleWrite),
+    /// A number typed into a row: a pivot.
+    Number(Number),
     /// Back to brightfield's own: the key comes out of the file. Colour's scheme
     /// row is the exception, since brightfield's default there is not Mosaic's:
     /// the window answers it by naming viridis, and with no edit where the plot
@@ -1129,6 +1199,8 @@ pub fn row_key(axis: ShelfChannel, row: &str) -> Option<&'static str> {
             return match row {
                 SCHEME_ROW => Some("colorScheme"),
                 REVERSE_ROW => Some("colorReverse"),
+                PIVOT_ROW => Some("colorPivot"),
+                STEPS_ROW => Some("colorN"),
                 _ => None,
             }
         }
@@ -1168,6 +1240,9 @@ pub fn row_default(row: &str) -> Option<SpecValue> {
         // default is not Mosaic's, so a saved file names viridis, and a default
         // no value equals is what makes every scheme written by name.
         SCHEME_ROW => SpecValue::Null,
+        // A pivot is always written by name, as the scheme is.
+        PIVOT_ROW => SpecValue::Null,
+        STEPS_ROW => SpecValue::Integer(5),
         TICKS_ROW => SpecValue::Integer(i64::try_from(DEFAULT_TICK_COUNT).unwrap_or(5)),
         GRID_ROW => SpecValue::Bool(true),
         ZERO_ROW | REVERSE_ROW => SpecValue::Bool(false),
@@ -1196,6 +1271,9 @@ impl SettingRow {
     pub fn steps(&self) -> bool {
         self.reason.is_none()
             && match self.name {
+                SCALE_ROW if self.colour.is_some() => {
+                    COLOUR_SCALE_STEPS.contains(&self.value.as_str())
+                }
                 SCALE_ROW => SCALE_STEPS.contains(&self.value.as_str()),
                 FORMAT_ROW | GRID_ROW | ZERO_ROW | REVERSE_ROW | SCHEME_ROW => true,
                 _ => false,
@@ -1241,6 +1319,22 @@ impl SettingRow {
         if !self.steps() || self.name == FORMAT_ROW {
             return None;
         }
+        if self.name == SCALE_ROW && self.colour.is_some() {
+            let at = COLOUR_SCALE_STEPS.iter().position(|w| *w == self.value)?;
+            let next = at
+                .checked_add_signed(by)
+                .filter(|n| *n < COLOUR_SCALE_STEPS.len())?;
+            let facts = self.colour.as_ref()?;
+            return Some(SettingValue::ColourScale(match COLOUR_SCALE_STEPS[next] {
+                "diverging" => ColourScaleWrite::Diverging {
+                    pivot: facts.auto_pivot.and_then(Number::new),
+                },
+                "steps" => ColourScaleWrite::Steps {
+                    count: DEFAULT_COLOUR_STEPS,
+                },
+                _ => ColourScaleWrite::Linear,
+            }));
+        }
         if self.name == SCALE_ROW {
             let at = SCALE_STEPS.iter().position(|w| *w == self.value)?;
             let next = at
@@ -1261,6 +1355,40 @@ impl SettingRow {
                 .then(|| SettingValue::Word(next.wire_name().to_string()));
         }
         Some(SettingValue::Switch(self.value != ON))
+    }
+
+    /// Whether the scale row's pivot or count is the analyst's: it differs from
+    /// brightfield's own. Compared at the precision a person types, so a median
+    /// written back to the file reads auto.
+    #[must_use]
+    pub fn parameter_set(&self) -> bool {
+        let Some(facts) = &self.colour else {
+            return false;
+        };
+        match (
+            self.value.as_str(),
+            facts.pivot,
+            facts.auto_pivot,
+            facts.count,
+        ) {
+            ("diverging", Some(pivot), Some(auto), _) => {
+                (pivot - auto).abs() > 1e-9 * auto.abs().max(1.0)
+            }
+            ("steps", _, _, Some(count)) => count != DEFAULT_COLOUR_STEPS,
+            _ => false,
+        }
+    }
+}
+
+/// brightfield's auto pivot for a column: 0 where its values cross zero, else
+/// its median. Read from the whole table's profile, so a sweep on another tile
+/// does not move it.
+#[must_use]
+pub fn auto_pivot(moments: &ColumnMoments) -> f64 {
+    if moments.min < 0.0 && moments.max > 0.0 {
+        0.0
+    } else {
+        moments.median
     }
 }
 
@@ -1307,7 +1435,25 @@ pub struct SettingRow {
     /// What only the range row knows. `None` on the title, scale, format, ticks,
     /// grid, zero and reverse rows.
     pub range: Option<RangeFacts>,
+    /// What only colour's scale, pivot and steps rows know. `None` on every other
+    /// row.
+    pub colour: Option<ColourScaleFacts>,
 }
+
+/// What only colour's scale, pivot and steps rows know.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColourScaleFacts {
+    /// The pivot the file writes, else the one the chart drew. `None` off diverging.
+    pub pivot: Option<f64>,
+    /// brightfield's auto pivot for the column, from its load-time profile, or
+    /// the drawn pivot where the file writes none. `None` where neither is known.
+    pub auto_pivot: Option<f64>,
+    /// The count the file writes, else the default. `None` off steps.
+    pub count: Option<usize>,
+}
+
+// Pivots are finite where present, so `==` is reflexive.
+impl Eq for ColourScaleFacts {}
 
 /// What the format row carries beyond its value, read from the plot and the scale
 /// the chart was drawn against.
@@ -1361,7 +1507,7 @@ impl ChannelSettings {
         channels: &ShelfChannels,
         drawn: &ScaleSet,
     ) -> Self {
-        Self::build(spec, plot, channels, drawn, None)
+        Self::build(spec, plot, channels, drawn, None, None)
     }
 
     /// [`Self::of_plot_drawn`] with the marks `plot` drew, which colour's
@@ -1377,7 +1523,22 @@ impl ChannelSettings {
         drawn: &ScaleSet,
         marks: &[MarkKind],
     ) -> Self {
-        Self::build(spec, plot, channels, drawn, Some(marks))
+        Self::build(spec, plot, channels, drawn, Some(marks), None)
+    }
+
+    /// [`Self::of_plot_marked`] with the load-time profile of colour's column,
+    /// which the scale row's auto pivot is read from. Without it the auto pivot
+    /// is the one the chart drew.
+    #[must_use]
+    pub fn of_plot_profiled(
+        spec: &Spec,
+        plot: &PlotNode,
+        channels: &ShelfChannels,
+        drawn: &ScaleSet,
+        marks: &[MarkKind],
+        moments: Option<&ColumnMoments>,
+    ) -> Self {
+        Self::build(spec, plot, channels, drawn, Some(marks), moments)
     }
 
     fn build(
@@ -1386,6 +1547,7 @@ impl ChannelSettings {
         channels: &ShelfChannels,
         drawn: &ScaleSet,
         marks: Option<&[MarkKind]>,
+        moments: Option<&ColumnMoments>,
     ) -> Self {
         let titles = resolve_axis_titles(plot);
         let scales = resolve_plot_scales_in(plot, &spec.params);
@@ -1409,7 +1571,7 @@ impl ChannelSettings {
                 drawn,
                 &domains.y,
             ),
-            colour: colour_rows(spec, plot, drawn, marks),
+            colour: colour_rows(spec, plot, drawn, marks, moments),
         }
     }
 
@@ -1443,6 +1605,7 @@ fn colour_rows(
     plot: &PlotNode,
     drawn: &ScaleSet,
     marks: Option<&[MarkKind]>,
+    moments: Option<&ColumnMoments>,
 ) -> Vec<SettingRow> {
     let scheme = resolve_colour_scheme_name(plot, &spec.params)
         .and_then(SequentialScheme::from_wire)
@@ -1460,6 +1623,63 @@ fn colour_rows(
         from: None,
         format: None,
         range: None,
+        colour: None,
+    };
+    let diverging = resolve_colour_scale_diverging(plot, &spec.params);
+    let quantize = resolve_colour_scale_quantize(plot, &spec.params);
+    let drawn_pivot = match drawn.get(Channel::Fill) {
+        Some(Scale::Diverging { pivot, .. }) => Some(*pivot),
+        _ => None,
+    };
+    let facts = ColourScaleFacts {
+        pivot: diverging
+            .then(|| resolve_colour_pivot(plot, &spec.params).or(drawn_pivot))
+            .flatten(),
+        auto_pivot: moments.map(auto_pivot).or(drawn_pivot),
+        count: quantize
+            .then(|| resolve_colour_steps(plot, &spec.params).unwrap_or(DEFAULT_COLOUR_STEPS)),
+    };
+    let scale_word = if diverging {
+        "diverging"
+    } else if quantize {
+        "steps"
+    } else {
+        "linear"
+    };
+    let scale = SettingRow {
+        colour: Some(facts.clone()),
+        ..row(
+            SCALE_ROW,
+            scale_word.to_string(),
+            scale_word != "linear",
+            COLOUR_SCALE_SAYS,
+            names.then(|| SCALE_NAMES.to_string()),
+        )
+    };
+    let parameter_set = scale.parameter_set();
+    let pivot = SettingRow {
+        by_name: true,
+        kind: SettingKind::Typed,
+        colour: Some(facts.clone()),
+        ..row(
+            PIVOT_ROW,
+            facts.pivot.map(end_text).unwrap_or_default(),
+            parameter_set,
+            PIVOT_SAYS,
+            (!diverging).then(|| PIVOT_OFF.to_string()),
+        )
+    };
+    let steps = SettingRow {
+        by_name: true,
+        kind: SettingKind::Typed,
+        colour: Some(facts.clone()),
+        ..row(
+            STEPS_ROW,
+            facts.count.map(|n| n.to_string()).unwrap_or_default(),
+            parameter_set,
+            STEPS_SAYS,
+            (!quantize).then(|| STEPS_OFF.to_string()),
+        )
     };
     vec![
         row(
@@ -1469,6 +1689,7 @@ fn colour_rows(
             SCHEME_SAYS,
             names.then(|| SCHEME_NAMES.to_string()),
         ),
+        scale,
         row(
             REVERSE_ROW,
             if reverse { ON } else { OFF }.to_string(),
@@ -1478,6 +1699,8 @@ fn colour_rows(
                 .is_some_and(|marks| !colour_reverse_applies(marks))
                 .then(|| COLOUR_REVERSE_DOTS.to_string()),
         ),
+        pivot,
+        steps,
     ]
 }
 
@@ -1531,6 +1754,7 @@ fn axis_rows(
         from: None,
         format: None,
         range: None,
+        colour: None,
     };
     // The scale the chart draws: band for names and time for dates, which are
     // brightfield's own choice and so leave the row unset, and otherwise the
@@ -1690,6 +1914,7 @@ fn by_name_rows(plot: &PlotNode, axis: ShelfChannel, drawn: &ScaleSet) -> [Setti
         from: None,
         format: None,
         range: None,
+        colour: None,
     };
     let grid_key = if x { "xGrid" } else { "yGrid" };
     let grid_from = (!plot.attributes.contains_key(grid_key)

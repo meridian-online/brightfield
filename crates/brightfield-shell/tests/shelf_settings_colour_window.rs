@@ -23,7 +23,8 @@ use brightfield_shell::app::CHART;
 use brightfield_shell::design::Mode;
 use brightfield_shell::legend::{self, LegendSpec};
 use brightfield_shell::shelf::{
-    CardDrawn, ListTab, SchemeDrawn, SettingRow, SettingRowDrawn, REVERSE_ROW, SCHEME_ROW,
+    CardDrawn, ListTab, SchemeDrawn, SettingRow, SettingRowDrawn, REVERSE_ROW, SCALE_ROW,
+    SCHEME_ROW,
 };
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::text_ink;
@@ -288,7 +289,7 @@ impl Window {
             .and_then(|l| l.setting_cursor().map(|r| r.name))
     }
 
-    /// The names of the open list's settings rows, in order.
+    /// The names of the open list's head settings rows, in order.
     fn row_names(&self) -> Vec<&'static str> {
         self.app
             .protocol_model()
@@ -296,6 +297,7 @@ impl Window {
             .expect("a list is open")
             .settings()
             .iter()
+            .filter(|r| !r.by_name)
             .map(|r| r.name)
             .collect()
     }
@@ -503,7 +505,7 @@ fn tab_on_colour_shows_scheme_then_reverse_each_auto_with_the_foot() {
     win.open_colour_settings();
     assert_eq!(
         win.row_names(),
-        [SCHEME_ROW, REVERSE_ROW],
+        [SCHEME_ROW, SCALE_ROW, REVERSE_ROW],
         "colour's head rows, in order"
     );
     for row in [SCHEME_ROW, REVERSE_ROW] {
@@ -528,8 +530,8 @@ fn tab_on_colour_shows_scheme_then_reverse_each_auto_with_the_foot() {
             .iter()
             .map(|r| r.name)
             .collect::<Vec<_>>(),
-        [SCHEME_ROW, REVERSE_ROW],
-        "the card draws the scheme row and then the reverse row"
+        [SCHEME_ROW, SCALE_ROW, REVERSE_ROW],
+        "the card draws the scheme, scale and reverse rows"
     );
     let sentence = shut.card().list.sentence.expect("the foot drew a sentence");
     assert_eq!(
@@ -538,6 +540,8 @@ fn tab_on_colour_shows_scheme_then_reverse_each_auto_with_the_foot() {
         "the foot says what the scheme row does"
     );
     shut.type_letter(egui::Key::J, "j");
+    assert_eq!(shut.setting_cursor(), Some(SCALE_ROW));
+    shut.type_letter(egui::Key::J, "j");
     assert_eq!(shut.setting_cursor(), Some(REVERSE_ROW));
     let sentence = shut.card().list.sentence.expect("the foot drew a sentence");
     assert_eq!(
@@ -545,6 +549,27 @@ fn tab_on_colour_shows_scheme_then_reverse_each_auto_with_the_foot() {
         "Whether colour runs the other way, a ramp from its far end and names from the last, which auto does not.",
         "the foot follows the cursor to the reverse row"
     );
+}
+
+/// **`l` on the scale row steps it to diverging and writes the auto pivot**: the
+/// row reads diverging with its pivot unmarked, and the file names the scale and
+/// the pivot and no longer the scheme.
+#[test]
+fn stepping_the_scale_row_to_diverging_writes_it_with_the_auto_pivot() {
+    let mut win = Window::housing("scale-diverging");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::J, "j");
+    assert_eq!(win.setting_cursor(), Some(SCALE_ROW));
+    win.type_letter(egui::Key::L, "l");
+    let row = win.row(SCALE_ROW);
+    assert_eq!(row.value, "diverging");
+    assert!(!row.parameter_set(), "the pivot written is the auto pivot");
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorScale: diverging"), "{text}");
+    assert!(text.contains("colorPivot: "), "{text}");
+    assert!(!text.contains("colorScheme"), "{text}");
 }
 
 // ---------------------------------------------------------------------------
@@ -667,6 +692,7 @@ fn reverse_switches_by_h_l_and_a_click_and_the_hero_and_its_legend_run_end_for_e
     );
 
     win.type_letter(egui::Key::J, "j");
+    win.type_letter(egui::Key::J, "j");
     assert_eq!(win.setting_cursor(), Some(REVERSE_ROW));
     assert_eq!(win.row(REVERSE_ROW).value, "off");
 
@@ -744,6 +770,7 @@ fn on_a_column_of_names_the_scheme_row_is_muted_and_reverse_reverses_the_categor
     assert_eq!(win.fill_categories(), (categories.clone(), palette.clone()));
 
     win.type_letter(egui::Key::J, "j");
+    win.type_letter(egui::Key::J, "j");
     assert_eq!(win.setting_cursor(), Some(REVERSE_ROW));
     assert!(
         win.row(REVERSE_ROW).reason.is_none(),
@@ -820,6 +847,7 @@ fn saved_and_opened_again_the_chart_its_legend_and_the_file_show_each_value() {
             step_to(&mut win, scheme);
         }
         if reversed {
+            win.type_letter(egui::Key::J, "j");
             win.type_letter(egui::Key::J, "j");
             win.type_letter(egui::Key::L, "l");
         }
@@ -910,6 +938,7 @@ fn backspace_names_viridis_only_where_a_scheme_is_named_and_takes_reverse_out() 
     win.open_colour_settings();
     win.type_letter(egui::Key::L, "l");
     win.type_letter(egui::Key::J, "j");
+    win.type_letter(egui::Key::J, "j");
     win.type_letter(egui::Key::L, "l");
     assert_eq!(win.row(REVERSE_ROW).value, "on");
     win.press(egui::Key::Backspace);
@@ -919,6 +948,7 @@ fn backspace_names_viridis_only_where_a_scheme_is_named_and_takes_reverse_out() 
         "⌫ on reverse switched it off"
     );
     assert_eq!(win.fill_stops(), SequentialScheme::Blues.stops());
+    win.type_letter(egui::Key::K, "k");
     win.type_letter(egui::Key::K, "k");
     assert_eq!(win.setting_cursor(), Some(SCHEME_ROW));
     win.press(egui::Key::Backspace);

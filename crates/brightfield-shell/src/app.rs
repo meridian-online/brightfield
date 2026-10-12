@@ -2292,6 +2292,23 @@ impl ChartDoc {
     > {
         use crate::shelf::SettingValue;
         use crate::shelf_edit::SettingWrite;
+        if let SettingValue::ColourScale(write) = &edit.value {
+            let mut spec = before.clone();
+            let edits = crate::shelf_edit::put_colour_scale(&mut spec, path, write)?;
+            return Ok((!edits.is_empty()).then_some((spec, edits)));
+        }
+        if edit.channel == ShelfChannel::Colour
+            && edit.row == crate::shelf::SCALE_ROW
+            && edit.value == SettingValue::Auto
+        {
+            let mut spec = before.clone();
+            let edits = crate::shelf_edit::put_colour_scale(
+                &mut spec,
+                path,
+                &crate::shelf::ColourScaleWrite::Linear,
+            )?;
+            return Ok((!edits.is_empty()).then_some((spec, edits)));
+        }
         let Some(key) = crate::shelf::row_key(edit.channel, edit.row) else {
             return Ok(None);
         };
@@ -2330,6 +2347,11 @@ impl ChartDoc {
                 crate::shelf_edit::number_value(ends.lo),
                 crate::shelf_edit::number_value(ends.hi),
             ])),
+            SettingValue::Number(n) => {
+                SettingWrite::Value(crate::shelf_edit::number_value(n.get()))
+            }
+            // Written whole above.
+            SettingValue::ColourScale(_) => return Ok(None),
             SettingValue::Auto => SettingWrite::Auto,
         };
         let mut spec = before.clone();

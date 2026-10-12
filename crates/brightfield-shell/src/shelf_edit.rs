@@ -67,6 +67,7 @@ use brightfield_spec::layout::PlotAxis;
 
 use crate::chart_kinds::{type_base, POINT_MAP_PROJECTION};
 use crate::dashboard::coordinate_pair;
+use crate::shelf::ColourScaleWrite;
 
 /// The plot attribute a map is drawn through, as Mosaic spells it.
 const PROJECTION_KEY: &str = "projectionType";
@@ -478,6 +479,128 @@ pub fn put_colour(
     }
     *spec = edited;
     Ok(edits)
+}
+
+/// Write colour's scale on the plot at `plot`: the keys the scale and its
+/// parameter take, and the keys the other two scales leave behind taken out.
+///
+/// Diverging names its pivot and brightfield's pair, and takes the scheme out,
+/// since the pair is the diverging scale's colours. Steps names its count and
+/// puts the scheme back where the plot names none, since a saved file names the
+/// scheme it is drawn in. Linear takes the scale's keys out and leaves the
+/// scheme. A `colorRange` that is not brightfield's pair is the analyst's and
+/// stays.
+///
+/// # Errors
+///
+/// [`ShelfRefusal::Edit`] when the plot path names no plot. `spec` is left as it
+/// was.
+pub fn put_colour_scale(
+    spec: &mut Spec,
+    plot: &ComponentPath,
+    write: &ColourScaleWrite,
+) -> Result<Vec<ChartEdit>, ShelfRefusal> {
+    let target =
+        plot_at_path(spec, &plot.0).ok_or(ShelfRefusal::Edit(RefuseReason::PlotNotFound))?;
+    let pair = own_pair_value();
+    let holds_pair = target.attributes.get("colorRange") == Some(&pair);
+    let names_scheme = target.attributes.contains_key(SCHEME_KEY);
+    let viridis = || SpecValue::String(SequentialScheme::default().wire_name().to_string());
+    let set = |key: &str, value: SpecValue| ChartEdit::SetPlotAttribute {
+        plot: plot.clone(),
+        key: key.to_string(),
+        value,
+    };
+    let remove = |key: &str| ChartEdit::RemovePlotAttribute {
+        plot: plot.clone(),
+        key: key.to_string(),
+    };
+    let mut wanted = Vec::new();
+    match write {
+        ColourScaleWrite::Linear => {
+            wanted.extend([remove("colorScale"), remove("colorPivot"), remove("colorN")]);
+            if holds_pair {
+                wanted.push(remove("colorRange"));
+                wanted.push(set(SCHEME_KEY, viridis()));
+            }
+        }
+        ColourScaleWrite::Diverging { pivot } => {
+            wanted.push(set(
+                "colorScale",
+                SpecValue::String("diverging".to_string()),
+            ));
+            wanted.push(match pivot {
+                Some(p) => set("colorPivot", number_value(p.get())),
+                None => remove("colorPivot"),
+            });
+            wanted.extend([
+                remove("colorN"),
+                remove(SCHEME_KEY),
+                set("colorRange", pair),
+            ]);
+        }
+        ColourScaleWrite::Steps { count } => {
+            wanted.push(set("colorScale", SpecValue::String("quantize".to_string())));
+            wanted.push(set(
+                "colorN",
+                SpecValue::Integer(i64::try_from(*count).unwrap_or(5)),
+            ));
+            wanted.push(remove("colorPivot"));
+            if holds_pair {
+                wanted.push(remove("colorRange"));
+            }
+            if !names_scheme || holds_pair {
+                wanted.push(set(SCHEME_KEY, viridis()));
+            }
+        }
+    }
+    apply_present(spec, plot, wanted)
+}
+
+/// Apply each of `wanted` to `spec` through [`edit::apply_for_fresh_load`], and
+/// return those that changed it: a removal of a key the plot lacks is dropped,
+/// and so is a set to the value already held. `spec` is left as it was on a
+/// refusal.
+fn apply_present(
+    spec: &mut Spec,
+    plot: &ComponentPath,
+    wanted: Vec<ChartEdit>,
+) -> Result<Vec<ChartEdit>, ShelfRefusal> {
+    let mut edited = spec.clone();
+    let mut kept = Vec::new();
+    for e in wanted {
+        let held = plot_at_path(&edited, &plot.0).map(|p| &p.attributes);
+        let changes = match &e {
+            ChartEdit::SetPlotAttribute { key, value, .. } => {
+                held.and_then(|a| a.get(key)) != Some(value)
+            }
+            ChartEdit::RemovePlotAttribute { key, .. } => held.is_some_and(|a| a.contains_key(key)),
+            _ => true,
+        };
+        if changes {
+            edit::apply_for_fresh_load(&mut edited, &e).map_err(ShelfRefusal::Edit)?;
+            kept.push(e);
+        }
+    }
+    *spec = edited;
+    Ok(kept)
+}
+
+/// brightfield's diverging pair as the file holds it: three hex strings.
+fn own_pair_value() -> SpecValue {
+    SpecValue::Array(
+        brightfield_render::scale::own_diverging_range()
+            .iter()
+            .map(|c| SpecValue::String(hex(*c)))
+            .collect(),
+    )
+}
+
+/// `#rrggbb` for a colour, alpha dropped.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn hex(c: [f32; 4]) -> String {
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", byte(c[0]), byte(c[1]), byte(c[2]))
 }
 
 /// Whether the dot paints a column of this DuckDB type along a ramp: the types

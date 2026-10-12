@@ -5009,11 +5009,17 @@ impl MeridianApp {
                             if !latched {
                                 canvas_scroll = (canvas_scroll - wheel).clamp(0.0, reach);
                             }
+                            let table: &[brightfield_engine::ColumnProfile] = protocol
+                                .doc
+                                .model
+                                .source()
+                                .map_or(&[], |s| s.profiles.as_slice());
                             let (drawn, picked) = if transposed {
                                 draw_transposed_pane_group(
                                     ui,
                                     body,
                                     charts,
+                                    table,
                                     ws,
                                     item,
                                     mode,
@@ -5028,6 +5034,7 @@ impl MeridianApp {
                                     ui,
                                     body,
                                     charts,
+                                    table,
                                     ws,
                                     item,
                                     mode,
@@ -5366,7 +5373,13 @@ impl MeridianApp {
             if let Some(band) = self.charts.shelf.band.as_mut() {
                 band.set_channels(channels.clone());
             }
-            if let Some(settings) = hero_axis_settings(&self.charts.doc, &channels) {
+            let table = self
+                .protocol
+                .doc
+                .model
+                .source()
+                .map_or(&[][..], |s| s.profiles.as_slice());
+            if let Some(settings) = hero_axis_settings(&self.charts.doc, &channels, table) {
                 self.protocol.doc.model.set_column_list_settings(settings);
             }
             self.protocol.doc.model.rebind_column_list(channels);
@@ -5592,7 +5605,15 @@ impl MeridianApp {
                         channel,
                         band.channels().clone(),
                     );
-                    if let Some(settings) = hero_axis_settings(&self.charts.doc, band.channels()) {
+                    let table = self
+                        .protocol
+                        .doc
+                        .model
+                        .source()
+                        .map_or(&[][..], |s| s.profiles.as_slice());
+                    if let Some(settings) =
+                        hero_axis_settings(&self.charts.doc, band.channels(), table)
+                    {
                         self.protocol.doc.model.set_column_list_settings(settings);
                     }
                 }
@@ -9633,6 +9654,7 @@ fn draw_canvas_pane_group(
     ui: &mut egui::Ui,
     body: egui::Rect,
     charts: &mut ChartView,
+    table: &[brightfield_engine::ColumnProfile],
     ws: &Workspace,
     item: ItemId,
     mode: Mode,
@@ -9668,7 +9690,7 @@ fn draw_canvas_pane_group(
     );
 
     let hero_body = pane_body(ui, map_rect, &map_subject, mode);
-    let map_body = carve_shelf_band(ui, hero_body, charts, &map_subject.title, mode);
+    let map_body = carve_shelf_band(ui, hero_body, charts, table, &map_subject.title, mode);
     // The grid pane's frame comes after the page below, so its own fill and
     // header band are not painted over by anything the composition overruns
     // its clip with.
@@ -9859,6 +9881,7 @@ fn draw_transposed_pane_group(
     ui: &mut egui::Ui,
     body: egui::Rect,
     charts: &mut ChartView,
+    table: &[brightfield_engine::ColumnProfile],
     ws: &Workspace,
     item: ItemId,
     mode: Mode,
@@ -9882,7 +9905,7 @@ fn draw_transposed_pane_group(
         brightfield_keys::BindingContext::Workspace,
     );
     let hero_body = pane_body(ui, map_rect, &map_subject, mode);
-    let map_body = carve_shelf_band(ui, hero_body, charts, &map_subject.title, mode);
+    let map_body = carve_shelf_band(ui, hero_body, charts, table, &map_subject.title, mode);
     // Framed before the page rather than after it, which is the opposite of
     // the untransposed layout's order and for the same reason: this pane draws
     // part of the page, so its fill and its header band have to be down before
@@ -10044,6 +10067,7 @@ fn carve_shelf_band(
     ui: &mut egui::Ui,
     body: egui::Rect,
     charts: &mut ChartView,
+    table: &[brightfield_engine::ColumnProfile],
     title: &str,
     mode: Mode,
 ) -> egui::Rect {
@@ -10068,7 +10092,7 @@ fn carve_shelf_band(
     band.set_channels(channels.clone());
     // A cell marks what is set on its channel: the dot, and a scale that is not
     // linear. A hero with no spec to read from has nothing set to mark.
-    band.set_settings(hero_axis_settings(&charts.doc, &channels).unwrap_or_default());
+    band.set_settings(hero_axis_settings(&charts.doc, &channels, table).unwrap_or_default());
     // The cell says *preview* while the chart document draws a column it has
     // not kept, and only then: the document's preview is the one record of it.
     match charts.doc.shelf_preview() {
@@ -10106,16 +10130,29 @@ fn hero_shelf_channels(doc: &ChartDoc) -> Option<ShelfChannels> {
 /// against, which the composed plot holds, so a row the render crate says does
 /// not apply to the axis it drew carries its reason. Colour's are judged by the
 /// same scales and by the marks the hero drew.
-fn hero_axis_settings(doc: &ChartDoc, channels: &ShelfChannels) -> Option<ChannelSettings> {
+fn hero_axis_settings(
+    doc: &ChartDoc,
+    channels: &ShelfChannels,
+    table: &[brightfield_engine::ColumnProfile],
+) -> Option<ChannelSettings> {
     let hero = doc.composed.plots.get(HERO_PLOT)?;
     let spec = doc.live_dashboard()?.spec();
     let plot = brightfield_spec::edit::plot_at_path(spec, &hero.path)?;
-    Some(ChannelSettings::of_plot_marked(
+    // Colour's auto pivot is read from the whole table's profile of its column.
+    let moments = match &channels.colour {
+        Binding::Column(name) => table
+            .iter()
+            .find(|p| &p.name == name)
+            .and_then(|p| p.moments.as_ref()),
+        _ => None,
+    };
+    Some(ChannelSettings::of_plot_profiled(
         spec,
         plot,
         channels,
         &hero.scales,
         &hero.marks,
+        moments,
     ))
 }
 

@@ -18,7 +18,8 @@ use std::path::PathBuf;
 use brightfield_engine::{ColumnProfile, ProfileOutcome};
 use brightfield_protocol::write_chart_edit;
 use brightfield_shell::data_file;
-use brightfield_shell::shelf_edit::{put_colour, put_column};
+use brightfield_shell::shelf::{ColourScaleWrite, Number};
+use brightfield_shell::shelf_edit::{put_colour, put_colour_scale, put_column};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::Spec;
 use brightfield_spec::edit::ChartEdit;
@@ -262,6 +263,66 @@ fn the_shelfs_colour_edit_on_the_generated_map_adds_a_fill_line_a_scheme_line_an
             .spec,
         opened.spec,
         "the text reads back as the spec the shelf made"
+    );
+}
+
+/// **The scale row's three values write and take out their keys**: diverging
+/// names its pivot and brightfield's pair and takes the scheme out, steps names
+/// its count and the scheme, and linear takes the scale's keys out and keeps the
+/// scheme.
+#[test]
+fn the_scale_rows_three_values_write_and_take_out_their_keys() {
+    let mut opened = open("scale_rows");
+    let edits = put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .expect("colour takes the column");
+    let coloured = write_all(&opened.text, &edits);
+
+    let mut spec = opened.spec.clone();
+    let diverging = put_colour_scale(
+        &mut spec,
+        &opened.hero,
+        &ColourScaleWrite::Diverging {
+            pivot: Number::new(3.47),
+        },
+    )
+    .expect("diverging writes");
+    let written = write_all(&coloured, &diverging);
+    assert!(written.contains("colorScale: diverging"));
+    assert!(written.contains("colorPivot: 3.47"));
+    assert!(
+        written.contains("colorRange: ["),
+        "the pair is written as colours"
+    );
+    assert!(
+        !written.contains("colorScheme"),
+        "diverging takes the scheme out"
+    );
+    assert_eq!(parse_spec(&written, Format::Yaml).unwrap().spec, spec);
+
+    let steps = put_colour_scale(
+        &mut spec,
+        &opened.hero,
+        &ColourScaleWrite::Steps { count: 5 },
+    )
+    .expect("steps writes");
+    let written = write_all(&written, &steps);
+    assert!(written.contains("colorScale: quantize"));
+    assert!(written.contains("colorN: 5"));
+    assert!(written.contains("colorScheme: viridis"));
+    assert!(!written.contains("colorPivot") && !written.contains("colorRange"));
+
+    let linear = put_colour_scale(&mut spec, &opened.hero, &ColourScaleWrite::Linear)
+        .expect("linear writes");
+    let written = write_all(&written, &linear);
+    assert!(!written.contains("colorScale") && !written.contains("colorN"));
+    assert!(
+        written.contains("colorScheme: viridis"),
+        "linear keeps the scheme"
     );
 }
 
