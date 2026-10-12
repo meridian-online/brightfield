@@ -412,8 +412,8 @@ fn sentence(frame: &Frame) -> String {
 // The rows.
 // ---------------------------------------------------------------------------
 
-/// **AC1.** The head rows are scheme, scale and reverse, in that order, and the
-/// pivot and steps rows are found by name behind them.
+/// The head rows are scheme, scale, legend and reverse, in that order, and the
+/// pivot, steps and domain rows are found by name behind them.
 #[test]
 fn colours_settings_have_the_head_rows_scheme_scale_legend_and_reverse_in_that_order() {
     for attrs in ["", "colorScheme: blues\ncolorReverse: true"] {
