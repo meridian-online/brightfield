@@ -22,9 +22,9 @@ use crate::legend::render_colour_legend;
 use crate::mark::{HighlightState, MarkRenderer};
 use crate::sample_notice::{render_sample_notice, SampleFact};
 use crate::scale::{
-    apply_colour_override, apply_pinned_domains, infer_scales_in, infer_scales_multi_in,
-    order_categories, written_ends_apply, ColourOverride, PinnedDomains, Scale, ScaleSet,
-    ViewExtent,
+    apply_colour_override, apply_colour_pin, apply_pinned_domains, infer_scales_in,
+    infer_scales_multi_in, order_categories, written_ends_apply, ColourOverride, PinnedDomains,
+    Scale, ScaleSet, ViewExtent,
 };
 use crate::title::ResolvedTitles;
 
@@ -633,6 +633,11 @@ pub fn build_multi_mark_scene_pinned(
     // back in their own order, so the file's domain and colours win there as they
     // do on a complete plot; and before the reversal, which turns what the file
     // wrote.
+    // The colour pin goes in first: a file holds either `Fixed` or two ends under
+    // `colorDomain`, never both, so the pin and the override's written domain
+    // cannot both act, and the steps the override cuts then divide the pinned
+    // domain.
+    apply_colour_pin(&mut scales, &pins);
     apply_colour_override(&mut scales, colour_override);
     apply_colour_reverse(&mut scales, colour_reverse);
     let scene = draw_multi_mark_scene(
@@ -930,7 +935,8 @@ pub fn written_ends_held(
     }
 }
 
-/// `pins` with every axis the reader has navigated dropped.
+/// `pins` with every axis the reader has navigated dropped. The colour pin stays:
+/// navigation moves positions, not colours.
 ///
 /// The view extent is already on the scale by the time a pin would be applied
 /// (`infer_multi_mark_scales` ends with it), so re-domaining a navigated axis
@@ -944,6 +950,7 @@ fn pins_yielding_to_navigation(pins: &PinnedDomains, entry: &ChartData<'_>) -> P
         y: extent.y.is_none().then(|| pins.y.clone()).flatten(),
         x_written: extent.x.is_none() && pins.x_written,
         y_written: extent.y.is_none() && pins.y_written,
+        colour: pins.colour,
     }
 }
 
