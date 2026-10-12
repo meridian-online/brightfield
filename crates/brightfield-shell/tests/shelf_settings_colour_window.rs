@@ -1335,7 +1335,10 @@ fn reverse_is_muted_on_a_hero_that_draws_no_dot() {
     w.open_colour_settings();
     let reverse = w.row(REVERSE_ROW);
     assert!(
-        reverse.reason.as_deref().is_some_and(|r| r.contains("dot")),
+        reverse
+            .reason
+            .as_deref()
+            .is_some_and(|r| r.contains("this chart draws none")),
         "reverse says why it does not apply, got {:?}",
         reverse.reason
     );
