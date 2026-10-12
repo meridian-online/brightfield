@@ -1267,17 +1267,9 @@ fn a_diverging_scale_with_no_pivot_written_reads_the_drawn_pivot_as_auto() {
             stops: vec![[0.0; 4]; 3],
         },
     );
-    let source = "data:\n  t:\n    - { a: 1 }\nplot:\n  - mark: dot\n    data: { from: t }\n    x: a\n    y: a\nwidth: 600\nheight: 300\ncolorScale: diverging\n";
-    let spec = parse_spec(source, Format::Yaml).expect("parses").spec;
-    let plot = plot_at_path(&spec, "root").expect("the root is its plot");
-    // No profile is handed in, so the drawn pivot stands as the auto pivot.
-    let row =
-        ChannelSettings::of_plot_profiled(&spec, plot, &channels(), &drawn, &[MarkKind::Dot], None)
-            .rows(ShelfChannel::Colour)
-            .iter()
-            .find(|r| r.name == SCALE_ROW)
-            .expect("a scale row")
-            .clone();
+    // The profile says 3.47 and the chart drew 3.5: a file with no pivot of its
+    // own is the analyst's for the scale alone.
+    let row = colour_row("colorScale: diverging", SCALE_ROW, &drawn);
     assert_eq!(row.colour.as_ref().and_then(|c| c.pivot), Some(3.5));
     assert!(!row.parameter_set());
 }

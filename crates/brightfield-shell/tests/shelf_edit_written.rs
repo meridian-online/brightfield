@@ -21,7 +21,7 @@ use brightfield_shell::data_file;
 use brightfield_shell::shelf::{ColourScaleWrite, Number};
 use brightfield_shell::shelf_edit::{put_colour, put_colour_scale, put_column};
 use brightfield_spec::analysis::ComponentPath;
-use brightfield_spec::ast::Spec;
+use brightfield_spec::ast::{Spec, SpecValue};
 use brightfield_spec::edit::ChartEdit;
 use brightfield_spec::layout::PlotAxis;
 use brightfield_spec::{parse_spec, Format};
@@ -266,10 +266,55 @@ fn the_shelfs_colour_edit_on_the_generated_map_adds_a_fill_line_a_scheme_line_an
     );
 }
 
-/// **The scale row's three values write and take out their keys**: diverging
-/// names its pivot and brightfield's pair and takes the scheme out, steps names
-/// its count and the scheme, and linear takes the scale's keys out and keeps the
-/// scheme.
+/// `write` put on the hero of `spec` and written into `text`, with the text read
+/// back as the spec the shelf made.
+fn scaled(text: &str, spec: &mut Spec, hero: &ComponentPath, write: &ColourScaleWrite) -> String {
+    let edits = put_colour_scale(spec, hero, write).expect("the scale writes");
+    let written = write_all(text, &edits);
+    assert_eq!(
+        parse_spec(&written, Format::Yaml).unwrap().spec,
+        *spec,
+        "{write:?}: the text reads back as the spec the shelf made"
+    );
+    written
+}
+
+/// `text` with the hero's `colorRange` set to `colours`, and the spec read from it.
+fn with_range(text: &str, hero: &ComponentPath, colours: &[&str]) -> (String, Spec) {
+    let edit = ChartEdit::SetPlotAttribute {
+        plot: hero.clone(),
+        key: "colorRange".to_string(),
+        value: SpecValue::Array(
+            colours
+                .iter()
+                .map(|c| SpecValue::String((*c).to_string()))
+                .collect(),
+        ),
+    };
+    let written = write_all(text, &[edit]);
+    let spec = parse_spec(&written, Format::Yaml).unwrap().spec;
+    (written, spec)
+}
+
+/// The three colours of `colorRange` in the text, as the file writes them.
+fn range_of(text: &str) -> Vec<String> {
+    let line = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("colorRange:"))
+        .expect("the file writes a colorRange");
+    line.split_once('[')
+        .expect("a list")
+        .1
+        .trim_end_matches(']')
+        .split(',')
+        .map(|c| c.trim().trim_matches(['\'', '"']).to_string())
+        .collect()
+}
+
+/// **The scale row's three values write and take out their keys**, each switch
+/// taking out what the scale it leaves wrote: diverging names its pivot and
+/// brightfield's pair and takes the scheme out; steps names its count and the
+/// scheme; linear takes the scale's keys out and keeps the scheme.
 #[test]
 fn the_scale_rows_three_values_write_and_take_out_their_keys() {
     let mut opened = open("scale_rows");
@@ -281,17 +326,15 @@ fn the_scale_rows_three_values_write_and_take_out_their_keys() {
     )
     .expect("colour takes the column");
     let coloured = write_all(&opened.text, &edits);
+    let hero = opened.hero.clone();
+    let diverging = ColourScaleWrite::Diverging {
+        pivot: Number::new(3.47),
+    };
+    let steps = ColourScaleWrite::Steps { count: 5 };
 
+    // Linear to diverging.
     let mut spec = opened.spec.clone();
-    let diverging = put_colour_scale(
-        &mut spec,
-        &opened.hero,
-        &ColourScaleWrite::Diverging {
-            pivot: Number::new(3.47),
-        },
-    )
-    .expect("diverging writes");
-    let written = write_all(&coloured, &diverging);
+    let written = scaled(&coloured, &mut spec, &hero, &diverging);
     assert!(written.contains("colorScale: diverging"));
     assert!(written.contains("colorPivot: 3.47"));
     assert!(
@@ -302,28 +345,110 @@ fn the_scale_rows_three_values_write_and_take_out_their_keys() {
         !written.contains("colorScheme"),
         "diverging takes the scheme out"
     );
-    assert_eq!(parse_spec(&written, Format::Yaml).unwrap().spec, spec);
 
-    let steps = put_colour_scale(
-        &mut spec,
-        &opened.hero,
-        &ColourScaleWrite::Steps { count: 5 },
-    )
-    .expect("steps writes");
-    let written = write_all(&written, &steps);
-    assert!(written.contains("colorScale: quantize"));
-    assert!(written.contains("colorN: 5"));
-    assert!(written.contains("colorScheme: viridis"));
-    assert!(!written.contains("colorPivot") && !written.contains("colorRange"));
+    // Diverging to steps: the pivot and the pair go, the scheme comes back.
+    let mut from_diverging = spec.clone();
+    let stepped = scaled(&written, &mut from_diverging, &hero, &steps);
+    assert!(stepped.contains("colorScale: quantize"));
+    assert!(stepped.contains("colorN: 5"));
+    assert!(stepped.contains("colorScheme: viridis"));
+    assert!(!stepped.contains("colorPivot") && !stepped.contains("colorRange"));
 
-    let linear = put_colour_scale(&mut spec, &opened.hero, &ColourScaleWrite::Linear)
-        .expect("linear writes");
-    let written = write_all(&written, &linear);
-    assert!(!written.contains("colorScale") && !written.contains("colorN"));
+    // Steps to diverging: the count goes, the scheme goes.
+    let mut spec_again = from_diverging.clone();
+    let back = scaled(&stepped, &mut spec_again, &hero, &diverging);
+    assert!(back.contains("colorScale: diverging") && back.contains("colorPivot: 3.47"));
+    assert!(!back.contains("colorN"), "steps' count is taken out");
+    assert!(!back.contains("colorScheme"), "and the scheme with it");
+
+    // Diverging to linear: the scale's keys and the pair go, the scheme is named.
+    let mut to_linear = spec.clone();
+    let linear = scaled(&written, &mut to_linear, &hero, &ColourScaleWrite::Linear);
     assert!(
-        written.contains("colorScheme: viridis"),
+        !linear.contains("colorPivot")
+            && !linear.contains("colorRange")
+            && !linear.contains("colorScale"),
+        "{linear}"
+    );
+    assert!(
+        linear.contains("colorScheme: viridis"),
+        "linear names the scheme"
+    );
+
+    // Steps to linear: the count goes and the scheme stays.
+    let mut steps_to_linear = from_diverging.clone();
+    let linear = scaled(
+        &stepped,
+        &mut steps_to_linear,
+        &hero,
+        &ColourScaleWrite::Linear,
+    );
+    assert!(!linear.contains("colorScale") && !linear.contains("colorN"));
+    assert!(
+        linear.contains("colorScheme: viridis"),
         "linear keeps the scheme"
     );
+}
+
+/// **A `colorRange` that is not brightfield's pair is the analyst's and stays**
+/// through a switch to linear and to steps.
+#[test]
+fn a_colour_range_of_the_analysts_survives_a_switch_to_linear_and_to_steps() {
+    let mut opened = open("scale_rows_own_range");
+    let edits = put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .expect("colour takes the column");
+    let coloured = write_all(&opened.text, &edits);
+    let (text, spec) = with_range(&coloured, &opened.hero, &["#000000", "#ffffff", "#ff0000"]);
+    for write in [
+        ColourScaleWrite::Linear,
+        ColourScaleWrite::Steps { count: 5 },
+    ] {
+        let mut spec = spec.clone();
+        let written = scaled(&text, &mut spec, &opened.hero, &write);
+        assert!(
+            written.contains("colorRange: ["),
+            "{write:?} left the analyst's range alone"
+        );
+        assert!(written.contains("#ffffff"), "{written}");
+    }
+}
+
+/// **The pair is recognised as the renderer reads it**: upper-case hex is still
+/// brightfield's own and is taken out with the scale.
+#[test]
+fn an_upper_case_pair_is_still_the_pair_and_goes_with_the_scale() {
+    let mut opened = open("scale_rows_upper");
+    let edits = put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .expect("colour takes the column");
+    let coloured = write_all(&opened.text, &edits);
+    let mut spec = opened.spec.clone();
+    let diverging = scaled(
+        &coloured,
+        &mut spec,
+        &opened.hero,
+        &ColourScaleWrite::Diverging {
+            pivot: Number::new(3.47),
+        },
+    );
+    let upper: Vec<String> = range_of(&diverging)
+        .iter()
+        .map(|c| c.to_uppercase())
+        .collect();
+    let upper: Vec<&str> = upper.iter().map(String::as_str).collect();
+    let (text, mut spec) = with_range(&diverging, &opened.hero, &upper);
+    assert!(text.contains(upper[0]), "fixture check: upper-case hex");
+    let linear = scaled(&text, &mut spec, &opened.hero, &ColourScaleWrite::Linear);
+    assert!(!linear.contains("colorRange"), "{linear}");
 }
 
 /// **A file's comments are as they were after the colour edit is written**, an

@@ -508,7 +508,7 @@ fn tab_on_colour_shows_scheme_then_reverse_each_auto_with_the_foot() {
         [SCHEME_ROW, SCALE_ROW, REVERSE_ROW],
         "colour's head rows, in order"
     );
-    for row in [SCHEME_ROW, REVERSE_ROW] {
+    for row in [SCHEME_ROW, SCALE_ROW, REVERSE_ROW] {
         assert!(
             !win.row(row).set,
             "{row} reads brightfield's own on a plot that sets nothing"
@@ -565,11 +565,42 @@ fn stepping_the_scale_row_to_diverging_writes_it_with_the_auto_pivot() {
     let row = win.row(SCALE_ROW);
     assert_eq!(row.value, "diverging");
     assert!(!row.parameter_set(), "the pivot written is the auto pivot");
+    let facts = row.colour.expect("the scale row carries its facts");
+    match win.hero().scales.get(Channel::Fill) {
+        Some(Scale::Diverging { pivot, .. }) => {
+            assert_eq!(
+                Some(*pivot),
+                facts.auto_pivot,
+                "the chart redrew about the auto pivot"
+            );
+        }
+        other => panic!("the hero's fill is not diverging: {other:?}"),
+    }
     win.save();
     let text = win.chart_text();
     assert!(text.contains("colorScale: diverging"), "{text}");
     assert!(text.contains("colorPivot: "), "{text}");
     assert!(!text.contains("colorScheme"), "{text}");
+}
+
+/// **`⌫` on the scale row from steps puts it back to linear**: the row reads
+/// linear and auto, and the file carries neither `colorScale` nor `colorN`.
+#[test]
+fn backspace_on_the_scale_row_from_steps_takes_the_scale_and_its_count_out() {
+    let mut win = Window::housing("scale-backspace");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::J, "j");
+    win.type_letter(egui::Key::L, "l");
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCALE_ROW).value, "steps");
+    win.press(egui::Key::Backspace);
+    let row = win.row(SCALE_ROW);
+    assert_eq!((row.value.as_str(), row.set), ("linear", false));
+    win.save();
+    let text = win.chart_text();
+    assert!(!text.contains("colorScale"), "{text}");
+    assert!(!text.contains("colorN"), "{text}");
 }
 
 // ---------------------------------------------------------------------------

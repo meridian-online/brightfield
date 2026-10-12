@@ -778,8 +778,8 @@ impl Number {
 pub enum ColourScaleWrite {
     /// One ramp: `colorScale`, `colorPivot` and `colorN` come out.
     Linear,
-    /// Diverging about `pivot`. `None` where no auto pivot is known, and then
-    /// none is written and the chart picks its own.
+    /// Diverging about `pivot`, or about the chart's own pivot where it is
+    /// `None` because brightfield knows of no auto pivot.
     Diverging { pivot: Option<Number> },
     /// Stepped in `count` colours.
     Steps { count: usize },
@@ -1435,8 +1435,8 @@ pub struct SettingRow {
     /// What only the range row knows. `None` on the title, scale, format, ticks,
     /// grid, zero and reverse rows.
     pub range: Option<RangeFacts>,
-    /// What only colour's scale, pivot and steps rows know. `None` on every other
-    /// row.
+    /// What only colour's scale, pivot and steps rows know, which the
+    /// rows of the axes leave `None`.
     pub colour: Option<ColourScaleFacts>,
 }
 
@@ -1445,8 +1445,9 @@ pub struct SettingRow {
 pub struct ColourScaleFacts {
     /// The pivot the file writes, else the one the chart drew. `None` off diverging.
     pub pivot: Option<f64>,
-    /// brightfield's auto pivot for the column, from its load-time profile, or
-    /// the drawn pivot where the file writes none. `None` where neither is known.
+    /// brightfield's auto pivot for the column, from its load-time profile. On a
+    /// diverging scale whose file writes no pivot it is the pivot the chart drew,
+    /// so that file reads auto. `None` where neither is known.
     pub auto_pivot: Option<f64>,
     /// The count the file writes, else the default. `None` off steps.
     pub count: Option<usize>,
@@ -1631,11 +1632,17 @@ fn colour_rows(
         Some(Scale::Diverging { pivot, .. }) => Some(*pivot),
         _ => None,
     };
+    let written_pivot = resolve_colour_pivot(plot, &spec.params);
     let facts = ColourScaleFacts {
-        pivot: diverging
-            .then(|| resolve_colour_pivot(plot, &spec.params).or(drawn_pivot))
-            .flatten(),
-        auto_pivot: moments.map(auto_pivot).or(drawn_pivot),
+        pivot: diverging.then(|| written_pivot.or(drawn_pivot)).flatten(),
+        // A file that writes no pivot leaves the chart to pick its own, so the
+        // pivot it drew is the auto one: nothing in the file is the analyst's
+        // beyond the scale.
+        auto_pivot: if diverging && written_pivot.is_none() {
+            drawn_pivot.or_else(|| moments.map(auto_pivot))
+        } else {
+            moments.map(auto_pivot).or(drawn_pivot)
+        },
         count: quantize
             .then(|| resolve_colour_steps(plot, &spec.params).unwrap_or(DEFAULT_COLOUR_STEPS)),
     };
@@ -2808,7 +2815,11 @@ impl ColumnList {
         let Some(row) = self.setting_cursor() else {
             return;
         };
-        if row.reason.is_none() && row_key(self.channel, row.name).is_some() {
+        // Colour's scale row has no key of its own: it takes three out, and the
+        // window answers it by writing linear.
+        let writes = row_key(self.channel, row.name).is_some()
+            || (self.channel == ShelfChannel::Colour && row.name == SCALE_ROW);
+        if row.reason.is_none() && writes {
             let name = row.name;
             out.push(ListReport::Set(RowEdit {
                 channel: self.channel,

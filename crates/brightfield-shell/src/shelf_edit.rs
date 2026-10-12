@@ -503,7 +503,7 @@ pub fn put_colour_scale(
     let target =
         plot_at_path(spec, &plot.0).ok_or(ShelfRefusal::Edit(RefuseReason::PlotNotFound))?;
     let pair = own_pair_value();
-    let holds_pair = target.attributes.get("colorRange") == Some(&pair);
+    let holds_pair = holds_own_pair(target.attributes.get("colorRange"));
     let names_scheme = target.attributes.contains_key(SCHEME_KEY);
     let viridis = || SpecValue::String(SequentialScheme::default().wire_name().to_string());
     let set = |key: &str, value: SpecValue| ChartEdit::SetPlotAttribute {
@@ -584,6 +584,25 @@ fn apply_present(
     }
     *spec = edited;
     Ok(kept)
+}
+
+/// Whether a `colorRange` is brightfield's own pair, read as the renderer reads
+/// it: each string through the colour parser, and the three within the one
+/// eight-bit step the file's round trip allows, so upper-case hex still is.
+fn holds_own_pair(range: Option<&SpecValue>) -> bool {
+    let Some(SpecValue::Array(items)) = range else {
+        return false;
+    };
+    let colours: Option<Vec<[f32; 4]>> = items
+        .iter()
+        .map(|v| match v {
+            SpecValue::String(s) => {
+                brightfield_render::mark::parse_colour_literal(s).map(|c| c.components)
+            }
+            _ => None,
+        })
+        .collect();
+    colours.is_some_and(|c| brightfield_render::scale::is_own_diverging_range(&c))
 }
 
 /// brightfield's diverging pair as the file holds it: three hex strings.
