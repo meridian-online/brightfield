@@ -1454,7 +1454,11 @@ pub fn apply_colour_override(set: &mut ScaleSet, ov: &ColourOverride) {
                 stops,
             } => {
                 let (domain_min, domain_max) = ov.domain.unwrap_or((*domain_min, *domain_max));
+                // brightfield's own pair keeps the ramp the scale was built
+                // with, which is the theme's: the file's three colours are the
+                // light theme's.
                 let stops = match &ov.range {
+                    Some(r) if is_own_diverging_range(r) => stops.clone(),
                     Some(r) if r.len() >= 2 => r.clone(),
                     _ => stops.clone(),
                 };
@@ -1675,6 +1679,34 @@ pub fn diverging_stops(scheme: Option<SequentialScheme>, ink: &ChartInk) -> Vec<
             .chain(DIVERGING_RED_ARM.iter().copied())
             .collect(),
     }
+}
+
+/// brightfield's diverging pair as a file writes it: the blue pole, the light
+/// theme's middle and the red pole. Mosaic has no scheme of that name, so the
+/// file carries the colours, and Mosaic on a white page draws what brightfield
+/// draws in light mode.
+#[must_use]
+pub fn own_diverging_range() -> [[f32; 4]; 3] {
+    [
+        DIVERGING_BLUE_ARM[0],
+        ChartInk::for_mode(false).diverging_mid.components,
+        DIVERGING_RED_ARM[DIVERGING_RED_ARM.len() - 1],
+    ]
+}
+
+/// Whether `range` is brightfield's own pair, which is drawn as the design
+/// system's ramp in the theme the chart is drawn in rather than as the three
+/// colours written.
+#[must_use]
+pub fn is_own_diverging_range(range: &[[f32; 4]]) -> bool {
+    // The tolerance absorbs the round trip through an eight-bit hex.
+    const CLOSE: f32 = 1.0 / 512.0;
+    let own = own_diverging_range();
+    range.len() == own.len()
+        && range
+            .iter()
+            .zip(own.iter())
+            .all(|(a, b)| a.iter().zip(b).all(|(x, y)| (x - y).abs() <= CLOSE))
 }
 
 /// The pivot of a diverging scale over `values`, the rows drawn.
@@ -4613,5 +4645,33 @@ mod tests {
             format!("{ramp:?}"),
             "a colour ramp has no pixel range to run the other way"
         );
+    }
+
+    /// A file that names brightfield's own diverging pair draws the design
+    /// system's ramp in the theme it is drawn in: the dark middle in dark mode,
+    /// though the file holds the light one.
+    #[test]
+    fn the_own_diverging_pair_draws_the_themes_middle() {
+        let dark = ChartInk::for_mode(true);
+        let mut set = ScaleSet::in_ink(dark);
+        set.insert(
+            Channel::Fill,
+            Scale::Diverging {
+                domain_min: -1.0,
+                domain_max: 1.0,
+                pivot: 0.0,
+                stops: diverging_stops(None, &dark),
+            },
+        );
+        let ov = ColourOverride {
+            range: Some(own_diverging_range().to_vec()),
+            ..ColourOverride::default()
+        };
+        apply_colour_override(&mut set, &ov);
+        let Some(Scale::Diverging { stops, .. }) = set.get(Channel::Fill) else {
+            panic!("the fill stays diverging");
+        };
+        assert_eq!(stops, &diverging_stops(None, &dark));
+        assert_eq!(stops[stops.len() / 2], dark.diverging_mid.components);
     }
 }
