@@ -839,8 +839,8 @@ impl DotRenderer {
     ///
     /// Generic column inference types a number fill `Linear`, which the dot's
     /// paint does not read, so — as [`CellRenderer::augment_scales`] does for its own
-    /// fill — the `Linear` is REPLACED with a `Sequential`, anchored `[0, max]`
-    /// when the column's minimum is not negative and `[min, max]` otherwise. A
+    /// fill — the `Linear` is REPLACED with a `Sequential`, running `[min, max]`
+    /// of the rows drawn. A
     /// `Sequential` already in the set (a co-rendered mark's, or this mark's own
     /// earlier call, since a plot runs this once per layer and again after a
     /// navigation) has its domain unioned and keeps its stops. The other kinds of
@@ -902,7 +902,10 @@ impl DotRenderer {
             scales.insert(Channel::Fill, ramp);
             return;
         }
-        let (d0, d1) = if lo >= 0.0 { (0.0, hi) } else { (lo, hi) };
+        // The rows' own ends, as Mosaic draws a ramp: a legend whose low end is
+        // zero for a column that never reaches it spends part of its colours on
+        // values no row holds.
+        let (d0, d1) = (lo, hi);
 
         let ramp = match scales.get(Channel::Fill) {
             Some(Scale::Sequential {
@@ -3047,7 +3050,10 @@ impl MarkRenderer for CellRenderer {
         if !(lo.is_finite() && hi.is_finite()) {
             return;
         }
-        let (d0, d1) = if lo >= 0.0 { (0.0, hi) } else { (lo, hi) };
+        // The rows' own ends, as Mosaic draws a ramp: a legend whose low end is
+        // zero for a column that never reaches it spends part of its colours on
+        // values no row holds.
+        let (d0, d1) = (lo, hi);
 
         let merged = match scales.get(Channel::Fill) {
             Some(Scale::Sequential {
@@ -8498,6 +8504,62 @@ mod tests {
         );
     }
 
+    /// A ramp's low end is the column's smallest value, as Mosaic draws it, and
+    /// not zero: a column of 2 to 10 runs its ramp from 2.
+    #[test]
+    fn a_non_negative_fill_ramp_starts_at_the_columns_minimum() {
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Float64Array::from(vec![2.0, 6.0, 10.0]))],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::Fill, "v".to_string());
+        let mut scales = ScaleSet::new();
+        DotRenderer::augment_fill_ramp(
+            SequentialScheme::Viridis,
+            ColourScale::Linear,
+            &mut scales,
+            &batch,
+            &cm,
+        );
+        match scales.get(Channel::Fill) {
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                ..
+            }) => assert_eq!((*domain_min, *domain_max), (2.0, 10.0)),
+            other => panic!("a number fill builds a ramp, got {other:?}"),
+        }
+    }
+
+    /// A cell's ramp runs from the column's smallest value, not from zero.
+    #[test]
+    fn a_non_negative_cell_ramp_starts_at_the_columns_minimum() {
+        let batch = cell_batch();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "slot".to_string());
+        cm.insert(Channel::Y, "day".to_string());
+        cm.insert(Channel::Fill, "value".to_string());
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        CellRenderer::default().augment_scales(
+            &mut scales,
+            &batch,
+            &cm,
+            (40.0, 600.0),
+            (450.0, 20.0),
+        );
+        match scales.get(Channel::Fill) {
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                ..
+            }) => assert_eq!((*domain_min, *domain_max), (1.0, 8.0)),
+            other => panic!("a number fill builds a ramp, got {other:?}"),
+        }
+    }
+
     /// Pre-aggregated cell fixture: 2 days × 2 slots with a numeric value and a
     /// categorical grade per pair.
     fn cell_batch() -> RecordBatch {
@@ -8579,7 +8641,7 @@ mod tests {
         };
 
         // min >= 0 (values 1..8): the inferred Linear is replaced by a
-        // zero-anchored Sequential with the scheme's stops.
+        // Sequential running from the column's minimum, with the scheme's stops.
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
         assert!(
             matches!(scales.get(Channel::Fill), Some(Scale::Linear { .. })),
@@ -8593,8 +8655,8 @@ mod tests {
                 stops,
             }) => {
                 assert!(
-                    (domain_min - 0.0).abs() < f64::EPSILON,
-                    "min >= 0 anchors at zero"
+                    (domain_min - 1.0).abs() < f64::EPSILON,
+                    "a non-negative column still starts at its minimum"
                 );
                 assert!((domain_max - 8.0).abs() < f64::EPSILON);
                 assert_eq!(

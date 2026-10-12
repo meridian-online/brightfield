@@ -247,8 +247,8 @@ fn the_count_is_the_count_asked_for() {
     let steps = viridis_steps(3);
     assert_edges(
         &steps_of(&three).0,
-        &[0.0, 95.0 / 3.0, 95.0 * 2.0 / 3.0, 95.0],
-        "three steps over the rows' own 0 to 95",
+        &[5.0, 35.0, 65.0, 95.0],
+        "three steps over the rows' own 5 to 95",
     );
     assert_eq!(counts(&three, &steps), [1, 2, 3]);
     let eight = compose(&spec(&values, "colorScale: quantize\ncolorN: 8\n"));
@@ -256,11 +256,11 @@ fn the_count_is_the_count_asked_for() {
     assert_eq!(steps_of(&eight).0.len(), 9);
 }
 
-/// **AC4.** With `colorN: 5` on a column running 0 to 500001, the plot draws five
-/// steps of equal width. Mosaic's renderer rounds the thresholds to tidy values
+/// **AC4.** With `colorN: 5` on a column running 50000 to 500001, the plot draws
+/// five steps of equal width. Mosaic's renderer rounds the thresholds to tidy values
 /// and draws six there; this draws what was asked.
 #[test]
-fn five_steps_over_nought_to_half_a_million_are_five_equal_steps() {
+fn five_steps_over_fifty_thousand_to_half_a_million_are_five_equal_steps() {
     let values = counted(&[
         (50_000.0, 1),
         (150_000.0, 2),
@@ -273,9 +273,9 @@ fn five_steps_over_nought_to_half_a_million_are_five_equal_steps() {
     let stepped = compose(&spec(&values, "colorScale: quantize\ncolorN: 5\n"));
     let (edges, colours) = steps_of(&stepped);
     assert_eq!(colours.len(), 5, "five steps, not the six tidy ticks give");
-    let width = 500_001.0 / 5.0;
-    let expected: Vec<f64> = (0..=5).map(|k| width * k as f64).collect();
-    assert_edges(&edges, &expected, "equal widths over 0 to 500001");
+    let width = (500_001.0 - 50_000.0) / 5.0;
+    let expected: Vec<f64> = (0..=5).map(|k| 50_000.0 + width * k as f64).collect();
+    assert_edges(&edges, &expected, "equal widths over 50000 to 500001");
     assert_eq!(
         counts(&stepped, &steps),
         [1, 2, 3, 4, 6],
@@ -300,8 +300,8 @@ fn a_fixed_domain_is_cut_before_the_steps_are() {
     let without = compose(&spec(&values, keys));
     assert_edges(
         &steps_of(&without).0,
-        &[0.0, 16.0, 32.0, 48.0, 64.0, 80.0],
-        "fixture check: the rows' own domain, 0 to 80",
+        &[5.0, 20.0, 35.0, 50.0, 65.0, 80.0],
+        "fixture check: the rows' own domain, 5 to 80",
     );
     let fixed = compose(&spec(&values, &format!("colorDomain: [0, 50]\n{keys}")));
     assert_edges(
@@ -354,7 +354,7 @@ fn a_range_of_four_colours_draws_four_steps_whatever_the_count_says() {
         let stepped = compose(&spec(&values, &attrs));
         let (edges, colours) = steps_of(&stepped);
         assert_eq!(colours, [RED, GREEN, BLUE, YELLOW], "{count:?}");
-        assert_edges(&edges, &[0.0, 22.5, 45.0, 67.5, 90.0], "four equal steps");
+        assert_edges(&edges, &[10.0, 30.0, 50.0, 70.0, 90.0], "four equal steps");
         assert_eq!(
             counts(&stepped, &[RED, GREEN, BLUE, YELLOW]),
             [1, 2, 3, 4],

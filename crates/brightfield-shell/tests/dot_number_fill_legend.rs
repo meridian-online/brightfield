@@ -150,7 +150,7 @@ fn a_literal_ghost_layer_leaves_the_second_layers_ramp_and_its_legend() {
         };
         assert_eq!(
             (min, max),
-            (0.0, 4.9),
+            (0.825, 4.9),
             "{order}: the ramp is over the number column's values"
         );
     }
