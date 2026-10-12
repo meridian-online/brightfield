@@ -3148,7 +3148,7 @@ impl ColumnList {
     }
 
     /// The edit that puts `row` back to auto, or `None` where the row does not
-    /// apply or has nothing to write.
+    /// apply or has no key to write.
     fn auto_edit(&self, row: &SettingRow) -> Option<RowEdit> {
         // Colour's scale row has no key of its own: it takes three out, and the
         // window answers it by writing linear. Its legend row has none either,
