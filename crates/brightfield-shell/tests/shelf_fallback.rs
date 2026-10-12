@@ -1125,9 +1125,9 @@ fn columns() -> Vec<ListColumn> {
         .collect()
 }
 
-/// What the hero's axes read when the plot's attributes are `attrs`, a block of
-/// top-level lines of the spec, as the window reads them off the live plot and
-/// hands them to the list.
+/// What the hero's axes and colour read when the plot's attributes are `attrs`,
+/// a block of top-level lines of the spec, as the window reads them off the live
+/// plot and hands them to the list.
 fn settings_of(attrs: &str, channels: &ShelfChannels) -> ChannelSettings {
     let source = format!(
         "data:\n  t:\n    - {{ a: 1 }}\nplot:\n  - mark: dot\n    data: {{ from: t }}\n    x: a\n    y: a\nwidth: 600\nheight: 300\n{attrs}\n"
@@ -1140,7 +1140,7 @@ fn settings_of(attrs: &str, channels: &ShelfChannels) -> ChannelSettings {
 }
 
 /// The card's list over the housing columns, as the window hands it: x's, with
-/// `attrs` the plot's attributes the axes' settings read.
+/// `attrs` the plot's attributes the axes' and colour's settings read.
 fn card_list(attrs: &str) -> ColumnList {
     let channels = ShelfChannels {
         mark: "dot".to_string(),

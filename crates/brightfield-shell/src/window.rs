@@ -5648,8 +5648,8 @@ impl MeridianApp {
     /// - `u`, or `⌘Z` from the query: the preview is backed out of and the last
     ///   kept column is taken back ([`Self::shelf_undo`]); the list stays open
     ///   with its cursor on the column the channel holds again.
-    /// - `Tab` turned the list to the axis's settings: the preview is backed out
-    ///   of, and the rows read the chart as it was kept.
+    /// - `Tab` turned the list to the channel's settings, an axis's or colour's:
+    ///   the preview is backed out of, and the rows read the chart as it was kept.
     /// - A typed settings row's field holds a value (the title's words, a tick
     ///   count): the hero is drawn with it as a preview
     ///   ([`ChartDoc::preview_axis_row`]), and of the previews in one batch the

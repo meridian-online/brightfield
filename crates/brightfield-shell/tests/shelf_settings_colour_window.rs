@@ -1305,3 +1305,38 @@ fn typing_two_ends_into_the_domain_row_writes_them_and_backspace_resets() {
     let text = win.chart_text();
     assert!(!text.contains("colorDomain"), "{text}");
 }
+
+/// A one-plot hero of cells filled by a number column, which draws no dot. The
+/// shelf band opens on a cell chart as it does on a dot chart, so no raster or
+/// heatmap stands in for it.
+fn cell_hero(data: &str) -> String {
+    format!(
+        "data:\n  opened:\n    file: '{data}'\nplot:\n  - mark: cell\n    data: {{ from: opened }}\n    x: {{ bin: median_income }}\n    y: {{ bin: house_age }}\n    fill: {VALUE}\nwidth: 400\nheight: 300\n"
+    )
+}
+
+/// The window hands colour's settings the marks the hero drew, which is what
+/// mutes reverse on a chart with no dot. Every other window test's hero draws
+/// dots, so this is the one that tells the marks drawn from no marks at all.
+#[test]
+fn reverse_is_muted_on_a_hero_that_draws_no_dot() {
+    let mut w = Window::housing("cells");
+    w.save();
+    let chart = std::fs::read_dir(w.folder.join("panels"))
+        .expect("Save wrote a panels folder")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|e| e == "yaml"))
+        .expect("Save wrote a chart file");
+    let data = w.folder.join(HOUSING_FILE);
+    std::fs::write(&chart, cell_hero(data.to_str().expect("utf-8 path")))
+        .expect("the cell hero writes");
+    let mut w = w.reopen();
+    w.open_colour_settings();
+    let reverse = w.row(REVERSE_ROW);
+    assert!(
+        reverse.reason.as_deref().is_some_and(|r| r.contains("dot")),
+        "reverse says why it does not apply, got {:?}",
+        reverse.reason
+    );
+}

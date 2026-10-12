@@ -697,7 +697,7 @@ pub fn undoes(key: egui::Key, modifiers: egui::Modifiers) -> bool {
 pub const UNDO: &str = "undo";
 
 // ---------------------------------------------------------------------------
-// The settings list: an axis's rows, read from the plot.
+// The settings list: the rows of an axis or of colour, read from the plot.
 // ---------------------------------------------------------------------------
 
 /// The word a row carries while its value is brightfield's own.
