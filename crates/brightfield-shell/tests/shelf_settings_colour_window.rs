@@ -1,6 +1,7 @@
-//! **In the window, colour's scheme and reverse rows act on the chart they sit
-//! over: the keys and the clicks write `colorScheme` and `colorReverse`, the marks
-//! and the legend are drawn again from them, and Save keeps them.**
+//! **In the window, colour's settings rows act on the chart they sit over: the
+//! keys and the clicks write the scheme, the scale, the domain, the legend and
+//! reverse, the marks and the legend are drawn again from them, and Save keeps
+//! them.**
 //!
 //! `shelf_settings_colour.rs` drives the list alone. What the list cannot say by
 //! itself is this file's: that `Tab` on colour's cell reaches its rows, that a
@@ -1305,6 +1306,167 @@ fn saved_and_opened_again_the_chart_its_legend_and_the_file_show_each_value() {
             reopened.chart_text(),
             written,
             "{name}: reopening rewrote the chart file"
+        );
+    }
+}
+
+/// What the colour round trip below leaves set before Save.
+#[derive(Clone, Copy, Debug)]
+enum Left {
+    /// A diverging scale about a typed pivot of 2.
+    DivergingAboutTwo,
+    /// A stepped scale of seven steps.
+    SevenSteps,
+    /// The domain fixed.
+    DomainFixed,
+    /// The legend below the plot.
+    LegendBelow,
+}
+
+/// **After Save, close and reopen, the chart and the file show the scale, the
+/// domain and the legend left set**: a diverging scale about a typed pivot, steps
+/// at seven, the domain fixed (with the colour pin captured on reopen), and the
+/// legend below the plot.
+#[test]
+fn saved_and_opened_again_the_scale_domain_and_legend_hold() {
+    for left in [
+        Left::DivergingAboutTwo,
+        Left::SevenSteps,
+        Left::DomainFixed,
+        Left::LegendBelow,
+    ] {
+        let mut win = Window::housing(&format!("save-{left:?}"));
+        win.keep_on_colour("median_income");
+        win.open_colour_settings();
+        match left {
+            Left::DivergingAboutTwo => {
+                win.move_to_row(SCALE_ROW);
+                win.type_letter(egui::Key::L, "l");
+                win.press(egui::Key::Enter);
+                win.run(vec![egui::Event::Text("2".to_owned())]);
+                win.press(egui::Key::Enter);
+            }
+            Left::SevenSteps => {
+                win.move_to_row(SCALE_ROW);
+                win.type_letter(egui::Key::L, "l");
+                win.type_letter(egui::Key::L, "l");
+                win.press(egui::Key::Enter);
+                win.run(vec![egui::Event::Text("7".to_owned())]);
+                win.press(egui::Key::Enter);
+            }
+            Left::DomainFixed => {
+                win.find_row(DOMAIN_ROW);
+                win.type_letter(egui::Key::L, "l");
+                assert_eq!(win.row(DOMAIN_ROW).value, "fixed");
+            }
+            Left::LegendBelow => {
+                win.move_to_row(LEGEND_ROW);
+                win.type_letter(egui::Key::L, "l");
+                assert_eq!(win.row(LEGEND_ROW).value, "below");
+            }
+        }
+        win.save();
+        assert!(
+            !win.marked_unsaved(),
+            "{left:?}: Save left the unsaved mark"
+        );
+        let written = win.chart_text();
+        let has = |key: &str, line: &str| {
+            assert_eq!(
+                lines_of_key(&written, key),
+                [line],
+                "{left:?}: the file names {line}:\n{written}"
+            );
+        };
+        match left {
+            Left::DivergingAboutTwo => {
+                has("colorScale", "colorScale: diverging");
+                has("colorPivot", "colorPivot: 2");
+            }
+            Left::SevenSteps => {
+                has("colorScale", "colorScale: quantize");
+                has("colorN", "colorN: 7");
+            }
+            Left::DomainFixed => has("colorDomain", "colorDomain: Fixed"),
+            Left::LegendBelow => {
+                assert!(written.contains("vconcat:"), "{left:?}:\n{written}");
+                assert!(written.contains("for: "), "{left:?}:\n{written}");
+            }
+        }
+
+        let mut reopened = win.reopen();
+        assert!(!reopened.marked_unsaved(), "{left:?}: reopened unmarked");
+        match left {
+            Left::DivergingAboutTwo => match reopened.hero().scales.get(Channel::Fill) {
+                Some(Scale::Diverging { pivot, .. }) => {
+                    assert_eq!(*pivot, 2.0, "the reopened chart is drawn about 2");
+                }
+                other => panic!("the reopened fill is not diverging: {other:?}"),
+            },
+            Left::SevenSteps => match reopened.hero().scales.get(Channel::Fill) {
+                Some(Scale::Quantized { colours, .. }) => {
+                    assert_eq!(colours.len(), 7, "the reopened chart draws seven steps");
+                }
+                other => panic!("the reopened fill is not stepped: {other:?}"),
+            },
+            Left::DomainFixed => {
+                let hero = reopened.hero();
+                let (lo, hi) = match hero.scales.get(Channel::Fill) {
+                    Some(Scale::Sequential {
+                        domain_min,
+                        domain_max,
+                        ..
+                    }) => (*domain_min, *domain_max),
+                    other => panic!("the reopened fill is not a ramp: {other:?}"),
+                };
+                let pin = reopened
+                    .app
+                    .chart_doc()
+                    .live_dashboard()
+                    .expect("the reopened chart is live")
+                    .pins()
+                    .get(&hero.path)
+                    .and_then(|p| p.colour)
+                    .expect("reopening captured the colour pin");
+                assert_eq!((pin.lo, pin.hi), (lo, hi), "the pin holds the drawn ends");
+            }
+            Left::LegendBelow => {
+                assert!(
+                    reopened.hero().legend_below.is_some(),
+                    "the reopened chart lays its legend out below the plot"
+                );
+                let doc = reopened.app.chart_doc();
+                assert!(doc.legend_rect.is_none(), "and none at the right");
+                let below = legend::below_blocks(&doc.composed);
+                let [(0, _, band)] = below.as_slice() else {
+                    panic!("the reopened page draws one legend, under the hero: {below:?}");
+                };
+                let area = reopened.hero().data_area();
+                assert!(
+                    band.y >= area.y + area.height,
+                    "the legend's band {band:?} stands below the data area {area:?}"
+                );
+            }
+        }
+        reopened.open_colour_settings();
+        match left {
+            Left::DivergingAboutTwo => {
+                let row = reopened.row(SCALE_ROW);
+                assert_eq!(row.value, "diverging");
+                assert!(row.parameter_set(), "the pivot reads as the analyst's");
+            }
+            Left::SevenSteps => {
+                let row = reopened.row(SCALE_ROW);
+                assert_eq!(row.value, "steps");
+                assert_eq!(row.colour.and_then(|c| c.count), Some(7));
+            }
+            Left::DomainFixed => assert_eq!(reopened.row(DOMAIN_ROW).value, "fixed"),
+            Left::LegendBelow => assert_eq!(reopened.row(LEGEND_ROW).value, "below"),
+        }
+        assert_eq!(
+            reopened.chart_text(),
+            written,
+            "{left:?}: reopening rewrote the chart file"
         );
     }
 }
