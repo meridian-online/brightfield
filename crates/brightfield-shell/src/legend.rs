@@ -1384,6 +1384,31 @@ mod tests {
         assert_eq!(ring.left(), -4.0);
     }
 
+    /// A block that touches the data area's right or bottom edge is cut back to
+    /// that edge and no further on the side it touches.
+    #[test]
+    fn a_block_touching_the_data_area_is_ringed_from_its_edge() {
+        let data = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0));
+        let right = egui::Rect::from_min_max(egui::pos2(100.0, 10.0), egui::pos2(200.0, 60.0));
+        let ring = ring_rect(right, data);
+        assert_eq!(ring.left(), 100.0);
+        assert_eq!((ring.top(), ring.right(), ring.bottom()), (6.0, 204.0, 64.0));
+
+        let below = egui::Rect::from_min_max(egui::pos2(10.0, 100.0), egui::pos2(90.0, 140.0));
+        let ring = ring_rect(below, data);
+        assert_eq!(ring.top(), 100.0);
+        assert_eq!((ring.left(), ring.right(), ring.bottom()), (6.0, 94.0, 144.0));
+    }
+
+    /// A block that overlaps the data area is not a legend beside or under it,
+    /// and the ring is the plain grown block: it is cut on no side.
+    #[test]
+    fn a_block_overlapping_the_data_area_is_not_cut() {
+        let data = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0));
+        let block = egui::Rect::from_min_max(egui::pos2(90.0, 90.0), egui::pos2(150.0, 130.0));
+        assert_eq!(ring_rect(block, data), block.expand(RING_GAP));
+    }
+
     /// A block at the right reports the rect it drew: its origin, the block's
     /// width, and a bottom at or below its last swatch.
     #[test]

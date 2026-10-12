@@ -1490,20 +1490,15 @@ impl Item<ChartDoc> for ChartItem {
                     brightfield_workbench::channel::ShelfChannel::Colour,
                     mode,
                 ));
-                // The ring stands outside the block, where this ui's own clip
-                // would cut it: where the legend is the last thing in the pane
-                // its outer edges lie beyond the content rect. It is painted
-                // through the layer's painter, clipped to that rect widened by
-                // the gap and no further.
-                ui.ctx()
-                    .layer_painter(ui.layer_id())
-                    .with_clip_rect(ui.clip_rect().expand(legend::RING_GAP))
-                    .rect_stroke(
-                        legend::ring_rect(block, data),
-                        0.0,
-                        egui::Stroke::new(legend::RING_WIDTH, hue),
-                        egui::StrokeKind::Inside,
-                    );
+                // The ring is cut back at the pane's edge as it is at the data
+                // area, so where the legend is the last thing in the pane the
+                // ring's outer side lies on the edge and is still drawn.
+                ui.painter().rect_stroke(
+                    legend::ring_rect(block, data).intersect(ui.clip_rect()),
+                    0.0,
+                    egui::Stroke::new(legend::RING_WIDTH, hue),
+                    egui::StrokeKind::Inside,
+                );
             }
         }
 

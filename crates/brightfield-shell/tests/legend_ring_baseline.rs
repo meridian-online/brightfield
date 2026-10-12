@@ -1,25 +1,31 @@
 //! **The ring round the hero's legend while colour's list is open: committed
-//! baselines, in both themes, with the legend at the plot's right and with it
-//! below, and a pixel check that the ring is one point wide, stands 4 points off
-//! the block, and keeps out of the plot's data area.** The legend is gone in a
-//! third picture, which is checked for the ring's absence and not photographed.
+//! baselines, in both themes, with the legend under the plot, and pixel checks
+//! that the ring is one point wide, stands 4 points off the band, and keeps out
+//! of the plot's data area.** With the list closed, or with no legend, the
+//! pictures are checked for the ring's absence and not photographed.
 //!
-//! The chart is the one `legend_below_baseline.rs` photographs, coloured by the
-//! `reading` column. The shelf band is drawn (a capture draws none) and the keys
-//! `e` then `c` open colour's list, so the picture is the window as it reads
-//! with that list open.
+//! The legend at the plot's right has no picture here. A generated dashboard
+//! places that band at the page's far right, past its tile column, where the
+//! hero's pane does not show it, and a page of one chart does not carve the
+//! shelf band that opens colour's list. The right-hand ring's geometry is the
+//! `ring_rect` unit tests'.
+//!
+//! The fixture is the housing sample with `median_income` kept on colour, so its
+//! page has a single coloured plot and these tests do not tell the hero's own
+//! legend from the first one the page draws. The shelf band is drawn (a capture
+//! draws none) and the keys `e` then `c` open colour's list.
 //!
 //! Regenerate with: `UPDATE_SNAPSHOTS=1 cargo +1.95.0 test -p brightfield-shell
 //! --test legend_ring_baseline`.
 
 use std::path::PathBuf;
 
-use brightfield_shell::app::{GridLayout, CHART};
+use brightfield_shell::app::CHART;
 use brightfield_shell::capture::capture_png_staged;
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{self, RING_GAP};
+use brightfield_shell::legend::RING_GAP;
 use brightfield_shell::startup::default_layout;
-use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_shell::window::Boot;
 use brightfield_workbench::channel::{hue, ShelfChannel};
 use brightfield_workbench::{chrome, PaneKey};
 
@@ -38,58 +44,12 @@ fn scratch(name: &str) -> PathBuf {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Placement {
-    Right,
+    /// The legend under the plot, colour's list open on its settings.
     Below,
+    /// The legend under the plot, colour's list opened and then closed again.
+    BelowClosed,
+    /// No legend, colour's list open.
     None,
-}
-
-/// Where the grid pane's layout switch draws its columns state, read off a
-/// window of the same size that has run three frames, as `dashboard_baseline.rs`
-/// reads it. The picture with the legend at the right is taken in that layout:
-/// in the rows layout the hero's pane shows the page cut at the hero's own width,
-/// and the legend at the page's right edge lies beyond it.
-fn layout_switch(size: (f32, f32), mode: Mode) -> egui::Pos2 {
-    let boot = Boot::data_file(fixture().to_str().expect("utf-8 path")).expect("the sample opens");
-    let mut app = MeridianApp::headless(boot, mode);
-    let ctx = egui::Context::default();
-    let raw = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(size.0, size.1),
-        )),
-        ..Default::default()
-    };
-    for _ in 0..3 {
-        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
-    }
-    app.chart_doc()
-        .grid_layout_switch
-        .clone()
-        .expect("the grid pane's header band drew a layout switch")
-        .states
-        .iter()
-        .find(|(state, _)| *state == GridLayout::Columns)
-        .expect("the switch offers a columns state")
-        .1
-        .center()
-}
-
-/// The frames that click `at`.
-fn throw_the_switch(at: egui::Pos2) -> Vec<Vec<egui::Event>> {
-    let button = |pressed| egui::Event::PointerButton {
-        pos: at,
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::default(),
-    };
-    vec![
-        vec![egui::Event::PointerMoved(at)],
-        vec![egui::Event::PointerMoved(at), button(true)],
-        vec![egui::Event::PointerMoved(at), button(false)],
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    ]
 }
 
 fn enter() -> egui::Event {
@@ -117,9 +77,7 @@ fn key(key: egui::Key, text: &str) -> Vec<egui::Event> {
 #[derive(Default)]
 struct Seen {
     data: Option<egui::Rect>,
-    /// The legend's band: at the right, the strip reserved beside the raster,
-    /// with the block's top where the plot's is; below, the band under the plot.
-    block_left_top: Option<egui::Pos2>,
+    /// The band under the plot.
     below: Option<egui::Rect>,
     open: bool,
 }
@@ -137,9 +95,6 @@ fn capture(name: &str, mode: Mode, placement: Placement) -> (image::RgbaImage, S
     // Enter keeps it on colour and closes the list. The legend row is the third of
     // colour's settings, and `l` steps it from right to below, and again to none.
     let mut script = vec![Vec::new(), Vec::new()];
-    if placement == Placement::Right {
-        script.extend(throw_the_switch(layout_switch(size, mode)));
-    }
     script.extend([
         key(egui::Key::E, "e"),
         Vec::new(),
@@ -158,11 +113,10 @@ fn capture(name: &str, mode: Mode, placement: Placement) -> (image::RgbaImage, S
     // Frames for the chart to be drawn again over the colour it was given.
     script.extend((0..6).map(|_| Vec::new()));
     let steps = match placement {
-        Placement::Right => 0,
-        Placement::Below => 1,
+        Placement::Below | Placement::BelowClosed => 1,
         Placement::None => 2,
     };
-    if steps > 0 {
+    {
         script.push(vec![tab()]);
         script.push(Vec::new());
         for _ in 0..2 {
@@ -173,6 +127,20 @@ fn capture(name: &str, mode: Mode, placement: Placement) -> (image::RgbaImage, S
             script.push(key(egui::Key::L, "l"));
             script.push(Vec::new());
         }
+    }
+    if placement == Placement::BelowClosed {
+        // Esc leaves the list for the band and the band for the pane.
+        for _ in 0..2 {
+            script.push(vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            script.push(Vec::new());
+        }
+        script.extend((0..3).map(|_| Vec::new()));
     }
     capture_png_staged(
         boot,
@@ -202,9 +170,6 @@ fn capture(name: &str, mode: Mode, placement: Placement) -> (image::RgbaImage, S
                         hero.top() + layout.plot_y_end() as f32,
                     ),
                 ));
-                seen.block_left_top = doc
-                    .legend_rect
-                    .map(|band| egui::pos2(band.left(), hero.top()));
                 seen.below =
                     doc.raster_rect
                         .zip(doc.composed.plots[0].legend_below)
@@ -251,103 +216,52 @@ fn hue_pixels(image: &image::RgbaImage, region: egui::Rect, mode: Mode) -> Optio
     bounds
 }
 
-fn baseline(name: &str, mode: Mode, placement: Placement) {
-    let (image, seen) = capture(name, mode, placement);
+/// Where the ring is looked for under the plot: the band grown past the ring's
+/// gap, below the data area.
+fn under_region(band: egui::Rect, data: egui::Rect, image: &image::RgbaImage) -> egui::Rect {
+    band.expand(RING_GAP + 3.0)
+        .intersect(egui::Rect::from_min_max(
+            egui::pos2(0.0, data.bottom()),
+            egui::pos2(image.width() as f32, image.height() as f32),
+        ))
+}
+
+fn baseline(name: &str, mode: Mode) {
+    let (image, seen) = capture(name, mode, Placement::Below);
     assert!(seen.open, "{name}: colour's list is not open");
     let data = seen.data.expect("the hero has a data area");
-    let (w, h) = (image.width() as f32, image.height() as f32);
-    let everywhere = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(w, h));
-    // Colour's hue stands nowhere in the plot's data area but in its marks, which
-    // the pixel rule cannot tell apart, so the ring is looked for beside it.
-    let ring = match placement {
-        Placement::Right => {
-            let origin = seen.block_left_top.expect("a band at the right");
-            let region = egui::Rect::from_min_max(
-                egui::pos2(origin.x - RING_GAP - 3.0, origin.y - RING_GAP - 3.0),
-                egui::pos2(origin.x + legend::block_width() + RING_GAP + 3.0, h),
-            )
-            .intersect(egui::Rect::from_min_max(
-                egui::pos2(data.right(), 0.0),
-                everywhere.max,
-            ));
-            hue_pixels(&image, region, mode)
-        }
-        Placement::Below => {
-            let band = seen.below.expect("a band under the plot");
-            let region = band
-                .expand(RING_GAP + 3.0)
-                .intersect(egui::Rect::from_min_max(
-                    egui::pos2(0.0, data.bottom()),
-                    everywhere.max,
-                ));
-            hue_pixels(&image, region, mode)
-        }
-        Placement::None => None,
-    };
-    match placement {
-        Placement::Right => {
-            let ring = ring.expect("a ring stands at the right of the plot");
-            let origin = seen.block_left_top.expect("a band at the right");
-            assert!(
-                ring.left() >= data.right(),
-                "{name}: {ring:?} reaches into {data:?}"
-            );
-            // The block's left edge less the gap, to within a pixel, or the data
-            // area's right edge where the gap would reach it.
-            let want = (origin.x - RING_GAP).max(data.right());
-            assert!(
-                (ring.left() - want).abs() <= 1.5,
-                "{name}: ring left {} want {want}",
-                ring.left()
-            );
-        }
-        Placement::Below => {
-            let ring = ring.expect("a ring stands under the plot");
-            let band = seen.below.expect("a band under the plot");
-            assert!(
-                ring.top() >= data.bottom(),
-                "{name}: {ring:?} reaches into {data:?}"
-            );
-            assert!(
-                (ring.left() - (band.left() - RING_GAP)).abs() <= 1.5,
-                "{name}: {ring:?} vs {band:?}"
-            );
-            assert!(
-                (ring.right() - (band.right() + RING_GAP)).abs() <= 1.5,
-                "{name}: {ring:?} vs {band:?}"
-            );
-            assert!(
-                (ring.bottom() - (band.bottom() + RING_GAP)).abs() <= 1.5,
-                "{name}: {ring:?} vs {band:?}"
-            );
-        }
-        Placement::None => {}
-    }
+    let band = seen.below.expect("a band under the plot");
+    // Colour's hue stands in the plot's data area in its marks, which the pixel
+    // rule cannot tell apart, so the ring is looked for under the plot.
+    let ring = hue_pixels(&image, under_region(band, data, &image), mode)
+        .expect("a ring stands under the plot");
+    // The band is the last thing in its pane, so the ring is cut back at the
+    // pane's edge on its left, right and foot and stands the gap off it on top.
+    assert!(
+        (ring.top() - (band.top() - RING_GAP)).abs() <= 1.5,
+        "{name}: ring {ring:?}, band {band:?}"
+    );
+    assert!(
+        band.expand(1.5)
+            .contains_rect(ring.intersect(band.expand(1.5)))
+            && ring.left() <= band.left() + 1.5
+            && ring.right() >= band.right() - 2.5
+            && ring.bottom() >= band.bottom() - 2.5,
+        "{name}: ring {ring:?} does not run round the band {band:?}"
+    );
     egui_kittest::image_snapshot(&image, name);
-}
-
-/// **The ring round the legend at the plot's right — light.**
-#[test]
-fn the_ring_at_the_right_light_baseline() {
-    baseline("legend_ring_right_light", Mode::Light, Placement::Right);
-}
-
-/// **The same in dark.**
-#[test]
-fn the_ring_at_the_right_dark_baseline() {
-    baseline("legend_ring_right_dark", Mode::Dark, Placement::Right);
 }
 
 /// **The ring round the legend under the plot — light.**
 #[test]
 fn the_ring_below_light_baseline() {
-    baseline("legend_ring_below_light", Mode::Light, Placement::Below);
+    baseline("legend_ring_below_light", Mode::Light);
 }
 
 /// **The same in dark.**
 #[test]
 fn the_ring_below_dark_baseline() {
-    baseline("legend_ring_below_dark", Mode::Dark, Placement::Below);
+    baseline("legend_ring_below_dark", Mode::Dark);
 }
 
 /// **With no legend there is nothing to ring**, though colour's list is open:
@@ -370,4 +284,22 @@ fn with_no_legend_no_ring_is_drawn() {
     // Under the plot are the axis' labels and the grid pane's chrome, none of
     // them colour's hue.
     assert_eq!(hue_pixels(&image, under, Mode::Light), None);
+}
+
+/// **With colour's list closed there is no ring**, though the legend is where it
+/// was: no pixel of colour's hue stands round the band under the plot.
+#[test]
+fn with_the_list_closed_no_ring_is_drawn() {
+    let (image, seen) = capture(
+        "legend_ring_closed_light",
+        Mode::Light,
+        Placement::BelowClosed,
+    );
+    assert!(!seen.open, "colour's list is still open");
+    let data = seen.data.expect("the hero has a data area");
+    let band = seen.below.expect("the legend is still under the plot");
+    assert_eq!(
+        hue_pixels(&image, under_region(band, data, &image), Mode::Light),
+        None
+    );
 }
