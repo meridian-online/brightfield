@@ -1019,6 +1019,18 @@ const SCHEME_NAMES: &str =
 /// Why the legend row does not apply to a plot with nothing on colour.
 const LEGEND_UNBOUND: &str = "nothing is on colour, so there is no legend to place";
 
+/// Why the scale row does not apply to a plot with nothing on colour.
+const SCALE_UNBOUND: &str = "nothing is on colour, so there is no scale to set";
+
+/// Why the domain row does not apply to a plot with nothing on colour.
+const DOMAIN_UNBOUND: &str = "nothing is on colour, so there are no ends to set";
+
+/// Why the pivot row does not apply to a plot with nothing on colour.
+const PIVOT_UNBOUND: &str = "nothing is on colour, so there is no pivot to set";
+
+/// Why the steps row does not apply to a plot with nothing on colour.
+const STEPS_UNBOUND: &str = "nothing is on colour, so there are no steps to set";
+
 /// Why colour's reverse row does not apply to a chart that draws no dot.
 const COLOUR_REVERSE_DOTS: &str =
     "only a dot's colour runs the other way, and this chart draws none";
@@ -1821,6 +1833,9 @@ fn colour_rows(
         range: None,
         colour: None,
     };
+    // A plot with nothing on colour has no scale, domain, pivot or steps to set:
+    // those rows are muted with the reason, before any other they would give.
+    let unbound = |reason: &str| (!bound).then(|| reason.to_string());
     let diverging = resolve_colour_scale_diverging(plot, &spec.params);
     let quantize = resolve_colour_scale_quantize(plot, &spec.params);
     let drawn_pivot = match drawn.get(Channel::Fill) {
@@ -1856,7 +1871,7 @@ fn colour_rows(
             scale_word.to_string(),
             scale_word != "linear",
             COLOUR_SCALE_SAYS,
-            names.then(|| SCALE_NAMES.to_string()),
+            unbound(SCALE_UNBOUND).or_else(|| names.then(|| SCALE_NAMES.to_string())),
         )
     };
     let parameter_set = scale.parameter_set();
@@ -1869,7 +1884,7 @@ fn colour_rows(
             facts.pivot.map(pivot_text).unwrap_or_default(),
             parameter_set,
             PIVOT_SAYS,
-            (!diverging).then(|| PIVOT_OFF.to_string()),
+            unbound(PIVOT_UNBOUND).or_else(|| (!diverging).then(|| PIVOT_OFF.to_string())),
         )
     };
     let steps = SettingRow {
@@ -1881,7 +1896,7 @@ fn colour_rows(
             facts.count.map(|n| n.to_string()).unwrap_or_default(),
             parameter_set,
             STEPS_SAYS,
-            (!quantize).then(|| STEPS_OFF.to_string()),
+            unbound(STEPS_UNBOUND).or_else(|| (!quantize).then(|| STEPS_OFF.to_string())),
         )
     };
     // A diverging scale with no scheme is drawn in brightfield's pair, which is
@@ -1957,7 +1972,7 @@ fn colour_rows(
             },
             fixed || set_ends.is_some(),
             DOMAIN_SAYS,
-            names.then(|| DOMAIN_NAMES.to_string()),
+            unbound(DOMAIN_UNBOUND).or_else(|| names.then(|| DOMAIN_NAMES.to_string())),
         )
     };
     // A plot that paints nothing by colour has no legend to place: the row reads

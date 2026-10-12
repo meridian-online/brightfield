@@ -729,6 +729,52 @@ fn the_legend_row_is_muted_while_nothing_is_on_colour_and_writes_nothing() {
     assert!(win.hero().legend_below.is_none());
 }
 
+/// **With nothing on colour the scale, domain, pivot and steps rows are muted
+/// with their reasons**, and `l`, `h` and `⌫` on the scale and domain rows write
+/// nothing.
+#[test]
+fn the_scale_and_domain_rows_are_muted_while_nothing_is_on_colour_and_write_nothing() {
+    let mut win = Window::housing("scale-muted");
+    win.open_colour_settings();
+    for (name, reason) in [
+        (
+            SCALE_ROW,
+            "nothing is on colour, so there is no scale to set",
+        ),
+        (
+            DOMAIN_ROW,
+            "nothing is on colour, so there are no ends to set",
+        ),
+        (
+            PIVOT_ROW,
+            "nothing is on colour, so there is no pivot to set",
+        ),
+        (
+            STEPS_ROW,
+            "nothing is on colour, so there are no steps to set",
+        ),
+    ] {
+        let row = win.row(name);
+        assert_eq!(row.reason.as_deref(), Some(reason), "{name}");
+        assert!(!row.set, "{name} carries no dot");
+    }
+    let unsaved = win.unsaved();
+    win.move_to_row(SCALE_ROW);
+    for (key, text) in [(egui::Key::L, "l"), (egui::Key::H, "h")] {
+        win.type_letter(key, text);
+        assert_eq!(win.unsaved(), unsaved, "{text} on the muted scale row");
+    }
+    win.press(egui::Key::Backspace);
+    assert_eq!(win.unsaved(), unsaved, "⌫ on the muted scale row");
+    win.find_row(DOMAIN_ROW);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.unsaved(), unsaved, "l on the muted domain row");
+    win.press(egui::Key::Backspace);
+    assert_eq!(win.unsaved(), unsaved, "⌫ on the muted domain row");
+    assert_eq!(win.row(SCALE_ROW).value, "linear");
+    assert_eq!(win.row(DOMAIN_ROW).value, "auto");
+}
+
 /// **`l` on the scale row steps it to diverging and writes the auto pivot**: the
 /// row reads diverging with its pivot unmarked, and the file names the scale and
 /// the pivot and no longer the scheme.
