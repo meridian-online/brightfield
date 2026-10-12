@@ -1016,6 +1016,9 @@ const COLOUR_REVERSE_SAYS: &str =
 const SCHEME_NAMES: &str =
     "a column of names takes the categorical set, which has no ramp to choose";
 
+/// Why the legend row does not apply to a plot with nothing on colour.
+const LEGEND_UNBOUND: &str = "nothing is on colour, so there is no legend to place";
+
 /// Why colour's reverse row does not apply to a chart that draws no dot.
 const COLOUR_REVERSE_DOTS: &str =
     "only a dot's colour runs the other way, and this chart draws none";
@@ -1957,8 +1960,8 @@ fn colour_rows(
             names.then(|| DOMAIN_NAMES.to_string()),
         )
     };
-    // A plot that paints nothing by colour has no legend to place, so it reads
-    // as the auto it would be given.
+    // A plot that paints nothing by colour has no legend to place: the row reads
+    // the auto it would be given, muted, and writes nothing.
     let placed = if bound {
         colour_legend_placement(spec, path).wire_name()
     } else {
@@ -1972,7 +1975,7 @@ fn colour_rows(
             placed.to_string(),
             placed != LEGEND_STEPS[0],
             LEGEND_SAYS,
-            None,
+            (!bound).then(|| LEGEND_UNBOUND.to_string()),
         ),
         row(
             REVERSE_ROW,
@@ -3128,9 +3131,10 @@ impl ColumnList {
             return;
         };
         // Colour's scale row has no key of its own: it takes three out, and the
-        // window answers it by writing linear.
+        // window answers it by writing linear. Its legend row has none either,
+        // and the window answers it by placing the legend at the right.
         let writes = row_key(self.channel, row.name).is_some()
-            || (self.channel == ShelfChannel::Colour && row.name == SCALE_ROW);
+            || (self.channel == ShelfChannel::Colour && matches!(row.name, SCALE_ROW | LEGEND_ROW));
         if row.reason.is_none() && writes {
             let name = row.name;
             out.push(ListReport::Set(RowEdit {

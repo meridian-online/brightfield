@@ -415,7 +415,7 @@ fn sentence(frame: &Frame) -> String {
 /// **AC1.** The head rows are scheme, scale and reverse, in that order, and the
 /// pivot and steps rows are found by name behind them.
 #[test]
-fn colours_settings_have_the_head_rows_scheme_scale_and_reverse_in_that_order() {
+fn colours_settings_have_the_head_rows_scheme_scale_legend_and_reverse_in_that_order() {
     for attrs in ["", "colorScheme: blues\ncolorReverse: true"] {
         let settings = settings_over(attrs, &ramp_scales(), None);
         let rows = settings.rows(ShelfChannel::Colour);
@@ -1270,7 +1270,7 @@ fn the_legend_row_steps_right_below_none_and_dots_the_two_that_are_not_auto() {
 }
 
 #[test]
-fn colours_head_rows_are_scheme_scale_and_reverse() {
+fn colours_head_rows_are_scheme_scale_legend_and_reverse() {
     let settings = settings_over("", &ramp_scales(), Some(&[MarkKind::Dot]));
     let head: Vec<&str> = settings
         .rows(ShelfChannel::Colour)

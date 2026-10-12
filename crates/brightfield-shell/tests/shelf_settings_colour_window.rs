@@ -23,7 +23,7 @@ use brightfield_shell::app::CHART;
 use brightfield_shell::design::Mode;
 use brightfield_shell::legend::{self, LegendSpec};
 use brightfield_shell::shelf::{
-    CardDrawn, ListTab, SchemeDrawn, SettingRow, SettingRowDrawn, DOMAIN_ROW, LEGEND_ROW,
+    Binding, CardDrawn, ListTab, SchemeDrawn, SettingRow, SettingRowDrawn, DOMAIN_ROW, LEGEND_ROW,
     REVERSE_ROW, SCALE_ROW, SCHEME_ROW,
 };
 use brightfield_shell::startup::default_layout;
@@ -506,11 +506,11 @@ fn lines_of_key(text: &str, key: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// **`Tab` on colour's cell turns its list to the settings, whose head rows are
-/// scheme and reverse in that order, each reading auto, with the sentence of the
+/// scheme, scale, legend and reverse in that order, each reading auto, with the sentence of the
 /// row under the cursor at the foot.** In the Outline, and in the card a shut rail
 /// hangs from the cell.
 #[test]
-fn tab_on_colour_shows_scheme_then_reverse_each_auto_with_the_foot() {
+fn tab_on_colour_shows_scheme_scale_legend_then_reverse_with_the_foot() {
     let mut win = Window::housing("tab");
     win.keep_on_colour(VALUE);
     win.open_colour_settings();
@@ -542,7 +542,7 @@ fn tab_on_colour_shows_scheme_then_reverse_each_auto_with_the_foot() {
             .map(|r| r.name)
             .collect::<Vec<_>>(),
         [SCHEME_ROW, SCALE_ROW, LEGEND_ROW, REVERSE_ROW],
-        "the card draws the scheme, scale and reverse rows"
+        "the card draws the scheme, scale, legend and reverse rows"
     );
     let sentence = shut.card().list.sentence.expect("the foot drew a sentence");
     assert_eq!(
@@ -588,6 +588,11 @@ fn the_legend_row_moves_the_legend_below_and_the_list_still_reads_the_plot() {
         win.hero().legend_below.is_some(),
         "the legend is under the plot"
     );
+    assert_eq!(
+        win.app.shelf_band().map(|b| b.channels().colour.clone()),
+        Some(Binding::Column("median_income".to_string())),
+        "the band still reads colour from the plot in the concat"
+    );
     win.save();
     let text = win.chart_text();
     assert!(
@@ -616,10 +621,64 @@ fn the_legend_row_moves_the_legend_below_and_the_list_still_reads_the_plot() {
     win.type_letter(egui::Key::H, "h");
     assert_eq!(win.row(LEGEND_ROW).value, "right");
     assert!(!win.row(LEGEND_ROW).set);
+    assert!(win.hero().legend_below.is_none());
+    assert!(
+        win.hero().legend_declared,
+        "the hero draws its legend at the right"
+    );
     win.save();
     let text = win.chart_text();
     assert!(text.contains("legend: color"), "{text}");
     assert!(!text.contains("for: "), "{text}");
+}
+
+/// **`⌫` on the legend row puts the legend back at the right**, from below and
+/// from none, in the file and on the chart.
+#[test]
+fn backspace_on_the_legend_row_puts_the_legend_back_at_the_right() {
+    for steps in [1, 2] {
+        let mut win = Window::housing("legend-backspace");
+        win.keep_on_colour("median_income");
+        win.open_colour_settings();
+        win.move_to_row(LEGEND_ROW);
+        for _ in 0..steps {
+            win.type_letter(egui::Key::L, "l");
+        }
+        let at = if steps == 1 { "below" } else { "none" };
+        assert_eq!(win.row(LEGEND_ROW).value, at);
+        win.press(egui::Key::Backspace);
+        let row = win.row(LEGEND_ROW);
+        assert_eq!((row.value.as_str(), row.set), ("right", false), "from {at}");
+        assert!(win.hero().legend_below.is_none());
+        assert!(win.hero().legend_declared, "from {at}");
+        win.save();
+        let text = win.chart_text();
+        assert!(text.contains("legend: color"), "from {at}: {text}");
+        assert!(!text.contains("for: "), "from {at}: {text}");
+    }
+}
+
+/// **With nothing on colour the legend row is muted with its reason**, carries
+/// no dot, and `l`, `h` and `⌫` on it write nothing.
+#[test]
+fn the_legend_row_is_muted_while_nothing_is_on_colour_and_writes_nothing() {
+    let mut win = Window::housing("legend-muted");
+    win.open_colour_settings();
+    win.move_to_row(LEGEND_ROW);
+    let row = win.row(LEGEND_ROW);
+    assert_eq!(
+        row.reason.as_deref(),
+        Some("nothing is on colour, so there is no legend to place")
+    );
+    assert!(!row.set);
+    let unsaved = win.unsaved();
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.unsaved(), unsaved, "l on a muted row is no edit");
+    win.type_letter(egui::Key::H, "h");
+    assert_eq!(win.unsaved(), unsaved, "h on a muted row is no edit");
+    win.press(egui::Key::Backspace);
+    assert_eq!(win.unsaved(), unsaved, "⌫ on a muted row is no edit");
+    assert!(win.hero().legend_below.is_none());
 }
 
 /// **`l` on the scale row steps it to diverging and writes the auto pivot**: the

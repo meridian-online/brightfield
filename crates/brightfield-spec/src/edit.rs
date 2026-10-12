@@ -859,10 +859,10 @@ pub fn colour_legends_below(spec: &Spec, plot_path: &str) -> Option<Vec<usize>> 
     legends_below(spec, plot_path).map(|(_, legends)| legends)
 }
 
-/// Where the plot at `plot_path` has its colour legend, as the file places it:
-/// a `legend: color` whose `for:` names the plot and sits under it is below, an
-/// item of the plot or any other legend that covers it is at the right, and no
-/// node is none.
+/// Where the plot at `plot_path` has its colour legend, as the file places it.
+/// A `legend: color` whose `for:` names the plot and sits under it is below. A
+/// legend among the plot's items, or beside it and for it, is at the right.
+/// Otherwise the legend is absent.
 #[must_use]
 pub fn colour_legend_placement(spec: &Spec, plot_path: &str) -> LegendPlacement {
     if colour_legends_below(spec, plot_path).is_some() {
