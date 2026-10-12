@@ -2309,6 +2309,20 @@ impl ChartDoc {
             )?;
             return Ok((!edits.is_empty()).then_some((spec, edits)));
         }
+        // A count typed into the steps row is always written: Mosaic's
+        // thresholds differ from the default's, so the file names the count the
+        // scale is drawn with.
+        if let (ShelfChannel::Colour, crate::shelf::STEPS_ROW, SettingValue::Count(count)) =
+            (edit.channel, edit.row, &edit.value)
+        {
+            let mut spec = before.clone();
+            let edits = crate::shelf_edit::put_colour_scale(
+                &mut spec,
+                path,
+                &crate::shelf::ColourScaleWrite::Steps { count: *count },
+            )?;
+            return Ok((!edits.is_empty()).then_some((spec, edits)));
+        }
         // On a diverging scale the scheme row chooses between brightfield's
         // pair, held as its colours, and `rdbu`, which the pair's `colorRange`
         // would otherwise cover.

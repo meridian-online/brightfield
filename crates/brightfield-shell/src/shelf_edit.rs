@@ -593,7 +593,13 @@ pub fn put_diverging_scheme(
         }
         wanted
     } else {
-        vec![remove(SCHEME_KEY), set("colorRange", own_pair_value())]
+        // The pair goes where no colours are written, or its own are; an
+        // analyst's colours stay, and the scheme alone comes out.
+        let mut wanted = vec![remove(SCHEME_KEY)];
+        if holds_pair || !target.attributes.contains_key("colorRange") {
+            wanted.push(set("colorRange", own_pair_value()));
+        }
+        wanted
     };
     apply_present(spec, plot, wanted)
 }

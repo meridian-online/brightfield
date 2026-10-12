@@ -1459,8 +1459,13 @@ impl SettingRow {
         if self.name == SCHEME_ROW && self.colour.as_ref().is_some_and(|f| f.diverging) {
             // Along the two a diverging scale offers; the first is auto.
             let strip = diverging_strip();
-            let at = strip.iter().position(|w| *w == self.value)?;
-            let next = *strip.get(at.checked_add_signed(by)?)?;
+            // A scheme off the strip stands before `rdbu`: `l` reaches it, and
+            // `h` goes back to the pair.
+            let next = match strip.iter().position(|w| *w == self.value) {
+                Some(at) => *strip.get(at.checked_add_signed(by)?)?,
+                None if by > 0 => strip[1],
+                None => strip[0],
+            };
             return Some(if next == OWN_PAIR {
                 SettingValue::Auto
             } else {
@@ -1797,7 +1802,7 @@ fn colour_rows(
         colour: Some(facts.clone()),
         ..row(
             PIVOT_ROW,
-            facts.pivot.map(end_text).unwrap_or_default(),
+            facts.pivot.map(pivot_text).unwrap_or_default(),
             parameter_set,
             PIVOT_SAYS,
             (!diverging).then(|| PIVOT_OFF.to_string()),

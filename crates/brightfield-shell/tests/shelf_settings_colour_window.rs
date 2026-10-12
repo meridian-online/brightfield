@@ -1062,3 +1062,49 @@ fn backspace_names_viridis_only_where_a_scheme_is_named_and_takes_reverse_out() 
         "⌫ on reverse took its key out:\n{written}"
     );
 }
+
+/// **A count typed into the steps field stays written, even at the default**: the
+/// file names the count, since Mosaic's thresholds differ from the default's.
+#[test]
+fn a_count_of_five_typed_over_seven_stays_in_the_file() {
+    let mut win = Window::housing("steps-five");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::J, "j");
+    win.type_letter(egui::Key::L, "l");
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCALE_ROW).value, "steps");
+    for typed in ["7", "5"] {
+        win.press(egui::Key::Enter);
+        win.run(vec![egui::Event::Text(typed.to_owned())]);
+        win.press(egui::Key::Enter);
+    }
+    let row = win.row(SCALE_ROW);
+    assert_eq!(row.colour.and_then(|c| c.count), Some(5));
+    assert!(!win.row(SCALE_ROW).parameter_set());
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorN: 5"), "{text}");
+}
+
+/// **`Esc` in the scale row's pivot field drops what was typed**: the hero is
+/// drawn about the pivot it had.
+#[test]
+fn esc_in_the_pivot_field_puts_the_heros_pivot_back() {
+    let mut win = Window::housing("pivot-esc");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::J, "j");
+    win.type_letter(egui::Key::L, "l");
+    let pivot = |win: &Window| match win.hero().scales.get(Channel::Fill) {
+        Some(Scale::Diverging { pivot, .. }) => *pivot,
+        other => panic!("the hero's fill is not diverging: {other:?}"),
+    };
+    let before = pivot(&win);
+    win.press(egui::Key::Enter);
+    win.run(vec![egui::Event::Text("1234".to_owned())]);
+    win.run(Vec::new());
+    assert_eq!(pivot(&win), 1234.0, "the typed pivot is previewed");
+    win.press(egui::Key::Escape);
+    assert_eq!(pivot(&win), before, "Esc put the pivot back");
+}

@@ -13,8 +13,10 @@
 //!   window hands them.
 //! - **Ink** is read off the frame: the mesh painted for each ramp, its colours
 //!   strip by strip; the stroke painted for the ring; the galley of each name.
-//! - **Pixels** are two baselines, colour's list with the cursor on the scheme
-//!   row, one for each theme. Regenerate them with
+//! - **Pixels** are baselines, one for each theme: colour's list with the cursor
+//!   on the scheme row, on the scale row of a diverging plot, on the scale row
+//!   with its pivot field open, and on the scheme row of a diverging plot with
+//!   its strip. Regenerate them with
 //!   `UPDATE_SNAPSHOTS=1 cargo +1.95.0 test -p brightfield-shell --test
 //!   shelf_settings_colour`, and read what moved before committing it.
 
@@ -1693,5 +1695,103 @@ fn colours_scheme_row_diverging_strip_dark_matches_its_baseline() {
         diverging_strip_list(),
         "shelf_settings_colour_scheme_diverging_strip_dark",
         Mode::Dark,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The pivot and steps rows found by name, and the diverging scheme's edges.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_pivot_off_auto_beyond_the_displayed_precision_reads_the_same_on_both_rows() {
+    let attrs = "colorScale: diverging\ncolorPivot: 3.470004";
+    let scale = colour_row(attrs, SCALE_ROW, &ramp_scales());
+    let pivot = colour_row(attrs, PIVOT_ROW, &ramp_scales());
+    assert_eq!(pivot.value, "3.47");
+    assert!(!pivot.set && !scale.parameter_set(), "muted: it is auto");
+    let stage = Stage::new(Mode::Light);
+    let mut list = off_scale_row(attrs);
+    let frame = stage.draw(&mut list);
+    let row = drawn_row(&frame, SCALE_ROW);
+    assert_eq!(row_text(&frame, row), "diverging about 3.47");
+    assert_eq!(
+        ink_of_text(&frame, row, "3.47"),
+        chrome::colour(semantic(false).text.muted)
+    );
+}
+
+/// A list turned to the settings with the cursor on the row found by name.
+fn on_named_row(attrs: &str, name: &'static str) -> ColumnList {
+    let mut list = turned_over(profiled_settings(attrs, &ramp_scales()));
+    assert!(list.open_on_row(name));
+    list
+}
+
+#[test]
+fn typing_into_the_pivot_row_found_by_name_keeps_a_pivot_and_not_a_tick_count() {
+    let mut list = on_named_row("colorScale: diverging\ncolorPivot: 3.47", PIVOT_ROW);
+    list.feed_events(&enter());
+    list.feed_events(&text("2.5"));
+    let reports = list.feed_events(&enter());
+    assert!(reports.contains(&set(
+        PIVOT_ROW,
+        SettingValue::Number(Number::new(2.5).unwrap())
+    )));
+}
+
+#[test]
+fn typing_into_the_steps_row_found_by_name_keeps_a_count_of_steps() {
+    let mut list = on_named_row("colorScale: quantize\ncolorN: 5", STEPS_ROW);
+    list.feed_events(&enter());
+    list.feed_events(&text("9"));
+    let reports = list.feed_events(&enter());
+    assert!(reports.contains(&set(STEPS_ROW, SettingValue::Count(9))));
+    let mut list = on_named_row("colorScale: quantize\ncolorN: 5", STEPS_ROW);
+    list.feed_events(&enter());
+    list.feed_events(&text("1"));
+    let reports = list.feed_events(&enter());
+    assert!(!reports.iter().any(|r| matches!(r, ListReport::Set(_))));
+}
+
+#[test]
+fn a_scheme_off_the_diverging_strip_steps_to_rdbu_and_back_to_the_pair() {
+    let row = colour_row(
+        "colorScale: diverging\ncolorPivot: 1\ncolorScheme: blues",
+        SCHEME_ROW,
+        &ramp_scales(),
+    );
+    assert_eq!(row.stepped(1), Some(word("rdbu")));
+    assert_eq!(row.stepped(-1), Some(SettingValue::Auto));
+}
+
+#[test]
+fn resetting_a_diverging_scheme_leaves_an_analysts_colours_and_writes_the_pair_elsewhere() {
+    use brightfield_shell::shelf_edit::put_diverging_scheme;
+    use brightfield_spec::analysis::ComponentPath;
+    let spec_of = |attrs: &str| {
+        let source = format!(
+            "data:\n  t:\n    - {{ a: 1 }}\nplot:\n  - mark: dot\n    data: {{ from: t }}\n    x: a\n    y: a\nwidth: 600\nheight: 300\n{attrs}\n"
+        );
+        parse_spec(&source, Format::Yaml).unwrap().spec
+    };
+    let root = ComponentPath("root".to_string());
+    let keys = |spec: &brightfield_spec::ast::Spec| {
+        let plot = plot_at_path(spec, "root").unwrap();
+        (
+            plot.attributes.contains_key("colorScheme"),
+            plot.attributes.get("colorRange").cloned(),
+        )
+    };
+    let mut own = spec_of("colorScale: diverging\ncolorScheme: rdbu\ncolorRange: [\"#111111\", \"#222222\", \"#333333\"]");
+    let before = keys(&own).1;
+    put_diverging_scheme(&mut own, &root, false).unwrap();
+    assert_eq!(keys(&own), (false, before), "the analyst's colours stay");
+
+    let mut none = spec_of("colorScale: diverging\ncolorScheme: rdbu");
+    put_diverging_scheme(&mut none, &root, false).unwrap();
+    let (named, range) = keys(&none);
+    assert!(
+        !named && range.is_some(),
+        "the pair is written where none is"
     );
 }
