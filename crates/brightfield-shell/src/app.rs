@@ -935,7 +935,7 @@ pub struct ChartDoc {
     /// an axis is the canvas's, as it was before the axes were targets.
     pub axis_targets_live: bool,
     /// **Whether colour's list is open this frame**, on either of its tabs, so the
-    /// chart rings the hero's legend in colour's hue. Cleared at the head of every
+    /// chart rings the hero's legend in colour's hue. Cleared at the head of each
     /// frame with [`Self::axis_targets_live`] and set with it where the shelf band
     /// is carved: the ring is authoring chrome and a frame that draws no band
     /// draws no ring.

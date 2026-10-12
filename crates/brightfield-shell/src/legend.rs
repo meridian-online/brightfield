@@ -424,7 +424,7 @@ pub const RING_WIDTH: f32 = 1.0;
 
 /// The ring round a legend `block`: the block grown by [`RING_GAP`], cut back
 /// on a side where that would reach into `data`, the plot's data area, so the
-/// ring never lies over a mark.
+/// ring does not lie over a mark (`the_ring_stays_outside_the_data_area`).
 #[must_use]
 pub fn ring_rect(block: egui::Rect, data: egui::Rect) -> egui::Rect {
     let mut ring = block.expand(RING_GAP);

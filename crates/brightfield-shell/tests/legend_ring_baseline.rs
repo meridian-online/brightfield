@@ -226,7 +226,7 @@ fn capture(name: &str, mode: Mode, placement: Placement) -> (image::RgbaImage, S
 }
 
 /// The pixels of `image` within `region` that are near colour's hue, as a
-/// bounding rect, or `None` when there are none. "Near" is a per-channel
+/// bounding rect, or nothing when no pixel is. "Near" is a per-channel
 /// distance of 40 from the hue, which a one-point stroke on a fractional edge
 /// still lands inside and the legend's ramp and the plot's marks do not.
 fn hue_pixels(image: &image::RgbaImage, region: egui::Rect, mode: Mode) -> Option<egui::Rect> {
