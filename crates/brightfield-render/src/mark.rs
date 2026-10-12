@@ -840,10 +840,9 @@ impl DotRenderer {
     /// Generic column inference types a number fill `Linear`, which the dot's
     /// paint does not read, so — as [`CellRenderer::augment_scales`] does for its own
     /// fill — the `Linear` is REPLACED with a `Sequential`, running `[min, max]`
-    /// of the rows drawn. A
-    /// `Sequential` already in the set (a co-rendered mark's, or this mark's own
-    /// earlier call, since a plot runs this once per layer and again after a
-    /// navigation) has its domain unioned and keeps its stops. The other kinds of
+    /// of the rows drawn. A `Sequential` already in the set (a co-rendered
+    /// mark's, or this mark's own earlier call, since a plot runs this once per
+    /// layer and again after a navigation) has its domain unioned and keeps its stops. The other kinds of
     /// fill scale stay as they are: a categorical `Colour`, a `Time`, and the
     /// absence of one for a layer whose fill is a colour literal — the ghost of a
     /// two-layer tile — so that layer's call cannot undo the ramp another
@@ -3021,8 +3020,8 @@ impl MarkRenderer for CellRenderer {
 
     /// Build the numeric-fill → colour ramp under [`Channel::Fill`]. Generic
     /// column inference types a numeric fill Linear (the recon's trap), so a
-    /// non-colour Fill scale is REPLACED with a Sequential anchored per the v1
-    /// rule — `[0, max]` when `min >= 0`, else `[min, max]`. A co-rendered
+    /// non-colour Fill scale is REPLACED with a Sequential running `[min, max]`
+    /// of the rows drawn. A co-rendered
     /// Sequential unions its domain (keeping the first's stops, mirroring
     /// raster); a categorical Colour Fill (Utf8 fill, or a sibling's swatches)
     /// is left untouched.
@@ -3050,9 +3049,7 @@ impl MarkRenderer for CellRenderer {
         if !(lo.is_finite() && hi.is_finite()) {
             return;
         }
-        // The rows' own ends, as Mosaic draws a ramp: a legend whose low end is
-        // zero for a column that never reaches it spends part of its colours on
-        // values no row holds.
+        // The rows' own ends, as the dot's ramp runs.
         let (d0, d1) = (lo, hi);
 
         let merged = match scales.get(Channel::Fill) {
@@ -3318,7 +3315,7 @@ impl MarkRenderer for HexbinRenderer {
     /// Widen the linear x/y domains by half a hex so the outermost hexes fit
     /// inside the plot area, and build the fill → colour ramp under
     /// [`Channel::Fill`]. A count fill is zero-anchored `[0, max]`; an avg fill
-    /// follows the cell rule (`[0, max]` when `min >= 0`, else `[min, max]`).
+    /// is `[0, max]` when `min >= 0`, else `[min, max]`.
     /// Merge-not-clobber mirrors raster/cell: a co-rendered Sequential unions
     /// its domain (keeping the first's stops); a sibling's categorical Colour
     /// Fill survives untouched.
@@ -3380,7 +3377,7 @@ impl MarkRenderer for HexbinRenderer {
             }
         }
 
-        // Fill → colour ramp. Count is zero-anchored; avg follows the cell rule.
+        // Fill → colour ramp. Count is zero-anchored; avg is [0, max] when min >= 0, else [min, max].
         let Some(fill_col) = channel_map.get(Channel::Fill) else {
             return;
         };
@@ -8625,10 +8622,10 @@ mod tests {
         );
     }
 
-    // augment_scales anchors the Fill Sequential domain per the v1
-    // rule — [0, max] when min >= 0, else [min, max] — REPLACING the Linear a
-    // numeric fill otherwise infers (the trap), unioning with a co-rendered
-    // Sequential, and leaving a categorical Colour fill untouched.
+    // augment_scales runs the Fill Sequential domain [min, max] of the rows
+    // drawn, REPLACING the Linear a numeric fill otherwise infers (the trap),
+    // unioning with a co-rendered Sequential, and leaving a categorical Colour
+    // fill untouched.
     #[test]
     fn cell_augment_scales_anchors_sequential_domain() {
         let batch = cell_batch();
