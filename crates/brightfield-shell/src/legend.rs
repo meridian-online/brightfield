@@ -1392,12 +1392,18 @@ mod tests {
         let right = egui::Rect::from_min_max(egui::pos2(100.0, 10.0), egui::pos2(200.0, 60.0));
         let ring = ring_rect(right, data);
         assert_eq!(ring.left(), 100.0);
-        assert_eq!((ring.top(), ring.right(), ring.bottom()), (6.0, 204.0, 64.0));
+        assert_eq!(
+            (ring.top(), ring.right(), ring.bottom()),
+            (6.0, 204.0, 64.0)
+        );
 
         let below = egui::Rect::from_min_max(egui::pos2(10.0, 100.0), egui::pos2(90.0, 140.0));
         let ring = ring_rect(below, data);
         assert_eq!(ring.top(), 100.0);
-        assert_eq!((ring.left(), ring.right(), ring.bottom()), (6.0, 94.0, 144.0));
+        assert_eq!(
+            (ring.left(), ring.right(), ring.bottom()),
+            (6.0, 94.0, 144.0)
+        );
     }
 
     /// A block that overlaps the data area is not a legend beside or under it,
