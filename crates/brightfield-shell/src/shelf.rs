@@ -1435,8 +1435,8 @@ pub struct SettingRow {
     /// What only the range row knows. `None` on the title, scale, format, ticks,
     /// grid, zero and reverse rows.
     pub range: Option<RangeFacts>,
-    /// What only colour's scale, pivot and steps rows know, which the
-    /// rows of the axes leave `None`.
+    /// What colour's scale, pivot and steps rows carry, which the rows
+    /// of the axes leave `None`.
     pub colour: Option<ColourScaleFacts>,
 }
 
