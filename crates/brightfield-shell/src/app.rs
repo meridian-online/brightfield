@@ -934,6 +934,12 @@ pub struct ChartDoc {
     /// or a dashboard shown for reading, draws neither. False means a click on
     /// an axis is the canvas's, as it was before the axes were targets.
     pub axis_targets_live: bool,
+    /// **Whether colour's list is open this frame**, on either of its tabs, so the
+    /// chart rings the hero's legend in colour's hue. Cleared at the head of every
+    /// frame with [`Self::axis_targets_live`] and set with it where the shelf band
+    /// is carved: the ring is authoring chrome and a frame that draws no band
+    /// draws no ring.
+    pub colour_list_open: bool,
     /// The axis part a press landed on, waiting for the window, which opens that
     /// axis's settings on the part's row. Written by the chart pane's gesture
     /// machine, taken by [`Self::take_axis_request`].
@@ -1236,6 +1242,7 @@ impl ChartDoc {
             gesture_ink: None,
             wheel_taken: false,
             axis_targets_live: false,
+            colour_list_open: false,
             axis_request: None,
             raster_rect: None,
             legend_rect: None,
@@ -1296,6 +1303,7 @@ impl ChartDoc {
             gesture_ink: None,
             wheel_taken: false,
             axis_targets_live: false,
+            colour_list_open: false,
             axis_request: None,
             raster_rect: None,
             legend_rect: None,

@@ -1994,6 +1994,10 @@ struct ShelfHold {
     /// open: cleared with the frame's other records and written by
     /// [`MeridianApp::shelf_card`].
     card: Option<CardDrawn>,
+    /// The channel the Outline's list is open on, as the frame's canvas begins:
+    /// [`carve_shelf_band`] reads it, since the list is the model's and the
+    /// carving is not handed the model.
+    list_channel: Option<ShelfChannel>,
 }
 
 impl ShelfHold {
@@ -4048,6 +4052,7 @@ impl MeridianApp {
         // and a flag left standing from a banded frame would have the axes of
         // a bandless picture take a press the canvas should hear.
         self.charts.doc.axis_targets_live = false;
+        self.charts.doc.colour_list_open = false;
 
         // The document's file watcher: poll on its own cadence, keep frames
         // coming while anything is watched (a poll nobody runs watches
@@ -5014,6 +5019,8 @@ impl MeridianApp {
                                 .model
                                 .source()
                                 .map_or(&[], |s| s.profiles.as_slice());
+                            charts.shelf.list_channel =
+                                protocol.doc.model.column_list().map(|l| l.channel());
                             let (drawn, picked) = if transposed {
                                 draw_transposed_pane_group(
                                     ui,
@@ -10103,6 +10110,7 @@ fn carve_shelf_band(
     // The axes are targets for the rest of this frame; `draw` clears the flag at
     // the head of the next.
     charts.doc.axis_targets_live = true;
+    charts.doc.colour_list_open = charts.shelf.list_channel == Some(ShelfChannel::Colour);
     charts.shelf.tile = title.to_string();
     egui::Rect::from_min_max(egui::pos2(body.left(), body.top() + height), body.max)
 }
