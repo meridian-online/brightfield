@@ -842,11 +842,11 @@ impl DotRenderer {
     /// fill — the `Linear` is REPLACED with a `Sequential`, running `[min, max]`
     /// of the rows drawn. A `Sequential` already in the set (a co-rendered
     /// mark's, or this mark's own earlier call, since a plot runs this once per
-    /// layer and again after a navigation) has its domain unioned and keeps its stops. The other kinds of
-    /// fill scale stay as they are: a categorical `Colour`, a `Time`, and the
-    /// absence of one for a layer whose fill is a colour literal — the ghost of a
-    /// two-layer tile — so that layer's call cannot undo the ramp another
-    /// layer's column built.
+    /// layer and again after a navigation) has its domain unioned and keeps its
+    /// stops. The other kinds of fill scale stay as they are: a categorical
+    /// `Colour`, a `Time`, and the absence of one for a layer whose fill is a
+    /// colour literal — the ghost of a two-layer tile — so that layer's call
+    /// cannot undo the ramp another layer's column built.
     ///
     /// The ramp's stops are `scheme`'s: the plot's `colorScheme` as
     /// [`crate::mark::configured_renderer`] carried it into the renderer, and
@@ -5365,10 +5365,11 @@ fn aspect_fit_domains(
 }
 
 /// Build the numeric-fill → colour ramp under [`Channel::Fill`] for a geo
-/// choropleth (`fill: <numeric col>`), mirroring [`CellRenderer::augment_scales`]:
-/// a Utf8/absent fill reads as `None` and keeps the categorical colour path; a
-/// numeric fill REPLACES the inferred Linear with a [`Scale::Sequential`]
-/// anchored `[0, max]` when `min >= 0`, else `[min, max]`.
+/// choropleth (`fill: <numeric col>`). As in [`CellRenderer::augment_scales`],
+/// a Utf8/absent fill reads as `None` and keeps the categorical colour path, and
+/// a numeric fill REPLACES the inferred Linear with a [`Scale::Sequential`];
+/// unlike the cell's, this one is anchored `[0, max]` when `min >= 0`, else
+/// `[min, max]`.
 fn build_geo_fill_ramp(
     scales: &mut ScaleSet,
     batch: &RecordBatch,
