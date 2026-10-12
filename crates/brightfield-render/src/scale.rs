@@ -1699,8 +1699,9 @@ pub fn own_diverging_range() -> [[f32; 4]; 3] {
 /// colours written.
 #[must_use]
 pub fn is_own_diverging_range(range: &[[f32; 4]]) -> bool {
-    // The tolerance absorbs the round trip through an eight-bit hex.
-    const CLOSE: f32 = 1.0 / 512.0;
+    // The tolerance absorbs the round trip through an eight-bit hex, which is
+    // off by up to half a step, and is far below a visible change.
+    const CLOSE: f32 = 1.0 / 255.0;
     let own = own_diverging_range();
     range.len() == own.len()
         && range
@@ -4673,5 +4674,71 @@ mod tests {
         };
         assert_eq!(stops, &diverging_stops(None, &dark));
         assert_eq!(stops[stops.len() / 2], dark.diverging_mid.components);
+    }
+
+    /// The pair as a file holds it: each stop written as `#rrggbb` and read back
+    /// the way a `colorRange` entry is, so the eight-bit rounding is in play.
+    fn own_pair_through_hex() -> Vec<[f32; 4]> {
+        own_diverging_range()
+            .iter()
+            .map(|[r, g, b, _]| {
+                let byte = |v: f32| (v * 255.0).round() as u8;
+                let hex = format!("#{:02x}{:02x}{:02x}", byte(*r), byte(*g), byte(*b));
+                crate::mark::parse_colour_literal(&hex)
+                    .expect("a hex colour parses")
+                    .components
+            })
+            .collect()
+    }
+
+    fn diverging_fill_after(range: Vec<[f32; 4]>, ink: ChartInk) -> Vec<[f32; 4]> {
+        let mut set = ScaleSet::in_ink(ink);
+        set.insert(
+            Channel::Fill,
+            Scale::Diverging {
+                domain_min: -1.0,
+                domain_max: 1.0,
+                pivot: 0.0,
+                stops: diverging_stops(None, &ink),
+            },
+        );
+        let ov = ColourOverride {
+            range: Some(range),
+            ..ColourOverride::default()
+        };
+        apply_colour_override(&mut set, &ov);
+        let Some(Scale::Diverging { stops, .. }) = set.get(Channel::Fill) else {
+            panic!("the fill stays diverging");
+        };
+        stops.clone()
+    }
+
+    /// The pair is still recognised after the file's hex round trip, so a saved
+    /// file draws the theme's ramp and not its own three colours.
+    #[test]
+    fn the_own_pair_is_recognised_after_the_hex_round_trip() {
+        let read_back = own_pair_through_hex();
+        assert!(is_own_diverging_range(&read_back));
+        let dark = ChartInk::for_mode(true);
+        assert_eq!(
+            diverging_fill_after(read_back, dark),
+            diverging_stops(None, &dark)
+        );
+    }
+
+    /// A range that is not the pair draws as written: one stop off by a visible
+    /// amount, or a two-stop range.
+    #[test]
+    fn a_range_that_is_not_the_own_pair_draws_as_written() {
+        let dark = ChartInk::for_mode(true);
+        let mut off = own_diverging_range().to_vec();
+        off[1][0] += 0.1;
+        assert!(!is_own_diverging_range(&off));
+        assert_eq!(diverging_fill_after(off.clone(), dark), off);
+
+        let own = own_diverging_range();
+        let two = vec![own[0], own[2]];
+        assert!(!is_own_diverging_range(&two));
+        assert_eq!(diverging_fill_after(two.clone(), dark), two);
     }
 }
