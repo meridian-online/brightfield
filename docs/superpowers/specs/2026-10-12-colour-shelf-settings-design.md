@@ -6,7 +6,7 @@ With the cursor on colour's shelf entry, `Tab` turns its list to settings, and a
 
 ## What is already on main
 
-- The render crate reads `colorScheme` (viridis, the default, plus blues, turbo and meridian), `colorScale: diverging` about `colorPivot`, `colorScale: quantize` with `colorN` (five when absent), `colorReverse`, and `colorDomain` with `colorRange`. A colour key brightfield cannot draw draws as if absent, and the page's warning names it.
+- The render crate reads `colorScheme` (viridis, the default, plus blues, turbo and meridian), `colorScale: diverging` about `colorPivot`, `colorScale: quantize` with `colorN` (five when absent), `colorReverse`, and `colorDomain` with `colorRange`. A `colorScheme`, `colorScale`, `colorPivot`, `colorN` or `colorReverse` value brightfield cannot draw draws as if absent, and the page's warning names it; a `colorDomain` that is not an array, `Fixed` included, is read as no domain without a warning.
 - A plot draws a legend where its file holds a legend node and none where it holds none: at the right as a column, below as a band 44 high when the file is a `vconcat` of the plot and a `legend: color` whose `for:` names it.
 - Putting a number column on colour writes `colorScheme: viridis` and a `legend: color` item. `LegendPlacement` (`crates/brightfield-spec/src/edit.rs`) moves the legend between right, below and none.
 - Colour's settings list has two head rows, scheme and reverse (`colour_rows`, `crates/brightfield-shell/src/shelf.rs`). The scheme row shows a swatch and, under the cursor, a strip of the schemes that apply. A row that does not apply is muted with its reason.
@@ -71,10 +71,11 @@ The domain row is muted with its reason when colour paints names. Putting a diff
 
 The reader:
 
-- `brightfield-spec` reads `colorDomain: Fixed` as a pin request beside `xDomain` and `yDomain`. It is no longer a key brightfield cannot draw, so it leaves the page's warning.
+- `brightfield-spec` reads `colorDomain: Fixed` as a pin request beside `xDomain` and `yDomain`. Today the reader takes it, silently, as no domain; `colour_domain` keeps that reading, and `resolve_fixed_domains` is what reads the pin.
 - `PinnedDomains` (`crates/brightfield-render/src/scale.rs`) gains a colour pin: the colour scale's two ends, plus the pivot when the scale is diverging. It is captured from the scales of the plot's first composition, as the positional pins are, and applied where `apply_colour_override` runs. Re-domaining keeps the scale's own stops and kind. A pin and a scale of different kinds (the colour changed from a ramp to categories) leave the fresh scale standing, as the positional pins do.
 - The capture moment is Mosaic's: a file opened with a selection already filtering its plot pins the filtered domain. A *fixed* set from the row is captured unfiltered, because an edit rebuilds the dashboard and a rebuild drops the committed selection.
-- `Fixed` on a colour that paints category names is not read in this work. It draws as today, and the page's warning names it.
+- `Fixed` on a colour that paints category names is not read in this work: the pin captures nothing from a categorical scale, and the chart draws as today.
+- The diverging pair is recognised where the file writes it. A `colorRange` equal to the pair's three light-theme stops draws the design system's diverging ramp in the current theme, so dark mode gets the dark middle. Any other `colorRange` draws as written.
 - Under an automatic sample, the pin holds the ends of the sample's first draw. A ramp anchored to the unsampled column is a separate piece of work.
 
 ### 3. The legend row and its ring
@@ -103,12 +104,13 @@ The scale and legend rows both edit `shelf.rs` and `window.rs`, so they go in se
 ## Testing
 
 - `brightfield-spec` edit tests for each key the rows write and remove, including a round trip through the chart-text writer and back through the parser.
-- `brightfield-spec` reader tests: `colorDomain: Fixed` is a pin request and raises no warning; `Fixed` beside a categorical colour still warns.
+- `brightfield-spec` reader tests: `colorDomain: Fixed` is a colour pin request, and `colour_domain` still reads it as no domain.
 - `brightfield-render` tests:
   - the colour pin captures on the first composition and holds the ends across a later composition over fewer rows;
   - on diverging it holds the pivot too;
   - a kind change leaves the fresh scale;
-  - a non-negative ramp starts at the column's minimum.
+  - a non-negative ramp starts at the column's minimum;
+  - a `colorRange` equal to the diverging pair draws the dark middle in dark mode.
 - `brightfield-shell` shelf tests:
   - each row's value, auto/set state and mute reason;
   - the pivot's auto/set comparison against the profile;
