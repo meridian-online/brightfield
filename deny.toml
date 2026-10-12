@@ -55,4 +55,13 @@ ignore = [
   # fixed release exists ("no safe upgrade"); drop this waiver when
   # image/rav1e move off paste.
   "RUSTSEC-2024-0436",
+  # unsafe-libyaml 0.2.11 — unmaintained-crate NOTICE, not a vulnerability. It
+  # is the parser under serde_yaml, which is itself deprecated and archived,
+  # and which this workspace uses directly (brightfield-spec,
+  # brightfield-protocol, brightfield-conformance) and through arcform's `arc`
+  # crate. No maintained release of either exists ("no safe upgrade"), and
+  # replacing the YAML parser changes how every chart file is read, so it is
+  # its own change in both repos, under the conformance corpus. Drop this
+  # waiver when both move off serde_yaml.
+  "RUSTSEC-2024-0449",
 ]
