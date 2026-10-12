@@ -3127,22 +3127,40 @@ impl ColumnList {
     /// `⌫` on the settings: put the row under the cursor back to auto. A row that
     /// does not apply reports nothing.
     fn row_to_auto(&mut self, out: &mut Vec<ListReport>) {
-        let Some(row) = self.setting_cursor() else {
-            return;
-        };
+        if let Some(edit) = self.setting_cursor().and_then(|row| self.auto_edit(row)) {
+            out.push(ListReport::Set(edit));
+        }
+    }
+
+    /// The edit that puts `row` back to auto, or `None` where the row does not
+    /// apply or has nothing to write.
+    fn auto_edit(&self, row: &SettingRow) -> Option<RowEdit> {
         // Colour's scale row has no key of its own: it takes three out, and the
         // window answers it by writing linear. Its legend row has none either,
         // and the window answers it by placing the legend at the right.
         let writes = row_key(self.channel, row.name).is_some()
             || (self.channel == ShelfChannel::Colour && matches!(row.name, SCALE_ROW | LEGEND_ROW));
-        if row.reason.is_none() && writes {
-            let name = row.name;
-            out.push(ListReport::Set(RowEdit {
-                channel: self.channel,
-                row: name,
-                value: SettingValue::Auto,
-            }));
+        if row.reason.is_some() || !writes {
+            return None;
         }
+        // The pivot and the count are written as soon as their scale is chosen,
+        // since Mosaic's defaults differ from brightfield's, so their auto is
+        // auto's value written by name rather than the key taken out.
+        let value = match (self.channel, row.name) {
+            (ShelfChannel::Colour, PIVOT_ROW) => SettingValue::Number(
+                row.colour
+                    .as_ref()
+                    .and_then(|facts| facts.auto_pivot)
+                    .and_then(Number::new)?,
+            ),
+            (ShelfChannel::Colour, STEPS_ROW) => SettingValue::Count(DEFAULT_COLOUR_STEPS),
+            _ => SettingValue::Auto,
+        };
+        Some(RowEdit {
+            channel: self.channel,
+            row: row.name,
+            value,
+        })
     }
 
     /// `Esc`: clear the query first, and with the query empty, back out of the

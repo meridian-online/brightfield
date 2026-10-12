@@ -2330,17 +2330,29 @@ impl ChartDoc {
         }
         // A count typed into the steps row is always written: Mosaic's
         // thresholds differ from the default's, so the file names the count the
-        // scale is drawn with.
-        if let (ShelfChannel::Colour, crate::shelf::STEPS_ROW, SettingValue::Count(count)) =
-            (edit.channel, edit.row, &edit.value)
-        {
+        // scale is drawn with, and auto is the default count by name.
+        if let (ShelfChannel::Colour, crate::shelf::STEPS_ROW) = (edit.channel, edit.row) {
+            let count = match &edit.value {
+                SettingValue::Count(count) => *count,
+                SettingValue::Auto => brightfield_spec::layout::DEFAULT_COLOUR_STEPS,
+                _ => return Ok(None),
+            };
             let mut spec = before.clone();
             let edits = crate::shelf_edit::put_colour_scale(
                 &mut spec,
                 path,
-                &crate::shelf::ColourScaleWrite::Steps { count: *count },
+                &crate::shelf::ColourScaleWrite::Steps { count },
             )?;
             return Ok((!edits.is_empty()).then_some((spec, edits)));
+        }
+        // The pivot is written by name for the same reason: Mosaic's is 0. Its
+        // auto is a number only the column's profile knows, which the list sends
+        // as one, so an auto with no number has nothing to write.
+        if edit.channel == ShelfChannel::Colour
+            && edit.row == crate::shelf::PIVOT_ROW
+            && edit.value == SettingValue::Auto
+        {
+            return Ok(None);
         }
         // On a diverging scale the scheme row chooses between brightfield's
         // pair, held as its colours, and `rdbu`, which the pair's `colorRange`

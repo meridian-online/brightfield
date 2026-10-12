@@ -24,7 +24,7 @@ use brightfield_shell::design::Mode;
 use brightfield_shell::legend::{self, LegendSpec};
 use brightfield_shell::shelf::{
     Binding, CardDrawn, ListTab, SchemeDrawn, SettingRow, SettingRowDrawn, DOMAIN_ROW, LEGEND_ROW,
-    REVERSE_ROW, SCALE_ROW, SCHEME_ROW,
+    PIVOT_ROW, REVERSE_ROW, SCALE_ROW, SCHEME_ROW, STEPS_ROW,
 };
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::text_ink;
@@ -280,6 +280,22 @@ impl Window {
             self.type_letter(egui::Key::J, "j");
         }
         panic!("the settings cursor did not reach {name}");
+    }
+
+    /// Find the settings row `name` by typing its name after `/`, and `Enter`.
+    fn find_row(&mut self, name: &str) {
+        self.type_letter(egui::Key::Slash, "/");
+        for letter in name.chars() {
+            let key = egui::Key::from_name(&letter.to_ascii_uppercase().to_string())
+                .unwrap_or_else(|| panic!("no key for {letter}"));
+            self.type_letter(key, &letter.to_string());
+        }
+        self.press(egui::Key::Enter);
+        assert_eq!(
+            self.setting_cursor(),
+            Some(name),
+            "typing {name} did not find its row"
+        );
     }
 
     fn list_tab(&self) -> Option<ListTab> {
@@ -807,6 +823,71 @@ fn backspace_on_the_scale_row_from_steps_takes_the_scale_and_its_count_out() {
     let text = win.chart_text();
     assert!(!text.contains("colorScale"), "{text}");
     assert!(!text.contains("colorN"), "{text}");
+}
+
+/// **`⌫` on the pivot row found by name puts the auto pivot back, by name**:
+/// Mosaic's own pivot is 0, so the file keeps `colorPivot` at the auto value
+/// rather than losing the key.
+#[test]
+fn backspace_on_the_pivot_row_writes_the_auto_pivot_and_keeps_the_key() {
+    let mut win = Window::housing("pivot-backspace");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::L, "l");
+    let auto = win
+        .row(SCALE_ROW)
+        .colour
+        .and_then(|c| c.auto_pivot)
+        .expect("the scale row knows its auto pivot");
+    win.press(egui::Key::Enter);
+    win.run(vec![egui::Event::Text("2".to_owned())]);
+    win.press(egui::Key::Enter);
+    assert!(win.row(SCALE_ROW).parameter_set(), "fixture check: pivot 2");
+    win.find_row(PIVOT_ROW);
+    win.press(egui::Key::Backspace);
+    assert!(!win.row(PIVOT_ROW).set, "the pivot reads auto again");
+    assert_eq!(win.row(SCALE_ROW).value, "diverging");
+    win.save();
+    let text = win.chart_text();
+    let pivots = lines_of_key(&text, "colorPivot");
+    let [line] = pivots.as_slice() else {
+        panic!("the file names one pivot:\n{text}");
+    };
+    let written: f64 = line["colorPivot:".len()..]
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("{line}: {e}"));
+    assert!(
+        (written - auto).abs() < 1e-9,
+        "the pivot written is the auto one, {auto}: {line}"
+    );
+    assert!(text.contains("colorScale: diverging"), "{text}");
+}
+
+/// **`⌫` on the steps row found by name puts the count back to five, by name**:
+/// Mosaic's thresholds differ from the default's, so `colorN` stays written.
+#[test]
+fn backspace_on_the_steps_row_writes_five_and_keeps_the_key() {
+    let mut win = Window::housing("steps-backspace");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::L, "l");
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCALE_ROW).value, "steps");
+    win.press(egui::Key::Enter);
+    win.run(vec![egui::Event::Text("7".to_owned())]);
+    win.press(egui::Key::Enter);
+    assert_eq!(win.row(SCALE_ROW).colour.and_then(|c| c.count), Some(7));
+    win.find_row(STEPS_ROW);
+    win.press(egui::Key::Backspace);
+    assert_eq!(win.row(STEPS_ROW).value, "5");
+    assert!(!win.row(STEPS_ROW).set);
+    win.save();
+    let text = win.chart_text();
+    assert_eq!(lines_of_key(&text, "colorN"), ["colorN: 5"], "{text}");
+    assert!(text.contains("colorScale: quantize"), "{text}");
 }
 
 /// **A pivot typed behind `diverging` is drawn as it is typed and kept on
