@@ -409,6 +409,11 @@ pub fn put_setting(
 /// the plot reads as the analyst left it, a chart saved before this edit wrote
 /// a legend included.
 ///
+/// **Why a set domain and pivot go.** Both were values of the old column, so a
+/// new column takes a set `colorDomain` out, and a diverging scale's
+/// `colorPivot` is written again as the new column's auto pivot (taken out where
+/// the column has no profile to read one from).
+///
 /// # Errors
 ///
 /// [`ShelfRefusal::NoSuchColumn`] when the table has no `column`, and

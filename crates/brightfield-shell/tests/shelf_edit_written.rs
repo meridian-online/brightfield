@@ -541,3 +541,51 @@ fn a_new_column_on_colour_takes_a_set_domain_out_and_re_reads_the_pivot() {
         Some(&number_value(auto_pivot(age)))
     );
 }
+
+#[test]
+fn a_column_change_writes_a_pivot_only_on_a_diverging_plot() {
+    // Linear and stepped plots hold no pivot, and a column change gives them none.
+    for write in [None, Some(ColourScaleWrite::Steps { count: 5 })] {
+        let mut opened = open("colour_pivot_off");
+        put_colour(
+            &mut opened.spec,
+            &opened.hero,
+            "median_income",
+            &opened.table,
+        )
+        .unwrap();
+        if let Some(write) = write {
+            put_colour_scale(&mut opened.spec, &opened.hero, &write).unwrap();
+        }
+        put_colour(&mut opened.spec, &opened.hero, "house_age", &opened.table).unwrap();
+        let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+        assert!(!plot.attributes.contains_key("colorPivot"));
+    }
+
+    // A diverging plot's pivot comes out for a column the table holds no
+    // moments of.
+    let mut opened = open("colour_pivot_no_moments");
+    put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .unwrap();
+    put_colour_scale(
+        &mut opened.spec,
+        &opened.hero,
+        &ColourScaleWrite::Diverging {
+            pivot: Number::new(2.0),
+        },
+    )
+    .unwrap();
+    for column in &mut opened.table {
+        if column.name == "house_age" {
+            column.moments = None;
+        }
+    }
+    put_colour(&mut opened.spec, &opened.hero, "house_age", &opened.table).unwrap();
+    let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+    assert!(!plot.attributes.contains_key("colorPivot"));
+}

@@ -1078,7 +1078,8 @@ fn quoted_back(typed: &str) -> String {
 /// What the scale row reads after its word, fullest first: the pivot of a
 /// diverging scale, `about 3.47`, or the count of a stepped one, `\u{b7} 5`. A
 /// pivot gives way to the bare number where the row is too narrow for both the
-/// word and the chips.
+/// word and the chips. The domain row's auto value also takes the ends the
+/// colours were drawn over, `\u{b7} 0 \u{2013} 10`, muted.
 fn scale_parameter(row: &SettingRow) -> Option<Vec<String>> {
     if row.reason.is_some() {
         return None;
@@ -1086,7 +1087,7 @@ fn scale_parameter(row: &SettingRow) -> Option<Vec<String>> {
     if row.name == DOMAIN_ROW {
         // An auto domain shows the ends the colours were drawn over.
         let drawn = row.range.as_ref()?.drawn?;
-        return (row.value == AUTO).then(|| vec![ends_text(drawn)]);
+        return (row.value == AUTO).then(|| vec![format!("\u{b7} {}", ends_text(drawn))]);
     }
     if row.name != SCALE_ROW {
         return None;
@@ -4361,6 +4362,7 @@ impl ColumnList {
                 painter.galley(at.min, value, ink);
                 // The scale row's parameter after its word, muted while it is
                 // brightfield's own, and left out where it does not fit whole.
+                // The domain row's auto value takes its drawn ends here too.
                 if let Some(texts) = scale_parameter(row) {
                     let left = at.right() + spacing::SPACE_2;
                     let ink = if row.parameter_set() { primary } else { muted };

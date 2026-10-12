@@ -1132,3 +1132,49 @@ fn stepping_the_domain_row_to_fixed_writes_colordomain_fixed() {
     let text = win.chart_text();
     assert!(text.contains("colorDomain: Fixed"), "{text}");
 }
+
+/// **Two typed ends write `colorDomain: [0, 4]`, and `⌫` takes the key out**:
+/// the row keeps the ends under its own name, not the axis range's.
+#[test]
+fn typing_two_ends_into_the_domain_row_writes_them_and_backspace_resets() {
+    let mut win = Window::housing("domain-ends");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::Slash, "/");
+    for (key, text) in [
+        (egui::Key::D, "d"),
+        (egui::Key::O, "o"),
+        (egui::Key::M, "m"),
+    ] {
+        win.type_letter(key, text);
+    }
+    win.press(egui::Key::Enter);
+    assert_eq!(win.setting_cursor(), Some(DOMAIN_ROW));
+    win.press(egui::Key::Enter);
+    for typed in ["0", "4"] {
+        win.run(vec![egui::Event::Text(typed.to_owned())]);
+        win.press(egui::Key::Enter);
+    }
+    assert_eq!(win.row(DOMAIN_ROW).value, "0 \u{2013} 4");
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorDomain: [0, 4]"), "{text}");
+
+    // Save left the list; open it again on the row.
+    win.open_colour_settings();
+    win.type_letter(egui::Key::Slash, "/");
+    for (key, text) in [
+        (egui::Key::D, "d"),
+        (egui::Key::O, "o"),
+        (egui::Key::M, "m"),
+    ] {
+        win.type_letter(key, text);
+    }
+    win.press(egui::Key::Enter);
+    assert_eq!(win.row(DOMAIN_ROW).value, "0 \u{2013} 4");
+    win.press(egui::Key::Backspace);
+    assert_eq!(win.row(DOMAIN_ROW).value, "auto");
+    win.save();
+    let text = win.chart_text();
+    assert!(!text.contains("colorDomain"), "{text}");
+}
