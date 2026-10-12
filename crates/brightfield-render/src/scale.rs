@@ -1234,7 +1234,9 @@ pub struct PinnedDomains {
 /// or a stepped one's, and a diverging scale's pivot, held from the plot's first
 /// draw under `colorDomain: Fixed`, so a value keeps its colour while a filter
 /// on another tile moves the rows. A categorical colour has no ends, and is not
-/// pinned here.
+/// pinned here. Only the fill is pinned: a number column bound to `stroke`
+/// builds no ramp under the stroke channel (every ramp is built under the fill),
+/// so there is no stroke scale with ends to hold.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ColourPin {
     /// The low end.
@@ -1317,7 +1319,8 @@ pub fn apply_colour_pin(scales: &mut ScaleSet, pins: &PinnedDomains) {
 
 impl PinnedDomains {
     /// Whether nothing is pinned — the state of every plot whose spec asks for
-    /// no pin, and the state in which [`apply_pinned_domains`] is a no-op.
+    /// no pin. A set holding only a colour pin is not empty, though
+    /// [`apply_pinned_domains`], which reads the positional pins, is a no-op on it.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.x.is_none() && self.y.is_none() && self.colour.is_none()
@@ -4522,7 +4525,13 @@ mod tests {
         );
         apply_colour_pin(&mut later, &pins);
         assert!(
-            matches!(later.get(Channel::Fill), Some(Scale::Sequential { domain_max, .. }) if *domain_max == 15.0)
+            matches!(
+                later.get(Channel::Fill),
+                Some(Scale::Sequential { domain_min, domain_max, stops })
+                    if (*domain_min, *domain_max) == (0.5, 15.0)
+                        && *stops == vec![[0.0; 4], [1.0; 4]]
+            ),
+            "the pinned ends land and the scale keeps its own stops"
         );
     }
 
@@ -4592,6 +4601,57 @@ mod tests {
             Some(Scale::Sequential { domain_min, domain_max, .. })
                 if (*domain_min, *domain_max) == (1.0, 9.0)
         ));
+    }
+
+    /// A diverging pin does not land on a fresh ramp, and a ramp's pin does not
+    /// land on a diverging scale: the fresh scale stands as inferred.
+    #[test]
+    fn a_diverging_pin_leaves_a_fresh_ramp_standing() {
+        let pins = PinnedDomains {
+            colour: Some(ColourPin {
+                lo: -8.0,
+                hi: 15.0,
+                pivot: Some(3.47),
+            }),
+            ..PinnedDomains::default()
+        };
+        let mut later = ScaleSet::new();
+        later.insert(
+            Channel::Fill,
+            Scale::Sequential {
+                domain_min: 2.0,
+                domain_max: 5.0,
+                stops: vec![[0.0; 4], [1.0; 4]],
+            },
+        );
+        apply_colour_pin(&mut later, &pins);
+        assert!(matches!(
+            later.get(Channel::Fill),
+            Some(Scale::Sequential { domain_min, domain_max, .. })
+                if (*domain_min, *domain_max) == (2.0, 5.0)
+        ));
+    }
+
+    /// Only the fill carries a ramp: a stroke scale is not captured or re-domained.
+    #[test]
+    fn a_colour_pin_reads_and_lands_on_the_fill_only() {
+        let ramp = || Scale::Sequential {
+            domain_min: 0.0,
+            domain_max: 1.0,
+            stops: vec![[0.0; 4], [1.0; 4]],
+        };
+        let mut stroke_only = ScaleSet::new();
+        stroke_only.insert(Channel::Stroke, ramp());
+        let mut pins = PinnedDomains::default();
+        pins.capture(
+            &stroke_only,
+            FixedDomains {
+                x: false,
+                y: false,
+                colour: true,
+            },
+        );
+        assert_eq!(pins.colour, None);
     }
 
     #[test]

@@ -784,8 +784,8 @@ pub struct FixedDomains {
 }
 
 impl FixedDomains {
-    /// Whether neither axis nor the colour asks for a pin — the shape of every plot in the
-    /// examples corpus, and the one a caller may skip work for.
+    /// Whether neither axis nor the colour asks for a pin — the shape of a plot
+    /// that writes no `Fixed`, and the one a caller may skip work for.
     #[must_use]
     pub fn is_empty(self) -> bool {
         !self.x && !self.y && !self.colour

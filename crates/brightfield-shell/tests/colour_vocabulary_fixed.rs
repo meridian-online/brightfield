@@ -105,3 +105,16 @@ fn without_fixed_the_ends_re_fit_to_the_rows_left() {
         "the ends shrink to the rows the brush leaves"
     );
 }
+
+/// A number column bound to `stroke` builds no ramp under the stroke channel,
+/// which is why the colour pin reads the fill alone.
+#[test]
+fn a_number_stroke_builds_no_ramp_under_the_stroke_channel() {
+    let spec = brushed_spec("colorDomain: Fixed").replace("fill: v", "stroke: v");
+    let mut live = LiveDashboard::load_str(&spec, None).expect("the spec loads live");
+    let composed = live.present().expect("first composite");
+    assert!(!matches!(
+        composed.plots[1].scales.get(Channel::Stroke),
+        Some(Scale::Sequential { .. } | Scale::Diverging { .. } | Scale::Quantized { .. })
+    ));
+}
