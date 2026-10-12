@@ -4021,9 +4021,10 @@ impl ColumnList {
     ///
     /// **A row reads its name, its value and a marker.** A value that is
     /// brightfield's own is in muted ink, with the word *auto* and a hollow ring;
-    /// one that differs is in the text ink, with a filled dot. Nothing here
-    /// changes a value, so a click or the pointer over a row moves the cursor and
-    /// no more.
+    /// one that differs is in the text ink, with a filled dot. A click or the
+    /// pointer over a row moves the cursor; a click on a stepping row's value
+    /// steps it, and one on the dot of a row that applies puts it back to auto,
+    /// as `⌫` does.
     ///
     /// **A row that does not apply to the axis is in muted ink throughout**, set
     /// or not, and says why on a line of its own under the name and the value. A
@@ -4085,6 +4086,8 @@ impl ColumnList {
         let mut clicked = None;
         let mut pointed = None;
         let mut stepped: Option<(usize, isize)> = None;
+        // The row whose dot a click landed on, which the click puts back to auto.
+        let mut reset: Option<usize> = None;
         // The ramp of the strip a click landed on, with the row it belongs to.
         let mut picked: Option<(usize, &'static str)> = None;
         for &i in &order {
@@ -4237,6 +4240,13 @@ impl ColumnList {
                 egui::pos2(content.left() + name_column + spacing::SPACE_3, rect.top()),
                 egui::pos2(marker.left(), line.bottom()),
             );
+            // A click on the dot of a set row that applies does what `⌫` does.
+            if response.clicked() && row.set && applies && self.field.is_none() {
+                let at = response.interact_pointer_pos();
+                if at.is_some_and(|p| marker.contains(p)) {
+                    reset = Some(i);
+                }
+            }
             if response.clicked() && row.steps() && self.field.is_none() {
                 let at = response.interact_pointer_pos();
                 if at.is_some_and(|p| value_zone.contains(p)) {
@@ -4535,8 +4545,8 @@ impl ColumnList {
         );
 
         // The pointer moves the cursor and a click leaves it there; a click on
-        // the value of a row that steps does what `l` does, and the chip of `←`
-        // what `h` does.
+        // the value of a row that steps does what `l` does, the chip of `←`
+        // what `h` does, and the dot of a set row what `⌫` does.
         if let Some(i) = clicked.or(pointed) {
             if self.row != Some(i) {
                 self.row = Some(i);
@@ -4544,7 +4554,9 @@ impl ColumnList {
             }
         }
         let mut reports = Vec::new();
-        if let Some((i, word)) = picked {
+        if let Some(edit) = reset.and_then(|i| self.auto_edit(&rows[i])) {
+            reports.push(ListReport::Set(edit));
+        } else if let Some((i, word)) = picked {
             reports.push(ListReport::Set(RowEdit {
                 channel: self.channel,
                 row: rows[i].name,

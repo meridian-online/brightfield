@@ -890,6 +890,30 @@ fn backspace_on_the_steps_row_writes_five_and_keeps_the_key() {
     assert!(text.contains("colorScale: quantize"), "{text}");
 }
 
+/// **A click on the scale row's dot puts it back to linear**, as `⌫` does: the
+/// file names neither the scale nor its pivot.
+#[test]
+fn a_click_on_the_scale_rows_dot_puts_it_back_to_linear() {
+    let mut win = Window::housing("scale-dot").rail_shut();
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCALE_ROW).value, "diverging");
+    assert!(
+        win.row(SCALE_ROW).set,
+        "fixture check: diverging has its dot"
+    );
+    let dot = win.row_drawn(SCALE_ROW).marker.center();
+    win.click(dot);
+    let row = win.row(SCALE_ROW);
+    assert_eq!((row.value.as_str(), row.set), ("linear", false));
+    win.save();
+    let text = win.chart_text();
+    assert!(!text.contains("colorScale"), "{text}");
+    assert!(!text.contains("colorPivot"), "{text}");
+}
+
 /// **A pivot typed behind `diverging` is drawn as it is typed and kept on
 /// `Enter`**: the hero's diverging scale is about the typed pivot before it is
 /// kept, the row then reads the parameter as the analyst's, and the file names it.
