@@ -337,7 +337,7 @@ impl Window {
         self.row_drawn(SCHEME_ROW)
             .schemes
             .iter()
-            .find(|s| s.scheme == scheme)
+            .find(|s| s.scheme == Some(scheme))
             .unwrap_or_else(|| panic!("the strip drew no {}", scheme.wire_name()))
     }
 
@@ -347,7 +347,7 @@ impl Window {
             .schemes
             .iter()
             .filter(|s| s.ring.is_some())
-            .map(|s| s.scheme)
+            .filter_map(|s| s.scheme)
             .collect()
     }
 
@@ -601,6 +601,70 @@ fn backspace_on_the_scale_row_from_steps_takes_the_scale_and_its_count_out() {
     let text = win.chart_text();
     assert!(!text.contains("colorScale"), "{text}");
     assert!(!text.contains("colorN"), "{text}");
+}
+
+/// **A pivot typed behind `diverging` is drawn as it is typed and kept on
+/// `Enter`**: the hero's diverging scale is about the typed pivot before it is
+/// kept, the row then reads the parameter as the analyst's, and the file names it.
+#[test]
+fn a_typed_pivot_previews_and_enter_keeps_it_with_its_dot() {
+    let mut win = Window::housing("pivot-typed");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::J, "j");
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCALE_ROW).value, "diverging");
+    win.press(egui::Key::Enter);
+    win.run(vec![egui::Event::Text("2".to_owned())]);
+    win.run(Vec::new());
+    match win.hero().scales.get(Channel::Fill) {
+        Some(Scale::Diverging { pivot, .. }) => {
+            assert_eq!(*pivot, 2.0, "the typed pivot is drawn before it is kept");
+        }
+        other => panic!("the hero's fill is not diverging: {other:?}"),
+    }
+    win.press(egui::Key::Enter);
+    assert!(win.row(SCALE_ROW).parameter_set());
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorPivot: 2"), "{text}");
+}
+
+/// **On a diverging scale the scheme row steps between brightfield's pair and
+/// `rdbu`**: `l` names `rdbu` and takes the pair's colours out, and `h` takes the
+/// scheme out and writes the pair back.
+#[test]
+fn on_diverging_the_scheme_row_writes_rdbu_and_the_pair() {
+    let mut win = Window::housing("diverging-scheme");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::J, "j");
+    win.type_letter(egui::Key::L, "l");
+    win.type_letter(egui::Key::K, "k");
+    assert_eq!(win.setting_cursor(), Some(SCHEME_ROW));
+    assert_eq!(win.row(SCHEME_ROW).value, "blue-red");
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCHEME_ROW).value, "rdbu");
+    win.type_letter(egui::Key::H, "h");
+    let row = win.row(SCHEME_ROW);
+    assert_eq!((row.value.as_str(), row.set), ("blue-red", false));
+    win.save();
+    let text = win.chart_text();
+    assert!(!text.contains("colorScheme"), "{text}");
+    assert!(text.contains("colorRange"), "{text}");
+
+    let mut win = Window::housing("diverging-scheme-rdbu");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::J, "j");
+    win.type_letter(egui::Key::L, "l");
+    win.type_letter(egui::Key::K, "k");
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCHEME_ROW).value, "rdbu");
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorScheme: rdbu"), "{text}");
+    assert!(!text.contains("colorRange"), "{text}");
 }
 
 // ---------------------------------------------------------------------------

@@ -557,6 +557,47 @@ pub fn put_colour_scale(
     apply_present(spec, plot, wanted)
 }
 
+/// Write the scheme of a diverging scale on the plot at `plot`: `rdbu` names it
+/// and takes brightfield's pair out of `colorRange`, and the pair (the scale's
+/// auto) takes the scheme out and writes the pair. A `colorRange` that is not
+/// the pair is the analyst's and stays under `rdbu`.
+///
+/// # Errors
+///
+/// [`ShelfRefusal::Edit`] when the plot path names no plot. `spec` is left as it
+/// was.
+pub fn put_diverging_scheme(
+    spec: &mut Spec,
+    plot: &ComponentPath,
+    rdbu: bool,
+) -> Result<Vec<ChartEdit>, ShelfRefusal> {
+    let target =
+        plot_at_path(spec, &plot.0).ok_or(ShelfRefusal::Edit(RefuseReason::PlotNotFound))?;
+    let holds_pair = holds_own_pair(target.attributes.get("colorRange"));
+    let set = |key: &str, value: SpecValue| ChartEdit::SetPlotAttribute {
+        plot: plot.clone(),
+        key: key.to_string(),
+        value,
+    };
+    let remove = |key: &str| ChartEdit::RemovePlotAttribute {
+        plot: plot.clone(),
+        key: key.to_string(),
+    };
+    let wanted = if rdbu {
+        let mut wanted = vec![set(
+            SCHEME_KEY,
+            SpecValue::String(SequentialScheme::Rdbu.wire_name().to_string()),
+        )];
+        if holds_pair {
+            wanted.push(remove("colorRange"));
+        }
+        wanted
+    } else {
+        vec![remove(SCHEME_KEY), set("colorRange", own_pair_value())]
+    };
+    apply_present(spec, plot, wanted)
+}
+
 /// Apply each of `wanted` to `spec` through [`edit::apply_for_fresh_load`], and
 /// return those that changed it: a removal of a key the plot lacks is dropped,
 /// and so is a set to the value already held. `spec` is left as it was on a

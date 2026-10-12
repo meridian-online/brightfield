@@ -70,7 +70,8 @@ use brightfield_spec::layout::{
     resolve_colour_pivot, resolve_colour_reverse, resolve_colour_scale_diverging,
     resolve_colour_scale_quantize, resolve_colour_scheme_name, resolve_colour_steps,
     resolve_grid_lines, resolve_plot_scales_in, resolve_tick_counts, tick_count_target, AxisTitle,
-    ScaleType, TickFormatReading, DEFAULT_COLOUR_STEPS, DEFAULT_TICK_COUNT, MAX_TICK_COUNT,
+    ScaleType, TickFormatReading, DEFAULT_COLOUR_STEPS, DEFAULT_TICK_COUNT, MAX_COLOUR_STEPS,
+    MAX_TICK_COUNT,
 };
 use brightfield_spec::number_format::NumberFormat;
 use brightfield_spec::vocab::{is_colour_literal, MarkKind};
@@ -908,6 +909,40 @@ pub const STEPS_ROW: &str = "steps";
 /// `steps` is Mosaic's `quantize`.
 pub const COLOUR_SCALE_STEPS: [&str; 3] = ["linear", "diverging", "steps"];
 
+/// What the scheme row reads on a diverging scale that names no scheme: the
+/// pair brightfield draws, which a file holds as its three colours.
+pub const OWN_PAIR: &str = "blue-red";
+
+/// The schemes colour's scheme row offers on a diverging scale: brightfield's pair,
+/// which is its auto, and Mosaic's `rdbu`.
+#[must_use]
+pub fn diverging_strip() -> [&'static str; 2] {
+    [OWN_PAIR, "rdbu"]
+}
+
+/// A pivot as the scale row displays it: four significant figures, no fewer
+/// than the whole part, no trailing zeros. Two pivots that display the same are
+/// the same to the row.
+#[must_use]
+pub fn pivot_text(n: f64) -> String {
+    if n == 0.0 || !n.is_finite() {
+        return "0".to_string();
+    }
+    let places = (3.0 - n.abs().log10().floor()).clamp(0.0, 10.0);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let fixed = format!("{n:.*}", places as usize);
+    let trimmed = if fixed.contains('.') {
+        fixed.trim_end_matches('0').trim_end_matches('.')
+    } else {
+        fixed.as_str()
+    };
+    if trimmed == "-0" || trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// The foot's sentence for colour's scale row.
 const COLOUR_SCALE_SAYS: &str = "How values map onto colours: along one ramp, \
     diverging either side of a pivot, or cut into steps. Auto is linear.";
@@ -949,6 +984,10 @@ const REVERSE_SAYS: &str = "Whether the axis runs from high to low, which auto r
 /// The foot's sentence for colour's scheme row.
 const SCHEME_SAYS: &str = "The ramp a number's colour runs along, which auto draws as viridis.";
 
+/// The foot's sentence for colour's scheme row on a diverging scale.
+const SCHEME_DIVERGING_SAYS: &str =
+    "The colours a diverging scale runs through, which auto draws as brightfield's blue and red.";
+
 /// The foot's sentence for colour's reverse row.
 const COLOUR_REVERSE_SAYS: &str =
     "Whether colour runs the other way, a ramp from its far end and names from the last, which auto does not.";
@@ -971,6 +1010,75 @@ pub fn scheme_strip() -> Vec<SequentialScheme> {
         .into_iter()
         .filter(|scheme| *scheme != SequentialScheme::Rdbu)
         .collect()
+}
+
+/// **What the pivot field holds, read as a pivot**: a finite number, or the
+/// sentence that says why the row refuses it.
+///
+/// # Errors
+///
+/// The sentence the row prints under itself.
+pub fn pivot_number(text: &str) -> Result<Number, String> {
+    let typed = text.trim();
+    typed
+        .parse::<f64>()
+        .ok()
+        .and_then(Number::new)
+        .ok_or_else(|| format!("a pivot is a number, and {} is not one", quoted_back(typed)))
+}
+
+/// **What the steps field holds, read as a count of steps**: a whole number from
+/// 2 to [`MAX_COLOUR_STEPS`], or the sentence that says why the row refuses it.
+///
+/// # Errors
+///
+/// The sentence the row prints under itself.
+pub fn steps_count(text: &str) -> Result<usize, String> {
+    let typed = text.trim();
+    let n: usize = typed.parse().map_err(|_| {
+        format!(
+            "steps is a whole number, and {} is not one",
+            quoted_back(typed)
+        )
+    })?;
+    if (2..=MAX_COLOUR_STEPS).contains(&n) {
+        Ok(n)
+    } else {
+        Err(format!("steps is 2 to {MAX_COLOUR_STEPS}, and {n} is not"))
+    }
+}
+
+/// What a refused entry is quoted back as: whole, or cut to
+/// [`QUOTED_AT_MOST`] characters with an ellipsis.
+fn quoted_back(typed: &str) -> String {
+    if typed.is_empty() {
+        return "nothing".to_string();
+    }
+    if typed.chars().count() > QUOTED_AT_MOST {
+        let cut: String = typed.chars().take(QUOTED_AT_MOST).collect();
+        format!("{cut}\u{2026}")
+    } else {
+        typed.to_string()
+    }
+}
+
+/// What the scale row reads after its word, fullest first: the pivot of a
+/// diverging scale, `about 3.47`, or the count of a stepped one, `\u{b7} 5`. A
+/// pivot gives way to the bare number where the row is too narrow for both the
+/// word and the chips.
+fn scale_parameter(row: &SettingRow) -> Option<Vec<String>> {
+    if row.name != SCALE_ROW || row.reason.is_some() {
+        return None;
+    }
+    let facts = row.colour.as_ref()?;
+    match row.value.as_str() {
+        "diverging" => facts.pivot.map(|p| {
+            let n = pivot_text(p);
+            vec![format!("about {n}"), n]
+        }),
+        "steps" => facts.count.map(|n| vec![format!("\u{b7} {n}")]),
+        _ => None,
+    }
 }
 
 /// The foot's sentence for the title row: what it does, and the rule for its
@@ -1280,11 +1388,17 @@ impl SettingRow {
             }
     }
 
-    /// Whether `Enter` opens a field on this row: the rows that take typed text
-    /// and the format, which takes it behind its presets.
+    /// Whether `Enter` opens a field on this row: the rows that take typed text,
+    /// the format, which takes it behind its presets, and colour's scale row on
+    /// a diverging or stepped scale, which takes its pivot or count.
     #[must_use]
     pub fn takes_field(&self) -> bool {
-        self.reason.is_none() && (self.kind == SettingKind::Typed || self.name == FORMAT_ROW)
+        self.reason.is_none()
+            && (self.kind == SettingKind::Typed
+                || self.name == FORMAT_ROW
+                || (self.name == SCALE_ROW
+                    && matches!(self.value.as_str(), "diverging" | "steps")
+                    && self.colour.is_some()))
     }
 
     /// What one step `by` from the row's own does, or `None` where the row does
@@ -1342,6 +1456,17 @@ impl SettingRow {
                 .filter(|n| *n < SCALE_STEPS.len())?;
             return Some(SettingValue::Word(SCALE_STEPS[next].to_string()));
         }
+        if self.name == SCHEME_ROW && self.colour.as_ref().is_some_and(|f| f.diverging) {
+            // Along the two a diverging scale offers; the first is auto.
+            let strip = diverging_strip();
+            let at = strip.iter().position(|w| *w == self.value)?;
+            let next = *strip.get(at.checked_add_signed(by)?)?;
+            return Some(if next == OWN_PAIR {
+                SettingValue::Auto
+            } else {
+                SettingValue::Word(next.to_string())
+            });
+        }
         if self.name == SCHEME_ROW {
             // Along the order the renderer visits the schemes in, stopping at
             // the ends of the strip. A scheme off the strip (rdbu, which a file
@@ -1358,7 +1483,7 @@ impl SettingRow {
     }
 
     /// Whether the scale row's pivot or count is the analyst's: it differs from
-    /// brightfield's own. Compared at the precision a person types, so a median
+    /// brightfield's own. Compared at the precision the row displays, so a median
     /// written back to the file reads auto.
     #[must_use]
     pub fn parameter_set(&self) -> bool {
@@ -1371,9 +1496,7 @@ impl SettingRow {
             facts.auto_pivot,
             facts.count,
         ) {
-            ("diverging", Some(pivot), Some(auto), _) => {
-                (pivot - auto).abs() > 1e-9 * auto.abs().max(1.0)
-            }
+            ("diverging", Some(pivot), Some(auto), _) => pivot_text(pivot) != pivot_text(auto),
             ("steps", _, _, Some(count)) => count != DEFAULT_COLOUR_STEPS,
             _ => false,
         }
@@ -1451,6 +1574,9 @@ pub struct ColourScaleFacts {
     pub auto_pivot: Option<f64>,
     /// The count the file writes, else the default. `None` off steps.
     pub count: Option<usize>,
+    /// Whether the scale is diverging, which the scheme row offers its own two
+    /// schemes for.
+    pub diverging: bool,
 }
 
 // Pivots are finite where present, so `==` is reflexive.
@@ -1645,6 +1771,7 @@ fn colour_rows(
         },
         count: quantize
             .then(|| resolve_colour_steps(plot, &spec.params).unwrap_or(DEFAULT_COLOUR_STEPS)),
+        diverging,
     };
     let scale_word = if diverging {
         "diverging"
@@ -1688,14 +1815,35 @@ fn colour_rows(
             (!quantize).then(|| STEPS_OFF.to_string()),
         )
     };
-    vec![
+    // A diverging scale with no scheme is drawn in brightfield's pair, which is
+    // its auto; one that names a scheme reads it, and `rdbu` is the one the
+    // strip offers.
+    let scheme_row = if diverging {
+        let named =
+            resolve_colour_scheme_name(plot, &spec.params).and_then(SequentialScheme::from_wire);
+        SettingRow {
+            colour: Some(facts.clone()),
+            ..row(
+                SCHEME_ROW,
+                named
+                    .map_or(OWN_PAIR, SequentialScheme::wire_name)
+                    .to_string(),
+                named.is_some(),
+                SCHEME_DIVERGING_SAYS,
+                names.then(|| SCHEME_NAMES.to_string()),
+            )
+        }
+    } else {
         row(
             SCHEME_ROW,
             scheme.wire_name().to_string(),
             scheme != SequentialScheme::default(),
             SCHEME_SAYS,
             names.then(|| SCHEME_NAMES.to_string()),
-        ),
+        )
+    };
+    vec![
+        scheme_row,
         scale,
         row(
             REVERSE_ROW,
@@ -2548,6 +2696,26 @@ impl ColumnList {
             });
             return;
         }
+        if row.name == SCALE_ROW {
+            // A diverging or stepped scale opens on its parameter, which the
+            // field keeps under the pivot's or the steps' own name.
+            if let Some(facts) = &row.colour {
+                let diverging = row.value == "diverging";
+                let text = if diverging {
+                    facts.pivot.map(end_text).unwrap_or_default()
+                } else {
+                    facts.count.map(|n| n.to_string()).unwrap_or_default()
+                };
+                self.field = Some(RowField {
+                    row: if diverging { PIVOT_ROW } else { STEPS_ROW },
+                    selected: !text.is_empty(),
+                    text,
+                    refusal: None,
+                    ends: None,
+                });
+                return;
+            }
+        }
         let text = if row.name == FORMAT_ROW {
             // The specifier the file holds, which every preset is one of; auto
             // holds none, so its field opens empty.
@@ -2594,6 +2762,18 @@ impl ColumnList {
                 SettingValue::Text(format_specifier(&field.text)?)
             }
             RANGE_ROW => return self.range_edit(),
+            PIVOT_ROW => {
+                if field.text.trim().is_empty() {
+                    return Ok(None);
+                }
+                SettingValue::Number(pivot_number(&field.text)?)
+            }
+            STEPS_ROW => {
+                if field.text.trim().is_empty() {
+                    return Ok(None);
+                }
+                SettingValue::Count(steps_count(&field.text)?)
+            }
             _ => {
                 if field.text.trim().is_empty() {
                     return Ok(None);
@@ -2727,6 +2907,8 @@ impl ColumnList {
                     Some(TITLE_ROW) => TITLE_NEEDS_TEXT.to_string(),
                     Some(FORMAT_ROW) => format_specifier("").unwrap_err(),
                     Some(RANGE_ROW) => end_number("").unwrap_err(),
+                    Some(PIVOT_ROW) => pivot_number("").unwrap_err(),
+                    Some(STEPS_ROW) => steps_count("").unwrap_err(),
                     _ => ticks_count("").unwrap_err(),
                 };
                 if let Some(field) = self.field.as_mut() {
@@ -3159,9 +3341,11 @@ pub struct SettingRowDrawn {
 /// One scheme of the strip under colour's scheme row as it was drawn.
 #[derive(Clone, Debug)]
 pub struct SchemeDrawn {
-    /// The scheme the ramp and the name stand for, which a click on either
-    /// writes.
-    pub scheme: SequentialScheme,
+    /// The scheme the ramp and the name stand for. `None` for brightfield's own
+    /// diverging pair, which is no scheme of the renderer's.
+    pub scheme: Option<SequentialScheme>,
+    /// The word the name reads, which a click on the ramp or the name writes.
+    pub word: &'static str,
     /// The ramp painted.
     pub ramp: egui::Rect,
     /// Where the scheme's name was laid out.
@@ -3186,8 +3370,7 @@ const RING_WIDTH: f32 = 1.5;
 /// for each point of the width, each sampled along the scheme's stops, so the
 /// first strip is the first stop and the last is the last, exactly. A mesh and
 /// not a run of rectangles, so no seam shows between the strips.
-fn paint_ramp(painter: &egui::Painter, rect: egui::Rect, scheme: SequentialScheme) {
-    let stops = scheme.stops();
+fn paint_ramp(painter: &egui::Painter, rect: egui::Rect, stops: &[[f32; 4]]) {
     let strips = rect.width().round().max(2.0) as usize;
     let step = rect.width() / strips as f32;
     let mut mesh = egui::Mesh::default();
@@ -3199,16 +3382,61 @@ fn paint_ramp(painter: &egui::Painter, rect: egui::Rect, scheme: SequentialSchem
         );
         mesh.add_colored_rect(
             strip,
-            crate::legend::chart_ink(ramp_at(&stops, i as f64 / (strips - 1) as f64)),
+            crate::legend::chart_ink(ramp_at(stops, i as f64 / (strips - 1) as f64)),
         );
     }
     painter.add(egui::Shape::mesh(mesh));
 }
 
+/// One scheme the strip under the scheme row offers: the word it reads, and the
+/// renderer's scheme behind it where it is one.
+#[derive(Clone, Copy, PartialEq)]
+struct StripEntry {
+    word: &'static str,
+    scheme: Option<SequentialScheme>,
+}
+
+impl StripEntry {
+    fn of(scheme: SequentialScheme) -> Self {
+        Self {
+            word: scheme.wire_name(),
+            scheme: Some(scheme),
+        }
+    }
+
+    /// brightfield's diverging pair.
+    const OWN: Self = Self {
+        word: OWN_PAIR,
+        scheme: None,
+    };
+
+    /// The stops the ramp is painted along, in `mode`: the pair's middle is the
+    /// theme's.
+    fn stops(self, mode: Mode) -> Vec<[f32; 4]> {
+        match self.scheme {
+            Some(scheme) => scheme.stops(),
+            None => brightfield_render::scale::diverging_stops(
+                None,
+                &brightfield_render::ink::ChartInk::for_mode(mode.is_dark()),
+            ),
+        }
+    }
+}
+
+/// The entries the strip offers: the four sequential schemes, or on a diverging
+/// scale the pair and `rdbu`.
+fn strip_entries(diverging: bool) -> Vec<StripEntry> {
+    if diverging {
+        vec![StripEntry::OWN, StripEntry::of(SequentialScheme::Rdbu)]
+    } else {
+        scheme_strip().into_iter().map(StripEntry::of).collect()
+    }
+}
+
 /// One scheme of the strip, laid out: where its ramp and its name stand from the
 /// strip's top left.
 struct StripItem {
-    scheme: SequentialScheme,
+    entry: StripEntry,
     ramp_at: egui::Vec2,
     name_at: egui::Vec2,
     name: std::sync::Arc<egui::Galley>,
@@ -3226,16 +3454,16 @@ struct StripLayout {
 /// next, so a rail as narrow as the list's least shows one scheme on a line.
 fn layout_strip(
     painter: &egui::Painter,
-    schemes: &[SequentialScheme],
+    schemes: &[StripEntry],
     room: f32,
-    ink: impl Fn(SequentialScheme) -> egui::Color32,
+    ink: impl Fn(StripEntry) -> egui::Color32,
 ) -> StripLayout {
     // The ring stands off the ramp by this much on every side.
     let ring = RING_GAP + RING_WIDTH;
     let mut items = Vec::with_capacity(schemes.len());
     let (mut x, mut y, mut tall) = (0.0_f32, 0.0_f32, 0.0_f32);
-    for &scheme in schemes {
-        let name = painter.layout_no_wrap(scheme.wire_name().to_string(), ui_font(), ink(scheme));
+    for &entry in schemes {
+        let name = painter.layout_no_wrap(entry.word.to_string(), ui_font(), ink(entry));
         let wide = ring + RAMP_WIDTH + spacing::SPACE_2 + name.size().x;
         let high = name.size().y.max(RAMP_HEIGHT + 2.0 * ring);
         if x > 0.0 && x + wide > room {
@@ -3245,7 +3473,7 @@ fn layout_strip(
         }
         let middle = y + high / 2.0;
         items.push(StripItem {
-            scheme,
+            entry,
             ramp_at: egui::vec2(x + ring, middle - RAMP_HEIGHT / 2.0),
             name_at: egui::vec2(
                 x + ring + RAMP_WIDTH + spacing::SPACE_2,
@@ -3706,15 +3934,16 @@ impl ColumnList {
         let mut pointed = None;
         let mut stepped: Option<(usize, isize)> = None;
         // The ramp of the strip a click landed on, with the row it belongs to.
-        let mut picked: Option<(usize, SequentialScheme)> = None;
-        let offered = scheme_strip();
+        let mut picked: Option<(usize, &'static str)> = None;
         for &i in &order {
             let row = &rows[i];
             // The field of a typed row, open on this row.
-            let field = self
-                .field
-                .as_ref()
-                .filter(|f| self.row == Some(i) && f.row == row.name);
+            // The scale row's field names the parameter it keeps.
+            let field = self.field.as_ref().filter(|f| {
+                self.row == Some(i)
+                    && (f.row == row.name
+                        || (row.name == SCALE_ROW && matches!(f.row, PIVOT_ROW | STEPS_ROW)))
+            });
             // A row that does not apply says why on a line of its own under the
             // name and the value, in the room the row's content leaves; a row
             // whose field holds a value it refuses says so there, in full ink.
@@ -3739,15 +3968,23 @@ impl ColumnList {
             // before its name. While the cursor is on the row, a second line
             // offers each scheme as a ramp and its name, laid out before the row
             // is allocated so the row is as high as the strip needs.
+            let diverging = row.colour.as_ref().is_some_and(|f| f.diverging);
+            let offered = strip_entries(diverging);
             let scheme = (row.name == SCHEME_ROW && row.reason.is_none())
-                .then(|| SequentialScheme::from_wire(&row.value))
+                .then(|| {
+                    if row.value == OWN_PAIR {
+                        Some(StripEntry::OWN)
+                    } else {
+                        SequentialScheme::from_wire(&row.value).map(StripEntry::of)
+                    }
+                })
                 .flatten();
             let offer = scheme
                 .filter(|_| on && self.field.is_none())
                 .map(|current| {
                     let room = width - 2.0 * (b.pad_x + spacing::SPACE_4);
-                    let ink = |scheme| {
-                        if scheme == current {
+                    let ink = |entry| {
+                        if entry == current {
                             primary
                         } else {
                             chrome::colour(sem.text.secondary)
@@ -3868,13 +4105,13 @@ impl ColumnList {
                                 strip_origin + item.ramp_at,
                                 egui::vec2(RAMP_WIDTH, RAMP_HEIGHT),
                             );
-                            paint_ramp(&painter, ramp, item.scheme);
+                            paint_ramp(&painter, ramp, &item.entry.stops(mode));
                             let name = egui::Rect::from_min_size(
                                 strip_origin + item.name_at,
                                 item.name.size(),
                             );
                             painter.galley(name.min, item.name.clone(), primary);
-                            let ring = (item.scheme == *current).then(|| {
+                            let ring = (item.entry == *current).then(|| {
                                 let ring = ramp.expand(RING_GAP + RING_WIDTH);
                                 painter.rect_stroke(
                                     ring,
@@ -3885,7 +4122,8 @@ impl ColumnList {
                                 ring
                             });
                             SchemeDrawn {
-                                scheme: item.scheme,
+                                scheme: item.entry.scheme,
+                                word: item.entry.word,
                                 ramp,
                                 name,
                                 ring,
@@ -3900,7 +4138,7 @@ impl ColumnList {
                     ramps
                         .iter()
                         .find(|r| r.ramp.union(r.name).expand(RING_GAP).contains(p))
-                        .map(|r| (i, r.scheme))
+                        .map(|r| (i, r.word))
                 });
             }
 
@@ -3935,8 +4173,24 @@ impl ColumnList {
                 // selected, and the caret after it. The range row draws two, low and
                 // high, with the dash between, and the caret in the one that has the
                 // keys.
+                // The scale row keeps its word, and the field takes the place of
+                // the parameter after it.
+                let word = (row.name == SCALE_ROW).then(|| {
+                    let galley = painter.layout_no_wrap(row.value.clone(), ui_font(), ink);
+                    let at = egui::Rect::from_min_size(
+                        egui::pos2(value_left, line.center().y - galley.size().y / 2.0),
+                        galley.size(),
+                    );
+                    painter.galley(at.min, galley, ink);
+                    at
+                });
                 let ground = egui::Rect::from_min_max(
-                    egui::pos2(value_left - spacing::SPACE_2, line.top() + 2.0),
+                    egui::pos2(
+                        word.map_or(value_left - spacing::SPACE_2, |w| {
+                            w.right() + spacing::SPACE_2
+                        }),
+                        line.top() + 2.0,
+                    ),
                     egui::pos2(right, line.bottom() - 2.0),
                 );
                 let paint = |ground: egui::Rect, text: &str, selected: bool, active: bool| {
@@ -4009,7 +4263,7 @@ impl ColumnList {
                 } else {
                     paint(ground, &open.text, open.selected, true)
                 };
-                (at, Some(ground))
+                (word.unwrap_or(at), Some(ground))
             } else {
                 // The scheme row paints its ramp before the name.
                 let text_left =
@@ -4020,6 +4274,20 @@ impl ColumnList {
                     value.size(),
                 );
                 painter.galley(at.min, value, ink);
+                // The scale row's parameter after its word, muted while it is
+                // brightfield's own, and left out where it does not fit whole.
+                if let Some(texts) = scale_parameter(row) {
+                    let left = at.right() + spacing::SPACE_2;
+                    let ink = if row.parameter_set() { primary } else { muted };
+                    let galley = texts
+                        .into_iter()
+                        .map(|text| painter.layout_no_wrap(text, ui_font(), ink))
+                        .find(|galley| galley.size().x <= right - left);
+                    if let Some(galley) = galley {
+                        let place = egui::pos2(left, line.center().y - galley.size().y / 2.0);
+                        painter.galley(place, galley, ink);
+                    }
+                }
                 (at, None)
             };
             let ramp = scheme.map(|scheme| {
@@ -4027,7 +4295,7 @@ impl ColumnList {
                     egui::pos2(value_left, line.center().y - RAMP_HEIGHT / 2.0),
                     egui::vec2(RAMP_WIDTH, RAMP_HEIGHT),
                 );
-                paint_ramp(&painter, at, scheme);
+                paint_ramp(&painter, at, &scheme.stops(mode));
                 at
             });
             // The format's sample, muted, after the value. It gives way to the
@@ -4123,11 +4391,16 @@ impl ColumnList {
             }
         }
         let mut reports = Vec::new();
-        if let Some((i, scheme)) = picked {
+        if let Some((i, word)) = picked {
             reports.push(ListReport::Set(RowEdit {
                 channel: self.channel,
                 row: rows[i].name,
-                value: SettingValue::Word(scheme.wire_name().to_string()),
+                // The pair is brightfield's own, which `⌫` also goes back to.
+                value: if word == OWN_PAIR {
+                    SettingValue::Auto
+                } else {
+                    SettingValue::Word(word.to_string())
+                },
             }));
         } else if let Some((i, by)) = stepped {
             match rows[i].step_to(by) {

@@ -2309,6 +2309,24 @@ impl ChartDoc {
             )?;
             return Ok((!edits.is_empty()).then_some((spec, edits)));
         }
+        // On a diverging scale the scheme row chooses between brightfield's
+        // pair, held as its colours, and `rdbu`, which the pair's `colorRange`
+        // would otherwise cover.
+        if edit.channel == ShelfChannel::Colour && edit.row == crate::shelf::SCHEME_ROW {
+            let rdbu = match &edit.value {
+                SettingValue::Word(word) if word == "rdbu" => Some(true),
+                SettingValue::Auto => Some(false),
+                _ => None,
+            };
+            let diverging = edit::plot_at_path(before, &path.0).is_some_and(|plot| {
+                brightfield_spec::layout::resolve_colour_scale_diverging(plot, &before.params)
+            });
+            if let (true, Some(rdbu)) = (diverging, rdbu) {
+                let mut spec = before.clone();
+                let edits = crate::shelf_edit::put_diverging_scheme(&mut spec, path, rdbu)?;
+                return Ok((!edits.is_empty()).then_some((spec, edits)));
+            }
+        }
         let Some(key) = crate::shelf::row_key(edit.channel, edit.row) else {
             return Ok(None);
         };
