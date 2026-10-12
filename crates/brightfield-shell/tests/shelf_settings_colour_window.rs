@@ -430,6 +430,11 @@ impl Window {
         }
     }
 
+    /// The words the status band names the last kept shelf edit by.
+    fn note(&self) -> Option<String> {
+        self.app.chart_doc().last_shelf_edit().map(str::to_owned)
+    }
+
     /// Whether the window title carries the unsaved mark.
     fn marked_unsaved(&self) -> bool {
         self.app.title().contains(UNSAVED_MARK)
@@ -632,6 +637,32 @@ fn the_legend_row_moves_the_legend_below_and_the_list_still_reads_the_plot() {
     assert!(!text.contains("for: "), "{text}");
 }
 
+/// **The note of a legend move names the placement the row moved to**: a move
+/// below wraps the plot in a `vconcat` and a move from below unwraps it, and the
+/// note reads the plot where it now is.
+#[test]
+fn the_note_of_a_legend_move_names_where_the_legend_went() {
+    let mut win = Window::housing("legend-note");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(LEGEND_ROW);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(
+        win.note().as_deref(),
+        Some("colour legend: right \u{2192} below")
+    );
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(
+        win.note().as_deref(),
+        Some("colour legend: below \u{2192} none")
+    );
+    win.press(egui::Key::Backspace);
+    assert_eq!(
+        win.note().as_deref(),
+        Some("colour legend: none \u{2192} right")
+    );
+}
+
 /// **`⌫` on the legend row puts the legend back at the right**, from below and
 /// from none, in the file and on the chart.
 #[test]
@@ -711,6 +742,51 @@ fn stepping_the_scale_row_to_diverging_writes_it_with_the_auto_pivot() {
     assert!(text.contains("colorScale: diverging"), "{text}");
     assert!(text.contains("colorPivot: "), "{text}");
     assert!(!text.contains("colorScheme"), "{text}");
+}
+
+/// **A colour scale write names the scale alone**: colour has no range, so the
+/// note says nothing of one, though the write touches several keys.
+#[test]
+fn the_note_of_a_colour_scale_step_names_no_range() {
+    let mut win = Window::housing("scale-note");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(
+        win.note().as_deref(),
+        Some("colour scale: linear \u{2192} diverging")
+    );
+}
+
+/// **A column put on colour over a set domain names no range in its note**, though
+/// the change takes the old column's domain out.
+#[test]
+fn the_note_of_a_colour_column_change_over_a_set_domain_names_no_range() {
+    let mut win = Window::housing("column-note");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::Slash, "/");
+    for (key, text) in [
+        (egui::Key::D, "d"),
+        (egui::Key::O, "o"),
+        (egui::Key::M, "m"),
+    ] {
+        win.type_letter(key, text);
+    }
+    win.press(egui::Key::Enter);
+    assert_eq!(win.setting_cursor(), Some(DOMAIN_ROW));
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(DOMAIN_ROW).value, "fixed");
+    for _ in 0..4 {
+        if win.app.protocol_model().column_list().is_none() && !win.app.shelf_holds_keys() {
+            break;
+        }
+        win.press(egui::Key::Escape);
+    }
+    win.keep_on_colour(VALUE);
+    let note = win.note().expect("the column change left a note");
+    assert!(!note.contains("range"), "{note}");
 }
 
 /// **`⌫` on the scale row from steps puts it back to linear**: the row reads

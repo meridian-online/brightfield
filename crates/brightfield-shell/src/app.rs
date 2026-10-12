@@ -2197,8 +2197,11 @@ impl ChartDoc {
             }
         };
         let was = Self::setting_text(&before, &path, edit.channel, edit.row);
-        let now = Self::setting_text(&spec, &path, edit.channel, edit.row);
-        let range_note = if applied.len() > 1 {
+        // Only an axis has a range, and a scale change there is the one write of
+        // more than one edit that takes it out; colour's scale writes several
+        // keys and has no range to name.
+        let axis = matches!(edit.channel, ShelfChannel::X | ShelfChannel::Y);
+        let range_note = if axis && applied.len() > 1 {
             let ends = Self::setting_text(&before, &path, edit.channel, crate::shelf::RANGE_ROW);
             format!(", and its range {ends} \u{2192} auto")
         } else {
@@ -2207,6 +2210,14 @@ impl ChartDoc {
         let added = applied.len();
         match self.rebuild(spec) {
             Ok((live, composed)) => {
+                // The plot is read where the rebuilt page holds it: a legend
+                // moved below wraps the plot in a `vconcat`, and one moved from
+                // below unwraps it.
+                let after = composed
+                    .plots
+                    .get(plot)
+                    .map_or(path, |h| ComponentPath(h.path.clone()));
+                let now = Self::setting_text(live.spec(), &after, edit.channel, edit.row);
                 self.live = Some(live);
                 self.composed = composed;
                 self.shelf_undo.push(
@@ -2471,7 +2482,9 @@ impl ChartDoc {
         let Some(handle) = self.composed.plots.get(plot) else {
             return String::new();
         };
-        if !cleared {
+        // Only an axis has a range: a column put on colour takes the old
+        // column's domain out, which is no range.
+        if !cleared || !matches!(channel, ShelfChannel::X | ShelfChannel::Y) {
             return String::new();
         }
         let ends = Self::setting_text(
