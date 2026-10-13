@@ -2186,3 +2186,40 @@ fn on_steps_over_the_pair_the_count_is_unread() {
     assert_eq!(scale.colour.as_ref().and_then(|f| f.count), None);
     assert!(!scale.parameter_set());
 }
+
+/// **A scale or domain the file writes that the shelf does not offer is read as
+/// the file's and left alone**: `symlog` and a `$param` read as written, set,
+/// and muted with the reason, so neither a step, `⌫` nor a click on the dot
+/// writes over them.
+#[test]
+fn a_scale_or_domain_the_shelf_does_not_offer_reads_as_the_files() {
+    for (attrs, word) in [
+        ("colorScale: symlog", "symlog"),
+        ("colorScale: $scale", "$scale"),
+    ] {
+        let rows = colour_rows_bound(attrs, Binding::Column("median_income".to_string()));
+        let scale = named(&rows, SCALE_ROW);
+        assert_eq!((scale.value.as_str(), scale.set), (word, true), "{attrs}");
+        assert_eq!(
+            scale.reason.as_deref(),
+            Some("the file writes this scale itself, and the shelf leaves it as written"),
+            "{attrs}"
+        );
+        assert!(
+            !scale.takes_field(),
+            "{attrs}: the muted row opens no field"
+        );
+    }
+
+    let rows = colour_rows_bound(
+        "colorDomain: $ends",
+        Binding::Column("median_income".to_string()),
+    );
+    let domain = named(&rows, DOMAIN_ROW);
+    assert_eq!((domain.value.as_str(), domain.set), ("$ends", true));
+    assert_eq!(
+        domain.reason.as_deref(),
+        Some("the file writes this domain itself, and the shelf leaves it as written")
+    );
+    assert!(!domain.takes_field());
+}

@@ -614,6 +614,50 @@ fn a_column_of_names_takes_the_ramps_scale_and_pair_out() {
     assert_eq!(plot.attributes.get("colorRange"), Some(&own));
 }
 
+/// A column of names takes out only what the scale row writes: a `$param` scale
+/// and the count written beside it stay.
+#[test]
+fn a_column_of_names_leaves_a_scale_the_shelf_did_not_write() {
+    let mut opened = open("colour_names_keep_param_scale");
+    put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .unwrap();
+    for (key, value) in [
+        (
+            "colorScale",
+            SpecValue::Param(brightfield_spec::ast::ParamRef::new("scale")),
+        ),
+        ("colorN", SpecValue::Integer(7)),
+    ] {
+        put_setting(
+            &mut opened.spec,
+            &opened.hero,
+            key,
+            &SpecValue::Null,
+            &SettingWrite::Value(value),
+        )
+        .unwrap();
+    }
+    let mut names = opened.table[0].clone();
+    names.name = "district".to_string();
+    names.type_name = "VARCHAR".to_string();
+    names.moments = None;
+    opened.table.push(names);
+    put_colour(&mut opened.spec, &opened.hero, "district", &opened.table).unwrap();
+    let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+    assert_eq!(
+        plot.attributes.get("colorScale"),
+        Some(&SpecValue::Param(brightfield_spec::ast::ParamRef::new(
+            "scale"
+        )))
+    );
+    assert_eq!(plot.attributes.get("colorN"), Some(&SpecValue::Integer(7)));
+}
+
 #[test]
 fn a_number_column_on_a_diverging_plot_is_given_no_scheme() {
     let mut opened = diverging_on("colour_diverging_no_scheme", "median_income");

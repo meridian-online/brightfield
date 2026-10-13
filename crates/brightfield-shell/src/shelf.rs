@@ -1055,6 +1055,28 @@ const SCALE_UNBOUND: &str = "nothing is on colour, so there is no scale to set";
 /// Why the domain row does not apply to a plot with nothing on colour.
 const DOMAIN_UNBOUND: &str = "nothing is on colour, so there are no ends to set";
 
+/// Why the scale row leaves a scale the file writes that the shelf does not
+/// offer, such as `symlog` or a `$param`.
+const SCALE_THE_FILES: &str =
+    "the file writes this scale itself, and the shelf leaves it as written";
+
+/// Why the domain row leaves a domain the file writes that the shelf does not
+/// offer, such as a `$param`.
+const DOMAIN_THE_FILES: &str =
+    "the file writes this domain itself, and the shelf leaves it as written";
+
+/// A colour key's value the file writes as a word the shelf neither offers nor
+/// writes: a `colorScale` other than linear, diverging or quantize, or a
+/// `colorDomain` word other than `Fixed`, a `$param` included. The rows read it
+/// as the file's and write nothing over it.
+fn files_own_word(value: Option<&SpecValue>, offered: &[&str]) -> Option<String> {
+    match value {
+        Some(SpecValue::String(word)) if !offered.contains(&word.as_str()) => Some(word.clone()),
+        Some(SpecValue::Param(param)) => Some(format!("${}", param.0)),
+        _ => None,
+    }
+}
+
 /// Why the pivot row does not apply to a plot with nothing on colour.
 const PIVOT_UNBOUND: &str = "nothing is on colour, so there is no pivot to set";
 
@@ -1921,8 +1943,14 @@ fn colour_rows(
     // With nothing on colour the file's scale and domain keys draw nothing, and
     // the muted rows offer no way to clear them: those rows read their auto,
     // unset, as the legend row does.
+    let files_scale = files_own_word(
+        plot.attributes.get("colorScale"),
+        &["linear", "diverging", "quantize"],
+    );
     let scale_word = if !bound {
         "linear"
+    } else if let Some(word) = files_scale.as_deref() {
+        word
     } else if diverging {
         "diverging"
     } else if quantize {
@@ -1937,7 +1965,9 @@ fn colour_rows(
             scale_word.to_string(),
             scale_word != "linear",
             COLOUR_SCALE_SAYS,
-            unbound(SCALE_UNBOUND).or_else(|| names.then(|| SCALE_NAMES.to_string())),
+            unbound(SCALE_UNBOUND)
+                .or_else(|| files_scale.as_ref().map(|_| SCALE_THE_FILES.to_string()))
+                .or_else(|| names.then(|| SCALE_NAMES.to_string())),
         )
     };
     // Each parameter row is set by its own value on its own scale, so a muted
@@ -2017,6 +2047,7 @@ fn colour_rows(
         plot.attributes.get("colorDomain"),
         Some(SpecValue::String(word)) if word == "Fixed"
     );
+    let files_domain = files_own_word(plot.attributes.get("colorDomain"), &["Fixed"]);
     let set_ends = match plot.attributes.get("colorDomain").and_then(colour_domain) {
         Some(ColourDomain::Ends(lo, hi)) => Ends::new(lo, hi),
         _ => None,
@@ -2052,14 +2083,17 @@ fn colour_rows(
         }),
         ..row(
             DOMAIN_ROW,
-            match (bound, fixed, set_ends) {
-                (true, true, _) => FIXED_DOMAIN.to_string(),
-                (true, false, Some(ends)) => ends_text(ends),
+            match (bound, fixed, set_ends, &files_domain) {
+                (true, true, _, _) => FIXED_DOMAIN.to_string(),
+                (true, false, Some(ends), _) => ends_text(ends),
+                (true, false, None, Some(word)) => word.clone(),
                 _ => AUTO.to_string(),
             },
-            bound && (fixed || set_ends.is_some()),
+            bound && (fixed || set_ends.is_some() || files_domain.is_some()),
             DOMAIN_SAYS,
-            unbound(DOMAIN_UNBOUND).or_else(|| names.then(|| DOMAIN_NAMES.to_string())),
+            unbound(DOMAIN_UNBOUND)
+                .or_else(|| files_domain.as_ref().map(|_| DOMAIN_THE_FILES.to_string()))
+                .or_else(|| names.then(|| DOMAIN_NAMES.to_string())),
         )
     };
     // A plot that paints nothing by colour has no legend to place: the row reads

@@ -413,9 +413,10 @@ pub fn put_setting(
 /// new column takes a set `colorDomain` out, and a diverging scale's
 /// `colorPivot` is written again as the new column's auto pivot (taken out where
 /// the column has no profile to read one from). A column of names takes out the
-/// scale brightfield wrote for a ramp as well: `colorScale`, `colorPivot`,
-/// `colorN` and its own pair, since names paint by category. An analyst's own
-/// `colorRange` stays. A diverging scale, or a plot with a written range, is
+/// scale brightfield wrote for a ramp as well, since names paint by category: a
+/// literal `colorScale: diverging` or `quantize`, the numbers written beside it
+/// as `colorPivot` and `colorN`, and its own pair. A `$param`, a scale the shelf
+/// does not write, and an analyst's own `colorRange` stay. A diverging scale, or a plot with a written range, is
 /// given no scheme, since neither draws one.
 ///
 /// # Errors
@@ -490,15 +491,28 @@ pub fn put_colour(
         }
         if !ramp {
             // A column of names paints by category, so the scale brightfield
-            // wrote for a ramp goes with it: its kind, pivot and count, and its
-            // own pair. An analyst's own range stays.
-            for key in ["colorScale", "colorPivot", "colorN"] {
-                if target.attributes.contains_key(key) {
-                    edits.push(ChartEdit::RemovePlotAttribute {
-                        plot: plot.clone(),
-                        key: key.to_string(),
-                    });
-                }
+            // wrote for a ramp goes with it: its kind where it is the literal
+            // word the scale row writes, the pivot and count written as numbers
+            // beside it, and its own pair. A `$param`, a scale the shelf does not
+            // write, and an analyst's own range stay.
+            let shelfs_scale = matches!(
+                target.attributes.get("colorScale"),
+                Some(SpecValue::String(word)) if word == "diverging" || word == "quantize"
+            );
+            let written_number = |key: &str| {
+                matches!(
+                    target.attributes.get(key),
+                    Some(SpecValue::Integer(_) | SpecValue::Float(_))
+                )
+            };
+            let keys = ["colorScale", "colorPivot", "colorN"]
+                .into_iter()
+                .filter(|&key| shelfs_scale && (key == "colorScale" || written_number(key)));
+            for key in keys {
+                edits.push(ChartEdit::RemovePlotAttribute {
+                    plot: plot.clone(),
+                    key: key.to_string(),
+                });
             }
             if holds_own_pair(target.attributes.get("colorRange")) {
                 edits.push(ChartEdit::RemovePlotAttribute {
