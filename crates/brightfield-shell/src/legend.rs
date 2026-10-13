@@ -1491,8 +1491,8 @@ mod tests {
         );
         let drawn = drawn.expect("the frame ran");
         assert!(
-            drawn.bottom() <= bottom,
-            "the rect ends at {} past the room's foot at {bottom}",
+            (drawn.bottom() - bottom).abs() < 1e-3,
+            "the rows overflow, so the rect ends at the room's foot, {bottom}, not {}",
             drawn.bottom()
         );
     }
