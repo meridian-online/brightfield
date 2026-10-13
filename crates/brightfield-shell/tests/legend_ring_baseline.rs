@@ -1,7 +1,7 @@
 //! **The ring round the hero's legend while colour's list is open: committed
 //! baselines, in both themes, with the legend under the plot, and pixel checks
-//! that the ring is one point wide, stands 4 points off the band, and keeps out
-//! of the plot's data area.** With the list closed, or with no legend, the
+//! that the ring runs down each side of the band, stands 4 points off it, and
+//! keeps out of the plot's data area.** With the list closed, or with no legend, the
 //! pictures are checked for the ring's absence and not photographed.
 //!
 //! The legend at the plot's right has no picture here. A generated dashboard
@@ -242,13 +242,27 @@ fn baseline(name: &str, mode: Mode) {
         "{name}: ring {ring:?}, band {band:?}"
     );
     assert!(
-        band.expand(1.5)
-            .contains_rect(ring.intersect(band.expand(1.5)))
-            && ring.left() <= band.left() + 1.5
+        ring.left() <= band.left() + 1.5
             && ring.right() >= band.right() - 2.5
             && ring.bottom() >= band.bottom() - 2.5,
         "{name}: ring {ring:?} does not run round the band {band:?}"
     );
+    // Each side is drawn down its length, not only met by the top edge: a strip
+    // along each side, clear of the top and foot, holds colour's hue.
+    let side = |x: f32| {
+        egui::Rect::from_min_max(
+            egui::pos2(x - 2.0, band.top() + 4.0),
+            egui::pos2(x + 2.0, band.bottom() - 4.0),
+        )
+    };
+    for (edge, x) in [("left", ring.left() + 0.5), ("right", ring.right() - 0.5)] {
+        let found = hue_pixels(&image, side(x), mode)
+            .unwrap_or_else(|| panic!("{name}: no ring down the band's {edge} side"));
+        assert!(
+            found.height() >= band.height() - 10.0,
+            "{name}: the {edge} side runs {found:?}, short of the band {band:?}"
+        );
+    }
     egui_kittest::image_snapshot(&image, name);
 }
 

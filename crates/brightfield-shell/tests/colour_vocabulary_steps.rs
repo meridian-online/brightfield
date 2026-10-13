@@ -256,8 +256,8 @@ fn the_count_is_the_count_asked_for() {
     assert_eq!(steps_of(&eight).0.len(), 9);
 }
 
-/// **AC4.** With `colorN: 5` on a column running 50000 to 500001, the plot draws
-/// five steps of equal width. Mosaic's renderer rounds the thresholds to tidy values
+/// With `colorN: 5` on a column running 50000 to 500001, the plot draws five
+/// steps of equal width. Mosaic's renderer rounds the thresholds to tidy values
 /// and draws six there; this draws what was asked.
 #[test]
 fn five_steps_over_fifty_thousand_to_half_a_million_are_five_equal_steps() {
