@@ -989,8 +989,9 @@ fn a_typed_pivot_previews_and_enter_keeps_it_with_its_dot() {
 }
 
 /// **The pivot row found by name opens on the pivot the file holds, not the one
-/// the row displays**: `Enter` and `Enter` again with nothing typed keep a pivot
-/// past four figures whole, rather than rounding it to what the row reads.
+/// the row displays**: `Enter` and `Enter` again, with no digit typed between,
+/// keep a pivot past four figures whole rather than rounding it to what the row
+/// reads.
 #[test]
 fn opening_the_pivot_row_and_keeping_it_leaves_a_fine_pivot_whole() {
     let mut win = Window::housing("pivot-whole");

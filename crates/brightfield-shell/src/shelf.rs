@@ -1679,7 +1679,7 @@ pub struct ColourScaleFacts {
     pub diverging: bool,
     /// The colours of the analyst's own `colorRange`, which the chart draws in
     /// place of any scheme and the scheme row reads as custom. `None` where the
-    /// file writes none, or writes brightfield's pair.
+    /// file writes brightfield's pair or no range.
     pub range: Option<Vec<[f32; 4]>>,
 }
 

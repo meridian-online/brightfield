@@ -523,11 +523,12 @@ pub fn put_colour(
 /// scheme it is drawn in. Linear takes the scale's keys out and leaves the
 /// scheme.
 ///
-/// **No step of the scale overwrites or removes an analyst's own `colorRange`**
-/// (one that is not brightfield's pair): diverging writes the pair only where
-/// the plot writes no range or writes the pair, and linear and steps take out
-/// the pair alone. Only an explicit choice on the scheme row replaces the
-/// analyst's colours ([`put_diverging_scheme`], [`put_scheme_over_range`]).
+/// **A step of the scale keeps an analyst's own `colorRange`** (one that is not
+/// brightfield's pair): diverging writes the pair where the plot writes no range
+/// or writes the pair, and linear and steps take out the pair alone
+/// (`choosing_the_pair_replaces_an_analysts_colours_and_a_scale_step_keeps_them`).
+/// An explicit choice on the scheme row replaces the analyst's colours
+/// ([`put_diverging_scheme`], [`put_scheme_over_range`]).
 ///
 /// # Errors
 ///
@@ -601,8 +602,7 @@ pub fn put_colour_scale(
 ///
 /// This is an explicit choice on the scheme row, so it replaces an analyst's own
 /// `colorRange` too: the renderer draws any range in place of a scheme, and the
-/// key written is then the one drawn. It is the one writer, with
-/// [`put_scheme_over_range`], that does.
+/// key written is then the one drawn.
 ///
 /// # Errors
 ///
@@ -643,8 +643,7 @@ pub fn put_diverging_scheme(
 /// drawn. `None` is `⌫`, which takes the range out and names viridis where the
 /// plot names a scheme, since a saved file names the scheme it is drawn in.
 ///
-/// An explicit choice on the scheme row, and so, with [`put_diverging_scheme`],
-/// the one writer that replaces the analyst's colours.
+/// An explicit choice on the scheme row, as [`put_diverging_scheme`] is.
 ///
 /// # Errors
 ///
