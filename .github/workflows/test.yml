@@ -56,10 +56,11 @@ jobs:
     # Each is 1.25 times that shard's slowest warm run in the table, rounded up
     # to a whole minute, and is never lowered below the one it replaces. A
     # shard's time is its job's start to its end, in minutes. The runs are the
-    # six green runs of this workflow between commits 78f5e87 and 175da74, and
-    # one run on commit 236fbdc where default-2 was cancelled at its old
-    # 24-minute ceiling (a lower bound on that shard's time, counted as its
-    # slowest). Every one restored the cache `main` saved.
+    # six green runs 38191865784, 38301132291, 38304447941, 38344717939,
+    # 38346718201 and 38356362413, and the first attempt of run 38362995731,
+    # where default-2 was cancelled at its old 24-minute ceiling (a lower bound
+    # on that shard's time, counted as its slowest). Every one restored the
+    # cache `main` saved.
     #
     #   shard         fastest  slowest   ceiling
     #   one-thread-1     16.8     21.6        27
