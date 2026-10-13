@@ -1919,15 +1919,11 @@ fn colour_rows(
             unbound(SCALE_UNBOUND).or_else(|| names.then(|| SCALE_NAMES.to_string())),
         )
     };
-    // Each parameter row is set by its own value alone, so a muted row never
-    // shows the other's dot.
-    let pivot_set = bound
-        && diverging
-        && match (facts.pivot, facts.auto_pivot) {
-            (Some(pivot), Some(auto)) => pivot_text(pivot) != pivot_text(auto),
-            _ => false,
-        };
-    let steps_set = bound && quantize && facts.count.is_some_and(|n| n != DEFAULT_COLOUR_STEPS);
+    // Each parameter row is set by its own value on its own scale, so a muted
+    // row never shows the other's dot. The scale row reads linear with nothing
+    // on colour, so neither is set then.
+    let pivot_set = diverging && scale.parameter_set();
+    let steps_set = quantize && scale.parameter_set();
     let pivot = SettingRow {
         by_name: true,
         kind: SettingKind::Typed,
