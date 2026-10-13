@@ -308,6 +308,38 @@ fn the_arms_are_the_designs_by_default_and_the_named_scheme_otherwise() {
     }
 }
 
+/// brightfield's pair written as `colorRange` draws the design system's ramp in
+/// the theme, even where the file also names a scheme: the pair is the ramp
+/// drawn, and the scheme's own stops are not.
+#[test]
+fn the_pair_beside_a_scheme_draws_the_themes_diverging_ramp() {
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let pair: Vec<String> = brightfield_render::scale::own_diverging_range()
+        .iter()
+        .map(|c| {
+            format!(
+                "\"#{:02x}{:02x}{:02x}\"",
+                byte(c[0]),
+                byte(c[1]),
+                byte(c[2])
+            )
+        })
+        .collect();
+    let attrs = format!(
+        "colorScale: diverging\ncolorScheme: viridis\ncolorRange: [{}]\n",
+        pair.join(", ")
+    );
+    let composed = compose(&spec(&[-3.0, -1.5, 0.0, 1.5, 3.0], &attrs));
+    let Some(Scale::Diverging { stops, .. }) = composed.plots[0].scales.get(Channel::Fill) else {
+        panic!("the fill scale is not diverging");
+    };
+    assert_eq!(
+        stops,
+        &design_stops(),
+        "the pair draws the design system's ramp, not viridis"
+    );
+}
+
 /// What the page is told about `key`, as it words it.
 fn about(composed: &Composed, key: &str) -> Vec<String> {
     composed

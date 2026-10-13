@@ -1547,11 +1547,12 @@ pub fn apply_colour_override(set: &mut ScaleSet, ov: &ColourOverride) {
                 stops,
             } => {
                 let (domain_min, domain_max) = ov.domain.unwrap_or((*domain_min, *domain_max));
-                // brightfield's own pair keeps the ramp the scale was built
-                // with, which is the theme's: the file's three colours are the
-                // light theme's.
+                // brightfield's own pair draws the design system's ramp in the
+                // theme the set is drawn in: the file's three colours are the
+                // light theme's, and a scheme written beside the pair is not
+                // what the pair draws.
                 let stops = match &ov.range {
-                    Some(r) if is_own_diverging_range(r) => stops.clone(),
+                    Some(r) if is_own_diverging_range(r) => diverging_stops(None, &set.ink()),
                     Some(r) if r.len() >= 2 => r.clone(),
                     _ => stops.clone(),
                 };
