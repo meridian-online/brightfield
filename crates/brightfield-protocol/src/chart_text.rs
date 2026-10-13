@@ -58,7 +58,9 @@
 //!   of its line stays with it
 //!   (`each_legend_move_on_a_plot_in_a_concat_keeps_the_files_comments`). The
 //!   legend each move writes is the one the reducer made, in the whole-spec
-//!   serialiser's spelling; a comment on the legend's own lines is not kept.
+//!   serialiser's spelling; a comment on the legend's own lines is not kept,
+//!   and a comment flush above a legend a move takes out is
+//!   (`taking_a_legend_out_from_either_place_keeps_the_comment_above_it`).
 //!   Between right and none the move is the item edits' splice.
 //! - A [`ChartEdit::RemovePlotAttribute`], the edit that takes a map's
 //!   projection out, and the edit each settings-list reset makes. The key's
@@ -66,7 +68,10 @@
 //!   ownership a comment flush above the line is that line's header and goes
 //!   with it, so the writer puts it back: the comment is the analyst's text,
 //!   and a reset is a statement about one value, not about their note
-//!   (`a_comment_flush_above_a_removed_line_stays_and_so_do_the_rest`).
+//!   (`a_comment_flush_above_a_removed_line_stays_and_so_do_the_rest`). Kept
+//!   where the line was, the comment then sits flush above the next key, and
+//!   by the same rule heads it: a value set again lands after the mapping's
+//!   last key, not back under the comment.
 //!
 //! Change mark type, add mark and remove mark are refused by kind until each
 //! has a writer of its own.
@@ -548,7 +553,7 @@ fn place_colour_legend(
             let parent = route[..route.len().saturating_sub(2)].to_vec();
             let mut concat = parent.clone();
             concat.push(PathPart::from(VCONCAT_KEY));
-            let mut edits: Vec<SpecEdit> = legends
+            let deletes: Vec<SpecEdit> = legends
                 .iter()
                 .rev()
                 .map(|&index| {
@@ -557,19 +562,25 @@ fn place_colour_legend(
                     SpecEdit::Delete { path }
                 })
                 .collect();
+            let mut moved = apply_keeping_headers(text, &deletes)?;
             let after = plot_path_after(parsed, edit);
             let route = if after == plot_path {
                 route
             } else {
-                edits.push(SpecEdit::Lift {
-                    path: parent.clone(),
-                    key: VCONCAT_KEY.to_string(),
-                });
+                moved = splice(
+                    &moved,
+                    &[SpecEdit::Lift {
+                        path: parent.clone(),
+                        key: VCONCAT_KEY.to_string(),
+                    }],
+                )?;
                 parent
             };
-            let moved = splice(text, &edits)?;
             if at == LegendPlacement::None {
-                return splice(&moved, &delete_legend_items(parsed, plot_path, route));
+                return apply_keeping_headers(
+                    &moved,
+                    &delete_legend_items(parsed, plot_path, route),
+                );
             }
             let item = plot_at_path(edited, &after)
                 .and_then(|p| p.items.last())
