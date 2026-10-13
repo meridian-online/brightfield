@@ -778,9 +778,14 @@ fn draw_block(
             ));
         }
     }
+    // Categories past the room's foot are clipped, so the rect stops there,
+    // and never above the block's own top.
     egui::Rect::from_min_max(
         block_origin,
-        egui::pos2(block_origin.x + block_width(), used_bottom),
+        egui::pos2(
+            block_origin.x + block_width(),
+            used_bottom.min(bottom).max(block_origin.y),
+        ),
     )
 }
 
@@ -1452,5 +1457,43 @@ mod tests {
             })
             .fold(f32::NEG_INFINITY, f32::max);
         assert!(drawn.bottom() >= lowest_swatch);
+
+        // More categories than the room holds: the rows past `bottom` are cut
+        // off, and the rect stops at the room's foot rather than running on.
+        let many = LegendSpec::Categorical {
+            entries: (0..40)
+                .map(|i| crate::legend::LegendEntry {
+                    label: format!("category {i}"),
+                    colour: [0.1, 0.2, 0.3, 1.0],
+                })
+                .collect(),
+        };
+        let bottom = 120.0;
+        let mut drawn = None;
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(300.0, 200.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                drawn = Some(draw_block(
+                    ui.painter(),
+                    egui::pos2(10.0, 10.0),
+                    bottom,
+                    &many,
+                    Some("name"),
+                    Mode::Light,
+                ));
+            },
+        );
+        let drawn = drawn.expect("the frame ran");
+        assert!(
+            drawn.bottom() <= bottom,
+            "the rect ends at {} past the room's foot at {bottom}",
+            drawn.bottom()
+        );
     }
 }
