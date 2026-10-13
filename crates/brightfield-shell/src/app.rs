@@ -2356,7 +2356,7 @@ impl ChartDoc {
         }
         // On a diverging scale the scheme row chooses between brightfield's
         // pair, held as its colours, and `rdbu`, which the pair's `colorRange`
-        // would otherwise cover.
+        // would otherwise cover. Either replaces colours of the analyst's own.
         if edit.channel == ShelfChannel::Colour && edit.row == crate::shelf::SCHEME_ROW {
             let rdbu = match &edit.value {
                 SettingValue::Word(word) if word == "rdbu" => Some(true),
@@ -2369,6 +2369,26 @@ impl ChartDoc {
             if let (true, Some(rdbu)) = (diverging, rdbu) {
                 let mut spec = before.clone();
                 let edits = crate::shelf_edit::put_diverging_scheme(&mut spec, path, rdbu)?;
+                return Ok((!edits.is_empty()).then_some((spec, edits)));
+            }
+            // On a linear or stepped scale over colours of the analyst's own, a
+            // scheme chosen, or `⌫`, takes the colours out: they are drawn in
+            // place of any scheme.
+            let own_colours = edit::plot_at_path(before, &path.0)
+                .is_some_and(|plot| crate::shelf::own_colour_range(before, plot).is_some());
+            if !diverging && own_colours {
+                let scheme = match &edit.value {
+                    SettingValue::Word(word) => {
+                        match brightfield_render::scale::SequentialScheme::from_wire(word) {
+                            Some(scheme) => Some(scheme),
+                            None => return Ok(None),
+                        }
+                    }
+                    SettingValue::Auto => None,
+                    _ => return Ok(None),
+                };
+                let mut spec = before.clone();
+                let edits = crate::shelf_edit::put_scheme_over_range(&mut spec, path, scheme)?;
                 return Ok((!edits.is_empty()).then_some((spec, edits)));
             }
         }

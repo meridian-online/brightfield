@@ -1767,3 +1767,155 @@ fn reverse_is_muted_on_a_hero_that_draws_no_dot() {
         reverse.reason
     );
 }
+
+// ---------------------------------------------------------------------------
+// An analyst's own colours on a diverging scale.
+// ---------------------------------------------------------------------------
+
+/// Three colours of the analyst's own, none of them brightfield's pair.
+const OWN_COLOURS: [&str; 3] = ["#1b7837", "#f7f7f7", "#762a83"];
+
+/// A window over a diverging hero whose file writes [`OWN_COLOURS`] as its
+/// `colorRange`, opened again from that file, with colour's settings open.
+fn diverging_over_own_colours(name: &str) -> Window {
+    let mut win = Window::housing(name);
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCALE_ROW).value, "diverging");
+    win.save();
+    let chart = std::fs::read_dir(win.folder.join("panels"))
+        .expect("Save wrote a panels folder")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|e| e == "yaml"))
+        .expect("Save wrote a chart file");
+    let text = std::fs::read_to_string(&chart).expect("the chart reads");
+    // The pair's `colorRange` out, the analyst's in beside the scale.
+    let mut out = Vec::new();
+    let mut in_range = None;
+    for line in text.lines() {
+        let indent = line.len() - line.trim_start().len();
+        if let Some(at) = in_range {
+            if indent > at || (indent == at && line.trim_start().starts_with("- ")) {
+                continue;
+            }
+            in_range = None;
+        }
+        if line.trim_start().starts_with("colorRange:") {
+            in_range = Some(indent);
+            continue;
+        }
+        out.push(line.to_string());
+        if line.trim_start() == "colorScale: diverging" {
+            let quoted: Vec<String> = OWN_COLOURS.iter().map(|c| format!("'{c}'")).collect();
+            out.push(format!(
+                "{}colorRange: [{}]",
+                " ".repeat(indent),
+                quoted.join(", ")
+            ));
+        }
+    }
+    let written = out.join("\n") + "\n";
+    assert!(written.contains(OWN_COLOURS[0]), "{written}");
+    std::fs::write(&chart, written).expect("the chart writes");
+    let mut win = win.reopen();
+    win.open_colour_settings();
+    win
+}
+
+/// Whether the saved file still holds the analyst's colours.
+fn holds_own_colours(text: &str) -> bool {
+    OWN_COLOURS.iter().all(|c| text.contains(c))
+}
+
+/// **The scheme row reads an analyst's own `colorRange` as custom, and set**:
+/// those colours are what the chart draws, whatever scheme the file names.
+#[test]
+fn on_diverging_the_scheme_row_reads_an_own_colour_range_as_custom() {
+    let win = diverging_over_own_colours("own-range-reads");
+    let row = win.row(SCHEME_ROW);
+    assert_eq!((row.value.as_str(), row.set), ("custom", true));
+}
+
+/// **`l` on the scheme row over custom colours names `rdbu` and takes the
+/// colours out**, so the key written is the one drawn.
+#[test]
+fn l_on_custom_colours_writes_rdbu_and_takes_the_range_out() {
+    let mut win = diverging_over_own_colours("own-range-rdbu");
+    assert_eq!(win.setting_cursor(), Some(SCHEME_ROW));
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCHEME_ROW).value, "rdbu");
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorScheme: rdbu"), "{text}");
+    assert!(!text.contains("colorRange"), "{text}");
+}
+
+/// **`⌫` on the scheme row over custom colours takes them out**: the row reads
+/// the diverging scale's auto again.
+#[test]
+fn backspace_on_custom_colours_takes_the_range_out() {
+    let mut win = diverging_over_own_colours("own-range-backspace");
+    assert_eq!(win.setting_cursor(), Some(SCHEME_ROW));
+    win.press(egui::Key::Backspace);
+    let row = win.row(SCHEME_ROW);
+    assert_eq!((row.value.as_str(), row.set), ("blue-red", false));
+    win.save();
+    let text = win.chart_text();
+    assert!(!holds_own_colours(&text), "{text}");
+}
+
+/// **A step of the scale to linear and back to diverging leaves the analyst's
+/// colours as they are**: no automatic write takes them out or covers them
+/// with the pair.
+#[test]
+fn a_scale_step_to_linear_and_back_keeps_custom_colours() {
+    let mut win = diverging_over_own_colours("own-range-scale");
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::H, "h");
+    assert_eq!(win.row(SCALE_ROW).value, "linear");
+    assert_eq!(win.row(SCHEME_ROW).value, "custom", "custom on linear too");
+    win.save();
+    let text = win.chart_text();
+    assert!(holds_own_colours(&text), "linear keeps them:\n{text}");
+
+    let mut win = win.reopen();
+    win.open_colour_settings();
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCALE_ROW).value, "diverging");
+    assert_eq!(win.row(SCHEME_ROW).value, "custom");
+    win.save();
+    let text = win.chart_text();
+    assert!(holds_own_colours(&text), "diverging keeps them:\n{text}");
+    assert_eq!(
+        lines_of_key(&text, "colorRange").len(),
+        1,
+        "one colorRange, the analyst's:\n{text}"
+    );
+}
+
+/// **On a linear scale, `l` on the scheme row over custom colours names the
+/// strip's first scheme and takes the colours out.**
+#[test]
+fn on_linear_l_on_custom_colours_writes_the_scheme_and_takes_the_range_out() {
+    let mut win = diverging_over_own_colours("own-range-linear");
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::H, "h");
+    assert_eq!(win.row(SCALE_ROW).value, "linear");
+    for _ in 0..4 {
+        if win.setting_cursor() == Some(SCHEME_ROW) {
+            break;
+        }
+        win.type_letter(egui::Key::K, "k");
+    }
+    assert_eq!(win.row(SCHEME_ROW).value, "custom");
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCHEME_ROW).value, "viridis");
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorScheme: viridis"), "{text}");
+    assert!(!text.contains("colorRange"), "{text}");
+}

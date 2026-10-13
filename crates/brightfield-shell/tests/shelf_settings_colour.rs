@@ -1819,9 +1819,13 @@ fn a_scheme_off_the_diverging_strip_steps_to_rdbu_and_back_to_the_pair() {
     assert_eq!(row.stepped(-1), Some(SettingValue::Auto));
 }
 
+/// **Choosing the pair on the scheme row replaces an analyst's colours with it**,
+/// as it writes it where none is: the key written is the one drawn. **A step of
+/// the scale to diverging leaves those colours**, and writes the pair only where
+/// the plot writes no range.
 #[test]
-fn resetting_a_diverging_scheme_leaves_an_analysts_colours_and_writes_the_pair_elsewhere() {
-    use brightfield_shell::shelf_edit::put_diverging_scheme;
+fn choosing_the_pair_replaces_an_analysts_colours_and_a_scale_step_keeps_them() {
+    use brightfield_shell::shelf_edit::{put_colour_scale, put_diverging_scheme};
     use brightfield_spec::analysis::ComponentPath;
     let spec_of = |attrs: &str| {
         let source = format!(
@@ -1837,17 +1841,44 @@ fn resetting_a_diverging_scheme_leaves_an_analysts_colours_and_writes_the_pair_e
             plot.attributes.get("colorRange").cloned(),
         )
     };
-    let mut own = spec_of("colorScale: diverging\ncolorScheme: rdbu\ncolorRange: [\"#111111\", \"#222222\", \"#333333\"]");
+    let own_range = "colorRange: [\"#111111\", \"#222222\", \"#333333\"]";
+    let mut own = spec_of(&format!(
+        "colorScale: diverging\ncolorScheme: rdbu\n{own_range}"
+    ));
     let before = keys(&own).1;
-    put_diverging_scheme(&mut own, &root, false).unwrap();
-    assert_eq!(keys(&own), (false, before), "the analyst's colours stay");
-
     let mut none = spec_of("colorScale: diverging\ncolorScheme: rdbu");
+    put_diverging_scheme(&mut own, &root, false).unwrap();
     put_diverging_scheme(&mut none, &root, false).unwrap();
-    let (named, range) = keys(&none);
+    assert_eq!(
+        keys(&own),
+        keys(&none),
+        "the pair replaces the analyst's colours"
+    );
+    assert!(keys(&own).1.is_some() && keys(&own).1 != before);
+
+    let mut own = spec_of(own_range);
+    let before = keys(&own).1;
+    put_colour_scale(
+        &mut own,
+        &root,
+        &ColourScaleWrite::Diverging { pivot: None },
+    )
+    .unwrap();
+    assert_eq!(
+        keys(&own).1,
+        before,
+        "a scale step keeps the analyst's colours"
+    );
+    let mut bare = spec_of("");
+    put_colour_scale(
+        &mut bare,
+        &root,
+        &ColourScaleWrite::Diverging { pivot: None },
+    )
+    .unwrap();
     assert!(
-        !named && range.is_some(),
-        "the pair is written where none is"
+        keys(&bare).1.is_some(),
+        "the pair is written where no range is"
     );
 }
 
@@ -2016,4 +2047,91 @@ fn with_nothing_on_colour_the_scale_and_domain_rows_read_auto() {
         !domain.set,
         "typed ends with nothing on colour carry no dot"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Colours of the analyst's own.
+// ---------------------------------------------------------------------------
+
+/// **On a linear scale the scheme row reads an analyst's own `colorRange` as
+/// custom, set, painted in those colours; `l` reaches the strip's first scheme
+/// and `h` goes nowhere.** brightfield's pair is not the analyst's and reads as
+/// the scheme.
+#[test]
+fn on_linear_the_scheme_row_reads_own_colours_as_custom() {
+    let own = "colorRange: ['#1b7837', '#f7f7f7', '#762a83']";
+    let row = colour_row(own, SCHEME_ROW, &ramp_scales());
+    assert_eq!((row.value.as_str(), row.set), ("custom", true));
+    assert_eq!(row.stepped(1), Some(word("viridis")));
+    assert_eq!(row.stepped(-1), None);
+    let painted = row
+        .colour
+        .as_ref()
+        .and_then(|f| f.range.clone())
+        .expect("the row carries the colours it paints");
+    assert_eq!(painted.len(), 3);
+
+    let one = colour_row("colorRange: ['#1b7837']", SCHEME_ROW, &ramp_scales());
+    assert_eq!(
+        one.value, "viridis",
+        "one colour is no ramp, and draws none"
+    );
+
+    let row = colour_row(
+        &format!("colorScale: diverging\ncolorRange: {}", pair_text()),
+        SCHEME_ROW,
+        &ramp_scales(),
+    );
+    assert_eq!(row.value, "blue-red", "the pair is brightfield's own");
+}
+
+/// **A scheme chosen over an analyst's colours on a linear scale names it and
+/// takes the colours out; `⌫` takes them out and names viridis only where a
+/// scheme is named.**
+#[test]
+fn a_scheme_chosen_over_own_colours_takes_them_out() {
+    use brightfield_shell::shelf_edit::put_scheme_over_range;
+    use brightfield_spec::analysis::ComponentPath;
+    let spec_of = |attrs: &str| {
+        let source = format!(
+            "data:\n  t:\n    - {{ a: 1 }}\nplot:\n  - mark: dot\n    data: {{ from: t }}\n    x: a\n    y: a\nwidth: 600\nheight: 300\n{attrs}\n"
+        );
+        parse_spec(&source, Format::Yaml).unwrap().spec
+    };
+    let root = ComponentPath("root".to_string());
+    let keys = |spec: &brightfield_spec::ast::Spec| {
+        let plot = plot_at_path(spec, "root").unwrap();
+        (
+            plot.attributes.get("colorScheme").and_then(|v| match v {
+                brightfield_spec::ast::SpecValue::String(s) => Some(s.clone()),
+                _ => None,
+            }),
+            plot.attributes.contains_key("colorRange"),
+        )
+    };
+    let own = "colorRange: ['#1b7837', '#f7f7f7', '#762a83']";
+
+    let mut spec = spec_of(&format!("colorScheme: viridis\n{own}"));
+    put_scheme_over_range(&mut spec, &root, Some(SequentialScheme::Blues)).unwrap();
+    assert_eq!(keys(&spec), (Some("blues".to_string()), false));
+
+    let mut spec = spec_of(&format!("colorScheme: viridis\n{own}"));
+    let edits = put_scheme_over_range(&mut spec, &root, Some(SequentialScheme::Viridis)).unwrap();
+    assert_eq!(keys(&spec), (Some("viridis".to_string()), false));
+    assert_eq!(
+        edits.len(),
+        1,
+        "the scheme already named, the range out alone"
+    );
+
+    let mut spec = spec_of(own);
+    put_scheme_over_range(&mut spec, &root, None).unwrap();
+    assert_eq!(
+        keys(&spec),
+        (None, false),
+        "⌫ names no scheme the plot did not"
+    );
+    let mut spec = spec_of(&format!("colorScheme: blues\n{own}"));
+    put_scheme_over_range(&mut spec, &root, None).unwrap();
+    assert_eq!(keys(&spec), (Some("viridis".to_string()), false));
 }

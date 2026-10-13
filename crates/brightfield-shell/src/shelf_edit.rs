@@ -67,7 +67,7 @@ use brightfield_spec::layout::{resolve_colour_scale_diverging, PlotAxis};
 
 use crate::chart_kinds::{type_base, POINT_MAP_PROJECTION};
 use crate::dashboard::coordinate_pair;
-use crate::shelf::{auto_pivot, ColourScaleWrite};
+use crate::shelf::{auto_pivot, own_colour_range, ColourScaleWrite};
 
 /// The plot attribute a map is drawn through, as Mosaic spells it.
 const PROJECTION_KEY: &str = "projectionType";
@@ -521,8 +521,13 @@ pub fn put_colour(
 /// since the pair is the diverging scale's colours. Steps names its count and
 /// puts the scheme back where the plot names none, since a saved file names the
 /// scheme it is drawn in. Linear takes the scale's keys out and leaves the
-/// scheme. A `colorRange` that is not brightfield's pair is the analyst's and
-/// stays.
+/// scheme.
+///
+/// **No step of the scale overwrites or removes an analyst's own `colorRange`**
+/// (one that is not brightfield's pair): diverging writes the pair only where
+/// the plot writes no range or writes the pair, and linear and steps take out
+/// the pair alone. Only an explicit choice on the scheme row replaces the
+/// analyst's colours ([`put_diverging_scheme`], [`put_scheme_over_range`]).
 ///
 /// # Errors
 ///
@@ -537,6 +542,7 @@ pub fn put_colour_scale(
         plot_at_path(spec, &plot.0).ok_or(ShelfRefusal::Edit(RefuseReason::PlotNotFound))?;
     let pair = own_pair_value();
     let holds_pair = holds_own_pair(target.attributes.get("colorRange"));
+    let own_colours = own_colour_range(spec, target).is_some();
     let names_scheme = target.attributes.contains_key(SCHEME_KEY);
     let viridis = || SpecValue::String(SequentialScheme::default().wire_name().to_string());
     let set = |key: &str, value: SpecValue| ChartEdit::SetPlotAttribute {
@@ -566,11 +572,10 @@ pub fn put_colour_scale(
                 Some(p) => set("colorPivot", number_value(p.get())),
                 None => remove("colorPivot"),
             });
-            wanted.extend([
-                remove("colorN"),
-                remove(SCHEME_KEY),
-                set("colorRange", pair),
-            ]);
+            wanted.extend([remove("colorN"), remove(SCHEME_KEY)]);
+            if !own_colours {
+                wanted.push(set("colorRange", pair));
+            }
         }
         ColourScaleWrite::Steps { count } => {
             wanted.push(set("colorScale", SpecValue::String("quantize".to_string())));
@@ -591,9 +596,13 @@ pub fn put_colour_scale(
 }
 
 /// Write the scheme of a diverging scale on the plot at `plot`: `rdbu` names it
-/// and takes brightfield's pair out of `colorRange`, and the pair (the scale's
-/// auto) takes the scheme out and writes the pair. A `colorRange` that is not
-/// the pair is the analyst's and stays under `rdbu`.
+/// and takes `colorRange` out, and the pair (the scale's auto) takes the scheme
+/// out and writes the pair as `colorRange`.
+///
+/// This is an explicit choice on the scheme row, so it replaces an analyst's own
+/// `colorRange` too: the renderer draws any range in place of a scheme, and the
+/// key written is then the one drawn. It is the one writer, with
+/// [`put_scheme_over_range`], that does.
 ///
 /// # Errors
 ///
@@ -604,9 +613,7 @@ pub fn put_diverging_scheme(
     plot: &ComponentPath,
     rdbu: bool,
 ) -> Result<Vec<ChartEdit>, ShelfRefusal> {
-    let target =
-        plot_at_path(spec, &plot.0).ok_or(ShelfRefusal::Edit(RefuseReason::PlotNotFound))?;
-    let holds_pair = holds_own_pair(target.attributes.get("colorRange"));
+    plot_at_path(spec, &plot.0).ok_or(ShelfRefusal::Edit(RefuseReason::PlotNotFound))?;
     let set = |key: &str, value: SpecValue| ChartEdit::SetPlotAttribute {
         plot: plot.clone(),
         key: key.to_string(),
@@ -617,23 +624,56 @@ pub fn put_diverging_scheme(
         key: key.to_string(),
     };
     let wanted = if rdbu {
-        let mut wanted = vec![set(
-            SCHEME_KEY,
-            SpecValue::String(SequentialScheme::Rdbu.wire_name().to_string()),
-        )];
-        if holds_pair {
-            wanted.push(remove("colorRange"));
-        }
-        wanted
+        vec![
+            set(
+                SCHEME_KEY,
+                SpecValue::String(SequentialScheme::Rdbu.wire_name().to_string()),
+            ),
+            remove("colorRange"),
+        ]
     } else {
-        // The pair goes where no colours are written, or its own are; an
-        // analyst's colours stay, and the scheme alone comes out.
-        let mut wanted = vec![remove(SCHEME_KEY)];
-        if holds_pair || !target.attributes.contains_key("colorRange") {
-            wanted.push(set("colorRange", own_pair_value()));
-        }
-        wanted
+        vec![remove(SCHEME_KEY), set("colorRange", own_pair_value())]
     };
+    apply_present(spec, plot, wanted)
+}
+
+/// Write the scheme of a linear or stepped scale on the plot at `plot` over an
+/// analyst's own `colorRange`, which the renderer draws in place of any scheme:
+/// `scheme` is named and the range taken out, so the key written is the one
+/// drawn. `None` is `⌫`, which takes the range out and names viridis where the
+/// plot names a scheme, since a saved file names the scheme it is drawn in.
+///
+/// An explicit choice on the scheme row, and so, with [`put_diverging_scheme`],
+/// the one writer that replaces the analyst's colours.
+///
+/// # Errors
+///
+/// [`ShelfRefusal::Edit`] when the plot path names no plot. `spec` is left as it
+/// was.
+pub fn put_scheme_over_range(
+    spec: &mut Spec,
+    plot: &ComponentPath,
+    scheme: Option<SequentialScheme>,
+) -> Result<Vec<ChartEdit>, ShelfRefusal> {
+    let target =
+        plot_at_path(spec, &plot.0).ok_or(ShelfRefusal::Edit(RefuseReason::PlotNotFound))?;
+    let names_scheme = target.attributes.contains_key(SCHEME_KEY);
+    let mut wanted = Vec::new();
+    let named = match scheme {
+        Some(scheme) => Some(scheme),
+        None => names_scheme.then(SequentialScheme::default),
+    };
+    if let Some(named) = named {
+        wanted.push(ChartEdit::SetPlotAttribute {
+            plot: plot.clone(),
+            key: SCHEME_KEY.to_string(),
+            value: SpecValue::String(named.wire_name().to_string()),
+        });
+    }
+    wanted.push(ChartEdit::RemovePlotAttribute {
+        plot: plot.clone(),
+        key: "colorRange".to_string(),
+    });
     apply_present(spec, plot, wanted)
 }
 

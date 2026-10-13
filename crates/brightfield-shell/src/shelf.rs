@@ -67,11 +67,11 @@ use brightfield_spec::ast::{Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
 use brightfield_spec::edit::colour_legend_placement;
 use brightfield_spec::layout::{
     colour_domain, read_tick_format, resolve_axis_ends, resolve_axis_reverse, resolve_axis_titles,
-    resolve_colour_pivot, resolve_colour_reverse, resolve_colour_scale_diverging,
-    resolve_colour_scale_quantize, resolve_colour_scheme_name, resolve_colour_steps,
-    resolve_grid_lines, resolve_plot_scales_in, resolve_tick_counts, tick_count_target, AxisTitle,
-    ColourDomain, ScaleType, TickFormatReading, DEFAULT_COLOUR_STEPS, DEFAULT_TICK_COUNT,
-    MAX_COLOUR_STEPS, MAX_TICK_COUNT,
+    resolve_colour_pivot, resolve_colour_range, resolve_colour_reverse,
+    resolve_colour_scale_diverging, resolve_colour_scale_quantize, resolve_colour_scheme_name,
+    resolve_colour_steps, resolve_grid_lines, resolve_plot_scales_in, resolve_tick_counts,
+    tick_count_target, AxisTitle, ColourDomain, ScaleType, TickFormatReading, DEFAULT_COLOUR_STEPS,
+    DEFAULT_TICK_COUNT, MAX_COLOUR_STEPS, MAX_TICK_COUNT,
 };
 use brightfield_spec::layout::{read_domains_in, DomainReading};
 use brightfield_spec::number_format::NumberFormat;
@@ -933,6 +933,25 @@ pub const COLOUR_SCALE_STEPS: [&str; 3] = ["linear", "diverging", "steps"];
 /// pair brightfield draws, which a file holds as its three colours.
 pub const OWN_PAIR: &str = "blue-red";
 
+/// What the scheme row reads where the file writes colours of the analyst's own
+/// as `colorRange`: the chart draws those in place of any scheme.
+pub const CUSTOM_RANGE: &str = "custom";
+
+/// The colours of an analyst's own `colorRange` on `plot`: two or more that the
+/// renderer reads as colours, and not brightfield's diverging pair. The renderer
+/// draws such a range in place of any scheme, on every scale. `None` where the
+/// plot writes no range, writes the pair, or writes one the renderer does not
+/// draw.
+#[must_use]
+pub fn own_colour_range(spec: &Spec, plot: &PlotNode) -> Option<Vec<[f32; 4]>> {
+    let colours = resolve_colour_range(plot, &spec.params)?
+        .into_iter()
+        .map(|name| brightfield_render::mark::parse_colour_literal(name).map(|c| c.components))
+        .collect::<Option<Vec<[f32; 4]>>>()?;
+    (colours.len() >= 2 && !brightfield_render::scale::is_own_diverging_range(&colours))
+        .then_some(colours)
+}
+
 /// The schemes colour's scheme row offers on a diverging scale: brightfield's pair,
 /// which is its auto, and Mosaic's `rdbu`.
 #[must_use]
@@ -1003,6 +1022,10 @@ const REVERSE_SAYS: &str = "Whether the axis runs from high to low, which auto r
 
 /// The foot's sentence for colour's scheme row.
 const SCHEME_SAYS: &str = "The ramp a number's colour runs along, which auto draws as viridis.";
+
+/// The foot's sentence for colour's scheme row over colours of the analyst's own.
+const SCHEME_CUSTOM_SAYS: &str =
+    "The colours the file writes for the ramp, drawn in place of a scheme. Choosing a scheme replaces them.";
 
 /// The foot's sentence for colour's scheme row on a diverging scale.
 const SCHEME_DIVERGING_SAYS: &str =
@@ -1516,6 +1539,18 @@ impl SettingRow {
                 .filter(|n| *n < SCALE_STEPS.len())?;
             return Some(SettingValue::Word(SCALE_STEPS[next].to_string()));
         }
+        if self.name == SCHEME_ROW && self.value == CUSTOM_RANGE {
+            // Custom colours stand off the strip: on a diverging scale between
+            // the pair and `rdbu`, as a scheme off its strip does, and on the
+            // others before the strip's first, which `l` reaches.
+            let diverging = self.colour.as_ref().is_some_and(|f| f.diverging);
+            return Some(match (diverging, by > 0) {
+                (true, true) => SettingValue::Word(diverging_strip()[1].to_string()),
+                (true, false) => SettingValue::Auto,
+                (false, true) => SettingValue::Word(scheme_strip()[0].wire_name().to_string()),
+                (false, false) => return None,
+            });
+        }
         if self.name == SCHEME_ROW && self.colour.as_ref().is_some_and(|f| f.diverging) {
             // Along the two a diverging scale offers; the first is auto.
             let strip = diverging_strip();
@@ -1642,9 +1677,13 @@ pub struct ColourScaleFacts {
     /// Whether the scale is diverging, which the scheme row offers its own two
     /// schemes for.
     pub diverging: bool,
+    /// The colours of the analyst's own `colorRange`, which the chart draws in
+    /// place of any scheme and the scheme row reads as custom. `None` where the
+    /// file writes none, or writes brightfield's pair.
+    pub range: Option<Vec<[f32; 4]>>,
 }
 
-// Pivots are finite where present, so `==` is reflexive.
+// Pivots and colours are finite where present, so `==` is reflexive.
 impl Eq for ColourScaleFacts {}
 
 /// What the format row carries beyond its value, read from the plot and the scale
@@ -1856,6 +1895,7 @@ fn colour_rows(
         count: quantize
             .then(|| resolve_colour_steps(plot, &spec.params).unwrap_or(DEFAULT_COLOUR_STEPS)),
         diverging,
+        range: own_colour_range(spec, plot),
     };
     // With nothing on colour the file's scale and domain keys draw nothing, and
     // the muted rows offer no way to clear them: those rows read their auto,
@@ -1912,10 +1952,22 @@ fn colour_rows(
             unbound(STEPS_UNBOUND).or_else(|| (!quantize).then(|| STEPS_OFF.to_string())),
         )
     };
-    // A diverging scale with no scheme is drawn in brightfield's pair, which is
-    // its auto; one that names a scheme reads it, and `rdbu` is the one the
-    // strip offers.
-    let scheme_row = if diverging {
+    // Colours of the analyst's own are drawn in place of any scheme, on every
+    // scale, so the row reads them as custom, set. A diverging scale with no
+    // scheme is drawn in brightfield's pair, which is its auto; one that names a
+    // scheme reads it, and `rdbu` is the one the strip offers.
+    let scheme_row = if facts.range.is_some() {
+        SettingRow {
+            colour: Some(facts.clone()),
+            ..row(
+                SCHEME_ROW,
+                CUSTOM_RANGE.to_string(),
+                true,
+                SCHEME_CUSTOM_SAYS,
+                names.then(|| SCHEME_NAMES.to_string()),
+            )
+        }
+    } else if diverging {
         let named =
             resolve_colour_scheme_name(plot, &spec.params).and_then(SequentialScheme::from_wire);
         SettingRow {
@@ -3598,6 +3650,13 @@ impl StripEntry {
         scheme: None,
     };
 
+    /// Colours of the analyst's own, which the row paints from the file and the
+    /// strip does not offer.
+    const CUSTOM: Self = Self {
+        word: CUSTOM_RANGE,
+        scheme: None,
+    };
+
     /// The stops the ramp is painted along, in `mode`: the pair's middle is the
     /// theme's.
     fn stops(self, mode: Mode) -> Vec<[f32; 4]> {
@@ -4165,6 +4224,8 @@ impl ColumnList {
                 .then(|| {
                     if row.value == OWN_PAIR {
                         Some(StripEntry::OWN)
+                    } else if row.value == CUSTOM_RANGE {
+                        Some(StripEntry::CUSTOM)
                     } else {
                         SequentialScheme::from_wire(&row.value).map(StripEntry::of)
                     }
@@ -4494,7 +4555,9 @@ impl ColumnList {
                     egui::pos2(value_left, line.center().y - RAMP_HEIGHT / 2.0),
                     egui::vec2(RAMP_WIDTH, RAMP_HEIGHT),
                 );
-                paint_ramp(&painter, at, &scheme.stops(mode));
+                // Custom colours are painted as the file writes them.
+                let custom = row.colour.as_ref().and_then(|f| f.range.clone());
+                paint_ramp(&painter, at, &custom.unwrap_or_else(|| scheme.stops(mode)));
                 at
             });
             // The format's sample, muted, after the value. It gives way to the

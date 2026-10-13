@@ -51,6 +51,8 @@ The pivot and steps rows found by name show the same value as the scale row and 
 
 The scheme strip offers the design system's blue-red pair and Mosaic's `rdbu` on diverging, and the four sequential schemes on linear and steps. On diverging, the scheme row reads the pair as auto.
 
+A `colorRange` of the analyst's own (two or more colours, not the pair) is drawn in place of any scheme, so on every scale the scheme row reads it as *custom*, set, painted in those colours. No automatic write overwrites or removes it: the scale's steps, a column change and resets leave it, and diverging writes the pair only where the file writes no range or the pair. An explicit scheme choice on the row (`h`, `l`, a click on the strip) replaces it, as does `⌫` on the row, so the key written is the one drawn.
+
 The zero anchor goes in this piece. `augment_fill_ramp` (`crates/brightfield-render/src/mark.rs`) anchors a non-negative column's ramp at `[0, max]` today. It becomes `[min, max]`, as the ruling on the legend's low end has it, and the legend baselines move once for it.
 
 ### 2. The domain row and `colorDomain: Fixed`
