@@ -1392,9 +1392,10 @@ fn each_legend_move_on_a_plot_at_the_root_keeps_the_files_comments() {
 }
 
 /// Taking a legend out keeps the comment flush above it. From the right, the
-/// comment stays where the plot's legend item was. From below, the legend
-/// leaves the `vconcat` first and the comment with it, so when the plot's lines
-/// are lifted back into the `vconcat`'s place the comment closes them.
+/// comment stays where the plot's legend item was. From below, to none or to
+/// the right, the legend leaves the `vconcat` first and the comment stays
+/// there, so when the plot's lines are lifted back into the `vconcat`'s place
+/// the comment follows them, and in an `hconcat` heads the next entry.
 #[test]
 fn taking_a_legend_out_from_either_place_keeps_the_comment_above_it() {
     let right = PLOT_AT_ROOT.replace("  - legend: color\n", "  # the key\n  - legend: color\n");
@@ -1409,6 +1410,23 @@ fn taking_a_legend_out_from_either_place_keeps_the_comment_above_it() {
         &below,
         &place("root/vconcat[0]", LegendPlacement::None),
         &format!("{PLOT_AT_ROOT_NONE}# the key\n"),
+    );
+    assert_written(
+        &below,
+        &place("root/vconcat[0]", LegendPlacement::Right),
+        &format!("{PLOT_AT_ROOT_RIGHT_AGAIN}# the key\n"),
+    );
+    let concat = PLOT_IN_CONCAT_BELOW.replace(
+        "      - legend: color\n",
+        "      # the key\n      - legend: color\n",
+    );
+    assert_written(
+        &concat,
+        &place("root/hconcat[0]/vconcat[0]", LegendPlacement::None),
+        &PLOT_IN_CONCAT_NONE.replace(
+            "  - plot:\n      - mark: line",
+            "  # the key\n  - plot:\n      - mark: line",
+        ),
     );
 }
 

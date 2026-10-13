@@ -59,7 +59,9 @@
 //!   (`each_legend_move_on_a_plot_in_a_concat_keeps_the_files_comments`). The
 //!   legend each move writes is the one the reducer made, in the whole-spec
 //!   serialiser's spelling; a comment on the legend's own lines is not kept,
-//!   and a comment flush above a legend a move takes out is
+//!   and a comment flush above a legend a move takes out is. It stays where
+//!   the legend was, so after a lift it follows the plot's lines and can come
+//!   to head the next entry of a concat
 //!   (`taking_a_legend_out_from_either_place_keeps_the_comment_above_it`).
 //!   Between right and none the move is the item edits' splice.
 //! - A [`ChartEdit::RemovePlotAttribute`], the edit that takes a map's
