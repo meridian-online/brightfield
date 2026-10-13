@@ -115,12 +115,16 @@ fn at_right(composed: &Composed) -> Vec<Ink> {
         egui::pos2(BAND_LEFT, RASTER_TOP),
         egui::vec2(band_width(composed), composed.height as f32),
     );
-    shapes(|ui| draw_band(ui, band, RASTER_TOP, composed, Mode::Light))
+    shapes(|ui| {
+        draw_band(ui, band, RASTER_TOP, composed, Mode::Light);
+    })
 }
 
 /// What `draw_below` paints for `composed`, the raster standing at [`ORIGIN`].
 fn below(composed: &Composed) -> Vec<Ink> {
-    shapes(|ui| draw_below(ui, egui::pos2(ORIGIN.0, ORIGIN.1), composed, Mode::Light))
+    shapes(|ui| {
+        draw_below(ui, egui::pos2(ORIGIN.0, ORIGIN.1), composed, Mode::Light);
+    })
 }
 
 fn fills(ink: &[Ink]) -> Vec<(egui::Rect, egui::Color32)> {

@@ -64,13 +64,16 @@ use brightfield_render::scene::{
     axis_ends_apply, axis_keys_apply, axis_reverse_applies, colour_reverse_applies,
 };
 use brightfield_spec::ast::{Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
-use brightfield_spec::layout::{read_domains_in, DomainReading};
+use brightfield_spec::edit::colour_legend_placement;
 use brightfield_spec::layout::{
-    read_tick_format, resolve_axis_ends, resolve_axis_reverse, resolve_axis_titles,
-    resolve_colour_reverse, resolve_colour_scheme_name, resolve_grid_lines, resolve_plot_scales_in,
-    resolve_tick_counts, tick_count_target, AxisTitle, ScaleType, TickFormatReading,
-    DEFAULT_TICK_COUNT, MAX_TICK_COUNT,
+    colour_domain, read_tick_format, resolve_axis_ends, resolve_axis_reverse, resolve_axis_titles,
+    resolve_colour_pivot, resolve_colour_range, resolve_colour_reverse,
+    resolve_colour_scale_diverging, resolve_colour_scale_quantize, resolve_colour_scheme_name,
+    resolve_colour_steps, resolve_grid_lines, resolve_plot_scales_in, resolve_tick_counts,
+    tick_count_target, AxisTitle, ColourDomain, ScaleType, TickFormatReading, DEFAULT_COLOUR_STEPS,
+    DEFAULT_TICK_COUNT, MAX_COLOUR_STEPS, MAX_TICK_COUNT,
 };
+use brightfield_spec::layout::{read_domains_in, DomainReading};
 use brightfield_spec::number_format::NumberFormat;
 use brightfield_spec::vocab::{is_colour_literal, MarkKind};
 use brightfield_workbench::channel::{self, ShelfChannel, BAND_HEIGHT};
@@ -694,7 +697,7 @@ pub fn undoes(key: egui::Key, modifiers: egui::Modifiers) -> bool {
 pub const UNDO: &str = "undo";
 
 // ---------------------------------------------------------------------------
-// The settings list: an axis's rows, read from the plot.
+// The settings list: the rows of an axis or of colour, read from the plot.
 // ---------------------------------------------------------------------------
 
 /// The word a row carries while its value is brightfield's own.
@@ -747,6 +750,41 @@ impl Ends {
     pub fn new(lo: f64, hi: f64) -> Option<Self> {
         (lo.is_finite() && hi.is_finite() && lo < hi).then_some(Self { lo, hi })
     }
+}
+
+/// A finite number a row writes: a pivot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Number(f64);
+
+// `Number::new` admits finite numbers alone, so `==` is reflexive.
+impl Eq for Number {}
+
+impl Number {
+    /// `n`, where it is finite.
+    #[must_use]
+    pub fn new(n: f64) -> Option<Self> {
+        n.is_finite().then_some(Self(n))
+    }
+
+    /// The number.
+    #[must_use]
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+/// What a step on colour's scale row writes: the scale, with the parameter it
+/// carries named in the file, since Mosaic's own pivot is 0 and its steps are
+/// rounded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ColourScaleWrite {
+    /// One ramp: `colorScale`, `colorPivot` and `colorN` come out.
+    Linear,
+    /// Diverging about `pivot`, or about the chart's own pivot where it is
+    /// `None` because brightfield knows of no auto pivot.
+    Diverging { pivot: Option<Number> },
+    /// Stepped in `count` colours.
+    Steps { count: usize },
 }
 
 /// An end as the row writes it: no trailing zeros, and no exponent.
@@ -858,9 +896,118 @@ pub const ZERO_ROW: &str = "zero";
 /// The name of the reverse row, which is found by typing it on an axis and is a
 /// head row on colour.
 pub const REVERSE_ROW: &str = "reverse";
+/// The name of colour's legend row, a head row.
+pub const LEGEND_ROW: &str = "legend";
+/// Where the legend row steps the legend, in the order `l` steps them.
+pub const LEGEND_STEPS: [&str; 3] = ["right", "below", "none"];
+const LEGEND_SAYS: &str = "Where the chart's colour legend is drawn: at its right, \
+    below it, or not at all. Auto is right.";
 
 /// The name of colour's scheme row.
 pub const SCHEME_ROW: &str = "scheme";
+
+/// The name of colour's pivot row, found by typing it.
+pub const PIVOT_ROW: &str = "pivot";
+
+/// The name of colour's steps row, found by typing it.
+pub const STEPS_ROW: &str = "steps";
+
+/// The name of colour's domain row, found by typing it.
+pub const DOMAIN_ROW: &str = "domain";
+
+/// The domain row's word for `colorDomain: Fixed`.
+pub const FIXED_DOMAIN: &str = "fixed";
+
+/// The foot's sentence for colour's domain row.
+const DOMAIN_SAYS: &str = "The two values the colours run between. Auto fits \
+    the rows drawn, so a sweep elsewhere re-fits them; fixed holds the first draw's.";
+
+/// Why the domain row does not apply to a colour of names.
+const DOMAIN_NAMES: &str = "a colour of names has no ends to set";
+
+/// The values colour's scale row steps through, in the order `l` steps them.
+/// `steps` is Mosaic's `quantize`.
+pub const COLOUR_SCALE_STEPS: [&str; 3] = ["linear", "diverging", "steps"];
+
+/// What the scheme row reads on a diverging scale that names no scheme: the
+/// pair brightfield draws, which a file holds as its three colours.
+pub const OWN_PAIR: &str = "blue-red";
+
+/// What the scheme row reads where the file writes colours of the analyst's own
+/// as `colorRange`: the chart draws those in place of any scheme.
+pub const CUSTOM_RANGE: &str = "custom";
+
+/// The colours of an analyst's own `colorRange` on `plot`: two or more that the
+/// renderer reads as colours, and not brightfield's diverging pair. The renderer
+/// draws such a range in place of any scheme, on every scale. `None` where the
+/// plot writes no range, writes the pair, or writes one the renderer does not
+/// draw.
+#[must_use]
+pub fn own_colour_range(spec: &Spec, plot: &PlotNode) -> Option<Vec<[f32; 4]>> {
+    drawn_colour_range(spec, plot)
+        .filter(|colours| !brightfield_render::scale::is_own_diverging_range(colours))
+}
+
+/// The colours of any `colorRange` on `plot` the renderer draws: two or more
+/// that it reads as colours, brightfield's pair included. A stepped scale over
+/// them draws one step per colour and leaves `colorN` unread.
+fn drawn_colour_range(spec: &Spec, plot: &PlotNode) -> Option<Vec<[f32; 4]>> {
+    let colours = resolve_colour_range(plot, &spec.params)?
+        .into_iter()
+        .map(|name| brightfield_render::mark::parse_colour_literal(name).map(|c| c.components))
+        .collect::<Option<Vec<[f32; 4]>>>()?;
+    (colours.len() >= 2).then_some(colours)
+}
+
+/// The schemes colour's scheme row offers on a diverging scale: brightfield's pair,
+/// which is its auto, and Mosaic's `rdbu`.
+#[must_use]
+pub fn diverging_strip() -> [&'static str; 2] {
+    [OWN_PAIR, "rdbu"]
+}
+
+/// A pivot as the scale row displays it: four significant figures, no fewer
+/// than the whole part, no trailing zeros. Two pivots that display the same are
+/// the same to the row.
+#[must_use]
+pub fn pivot_text(n: f64) -> String {
+    if n == 0.0 || !n.is_finite() {
+        return "0".to_string();
+    }
+    let places = (3.0 - n.abs().log10().floor()).clamp(0.0, 10.0);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let fixed = format!("{n:.*}", places as usize);
+    let trimmed = if fixed.contains('.') {
+        fixed.trim_end_matches('0').trim_end_matches('.')
+    } else {
+        fixed.as_str()
+    };
+    if trimmed == "-0" || trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// The foot's sentence for colour's scale row.
+const COLOUR_SCALE_SAYS: &str = "How values map onto colours: along one ramp, \
+    diverging either side of a pivot, or cut into steps. Auto is linear.";
+
+/// The foot's sentence for colour's pivot row.
+const PIVOT_SAYS: &str = "The value at the middle of a diverging scale. Auto is \
+    0 where the column crosses it, else the column's median.";
+
+/// The foot's sentence for colour's steps row.
+const STEPS_SAYS: &str = "How many colours a stepped scale cuts the values into. Auto is 5.";
+
+/// Why the pivot row does not apply to a scale that is not diverging.
+const PIVOT_OFF: &str = "pivot applies to a diverging scale";
+
+/// Why the steps row does not apply to a scale that is not stepped.
+const STEPS_OFF: &str = "steps applies to a stepped scale";
+
+/// Why the scale row does not apply to a colour that paints names.
+const SCALE_NAMES: &str = "a colour of names has no scale to choose";
 
 /// What a switch row reads while the key is on.
 pub const ON: &str = "on";
@@ -883,6 +1030,14 @@ const REVERSE_SAYS: &str = "Whether the axis runs from high to low, which auto r
 /// The foot's sentence for colour's scheme row.
 const SCHEME_SAYS: &str = "The ramp a number's colour runs along, which auto draws as viridis.";
 
+/// The foot's sentence for colour's scheme row over colours of the analyst's own.
+const SCHEME_CUSTOM_SAYS: &str =
+    "The colours the file writes for the ramp, drawn in place of a scheme. Choosing a scheme replaces them.";
+
+/// The foot's sentence for colour's scheme row on a diverging scale.
+const SCHEME_DIVERGING_SAYS: &str =
+    "The colours a diverging scale runs through, which auto draws as brightfield's blue and red.";
+
 /// The foot's sentence for colour's reverse row.
 const COLOUR_REVERSE_SAYS: &str =
     "Whether colour runs the other way, a ramp from its far end and names from the last, which auto does not.";
@@ -890,6 +1045,47 @@ const COLOUR_REVERSE_SAYS: &str =
 /// Why the scheme row does not apply to a colour that paints names.
 const SCHEME_NAMES: &str =
     "a column of names takes the categorical set, which has no ramp to choose";
+
+/// Why the legend row does not apply to a plot with nothing on colour.
+const LEGEND_UNBOUND: &str = "nothing is on colour, so there is no legend to place";
+
+/// Why the scale row does not apply to a plot with nothing on colour.
+const SCALE_UNBOUND: &str = "nothing is on colour, so there is no scale to set";
+
+/// Why the domain row does not apply to a plot with nothing on colour.
+const DOMAIN_UNBOUND: &str = "nothing is on colour, so there are no ends to set";
+
+/// Why the scale row leaves a scale the file writes that the shelf does not
+/// offer, such as `symlog` or a `$param`.
+const SCALE_THE_FILES: &str =
+    "the file writes this scale itself, and the shelf leaves it as written";
+
+/// Why the domain row leaves a domain the file writes that the shelf does not
+/// offer, such as a `$param`.
+const DOMAIN_THE_FILES: &str =
+    "the file writes this domain itself, and the shelf leaves it as written";
+
+/// A colour key's value the file writes as a word the shelf neither offers nor
+/// writes: a `colorScale` other than linear, diverging or quantize, or a
+/// `colorDomain` word other than `Fixed`, a `$param` included. The rows read it
+/// as the file's and write nothing over it.
+fn files_own_word(value: Option<&SpecValue>, offered: &[&str]) -> Option<String> {
+    match value {
+        Some(SpecValue::String(word)) if !offered.contains(&word.as_str()) => Some(word.clone()),
+        Some(SpecValue::Param(param)) => Some(format!("${}", param.0)),
+        _ => None,
+    }
+}
+
+/// Why the pivot row does not apply to a plot with nothing on colour.
+const PIVOT_UNBOUND: &str = "nothing is on colour, so there is no pivot to set";
+
+/// Why the steps row does not apply to a stepped scale over colours the file
+/// writes, which give one step each.
+const STEPS_OWN_COLOURS: &str = "the file's own colours set the count";
+
+/// Why the steps row does not apply to a plot with nothing on colour.
+const STEPS_UNBOUND: &str = "nothing is on colour, so there are no steps to set";
 
 /// Why colour's reverse row does not apply to a chart that draws no dot.
 const COLOUR_REVERSE_DOTS: &str =
@@ -905,6 +1101,84 @@ pub fn scheme_strip() -> Vec<SequentialScheme> {
         .into_iter()
         .filter(|scheme| *scheme != SequentialScheme::Rdbu)
         .collect()
+}
+
+/// **What the pivot field holds, read as a pivot**: a finite number, or the
+/// sentence that says why the row refuses it.
+///
+/// # Errors
+///
+/// The sentence the row prints under itself.
+pub fn pivot_number(text: &str) -> Result<Number, String> {
+    let typed = text.trim();
+    typed
+        .parse::<f64>()
+        .ok()
+        .and_then(Number::new)
+        .ok_or_else(|| format!("a pivot is a number, and {} is not one", quoted_back(typed)))
+}
+
+/// **What the steps field holds, read as a count of steps**: a whole number from
+/// 2 to [`MAX_COLOUR_STEPS`], or the sentence that says why the row refuses it.
+///
+/// # Errors
+///
+/// The sentence the row prints under itself.
+pub fn steps_count(text: &str) -> Result<usize, String> {
+    let typed = text.trim();
+    let n: usize = typed.parse().map_err(|_| {
+        format!(
+            "steps is a whole number, and {} is not one",
+            quoted_back(typed)
+        )
+    })?;
+    if (2..=MAX_COLOUR_STEPS).contains(&n) {
+        Ok(n)
+    } else {
+        Err(format!("steps is 2 to {MAX_COLOUR_STEPS}, and {n} is not"))
+    }
+}
+
+/// What a refused entry is quoted back as: whole, or cut to
+/// [`QUOTED_AT_MOST`] characters with an ellipsis.
+fn quoted_back(typed: &str) -> String {
+    if typed.is_empty() {
+        return "nothing".to_string();
+    }
+    if typed.chars().count() > QUOTED_AT_MOST {
+        let cut: String = typed.chars().take(QUOTED_AT_MOST).collect();
+        format!("{cut}\u{2026}")
+    } else {
+        typed.to_string()
+    }
+}
+
+/// What the scale row reads after its word, fullest first: the pivot of a
+/// diverging scale, `about 3.47`, or the count of a stepped one, `\u{b7} 5`. A
+/// pivot gives way to the bare number where the row is too narrow for both the
+/// word and the chips. The domain row's auto value also takes the ends the
+/// colours were drawn over, `\u{b7} 0 \u{2013} 10`, muted.
+fn scale_parameter(row: &SettingRow) -> Option<Vec<String>> {
+    if row.reason.is_some() {
+        return None;
+    }
+    if row.name == DOMAIN_ROW {
+        // An auto domain shows the ends the colours were drawn over.
+        let drawn = row.range.as_ref()?.drawn?;
+        return (row.value == AUTO).then(|| vec![format!("\u{b7} {}", ends_text(drawn))]);
+    }
+    if row.name != SCALE_ROW {
+        return None;
+    }
+    let facts = row.colour.as_ref()?;
+    match row.value.as_str() {
+        "diverging" => facts.pivot.map(|p| {
+            let n = pivot_text(p);
+            vec![format!("about {n}"), n]
+        }),
+        "steps" => facts.count.map(|n| vec![format!("\u{b7} {n}")]),
+        _ => None,
+    }
 }
 
 /// The foot's sentence for the title row: what it does, and the rule for its
@@ -1095,6 +1369,10 @@ pub enum SettingValue {
     Text(String),
     /// The two ends of a range, low first.
     Ends(Ends),
+    /// Colour's scale, with the pivot or count it carries.
+    ColourScale(ColourScaleWrite),
+    /// A number typed into a row: a pivot.
+    Number(Number),
     /// Back to brightfield's own: the key comes out of the file. Colour's scheme
     /// row is the exception, since brightfield's default there is not Mosaic's:
     /// the window answers it by naming viridis, and with no edit where the plot
@@ -1129,6 +1407,9 @@ pub fn row_key(axis: ShelfChannel, row: &str) -> Option<&'static str> {
             return match row {
                 SCHEME_ROW => Some("colorScheme"),
                 REVERSE_ROW => Some("colorReverse"),
+                PIVOT_ROW => Some("colorPivot"),
+                STEPS_ROW => Some("colorN"),
+                DOMAIN_ROW => Some("colorDomain"),
                 _ => None,
             }
         }
@@ -1163,11 +1444,14 @@ pub fn row_default(row: &str) -> Option<SpecValue> {
     Some(match row {
         SCALE_ROW => SpecValue::String("linear".to_string()),
         // Mosaic's own, no format: the axis draws its own tick text.
-        FORMAT_ROW | RANGE_ROW => SpecValue::Null,
+        FORMAT_ROW | RANGE_ROW | DOMAIN_ROW => SpecValue::Null,
         // No value of the scheme is the one a file leaves out: brightfield's
         // default is not Mosaic's, so a saved file names viridis, and a default
         // no value equals is what makes every scheme written by name.
         SCHEME_ROW => SpecValue::Null,
+        // A pivot is always written by name, as the scheme is.
+        PIVOT_ROW => SpecValue::Null,
+        STEPS_ROW => SpecValue::Integer(5),
         TICKS_ROW => SpecValue::Integer(i64::try_from(DEFAULT_TICK_COUNT).unwrap_or(5)),
         GRID_ROW => SpecValue::Bool(true),
         ZERO_ROW | REVERSE_ROW => SpecValue::Bool(false),
@@ -1196,17 +1480,34 @@ impl SettingRow {
     pub fn steps(&self) -> bool {
         self.reason.is_none()
             && match self.name {
+                SCALE_ROW if self.colour.is_some() => {
+                    COLOUR_SCALE_STEPS.contains(&self.value.as_str())
+                }
                 SCALE_ROW => SCALE_STEPS.contains(&self.value.as_str()),
-                FORMAT_ROW | GRID_ROW | ZERO_ROW | REVERSE_ROW | SCHEME_ROW => true,
+                FORMAT_ROW | GRID_ROW | ZERO_ROW | REVERSE_ROW | SCHEME_ROW | LEGEND_ROW => true,
+                DOMAIN_ROW => matches!(self.value.as_str(), AUTO | FIXED_DOMAIN),
                 _ => false,
             }
     }
 
-    /// Whether `Enter` opens a field on this row: the rows that take typed text
-    /// and the format, which takes it behind its presets.
+    /// Whether `Enter` opens a field on this row: the rows that take typed text,
+    /// the format, which takes it behind its presets, and colour's scale row on
+    /// a diverging or stepped scale, which takes its pivot or count.
     #[must_use]
     pub fn takes_field(&self) -> bool {
-        self.reason.is_none() && (self.kind == SettingKind::Typed || self.name == FORMAT_ROW)
+        self.reason.is_none()
+            && (self.kind == SettingKind::Typed
+                || self.name == FORMAT_ROW
+                || (self.name == SCALE_ROW
+                    && self
+                        .colour
+                        .as_ref()
+                        .is_some_and(|f| match self.value.as_str() {
+                            "diverging" => true,
+                            // Colours the file writes set a stepped scale's count.
+                            "steps" => f.count.is_some(),
+                            _ => false,
+                        })))
     }
 
     /// What one step `by` from the row's own does, or `None` where the row does
@@ -1241,12 +1542,70 @@ impl SettingRow {
         if !self.steps() || self.name == FORMAT_ROW {
             return None;
         }
+        if self.name == DOMAIN_ROW {
+            return match (self.value.as_str(), by.signum()) {
+                (AUTO, 1) => Some(SettingValue::Word(FIXED_DOMAIN.to_string())),
+                (FIXED_DOMAIN, -1) => Some(SettingValue::Auto),
+                _ => None,
+            };
+        }
+        if self.name == LEGEND_ROW {
+            let at = LEGEND_STEPS.iter().position(|w| *w == self.value)?;
+            let next = at
+                .checked_add_signed(by)
+                .filter(|n| *n < LEGEND_STEPS.len())?;
+            return Some(SettingValue::Word(LEGEND_STEPS[next].to_string()));
+        }
+        if self.name == SCALE_ROW && self.colour.is_some() {
+            let at = COLOUR_SCALE_STEPS.iter().position(|w| *w == self.value)?;
+            let next = at
+                .checked_add_signed(by)
+                .filter(|n| *n < COLOUR_SCALE_STEPS.len())?;
+            let facts = self.colour.as_ref()?;
+            return Some(SettingValue::ColourScale(match COLOUR_SCALE_STEPS[next] {
+                "diverging" => ColourScaleWrite::Diverging {
+                    pivot: facts.auto_pivot.and_then(Number::new),
+                },
+                "steps" => ColourScaleWrite::Steps {
+                    count: DEFAULT_COLOUR_STEPS,
+                },
+                _ => ColourScaleWrite::Linear,
+            }));
+        }
         if self.name == SCALE_ROW {
             let at = SCALE_STEPS.iter().position(|w| *w == self.value)?;
             let next = at
                 .checked_add_signed(by)
                 .filter(|n| *n < SCALE_STEPS.len())?;
             return Some(SettingValue::Word(SCALE_STEPS[next].to_string()));
+        }
+        if self.name == SCHEME_ROW && self.value == CUSTOM_RANGE {
+            // Custom colours stand off the strip: on a diverging scale between
+            // the pair and `rdbu`, as a scheme off its strip does, and on the
+            // others before the strip's first, which `l` reaches.
+            let diverging = self.colour.as_ref().is_some_and(|f| f.diverging);
+            return Some(match (diverging, by > 0) {
+                (true, true) => SettingValue::Word(diverging_strip()[1].to_string()),
+                (true, false) => SettingValue::Auto,
+                (false, true) => SettingValue::Word(scheme_strip()[0].wire_name().to_string()),
+                (false, false) => return None,
+            });
+        }
+        if self.name == SCHEME_ROW && self.colour.as_ref().is_some_and(|f| f.diverging) {
+            // Along the two a diverging scale offers; the first is auto.
+            let strip = diverging_strip();
+            // A scheme off the strip stands before `rdbu`: `l` reaches it, and
+            // `h` goes back to the pair.
+            let next = match strip.iter().position(|w| *w == self.value) {
+                Some(at) => *strip.get(at.checked_add_signed(by)?)?,
+                None if by > 0 => strip[1],
+                None => strip[0],
+            };
+            return Some(if next == OWN_PAIR {
+                SettingValue::Auto
+            } else {
+                SettingValue::Word(next.to_string())
+            });
         }
         if self.name == SCHEME_ROW {
             // Along the order the renderer visits the schemes in, stopping at
@@ -1261,6 +1620,33 @@ impl SettingRow {
                 .then(|| SettingValue::Word(next.wire_name().to_string()));
         }
         Some(SettingValue::Switch(self.value != ON))
+    }
+
+    /// Whether the scale row's pivot or count is the analyst's: it differs from
+    /// brightfield's own. Compared at the precision the row displays, so a median
+    /// written back to the file reads auto.
+    #[must_use]
+    pub fn parameter_set(&self) -> bool {
+        let Some(facts) = &self.colour else {
+            return false;
+        };
+        match self.value.as_str() {
+            "diverging" => facts.pivot_set(),
+            "steps" => facts.steps_set(),
+            _ => false,
+        }
+    }
+}
+
+/// brightfield's auto pivot for a column: 0 where its values cross zero, else
+/// its median. Read from the whole table's profile, so a sweep on another tile
+/// does not move it.
+#[must_use]
+pub fn auto_pivot(moments: &ColumnMoments) -> f64 {
+    if moments.min < 0.0 && moments.max > 0.0 {
+        0.0
+    } else {
+        moments.median
     }
 }
 
@@ -1307,6 +1693,52 @@ pub struct SettingRow {
     /// What only the range row knows. `None` on the title, scale, format, ticks,
     /// grid, zero and reverse rows.
     pub range: Option<RangeFacts>,
+    /// What colour's scale, pivot and steps rows carry, which the rows
+    /// of the axes leave `None`.
+    pub colour: Option<ColourScaleFacts>,
+}
+
+/// What only colour's scale, pivot and steps rows know.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColourScaleFacts {
+    /// The pivot the file writes, else the one the chart drew. `None` off diverging.
+    pub pivot: Option<f64>,
+    /// brightfield's auto pivot for the column, from its load-time profile. On a
+    /// diverging scale whose file writes no pivot it is the pivot the chart drew,
+    /// so that file reads auto. `None` where neither is known.
+    pub auto_pivot: Option<f64>,
+    /// The count the file writes, else the default. `None` off steps, and on a
+    /// stepped scale over colours the file writes, whose count they set.
+    pub count: Option<usize>,
+    /// Whether the scale is diverging, which the scheme row offers its own two
+    /// schemes for.
+    pub diverging: bool,
+    /// The colours of the analyst's own `colorRange`, which the chart draws in
+    /// place of any scheme and the scheme row reads as custom. `None` where the
+    /// file writes brightfield's pair or no range.
+    pub range: Option<Vec<[f32; 4]>>,
+}
+
+// Pivots and colours are finite where present, so `==` is reflexive.
+impl Eq for ColourScaleFacts {}
+
+impl ColourScaleFacts {
+    /// Whether the pivot differs from auto at the precision the row shows it.
+    #[must_use]
+    pub fn pivot_set(&self) -> bool {
+        match (self.pivot, self.auto_pivot) {
+            (Some(pivot), Some(auto)) => pivot_text(pivot) != pivot_text(auto),
+            _ => false,
+        }
+    }
+
+    /// Whether the count differs from brightfield's five. `None` counts, a
+    /// scale off steps or one whose colours set the count, are not set.
+    #[must_use]
+    pub fn steps_set(&self) -> bool {
+        self.count
+            .is_some_and(|count| count != DEFAULT_COLOUR_STEPS)
+    }
 }
 
 /// What the format row carries beyond its value, read from the plot and the scale
@@ -1335,7 +1767,9 @@ pub struct ChannelSettings {
 
 impl ChannelSettings {
     /// The rows of `plot`'s two axes, with `channels` saying what each axis
-    /// holds and `spec` the params a lifted scale name resolves through.
+    /// holds and `spec` the params a lifted scale name resolves through. `path`
+    /// is where `plot` stands in `spec`, which colour's legend row reads its
+    /// placement by.
     ///
     /// Each value is the resolved one: the title is the resolver's
     /// override, suppression or derivation, the scale is the type the plot
@@ -1347,8 +1781,8 @@ impl ChannelSettings {
     /// resolves to. A window hands the scales its chart was drawn against to
     /// [`Self::of_plot_drawn`], which reads such an axis as band or time.
     #[must_use]
-    pub fn of_plot(spec: &Spec, plot: &PlotNode, channels: &ShelfChannels) -> Self {
-        Self::of_plot_drawn(spec, plot, channels, &ScaleSet::new())
+    pub fn of_plot(spec: &Spec, plot: &PlotNode, path: &str, channels: &ShelfChannels) -> Self {
+        Self::of_plot_drawn(spec, plot, path, channels, &ScaleSet::new())
     }
 
     /// [`Self::of_plot`] with the scales `plot` was drawn against, which the
@@ -1358,10 +1792,11 @@ impl ChannelSettings {
     pub fn of_plot_drawn(
         spec: &Spec,
         plot: &PlotNode,
+        path: &str,
         channels: &ShelfChannels,
         drawn: &ScaleSet,
     ) -> Self {
-        Self::build(spec, plot, channels, drawn, None)
+        Self::build(spec, plot, path, channels, drawn, None, None)
     }
 
     /// [`Self::of_plot_drawn`] with the marks `plot` drew, which colour's
@@ -1373,19 +1808,38 @@ impl ChannelSettings {
     pub fn of_plot_marked(
         spec: &Spec,
         plot: &PlotNode,
+        path: &str,
         channels: &ShelfChannels,
         drawn: &ScaleSet,
         marks: &[MarkKind],
     ) -> Self {
-        Self::build(spec, plot, channels, drawn, Some(marks))
+        Self::build(spec, plot, path, channels, drawn, Some(marks), None)
+    }
+
+    /// [`Self::of_plot_marked`] with the load-time profile of colour's column,
+    /// which the scale row's auto pivot is read from. Without it the auto pivot
+    /// is the one the chart drew.
+    #[must_use]
+    pub fn of_plot_profiled(
+        spec: &Spec,
+        plot: &PlotNode,
+        path: &str,
+        channels: &ShelfChannels,
+        drawn: &ScaleSet,
+        marks: &[MarkKind],
+        moments: Option<&ColumnMoments>,
+    ) -> Self {
+        Self::build(spec, plot, path, channels, drawn, Some(marks), moments)
     }
 
     fn build(
         spec: &Spec,
         plot: &PlotNode,
+        path: &str,
         channels: &ShelfChannels,
         drawn: &ScaleSet,
         marks: Option<&[MarkKind]>,
+        moments: Option<&ColumnMoments>,
     ) -> Self {
         let titles = resolve_axis_titles(plot);
         let scales = resolve_plot_scales_in(plot, &spec.params);
@@ -1409,7 +1863,15 @@ impl ChannelSettings {
                 drawn,
                 &domains.y,
             ),
-            colour: colour_rows(spec, plot, drawn, marks),
+            colour: colour_rows(
+                spec,
+                plot,
+                path,
+                channels.colour != Binding::Unset,
+                drawn,
+                marks,
+                moments,
+            ),
         }
     }
 
@@ -1426,8 +1888,8 @@ impl ChannelSettings {
     }
 }
 
-/// The rows of colour: the head rows scheme and reverse, in that order, each
-/// reading *auto* or the value the plot sets.
+/// The rows of colour: the head rows scheme, scale, legend and reverse, in that
+/// order, each reading *auto* or the value the plot sets.
 ///
 /// The scheme reads the name the resolver gives, and a name this build cannot
 /// draw, like none, reads viridis, which is what the plot draws. It is the
@@ -1441,8 +1903,11 @@ impl ChannelSettings {
 fn colour_rows(
     spec: &Spec,
     plot: &PlotNode,
+    path: &str,
+    bound: bool,
     drawn: &ScaleSet,
     marks: Option<&[MarkKind]>,
+    moments: Option<&ColumnMoments>,
 ) -> Vec<SettingRow> {
     let scheme = resolve_colour_scheme_name(plot, &spec.params)
         .and_then(SequentialScheme::from_wire)
@@ -1460,14 +1925,207 @@ fn colour_rows(
         from: None,
         format: None,
         range: None,
+        colour: None,
     };
-    vec![
+    // A plot with nothing on colour has no scale, domain, pivot or steps to set:
+    // those rows are muted with the reason, before any other they would give.
+    let unbound = |reason: &str| (!bound).then(|| reason.to_string());
+    let diverging = resolve_colour_scale_diverging(plot, &spec.params);
+    let quantize = resolve_colour_scale_quantize(plot, &spec.params);
+    let drawn_pivot = match drawn.get(Channel::Fill) {
+        Some(Scale::Diverging { pivot, .. }) => Some(*pivot),
+        _ => None,
+    };
+    let written_pivot = resolve_colour_pivot(plot, &spec.params);
+    let facts = ColourScaleFacts {
+        pivot: diverging.then(|| written_pivot.or(drawn_pivot)).flatten(),
+        // A file that writes no pivot leaves the chart to pick its own, so the
+        // pivot it drew is the auto one: nothing in the file is the analyst's
+        // beyond the scale.
+        auto_pivot: if diverging && written_pivot.is_none() {
+            drawn_pivot.or_else(|| moments.map(auto_pivot))
+        } else {
+            moments.map(auto_pivot).or(drawn_pivot)
+        },
+        // Colours the file writes set a stepped scale's count, so there is no
+        // count to show, compare or type.
+        count: (quantize && drawn_colour_range(spec, plot).is_none())
+            .then(|| resolve_colour_steps(plot, &spec.params).unwrap_or(DEFAULT_COLOUR_STEPS)),
+        diverging,
+        range: own_colour_range(spec, plot),
+    };
+    // With nothing on colour the file's scale and domain keys draw nothing, and
+    // the muted rows offer no way to clear them: those rows read their auto,
+    // unset, as the legend row does.
+    let files_scale = files_own_word(
+        plot.attributes.get("colorScale"),
+        &["linear", "diverging", "quantize"],
+    );
+    let scale_word = if !bound {
+        "linear"
+    } else if let Some(word) = files_scale.as_deref() {
+        word
+    } else if diverging {
+        "diverging"
+    } else if quantize {
+        "steps"
+    } else {
+        "linear"
+    };
+    let scale = SettingRow {
+        colour: Some(facts.clone()),
+        ..row(
+            SCALE_ROW,
+            scale_word.to_string(),
+            scale_word != "linear",
+            COLOUR_SCALE_SAYS,
+            unbound(SCALE_UNBOUND)
+                .or_else(|| files_scale.as_ref().map(|_| SCALE_THE_FILES.to_string()))
+                .or_else(|| names.then(|| SCALE_NAMES.to_string())),
+        )
+    };
+    // Each parameter row is set by its own value on its own scale, so a muted
+    // row never shows the other's dot. The scale is the one the file resolves
+    // to, a `$param`'s included, and with nothing on colour neither is set.
+    let pivot_set = bound && diverging && facts.pivot_set();
+    // Over colours of the analyst's own, the chart draws one step per colour
+    // and leaves `colorN` unread, so the steps row has no count to set.
+    let own_steps = quantize && facts.count.is_none();
+    let steps_set = bound && quantize && !own_steps && facts.steps_set();
+    let pivot = SettingRow {
+        by_name: true,
+        kind: SettingKind::Typed,
+        colour: Some(facts.clone()),
+        ..row(
+            PIVOT_ROW,
+            facts.pivot.map(pivot_text).unwrap_or_default(),
+            pivot_set,
+            PIVOT_SAYS,
+            unbound(PIVOT_UNBOUND).or_else(|| (!diverging).then(|| PIVOT_OFF.to_string())),
+        )
+    };
+    let steps = SettingRow {
+        by_name: true,
+        kind: SettingKind::Typed,
+        colour: Some(facts.clone()),
+        ..row(
+            STEPS_ROW,
+            facts.count.map(|n| n.to_string()).unwrap_or_default(),
+            steps_set,
+            STEPS_SAYS,
+            unbound(STEPS_UNBOUND)
+                .or_else(|| (!quantize).then(|| STEPS_OFF.to_string()))
+                .or_else(|| own_steps.then(|| STEPS_OWN_COLOURS.to_string())),
+        )
+    };
+    // Colours of the analyst's own are drawn in place of any scheme, on every
+    // scale, so the row reads them as custom, set. A diverging scale with no
+    // scheme is drawn in brightfield's pair, which is its auto; one that names a
+    // scheme reads it, and `rdbu` is the one the strip offers.
+    let scheme_row = if facts.range.is_some() {
+        SettingRow {
+            colour: Some(facts.clone()),
+            ..row(
+                SCHEME_ROW,
+                CUSTOM_RANGE.to_string(),
+                true,
+                SCHEME_CUSTOM_SAYS,
+                names.then(|| SCHEME_NAMES.to_string()),
+            )
+        }
+    } else if diverging {
+        let named =
+            resolve_colour_scheme_name(plot, &spec.params).and_then(SequentialScheme::from_wire);
+        SettingRow {
+            colour: Some(facts.clone()),
+            ..row(
+                SCHEME_ROW,
+                named
+                    .map_or(OWN_PAIR, SequentialScheme::wire_name)
+                    .to_string(),
+                named.is_some(),
+                SCHEME_DIVERGING_SAYS,
+                names.then(|| SCHEME_NAMES.to_string()),
+            )
+        }
+    } else {
         row(
             SCHEME_ROW,
             scheme.wire_name().to_string(),
             scheme != SequentialScheme::default(),
             SCHEME_SAYS,
             names.then(|| SCHEME_NAMES.to_string()),
+        )
+    };
+    let fixed = matches!(
+        plot.attributes.get("colorDomain"),
+        Some(SpecValue::String(word)) if word == "Fixed"
+    );
+    let files_domain = files_own_word(plot.attributes.get("colorDomain"), &["Fixed"]);
+    let set_ends = match plot.attributes.get("colorDomain").and_then(colour_domain) {
+        Some(ColourDomain::Ends(lo, hi)) => Ends::new(lo, hi),
+        _ => None,
+    };
+    let drawn_ends = match drawn.get(Channel::Fill) {
+        Some(
+            Scale::Sequential {
+                domain_min,
+                domain_max,
+                ..
+            }
+            | Scale::Diverging {
+                domain_min,
+                domain_max,
+                ..
+            }
+            | Scale::Quantized {
+                domain_min,
+                domain_max,
+                ..
+            },
+        ) => Ends::new(*domain_min, *domain_max),
+        _ => None,
+    };
+    let domain = SettingRow {
+        by_name: true,
+        kind: SettingKind::Typed,
+        range: Some(RangeFacts {
+            key: "colorDomain",
+            drawn: drawn_ends,
+            set: set_ends,
+            log: false,
+        }),
+        ..row(
+            DOMAIN_ROW,
+            match (bound, fixed, set_ends, &files_domain) {
+                (true, true, _, _) => FIXED_DOMAIN.to_string(),
+                (true, false, Some(ends), _) => ends_text(ends),
+                (true, false, None, Some(word)) => word.clone(),
+                _ => AUTO.to_string(),
+            },
+            bound && (fixed || set_ends.is_some() || files_domain.is_some()),
+            DOMAIN_SAYS,
+            unbound(DOMAIN_UNBOUND)
+                .or_else(|| files_domain.as_ref().map(|_| DOMAIN_THE_FILES.to_string()))
+                .or_else(|| names.then(|| DOMAIN_NAMES.to_string())),
+        )
+    };
+    // A plot that paints nothing by colour has no legend to place: the row reads
+    // the auto it would be given, muted, and writes nothing.
+    let placed = if bound {
+        colour_legend_placement(spec, path).wire_name()
+    } else {
+        LEGEND_STEPS[0]
+    };
+    vec![
+        scheme_row,
+        scale,
+        row(
+            LEGEND_ROW,
+            placed.to_string(),
+            placed != LEGEND_STEPS[0],
+            LEGEND_SAYS,
+            (!bound).then(|| LEGEND_UNBOUND.to_string()),
         ),
         row(
             REVERSE_ROW,
@@ -1478,6 +2136,9 @@ fn colour_rows(
                 .is_some_and(|marks| !colour_reverse_applies(marks))
                 .then(|| COLOUR_REVERSE_DOTS.to_string()),
         ),
+        pivot,
+        steps,
+        domain,
     ]
 }
 
@@ -1531,6 +2192,7 @@ fn axis_rows(
         from: None,
         format: None,
         range: None,
+        colour: None,
     };
     // The scale the chart draws: band for names and time for dates, which are
     // brightfield's own choice and so leave the row unset, and otherwise the
@@ -1690,6 +2352,7 @@ fn by_name_rows(plot: &PlotNode, axis: ShelfChannel, drawn: &ScaleSet) -> [Setti
         from: None,
         format: None,
         range: None,
+        colour: None,
     };
     let grid_key = if x { "xGrid" } else { "yGrid" };
     let grid_from = (!plot.attributes.contains_key(grid_key)
@@ -2293,7 +2956,7 @@ impl ColumnList {
         if !row.takes_field() {
             return;
         }
-        if row.name == RANGE_ROW {
+        if row.range.is_some() {
             // Both ends open at once, on the ends the axis runs over, with the low
             // selected.
             let shown = row
@@ -2305,7 +2968,7 @@ impl ColumnList {
                 |ends| (end_text(ends.lo), end_text(ends.hi)),
             );
             self.field = Some(RowField {
-                row: RANGE_ROW,
+                row: row.name,
                 selected: !low.is_empty(),
                 text: low,
                 refusal: None,
@@ -2316,12 +2979,40 @@ impl ColumnList {
             });
             return;
         }
+        if row.name == SCALE_ROW {
+            // A diverging or stepped scale opens on its parameter, which the
+            // field keeps under the pivot's or the steps' own name.
+            if let Some(facts) = &row.colour {
+                let diverging = row.value == "diverging";
+                let text = if diverging {
+                    facts.pivot.map(end_text).unwrap_or_default()
+                } else {
+                    facts.count.map(|n| n.to_string()).unwrap_or_default()
+                };
+                self.field = Some(RowField {
+                    row: if diverging { PIVOT_ROW } else { STEPS_ROW },
+                    selected: !text.is_empty(),
+                    text,
+                    refusal: None,
+                    ends: None,
+                });
+                return;
+            }
+        }
         let text = if row.name == FORMAT_ROW {
             // The specifier the file holds, which every preset is one of; auto
             // holds none, so its field opens empty.
             row.format
                 .as_ref()
                 .and_then(|facts| facts.specifier.clone())
+                .unwrap_or_default()
+        } else if row.name == PIVOT_ROW {
+            // The pivot the file holds, as the scale row opens on: the row
+            // displays four figures, and keeping that would round the file's.
+            row.colour
+                .as_ref()
+                .and_then(|f| f.pivot)
+                .map(end_text)
                 .unwrap_or_default()
         } else if row.name == TITLE_ROW && row.value == NO_TITLE {
             match self.channels.binding(self.channel) {
@@ -2361,7 +3052,19 @@ impl ColumnList {
                 }
                 SettingValue::Text(format_specifier(&field.text)?)
             }
-            RANGE_ROW => return self.range_edit(),
+            RANGE_ROW | DOMAIN_ROW => return self.range_edit(),
+            PIVOT_ROW => {
+                if field.text.trim().is_empty() {
+                    return Ok(None);
+                }
+                SettingValue::Number(pivot_number(&field.text)?)
+            }
+            STEPS_ROW => {
+                if field.text.trim().is_empty() {
+                    return Ok(None);
+                }
+                SettingValue::Count(steps_count(&field.text)?)
+            }
             _ => {
                 if field.text.trim().is_empty() {
                     return Ok(None);
@@ -2421,7 +3124,7 @@ impl ColumnList {
         }
         Ok(Ends::new(lo, hi).map(|ends| RowEdit {
             channel: self.channel,
-            row: RANGE_ROW,
+            row: field.row,
             value: SettingValue::Ends(ends),
         }))
     }
@@ -2494,7 +3197,9 @@ impl ColumnList {
                 let sentence = match self.field.as_ref().map(|f| f.row) {
                     Some(TITLE_ROW) => TITLE_NEEDS_TEXT.to_string(),
                     Some(FORMAT_ROW) => format_specifier("").unwrap_err(),
-                    Some(RANGE_ROW) => end_number("").unwrap_err(),
+                    Some(RANGE_ROW | DOMAIN_ROW) => end_number("").unwrap_err(),
+                    Some(PIVOT_ROW) => pivot_number("").unwrap_err(),
+                    Some(STEPS_ROW) => steps_count("").unwrap_err(),
                     _ => ticks_count("").unwrap_err(),
                 };
                 if let Some(field) = self.field.as_mut() {
@@ -2580,17 +3285,40 @@ impl ColumnList {
     /// `⌫` on the settings: put the row under the cursor back to auto. A row that
     /// does not apply reports nothing.
     fn row_to_auto(&mut self, out: &mut Vec<ListReport>) {
-        let Some(row) = self.setting_cursor() else {
-            return;
-        };
-        if row.reason.is_none() && row_key(self.channel, row.name).is_some() {
-            let name = row.name;
-            out.push(ListReport::Set(RowEdit {
-                channel: self.channel,
-                row: name,
-                value: SettingValue::Auto,
-            }));
+        if let Some(edit) = self.setting_cursor().and_then(|row| self.auto_edit(row)) {
+            out.push(ListReport::Set(edit));
         }
+    }
+
+    /// The edit that puts `row` back to auto, or `None` where the row does not
+    /// apply or has no key to write.
+    fn auto_edit(&self, row: &SettingRow) -> Option<RowEdit> {
+        // Colour's scale row has no key of its own: it takes three out, and the
+        // window answers it by writing linear. Its legend row has none either,
+        // and the window answers it by placing the legend at the right.
+        let writes = row_key(self.channel, row.name).is_some()
+            || (self.channel == ShelfChannel::Colour && matches!(row.name, SCALE_ROW | LEGEND_ROW));
+        if row.reason.is_some() || !writes {
+            return None;
+        }
+        // The pivot and the count are written as soon as their scale is chosen,
+        // since Mosaic's defaults differ from brightfield's, so their auto is
+        // auto's value written by name rather than the key taken out.
+        let value = match (self.channel, row.name) {
+            (ShelfChannel::Colour, PIVOT_ROW) => SettingValue::Number(
+                row.colour
+                    .as_ref()
+                    .and_then(|facts| facts.auto_pivot)
+                    .and_then(Number::new)?,
+            ),
+            (ShelfChannel::Colour, STEPS_ROW) => SettingValue::Count(DEFAULT_COLOUR_STEPS),
+            _ => SettingValue::Auto,
+        };
+        Some(RowEdit {
+            channel: self.channel,
+            row: row.name,
+            value,
+        })
     }
 
     /// `Esc`: clear the query first, and with the query empty, back out of the
@@ -2923,9 +3651,11 @@ pub struct SettingRowDrawn {
 /// One scheme of the strip under colour's scheme row as it was drawn.
 #[derive(Clone, Debug)]
 pub struct SchemeDrawn {
-    /// The scheme the ramp and the name stand for, which a click on either
-    /// writes.
-    pub scheme: SequentialScheme,
+    /// The scheme the ramp and the name stand for. `None` for brightfield's own
+    /// diverging pair, which is no scheme of the renderer's.
+    pub scheme: Option<SequentialScheme>,
+    /// The word the name reads, which a click on the ramp or the name writes.
+    pub word: &'static str,
     /// The ramp painted.
     pub ramp: egui::Rect,
     /// Where the scheme's name was laid out.
@@ -2950,8 +3680,7 @@ const RING_WIDTH: f32 = 1.5;
 /// for each point of the width, each sampled along the scheme's stops, so the
 /// first strip is the first stop and the last is the last, exactly. A mesh and
 /// not a run of rectangles, so no seam shows between the strips.
-fn paint_ramp(painter: &egui::Painter, rect: egui::Rect, scheme: SequentialScheme) {
-    let stops = scheme.stops();
+fn paint_ramp(painter: &egui::Painter, rect: egui::Rect, stops: &[[f32; 4]]) {
     let strips = rect.width().round().max(2.0) as usize;
     let step = rect.width() / strips as f32;
     let mut mesh = egui::Mesh::default();
@@ -2963,16 +3692,68 @@ fn paint_ramp(painter: &egui::Painter, rect: egui::Rect, scheme: SequentialSchem
         );
         mesh.add_colored_rect(
             strip,
-            crate::legend::chart_ink(ramp_at(&stops, i as f64 / (strips - 1) as f64)),
+            crate::legend::chart_ink(ramp_at(stops, i as f64 / (strips - 1) as f64)),
         );
     }
     painter.add(egui::Shape::mesh(mesh));
 }
 
+/// One scheme the strip under the scheme row offers: the word it reads, and the
+/// renderer's scheme behind it where it is one.
+#[derive(Clone, Copy, PartialEq)]
+struct StripEntry {
+    word: &'static str,
+    scheme: Option<SequentialScheme>,
+}
+
+impl StripEntry {
+    fn of(scheme: SequentialScheme) -> Self {
+        Self {
+            word: scheme.wire_name(),
+            scheme: Some(scheme),
+        }
+    }
+
+    /// brightfield's diverging pair.
+    const OWN: Self = Self {
+        word: OWN_PAIR,
+        scheme: None,
+    };
+
+    /// Colours of the analyst's own, which the row paints from the file and the
+    /// strip does not offer.
+    const CUSTOM: Self = Self {
+        word: CUSTOM_RANGE,
+        scheme: None,
+    };
+
+    /// The stops the ramp is painted along, in `mode`: the pair's middle is the
+    /// theme's.
+    fn stops(self, mode: Mode) -> Vec<[f32; 4]> {
+        match self.scheme {
+            Some(scheme) => scheme.stops(),
+            None => brightfield_render::scale::diverging_stops(
+                None,
+                &brightfield_render::ink::ChartInk::for_mode(mode.is_dark()),
+            ),
+        }
+    }
+}
+
+/// The entries the strip offers: the four sequential schemes, or on a diverging
+/// scale the pair and `rdbu`.
+fn strip_entries(diverging: bool) -> Vec<StripEntry> {
+    if diverging {
+        vec![StripEntry::OWN, StripEntry::of(SequentialScheme::Rdbu)]
+    } else {
+        scheme_strip().into_iter().map(StripEntry::of).collect()
+    }
+}
+
 /// One scheme of the strip, laid out: where its ramp and its name stand from the
 /// strip's top left.
 struct StripItem {
-    scheme: SequentialScheme,
+    entry: StripEntry,
     ramp_at: egui::Vec2,
     name_at: egui::Vec2,
     name: std::sync::Arc<egui::Galley>,
@@ -2990,16 +3771,16 @@ struct StripLayout {
 /// next, so a rail as narrow as the list's least shows one scheme on a line.
 fn layout_strip(
     painter: &egui::Painter,
-    schemes: &[SequentialScheme],
+    schemes: &[StripEntry],
     room: f32,
-    ink: impl Fn(SequentialScheme) -> egui::Color32,
+    ink: impl Fn(StripEntry) -> egui::Color32,
 ) -> StripLayout {
     // The ring stands off the ramp by this much on every side.
     let ring = RING_GAP + RING_WIDTH;
     let mut items = Vec::with_capacity(schemes.len());
     let (mut x, mut y, mut tall) = (0.0_f32, 0.0_f32, 0.0_f32);
-    for &scheme in schemes {
-        let name = painter.layout_no_wrap(scheme.wire_name().to_string(), ui_font(), ink(scheme));
+    for &entry in schemes {
+        let name = painter.layout_no_wrap(entry.word.to_string(), ui_font(), ink(entry));
         let wide = ring + RAMP_WIDTH + spacing::SPACE_2 + name.size().x;
         let high = name.size().y.max(RAMP_HEIGHT + 2.0 * ring);
         if x > 0.0 && x + wide > room {
@@ -3009,7 +3790,7 @@ fn layout_strip(
         }
         let middle = y + high / 2.0;
         items.push(StripItem {
-            scheme,
+            entry,
             ramp_at: egui::vec2(x + ring, middle - RAMP_HEIGHT / 2.0),
             name_at: egui::vec2(
                 x + ring + RAMP_WIDTH + spacing::SPACE_2,
@@ -3405,9 +4186,10 @@ impl ColumnList {
     ///
     /// **A row reads its name, its value and a marker.** A value that is
     /// brightfield's own is in muted ink, with the word *auto* and a hollow ring;
-    /// one that differs is in the text ink, with a filled dot. Nothing here
-    /// changes a value, so a click or the pointer over a row moves the cursor and
-    /// no more.
+    /// one that differs is in the text ink, with a filled dot. A click or the
+    /// pointer over a row moves the cursor; a click on a stepping row's value
+    /// steps it, and one on the dot of a row that applies puts it back to auto,
+    /// as `⌫` does.
     ///
     /// **A row that does not apply to the axis is in muted ink throughout**, set
     /// or not, and says why on a line of its own under the name and the value. A
@@ -3469,16 +4251,19 @@ impl ColumnList {
         let mut clicked = None;
         let mut pointed = None;
         let mut stepped: Option<(usize, isize)> = None;
+        // The row whose dot a click landed on, which the click puts back to auto.
+        let mut reset: Option<usize> = None;
         // The ramp of the strip a click landed on, with the row it belongs to.
-        let mut picked: Option<(usize, SequentialScheme)> = None;
-        let offered = scheme_strip();
+        let mut picked: Option<(usize, &'static str)> = None;
         for &i in &order {
             let row = &rows[i];
             // The field of a typed row, open on this row.
-            let field = self
-                .field
-                .as_ref()
-                .filter(|f| self.row == Some(i) && f.row == row.name);
+            // The scale row's field names the parameter it keeps.
+            let field = self.field.as_ref().filter(|f| {
+                self.row == Some(i)
+                    && (f.row == row.name
+                        || (row.name == SCALE_ROW && matches!(f.row, PIVOT_ROW | STEPS_ROW)))
+            });
             // A row that does not apply says why on a line of its own under the
             // name and the value, in the room the row's content leaves; a row
             // whose field holds a value it refuses says so there, in full ink.
@@ -3503,15 +4288,25 @@ impl ColumnList {
             // before its name. While the cursor is on the row, a second line
             // offers each scheme as a ramp and its name, laid out before the row
             // is allocated so the row is as high as the strip needs.
+            let diverging = row.colour.as_ref().is_some_and(|f| f.diverging);
+            let offered = strip_entries(diverging);
             let scheme = (row.name == SCHEME_ROW && row.reason.is_none())
-                .then(|| SequentialScheme::from_wire(&row.value))
+                .then(|| {
+                    if row.value == OWN_PAIR {
+                        Some(StripEntry::OWN)
+                    } else if row.value == CUSTOM_RANGE {
+                        Some(StripEntry::CUSTOM)
+                    } else {
+                        SequentialScheme::from_wire(&row.value).map(StripEntry::of)
+                    }
+                })
                 .flatten();
             let offer = scheme
                 .filter(|_| on && self.field.is_none())
                 .map(|current| {
                     let room = width - 2.0 * (b.pad_x + spacing::SPACE_4);
-                    let ink = |scheme| {
-                        if scheme == current {
+                    let ink = |entry| {
+                        if entry == current {
                             primary
                         } else {
                             chrome::colour(sem.text.secondary)
@@ -3612,6 +4407,13 @@ impl ColumnList {
                 egui::pos2(content.left() + name_column + spacing::SPACE_3, rect.top()),
                 egui::pos2(marker.left(), line.bottom()),
             );
+            // A click on the dot of a set row that applies does what `⌫` does.
+            if response.clicked() && row.set && applies && self.field.is_none() {
+                let at = response.interact_pointer_pos();
+                if at.is_some_and(|p| marker.contains(p)) {
+                    reset = Some(i);
+                }
+            }
             if response.clicked() && row.steps() && self.field.is_none() {
                 let at = response.interact_pointer_pos();
                 if at.is_some_and(|p| value_zone.contains(p)) {
@@ -3632,13 +4434,13 @@ impl ColumnList {
                                 strip_origin + item.ramp_at,
                                 egui::vec2(RAMP_WIDTH, RAMP_HEIGHT),
                             );
-                            paint_ramp(&painter, ramp, item.scheme);
+                            paint_ramp(&painter, ramp, &item.entry.stops(mode));
                             let name = egui::Rect::from_min_size(
                                 strip_origin + item.name_at,
                                 item.name.size(),
                             );
                             painter.galley(name.min, item.name.clone(), primary);
-                            let ring = (item.scheme == *current).then(|| {
+                            let ring = (item.entry == *current).then(|| {
                                 let ring = ramp.expand(RING_GAP + RING_WIDTH);
                                 painter.rect_stroke(
                                     ring,
@@ -3649,7 +4451,8 @@ impl ColumnList {
                                 ring
                             });
                             SchemeDrawn {
-                                scheme: item.scheme,
+                                scheme: item.entry.scheme,
+                                word: item.entry.word,
                                 ramp,
                                 name,
                                 ring,
@@ -3664,7 +4467,7 @@ impl ColumnList {
                     ramps
                         .iter()
                         .find(|r| r.ramp.union(r.name).expand(RING_GAP).contains(p))
-                        .map(|r| (i, r.scheme))
+                        .map(|r| (i, r.word))
                 });
             }
 
@@ -3699,8 +4502,24 @@ impl ColumnList {
                 // selected, and the caret after it. The range row draws two, low and
                 // high, with the dash between, and the caret in the one that has the
                 // keys.
+                // The scale row keeps its word, and the field takes the place of
+                // the parameter after it.
+                let word = (row.name == SCALE_ROW).then(|| {
+                    let galley = painter.layout_no_wrap(row.value.clone(), ui_font(), ink);
+                    let at = egui::Rect::from_min_size(
+                        egui::pos2(value_left, line.center().y - galley.size().y / 2.0),
+                        galley.size(),
+                    );
+                    painter.galley(at.min, galley, ink);
+                    at
+                });
                 let ground = egui::Rect::from_min_max(
-                    egui::pos2(value_left - spacing::SPACE_2, line.top() + 2.0),
+                    egui::pos2(
+                        word.map_or(value_left - spacing::SPACE_2, |w| {
+                            w.right() + spacing::SPACE_2
+                        }),
+                        line.top() + 2.0,
+                    ),
                     egui::pos2(right, line.bottom() - 2.0),
                 );
                 let paint = |ground: egui::Rect, text: &str, selected: bool, active: bool| {
@@ -3773,7 +4592,7 @@ impl ColumnList {
                 } else {
                     paint(ground, &open.text, open.selected, true)
                 };
-                (at, Some(ground))
+                (word.unwrap_or(at), Some(ground))
             } else {
                 // The scheme row paints its ramp before the name.
                 let text_left =
@@ -3784,6 +4603,21 @@ impl ColumnList {
                     value.size(),
                 );
                 painter.galley(at.min, value, ink);
+                // The scale row's parameter after its word, muted while it is
+                // brightfield's own, and left out where it does not fit whole.
+                // The domain row's auto value takes its drawn ends here too.
+                if let Some(texts) = scale_parameter(row) {
+                    let left = at.right() + spacing::SPACE_2;
+                    let ink = if row.parameter_set() { primary } else { muted };
+                    let galley = texts
+                        .into_iter()
+                        .map(|text| painter.layout_no_wrap(text, ui_font(), ink))
+                        .find(|galley| galley.size().x <= right - left);
+                    if let Some(galley) = galley {
+                        let place = egui::pos2(left, line.center().y - galley.size().y / 2.0);
+                        painter.galley(place, galley, ink);
+                    }
+                }
                 (at, None)
             };
             let ramp = scheme.map(|scheme| {
@@ -3791,7 +4625,9 @@ impl ColumnList {
                     egui::pos2(value_left, line.center().y - RAMP_HEIGHT / 2.0),
                     egui::vec2(RAMP_WIDTH, RAMP_HEIGHT),
                 );
-                paint_ramp(&painter, at, scheme);
+                // Custom colours are painted as the file writes them.
+                let custom = row.colour.as_ref().and_then(|f| f.range.clone());
+                paint_ramp(&painter, at, &custom.unwrap_or_else(|| scheme.stops(mode)));
                 at
             });
             // The format's sample, muted, after the value. It gives way to the
@@ -3878,8 +4714,8 @@ impl ColumnList {
         );
 
         // The pointer moves the cursor and a click leaves it there; a click on
-        // the value of a row that steps does what `l` does, and the chip of `←`
-        // what `h` does.
+        // the value of a row that steps does what `l` does, the chip of `←`
+        // what `h` does, and the dot of a set row what `⌫` does.
         if let Some(i) = clicked.or(pointed) {
             if self.row != Some(i) {
                 self.row = Some(i);
@@ -3887,11 +4723,18 @@ impl ColumnList {
             }
         }
         let mut reports = Vec::new();
-        if let Some((i, scheme)) = picked {
+        if let Some(edit) = reset.and_then(|i| self.auto_edit(&rows[i])) {
+            reports.push(ListReport::Set(edit));
+        } else if let Some((i, word)) = picked {
             reports.push(ListReport::Set(RowEdit {
                 channel: self.channel,
                 row: rows[i].name,
-                value: SettingValue::Word(scheme.wire_name().to_string()),
+                // The pair is brightfield's own, which `⌫` also goes back to.
+                value: if word == OWN_PAIR {
+                    SettingValue::Auto
+                } else {
+                    SettingValue::Word(word.to_string())
+                },
             }));
         } else if let Some((i, by)) = stepped {
             match rows[i].step_to(by) {

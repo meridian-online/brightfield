@@ -934,6 +934,12 @@ pub struct ChartDoc {
     /// or a dashboard shown for reading, draws neither. False means a click on
     /// an axis is the canvas's, as it was before the axes were targets.
     pub axis_targets_live: bool,
+    /// **Whether colour's list is open this frame**, on either of its tabs, so the
+    /// chart rings the hero's legend in colour's hue. Cleared at the head of each
+    /// frame with [`Self::axis_targets_live`] and set with it where the shelf band
+    /// is carved: the ring is authoring chrome and a frame that draws no band
+    /// draws no ring.
+    pub colour_list_open: bool,
     /// The axis part a press landed on, waiting for the window, which opens that
     /// axis's settings on the part's row. Written by the chart pane's gesture
     /// machine, taken by [`Self::take_axis_request`].
@@ -1236,6 +1242,7 @@ impl ChartDoc {
             gesture_ink: None,
             wheel_taken: false,
             axis_targets_live: false,
+            colour_list_open: false,
             axis_request: None,
             raster_rect: None,
             legend_rect: None,
@@ -1296,6 +1303,7 @@ impl ChartDoc {
             gesture_ink: None,
             wheel_taken: false,
             axis_targets_live: false,
+            colour_list_open: false,
             axis_request: None,
             raster_rect: None,
             legend_rect: None,
@@ -2189,8 +2197,11 @@ impl ChartDoc {
             }
         };
         let was = Self::setting_text(&before, &path, edit.channel, edit.row);
-        let now = Self::setting_text(&spec, &path, edit.channel, edit.row);
-        let range_note = if applied.len() > 1 {
+        // Only an axis has a range, and a scale change there is the one write of
+        // more than one edit that takes it out; colour's scale writes several
+        // keys and has no range to name.
+        let axis = matches!(edit.channel, ShelfChannel::X | ShelfChannel::Y);
+        let range_note = if axis && applied.len() > 1 {
             let ends = Self::setting_text(&before, &path, edit.channel, crate::shelf::RANGE_ROW);
             format!(", and its range {ends} \u{2192} auto")
         } else {
@@ -2199,6 +2210,14 @@ impl ChartDoc {
         let added = applied.len();
         match self.rebuild(spec) {
             Ok((live, composed)) => {
+                // The plot is read where the rebuilt page holds it: a legend
+                // moved below wraps the plot in a `vconcat`, and one moved from
+                // below unwraps it.
+                let after = composed
+                    .plots
+                    .get(plot)
+                    .map_or(path, |h| ComponentPath(h.path.clone()));
+                let now = Self::setting_text(live.spec(), &after, edit.channel, edit.row);
                 self.live = Some(live);
                 self.composed = composed;
                 self.shelf_undo.push(
@@ -2292,6 +2311,109 @@ impl ChartDoc {
     > {
         use crate::shelf::SettingValue;
         use crate::shelf_edit::SettingWrite;
+        if let SettingValue::ColourScale(write) = &edit.value {
+            let mut spec = before.clone();
+            let edits = crate::shelf_edit::put_colour_scale(&mut spec, path, write)?;
+            return Ok((!edits.is_empty()).then_some((spec, edits)));
+        }
+        if edit.channel == ShelfChannel::Colour
+            && edit.row == crate::shelf::SCALE_ROW
+            && edit.value == SettingValue::Auto
+        {
+            let mut spec = before.clone();
+            let edits = crate::shelf_edit::put_colour_scale(
+                &mut spec,
+                path,
+                &crate::shelf::ColourScaleWrite::Linear,
+            )?;
+            return Ok((!edits.is_empty()).then_some((spec, edits)));
+        }
+        // A count typed into the steps row is always written: Mosaic's
+        // thresholds differ from the default's, so the file names the count the
+        // scale is drawn with, and auto is the default count by name.
+        if let (ShelfChannel::Colour, crate::shelf::STEPS_ROW) = (edit.channel, edit.row) {
+            let count = match &edit.value {
+                SettingValue::Count(count) => *count,
+                SettingValue::Auto => brightfield_spec::layout::DEFAULT_COLOUR_STEPS,
+                _ => return Ok(None),
+            };
+            let mut spec = before.clone();
+            let edits = crate::shelf_edit::put_colour_scale(
+                &mut spec,
+                path,
+                &crate::shelf::ColourScaleWrite::Steps { count },
+            )?;
+            return Ok((!edits.is_empty()).then_some((spec, edits)));
+        }
+        // The pivot is written by name for the same reason: Mosaic's is 0. Its
+        // auto is a number only the column's profile knows, which the list sends
+        // as one, so an auto with no number has nothing to write.
+        if edit.channel == ShelfChannel::Colour
+            && edit.row == crate::shelf::PIVOT_ROW
+            && edit.value == SettingValue::Auto
+        {
+            return Ok(None);
+        }
+        // On a diverging scale the scheme row chooses between brightfield's
+        // pair, held as its colours, and `rdbu`, which the pair's `colorRange`
+        // would otherwise cover. Either replaces colours of the analyst's own.
+        if edit.channel == ShelfChannel::Colour && edit.row == crate::shelf::SCHEME_ROW {
+            let rdbu = match &edit.value {
+                SettingValue::Word(word) if word == "rdbu" => Some(true),
+                SettingValue::Auto => Some(false),
+                _ => None,
+            };
+            let diverging = edit::plot_at_path(before, &path.0).is_some_and(|plot| {
+                brightfield_spec::layout::resolve_colour_scale_diverging(plot, &before.params)
+            });
+            if let (true, Some(rdbu)) = (diverging, rdbu) {
+                let mut spec = before.clone();
+                let edits = crate::shelf_edit::put_diverging_scheme(&mut spec, path, rdbu)?;
+                return Ok((!edits.is_empty()).then_some((spec, edits)));
+            }
+            // On a linear or stepped scale over colours of the analyst's own, a
+            // scheme chosen, or `⌫`, takes the colours out: they are drawn in
+            // place of any scheme.
+            let own_colours = edit::plot_at_path(before, &path.0)
+                .is_some_and(|plot| crate::shelf::own_colour_range(before, plot).is_some());
+            if !diverging && own_colours {
+                let scheme = match &edit.value {
+                    SettingValue::Word(word) => {
+                        match brightfield_render::scale::SequentialScheme::from_wire(word) {
+                            Some(scheme) => Some(scheme),
+                            None => return Ok(None),
+                        }
+                    }
+                    SettingValue::Auto => None,
+                    _ => return Ok(None),
+                };
+                let mut spec = before.clone();
+                let edits = crate::shelf_edit::put_scheme_over_range(&mut spec, path, scheme)?;
+                return Ok((!edits.is_empty()).then_some((spec, edits)));
+            }
+        }
+        // Colour's legend row places the legend. Right is what the colour edit
+        // writes, so a file with no legend node is given one at the right
+        // rather than the choice being dropped as a default.
+        if edit.channel == ShelfChannel::Colour && edit.row == crate::shelf::LEGEND_ROW {
+            let at = match &edit.value {
+                SettingValue::Word(word) => edit::LegendPlacement::from_wire(word),
+                SettingValue::Auto => Some(edit::LegendPlacement::Right),
+                _ => None,
+            };
+            let Some(at) = at else { return Ok(None) };
+            if edit::colour_legend_placement(before, &path.0) == at {
+                return Ok(None);
+            }
+            let mut spec = before.clone();
+            let placed = ChartEdit::PlaceColourLegend {
+                plot: path.clone(),
+                at,
+            };
+            edit::apply_for_fresh_load(&mut spec, &placed)
+                .map_err(crate::shelf_edit::ShelfRefusal::Edit)?;
+            return Ok(Some((spec, vec![placed])));
+        }
         let Some(key) = crate::shelf::row_key(edit.channel, edit.row) else {
             return Ok(None);
         };
@@ -2320,6 +2442,12 @@ impl ChartDoc {
                         .to_string(),
                 ))
             }
+            // Mosaic reads `Fixed` with its capital.
+            SettingValue::Word(word)
+                if edit.row == crate::shelf::DOMAIN_ROW && word == crate::shelf::FIXED_DOMAIN =>
+            {
+                SettingWrite::Value(SpecValue::String("Fixed".to_string()))
+            }
             SettingValue::Word(word) => SettingWrite::Value(SpecValue::String(word.clone())),
             SettingValue::Text(words) => SettingWrite::Value(SpecValue::String(words.clone())),
             SettingValue::Switch(on) => SettingWrite::Value(SpecValue::Bool(*on)),
@@ -2330,6 +2458,11 @@ impl ChartDoc {
                 crate::shelf_edit::number_value(ends.lo),
                 crate::shelf_edit::number_value(ends.hi),
             ])),
+            SettingValue::Number(n) => {
+                SettingWrite::Value(crate::shelf_edit::number_value(n.get()))
+            }
+            // Written whole above.
+            SettingValue::ColourScale(_) => return Ok(None),
             SettingValue::Auto => SettingWrite::Auto,
         };
         let mut spec = before.clone();
@@ -2381,7 +2514,9 @@ impl ChartDoc {
         let Some(handle) = self.composed.plots.get(plot) else {
             return String::new();
         };
-        if !cleared {
+        // Only an axis has a range: a column put on colour takes the old
+        // column's domain out, which is no range.
+        if !cleared || !matches!(channel, ShelfChannel::X | ShelfChannel::Y) {
             return String::new();
         }
         let ends = Self::setting_text(
@@ -2424,7 +2559,8 @@ impl ChartDoc {
         edit::plot_at_path(spec, &path.0)
             .and_then(|plot| {
                 let channels = ShelfChannels::of_plot(plot)?;
-                let settings = crate::shelf::ChannelSettings::of_plot(spec, plot, &channels);
+                let settings =
+                    crate::shelf::ChannelSettings::of_plot(spec, plot, &path.0, &channels);
                 settings
                     .rows(channel)
                     .iter()

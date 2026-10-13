@@ -27,10 +27,10 @@ const BAND_LEFT: f32 = 400.0;
 /// Where the raster's top sits in the same coordinates.
 const RASTER_TOP: f32 = 20.0;
 
-/// Seven rows: a number column to colour by whose highest value is a whole
-/// number, so its domain end spells the same way in the legend and here, and a
+/// Seven rows: a number column to colour by whose lowest and highest values are
+/// whole numbers, so its domain ends spell the same way in the legend and here, and a
 /// string column of three categories.
-const VALUES: [f64; 7] = [1.5, 2.0, 3.5, 9.0, 4.0, 6.5, 5.0];
+const VALUES: [f64; 7] = [1.0, 2.0, 3.5, 9.0, 4.0, 6.5, 5.0];
 
 fn page(column: &str, fill: &str, attrs: &str) -> String {
     page_of(&VALUES, column, fill, attrs)
@@ -340,10 +340,11 @@ const SIXTEEN_DIGITS: [f64; 4] = [
 ];
 
 /// The scales a sixteen-digit domain is drawn on, with how many of the legend's
-/// values are then of sixteen digits: a sequential scale starts at zero, so only
-/// its maximum is; a diverging one about a pivot of sixteen digits has all three.
+/// values are then of sixteen digits: a sequential scale runs from the rows'
+/// smallest value to their largest, so both ends are; a diverging one about a
+/// pivot of sixteen digits has all three.
 const SIXTEEN_DIGIT_SCALES: [(&str, usize); 2] = [
-    ("", 1),
+    ("", 2),
     ("colorScale: diverging\ncolorPivot: 5000000000000000\n", 3),
 ];
 

@@ -24,7 +24,7 @@ use peniko::{Color, Fill};
 use vello::Scene;
 
 /// The column the dots are filled by. The values are positive, so the ramp is
-/// anchored at zero and ends at the maximum, 4.9.
+/// run from the smallest, 0.825, to the largest, 4.9.
 const VALUES: [f64; 5] = [0.825, 2.291, 1.5, 4.9, 3.2];
 
 /// The three schemes that are not the default, and the default.
@@ -96,10 +96,10 @@ fn painted(composed: &Composed) -> Vec<u32> {
     composed.scene.encoding().draw_data.to_vec()
 }
 
-/// The colour word a value takes along `scheme`'s ramp over `[0, max]`.
-fn along(scheme: SequentialScheme, max: f64, value: f64) -> u32 {
+/// The colour word a value takes along `scheme`'s ramp over `[min, max]`.
+fn along(scheme: SequentialScheme, min: f64, max: f64, value: f64) -> u32 {
     let ramp = Scale::Sequential {
-        domain_min: 0.0,
+        domain_min: min,
         domain_max: max,
         stops: scheme.stops(),
     };
@@ -134,7 +134,7 @@ fn a_dot_filled_by_a_number_paints_and_draws_its_legend_along_the_scheme_it_name
         let words = painted(&composed);
         for v in VALUES {
             assert!(
-                words.contains(&along(scheme, 4.9, v)),
+                words.contains(&along(scheme, 0.825, 4.9, v)),
                 "{name}: no point painted the colour {v} takes along the {name} ramp"
             );
         }
@@ -203,7 +203,11 @@ fn a_plot_redrawn_after_a_range_is_swept_elsewhere_keeps_its_scheme() {
         Some(SequentialScheme::Blues.stops()),
         "after the sweep, the legend's ramp is blues"
     );
-    let Some(Scale::Sequential { domain_max, .. }) = swept.plots[1].scales.get(Channel::Fill)
+    let Some(Scale::Sequential {
+        domain_min,
+        domain_max,
+        ..
+    }) = swept.plots[1].scales.get(Channel::Fill)
     else {
         panic!("the swept plot has no fill ramp");
     };
@@ -211,7 +215,7 @@ fn a_plot_redrawn_after_a_range_is_swept_elsewhere_keeps_its_scheme() {
     // x in {1, 2, 3} survive the sweep: v is 2.291, 1.5 and 4.9.
     for v in [2.291, 1.5, 4.9] {
         assert!(
-            words.contains(&along(SequentialScheme::Blues, *domain_max, v)),
+            words.contains(&along(SequentialScheme::Blues, *domain_min, *domain_max, v)),
             "after the sweep, no point painted the colour {v} takes along the blues ramp"
         );
     }
@@ -260,14 +264,23 @@ fn a_cell_with_a_counted_fill_paints_along_the_scheme_its_plot_names() {
         Some(SequentialScheme::Blues.stops()),
         "the counted cells' legend is blues"
     );
-    let Some(Scale::Sequential { domain_max, .. }) = blues.plots[0].scales.get(Channel::Fill)
+    let Some(Scale::Sequential {
+        domain_min,
+        domain_max,
+        ..
+    }) = blues.plots[0].scales.get(Channel::Fill)
     else {
         panic!("the count grid has no fill ramp");
     };
     let words = painted(&blues);
     for count in [1.0, 2.0, 3.0, 4.0] {
         assert!(
-            words.contains(&along(SequentialScheme::Blues, *domain_max, count)),
+            words.contains(&along(
+                SequentialScheme::Blues,
+                *domain_min,
+                *domain_max,
+                count
+            )),
             "no cell painted the colour a count of {count} takes along the blues ramp"
         );
     }

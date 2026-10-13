@@ -91,7 +91,7 @@ fn log(lo: f64, hi: f64) -> ScaleSet {
 fn settings_over(attrs: &str, drawn: &ScaleSet) -> ChannelSettings {
     let spec = spec_of(attrs);
     let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
-    ChannelSettings::of_plot_drawn(&spec, plot, &channels(), drawn)
+    ChannelSettings::of_plot_drawn(&spec, plot, "root", &channels(), drawn)
 }
 
 /// A list on x's settings with the cursor on the range row, reached by its name.

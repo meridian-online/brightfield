@@ -1,6 +1,7 @@
-//! **In the window, colour's scheme and reverse rows act on the chart they sit
-//! over: the keys and the clicks write `colorScheme` and `colorReverse`, the marks
-//! and the legend are drawn again from them, and Save keeps them.**
+//! **In the window, colour's settings rows act on the chart they sit over: the
+//! keys and the clicks write the scheme, the scale, the domain, the legend and
+//! reverse, the marks and the legend are drawn again from them, and Save keeps
+//! them.**
 //!
 //! `shelf_settings_colour.rs` drives the list alone. What the list cannot say by
 //! itself is this file's: that `Tab` on colour's cell reaches its rows, that a
@@ -23,7 +24,8 @@ use brightfield_shell::app::CHART;
 use brightfield_shell::design::Mode;
 use brightfield_shell::legend::{self, LegendSpec};
 use brightfield_shell::shelf::{
-    CardDrawn, ListTab, SchemeDrawn, SettingRow, SettingRowDrawn, REVERSE_ROW, SCHEME_ROW,
+    Binding, CardDrawn, ListTab, SchemeDrawn, SettingRow, SettingRowDrawn, DOMAIN_ROW, LEGEND_ROW,
+    PIVOT_ROW, REVERSE_ROW, SCALE_ROW, SCHEME_ROW, STEPS_ROW,
 };
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::text_ink;
@@ -270,6 +272,33 @@ impl Window {
         assert_eq!(self.setting_cursor(), Some(SCHEME_ROW));
     }
 
+    /// Walk the open list's cursor down to the settings row `name`.
+    fn move_to_row(&mut self, name: &str) {
+        for _ in 0..12 {
+            if self.setting_cursor() == Some(name) {
+                return;
+            }
+            self.type_letter(egui::Key::J, "j");
+        }
+        panic!("the settings cursor did not reach {name}");
+    }
+
+    /// Find the settings row `name` by typing its name after `/`, and `Enter`.
+    fn find_row(&mut self, name: &str) {
+        self.type_letter(egui::Key::Slash, "/");
+        for letter in name.chars() {
+            let key = egui::Key::from_name(&letter.to_ascii_uppercase().to_string())
+                .unwrap_or_else(|| panic!("no key for {letter}"));
+            self.type_letter(key, &letter.to_string());
+        }
+        self.press(egui::Key::Enter);
+        assert_eq!(
+            self.setting_cursor(),
+            Some(name),
+            "typing {name} did not find its row"
+        );
+    }
+
     fn list_tab(&self) -> Option<ListTab> {
         self.app.protocol_model().column_list().map(|l| l.tab())
     }
@@ -288,7 +317,7 @@ impl Window {
             .and_then(|l| l.setting_cursor().map(|r| r.name))
     }
 
-    /// The names of the open list's settings rows, in order.
+    /// The names of the open list's head settings rows, in order.
     fn row_names(&self) -> Vec<&'static str> {
         self.app
             .protocol_model()
@@ -296,6 +325,7 @@ impl Window {
             .expect("a list is open")
             .settings()
             .iter()
+            .filter(|r| !r.by_name)
             .map(|r| r.name)
             .collect()
     }
@@ -335,7 +365,7 @@ impl Window {
         self.row_drawn(SCHEME_ROW)
             .schemes
             .iter()
-            .find(|s| s.scheme == scheme)
+            .find(|s| s.scheme == Some(scheme))
             .unwrap_or_else(|| panic!("the strip drew no {}", scheme.wire_name()))
     }
 
@@ -345,7 +375,7 @@ impl Window {
             .schemes
             .iter()
             .filter(|s| s.ring.is_some())
-            .map(|s| s.scheme)
+            .filter_map(|s| s.scheme)
             .collect()
     }
 
@@ -415,6 +445,11 @@ impl Window {
                 .collect(),
             other => panic!("the page does not draw one categorical legend: {other:?}"),
         }
+    }
+
+    /// The words the status band names the last kept shelf edit by.
+    fn note(&self) -> Option<String> {
+        self.app.chart_doc().last_shelf_edit().map(str::to_owned)
     }
 
     /// Whether the window title carries the unsaved mark.
@@ -493,20 +528,20 @@ fn lines_of_key(text: &str, key: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// **`Tab` on colour's cell turns its list to the settings, whose head rows are
-/// scheme and reverse in that order, each reading auto, with the sentence of the
+/// scheme, scale, legend and reverse in that order, each reading auto, with the sentence of the
 /// row under the cursor at the foot.** In the Outline, and in the card a shut rail
 /// hangs from the cell.
 #[test]
-fn tab_on_colour_shows_scheme_then_reverse_each_auto_with_the_foot() {
+fn tab_on_colour_shows_scheme_scale_legend_then_reverse_with_the_foot() {
     let mut win = Window::housing("tab");
     win.keep_on_colour(VALUE);
     win.open_colour_settings();
     assert_eq!(
         win.row_names(),
-        [SCHEME_ROW, REVERSE_ROW],
+        [SCHEME_ROW, SCALE_ROW, LEGEND_ROW, REVERSE_ROW],
         "colour's head rows, in order"
     );
-    for row in [SCHEME_ROW, REVERSE_ROW] {
+    for row in [SCHEME_ROW, SCALE_ROW, LEGEND_ROW, REVERSE_ROW] {
         assert!(
             !win.row(row).set,
             "{row} reads brightfield's own on a plot that sets nothing"
@@ -528,8 +563,8 @@ fn tab_on_colour_shows_scheme_then_reverse_each_auto_with_the_foot() {
             .iter()
             .map(|r| r.name)
             .collect::<Vec<_>>(),
-        [SCHEME_ROW, REVERSE_ROW],
-        "the card draws the scheme row and then the reverse row"
+        [SCHEME_ROW, SCALE_ROW, LEGEND_ROW, REVERSE_ROW],
+        "the card draws the scheme, scale, legend and reverse rows"
     );
     let sentence = shut.card().list.sentence.expect("the foot drew a sentence");
     assert_eq!(
@@ -538,6 +573,10 @@ fn tab_on_colour_shows_scheme_then_reverse_each_auto_with_the_foot() {
         "the foot says what the scheme row does"
     );
     shut.type_letter(egui::Key::J, "j");
+    assert_eq!(shut.setting_cursor(), Some(SCALE_ROW));
+    shut.type_letter(egui::Key::J, "j");
+    assert_eq!(shut.setting_cursor(), Some(LEGEND_ROW));
+    shut.type_letter(egui::Key::J, "j");
     assert_eq!(shut.setting_cursor(), Some(REVERSE_ROW));
     let sentence = shut.card().list.sentence.expect("the foot drew a sentence");
     assert_eq!(
@@ -545,6 +584,481 @@ fn tab_on_colour_shows_scheme_then_reverse_each_auto_with_the_foot() {
         "Whether colour runs the other way, a ramp from its far end and names from the last, which auto does not.",
         "the foot follows the cursor to the reverse row"
     );
+}
+
+/// **`l` on the legend row moves the legend below the plot and then off the
+/// page, and the rows keep reading the plot**: the plot's path changes when it
+/// is wrapped in a `vconcat`, and the list is rebuilt for the plot where it now
+/// is.
+#[test]
+fn the_legend_row_moves_the_legend_below_and_the_list_still_reads_the_plot() {
+    let mut win = Window::housing("legend-below");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(LEGEND_ROW);
+    assert_eq!(win.row(LEGEND_ROW).value, "right");
+    assert!(!win.row(LEGEND_ROW).set);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(LEGEND_ROW).value, "below");
+    assert!(win.row(LEGEND_ROW).set, "below carries the dot");
+    assert_eq!(
+        win.row(SCALE_ROW).value,
+        "linear",
+        "the rows still read the plot"
+    );
+    assert!(
+        win.hero().legend_below.is_some(),
+        "the legend is under the plot"
+    );
+    assert_eq!(
+        win.app.shelf_band().map(|b| b.channels().colour.clone()),
+        Some(Binding::Column("median_income".to_string())),
+        "the band still reads colour from the plot in the concat"
+    );
+    win.save();
+    let text = win.chart_text();
+    assert!(
+        text.contains("for: "),
+        "below is a legend for the plot: {text}"
+    );
+
+    win.open_colour_settings();
+    win.move_to_row(LEGEND_ROW);
+    assert_eq!(
+        win.row(LEGEND_ROW).value,
+        "below",
+        "the file's placement is read"
+    );
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(LEGEND_ROW).value, "none");
+    assert!(win.hero().legend_below.is_none());
+    win.save();
+    let text = win.chart_text();
+    assert!(!text.contains("legend: color"), "{text}");
+
+    // Back to the right on a file that holds no legend writes one.
+    win.open_colour_settings();
+    win.move_to_row(LEGEND_ROW);
+    win.type_letter(egui::Key::H, "h");
+    win.type_letter(egui::Key::H, "h");
+    assert_eq!(win.row(LEGEND_ROW).value, "right");
+    assert!(!win.row(LEGEND_ROW).set);
+    assert!(win.hero().legend_below.is_none());
+    assert!(
+        win.hero().legend_declared,
+        "the hero draws its legend at the right"
+    );
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("legend: color"), "{text}");
+    assert!(!text.contains("for: "), "{text}");
+}
+
+/// **The note of a legend move names the placement the row moved to**: a move
+/// below wraps the plot in a `vconcat` and a move from below unwraps it, and the
+/// note reads the plot where it now is.
+#[test]
+fn the_note_of_a_legend_move_names_where_the_legend_went() {
+    let mut win = Window::housing("legend-note");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(LEGEND_ROW);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(
+        win.note().as_deref(),
+        Some("colour legend: right \u{2192} below")
+    );
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(
+        win.note().as_deref(),
+        Some("colour legend: below \u{2192} none")
+    );
+    win.press(egui::Key::Backspace);
+    assert_eq!(
+        win.note().as_deref(),
+        Some("colour legend: none \u{2192} right")
+    );
+}
+
+/// **`⌫` on the legend row puts the legend back at the right**, from below and
+/// from none, in the file and on the chart.
+#[test]
+fn backspace_on_the_legend_row_puts_the_legend_back_at_the_right() {
+    for steps in [1, 2] {
+        let mut win = Window::housing("legend-backspace");
+        win.keep_on_colour("median_income");
+        win.open_colour_settings();
+        win.move_to_row(LEGEND_ROW);
+        for _ in 0..steps {
+            win.type_letter(egui::Key::L, "l");
+        }
+        let at = if steps == 1 { "below" } else { "none" };
+        assert_eq!(win.row(LEGEND_ROW).value, at);
+        win.press(egui::Key::Backspace);
+        let row = win.row(LEGEND_ROW);
+        assert_eq!((row.value.as_str(), row.set), ("right", false), "from {at}");
+        assert!(win.hero().legend_below.is_none());
+        assert!(win.hero().legend_declared, "from {at}");
+        win.save();
+        let text = win.chart_text();
+        assert!(text.contains("legend: color"), "from {at}: {text}");
+        assert!(!text.contains("for: "), "from {at}: {text}");
+    }
+}
+
+/// **With nothing on colour the legend row is muted with its reason**, carries
+/// no dot, and `l`, `h` and `⌫` on it write nothing.
+#[test]
+fn the_legend_row_is_muted_while_nothing_is_on_colour_and_writes_nothing() {
+    let mut win = Window::housing("legend-muted");
+    win.open_colour_settings();
+    win.move_to_row(LEGEND_ROW);
+    let row = win.row(LEGEND_ROW);
+    assert_eq!(
+        row.reason.as_deref(),
+        Some("nothing is on colour, so there is no legend to place")
+    );
+    assert!(!row.set);
+    let unsaved = win.unsaved();
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.unsaved(), unsaved, "l on a muted row is no edit");
+    win.type_letter(egui::Key::H, "h");
+    assert_eq!(win.unsaved(), unsaved, "h on a muted row is no edit");
+    win.press(egui::Key::Backspace);
+    assert_eq!(win.unsaved(), unsaved, "⌫ on a muted row is no edit");
+    assert!(win.hero().legend_below.is_none());
+}
+
+/// **With nothing on colour the scale, domain, pivot and steps rows are muted
+/// with their reasons**, and `l`, `h` and `⌫` on the scale and domain rows write
+/// nothing.
+#[test]
+fn the_scale_and_domain_rows_are_muted_while_nothing_is_on_colour_and_write_nothing() {
+    let mut win = Window::housing("scale-muted");
+    win.open_colour_settings();
+    for (name, reason) in [
+        (
+            SCALE_ROW,
+            "nothing is on colour, so there is no scale to set",
+        ),
+        (
+            DOMAIN_ROW,
+            "nothing is on colour, so there are no ends to set",
+        ),
+        (
+            PIVOT_ROW,
+            "nothing is on colour, so there is no pivot to set",
+        ),
+        (
+            STEPS_ROW,
+            "nothing is on colour, so there are no steps to set",
+        ),
+    ] {
+        let row = win.row(name);
+        assert_eq!(row.reason.as_deref(), Some(reason), "{name}");
+        assert!(!row.set, "{name} carries no dot");
+    }
+    let unsaved = win.unsaved();
+    win.move_to_row(SCALE_ROW);
+    for (key, text) in [(egui::Key::L, "l"), (egui::Key::H, "h")] {
+        win.type_letter(key, text);
+        assert_eq!(win.unsaved(), unsaved, "{text} on the muted scale row");
+    }
+    win.press(egui::Key::Backspace);
+    assert_eq!(win.unsaved(), unsaved, "⌫ on the muted scale row");
+    win.find_row(DOMAIN_ROW);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.unsaved(), unsaved, "l on the muted domain row");
+    win.press(egui::Key::Backspace);
+    assert_eq!(win.unsaved(), unsaved, "⌫ on the muted domain row");
+    assert_eq!(win.row(SCALE_ROW).value, "linear");
+    assert_eq!(win.row(DOMAIN_ROW).value, "auto");
+}
+
+/// **`l` on the scale row steps it to diverging and writes the auto pivot**: the
+/// row reads diverging with its pivot unmarked, and the file names the scale and
+/// the pivot and no longer the scheme.
+#[test]
+fn stepping_the_scale_row_to_diverging_writes_it_with_the_auto_pivot() {
+    let mut win = Window::housing("scale-diverging");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::J, "j");
+    assert_eq!(win.setting_cursor(), Some(SCALE_ROW));
+    win.type_letter(egui::Key::L, "l");
+    let row = win.row(SCALE_ROW);
+    assert_eq!(row.value, "diverging");
+    assert!(!row.parameter_set(), "the pivot written is the auto pivot");
+    let facts = row.colour.expect("the scale row carries its facts");
+    match win.hero().scales.get(Channel::Fill) {
+        Some(Scale::Diverging { pivot, .. }) => {
+            assert_eq!(
+                Some(*pivot),
+                facts.auto_pivot,
+                "the chart redrew about the auto pivot"
+            );
+        }
+        other => panic!("the hero's fill is not diverging: {other:?}"),
+    }
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorScale: diverging"), "{text}");
+    assert!(text.contains("colorPivot: "), "{text}");
+    assert!(!text.contains("colorScheme"), "{text}");
+}
+
+/// **A colour scale write names the scale alone**: colour has no range, so the
+/// note says nothing of one, though the write touches several keys.
+#[test]
+fn the_note_of_a_colour_scale_step_names_no_range() {
+    let mut win = Window::housing("scale-note");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(
+        win.note().as_deref(),
+        Some("colour scale: linear \u{2192} diverging")
+    );
+}
+
+/// **A column put on colour over a set domain names no range in its note**, though
+/// the change takes the old column's domain out.
+#[test]
+fn the_note_of_a_colour_column_change_over_a_set_domain_names_no_range() {
+    let mut win = Window::housing("column-note");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::Slash, "/");
+    for (key, text) in [
+        (egui::Key::D, "d"),
+        (egui::Key::O, "o"),
+        (egui::Key::M, "m"),
+    ] {
+        win.type_letter(key, text);
+    }
+    win.press(egui::Key::Enter);
+    assert_eq!(win.setting_cursor(), Some(DOMAIN_ROW));
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(DOMAIN_ROW).value, "fixed");
+    for _ in 0..4 {
+        if win.app.protocol_model().column_list().is_none() && !win.app.shelf_holds_keys() {
+            break;
+        }
+        win.press(egui::Key::Escape);
+    }
+    win.keep_on_colour(VALUE);
+    let note = win.note().expect("the column change left a note");
+    assert!(!note.contains("range"), "{note}");
+}
+
+/// **`⌫` on the scale row from steps puts it back to linear**: the row reads
+/// linear and auto, and the file carries neither `colorScale` nor `colorN`.
+#[test]
+fn backspace_on_the_scale_row_from_steps_takes_the_scale_and_its_count_out() {
+    let mut win = Window::housing("scale-backspace");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::J, "j");
+    win.type_letter(egui::Key::L, "l");
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCALE_ROW).value, "steps");
+    win.press(egui::Key::Backspace);
+    let row = win.row(SCALE_ROW);
+    assert_eq!((row.value.as_str(), row.set), ("linear", false));
+    win.save();
+    let text = win.chart_text();
+    assert!(!text.contains("colorScale"), "{text}");
+    assert!(!text.contains("colorN"), "{text}");
+}
+
+/// **`⌫` on the pivot row found by name puts the auto pivot back, by name**:
+/// Mosaic's own pivot is 0, so the file keeps `colorPivot` at the auto value
+/// rather than losing the key.
+#[test]
+fn backspace_on_the_pivot_row_writes_the_auto_pivot_and_keeps_the_key() {
+    let mut win = Window::housing("pivot-backspace");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::L, "l");
+    let auto = win
+        .row(SCALE_ROW)
+        .colour
+        .and_then(|c| c.auto_pivot)
+        .expect("the scale row knows its auto pivot");
+    win.press(egui::Key::Enter);
+    win.run(vec![egui::Event::Text("2".to_owned())]);
+    win.press(egui::Key::Enter);
+    assert!(win.row(SCALE_ROW).parameter_set(), "fixture check: pivot 2");
+    win.find_row(PIVOT_ROW);
+    win.press(egui::Key::Backspace);
+    assert!(!win.row(PIVOT_ROW).set, "the pivot reads auto again");
+    assert_eq!(win.row(SCALE_ROW).value, "diverging");
+    win.save();
+    let text = win.chart_text();
+    let pivots = lines_of_key(&text, "colorPivot");
+    let [line] = pivots.as_slice() else {
+        panic!("the file names one pivot:\n{text}");
+    };
+    let written: f64 = line["colorPivot:".len()..]
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("{line}: {e}"));
+    assert!(
+        (written - auto).abs() < 1e-9,
+        "the pivot written is the auto one, {auto}: {line}"
+    );
+    assert!(text.contains("colorScale: diverging"), "{text}");
+}
+
+/// **`⌫` on the steps row found by name puts the count back to five, by name**:
+/// Mosaic's thresholds differ from the default's, so `colorN` stays written.
+#[test]
+fn backspace_on_the_steps_row_writes_five_and_keeps_the_key() {
+    let mut win = Window::housing("steps-backspace");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::L, "l");
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCALE_ROW).value, "steps");
+    win.press(egui::Key::Enter);
+    win.run(vec![egui::Event::Text("7".to_owned())]);
+    win.press(egui::Key::Enter);
+    assert_eq!(win.row(SCALE_ROW).colour.and_then(|c| c.count), Some(7));
+    win.find_row(STEPS_ROW);
+    win.press(egui::Key::Backspace);
+    assert_eq!(win.row(STEPS_ROW).value, "5");
+    assert!(!win.row(STEPS_ROW).set);
+    win.save();
+    let text = win.chart_text();
+    assert_eq!(lines_of_key(&text, "colorN"), ["colorN: 5"], "{text}");
+    assert!(text.contains("colorScale: quantize"), "{text}");
+}
+
+/// **A click on the scale row's dot puts it back to linear**, as `⌫` does: the
+/// file names neither the scale nor its pivot.
+#[test]
+fn a_click_on_the_scale_rows_dot_puts_it_back_to_linear() {
+    let mut win = Window::housing("scale-dot").rail_shut();
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCALE_ROW).value, "diverging");
+    assert!(
+        win.row(SCALE_ROW).set,
+        "fixture check: diverging has its dot"
+    );
+    let dot = win.row_drawn(SCALE_ROW).marker.center();
+    win.click(dot);
+    let row = win.row(SCALE_ROW);
+    assert_eq!((row.value.as_str(), row.set), ("linear", false));
+    win.save();
+    let text = win.chart_text();
+    assert!(!text.contains("colorScale"), "{text}");
+    assert!(!text.contains("colorPivot"), "{text}");
+}
+
+/// **A pivot typed behind `diverging` is drawn as it is typed and kept on
+/// `Enter`**: the hero's diverging scale is about the typed pivot before it is
+/// kept, the row then reads the parameter as the analyst's, and the file names it.
+#[test]
+fn a_typed_pivot_previews_and_enter_keeps_it_with_its_dot() {
+    let mut win = Window::housing("pivot-typed");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::J, "j");
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCALE_ROW).value, "diverging");
+    win.press(egui::Key::Enter);
+    win.run(vec![egui::Event::Text("2".to_owned())]);
+    win.run(Vec::new());
+    match win.hero().scales.get(Channel::Fill) {
+        Some(Scale::Diverging { pivot, .. }) => {
+            assert_eq!(*pivot, 2.0, "the typed pivot is drawn before it is kept");
+        }
+        other => panic!("the hero's fill is not diverging: {other:?}"),
+    }
+    win.press(egui::Key::Enter);
+    assert!(win.row(SCALE_ROW).parameter_set());
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorPivot: 2"), "{text}");
+}
+
+/// **The pivot row found by name opens on the pivot the file holds, not the one
+/// the row displays**: `Enter` and `Enter` again, with no digit typed between,
+/// keep a pivot past four figures whole rather than rounding it to what the row
+/// reads.
+#[test]
+fn opening_the_pivot_row_and_keeping_it_leaves_a_fine_pivot_whole() {
+    let mut win = Window::housing("pivot-whole");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::L, "l");
+    win.press(egui::Key::Enter);
+    win.run(vec![egui::Event::Text("3.470004".to_owned())]);
+    win.press(egui::Key::Enter);
+    assert_eq!(
+        win.row(SCALE_ROW).colour.and_then(|c| c.pivot),
+        Some(3.470004),
+        "fixture check: the typed pivot is kept"
+    );
+    win.find_row(PIVOT_ROW);
+    assert_eq!(
+        win.row(PIVOT_ROW).value,
+        "3.47",
+        "the row displays four figures"
+    );
+    win.press(egui::Key::Enter);
+    win.press(egui::Key::Enter);
+    win.save();
+    let text = win.chart_text();
+    assert_eq!(
+        lines_of_key(&text, "colorPivot"),
+        ["colorPivot: 3.470004"],
+        "{text}"
+    );
+}
+
+/// **On a diverging scale the scheme row steps between brightfield's pair and
+/// `rdbu`**: `l` names `rdbu` and takes the pair's colours out, and `h` takes the
+/// scheme out and writes the pair back.
+#[test]
+fn on_diverging_the_scheme_row_writes_rdbu_and_the_pair() {
+    let mut win = Window::housing("diverging-scheme");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::J, "j");
+    win.type_letter(egui::Key::L, "l");
+    win.type_letter(egui::Key::K, "k");
+    assert_eq!(win.setting_cursor(), Some(SCHEME_ROW));
+    assert_eq!(win.row(SCHEME_ROW).value, "blue-red");
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCHEME_ROW).value, "rdbu");
+    win.type_letter(egui::Key::H, "h");
+    let row = win.row(SCHEME_ROW);
+    assert_eq!((row.value.as_str(), row.set), ("blue-red", false));
+    win.save();
+    let text = win.chart_text();
+    assert!(!text.contains("colorScheme"), "{text}");
+    assert!(text.contains("colorRange"), "{text}");
+
+    let mut win = Window::housing("diverging-scheme-rdbu");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::J, "j");
+    win.type_letter(egui::Key::L, "l");
+    win.type_letter(egui::Key::K, "k");
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCHEME_ROW).value, "rdbu");
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorScheme: rdbu"), "{text}");
+    assert!(!text.contains("colorRange"), "{text}");
 }
 
 // ---------------------------------------------------------------------------
@@ -666,7 +1180,7 @@ fn reverse_switches_by_h_l_and_a_click_and_the_hero_and_its_legend_run_end_for_e
         "fixture check: blues, not reversed"
     );
 
-    win.type_letter(egui::Key::J, "j");
+    win.move_to_row(REVERSE_ROW);
     assert_eq!(win.setting_cursor(), Some(REVERSE_ROW));
     assert_eq!(win.row(REVERSE_ROW).value, "off");
 
@@ -743,7 +1257,7 @@ fn on_a_column_of_names_the_scheme_row_is_muted_and_reverse_reverses_the_categor
     assert_eq!(win.unsaved(), unsaved, "l on a muted row is no edit");
     assert_eq!(win.fill_categories(), (categories.clone(), palette.clone()));
 
-    win.type_letter(egui::Key::J, "j");
+    win.move_to_row(REVERSE_ROW);
     assert_eq!(win.setting_cursor(), Some(REVERSE_ROW));
     assert!(
         win.row(REVERSE_ROW).reason.is_none(),
@@ -820,7 +1334,7 @@ fn saved_and_opened_again_the_chart_its_legend_and_the_file_show_each_value() {
             step_to(&mut win, scheme);
         }
         if reversed {
-            win.type_letter(egui::Key::J, "j");
+            win.move_to_row(REVERSE_ROW);
             win.type_letter(egui::Key::L, "l");
         }
         let mut stops = scheme.stops();
@@ -878,6 +1392,167 @@ fn saved_and_opened_again_the_chart_its_legend_and_the_file_show_each_value() {
     }
 }
 
+/// What the colour round trip below leaves set before Save.
+#[derive(Clone, Copy, Debug)]
+enum Left {
+    /// A diverging scale about a typed pivot of 2.
+    DivergingAboutTwo,
+    /// A stepped scale of seven steps.
+    SevenSteps,
+    /// The domain fixed.
+    DomainFixed,
+    /// The legend below the plot.
+    LegendBelow,
+}
+
+/// **After Save, close and reopen, the chart and the file show the scale, the
+/// domain and the legend left set**: a diverging scale about a typed pivot, steps
+/// at seven, the domain fixed (with the colour pin captured on reopen), and the
+/// legend below the plot.
+#[test]
+fn saved_and_opened_again_the_scale_domain_and_legend_hold() {
+    for left in [
+        Left::DivergingAboutTwo,
+        Left::SevenSteps,
+        Left::DomainFixed,
+        Left::LegendBelow,
+    ] {
+        let mut win = Window::housing(&format!("save-{left:?}"));
+        win.keep_on_colour("median_income");
+        win.open_colour_settings();
+        match left {
+            Left::DivergingAboutTwo => {
+                win.move_to_row(SCALE_ROW);
+                win.type_letter(egui::Key::L, "l");
+                win.press(egui::Key::Enter);
+                win.run(vec![egui::Event::Text("2".to_owned())]);
+                win.press(egui::Key::Enter);
+            }
+            Left::SevenSteps => {
+                win.move_to_row(SCALE_ROW);
+                win.type_letter(egui::Key::L, "l");
+                win.type_letter(egui::Key::L, "l");
+                win.press(egui::Key::Enter);
+                win.run(vec![egui::Event::Text("7".to_owned())]);
+                win.press(egui::Key::Enter);
+            }
+            Left::DomainFixed => {
+                win.find_row(DOMAIN_ROW);
+                win.type_letter(egui::Key::L, "l");
+                assert_eq!(win.row(DOMAIN_ROW).value, "fixed");
+            }
+            Left::LegendBelow => {
+                win.move_to_row(LEGEND_ROW);
+                win.type_letter(egui::Key::L, "l");
+                assert_eq!(win.row(LEGEND_ROW).value, "below");
+            }
+        }
+        win.save();
+        assert!(
+            !win.marked_unsaved(),
+            "{left:?}: Save left the unsaved mark"
+        );
+        let written = win.chart_text();
+        let has = |key: &str, line: &str| {
+            assert_eq!(
+                lines_of_key(&written, key),
+                [line],
+                "{left:?}: the file names {line}:\n{written}"
+            );
+        };
+        match left {
+            Left::DivergingAboutTwo => {
+                has("colorScale", "colorScale: diverging");
+                has("colorPivot", "colorPivot: 2");
+            }
+            Left::SevenSteps => {
+                has("colorScale", "colorScale: quantize");
+                has("colorN", "colorN: 7");
+            }
+            Left::DomainFixed => has("colorDomain", "colorDomain: Fixed"),
+            Left::LegendBelow => {
+                assert!(written.contains("vconcat:"), "{left:?}:\n{written}");
+                assert!(written.contains("for: "), "{left:?}:\n{written}");
+            }
+        }
+
+        let mut reopened = win.reopen();
+        assert!(!reopened.marked_unsaved(), "{left:?}: reopened unmarked");
+        match left {
+            Left::DivergingAboutTwo => match reopened.hero().scales.get(Channel::Fill) {
+                Some(Scale::Diverging { pivot, .. }) => {
+                    assert_eq!(*pivot, 2.0, "the reopened chart is drawn about 2");
+                }
+                other => panic!("the reopened fill is not diverging: {other:?}"),
+            },
+            Left::SevenSteps => match reopened.hero().scales.get(Channel::Fill) {
+                Some(Scale::Quantized { colours, .. }) => {
+                    assert_eq!(colours.len(), 7, "the reopened chart draws seven steps");
+                }
+                other => panic!("the reopened fill is not stepped: {other:?}"),
+            },
+            Left::DomainFixed => {
+                let hero = reopened.hero();
+                let (lo, hi) = match hero.scales.get(Channel::Fill) {
+                    Some(Scale::Sequential {
+                        domain_min,
+                        domain_max,
+                        ..
+                    }) => (*domain_min, *domain_max),
+                    other => panic!("the reopened fill is not a ramp: {other:?}"),
+                };
+                let pin = reopened
+                    .app
+                    .chart_doc()
+                    .live_dashboard()
+                    .expect("the reopened chart is live")
+                    .pins()
+                    .get(&hero.path)
+                    .and_then(|p| p.colour)
+                    .expect("reopening captured the colour pin");
+                assert_eq!((pin.lo, pin.hi), (lo, hi), "the pin holds the drawn ends");
+            }
+            Left::LegendBelow => {
+                assert!(
+                    reopened.hero().legend_below.is_some(),
+                    "the reopened chart lays its legend out below the plot"
+                );
+                let doc = reopened.app.chart_doc();
+                assert!(doc.legend_rect.is_none(), "and none at the right");
+                let below = legend::below_blocks(&doc.composed);
+                let [(0, _, band)] = below.as_slice() else {
+                    panic!("the reopened page draws one legend, under the hero: {below:?}");
+                };
+                let area = reopened.hero().data_area();
+                assert!(
+                    band.y >= area.y + area.height,
+                    "the legend's band {band:?} stands below the data area {area:?}"
+                );
+            }
+        }
+        reopened.open_colour_settings();
+        match left {
+            Left::DivergingAboutTwo => {
+                let row = reopened.row(SCALE_ROW);
+                assert_eq!(row.value, "diverging");
+                assert!(row.parameter_set(), "the pivot reads as the analyst's");
+            }
+            Left::SevenSteps => {
+                let row = reopened.row(SCALE_ROW);
+                assert_eq!(row.value, "steps");
+                assert_eq!(row.colour.and_then(|c| c.count), Some(7));
+            }
+            Left::DomainFixed => assert_eq!(reopened.row(DOMAIN_ROW).value, "fixed"),
+            Left::LegendBelow => assert_eq!(reopened.row(LEGEND_ROW).value, "below"),
+        }
+        assert_eq!(
+            reopened.chart_text(),
+            written,
+            "{left:?}: reopening rewrote the chart file"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ⌫.
 // ---------------------------------------------------------------------------
@@ -909,7 +1584,7 @@ fn backspace_names_viridis_only_where_a_scheme_is_named_and_takes_reverse_out() 
     win.keep_on_colour(VALUE);
     win.open_colour_settings();
     win.type_letter(egui::Key::L, "l");
-    win.type_letter(egui::Key::J, "j");
+    win.move_to_row(REVERSE_ROW);
     win.type_letter(egui::Key::L, "l");
     assert_eq!(win.row(REVERSE_ROW).value, "on");
     win.press(egui::Key::Backspace);
@@ -919,7 +1594,9 @@ fn backspace_names_viridis_only_where_a_scheme_is_named_and_takes_reverse_out() 
         "⌫ on reverse switched it off"
     );
     assert_eq!(win.fill_stops(), SequentialScheme::Blues.stops());
-    win.type_letter(egui::Key::K, "k");
+    for _ in 0..3 {
+        win.type_letter(egui::Key::K, "k");
+    }
     assert_eq!(win.setting_cursor(), Some(SCHEME_ROW));
     win.press(egui::Key::Backspace);
     assert_eq!(win.row(SCHEME_ROW).value, "viridis");
@@ -936,4 +1613,310 @@ fn backspace_names_viridis_only_where_a_scheme_is_named_and_takes_reverse_out() 
         lines_of_key(&written, "colorReverse").is_empty(),
         "⌫ on reverse took its key out:\n{written}"
     );
+}
+
+/// **A count typed into the steps field stays written, even at the default**: the
+/// file names the count, since Mosaic's thresholds differ from the default's.
+#[test]
+fn a_count_of_five_typed_over_seven_stays_in_the_file() {
+    let mut win = Window::housing("steps-five");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::J, "j");
+    win.type_letter(egui::Key::L, "l");
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCALE_ROW).value, "steps");
+    for typed in ["7", "5"] {
+        win.press(egui::Key::Enter);
+        win.run(vec![egui::Event::Text(typed.to_owned())]);
+        win.press(egui::Key::Enter);
+    }
+    let row = win.row(SCALE_ROW);
+    assert_eq!(row.colour.and_then(|c| c.count), Some(5));
+    assert!(!win.row(SCALE_ROW).parameter_set());
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorN: 5"), "{text}");
+}
+
+/// **`Esc` in the scale row's pivot field drops what was typed**: the hero is
+/// drawn about the pivot it had.
+#[test]
+fn esc_in_the_pivot_field_puts_the_heros_pivot_back() {
+    let mut win = Window::housing("pivot-esc");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::J, "j");
+    win.type_letter(egui::Key::L, "l");
+    let pivot = |win: &Window| match win.hero().scales.get(Channel::Fill) {
+        Some(Scale::Diverging { pivot, .. }) => *pivot,
+        other => panic!("the hero's fill is not diverging: {other:?}"),
+    };
+    let before = pivot(&win);
+    win.press(egui::Key::Enter);
+    win.run(vec![egui::Event::Text("1234".to_owned())]);
+    win.run(Vec::new());
+    assert_eq!(pivot(&win), 1234.0, "the typed pivot is previewed");
+    win.press(egui::Key::Escape);
+    assert_eq!(pivot(&win), before, "Esc put the pivot back");
+}
+
+/// **Stepping the domain row to fixed writes `colorDomain: Fixed`**, with its
+/// capital, which is the word Mosaic reads.
+#[test]
+fn stepping_the_domain_row_to_fixed_writes_colordomain_fixed() {
+    let mut win = Window::housing("domain-fixed");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::Slash, "/");
+    for (key, text) in [
+        (egui::Key::D, "d"),
+        (egui::Key::O, "o"),
+        (egui::Key::M, "m"),
+    ] {
+        win.type_letter(key, text);
+    }
+    assert_eq!(win.setting_cursor(), Some(DOMAIN_ROW));
+    win.press(egui::Key::Enter);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(DOMAIN_ROW).value, "fixed");
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorDomain: Fixed"), "{text}");
+}
+
+/// **Two typed ends write `colorDomain: [0, 4]`, and `⌫` takes the key out**:
+/// the row keeps the ends under its own name, not the axis range's.
+#[test]
+fn typing_two_ends_into_the_domain_row_writes_them_and_backspace_resets() {
+    let mut win = Window::housing("domain-ends");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.type_letter(egui::Key::Slash, "/");
+    for (key, text) in [
+        (egui::Key::D, "d"),
+        (egui::Key::O, "o"),
+        (egui::Key::M, "m"),
+    ] {
+        win.type_letter(key, text);
+    }
+    win.press(egui::Key::Enter);
+    assert_eq!(win.setting_cursor(), Some(DOMAIN_ROW));
+    win.press(egui::Key::Enter);
+    for typed in ["0", "4"] {
+        win.run(vec![egui::Event::Text(typed.to_owned())]);
+        win.press(egui::Key::Enter);
+    }
+    assert_eq!(win.row(DOMAIN_ROW).value, "0 \u{2013} 4");
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorDomain: [0, 4]"), "{text}");
+
+    // Save left the list; open it again on the row.
+    win.open_colour_settings();
+    win.type_letter(egui::Key::Slash, "/");
+    for (key, text) in [
+        (egui::Key::D, "d"),
+        (egui::Key::O, "o"),
+        (egui::Key::M, "m"),
+    ] {
+        win.type_letter(key, text);
+    }
+    win.press(egui::Key::Enter);
+    assert_eq!(win.row(DOMAIN_ROW).value, "0 \u{2013} 4");
+    win.press(egui::Key::Backspace);
+    assert_eq!(win.row(DOMAIN_ROW).value, "auto");
+    win.save();
+    let text = win.chart_text();
+    assert!(!text.contains("colorDomain"), "{text}");
+}
+
+/// A one-plot hero of cells filled by a number column, which draws no dot. The
+/// shelf band opens on a cell chart as it does on a dot chart, so no raster or
+/// heatmap stands in for it.
+fn cell_hero(data: &str) -> String {
+    format!(
+        "data:\n  opened:\n    file: '{data}'\nplot:\n  - mark: cell\n    data: {{ from: opened }}\n    x: {{ bin: median_income }}\n    y: {{ bin: house_age }}\n    fill: {VALUE}\nwidth: 400\nheight: 300\n"
+    )
+}
+
+/// The window hands colour's settings the marks the hero drew, which is what
+/// mutes reverse on a chart with no dot. Every other window test's hero draws
+/// dots, so this is the one that tells the marks drawn from no marks at all.
+#[test]
+fn reverse_is_muted_on_a_hero_that_draws_no_dot() {
+    let mut w = Window::housing("cells");
+    w.save();
+    let chart = std::fs::read_dir(w.folder.join("panels"))
+        .expect("Save wrote a panels folder")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|e| e == "yaml"))
+        .expect("Save wrote a chart file");
+    let data = w.folder.join(HOUSING_FILE);
+    std::fs::write(&chart, cell_hero(data.to_str().expect("utf-8 path")))
+        .expect("the cell hero writes");
+    let mut w = w.reopen();
+    w.open_colour_settings();
+    let reverse = w.row(REVERSE_ROW);
+    assert!(
+        reverse
+            .reason
+            .as_deref()
+            .is_some_and(|r| r.contains("this chart draws none")),
+        "reverse says why it does not apply, got {:?}",
+        reverse.reason
+    );
+}
+
+// ---------------------------------------------------------------------------
+// An analyst's own colours on a diverging scale.
+// ---------------------------------------------------------------------------
+
+/// Three colours of the analyst's own, none of them brightfield's pair.
+const OWN_COLOURS: [&str; 3] = ["#1b7837", "#f7f7f7", "#762a83"];
+
+/// A window over a diverging hero whose file writes [`OWN_COLOURS`] as its
+/// `colorRange`, opened again from that file, with colour's settings open.
+fn diverging_over_own_colours(name: &str) -> Window {
+    let mut win = Window::housing(name);
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCALE_ROW).value, "diverging");
+    win.save();
+    let chart = std::fs::read_dir(win.folder.join("panels"))
+        .expect("Save wrote a panels folder")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|e| e == "yaml"))
+        .expect("Save wrote a chart file");
+    let text = std::fs::read_to_string(&chart).expect("the chart reads");
+    // The pair's `colorRange` out, the analyst's in beside the scale.
+    let mut out = Vec::new();
+    let mut in_range = None;
+    for line in text.lines() {
+        let indent = line.len() - line.trim_start().len();
+        if let Some(at) = in_range {
+            if indent > at || (indent == at && line.trim_start().starts_with("- ")) {
+                continue;
+            }
+            in_range = None;
+        }
+        if line.trim_start().starts_with("colorRange:") {
+            in_range = Some(indent);
+            continue;
+        }
+        out.push(line.to_string());
+        if line.trim_start() == "colorScale: diverging" {
+            let quoted: Vec<String> = OWN_COLOURS.iter().map(|c| format!("'{c}'")).collect();
+            out.push(format!(
+                "{}colorRange: [{}]",
+                " ".repeat(indent),
+                quoted.join(", ")
+            ));
+        }
+    }
+    let written = out.join("\n") + "\n";
+    assert!(written.contains(OWN_COLOURS[0]), "{written}");
+    std::fs::write(&chart, written).expect("the chart writes");
+    let mut win = win.reopen();
+    win.open_colour_settings();
+    win
+}
+
+/// Whether the saved file still holds the analyst's colours.
+fn holds_own_colours(text: &str) -> bool {
+    OWN_COLOURS.iter().all(|c| text.contains(c))
+}
+
+/// **The scheme row reads an analyst's own `colorRange` as custom, and set**:
+/// those colours are what the chart draws, whatever scheme the file names.
+#[test]
+fn on_diverging_the_scheme_row_reads_an_own_colour_range_as_custom() {
+    let win = diverging_over_own_colours("own-range-reads");
+    let row = win.row(SCHEME_ROW);
+    assert_eq!((row.value.as_str(), row.set), ("custom", true));
+}
+
+/// **`l` on the scheme row over custom colours names `rdbu` and takes the
+/// colours out**, so the key written is the one drawn.
+#[test]
+fn l_on_custom_colours_writes_rdbu_and_takes_the_range_out() {
+    let mut win = diverging_over_own_colours("own-range-rdbu");
+    assert_eq!(win.setting_cursor(), Some(SCHEME_ROW));
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCHEME_ROW).value, "rdbu");
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorScheme: rdbu"), "{text}");
+    assert!(!text.contains("colorRange"), "{text}");
+}
+
+/// **`⌫` on the scheme row over custom colours takes them out**: the row reads
+/// the diverging scale's auto again.
+#[test]
+fn backspace_on_custom_colours_takes_the_range_out() {
+    let mut win = diverging_over_own_colours("own-range-backspace");
+    assert_eq!(win.setting_cursor(), Some(SCHEME_ROW));
+    win.press(egui::Key::Backspace);
+    let row = win.row(SCHEME_ROW);
+    assert_eq!((row.value.as_str(), row.set), ("blue-red", false));
+    win.save();
+    let text = win.chart_text();
+    assert!(!holds_own_colours(&text), "{text}");
+}
+
+/// **A step of the scale to linear and back to diverging leaves the analyst's
+/// colours as they are**: no automatic write takes them out or covers them
+/// with the pair.
+#[test]
+fn a_scale_step_to_linear_and_back_keeps_custom_colours() {
+    let mut win = diverging_over_own_colours("own-range-scale");
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::H, "h");
+    assert_eq!(win.row(SCALE_ROW).value, "linear");
+    assert_eq!(win.row(SCHEME_ROW).value, "custom", "custom on linear too");
+    win.save();
+    let text = win.chart_text();
+    assert!(holds_own_colours(&text), "linear keeps them:\n{text}");
+
+    let mut win = win.reopen();
+    win.open_colour_settings();
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCALE_ROW).value, "diverging");
+    assert_eq!(win.row(SCHEME_ROW).value, "custom");
+    win.save();
+    let text = win.chart_text();
+    assert!(holds_own_colours(&text), "diverging keeps them:\n{text}");
+    assert_eq!(
+        lines_of_key(&text, "colorRange").len(),
+        1,
+        "one colorRange, the analyst's:\n{text}"
+    );
+}
+
+/// **On a linear scale, `l` on the scheme row over custom colours names the
+/// strip's first scheme and takes the colours out.**
+#[test]
+fn on_linear_l_on_custom_colours_writes_the_scheme_and_takes_the_range_out() {
+    let mut win = diverging_over_own_colours("own-range-linear");
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::H, "h");
+    assert_eq!(win.row(SCALE_ROW).value, "linear");
+    for _ in 0..4 {
+        if win.setting_cursor() == Some(SCHEME_ROW) {
+            break;
+        }
+        win.type_letter(egui::Key::K, "k");
+    }
+    assert_eq!(win.row(SCHEME_ROW).value, "custom");
+    win.type_letter(egui::Key::L, "l");
+    assert_eq!(win.row(SCHEME_ROW).value, "viridis");
+    win.save();
+    let text = win.chart_text();
+    assert!(text.contains("colorScheme: viridis"), "{text}");
+    assert!(!text.contains("colorRange"), "{text}");
 }

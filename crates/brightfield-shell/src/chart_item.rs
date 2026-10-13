@@ -1247,6 +1247,7 @@ impl Item<ChartDoc> for ChartItem {
         let ctx = ui.ctx().clone();
         let textured = doc.canvas_texture().is_some();
         let mut legend_rect = None;
+        let mut rights: Vec<(usize, egui::Rect)> = Vec::new();
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
 
@@ -1443,7 +1444,7 @@ impl Item<ChartDoc> for ChartItem {
                 );
                 legend_rect = Some(band_rect);
                 if textured {
-                    legend::draw_band(ui, band_rect, rect.top(), &doc.composed, mode);
+                    rights = legend::draw_band(ui, band_rect, rect.top(), &doc.composed, mode);
                 }
             }
         });
@@ -1455,13 +1456,49 @@ impl Item<ChartDoc> for ChartItem {
         // the room under the raster that the band stands in, and the legend
         // drawn into the layout's own rect. `legend_rect` stays the band at the
         // right, which this placement does not reserve.
+        let mut belows: Vec<(usize, egui::Rect)> = Vec::new();
         if let Some(raster) = doc.raster_rect {
             let overhang = legend::below_overhang(&doc.composed);
             if overhang > 0.0 {
                 ui.allocate_exact_size(egui::vec2(raster.width(), overhang), egui::Sense::hover());
             }
             if textured {
-                legend::draw_below(ui, raster.min, &doc.composed, mode);
+                belows = legend::draw_below(ui, raster.min, &doc.composed, mode);
+            }
+        }
+
+        // **The ring round the hero's legend while colour's list is open**, in
+        // colour's hue, so the block the list is choosing for reads as the
+        // list's. It is cut back at the plot's data area and drawn after both
+        // placements, over the legend and clear of every mark. With no legend
+        // there is no block, and nothing is drawn.
+        if doc.colour_list_open {
+            let hero = rights
+                .iter()
+                .chain(belows.iter())
+                .find(|(i, _)| *i == HERO_PLOT)
+                .map(|(_, r)| *r);
+            if let (Some(block), Some(plot), Some(raster)) =
+                (hero, doc.composed.plots.get(HERO_PLOT), doc.raster_rect)
+            {
+                let area = plot.data_area();
+                let data = egui::Rect::from_min_size(
+                    raster.min + egui::vec2(area.x as f32, area.y as f32),
+                    egui::vec2(area.width as f32, area.height as f32),
+                );
+                let hue = chrome::colour(brightfield_workbench::channel::hue(
+                    brightfield_workbench::channel::ShelfChannel::Colour,
+                    mode,
+                ));
+                // The ring is cut back at the pane's edge as it is at the data
+                // area, so where the legend is the last thing in the pane the
+                // ring's outer side lies on the edge and is still drawn.
+                ui.painter().rect_stroke(
+                    legend::ring_rect(block, data).intersect(ui.clip_rect()),
+                    0.0,
+                    egui::Stroke::new(legend::RING_WIDTH, hue),
+                    egui::StrokeKind::Inside,
+                );
             }
         }
 

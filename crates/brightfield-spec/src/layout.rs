@@ -778,14 +778,17 @@ pub struct FixedDomains {
     pub x: bool,
     /// `yDomain: Fixed` is declared on this plot.
     pub y: bool,
+    /// `colorDomain: Fixed` is declared on this plot: the colour scale holds
+    /// the domain of its first draw while filters move the rows.
+    pub colour: bool,
 }
 
 impl FixedDomains {
-    /// Whether neither axis asks for a pin — the shape of every plot in the
-    /// examples corpus, and the one a caller may skip work for.
+    /// Whether neither axis nor the colour asks for a pin — the shape of a plot
+    /// that writes no `Fixed`, and the one a caller may skip work for.
     #[must_use]
     pub fn is_empty(self) -> bool {
-        !self.x && !self.y
+        !self.x && !self.y && !self.colour
     }
 }
 
@@ -814,6 +817,7 @@ pub fn resolve_fixed_domains(plot: &PlotNode) -> FixedDomains {
     FixedDomains {
         x: pinned("xDomain"),
         y: pinned("yDomain"),
+        colour: pinned("colorDomain"),
     }
 }
 
@@ -1526,11 +1530,11 @@ pub enum ColourDomain {
 /// A `colorDomain` value read as the domain it fixes: a list of two finite
 /// numbers with the low end first, or a non-empty list of strings.
 ///
-/// A string (Mosaic's `Fixed`, which asks for the data's own domain held still
-/// and which this build leaves unread), a list of any other shape, a pair of
-/// numbers with the high end first or equal, and a list that mixes strings
-/// with numbers are no domain, and a plot that writes one draws as a file
-/// without the key does.
+/// A string, a list of any other shape, a pair of numbers with the high end
+/// first or equal, and a list that mixes strings with numbers are no domain
+/// here. Mosaic's `Fixed` is one of them: it fixes no ends of its own, and
+/// [`resolve_fixed_domains`] reads it instead, as a request to hold the colour
+/// scale's ends from the plot's first draw.
 #[must_use]
 pub fn colour_domain(value: &SpecValue) -> Option<ColourDomain> {
     let SpecValue::Array(items) = value else {
@@ -4500,17 +4504,44 @@ xScale: log
         let fixed = || SpecValue::String("Fixed".to_string());
         assert_eq!(
             resolve_fixed_domains(&plot_with(&[("xDomain", fixed())])),
-            FixedDomains { x: true, y: false }
+            FixedDomains {
+                x: true,
+                y: false,
+                colour: false
+            }
         );
         assert_eq!(
             resolve_fixed_domains(&plot_with(&[("yDomain", fixed())])),
-            FixedDomains { x: false, y: true }
+            FixedDomains {
+                x: false,
+                y: true,
+                colour: false
+            }
         );
         assert_eq!(
             resolve_fixed_domains(&plot_with(&[("xDomain", fixed()), ("yDomain", fixed())])),
-            FixedDomains { x: true, y: true }
+            FixedDomains {
+                x: true,
+                y: true,
+                colour: false
+            }
         );
         assert!(resolve_fixed_domains(&plot_with(&[])).is_empty());
+    }
+
+    /// `colorDomain: Fixed` asks for a colour pin, and is still no domain.
+    #[test]
+    fn color_domain_fixed_asks_for_a_colour_pin() {
+        let plot = plot_with(&[("colorDomain", SpecValue::String("Fixed".to_string()))]);
+        assert_eq!(
+            resolve_fixed_domains(&plot),
+            FixedDomains {
+                x: false,
+                y: false,
+                colour: true
+            }
+        );
+        assert_eq!(colour_domain(&SpecValue::String("Fixed".into())), None);
     }
 
     /// **Every other value at these keys leaves the axis unpinned.** A
@@ -5310,96 +5341,96 @@ plot:
     #[test]
     fn a_spec_with_no_plot_defaults_resolves_the_same_plot_attributes_and_fixed_domains_as_before()
     {
-        const BASELINE: &str = r#"aeromagnetic-survey.yaml::root/vconcat[2] FixedDomains { x: false, y: false } {"colorScale": String("diverging"), "colorDomain": String("Fixed")}
-airline-travelers.yaml::root FixedDomains { x: false, y: false } {"yGrid": Bool(true), "yLabel": String("↑ Travelers per day"), "yTickFormat": String("s")}
-area-sine.yaml::root/vconcat[0] FixedDomains { x: false, y: true } {"yDomain": String("Fixed"), "colorDomain": String("Fixed"), "xLabel": Null, "width": Integer(680), "height": Integer(180)}
-area-sine.yaml::root/vconcat[2] FixedDomains { x: false, y: true } {"yDomain": String("Fixed"), "colorDomain": String("Fixed"), "xLabel": Null, "width": Integer(680), "height": Integer(180)}
-area-sine.yaml::root/vconcat[4] FixedDomains { x: false, y: true } {"yDomain": String("Fixed"), "width": Integer(680), "height": Integer(90)}
-athlete-birth-waffle.yaml::root/vconcat[2] FixedDomains { x: false, y: false } {"xLabel": Null, "xTickSize": Integer(0), "xTickFormat": String("d")}
-athlete-height.yaml::root/hconcat[0]/vconcat[1] FixedDomains { x: false, y: true } {"name": String("heights"), "xDomain": Array([Float(1.5), Float(2.1)]), "yDomain": String("Fixed"), "yGrid": Bool(true), "yLabel": Null, "marginTop": Integer(5), "marginLeft": Integer(105), "marginRight": Integer(30), "height": Integer(420)}
-athletes.yaml::root/hconcat[0]/vconcat[2] FixedDomains { x: false, y: false } {"xyDomain": String("Fixed"), "colorDomain": String("Fixed"), "margins": Object({"left": Integer(35), "top": Integer(20), "right": Integer(1)}), "width": Integer(570), "height": Integer(350)}
-axes.yaml::root FixedDomains { x: false, y: false } {"xDomain": Array([Integer(0), Integer(100)]), "yDomain": Array([Integer(0), Integer(100)]), "xInsetLeft": Integer(36), "marginLeft": Integer(0), "marginRight": Integer(35), "width": Integer(680)}
-bias.yaml::root/vconcat[1] FixedDomains { x: false, y: false } {"width": Integer(680), "height": Integer(200)}
-contours.yaml::root/vconcat[1] FixedDomains { x: false, y: false } {"xAxis": String("bottom"), "xLabelAnchor": String("center"), "yAxis": String("right"), "yLabelAnchor": String("center"), "margins": Object({"top": Integer(5), "bottom": Integer(30), "left": Integer(5), "right": Integer(50)}), "width": Integer(700), "height": Integer(480)}
-crossfilter.yaml::root/vconcat[0] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "xLabel": String("Arrival Delay (min)"), "xLabelAnchor": String("center"), "yTickFormat": String("s"), "height": Integer(200)}
-crossfilter.yaml::root/vconcat[1] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "xLabel": String("Departure Time (hour)"), "xLabelAnchor": String("center"), "yTickFormat": String("s"), "height": Integer(200)}
-density-groups.yaml::root/vconcat[1] FixedDomains { x: false, y: false } {"marginLeft": Integer(50), "height": Integer(200)}
-density1d.yaml::root/vconcat[1] FixedDomains { x: true, y: false } {"yAxis": Null, "xDomain": String("Fixed"), "width": Integer(600), "marginLeft": Integer(10), "height": Integer(200)}
-density1d.yaml::root/vconcat[2] FixedDomains { x: true, y: false } {"yAxis": Null, "xScale": String("log"), "xDomain": String("Fixed"), "width": Integer(600), "marginLeft": Integer(10), "height": Integer(200)}
-density2d.yaml::root/vconcat[1] FixedDomains { x: false, y: false } {"rRange": Array([Integer(0), Integer(16)]), "xAxis": String("bottom"), "xLabelAnchor": String("center"), "yAxis": String("right"), "yLabelAnchor": String("center"), "margins": Object({"top": Integer(5), "bottom": Integer(30), "left": Integer(5), "right": Integer(50)}), "width": Integer(700), "height": Integer(480)}
-driving-shifts.yaml::root FixedDomains { x: false, y: false } {"inset": Integer(10), "grid": Bool(true), "xLabel": String("Miles driven (per person-year)"), "yLabel": String("Cost of gasoline ($ per gallon)")}
-earthquakes-feed.yaml::root FixedDomains { x: false, y: false } {"margin": Integer(2), "projectionType": String("equirectangular")}
-earthquakes-globe.yaml::root/vconcat[1] FixedDomains { x: false, y: false } {"margin": Integer(10), "style": String("overflow: visible;"), "projectionType": String("orthographic"), "projectionRotate": Param(ParamRef("rotate"))}
-facet-interval.yaml::root/hconcat[0] FixedDomains { x: true, y: true } {"name": String("plot"), "grid": Bool(true), "marginRight": Integer(60), "xDomain": String("Fixed"), "yDomain": String("Fixed"), "fxDomain": String("Fixed"), "fyDomain": String("Fixed"), "fxLabel": Null, "fyLabel": Null}
-flights-10m.yaml::root/vconcat[0] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "xLabel": String("Arrival Delay (min)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
-flights-10m.yaml::root/vconcat[1] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "xLabel": String("Departure Time (hour)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
-flights-10m.yaml::root/vconcat[2] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "xLabel": String("Flight Distance (miles)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
-flights-200k.yaml::root/vconcat[0] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "xLabel": String("Arrival Delay (min)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
-flights-200k.yaml::root/vconcat[1] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "xLabel": String("Departure Time (hour)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
-flights-200k.yaml::root/vconcat[2] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "xLabel": String("Flight Distance (miles)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
-flights-density.yaml::root/vconcat[1] FixedDomains { x: false, y: false } {"colorScale": String("symlog"), "colorScheme": String("ylgnbu"), "xAxis": String("top"), "xLabelAnchor": String("center"), "xZero": Bool(true), "yAxis": String("right"), "yLabelAnchor": String("center"), "marginTop": Integer(30), "marginLeft": Integer(5), "marginRight": Integer(40), "width": Integer(700), "height": Integer(500)}
-flights-hexbin.yaml::root/vconcat[1]/hconcat[0] FixedDomains { x: true, y: false } {"margins": Object({"left": Integer(5), "right": Integer(5), "top": Integer(30), "bottom": Integer(0)}), "xDomain": String("Fixed"), "xAxis": String("top"), "yAxis": Null, "xLabelAnchor": String("center"), "width": Integer(605), "height": Integer(70)}
-flights-hexbin.yaml::root/vconcat[2]/hconcat[0] FixedDomains { x: false, y: false } {"name": String("hexbins"), "colorScheme": String("ylgnbu"), "colorScale": Param(ParamRef("scale")), "margins": Object({"left": Integer(5), "right": Integer(0), "top": Integer(0), "bottom": Integer(5)}), "xAxis": Null, "yAxis": Null, "xyDomain": String("Fixed"), "width": Integer(600), "height": Integer(455)}
-flights-hexbin.yaml::root/vconcat[2]/hconcat[1] FixedDomains { x: false, y: false } {"margins": Object({"left": Integer(0), "right": Integer(50), "top": Integer(4), "bottom": Integer(5)}), "yDomain": Array([Integer(-60), Integer(180)]), "xAxis": Null, "yAxis": String("right"), "yLabelAnchor": String("center"), "width": Integer(80), "height": Integer(455)}
-gaia.yaml::root/hconcat[0]/vconcat[0] FixedDomains { x: false, y: false } {"xyDomain": String("Fixed"), "colorScale": Param(ParamRef("scaleType")), "colorScheme": String("viridis"), "width": Integer(440), "height": Integer(250), "marginLeft": Integer(25), "marginTop": Integer(20), "marginRight": Integer(1)}
-gaia.yaml::root/hconcat[0]/vconcat[1]/hconcat[0] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "yScale": Param(ParamRef("scaleType")), "yGrid": Bool(true), "width": Integer(220), "height": Integer(120), "marginLeft": Integer(65)}
-gaia.yaml::root/hconcat[0]/vconcat[1]/hconcat[1] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "yScale": Param(ParamRef("scaleType")), "yGrid": Bool(true), "width": Integer(220), "height": Integer(120), "marginLeft": Integer(65)}
-gaia.yaml::root/hconcat[2] FixedDomains { x: false, y: false } {"xyDomain": String("Fixed"), "colorScale": Param(ParamRef("scaleType")), "colorScheme": String("viridis"), "yReverse": Bool(true), "width": Integer(230), "height": Integer(370), "marginLeft": Integer(25), "marginTop": Integer(20), "marginRight": Integer(1)}
-line-density.yaml::root/vconcat[2] FixedDomains { x: false, y: false } {"colorScheme": Param(ParamRef("schemeColor")), "colorScale": Param(ParamRef("scaleColor")), "yLabel": String("Close (Normalized) ↑"), "yNice": Bool(true), "margins": Object({"left": Integer(30), "top": Integer(20), "right": Integer(0)}), "width": Integer(680), "height": Integer(240)}
-line-density.yaml::root/vconcat[3] FixedDomains { x: false, y: false } {"colorScheme": Param(ParamRef("schemeColor")), "colorScale": Param(ParamRef("scaleColor")), "yLabel": String("Close (Unnormalized) ↑"), "yNice": Bool(true), "margins": Object({"left": Integer(30), "top": Integer(20), "right": Integer(0)}), "width": Integer(680), "height": Integer(240)}
-line-multi-series.yaml::root FixedDomains { x: false, y: false } {"marginLeft": Integer(24), "xLabel": Null, "xTicks": Integer(10), "yLabel": String("Unemployment (%)"), "yGrid": Bool(true), "style": String("overflow: visible;"), "width": Integer(680)}
-line.yaml::root FixedDomains { x: false, y: false } {"width": Integer(680), "height": Integer(200)}
-linear-regression-10m.yaml::root/vconcat[2] FixedDomains { x: false, y: false } {"xDomain": Array([Integer(0), Integer(24)]), "yDomain": Array([Integer(-60), Integer(180)]), "colorScale": String("symlog"), "colorScheme": String("blues"), "colorDomain": String("Fixed")}
-linear-regression.yaml::root FixedDomains { x: false, y: false } {"xyDomain": String("Fixed"), "colorDomain": String("Fixed")}
-moving-average.yaml::root/vconcat[0] FixedDomains { x: false, y: false } {"xLabel": String("day"), "width": Integer(680), "height": Integer(300)}
-normalize.yaml::root FixedDomains { x: false, y: false } {"yScale": String("log"), "yDomain": Array([Float(0.2), Integer(6)]), "yGrid": Bool(true), "xLabel": Null, "yLabel": Null, "yTickFormat": String("%"), "width": Integer(680), "height": Integer(400), "marginRight": Integer(35)}
-nyc-taxi-rides.yaml::root/vconcat[0]/hconcat[0] FixedDomains { x: false, y: false } {"width": Integer(335), "height": Integer(550), "margin": Integer(0), "xAxis": Null, "yAxis": Null, "xDomain": Array([Float(975000.0), Float(1005000.0)]), "yDomain": Array([Float(190000.0), Float(240000.0)]), "colorScale": String("symlog"), "colorScheme": String("blues")}
-nyc-taxi-rides.yaml::root/vconcat[0]/hconcat[2] FixedDomains { x: false, y: false } {"width": Integer(335), "height": Integer(550), "margin": Integer(0), "xAxis": Null, "yAxis": Null, "xDomain": Array([Float(975000.0), Float(1005000.0)]), "yDomain": Array([Float(190000.0), Float(240000.0)]), "colorScale": String("symlog"), "colorScheme": String("oranges")}
-nyc-taxi-rides.yaml::root/vconcat[2] FixedDomains { x: false, y: false } {"yTickFormat": String("s"), "xLabel": String("Pickup Hour →"), "width": Integer(680), "height": Integer(100)}
-observable-latency.yaml::root/vconcat[0] FixedDomains { x: false, y: false } {"colorDomain": String("Fixed"), "colorScheme": String("observable10"), "opacityDomain": Array([Integer(0), Integer(25)]), "opacityClamp": Bool(true), "yScale": String("log"), "yLabel": String("↑ Duration (ms)"), "yDomain": Array([Float(0.5), Integer(10000)]), "yTickFormat": String("s"), "xScale": String("utc"), "xLabel": Null, "xDomain": Array([Integer(1706227200000), Integer(1706832000000)]), "width": Integer(680), "height": Integer(300), "margins": Object({"left": Integer(35), "top": Integer(20), "bottom": Integer(30), "right": Integer(20)})}
-observable-latency.yaml::root/vconcat[1] FixedDomains { x: false, y: false } {"colorDomain": String("Fixed"), "xLabel": String("Routes by Total Requests"), "xTickFormat": String("s"), "yLabel": Null, "width": Integer(680), "height": Integer(300), "marginTop": Integer(5), "marginLeft": Integer(220), "marginBottom": Integer(35)}
-overview-detail.yaml::root/vconcat[0] FixedDomains { x: false, y: false } {"width": Integer(680), "height": Integer(200)}
-overview-detail.yaml::root/vconcat[1] FixedDomains { x: false, y: true } {"yDomain": String("Fixed"), "width": Integer(680), "height": Integer(200)}
-pan-zoom.yaml::root/hconcat[0]/vconcat[0] FixedDomains { x: false, y: false } {"width": Integer(320), "height": Integer(240)}
-pan-zoom.yaml::root/hconcat[0]/vconcat[2] FixedDomains { x: false, y: false } {"width": Integer(320), "height": Integer(240)}
-pan-zoom.yaml::root/hconcat[2]/vconcat[0] FixedDomains { x: false, y: false } {"width": Integer(320), "height": Integer(240)}
-pan-zoom.yaml::root/hconcat[2]/vconcat[2] FixedDomains { x: false, y: false } {"width": Integer(320), "height": Integer(240)}
-population-arrows.yaml::root/vconcat[1] FixedDomains { x: false, y: false } {"name": String("arrows"), "grid": Bool(true), "inset": Integer(10), "xScale": String("log"), "xLabel": String("Population →"), "yLabel": String("↑ Inequality"), "yTicks": Integer(4), "colorScheme": String("BuRd"), "colorTickFormat": String("+f")}
-presidential-opinion.yaml::root/vconcat[0] FixedDomains { x: false, y: false } {"xInset": Integer(20), "xLabel": String("First inauguration date →"), "yInsetTop": Integer(4), "yGrid": Bool(true), "yLabel": String("↑ Opinion (%)"), "yTickFormat": String("+f")}
-protein-design.yaml::root/vconcat[2]/hconcat[0] FixedDomains { x: false, y: false } {"width": Integer(600), "height": Integer(55), "xAxis": Null, "yAxis": Null, "xDomain": Param(ParamRef("plddt_domain")), "colorDomain": String("Fixed"), "colorScheme": Param(ParamRef("scheme")), "marginLeft": Integer(40), "marginRight": Integer(0), "marginTop": Integer(0), "marginBottom": Integer(0)}
-protein-design.yaml::root/vconcat[3]/hconcat[0] FixedDomains { x: false, y: false } {"name": String("scatter"), "opacityDomain": Array([Integer(0), Integer(2)]), "opacityClamp": Bool(true), "colorDomain": String("Fixed"), "colorScheme": Param(ParamRef("scheme")), "xDomain": Param(ParamRef("plddt_domain")), "yDomain": Param(ParamRef("pae_domain")), "xLabelAnchor": String("center"), "yLabelAnchor": String("center"), "marginTop": Integer(0), "marginLeft": Integer(40), "marginRight": Integer(0), "width": Integer(600), "height": Integer(450)}
-protein-design.yaml::root/vconcat[3]/hconcat[1] FixedDomains { x: false, y: false } {"width": Integer(55), "height": Integer(450), "xAxis": Null, "yAxis": Null, "marginTop": Integer(0), "marginLeft": Integer(0), "marginRight": Integer(0), "yDomain": Param(ParamRef("pae_domain")), "colorDomain": String("Fixed"), "colorScheme": Param(ParamRef("scheme"))}
-region-tests.yaml::root/vconcat[0] FixedDomains { x: false, y: false } {"marginLeft": Integer(24), "xLabel": Null, "xTicks": Integer(10), "xLine": Bool(true), "yLine": Bool(true), "yLabel": String("Unemployment (%)"), "yGrid": Bool(true), "marginRight": Integer(0)}
-region-tests.yaml::root/vconcat[2] FixedDomains { x: false, y: false } {"margin": Integer(2), "projectionType": String("equirectangular")}
-region-tests.yaml::root/vconcat[4] FixedDomains { x: false, y: false } {"margin": Integer(0), "projectionType": String("albers")}
-seattle-temp.yaml::root FixedDomains { x: false, y: false } {"xTickFormat": String("%b"), "yLabel": String("Temperature Range (°C)"), "width": Integer(680), "height": Integer(300)}
-sorted-bars.yaml::root/vconcat[2] FixedDomains { x: false, y: false } {"xLabel": String("Gold Medals"), "yLabel": String("Nationality"), "yLabelAnchor": String("top"), "marginTop": Integer(15)}
-symbols.yaml::root/vconcat[2]/hconcat[0] FixedDomains { x: false, y: false } {"name": String("stroked"), "grid": Bool(true), "xLabel": String("Body mass (g) →"), "yLabel": String("↑ Flipper length (mm)")}
-symbols.yaml::root/vconcat[4]/hconcat[0] FixedDomains { x: false, y: false } {"name": String("filled"), "grid": Bool(true), "xLabel": String("Body mass (g) →"), "yLabel": String("↑ Flipper length (mm)")}
-triangle-wave.yaml::root/vconcat[0] FixedDomains { x: false, y: false } {"xLabel": Null, "width": Integer(680), "height": Integer(150)}
-triangle-wave.yaml::root/vconcat[2] FixedDomains { x: false, y: true } {"yDomain": String("Fixed"), "colorDomain": String("Fixed"), "xLabel": Null, "width": Integer(680), "height": Integer(150)}
-triangle-wave.yaml::root/vconcat[4] FixedDomains { x: false, y: true } {"yDomain": String("Fixed"), "colorDomain": String("Fixed"), "xLabel": Null, "width": Integer(680), "height": Integer(150)}
-unemployment.yaml::root/vconcat[1] FixedDomains { x: false, y: false } {"name": String("county-map"), "margin": Integer(0), "colorScale": String("quantile"), "colorN": Integer(9), "colorScheme": String("blues"), "projectionType": String("albers-usa")}
-us-county-map.yaml::root FixedDomains { x: false, y: false } {"margin": Integer(0), "projectionType": String("albers")}
-us-state-map.yaml::root FixedDomains { x: false, y: false } {"margin": Integer(0), "projectionType": String("albers")}
-voronoi.yaml::root/vconcat[0] FixedDomains { x: false, y: false } {"inset": Integer(10), "width": Integer(680)}
-walmart-openings.yaml::root/vconcat[0] FixedDomains { x: false, y: false } {"margin": Integer(0), "fyLabel": Null, "projectionType": String("albers")}
-weather.yaml::root/vconcat[0]/hconcat[0] FixedDomains { x: false, y: false } {"xyDomain": String("Fixed"), "xTickFormat": String("%b"), "colorDomain": Param(ParamRef("domain")), "colorRange": Param(ParamRef("colors")), "rDomain": String("Fixed"), "rRange": Array([Integer(2), Integer(10)]), "width": Integer(680), "height": Integer(300)}
-weather.yaml::root/vconcat[1] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "yDomain": Param(ParamRef("domain")), "yLabel": Null, "colorDomain": Param(ParamRef("domain")), "colorRange": Param(ParamRef("colors")), "width": Integer(680)}
-wind-map.yaml::root/vconcat[1] FixedDomains { x: false, y: false } {"name": String("wind-map"), "lengthScale": String("identity"), "colorZero": Bool(true), "inset": Integer(10), "aspectRatio": Integer(1), "width": Integer(680)}
-window-frame.yaml::root FixedDomains { x: false, y: false } {"yLabel": String("Close"), "width": Integer(680), "height": Integer(200)}
-wnba-shots.yaml::root/vconcat[2] FixedDomains { x: false, y: false } {"name": String("shot-chart"), "xAxis": Null, "yAxis": Null, "margin": Integer(5), "xDomain": Array([Integer(0), Integer(50)]), "yDomain": Array([Integer(0), Integer(40)]), "colorDomain": String("Fixed"), "colorScheme": String("YlOrRd"), "colorScale": String("linear"), "colorLabel": String("Avg. Shot Value"), "rScale": String("log"), "rRange": Array([Integer(3), Integer(9)]), "rLabel": String("Shot Count"), "aspectRatio": Integer(1), "width": Integer(510)}
-crossfilter.yaml::root/vconcat[0] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "xLabel": String("Arrival Delay (min)"), "xLabelAnchor": String("center"), "yTickFormat": String("s"), "height": Integer(200)}
-crossfilter.yaml::root/vconcat[1] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "xLabel": String("Departure Time (hour)"), "xLabelAnchor": String("center"), "yTickFormat": String("s"), "height": Integer(200)}
-facet-interval.yaml::root/hconcat[0] FixedDomains { x: true, y: true } {"name": String("plot"), "grid": Bool(true), "marginRight": Integer(60), "xDomain": String("Fixed"), "yDomain": String("Fixed"), "fxDomain": String("Fixed"), "fyDomain": String("Fixed"), "fxLabel": Null, "fyLabel": Null}
-flights-200k.yaml::root/vconcat[0] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "xLabel": String("Arrival Delay (min)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
-flights-200k.yaml::root/vconcat[1] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "xLabel": String("Departure Time (hour)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
-flights-200k.yaml::root/vconcat[2] FixedDomains { x: true, y: false } {"xDomain": String("Fixed"), "xLabel": String("Flight Distance (miles)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
-line.yaml::root FixedDomains { x: false, y: false } {"width": Integer(680), "height": Integer(200)}
-overview-detail.yaml::root/vconcat[0] FixedDomains { x: false, y: false } {"width": Integer(680), "height": Integer(200)}
-overview-detail.yaml::root/vconcat[1] FixedDomains { x: false, y: true } {"yDomain": String("Fixed"), "width": Integer(680), "height": Integer(200)}
-seattle-temp.yaml::root FixedDomains { x: false, y: false } {"xTickFormat": String("%b"), "yLabel": String("Temperature Range (°C)"), "width": Integer(680), "height": Integer(300)}
-sorted-bars.yaml::root/vconcat[2] FixedDomains { x: false, y: false } {"xLabel": String("Gold Medals"), "yLabel": String("Nationality"), "yLabelAnchor": String("top"), "marginTop": Integer(15)}"#;
+        const BASELINE: &str = r#"aeromagnetic-survey.yaml::root/vconcat[2] FixedDomains { x: false, y: false, colour: true } {"colorScale": String("diverging"), "colorDomain": String("Fixed")}
+airline-travelers.yaml::root FixedDomains { x: false, y: false, colour: false } {"yGrid": Bool(true), "yLabel": String("↑ Travelers per day"), "yTickFormat": String("s")}
+area-sine.yaml::root/vconcat[0] FixedDomains { x: false, y: true, colour: true } {"yDomain": String("Fixed"), "colorDomain": String("Fixed"), "xLabel": Null, "width": Integer(680), "height": Integer(180)}
+area-sine.yaml::root/vconcat[2] FixedDomains { x: false, y: true, colour: true } {"yDomain": String("Fixed"), "colorDomain": String("Fixed"), "xLabel": Null, "width": Integer(680), "height": Integer(180)}
+area-sine.yaml::root/vconcat[4] FixedDomains { x: false, y: true, colour: false } {"yDomain": String("Fixed"), "width": Integer(680), "height": Integer(90)}
+athlete-birth-waffle.yaml::root/vconcat[2] FixedDomains { x: false, y: false, colour: false } {"xLabel": Null, "xTickSize": Integer(0), "xTickFormat": String("d")}
+athlete-height.yaml::root/hconcat[0]/vconcat[1] FixedDomains { x: false, y: true, colour: false } {"name": String("heights"), "xDomain": Array([Float(1.5), Float(2.1)]), "yDomain": String("Fixed"), "yGrid": Bool(true), "yLabel": Null, "marginTop": Integer(5), "marginLeft": Integer(105), "marginRight": Integer(30), "height": Integer(420)}
+athletes.yaml::root/hconcat[0]/vconcat[2] FixedDomains { x: false, y: false, colour: true } {"xyDomain": String("Fixed"), "colorDomain": String("Fixed"), "margins": Object({"left": Integer(35), "top": Integer(20), "right": Integer(1)}), "width": Integer(570), "height": Integer(350)}
+axes.yaml::root FixedDomains { x: false, y: false, colour: false } {"xDomain": Array([Integer(0), Integer(100)]), "yDomain": Array([Integer(0), Integer(100)]), "xInsetLeft": Integer(36), "marginLeft": Integer(0), "marginRight": Integer(35), "width": Integer(680)}
+bias.yaml::root/vconcat[1] FixedDomains { x: false, y: false, colour: false } {"width": Integer(680), "height": Integer(200)}
+contours.yaml::root/vconcat[1] FixedDomains { x: false, y: false, colour: false } {"xAxis": String("bottom"), "xLabelAnchor": String("center"), "yAxis": String("right"), "yLabelAnchor": String("center"), "margins": Object({"top": Integer(5), "bottom": Integer(30), "left": Integer(5), "right": Integer(50)}), "width": Integer(700), "height": Integer(480)}
+crossfilter.yaml::root/vconcat[0] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "xLabel": String("Arrival Delay (min)"), "xLabelAnchor": String("center"), "yTickFormat": String("s"), "height": Integer(200)}
+crossfilter.yaml::root/vconcat[1] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "xLabel": String("Departure Time (hour)"), "xLabelAnchor": String("center"), "yTickFormat": String("s"), "height": Integer(200)}
+density-groups.yaml::root/vconcat[1] FixedDomains { x: false, y: false, colour: false } {"marginLeft": Integer(50), "height": Integer(200)}
+density1d.yaml::root/vconcat[1] FixedDomains { x: true, y: false, colour: false } {"yAxis": Null, "xDomain": String("Fixed"), "width": Integer(600), "marginLeft": Integer(10), "height": Integer(200)}
+density1d.yaml::root/vconcat[2] FixedDomains { x: true, y: false, colour: false } {"yAxis": Null, "xScale": String("log"), "xDomain": String("Fixed"), "width": Integer(600), "marginLeft": Integer(10), "height": Integer(200)}
+density2d.yaml::root/vconcat[1] FixedDomains { x: false, y: false, colour: false } {"rRange": Array([Integer(0), Integer(16)]), "xAxis": String("bottom"), "xLabelAnchor": String("center"), "yAxis": String("right"), "yLabelAnchor": String("center"), "margins": Object({"top": Integer(5), "bottom": Integer(30), "left": Integer(5), "right": Integer(50)}), "width": Integer(700), "height": Integer(480)}
+driving-shifts.yaml::root FixedDomains { x: false, y: false, colour: false } {"inset": Integer(10), "grid": Bool(true), "xLabel": String("Miles driven (per person-year)"), "yLabel": String("Cost of gasoline ($ per gallon)")}
+earthquakes-feed.yaml::root FixedDomains { x: false, y: false, colour: false } {"margin": Integer(2), "projectionType": String("equirectangular")}
+earthquakes-globe.yaml::root/vconcat[1] FixedDomains { x: false, y: false, colour: false } {"margin": Integer(10), "style": String("overflow: visible;"), "projectionType": String("orthographic"), "projectionRotate": Param(ParamRef("rotate"))}
+facet-interval.yaml::root/hconcat[0] FixedDomains { x: true, y: true, colour: false } {"name": String("plot"), "grid": Bool(true), "marginRight": Integer(60), "xDomain": String("Fixed"), "yDomain": String("Fixed"), "fxDomain": String("Fixed"), "fyDomain": String("Fixed"), "fxLabel": Null, "fyLabel": Null}
+flights-10m.yaml::root/vconcat[0] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "xLabel": String("Arrival Delay (min)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
+flights-10m.yaml::root/vconcat[1] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "xLabel": String("Departure Time (hour)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
+flights-10m.yaml::root/vconcat[2] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "xLabel": String("Flight Distance (miles)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
+flights-200k.yaml::root/vconcat[0] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "xLabel": String("Arrival Delay (min)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
+flights-200k.yaml::root/vconcat[1] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "xLabel": String("Departure Time (hour)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
+flights-200k.yaml::root/vconcat[2] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "xLabel": String("Flight Distance (miles)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
+flights-density.yaml::root/vconcat[1] FixedDomains { x: false, y: false, colour: false } {"colorScale": String("symlog"), "colorScheme": String("ylgnbu"), "xAxis": String("top"), "xLabelAnchor": String("center"), "xZero": Bool(true), "yAxis": String("right"), "yLabelAnchor": String("center"), "marginTop": Integer(30), "marginLeft": Integer(5), "marginRight": Integer(40), "width": Integer(700), "height": Integer(500)}
+flights-hexbin.yaml::root/vconcat[1]/hconcat[0] FixedDomains { x: true, y: false, colour: false } {"margins": Object({"left": Integer(5), "right": Integer(5), "top": Integer(30), "bottom": Integer(0)}), "xDomain": String("Fixed"), "xAxis": String("top"), "yAxis": Null, "xLabelAnchor": String("center"), "width": Integer(605), "height": Integer(70)}
+flights-hexbin.yaml::root/vconcat[2]/hconcat[0] FixedDomains { x: false, y: false, colour: false } {"name": String("hexbins"), "colorScheme": String("ylgnbu"), "colorScale": Param(ParamRef("scale")), "margins": Object({"left": Integer(5), "right": Integer(0), "top": Integer(0), "bottom": Integer(5)}), "xAxis": Null, "yAxis": Null, "xyDomain": String("Fixed"), "width": Integer(600), "height": Integer(455)}
+flights-hexbin.yaml::root/vconcat[2]/hconcat[1] FixedDomains { x: false, y: false, colour: false } {"margins": Object({"left": Integer(0), "right": Integer(50), "top": Integer(4), "bottom": Integer(5)}), "yDomain": Array([Integer(-60), Integer(180)]), "xAxis": Null, "yAxis": String("right"), "yLabelAnchor": String("center"), "width": Integer(80), "height": Integer(455)}
+gaia.yaml::root/hconcat[0]/vconcat[0] FixedDomains { x: false, y: false, colour: false } {"xyDomain": String("Fixed"), "colorScale": Param(ParamRef("scaleType")), "colorScheme": String("viridis"), "width": Integer(440), "height": Integer(250), "marginLeft": Integer(25), "marginTop": Integer(20), "marginRight": Integer(1)}
+gaia.yaml::root/hconcat[0]/vconcat[1]/hconcat[0] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "yScale": Param(ParamRef("scaleType")), "yGrid": Bool(true), "width": Integer(220), "height": Integer(120), "marginLeft": Integer(65)}
+gaia.yaml::root/hconcat[0]/vconcat[1]/hconcat[1] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "yScale": Param(ParamRef("scaleType")), "yGrid": Bool(true), "width": Integer(220), "height": Integer(120), "marginLeft": Integer(65)}
+gaia.yaml::root/hconcat[2] FixedDomains { x: false, y: false, colour: false } {"xyDomain": String("Fixed"), "colorScale": Param(ParamRef("scaleType")), "colorScheme": String("viridis"), "yReverse": Bool(true), "width": Integer(230), "height": Integer(370), "marginLeft": Integer(25), "marginTop": Integer(20), "marginRight": Integer(1)}
+line-density.yaml::root/vconcat[2] FixedDomains { x: false, y: false, colour: false } {"colorScheme": Param(ParamRef("schemeColor")), "colorScale": Param(ParamRef("scaleColor")), "yLabel": String("Close (Normalized) ↑"), "yNice": Bool(true), "margins": Object({"left": Integer(30), "top": Integer(20), "right": Integer(0)}), "width": Integer(680), "height": Integer(240)}
+line-density.yaml::root/vconcat[3] FixedDomains { x: false, y: false, colour: false } {"colorScheme": Param(ParamRef("schemeColor")), "colorScale": Param(ParamRef("scaleColor")), "yLabel": String("Close (Unnormalized) ↑"), "yNice": Bool(true), "margins": Object({"left": Integer(30), "top": Integer(20), "right": Integer(0)}), "width": Integer(680), "height": Integer(240)}
+line-multi-series.yaml::root FixedDomains { x: false, y: false, colour: false } {"marginLeft": Integer(24), "xLabel": Null, "xTicks": Integer(10), "yLabel": String("Unemployment (%)"), "yGrid": Bool(true), "style": String("overflow: visible;"), "width": Integer(680)}
+line.yaml::root FixedDomains { x: false, y: false, colour: false } {"width": Integer(680), "height": Integer(200)}
+linear-regression-10m.yaml::root/vconcat[2] FixedDomains { x: false, y: false, colour: true } {"xDomain": Array([Integer(0), Integer(24)]), "yDomain": Array([Integer(-60), Integer(180)]), "colorScale": String("symlog"), "colorScheme": String("blues"), "colorDomain": String("Fixed")}
+linear-regression.yaml::root FixedDomains { x: false, y: false, colour: true } {"xyDomain": String("Fixed"), "colorDomain": String("Fixed")}
+moving-average.yaml::root/vconcat[0] FixedDomains { x: false, y: false, colour: false } {"xLabel": String("day"), "width": Integer(680), "height": Integer(300)}
+normalize.yaml::root FixedDomains { x: false, y: false, colour: false } {"yScale": String("log"), "yDomain": Array([Float(0.2), Integer(6)]), "yGrid": Bool(true), "xLabel": Null, "yLabel": Null, "yTickFormat": String("%"), "width": Integer(680), "height": Integer(400), "marginRight": Integer(35)}
+nyc-taxi-rides.yaml::root/vconcat[0]/hconcat[0] FixedDomains { x: false, y: false, colour: false } {"width": Integer(335), "height": Integer(550), "margin": Integer(0), "xAxis": Null, "yAxis": Null, "xDomain": Array([Float(975000.0), Float(1005000.0)]), "yDomain": Array([Float(190000.0), Float(240000.0)]), "colorScale": String("symlog"), "colorScheme": String("blues")}
+nyc-taxi-rides.yaml::root/vconcat[0]/hconcat[2] FixedDomains { x: false, y: false, colour: false } {"width": Integer(335), "height": Integer(550), "margin": Integer(0), "xAxis": Null, "yAxis": Null, "xDomain": Array([Float(975000.0), Float(1005000.0)]), "yDomain": Array([Float(190000.0), Float(240000.0)]), "colorScale": String("symlog"), "colorScheme": String("oranges")}
+nyc-taxi-rides.yaml::root/vconcat[2] FixedDomains { x: false, y: false, colour: false } {"yTickFormat": String("s"), "xLabel": String("Pickup Hour →"), "width": Integer(680), "height": Integer(100)}
+observable-latency.yaml::root/vconcat[0] FixedDomains { x: false, y: false, colour: true } {"colorDomain": String("Fixed"), "colorScheme": String("observable10"), "opacityDomain": Array([Integer(0), Integer(25)]), "opacityClamp": Bool(true), "yScale": String("log"), "yLabel": String("↑ Duration (ms)"), "yDomain": Array([Float(0.5), Integer(10000)]), "yTickFormat": String("s"), "xScale": String("utc"), "xLabel": Null, "xDomain": Array([Integer(1706227200000), Integer(1706832000000)]), "width": Integer(680), "height": Integer(300), "margins": Object({"left": Integer(35), "top": Integer(20), "bottom": Integer(30), "right": Integer(20)})}
+observable-latency.yaml::root/vconcat[1] FixedDomains { x: false, y: false, colour: true } {"colorDomain": String("Fixed"), "xLabel": String("Routes by Total Requests"), "xTickFormat": String("s"), "yLabel": Null, "width": Integer(680), "height": Integer(300), "marginTop": Integer(5), "marginLeft": Integer(220), "marginBottom": Integer(35)}
+overview-detail.yaml::root/vconcat[0] FixedDomains { x: false, y: false, colour: false } {"width": Integer(680), "height": Integer(200)}
+overview-detail.yaml::root/vconcat[1] FixedDomains { x: false, y: true, colour: false } {"yDomain": String("Fixed"), "width": Integer(680), "height": Integer(200)}
+pan-zoom.yaml::root/hconcat[0]/vconcat[0] FixedDomains { x: false, y: false, colour: false } {"width": Integer(320), "height": Integer(240)}
+pan-zoom.yaml::root/hconcat[0]/vconcat[2] FixedDomains { x: false, y: false, colour: false } {"width": Integer(320), "height": Integer(240)}
+pan-zoom.yaml::root/hconcat[2]/vconcat[0] FixedDomains { x: false, y: false, colour: false } {"width": Integer(320), "height": Integer(240)}
+pan-zoom.yaml::root/hconcat[2]/vconcat[2] FixedDomains { x: false, y: false, colour: false } {"width": Integer(320), "height": Integer(240)}
+population-arrows.yaml::root/vconcat[1] FixedDomains { x: false, y: false, colour: false } {"name": String("arrows"), "grid": Bool(true), "inset": Integer(10), "xScale": String("log"), "xLabel": String("Population →"), "yLabel": String("↑ Inequality"), "yTicks": Integer(4), "colorScheme": String("BuRd"), "colorTickFormat": String("+f")}
+presidential-opinion.yaml::root/vconcat[0] FixedDomains { x: false, y: false, colour: false } {"xInset": Integer(20), "xLabel": String("First inauguration date →"), "yInsetTop": Integer(4), "yGrid": Bool(true), "yLabel": String("↑ Opinion (%)"), "yTickFormat": String("+f")}
+protein-design.yaml::root/vconcat[2]/hconcat[0] FixedDomains { x: false, y: false, colour: true } {"width": Integer(600), "height": Integer(55), "xAxis": Null, "yAxis": Null, "xDomain": Param(ParamRef("plddt_domain")), "colorDomain": String("Fixed"), "colorScheme": Param(ParamRef("scheme")), "marginLeft": Integer(40), "marginRight": Integer(0), "marginTop": Integer(0), "marginBottom": Integer(0)}
+protein-design.yaml::root/vconcat[3]/hconcat[0] FixedDomains { x: false, y: false, colour: true } {"name": String("scatter"), "opacityDomain": Array([Integer(0), Integer(2)]), "opacityClamp": Bool(true), "colorDomain": String("Fixed"), "colorScheme": Param(ParamRef("scheme")), "xDomain": Param(ParamRef("plddt_domain")), "yDomain": Param(ParamRef("pae_domain")), "xLabelAnchor": String("center"), "yLabelAnchor": String("center"), "marginTop": Integer(0), "marginLeft": Integer(40), "marginRight": Integer(0), "width": Integer(600), "height": Integer(450)}
+protein-design.yaml::root/vconcat[3]/hconcat[1] FixedDomains { x: false, y: false, colour: true } {"width": Integer(55), "height": Integer(450), "xAxis": Null, "yAxis": Null, "marginTop": Integer(0), "marginLeft": Integer(0), "marginRight": Integer(0), "yDomain": Param(ParamRef("pae_domain")), "colorDomain": String("Fixed"), "colorScheme": Param(ParamRef("scheme"))}
+region-tests.yaml::root/vconcat[0] FixedDomains { x: false, y: false, colour: false } {"marginLeft": Integer(24), "xLabel": Null, "xTicks": Integer(10), "xLine": Bool(true), "yLine": Bool(true), "yLabel": String("Unemployment (%)"), "yGrid": Bool(true), "marginRight": Integer(0)}
+region-tests.yaml::root/vconcat[2] FixedDomains { x: false, y: false, colour: false } {"margin": Integer(2), "projectionType": String("equirectangular")}
+region-tests.yaml::root/vconcat[4] FixedDomains { x: false, y: false, colour: false } {"margin": Integer(0), "projectionType": String("albers")}
+seattle-temp.yaml::root FixedDomains { x: false, y: false, colour: false } {"xTickFormat": String("%b"), "yLabel": String("Temperature Range (°C)"), "width": Integer(680), "height": Integer(300)}
+sorted-bars.yaml::root/vconcat[2] FixedDomains { x: false, y: false, colour: false } {"xLabel": String("Gold Medals"), "yLabel": String("Nationality"), "yLabelAnchor": String("top"), "marginTop": Integer(15)}
+symbols.yaml::root/vconcat[2]/hconcat[0] FixedDomains { x: false, y: false, colour: false } {"name": String("stroked"), "grid": Bool(true), "xLabel": String("Body mass (g) →"), "yLabel": String("↑ Flipper length (mm)")}
+symbols.yaml::root/vconcat[4]/hconcat[0] FixedDomains { x: false, y: false, colour: false } {"name": String("filled"), "grid": Bool(true), "xLabel": String("Body mass (g) →"), "yLabel": String("↑ Flipper length (mm)")}
+triangle-wave.yaml::root/vconcat[0] FixedDomains { x: false, y: false, colour: false } {"xLabel": Null, "width": Integer(680), "height": Integer(150)}
+triangle-wave.yaml::root/vconcat[2] FixedDomains { x: false, y: true, colour: true } {"yDomain": String("Fixed"), "colorDomain": String("Fixed"), "xLabel": Null, "width": Integer(680), "height": Integer(150)}
+triangle-wave.yaml::root/vconcat[4] FixedDomains { x: false, y: true, colour: true } {"yDomain": String("Fixed"), "colorDomain": String("Fixed"), "xLabel": Null, "width": Integer(680), "height": Integer(150)}
+unemployment.yaml::root/vconcat[1] FixedDomains { x: false, y: false, colour: false } {"name": String("county-map"), "margin": Integer(0), "colorScale": String("quantile"), "colorN": Integer(9), "colorScheme": String("blues"), "projectionType": String("albers-usa")}
+us-county-map.yaml::root FixedDomains { x: false, y: false, colour: false } {"margin": Integer(0), "projectionType": String("albers")}
+us-state-map.yaml::root FixedDomains { x: false, y: false, colour: false } {"margin": Integer(0), "projectionType": String("albers")}
+voronoi.yaml::root/vconcat[0] FixedDomains { x: false, y: false, colour: false } {"inset": Integer(10), "width": Integer(680)}
+walmart-openings.yaml::root/vconcat[0] FixedDomains { x: false, y: false, colour: false } {"margin": Integer(0), "fyLabel": Null, "projectionType": String("albers")}
+weather.yaml::root/vconcat[0]/hconcat[0] FixedDomains { x: false, y: false, colour: false } {"xyDomain": String("Fixed"), "xTickFormat": String("%b"), "colorDomain": Param(ParamRef("domain")), "colorRange": Param(ParamRef("colors")), "rDomain": String("Fixed"), "rRange": Array([Integer(2), Integer(10)]), "width": Integer(680), "height": Integer(300)}
+weather.yaml::root/vconcat[1] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "yDomain": Param(ParamRef("domain")), "yLabel": Null, "colorDomain": Param(ParamRef("domain")), "colorRange": Param(ParamRef("colors")), "width": Integer(680)}
+wind-map.yaml::root/vconcat[1] FixedDomains { x: false, y: false, colour: false } {"name": String("wind-map"), "lengthScale": String("identity"), "colorZero": Bool(true), "inset": Integer(10), "aspectRatio": Integer(1), "width": Integer(680)}
+window-frame.yaml::root FixedDomains { x: false, y: false, colour: false } {"yLabel": String("Close"), "width": Integer(680), "height": Integer(200)}
+wnba-shots.yaml::root/vconcat[2] FixedDomains { x: false, y: false, colour: true } {"name": String("shot-chart"), "xAxis": Null, "yAxis": Null, "margin": Integer(5), "xDomain": Array([Integer(0), Integer(50)]), "yDomain": Array([Integer(0), Integer(40)]), "colorDomain": String("Fixed"), "colorScheme": String("YlOrRd"), "colorScale": String("linear"), "colorLabel": String("Avg. Shot Value"), "rScale": String("log"), "rRange": Array([Integer(3), Integer(9)]), "rLabel": String("Shot Count"), "aspectRatio": Integer(1), "width": Integer(510)}
+crossfilter.yaml::root/vconcat[0] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "xLabel": String("Arrival Delay (min)"), "xLabelAnchor": String("center"), "yTickFormat": String("s"), "height": Integer(200)}
+crossfilter.yaml::root/vconcat[1] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "xLabel": String("Departure Time (hour)"), "xLabelAnchor": String("center"), "yTickFormat": String("s"), "height": Integer(200)}
+facet-interval.yaml::root/hconcat[0] FixedDomains { x: true, y: true, colour: false } {"name": String("plot"), "grid": Bool(true), "marginRight": Integer(60), "xDomain": String("Fixed"), "yDomain": String("Fixed"), "fxDomain": String("Fixed"), "fyDomain": String("Fixed"), "fxLabel": Null, "fyLabel": Null}
+flights-200k.yaml::root/vconcat[0] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "xLabel": String("Arrival Delay (min)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
+flights-200k.yaml::root/vconcat[1] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "xLabel": String("Departure Time (hour)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
+flights-200k.yaml::root/vconcat[2] FixedDomains { x: true, y: false, colour: false } {"xDomain": String("Fixed"), "xLabel": String("Flight Distance (miles)"), "yTickFormat": String("s"), "width": Integer(600), "height": Integer(200)}
+line.yaml::root FixedDomains { x: false, y: false, colour: false } {"width": Integer(680), "height": Integer(200)}
+overview-detail.yaml::root/vconcat[0] FixedDomains { x: false, y: false, colour: false } {"width": Integer(680), "height": Integer(200)}
+overview-detail.yaml::root/vconcat[1] FixedDomains { x: false, y: true, colour: false } {"yDomain": String("Fixed"), "width": Integer(680), "height": Integer(200)}
+seattle-temp.yaml::root FixedDomains { x: false, y: false, colour: false } {"xTickFormat": String("%b"), "yLabel": String("Temperature Range (°C)"), "width": Integer(680), "height": Integer(300)}
+sorted-bars.yaml::root/vconcat[2] FixedDomains { x: false, y: false, colour: false } {"xLabel": String("Gold Medals"), "yLabel": String("Nationality"), "yLabelAnchor": String("top"), "marginTop": Integer(15)}"#;
 
         let vendored =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/mosaic-specs/yaml");

@@ -65,7 +65,7 @@ fn spec_of(attrs: &str) -> Spec {
 fn settings_of(attrs: &str, drawn: &ScaleSet) -> ChannelSettings {
     let spec = spec_of(attrs);
     let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
-    ChannelSettings::of_plot_drawn(&spec, plot, &channels(), drawn)
+    ChannelSettings::of_plot_drawn(&spec, plot, "root", &channels(), drawn)
 }
 
 /// A list on x's settings over a plot that writes `attrs`, drawn against
@@ -411,7 +411,7 @@ fn row_in(text: &str, name: &str) -> SettingRow {
         .expect("the text parses")
         .spec;
     let plot = plot_at_path(&spec, "root").expect("the root plot");
-    ChannelSettings::of_plot(&spec, plot, &channels())
+    ChannelSettings::of_plot(&spec, plot, "root", &channels())
         .rows(ShelfChannel::X)
         .iter()
         .find(|r| r.name == name)
@@ -925,7 +925,7 @@ fn save_writes_each_value_set_and_none_for_a_row_stepped_back_to_auto() {
             .spec;
         let plot = plot_at_path(&spec, &path).expect("the plot");
         let channels = brightfield_shell::shelf::ShelfChannels::of_plot(plot).expect("channels");
-        ChannelSettings::of_plot(&spec, plot, &channels)
+        ChannelSettings::of_plot(&spec, plot, "root", &channels)
             .rows(ShelfChannel::X)
             .iter()
             .find(|r| r.name == name)

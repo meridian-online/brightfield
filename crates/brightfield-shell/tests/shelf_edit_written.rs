@@ -18,9 +18,13 @@ use std::path::PathBuf;
 use brightfield_engine::{ColumnProfile, ProfileOutcome};
 use brightfield_protocol::write_chart_edit;
 use brightfield_shell::data_file;
-use brightfield_shell::shelf_edit::{put_colour, put_column};
+use brightfield_shell::shelf::{auto_pivot, ColourScaleWrite, Number};
+use brightfield_shell::shelf_edit::{
+    number_value, put_colour, put_colour_scale, put_column, put_setting, SettingWrite,
+};
 use brightfield_spec::analysis::ComponentPath;
-use brightfield_spec::ast::Spec;
+use brightfield_spec::ast::{Spec, SpecValue};
+use brightfield_spec::edit::plot_at_path;
 use brightfield_spec::edit::ChartEdit;
 use brightfield_spec::layout::PlotAxis;
 use brightfield_spec::{parse_spec, Format};
@@ -265,6 +269,191 @@ fn the_shelfs_colour_edit_on_the_generated_map_adds_a_fill_line_a_scheme_line_an
     );
 }
 
+/// `write` put on the hero of `spec` and written into `text`, with the text read
+/// back as the spec the shelf made.
+fn scaled(text: &str, spec: &mut Spec, hero: &ComponentPath, write: &ColourScaleWrite) -> String {
+    let edits = put_colour_scale(spec, hero, write).expect("the scale writes");
+    let written = write_all(text, &edits);
+    assert_eq!(
+        parse_spec(&written, Format::Yaml).unwrap().spec,
+        *spec,
+        "{write:?}: the text reads back as the spec the shelf made"
+    );
+    written
+}
+
+/// `text` with the hero's `colorRange` set to `colours`, and the spec read from it.
+fn with_range(text: &str, hero: &ComponentPath, colours: &[&str]) -> (String, Spec) {
+    let edit = ChartEdit::SetPlotAttribute {
+        plot: hero.clone(),
+        key: "colorRange".to_string(),
+        value: SpecValue::Array(
+            colours
+                .iter()
+                .map(|c| SpecValue::String((*c).to_string()))
+                .collect(),
+        ),
+    };
+    let written = write_all(text, &[edit]);
+    let spec = parse_spec(&written, Format::Yaml).unwrap().spec;
+    (written, spec)
+}
+
+/// The three colours of `colorRange` in the text, as the file writes them.
+fn range_of(text: &str) -> Vec<String> {
+    let line = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("colorRange:"))
+        .expect("the file writes a colorRange");
+    line.split_once('[')
+        .expect("a list")
+        .1
+        .trim_end_matches(']')
+        .split(',')
+        .map(|c| c.trim().trim_matches(['\'', '"']).to_string())
+        .collect()
+}
+
+/// **The scale row's three values write and take out their keys**, each switch
+/// taking out what the scale it leaves wrote: diverging names its pivot and
+/// brightfield's pair and takes the scheme out; steps names its count and the
+/// scheme; linear takes the scale's keys out and keeps the scheme.
+#[test]
+fn the_scale_rows_three_values_write_and_take_out_their_keys() {
+    let mut opened = open("scale_rows");
+    let edits = put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .expect("colour takes the column");
+    let coloured = write_all(&opened.text, &edits);
+    let hero = opened.hero.clone();
+    let diverging = ColourScaleWrite::Diverging {
+        pivot: Number::new(3.47),
+    };
+    let steps = ColourScaleWrite::Steps { count: 5 };
+
+    // Linear to diverging.
+    let mut spec = opened.spec.clone();
+    let written = scaled(&coloured, &mut spec, &hero, &diverging);
+    assert!(written.contains("colorScale: diverging"));
+    assert!(written.contains("colorPivot: 3.47"));
+    assert!(
+        written.contains("colorRange: ["),
+        "the pair is written as colours"
+    );
+    assert!(
+        !written.contains("colorScheme"),
+        "diverging takes the scheme out"
+    );
+
+    // Diverging to steps: the pivot and the pair go, the scheme comes back.
+    let mut from_diverging = spec.clone();
+    let stepped = scaled(&written, &mut from_diverging, &hero, &steps);
+    assert!(stepped.contains("colorScale: quantize"));
+    assert!(stepped.contains("colorN: 5"));
+    assert!(stepped.contains("colorScheme: viridis"));
+    assert!(!stepped.contains("colorPivot") && !stepped.contains("colorRange"));
+
+    // Steps to diverging: the count goes, the scheme goes.
+    let mut spec_again = from_diverging.clone();
+    let back = scaled(&stepped, &mut spec_again, &hero, &diverging);
+    assert!(back.contains("colorScale: diverging") && back.contains("colorPivot: 3.47"));
+    assert!(!back.contains("colorN"), "steps' count is taken out");
+    assert!(!back.contains("colorScheme"), "and the scheme with it");
+
+    // Diverging to linear: the scale's keys and the pair go, the scheme is named.
+    let mut to_linear = spec.clone();
+    let linear = scaled(&written, &mut to_linear, &hero, &ColourScaleWrite::Linear);
+    assert!(
+        !linear.contains("colorPivot")
+            && !linear.contains("colorRange")
+            && !linear.contains("colorScale"),
+        "{linear}"
+    );
+    assert!(
+        linear.contains("colorScheme: viridis"),
+        "linear names the scheme"
+    );
+
+    // Steps to linear: the count goes and the scheme stays.
+    let mut steps_to_linear = from_diverging.clone();
+    let linear = scaled(
+        &stepped,
+        &mut steps_to_linear,
+        &hero,
+        &ColourScaleWrite::Linear,
+    );
+    assert!(!linear.contains("colorScale") && !linear.contains("colorN"));
+    assert!(
+        linear.contains("colorScheme: viridis"),
+        "linear keeps the scheme"
+    );
+}
+
+/// **A `colorRange` that is not brightfield's pair is the analyst's and stays**
+/// through a switch to linear and to steps.
+#[test]
+fn a_colour_range_of_the_analysts_survives_a_switch_to_linear_and_to_steps() {
+    let mut opened = open("scale_rows_own_range");
+    let edits = put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .expect("colour takes the column");
+    let coloured = write_all(&opened.text, &edits);
+    let (text, spec) = with_range(&coloured, &opened.hero, &["#000000", "#ffffff", "#ff0000"]);
+    for write in [
+        ColourScaleWrite::Linear,
+        ColourScaleWrite::Steps { count: 5 },
+    ] {
+        let mut spec = spec.clone();
+        let written = scaled(&text, &mut spec, &opened.hero, &write);
+        assert!(
+            written.contains("colorRange: ["),
+            "{write:?} left the analyst's range alone"
+        );
+        assert!(written.contains("#ffffff"), "{written}");
+    }
+}
+
+/// **The pair is recognised as the renderer reads it**: upper-case hex is still
+/// brightfield's own and is taken out with the scale.
+#[test]
+fn an_upper_case_pair_is_still_the_pair_and_goes_with_the_scale() {
+    let mut opened = open("scale_rows_upper");
+    let edits = put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .expect("colour takes the column");
+    let coloured = write_all(&opened.text, &edits);
+    let mut spec = opened.spec.clone();
+    let diverging = scaled(
+        &coloured,
+        &mut spec,
+        &opened.hero,
+        &ColourScaleWrite::Diverging {
+            pivot: Number::new(3.47),
+        },
+    );
+    let upper: Vec<String> = range_of(&diverging)
+        .iter()
+        .map(|c| c.to_uppercase())
+        .collect();
+    let upper: Vec<&str> = upper.iter().map(String::as_str).collect();
+    let (text, mut spec) = with_range(&diverging, &opened.hero, &upper);
+    assert!(text.contains(upper[0]), "fixture check: upper-case hex");
+    let linear = scaled(&text, &mut spec, &opened.hero, &ColourScaleWrite::Linear);
+    assert!(!linear.contains("colorRange"), "{linear}");
+}
+
 /// **A file's comments are as they were after the colour edit is written**, an
 /// own-line comment between the plot's list and its attributes and a comment
 /// after its last attribute among them: the lines that hold a `#` are the same
@@ -309,4 +498,248 @@ fn the_colour_lines_are_written_among_a_files_comments_and_leave_them() {
         spec,
         "the text reads back as the spec the shelf made"
     );
+}
+
+#[test]
+fn a_new_column_on_colour_takes_a_set_domain_out_and_re_reads_the_pivot() {
+    let mut opened = open("colour_domain_reset");
+    put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .unwrap();
+    put_colour_scale(
+        &mut opened.spec,
+        &opened.hero,
+        &ColourScaleWrite::Diverging {
+            pivot: Number::new(2.0),
+        },
+    )
+    .unwrap();
+    put_setting(
+        &mut opened.spec,
+        &opened.hero,
+        "colorDomain",
+        &SpecValue::Null,
+        &SettingWrite::Value(SpecValue::String("Fixed".into())),
+    )
+    .unwrap();
+
+    put_colour(&mut opened.spec, &opened.hero, "house_age", &opened.table).unwrap();
+    let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+    assert!(!plot.attributes.contains_key("colorDomain"));
+    let age = opened
+        .table
+        .iter()
+        .find(|p| p.name == "house_age")
+        .and_then(|p| p.moments.as_ref())
+        .unwrap();
+    assert_eq!(
+        plot.attributes.get("colorPivot"),
+        Some(&number_value(auto_pivot(age)))
+    );
+}
+
+/// The diverging scale's own keys after `number` is on colour and stepped to
+/// diverging about 2.
+fn diverging_on(name: &str, number: &str) -> Opened {
+    let mut opened = open(name);
+    put_colour(&mut opened.spec, &opened.hero, number, &opened.table).unwrap();
+    put_colour_scale(
+        &mut opened.spec,
+        &opened.hero,
+        &ColourScaleWrite::Diverging {
+            pivot: Number::new(2.0),
+        },
+    )
+    .unwrap();
+    opened
+}
+
+#[test]
+fn a_column_of_names_takes_the_ramps_scale_and_pair_out() {
+    let mut opened = diverging_on("colour_names_after_diverging", "median_income");
+    let mut names = opened.table[0].clone();
+    names.name = "district".to_string();
+    names.type_name = "VARCHAR".to_string();
+    names.moments = None;
+    opened.table.push(names);
+
+    put_colour(&mut opened.spec, &opened.hero, "district", &opened.table).unwrap();
+    let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+    for key in [
+        "colorScale",
+        "colorPivot",
+        "colorN",
+        "colorRange",
+        "colorScheme",
+    ] {
+        assert!(
+            !plot.attributes.contains_key(key),
+            "{key} goes with the ramp a column of names does not paint"
+        );
+    }
+
+    // An analyst's own range stays: only brightfield's pair is its own to take.
+    let mut opened = open("colour_names_keep_own_range");
+    put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .unwrap();
+    let own = SpecValue::Array(
+        ["#1b7837", "#f7f7f7", "#762a83"]
+            .map(|c| SpecValue::String(c.to_string()))
+            .to_vec(),
+    );
+    put_setting(
+        &mut opened.spec,
+        &opened.hero,
+        "colorRange",
+        &SpecValue::Null,
+        &SettingWrite::Value(own.clone()),
+    )
+    .unwrap();
+    let mut names = opened.table[0].clone();
+    names.name = "district".to_string();
+    names.type_name = "VARCHAR".to_string();
+    names.moments = None;
+    opened.table.push(names);
+    put_colour(&mut opened.spec, &opened.hero, "district", &opened.table).unwrap();
+    let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+    assert_eq!(plot.attributes.get("colorRange"), Some(&own));
+}
+
+/// A column of names takes out only what the scale row writes: a `$param` scale
+/// and the count written beside it stay.
+#[test]
+fn a_column_of_names_leaves_a_scale_the_shelf_did_not_write() {
+    let mut opened = open("colour_names_keep_param_scale");
+    put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .unwrap();
+    for (key, value) in [
+        (
+            "colorScale",
+            SpecValue::Param(brightfield_spec::ast::ParamRef::new("scale")),
+        ),
+        ("colorN", SpecValue::Integer(7)),
+    ] {
+        put_setting(
+            &mut opened.spec,
+            &opened.hero,
+            key,
+            &SpecValue::Null,
+            &SettingWrite::Value(value),
+        )
+        .unwrap();
+    }
+    let mut names = opened.table[0].clone();
+    names.name = "district".to_string();
+    names.type_name = "VARCHAR".to_string();
+    names.moments = None;
+    opened.table.push(names);
+    put_colour(&mut opened.spec, &opened.hero, "district", &opened.table).unwrap();
+    let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+    assert_eq!(
+        plot.attributes.get("colorScale"),
+        Some(&SpecValue::Param(brightfield_spec::ast::ParamRef::new(
+            "scale"
+        )))
+    );
+    assert_eq!(plot.attributes.get("colorN"), Some(&SpecValue::Integer(7)));
+}
+
+/// A column change takes out only a domain the domain row writes: a `$param`
+/// domain is the file's and stays.
+#[test]
+fn a_column_change_leaves_a_param_domain() {
+    let mut opened = open("colour_param_domain_stays");
+    put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .unwrap();
+    let param = SpecValue::Param(brightfield_spec::ast::ParamRef::new("ends"));
+    put_setting(
+        &mut opened.spec,
+        &opened.hero,
+        "colorDomain",
+        &SpecValue::Null,
+        &SettingWrite::Value(param.clone()),
+    )
+    .unwrap();
+    put_colour(&mut opened.spec, &opened.hero, "house_age", &opened.table).unwrap();
+    let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+    assert_eq!(plot.attributes.get("colorDomain"), Some(&param));
+}
+
+#[test]
+fn a_number_column_on_a_diverging_plot_is_given_no_scheme() {
+    let mut opened = diverging_on("colour_diverging_no_scheme", "median_income");
+    put_colour(&mut opened.spec, &opened.hero, "house_age", &opened.table).unwrap();
+    let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+    assert!(
+        !plot.attributes.contains_key("colorScheme"),
+        "a diverging scale draws its pair, so no scheme is named beside it"
+    );
+    assert!(plot.attributes.contains_key("colorRange"), "the pair stays");
+}
+
+#[test]
+fn a_column_change_writes_a_pivot_only_on_a_diverging_plot() {
+    // Linear and stepped plots hold no pivot, and a column change gives them none.
+    for write in [None, Some(ColourScaleWrite::Steps { count: 5 })] {
+        let mut opened = open("colour_pivot_off");
+        put_colour(
+            &mut opened.spec,
+            &opened.hero,
+            "median_income",
+            &opened.table,
+        )
+        .unwrap();
+        if let Some(write) = write {
+            put_colour_scale(&mut opened.spec, &opened.hero, &write).unwrap();
+        }
+        put_colour(&mut opened.spec, &opened.hero, "house_age", &opened.table).unwrap();
+        let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+        assert!(!plot.attributes.contains_key("colorPivot"));
+    }
+
+    // A diverging plot's pivot comes out for a column the table holds no
+    // moments of.
+    let mut opened = open("colour_pivot_no_moments");
+    put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .unwrap();
+    put_colour_scale(
+        &mut opened.spec,
+        &opened.hero,
+        &ColourScaleWrite::Diverging {
+            pivot: Number::new(2.0),
+        },
+    )
+    .unwrap();
+    for column in &mut opened.table {
+        if column.name == "house_age" {
+            column.moments = None;
+        }
+    }
+    put_colour(&mut opened.spec, &opened.hero, "house_age", &opened.table).unwrap();
+    let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+    assert!(!plot.attributes.contains_key("colorPivot"));
 }

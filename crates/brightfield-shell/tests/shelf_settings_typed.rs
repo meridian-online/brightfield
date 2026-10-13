@@ -75,7 +75,7 @@ fn settings_of(attrs: &str) -> ChannelSettings {
         .expect("the spec parses")
         .spec;
     let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
-    ChannelSettings::of_plot(&spec, plot, &channels())
+    ChannelSettings::of_plot(&spec, plot, "root", &channels())
 }
 
 /// A list on x's settings over a plot that writes `attrs`, the cursor on the

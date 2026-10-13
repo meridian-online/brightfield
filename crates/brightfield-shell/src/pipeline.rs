@@ -1587,6 +1587,12 @@ impl LiveDashboard {
         &self.view_extents
     }
 
+    /// What each `Domain: Fixed` plot is pinned to, as captured so far.
+    #[must_use]
+    pub fn pins(&self) -> &PlotPins {
+        &self.pins
+    }
+
     /// What each plot's QUERIES are currently filtered to — the session's own
     /// store, the durable half. Read by the gate that holds the two in step.
     #[must_use]

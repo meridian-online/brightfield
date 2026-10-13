@@ -358,17 +358,20 @@ pub fn legend_name(plot: &PlotHandle) -> Option<&str> {
 /// The band is as tall as its chart, so a block's room is what is left of the
 /// band under its plot's top. A number legend's ramp gives way to that room, and
 /// its value labels do not (`draw_block` says how).
+///
+/// Returns the rect each block drew, with the index of the plot it describes.
 pub fn draw_band(
     ui: &egui::Ui,
     band: egui::Rect,
     raster_top: f32,
     composed: &Composed,
     mode: Mode,
-) {
+) -> Vec<(usize, egui::Rect)> {
     let painter = ui.painter_at(band);
+    let mut drawn = Vec::new();
     for (i, legend) in blocks(composed) {
         let y = raster_top + composed.plots[i].rect.y as f32;
-        draw_block(
+        let rect = draw_block(
             &painter,
             egui::pos2(band.left(), y),
             band.bottom(),
@@ -376,7 +379,9 @@ pub fn draw_band(
             legend_name(&composed.plots[i]),
             mode,
         );
+        drawn.push((i, rect));
     }
+    drawn
 }
 
 /// Draw every plot's legend that sits in a band under it, each into the rect
@@ -386,7 +391,15 @@ pub fn draw_band(
 /// on the page plane lands where the layout put it. The painter is clipped to
 /// the band, so a long list of categories is cut at the band's right edge and
 /// never drawn over the plot or past the tile.
-pub fn draw_below(ui: &egui::Ui, origin: egui::Pos2, composed: &Composed, mode: Mode) {
+///
+/// Returns the band each block was drawn in, with the index of its plot.
+pub fn draw_below(
+    ui: &egui::Ui,
+    origin: egui::Pos2,
+    composed: &Composed,
+    mode: Mode,
+) -> Vec<(usize, egui::Rect)> {
+    let mut drawn = Vec::new();
     for (i, legend, rect) in below_blocks(composed) {
         let band = egui::Rect::from_min_size(
             origin + egui::vec2(rect.x as f32, rect.y as f32),
@@ -399,7 +412,29 @@ pub fn draw_below(ui: &egui::Ui, origin: egui::Pos2, composed: &Composed, mode: 
             legend_name(&composed.plots[i]),
             mode,
         );
+        drawn.push((i, band));
     }
+    drawn
+}
+
+/// How far the ring stands off the legend block, in points.
+pub const RING_GAP: f32 = 4.0;
+/// The ring's stroke, in points.
+pub const RING_WIDTH: f32 = 1.0;
+
+/// The ring round a legend `block`: the block grown by [`RING_GAP`], cut back
+/// on a side where that would reach into `data`, the plot's data area, so the
+/// ring does not lie over a mark (`the_ring_stays_outside_the_data_area`).
+#[must_use]
+pub fn ring_rect(block: egui::Rect, data: egui::Rect) -> egui::Rect {
+    let mut ring = block.expand(RING_GAP);
+    if block.left() >= data.right() {
+        ring.min.x = ring.min.x.max(data.right());
+    }
+    if block.top() >= data.bottom() {
+        ring.min.y = ring.min.y.max(data.bottom());
+    }
+    ring
 }
 
 /// The widest the ramp under a plot runs, in logical points. The ramp is one
@@ -421,13 +456,15 @@ pub const BELOW_RAMP_HEIGHT: f32 = control::ICON_XS;
 /// and the ramp starts after what is drawn of it. `name` is [`legend_name`]'s,
 /// and `None` for a plot whose fill is neither a column nor a transform's
 /// output, which draws no legend through [`LegendSpec::of_plot`].
+///
+/// Returns `band`: the block is centred in it, and the band is the block.
 pub fn draw_below_block(
     painter: &egui::Painter,
     band: egui::Rect,
     legend: &LegendSpec,
     name: Option<&str>,
     mode: Mode,
-) {
+) -> egui::Rect {
     let sem = semantic(mode.is_dark());
     let ink = crate::design::to_color32(sem.text.secondary);
     let name_ink = crate::design::to_color32(sem.text.primary);
@@ -491,6 +528,7 @@ pub fn draw_below_block(
             below_steps(painter, band, colours, edges, &font, &name_at, ink);
         }
     }
+    band
 }
 
 /// Where the ramp under a plot starts: the left edge after the name, the top of
@@ -671,18 +709,21 @@ fn draw_block(
     legend: &LegendSpec,
     name: Option<&str>,
     mode: Mode,
-) {
+) -> egui::Rect {
     let sem = semantic(mode.is_dark());
     let ink = crate::design::to_color32(sem.text.secondary);
     let font = egui::FontId::proportional(typography::UI_SIZE);
     let swatch = control::ICON_XS;
     let row = swatch + spacing::SPACE_2;
+    let block_origin = origin;
     let mut origin = origin;
+    let mut used_bottom = origin.y;
     if let Some(name) = name {
         let name_ink = crate::design::to_color32(sem.text.primary);
         let galley = text_ink::fit(painter, name, font.clone(), block_width(), name_ink);
         let height = galley.size().y;
         painter.galley(origin, galley, name_ink);
+        used_bottom = origin.y + height;
         origin.y += height + spacing::SPACE_2;
     }
     match legend {
@@ -695,11 +736,12 @@ fn draw_block(
                 );
                 painter.rect_filled(rect, 0.0, chart_ink(entry.colour));
                 let galley = painter.layout(entry.label.clone(), font.clone(), ink, LABEL_COLUMN);
+                let label_top = rect.center().y - galley.size().y / 2.0;
+                used_bottom = used_bottom
+                    .max(rect.bottom())
+                    .max(label_top + galley.size().y);
                 painter.galley(
-                    egui::pos2(
-                        rect.right() + spacing::ICON_LABEL_GAP,
-                        rect.center().y - galley.size().y / 2.0,
-                    ),
+                    egui::pos2(rect.right() + spacing::ICON_LABEL_GAP, label_top),
                     galley,
                     ink,
                 );
@@ -712,7 +754,8 @@ fn draw_block(
                 pivot: None,
                 min: *min,
             };
-            number_legend(painter, origin, bottom, &values, &font, ink);
+            used_bottom =
+                used_bottom.max(number_legend(painter, origin, bottom, &values, &font, ink));
         }
         LegendSpec::Diverging {
             min,
@@ -726,12 +769,24 @@ fn draw_block(
                 pivot: Some(*pivot),
                 min: *min,
             };
-            number_legend(painter, origin, bottom, &values, &font, ink);
+            used_bottom =
+                used_bottom.max(number_legend(painter, origin, bottom, &values, &font, ink));
         }
         LegendSpec::Steps { colours, edges } => {
-            steps_legend(painter, origin, bottom, colours, edges, &font, ink);
+            used_bottom = used_bottom.max(steps_legend(
+                painter, origin, bottom, colours, edges, &font, ink,
+            ));
         }
     }
+    // Categories past the room's foot are clipped, so the rect stops there,
+    // and never above the block's own top.
+    egui::Rect::from_min_max(
+        block_origin,
+        egui::pos2(
+            block_origin.x + block_width(),
+            used_bottom.min(bottom).max(block_origin.y),
+        ),
+    )
 }
 
 /// What a number column's legend says beside its ramp: the ramp's stops and the
@@ -745,7 +800,7 @@ struct RampValues<'a> {
 
 /// A number column's legend under its name, at `origin`, in the room down to
 /// `bottom`: the ramp with its values beside it, or as much of that as the room
-/// holds ([`number_fit`]).
+/// holds ([`number_fit`]). Returns the lowest y it painted at.
 ///
 /// The labels keep the font's size whatever the room; it is the ramp that
 /// gives way, down to the height that stands the two end labels one over the
@@ -760,7 +815,7 @@ fn number_legend(
     values: &RampValues,
     font: &egui::FontId,
     ink: egui::Color32,
-) {
+) -> f32 {
     let label = |value: f64| {
         text_ink::fit(
             painter,
@@ -780,6 +835,7 @@ fn number_legend(
                 ramp_value(painter, ramp, egui::Align::Center, label(pivot), ink);
             }
             ramp_value(painter, ramp, egui::Align::Max, low, ink);
+            ramp.bottom()
         }
         NumberFit::Labels => end_labels(painter, origin, bottom, [high, low], ink),
     }
@@ -787,22 +843,25 @@ fn number_legend(
 
 /// The two end labels alone, the maximum over the minimum from `origin` down, in
 /// the label column; a label the room down to `bottom` cannot hold whole is not
-/// drawn.
+/// drawn. Returns the lowest y painted at, or `origin.y` when none is.
 fn end_labels(
     painter: &egui::Painter,
     origin: egui::Pos2,
     bottom: f32,
     labels: [std::sync::Arc<egui::Galley>; 2],
     ink: egui::Color32,
-) {
+) -> f32 {
     let column = origin.x + control::ICON_XS + spacing::ICON_LABEL_GAP;
     let label_height = labels[0].size().y;
+    let mut lowest = origin.y;
     for (i, galley) in labels.into_iter().enumerate() {
         let top = origin.y + i as f32 * (label_height + LABEL_GAP);
         if top + label_height <= bottom {
             painter.galley(egui::pos2(column, top), galley, ink);
+            lowest = lowest.max(top + label_height);
         }
     }
+    lowest
 }
 
 /// A stepped scale's legend under its name, at `origin`, in the room down to
@@ -817,7 +876,7 @@ fn end_labels(
 /// would stand within [`LABEL_GAP`] of the one above it is not drawn
 /// ([`kept_labels`]); the two at the ends always are. In a room that holds no
 /// stack, or one a point high for each step cannot fill, the end labels stand
-/// alone, as a ramp's do.
+/// alone, as a ramp's do. Returns the lowest y painted at.
 fn steps_legend(
     painter: &egui::Painter,
     origin: egui::Pos2,
@@ -826,7 +885,7 @@ fn steps_legend(
     edges: &[f64],
     font: &egui::FontId,
     ink: egui::Color32,
-) {
+) -> f32 {
     let steps = colours.len();
     let label = |value: f64| {
         text_ink::fit(
@@ -838,7 +897,7 @@ fn steps_legend(
         )
     };
     let (Some(&high), Some(&low)) = (edges.last(), edges.first()) else {
-        return;
+        return origin.y;
     };
     let label_height = label(high).size().y;
     let block = match number_fit(bottom - origin.y, label_height, false) {
@@ -846,8 +905,7 @@ fn steps_legend(
         NumberFit::Labels => None,
     };
     let Some(block) = block else {
-        end_labels(painter, origin, bottom, [label(high), label(low)], ink);
-        return;
+        return end_labels(painter, origin, bottom, [label(high), label(low)], ink);
     };
     for (i, colour) in colours.iter().rev().enumerate() {
         let rect = egui::Rect::from_min_size(
@@ -875,6 +933,7 @@ fn steps_legend(
     for i in kept_labels(&spans, LABEL_GAP) {
         painter.galley(egui::pos2(column, spans[i].0), galleys[i].clone(), ink);
     }
+    origin.y + steps as f32 * block
 }
 
 /// How many whole points each of `steps` blocks is across `extent` points, or
@@ -1311,6 +1370,130 @@ mod tests {
             number_fit(floor - 0.5, LABEL, false),
             NumberFit::Labels,
             "under the floor draws the labels alone"
+        );
+    }
+
+    /// The ring is the block grown by 4 on every side, and cut back on a side
+    /// where that would reach into the plot's data area.
+    #[test]
+    fn the_ring_stays_outside_the_data_area() {
+        let data = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0));
+        let right = egui::Rect::from_min_max(egui::pos2(102.0, 0.0), egui::pos2(200.0, 60.0));
+        let ring = ring_rect(right, data);
+        assert!(ring.left() >= data.right());
+        assert_eq!((ring.right(), ring.bottom()), (204.0, 64.0));
+
+        let below = egui::Rect::from_min_max(egui::pos2(0.0, 101.0), egui::pos2(100.0, 145.0));
+        let ring = ring_rect(below, data);
+        assert!(ring.top() >= data.bottom());
+        assert_eq!(ring.left(), -4.0);
+    }
+
+    /// A block that touches the data area's right or bottom edge is cut back to
+    /// that edge and no further on the side it touches.
+    #[test]
+    fn a_block_touching_the_data_area_is_ringed_from_its_edge() {
+        let data = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0));
+        let right = egui::Rect::from_min_max(egui::pos2(100.0, 10.0), egui::pos2(200.0, 60.0));
+        let ring = ring_rect(right, data);
+        assert_eq!(ring.left(), 100.0);
+        assert_eq!(
+            (ring.top(), ring.right(), ring.bottom()),
+            (6.0, 204.0, 64.0)
+        );
+
+        let below = egui::Rect::from_min_max(egui::pos2(10.0, 100.0), egui::pos2(90.0, 140.0));
+        let ring = ring_rect(below, data);
+        assert_eq!(ring.top(), 100.0);
+        assert_eq!(
+            (ring.left(), ring.right(), ring.bottom()),
+            (6.0, 94.0, 144.0)
+        );
+    }
+
+    /// A block that overlaps the data area is not a legend beside or under it,
+    /// and the ring is the plain grown block: it is cut on no side.
+    #[test]
+    fn a_block_overlapping_the_data_area_is_not_cut() {
+        let data = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0));
+        let block = egui::Rect::from_min_max(egui::pos2(90.0, 90.0), egui::pos2(150.0, 130.0));
+        assert_eq!(ring_rect(block, data), block.expand(RING_GAP));
+    }
+
+    /// A block at the right reports the rect it drew: its origin, the block's
+    /// width, and a bottom at or below its last swatch.
+    #[test]
+    fn a_right_block_reports_the_rect_it_drew() {
+        let spec = LegendSpec::from_scales(&colour_scale()).expect("a colour scale has a legend");
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(300.0, 200.0),
+            )),
+            ..Default::default()
+        };
+        let mut drawn = None;
+        let out = ctx.run_ui(raw, |ui| {
+            let painter = ui.painter().clone();
+            drawn = Some(draw_block(
+                &painter,
+                egui::pos2(10.0, 10.0),
+                200.0,
+                &spec,
+                None,
+                Mode::Light,
+            ));
+        });
+        let drawn = drawn.expect("the frame ran");
+        assert_eq!(drawn.min, egui::pos2(10.0, 10.0));
+        assert_eq!(drawn.width(), block_width());
+        let lowest_swatch = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) => Some(r.rect.bottom()),
+                _ => None,
+            })
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(drawn.bottom() >= lowest_swatch);
+
+        // More categories than the room holds: the rows past `bottom` are cut
+        // off, and the rect stops at the room's foot rather than running on.
+        let many = LegendSpec::Categorical {
+            entries: (0..40)
+                .map(|i| crate::legend::LegendEntry {
+                    label: format!("category {i}"),
+                    colour: [0.1, 0.2, 0.3, 1.0],
+                })
+                .collect(),
+        };
+        let bottom = 120.0;
+        let mut drawn = None;
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(300.0, 200.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                drawn = Some(draw_block(
+                    ui.painter(),
+                    egui::pos2(10.0, 10.0),
+                    bottom,
+                    &many,
+                    Some("name"),
+                    Mode::Light,
+                ));
+            },
+        );
+        let drawn = drawn.expect("the frame ran");
+        assert!(
+            (drawn.bottom() - bottom).abs() < 1e-3,
+            "the rows overflow, so the rect ends at the room's foot, {bottom}, not {}",
+            drawn.bottom()
         );
     }
 }

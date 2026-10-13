@@ -1226,14 +1226,104 @@ pub struct PinnedDomains {
     pub x_written: bool,
     /// The y pin is the two numbers the file wrote for it.
     pub y_written: bool,
+    /// The colour scale's pin, once captured.
+    pub colour: Option<ColourPin>,
+}
+
+/// A colour scale's pinned domain: the two ends of a ramp, a diverging scale's
+/// or a stepped one's, and a diverging scale's pivot, held from the plot's first
+/// draw under `colorDomain: Fixed`, so a value keeps its colour while a filter
+/// on another tile moves the rows. A categorical colour has no ends, and is not
+/// pinned here. Only the fill is pinned: a number column bound to `stroke`
+/// builds no ramp under the stroke channel (every ramp is built under the fill),
+/// so there is no stroke scale with ends to hold.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColourPin {
+    /// The low end.
+    pub lo: f64,
+    /// The high end.
+    pub hi: f64,
+    /// A diverging scale's pivot. `None` for a ramp or steps.
+    pub pivot: Option<f64>,
+}
+
+impl ColourPin {
+    /// The pin `scale` hands back, or `None` for a scale with no ends.
+    #[must_use]
+    pub fn of(scale: &Scale) -> Option<Self> {
+        match scale {
+            Scale::Sequential {
+                domain_min,
+                domain_max,
+                ..
+            }
+            | Scale::Quantized {
+                domain_min,
+                domain_max,
+                ..
+            } => Some(Self {
+                lo: *domain_min,
+                hi: *domain_max,
+                pivot: None,
+            }),
+            Scale::Diverging {
+                domain_min,
+                domain_max,
+                pivot,
+                ..
+            } => Some(Self {
+                lo: *domain_min,
+                hi: *domain_max,
+                pivot: Some(*pivot),
+            }),
+            _ => None,
+        }
+    }
+
+    /// `scale` re-domained onto this pin, keeping its own colours. `None` where
+    /// the scale is not of the pin's kind.
+    fn applied_to(&self, scale: &Scale) -> Option<Scale> {
+        match (scale, self.pivot) {
+            (Scale::Sequential { stops, .. }, None) => Some(Scale::Sequential {
+                domain_min: self.lo,
+                domain_max: self.hi,
+                stops: stops.clone(),
+            }),
+            (Scale::Quantized { colours, .. }, None) => Some(Scale::Quantized {
+                domain_min: self.lo,
+                domain_max: self.hi,
+                colours: colours.clone(),
+            }),
+            (Scale::Diverging { stops, .. }, Some(pivot)) => Some(Scale::Diverging {
+                domain_min: self.lo,
+                domain_max: self.hi,
+                pivot,
+                stops: stops.clone(),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Re-domain `scales`' fill onto the colour pin, in place. A fill of another
+/// kind from the pin, or no pin, is left as inference made it.
+pub fn apply_colour_pin(scales: &mut ScaleSet, pins: &PinnedDomains) {
+    let Some(pin) = &pins.colour else { return };
+    let Some(scale) = scales.get(Channel::Fill) else {
+        return;
+    };
+    if let Some(pinned) = pin.applied_to(scale) {
+        scales.insert(Channel::Fill, pinned);
+    }
 }
 
 impl PinnedDomains {
     /// Whether nothing is pinned — the state of every plot whose spec asks for
-    /// no pin, and the state in which [`apply_pinned_domains`] is a no-op.
+    /// no pin. A set holding a colour pin alone is not empty, though
+    /// [`apply_pinned_domains`], which reads the positional pins, is a no-op on it.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.x.is_none() && self.y.is_none()
+        self.x.is_none() && self.y.is_none() && self.colour.is_none()
     }
 
     /// These pins with each axis the file wrote two numbers for pinned to those
@@ -1274,6 +1364,9 @@ impl PinnedDomains {
                 continue;
             }
             *slot = scales.get(channel).and_then(PinnedDomain::of);
+        }
+        if request.colour && self.colour.is_none() {
+            self.colour = scales.get(Channel::Fill).and_then(ColourPin::of);
         }
     }
 }
@@ -1454,7 +1547,12 @@ pub fn apply_colour_override(set: &mut ScaleSet, ov: &ColourOverride) {
                 stops,
             } => {
                 let (domain_min, domain_max) = ov.domain.unwrap_or((*domain_min, *domain_max));
+                // brightfield's own pair draws the design system's ramp in the
+                // theme the set is drawn in: the file's three colours are the
+                // light theme's, and a scheme written beside the pair is not
+                // what the pair draws.
                 let stops = match &ov.range {
+                    Some(r) if is_own_diverging_range(r) => diverging_stops(None, &set.ink()),
                     Some(r) if r.len() >= 2 => r.clone(),
                     _ => stops.clone(),
                 };
@@ -1675,6 +1773,35 @@ pub fn diverging_stops(scheme: Option<SequentialScheme>, ink: &ChartInk) -> Vec<
             .chain(DIVERGING_RED_ARM.iter().copied())
             .collect(),
     }
+}
+
+/// brightfield's diverging pair as a file writes it: the blue pole, the light
+/// theme's middle and the red pole. Mosaic has no scheme of that name, so the
+/// file carries the colours, and Mosaic on a white page draws what brightfield
+/// draws in light mode.
+#[must_use]
+pub fn own_diverging_range() -> [[f32; 4]; 3] {
+    [
+        DIVERGING_BLUE_ARM[0],
+        ChartInk::for_mode(false).diverging_mid.components,
+        DIVERGING_RED_ARM[DIVERGING_RED_ARM.len() - 1],
+    ]
+}
+
+/// Whether `range` is brightfield's own pair, which is drawn as the design
+/// system's ramp in the theme the chart is drawn in rather than as the three
+/// colours written.
+#[must_use]
+pub fn is_own_diverging_range(range: &[[f32; 4]]) -> bool {
+    // The tolerance absorbs the round trip through an eight-bit hex, which is
+    // off by up to half a step, and is far below a visible change.
+    const CLOSE: f32 = 1.0 / 255.0;
+    let own = own_diverging_range();
+    range.len() == own.len()
+        && range
+            .iter()
+            .zip(own.iter())
+            .all(|(a, b)| a.iter().zip(b).all(|(x, y)| (x - y).abs() <= CLOSE))
 }
 
 /// The pivot of a diverging scale over `values`, the rows drawn.
@@ -4328,7 +4455,11 @@ mod tests {
     /// says.
     #[test]
     fn capture_takes_the_first_answer_and_keeps_it() {
-        let both = FixedDomains { x: true, y: true };
+        let both = FixedDomains {
+            x: true,
+            y: true,
+            colour: false,
+        };
         let scales_at = |lo: f64, hi: f64| {
             let mut s = ScaleSet::new();
             s.insert(
@@ -4355,6 +4486,211 @@ mod tests {
         assert_eq!(pins.y, None, "no y scale existed to pin");
     }
 
+    /// A colour pin holds the ends of the first draw when a later draw has fewer
+    /// rows: the same value keeps the same colour across a sweep.
+    #[test]
+    fn a_colour_pin_holds_the_first_draws_ends() {
+        let ask = FixedDomains {
+            x: false,
+            y: false,
+            colour: true,
+        };
+        let mut first = ScaleSet::new();
+        first.insert(
+            Channel::Fill,
+            Scale::Sequential {
+                domain_min: 0.5,
+                domain_max: 15.0,
+                stops: vec![[0.0; 4], [1.0; 4]],
+            },
+        );
+        let mut pins = PinnedDomains::default();
+        pins.capture(&first, ask);
+        assert_eq!(
+            pins.colour,
+            Some(ColourPin {
+                lo: 0.5,
+                hi: 15.0,
+                pivot: None
+            })
+        );
+
+        let mut later = ScaleSet::new();
+        later.insert(
+            Channel::Fill,
+            Scale::Sequential {
+                domain_min: 0.5,
+                domain_max: 12.5,
+                stops: vec![[0.0; 4], [1.0; 4]],
+            },
+        );
+        apply_colour_pin(&mut later, &pins);
+        assert!(
+            matches!(
+                later.get(Channel::Fill),
+                Some(Scale::Sequential { domain_min, domain_max, stops })
+                    if (*domain_min, *domain_max) == (0.5, 15.0)
+                        && *stops == vec![[0.0; 4], [1.0; 4]]
+            ),
+            "the pinned ends land and the scale keeps its own stops"
+        );
+    }
+
+    #[test]
+    fn a_diverging_colour_pin_holds_the_pivot_too() {
+        let ask = FixedDomains {
+            x: false,
+            y: false,
+            colour: true,
+        };
+        let mut first = ScaleSet::new();
+        first.insert(
+            Channel::Fill,
+            Scale::Diverging {
+                domain_min: -8.0,
+                domain_max: 15.0,
+                pivot: 3.47,
+                stops: vec![[0.0; 4]; 3],
+            },
+        );
+        let mut pins = PinnedDomains::default();
+        pins.capture(&first, ask);
+        let mut later = ScaleSet::new();
+        later.insert(
+            Channel::Fill,
+            Scale::Diverging {
+                domain_min: -6.0,
+                domain_max: 12.5,
+                pivot: 3.2,
+                stops: vec![[0.0; 4]; 3],
+            },
+        );
+        apply_colour_pin(&mut later, &pins);
+        assert!(matches!(
+            later.get(Channel::Fill),
+            Some(Scale::Diverging { domain_min, domain_max, pivot, .. })
+                if (*domain_min, *domain_max, *pivot) == (-8.0, 15.0, 3.47)
+        ));
+    }
+
+    /// A pin of steps lands on the ramp the next draw infers, which the override
+    /// then cuts into steps again.
+    #[test]
+    fn a_pin_taken_from_steps_lands_on_a_ramp() {
+        let steps = Scale::Quantized {
+            domain_min: 1.0,
+            domain_max: 9.0,
+            colours: vec![[0.0; 4]; 4],
+        };
+        let pin = ColourPin::of(&steps).expect("steps have ends");
+        let mut later = ScaleSet::new();
+        later.insert(
+            Channel::Fill,
+            Scale::Sequential {
+                domain_min: 2.0,
+                domain_max: 5.0,
+                stops: vec![[0.0; 4], [1.0; 4]],
+            },
+        );
+        let pins = PinnedDomains {
+            colour: Some(pin),
+            ..PinnedDomains::default()
+        };
+        apply_colour_pin(&mut later, &pins);
+        assert!(matches!(
+            later.get(Channel::Fill),
+            Some(Scale::Sequential { domain_min, domain_max, .. })
+                if (*domain_min, *domain_max) == (1.0, 9.0)
+        ));
+    }
+
+    /// A diverging pin does not land on a fresh ramp, and a ramp's pin does not
+    /// land on a diverging scale: the fresh scale stands as inferred.
+    #[test]
+    fn a_diverging_pin_leaves_a_fresh_ramp_standing() {
+        let pins = PinnedDomains {
+            colour: Some(ColourPin {
+                lo: -8.0,
+                hi: 15.0,
+                pivot: Some(3.47),
+            }),
+            ..PinnedDomains::default()
+        };
+        let mut later = ScaleSet::new();
+        later.insert(
+            Channel::Fill,
+            Scale::Sequential {
+                domain_min: 2.0,
+                domain_max: 5.0,
+                stops: vec![[0.0; 4], [1.0; 4]],
+            },
+        );
+        apply_colour_pin(&mut later, &pins);
+        assert!(matches!(
+            later.get(Channel::Fill),
+            Some(Scale::Sequential { domain_min, domain_max, .. })
+                if (*domain_min, *domain_max) == (2.0, 5.0)
+        ));
+    }
+
+    /// Only the fill carries a ramp: a stroke scale is not captured or re-domained.
+    #[test]
+    fn a_colour_pin_reads_and_lands_on_the_fill_only() {
+        let ramp = || Scale::Sequential {
+            domain_min: 0.0,
+            domain_max: 1.0,
+            stops: vec![[0.0; 4], [1.0; 4]],
+        };
+        let mut stroke_only = ScaleSet::new();
+        stroke_only.insert(Channel::Stroke, ramp());
+        let mut pins = PinnedDomains::default();
+        pins.capture(
+            &stroke_only,
+            FixedDomains {
+                x: false,
+                y: false,
+                colour: true,
+            },
+        );
+        assert_eq!(pins.colour, None);
+    }
+
+    #[test]
+    fn a_colour_pin_leaves_a_scale_of_another_kind_and_a_categorical_colour_pins_nothing() {
+        let mut names = ScaleSet::new();
+        names.insert(
+            Channel::Fill,
+            Scale::Colour {
+                categories: vec!["a".into()],
+                palette: vec![[0.0; 4]],
+            },
+        );
+        let mut pins = PinnedDomains::default();
+        pins.capture(
+            &names,
+            FixedDomains {
+                x: false,
+                y: false,
+                colour: true,
+            },
+        );
+        assert_eq!(pins.colour, None);
+
+        let pins = PinnedDomains {
+            colour: Some(ColourPin {
+                lo: 0.0,
+                hi: 1.0,
+                pivot: None,
+            }),
+            ..PinnedDomains::default()
+        };
+        apply_colour_pin(&mut names, &pins);
+        assert!(matches!(
+            names.get(Channel::Fill),
+            Some(Scale::Colour { categories, .. }) if categories == &["a".to_string()]
+        ));
+    }
+
     /// An axis the spec did not ask to pin is never captured, so it can never
     /// be applied.
     #[test]
@@ -4379,7 +4715,14 @@ mod tests {
             },
         );
         let mut pins = PinnedDomains::default();
-        pins.capture(&set, FixedDomains { x: false, y: true });
+        pins.capture(
+            &set,
+            FixedDomains {
+                x: false,
+                y: true,
+                colour: false,
+            },
+        );
         assert_eq!(pins.x, None, "x was not requested");
         assert_eq!(pins.y, Some(PinnedDomain::Linear(0.0, 1.0)));
     }
@@ -4613,5 +4956,99 @@ mod tests {
             format!("{ramp:?}"),
             "a colour ramp has no pixel range to run the other way"
         );
+    }
+
+    /// A file that names brightfield's own diverging pair draws the design
+    /// system's ramp in the theme it is drawn in: the dark middle in dark mode,
+    /// though the file holds the light one.
+    #[test]
+    fn the_own_diverging_pair_draws_the_themes_middle() {
+        let dark = ChartInk::for_mode(true);
+        let mut set = ScaleSet::in_ink(dark);
+        set.insert(
+            Channel::Fill,
+            Scale::Diverging {
+                domain_min: -1.0,
+                domain_max: 1.0,
+                pivot: 0.0,
+                stops: diverging_stops(None, &dark),
+            },
+        );
+        let ov = ColourOverride {
+            range: Some(own_diverging_range().to_vec()),
+            ..ColourOverride::default()
+        };
+        apply_colour_override(&mut set, &ov);
+        let Some(Scale::Diverging { stops, .. }) = set.get(Channel::Fill) else {
+            panic!("the fill stays diverging");
+        };
+        assert_eq!(stops, &diverging_stops(None, &dark));
+        assert_eq!(stops[stops.len() / 2], dark.diverging_mid.components);
+    }
+
+    /// The pair as a file holds it: each stop written as `#rrggbb` and read back
+    /// the way a `colorRange` entry is, so the eight-bit rounding is in play.
+    fn own_pair_through_hex() -> Vec<[f32; 4]> {
+        own_diverging_range()
+            .iter()
+            .map(|[r, g, b, _]| {
+                let byte = |v: f32| (v * 255.0).round() as u8;
+                let hex = format!("#{:02x}{:02x}{:02x}", byte(*r), byte(*g), byte(*b));
+                crate::mark::parse_colour_literal(&hex)
+                    .expect("a hex colour parses")
+                    .components
+            })
+            .collect()
+    }
+
+    fn diverging_fill_after(range: Vec<[f32; 4]>, ink: ChartInk) -> Vec<[f32; 4]> {
+        let mut set = ScaleSet::in_ink(ink);
+        set.insert(
+            Channel::Fill,
+            Scale::Diverging {
+                domain_min: -1.0,
+                domain_max: 1.0,
+                pivot: 0.0,
+                stops: diverging_stops(None, &ink),
+            },
+        );
+        let ov = ColourOverride {
+            range: Some(range),
+            ..ColourOverride::default()
+        };
+        apply_colour_override(&mut set, &ov);
+        let Some(Scale::Diverging { stops, .. }) = set.get(Channel::Fill) else {
+            panic!("the fill stays diverging");
+        };
+        stops.clone()
+    }
+
+    /// The pair is still recognised after the file's hex round trip, so a saved
+    /// file draws the theme's ramp and not its own three colours.
+    #[test]
+    fn the_own_pair_is_recognised_after_the_hex_round_trip() {
+        let read_back = own_pair_through_hex();
+        assert!(is_own_diverging_range(&read_back));
+        let dark = ChartInk::for_mode(true);
+        assert_eq!(
+            diverging_fill_after(read_back, dark),
+            diverging_stops(None, &dark)
+        );
+    }
+
+    /// A range that is not the pair draws as written: one stop off by a visible
+    /// amount, or a two-stop range.
+    #[test]
+    fn a_range_that_is_not_the_own_pair_draws_as_written() {
+        let dark = ChartInk::for_mode(true);
+        let mut off = own_diverging_range().to_vec();
+        off[1][0] += 0.1;
+        assert!(!is_own_diverging_range(&off));
+        assert_eq!(diverging_fill_after(off.clone(), dark), off);
+
+        let own = own_diverging_range();
+        let two = vec![own[0], own[2]];
+        assert!(!is_own_diverging_range(&two));
+        assert_eq!(diverging_fill_after(two.clone(), dark), two);
     }
 }

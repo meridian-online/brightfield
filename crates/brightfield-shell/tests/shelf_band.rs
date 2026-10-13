@@ -1116,7 +1116,7 @@ fn settings_of(attrs: &str) -> ChannelSettings {
         .expect("the spec parses")
         .spec;
     let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
-    ChannelSettings::of_plot(&spec, plot, &map_channels())
+    ChannelSettings::of_plot(&spec, plot, "root", &map_channels())
 }
 
 /// The band over the generated map's channels, handed what `attrs` set.
@@ -1293,6 +1293,7 @@ fn band_drawn_with(attrs: &str, x: Scale, y: Scale) -> ShelfBand {
     band.set_settings(ChannelSettings::of_plot_drawn(
         &spec,
         plot,
+        "root",
         &map_channels(),
         &drawn,
     ));

@@ -13,18 +13,22 @@
 //!   window hands them.
 //! - **Ink** is read off the frame: the mesh painted for each ramp, its colours
 //!   strip by strip; the stroke painted for the ring; the galley of each name.
-//! - **Pixels** are two baselines, colour's list with the cursor on the scheme
-//!   row, one for each theme. Regenerate them with
+//! - **Pixels** are baselines, one for each theme: colour's list with the cursor
+//!   on the scheme row, on the scale row of a diverging plot, on the scale row
+//!   with its pivot field open, and on the scheme row of a diverging plot with
+//!   its strip. Regenerate them with
 //!   `UPDATE_SNAPSHOTS=1 cargo +1.95.0 test -p brightfield-shell --test
 //!   shelf_settings_colour`, and read what moved before committing it.
 
+use brightfield_engine::{ColumnMoments, Distribution};
 use brightfield_render::channel::Channel;
 use brightfield_render::scale::{ramp_at, Scale, ScaleSet, SequentialScheme};
 use brightfield_shell::design::{self, Mode};
 use brightfield_shell::shelf::{
-    foot_sentence, scheme_strip, Binding, ChannelSettings, ColumnList, ColumnListRequest,
-    ListColumn, ListDrawn, ListReport, ListTab, RowEdit, SchemeDrawn, SettingRow, SettingRowDrawn,
-    SettingValue, ShelfChannels, OFF, ON, REVERSE_ROW, SCHEME_ROW,
+    diverging_strip, foot_sentence, scheme_strip, Binding, ChannelSettings, ColourScaleWrite,
+    ColumnList, ColumnListRequest, Ends, ListColumn, ListDrawn, ListReport, ListTab, Number,
+    RowEdit, SchemeDrawn, SettingRow, SettingRowDrawn, SettingValue, ShelfChannels, DOMAIN_ROW,
+    LEGEND_ROW, OFF, ON, PIVOT_ROW, REVERSE_ROW, SCALE_ROW, SCHEME_ROW, STEPS_ROW,
 };
 use brightfield_shell::text_ink::{self, DrawnText};
 use brightfield_spec::edit::plot_at_path;
@@ -120,8 +124,10 @@ fn settings_over(attrs: &str, drawn: &ScaleSet, marks: Option<&[MarkKind]>) -> C
         .spec;
     let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
     match marks {
-        Some(marks) => ChannelSettings::of_plot_marked(&spec, plot, &channels(), drawn, marks),
-        None => ChannelSettings::of_plot_drawn(&spec, plot, &channels(), drawn),
+        Some(marks) => {
+            ChannelSettings::of_plot_marked(&spec, plot, "root", &channels(), drawn, marks)
+        }
+        None => ChannelSettings::of_plot_drawn(&spec, plot, "root", &channels(), drawn),
     }
 }
 
@@ -370,7 +376,7 @@ fn drawn_row<'a>(frame: &'a Frame, name: &str) -> &'a SettingRowDrawn {
 fn drawn_scheme(row: &SettingRowDrawn, scheme: SequentialScheme) -> &SchemeDrawn {
     row.schemes
         .iter()
-        .find(|s| s.scheme == scheme)
+        .find(|s| s.scheme == Some(scheme))
         .unwrap_or_else(|| panic!("the strip offers no {scheme:?}"))
 }
 
@@ -406,21 +412,28 @@ fn sentence(frame: &Frame) -> String {
 // The rows.
 // ---------------------------------------------------------------------------
 
-/// **AC1.** The head rows are scheme and reverse, in that order, and no others:
-/// the scale, legend, domain and pivot rows are other cards'.
+/// The head rows are scheme, scale, legend and reverse, in that order, and the
+/// pivot, steps and domain rows are found by name behind them.
 #[test]
-fn colours_settings_have_the_head_rows_scheme_and_reverse_in_that_order() {
+fn colours_settings_have_the_head_rows_scheme_scale_legend_and_reverse_in_that_order() {
     for attrs in ["", "colorScheme: blues\ncolorReverse: true"] {
         let settings = settings_over(attrs, &ramp_scales(), None);
         let rows = settings.rows(ShelfChannel::Colour);
         assert_eq!(
-            rows.iter().map(|r| r.name).collect::<Vec<_>>(),
-            [SCHEME_ROW, REVERSE_ROW],
+            rows.iter()
+                .filter(|r| !r.by_name)
+                .map(|r| r.name)
+                .collect::<Vec<_>>(),
+            [SCHEME_ROW, SCALE_ROW, LEGEND_ROW, REVERSE_ROW],
             "`{attrs}`"
         );
-        assert!(
-            rows.iter().all(|r| !r.by_name),
-            "both are head rows, listed with no query typed"
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.by_name)
+                .map(|r| r.name)
+                .collect::<Vec<_>>(),
+            [PIVOT_ROW, STEPS_ROW, DOMAIN_ROW],
+            "`{attrs}`: found by name"
         );
         let mut list = turned(attrs);
         let stage = Stage::new(Mode::Light);
@@ -432,8 +445,8 @@ fn colours_settings_have_the_head_rows_scheme_and_reverse_in_that_order() {
                 .iter()
                 .map(|r| r.name)
                 .collect::<Vec<_>>(),
-            [SCHEME_ROW, REVERSE_ROW],
-            "the list draws the two rows and no more"
+            [SCHEME_ROW, SCALE_ROW, LEGEND_ROW, REVERSE_ROW],
+            "the list draws the head rows and no more"
         );
         assert_eq!(list.setting_cursor().map(|r| r.name), Some(SCHEME_ROW));
     }
@@ -537,6 +550,18 @@ fn the_foot_prints_the_sentence_of_the_row_under_the_cursor() {
 
     list.feed_events(&j());
     let frame = stage.draw(&mut list);
+    let scale = row_of("", SCALE_ROW);
+    assert_eq!(sentence(&frame), foot_sentence(&scale));
+    assert!(scale.says.contains("Auto"), "{:?}", scale.says);
+
+    list.feed_events(&j());
+    let frame = stage.draw(&mut list);
+    let legend = row_of("", LEGEND_ROW);
+    assert_eq!(sentence(&frame), foot_sentence(&legend));
+    assert!(legend.says.contains("Auto"), "{:?}", legend.says);
+
+    list.feed_events(&j());
+    let frame = stage.draw(&mut list);
     let reverse = row_of("", REVERSE_ROW);
     assert_eq!(sentence(&frame), foot_sentence(&reverse));
     assert_ne!(reverse.says, scheme.says, "each row says its own");
@@ -628,10 +653,7 @@ fn under_the_cursor_a_second_line_offers_four_ramps_and_rings_the_current_one() 
             let frame = stage.draw(&mut list);
             let row = drawn_row(&frame, SCHEME_ROW);
             assert_eq!(
-                row.schemes
-                    .iter()
-                    .map(|s| s.scheme.wire_name())
-                    .collect::<Vec<_>>(),
+                row.schemes.iter().map(|s| s.word).collect::<Vec<_>>(),
                 OFFERED,
                 "{mode:?} `{attrs}`: the strip's four, in order"
             );
@@ -644,13 +666,13 @@ fn under_the_cursor_a_second_line_offers_four_ramps_and_rings_the_current_one() 
                 );
                 assert_eq!(
                     ramp_ink(&frame, item.ramp),
-                    expected_ramp(item.scheme),
+                    expected_ramp(item.scheme.expect("a scheme")),
                     "{mode:?}: {:?}'s ramp is its own stops",
                     item.scheme
                 );
                 assert_eq!(
                     texts_in(&frame, item.name),
-                    [item.scheme.wire_name()],
+                    [item.word],
                     "{mode:?}: the name beside the ramp"
                 );
                 assert!(
@@ -670,7 +692,7 @@ fn under_the_cursor_a_second_line_offers_four_ramps_and_rings_the_current_one() 
                 .schemes
                 .iter()
                 .filter(|s| s.ring.is_some())
-                .map(|s| s.scheme)
+                .filter_map(|s| s.scheme)
                 .collect();
             assert_eq!(
                 ringed,
@@ -717,6 +739,8 @@ fn a_scheme_off_the_strip_rings_none_and_the_strip_goes_with_the_cursor() {
     let mut list = turned("colorScheme: blues");
     let on = stage.draw(&mut list);
     let tall = drawn_row(&on, SCHEME_ROW).rect.height();
+    list.feed_events(&j());
+    list.feed_events(&j());
     list.feed_events(&j());
     assert_eq!(list.setting_cursor().map(|r| r.name), Some(REVERSE_ROW));
     let off = stage.draw(&mut list);
@@ -910,6 +934,8 @@ fn the_reverse_row_switches_by_h_l_and_a_click() {
     ] {
         let mut list = turned(attrs);
         list.feed_events(&j());
+        list.feed_events(&j());
+        list.feed_events(&j());
         assert_eq!(list.setting_cursor().map(|r| r.name), Some(REVERSE_ROW));
         let on = attrs.contains("true");
         let reports = list.feed_events(&if key == "l" { l() } else { h() });
@@ -921,6 +947,8 @@ fn the_reverse_row_switches_by_h_l_and_a_click() {
     }
     for (attrs, on) in [("", false), ("colorReverse: true", true)] {
         let mut list = turned(attrs);
+        list.feed_events(&j());
+        list.feed_events(&j());
         list.feed_events(&j());
         let frame = stage.draw(&mut list);
         let at = drawn_row(&frame, REVERSE_ROW).value_zone.center();
@@ -976,7 +1004,12 @@ fn on_a_colour_of_names_the_scheme_row_is_muted_with_its_reason_and_reverse_acts
     let stage = Stage::new(Mode::Light);
     let settings = settings_over("colorScheme: blues", &names_scales(), None);
     let scheme = settings.rows(ShelfChannel::Colour)[0].clone();
-    let reverse = settings.rows(ShelfChannel::Colour)[1].clone();
+    let reverse = settings
+        .rows(ShelfChannel::Colour)
+        .iter()
+        .find(|r| r.name == REVERSE_ROW)
+        .expect("colour has a reverse row")
+        .clone();
     let reason = scheme.reason.clone().expect("the scheme row has a reason");
     assert!(
         reason.contains("names") && reason.contains("categorical"),
@@ -1032,6 +1065,8 @@ fn on_a_colour_of_names_the_scheme_row_is_muted_with_its_reason_and_reverse_acts
 
     // Reverse acts.
     list.feed_events(&j());
+    list.feed_events(&j());
+    list.feed_events(&j());
     assert_eq!(
         list.feed_events(&l()),
         [set(REVERSE_ROW, SettingValue::Switch(true))]
@@ -1046,7 +1081,13 @@ fn on_a_colour_of_names_the_scheme_row_is_muted_with_its_reason_and_reverse_acts
 #[test]
 fn a_colour_that_draws_no_scale_mutes_neither_row() {
     let settings = settings_over("", &ScaleSet::new(), Some(&[MarkKind::Dot]));
-    for row in settings.rows(ShelfChannel::Colour) {
+    // The pivot and steps rows are muted by the scale the plot names, not by
+    // the want of one drawn.
+    for row in settings
+        .rows(ShelfChannel::Colour)
+        .iter()
+        .filter(|r| !r.by_name)
+    {
         assert_eq!(
             row.reason, None,
             "{} is not muted for want of a scale",
@@ -1060,7 +1101,11 @@ fn a_colour_that_draws_no_scale_mutes_neither_row() {
 #[test]
 fn reverse_is_muted_only_where_the_judge_says_no_dot_is_drawn() {
     let reverse = |marks: Option<&[MarkKind]>| {
-        settings_over("colorReverse: true", &ramp_scales(), marks).rows(ShelfChannel::Colour)[1]
+        settings_over("colorReverse: true", &ramp_scales(), marks)
+            .rows(ShelfChannel::Colour)
+            .iter()
+            .find(|r| r.name == REVERSE_ROW)
+            .expect("colour has a reverse row")
             .clone()
     };
     assert_eq!(reverse(Some(&[MarkKind::Dot])).reason, None);
@@ -1077,6 +1122,8 @@ fn reverse_is_muted_only_where_the_judge_says_no_dot_is_drawn() {
         &ramp_scales(),
         Some(&[MarkKind::Cell]),
     ));
+    list.feed_events(&j());
+    list.feed_events(&j());
     list.feed_events(&j());
     for events in [l(), h(), backspace()] {
         assert!(list.feed_events(&events).is_empty());
@@ -1105,8 +1152,14 @@ fn options() -> SnapshotOptions {
 /// scheme row, drawn through the wgpu renderer and compared with the committed
 /// baseline `name`.
 fn baseline(name: &str, mode: Mode) {
-    let mut list = turned("colorScheme: blues");
+    let list = turned("colorScheme: blues");
     assert_eq!(list.setting_cursor().map(|r| r.name), Some(SCHEME_ROW));
+    baseline_of(list, name, mode);
+}
+
+/// `list` drawn through the wgpu renderer and compared with the committed
+/// baseline `name`.
+fn baseline_of(mut list: ColumnList, name: &str, mode: Mode) {
     let size = egui::vec2(WIDTH, 420.0);
     let mut harness = Harness::builder()
         .with_size(size)
@@ -1135,4 +1188,1053 @@ fn colours_scheme_row_with_its_strip_light_matches_its_baseline() {
 #[test]
 fn colours_scheme_row_with_its_strip_dark_matches_its_baseline() {
     baseline("shelf_settings_colour_scheme_dark", Mode::Dark);
+}
+
+/// Moments of a column of 0.5 to 15 whose median is 3.47: no zero crossing,
+/// so the auto pivot is the median.
+fn income_moments() -> ColumnMoments {
+    ColumnMoments {
+        mean: 3.87,
+        median: 3.47,
+        sd: Some(1.9),
+        distinct: 12_000,
+        min: 0.5,
+        max: 15.0,
+        distribution: Distribution::Bins(vec![0; 480]),
+    }
+}
+
+fn colour_row(attrs: &str, name: &str, drawn: &ScaleSet) -> SettingRow {
+    let source = format!(
+        "data:\n  t:\n    - {{ a: 1 }}\nplot:\n  - mark: dot\n    data: {{ from: t }}\n    x: a\n    y: a\nwidth: 600\nheight: 300\n{attrs}\n"
+    );
+    let spec = parse_spec(&source, Format::Yaml)
+        .expect("the spec parses")
+        .spec;
+    let plot = plot_at_path(&spec, "root").expect("the root is its plot");
+    let moments = income_moments();
+    ChannelSettings::of_plot_profiled(
+        &spec,
+        plot,
+        "root",
+        &channels(),
+        drawn,
+        &[MarkKind::Dot],
+        Some(&moments),
+    )
+    .rows(ShelfChannel::Colour)
+    .iter()
+    .find(|r| r.name == name)
+    .unwrap_or_else(|| panic!("colour has no {name} row"))
+    .clone()
+}
+
+/// **The legend row reads where the file puts the legend, steps through right,
+/// below and none, and carries the dot for the two that are not auto.**
+#[test]
+fn the_legend_row_steps_right_below_none_and_dots_the_two_that_are_not_auto() {
+    let none = row_of("", LEGEND_ROW);
+    assert_eq!(
+        none.value, "none",
+        "a plot with no legend node has no legend"
+    );
+    assert!(none.set, "none carries the dot");
+    assert!(none.steps() && !none.by_name);
+    assert_eq!(none.stepped(1), None, "none is the last step");
+    assert_eq!(
+        none.stepped(-1),
+        Some(SettingValue::Word("below".to_string()))
+    );
+    let below = SettingRow {
+        value: "below".to_string(),
+        ..none.clone()
+    };
+    assert_eq!(
+        below.stepped(1),
+        Some(SettingValue::Word("none".to_string()))
+    );
+    assert_eq!(
+        below.stepped(-1),
+        Some(SettingValue::Word("right".to_string()))
+    );
+    let right = SettingRow {
+        value: "right".to_string(),
+        set: false,
+        ..none
+    };
+    assert_eq!(right.stepped(-1), None, "right is the first step");
+    assert_eq!(
+        right.stepped(1),
+        Some(SettingValue::Word("below".to_string()))
+    );
+}
+
+#[test]
+fn colours_head_rows_are_scheme_scale_legend_and_reverse() {
+    let settings = settings_over("", &ramp_scales(), Some(&[MarkKind::Dot]));
+    let head: Vec<&str> = settings
+        .rows(ShelfChannel::Colour)
+        .iter()
+        .filter(|r| !r.by_name)
+        .map(|r| r.name)
+        .collect();
+    assert_eq!(head, ["scheme", "scale", "legend", "reverse"]);
+}
+
+#[test]
+fn the_scale_row_reads_its_value_and_carries_its_parameter() {
+    let linear = colour_row("", SCALE_ROW, &ramp_scales());
+    assert_eq!((linear.value.as_str(), linear.set), ("linear", false));
+
+    let auto = colour_row(
+        "colorScale: diverging\ncolorPivot: 3.47",
+        SCALE_ROW,
+        &ramp_scales(),
+    );
+    assert_eq!(auto.value, "diverging");
+    assert_eq!(auto.colour.as_ref().and_then(|c| c.pivot), Some(3.47));
+    assert!(auto.set, "a scale off linear is set");
+    assert!(
+        !auto.parameter_set(),
+        "the pivot equal to the auto pivot reads auto"
+    );
+
+    let typed = colour_row(
+        "colorScale: diverging\ncolorPivot: 2",
+        SCALE_ROW,
+        &ramp_scales(),
+    );
+    assert!(typed.parameter_set(), "a pivot off the auto pivot is set");
+
+    let steps = colour_row("colorScale: quantize\ncolorN: 5", SCALE_ROW, &ramp_scales());
+    assert_eq!(steps.value, "steps");
+    assert_eq!(steps.colour.as_ref().and_then(|c| c.count), Some(5));
+    assert!(!steps.parameter_set());
+}
+
+/// A file written by hand with diverging and no pivot reads the pivot the
+/// chart drew, muted: nothing in the file is the analyst's beyond the scale.
+#[test]
+fn a_diverging_scale_with_no_pivot_written_reads_the_drawn_pivot_as_auto() {
+    let mut drawn = ScaleSet::new();
+    drawn.insert(
+        Channel::Fill,
+        Scale::Diverging {
+            domain_min: 0.0,
+            domain_max: 7.0,
+            pivot: 3.5,
+            stops: vec![[0.0; 4]; 3],
+        },
+    );
+    // The profile says 3.47 and the chart drew 3.5: a file with no pivot of its
+    // own is the analyst's for the scale alone.
+    let row = colour_row("colorScale: diverging", SCALE_ROW, &drawn);
+    assert_eq!(row.colour.as_ref().and_then(|c| c.pivot), Some(3.5));
+    assert!(!row.parameter_set());
+}
+
+#[test]
+fn the_scale_row_is_muted_on_a_colour_of_names_and_does_not_step() {
+    let row = colour_row("", SCALE_ROW, &names_scales());
+    assert!(row.reason.is_some());
+    assert_eq!(row.stepped(1), None);
+}
+
+#[test]
+fn stepping_to_diverging_carries_the_auto_pivot() {
+    let row = colour_row("", SCALE_ROW, &ramp_scales());
+    assert_eq!(
+        row.stepped(1),
+        Some(SettingValue::ColourScale(ColourScaleWrite::Diverging {
+            pivot: Number::new(3.47),
+        })),
+    );
+    let diverging = colour_row(
+        "colorScale: diverging\ncolorPivot: 3.47",
+        SCALE_ROW,
+        &ramp_scales(),
+    );
+    assert_eq!(
+        diverging.stepped(1),
+        Some(SettingValue::ColourScale(ColourScaleWrite::Steps {
+            count: 5
+        })),
+    );
+    assert_eq!(
+        diverging.stepped(-1),
+        Some(SettingValue::ColourScale(ColourScaleWrite::Linear)),
+    );
+}
+
+#[test]
+fn pivot_and_steps_are_found_by_name_and_muted_off_their_scale() {
+    let pivot = colour_row("", PIVOT_ROW, &ramp_scales());
+    assert!(pivot.by_name);
+    assert_eq!(
+        pivot.reason.as_deref(),
+        Some("pivot applies to a diverging scale")
+    );
+    let steps = colour_row("", STEPS_ROW, &ramp_scales());
+    assert_eq!(
+        steps.reason.as_deref(),
+        Some("steps applies to a stepped scale")
+    );
+    let on = colour_row("colorScale: quantize\ncolorN: 7", STEPS_ROW, &ramp_scales());
+    assert_eq!(
+        (on.value.as_str(), on.set, on.reason.clone()),
+        ("7", true, None)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The scale row's parameter.
+// ---------------------------------------------------------------------------
+
+fn enter() -> Vec<egui::Event> {
+    vec![key_event(egui::Key::Enter)]
+}
+
+fn text(s: &str) -> Vec<egui::Event> {
+    vec![egui::Event::Text(s.to_string())]
+}
+
+/// Colour's list over a plot with `attrs`, turned to its settings with the
+/// cursor on the scale row, the profile of the column handed in.
+fn on_scale_row(attrs: &str) -> ColumnList {
+    let mut list = turned_over(profiled_settings(attrs, &ramp_scales()));
+    list.feed_events(&j());
+    assert_eq!(list.setting_cursor().map(|r| r.name), Some(SCALE_ROW));
+    list
+}
+
+fn profiled_settings(attrs: &str, drawn: &ScaleSet) -> ChannelSettings {
+    let source = format!(
+        "data:\n  t:\n    - {{ a: 1 }}\nplot:\n  - mark: dot\n    data: {{ from: t }}\n    x: a\n    y: a\nwidth: 600\nheight: 300\n{attrs}\n"
+    );
+    let spec = parse_spec(&source, Format::Yaml)
+        .expect("the spec parses")
+        .spec;
+    let plot = plot_at_path(&spec, "root").expect("the root is its plot");
+    ChannelSettings::of_plot_profiled(
+        &spec,
+        plot,
+        "root",
+        &channels(),
+        drawn,
+        &[MarkKind::Dot],
+        Some(&income_moments()),
+    )
+}
+
+#[test]
+fn enter_on_diverging_opens_the_pivot_and_keeps_a_typed_one() {
+    let mut list = on_scale_row("colorScale: diverging\ncolorPivot: 3.47");
+    let reports = list.feed_events(&enter());
+    assert!(reports.is_empty());
+    assert_eq!(list.field().map(|f| f.text.as_str()), Some("3.47"));
+    list.feed_events(&text("2"));
+    let reports = list.feed_events(&enter());
+    assert!(reports.contains(&set(
+        PIVOT_ROW,
+        SettingValue::Number(Number::new(2.0).unwrap())
+    )));
+}
+
+#[test]
+fn enter_on_steps_opens_the_count_and_keeps_a_typed_one() {
+    let mut list = on_scale_row("colorScale: quantize\ncolorN: 5");
+    list.feed_events(&enter());
+    assert_eq!(list.field().map(|f| f.text.as_str()), Some("5"));
+    list.feed_events(&text("7"));
+    let reports = list.feed_events(&enter());
+    assert!(reports.contains(&set(STEPS_ROW, SettingValue::Count(7))));
+}
+
+#[test]
+fn a_pivot_or_count_the_row_cannot_take_is_refused_and_the_field_stays() {
+    for (attrs, typed) in [
+        ("colorScale: diverging\ncolorPivot: 1", "abc"),
+        ("colorScale: diverging\ncolorPivot: 1", "1e400"),
+        ("colorScale: quantize\ncolorN: 5", "1"),
+        ("colorScale: quantize\ncolorN: 5", "0"),
+        ("colorScale: quantize\ncolorN: 5", "300"),
+    ] {
+        let mut list = on_scale_row(attrs);
+        list.feed_events(&enter());
+        list.feed_events(&text(typed));
+        let reports = list.feed_events(&enter());
+        assert!(
+            !reports.iter().any(|r| matches!(r, ListReport::Set(_))),
+            "{typed} on {attrs} writes nothing",
+        );
+        assert!(
+            list.field().and_then(|f| f.refusal.clone()).is_some(),
+            "{typed} is refused in words"
+        );
+    }
+}
+
+#[test]
+fn enter_on_linear_opens_no_field() {
+    let mut list = on_scale_row("");
+    list.feed_events(&enter());
+    assert!(list.field().is_none());
+}
+
+#[test]
+fn a_pivot_differing_from_auto_beyond_the_displayed_precision_reads_as_not_set() {
+    // The auto pivot is the median, 3.47; the row shows four figures.
+    let beyond = colour_row(
+        "colorScale: diverging\ncolorPivot: 3.470004",
+        SCALE_ROW,
+        &ramp_scales(),
+    );
+    assert!(!beyond.parameter_set(), "off by less than the row shows");
+    let within = colour_row(
+        "colorScale: diverging\ncolorPivot: 3.48",
+        SCALE_ROW,
+        &ramp_scales(),
+    );
+    assert!(within.parameter_set(), "off by a digit the row shows");
+}
+
+/// The ink the text `text` was painted in on the row, read off the frame.
+fn ink_of_text(frame: &Frame, row: &SettingRowDrawn, text: &str) -> egui::Color32 {
+    leaves(frame)
+        .into_iter()
+        .find_map(|s| match s {
+            Shape::Text(t)
+                if row.rect.contains(t.pos + t.galley.size() / 2.0)
+                    && t.galley.job.text.contains(text) =>
+            {
+                t.galley.job.sections.first().map(|sec| sec.format.color)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no text containing {text:?} was drawn on the row"))
+}
+
+fn row_text(frame: &Frame, row: &SettingRowDrawn) -> String {
+    let mut parts: Vec<_> = frame
+        .texts
+        .iter()
+        .filter(|t| row.rect.contains(t.ink.center()) && t.ink.min.x > row.name_rect.max.x)
+        .collect();
+    parts.sort_by(|a, b| a.ink.min.x.total_cmp(&b.ink.min.x));
+    parts
+        .iter()
+        .map(|t| t.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Colour's list over a plot with `attrs`, turned to its settings with the
+/// cursor left on the scheme row, so the scale row draws no chips.
+fn off_scale_row(attrs: &str) -> ColumnList {
+    turned_over(profiled_settings(attrs, &ramp_scales()))
+}
+
+#[test]
+fn the_scale_row_draws_its_parameter_muted_while_auto() {
+    let muted = chrome::colour(semantic(false).text.muted);
+    let primary = chrome::colour(semantic(false).text.primary);
+    let stage = Stage::new(Mode::Light);
+
+    let mut list = off_scale_row("colorScale: diverging\ncolorPivot: 3.47");
+    let frame = stage.draw(&mut list);
+    let row = drawn_row(&frame, SCALE_ROW);
+    assert_eq!(row_text(&frame, row), "diverging about 3.47");
+    assert_eq!(ink_of_text(&frame, row, "3.47"), muted);
+    assert_eq!(ink_of_text(&frame, row, "diverging"), primary);
+
+    let mut list = off_scale_row("colorScale: diverging\ncolorPivot: 2");
+    let frame = stage.draw(&mut list);
+    let row = drawn_row(&frame, SCALE_ROW);
+    assert_eq!(ink_of_text(&frame, row, "about 2"), primary);
+
+    let mut list = off_scale_row("colorScale: quantize\ncolorN: 5");
+    let frame = stage.draw(&mut list);
+    let row = drawn_row(&frame, SCALE_ROW);
+    assert_eq!(row_text(&frame, row), "steps \u{b7} 5");
+    assert_eq!(ink_of_text(&frame, row, "\u{b7} 5"), muted);
+
+    let mut list = off_scale_row("colorScale: quantize\ncolorN: 7");
+    let frame = stage.draw(&mut list);
+    assert_eq!(
+        ink_of_text(&frame, drawn_row(&frame, SCALE_ROW), "\u{b7} 7"),
+        primary
+    );
+}
+
+/// Under the cursor the row wears its chips, and the pivot gives way to the bare
+/// number to leave them room; it is still muted while auto.
+#[test]
+fn under_the_cursor_the_pivot_is_the_bare_number_beside_the_chips() {
+    let muted = chrome::colour(semantic(false).text.muted);
+    let stage = Stage::new(Mode::Light);
+    let mut list = on_scale_row("colorScale: diverging\ncolorPivot: 3.47");
+    let frame = stage.draw(&mut list);
+    let row = drawn_row(&frame, SCALE_ROW);
+    assert!(row.chips.is_some());
+    assert_eq!(row_text(&frame, row), "diverging 3.47 \u{2190} \u{2192}");
+    assert_eq!(ink_of_text(&frame, row, "3.47"), muted);
+}
+
+#[test]
+fn the_open_field_takes_the_parameters_place_behind_the_word() {
+    let stage = Stage::new(Mode::Light);
+    let mut list = on_scale_row("colorScale: diverging\ncolorPivot: 3.47");
+    list.feed_events(&enter());
+    let frame = stage.draw(&mut list);
+    let row = drawn_row(&frame, SCALE_ROW);
+    let field = row.field.expect("the field is drawn on the scale row");
+    assert!(field.left() > row.value_rect.right(), "after the word");
+    let said = row_text(&frame, row);
+    assert!(said.starts_with("diverging 3.47"), "{said}");
+    assert!(!said.contains("about"), "the field replaces the parameter");
+}
+
+// ---------------------------------------------------------------------------
+// The scheme row on a diverging scale.
+// ---------------------------------------------------------------------------
+
+/// brightfield's diverging pair as a file writes it: a YAML array of three
+/// `#rrggbb` strings, each channel rounded to the byte.
+fn pair_text() -> String {
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let items: Vec<String> = brightfield_render::scale::own_diverging_range()
+        .iter()
+        .map(|c| {
+            format!(
+                "\"#{:02x}{:02x}{:02x}\"",
+                byte(c[0]),
+                byte(c[1]),
+                byte(c[2])
+            )
+        })
+        .collect();
+    format!("[{}]", items.join(", "))
+}
+
+#[test]
+fn on_diverging_the_scheme_row_offers_the_pair_and_rdbu() {
+    let pair = format!(
+        "colorScale: diverging\ncolorPivot: 1\ncolorRange: {}",
+        pair_text()
+    );
+    let row = colour_row(&pair, SCHEME_ROW, &ramp_scales());
+    assert_eq!((row.value.as_str(), row.set), ("blue-red", false));
+    assert_eq!(row.stepped(1), Some(word("rdbu")));
+    let rdbu = colour_row(
+        "colorScale: diverging\ncolorPivot: 1\ncolorScheme: rdbu",
+        SCHEME_ROW,
+        &ramp_scales(),
+    );
+    assert_eq!((rdbu.value.as_str(), rdbu.set), ("rdbu", true));
+    assert_eq!(rdbu.stepped(-1), Some(SettingValue::Auto));
+    assert_eq!(diverging_strip(), ["blue-red", "rdbu"]);
+}
+
+#[test]
+fn off_diverging_the_scheme_row_offers_the_four_sequential_schemes_as_before() {
+    let row = colour_row("colorScheme: viridis", SCHEME_ROW, &ramp_scales());
+    assert_eq!(row.stepped(1), Some(word("blues")));
+    assert_eq!(scheme_strip().len(), 4);
+}
+
+#[test]
+fn on_diverging_the_strip_draws_the_pair_and_rdbu_and_rings_the_current_one() {
+    let stage = Stage::new(Mode::Light);
+    let pair = format!(
+        "colorScale: diverging\ncolorPivot: 1\ncolorRange: {}",
+        pair_text()
+    );
+    let mut list = off_scale_row(&pair);
+    let frame = stage.draw(&mut list);
+    let row = drawn_row(&frame, SCHEME_ROW);
+    assert_eq!(
+        row.schemes.iter().map(|s| s.word).collect::<Vec<_>>(),
+        ["blue-red", "rdbu"]
+    );
+    let ringed: Vec<_> = row.schemes.iter().filter(|s| s.ring.is_some()).collect();
+    assert_eq!(ringed.len(), 1);
+    assert_eq!(ringed[0].word, "blue-red");
+    let ink = brightfield_render::ink::ChartInk::for_mode(false);
+    let stops = brightfield_render::scale::diverging_stops(None, &ink);
+    let expected: Vec<_> = (0..28)
+        .map(|i| quantised(ramp_at(&stops, f64::from(i) / 27.0)))
+        .collect();
+    assert_eq!(ramp_ink(&frame, row.schemes[0].ramp), expected);
+    assert_eq!(
+        ramp_ink(&frame, row.schemes[1].ramp),
+        expected_ramp(SequentialScheme::Rdbu)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The baselines of the scale row and the diverging strip.
+// ---------------------------------------------------------------------------
+
+/// The scale row on a diverging scale with the cursor on it: the word, the pivot
+/// muted beside it while it is the auto one, and the chips.
+fn scale_diverging() -> ColumnList {
+    on_scale_row("colorScale: diverging\ncolorPivot: 3.47")
+}
+
+/// The same with `Enter` pressed and a `2` typed: the field takes the pivot's
+/// place behind the word.
+fn scale_pivot_field() -> ColumnList {
+    let mut list = on_scale_row("colorScale: diverging\ncolorPivot: 3.47");
+    list.feed_events(&enter());
+    list.feed_events(&text("2"));
+    list
+}
+
+/// The scheme row of a diverging plot with the cursor on it: the pair and `rdbu`
+/// under the row, the pair ringed.
+fn diverging_strip_list() -> ColumnList {
+    off_scale_row(&format!(
+        "colorScale: diverging\ncolorPivot: 3.47\ncolorRange: {}",
+        pair_text()
+    ))
+}
+
+#[test]
+fn colours_scale_row_diverging_light_matches_its_baseline() {
+    baseline_of(
+        scale_diverging(),
+        "shelf_settings_colour_scale_diverging_light",
+        Mode::Light,
+    );
+}
+
+#[test]
+fn colours_scale_row_diverging_dark_matches_its_baseline() {
+    baseline_of(
+        scale_diverging(),
+        "shelf_settings_colour_scale_diverging_dark",
+        Mode::Dark,
+    );
+}
+
+#[test]
+fn colours_scale_row_pivot_field_light_matches_its_baseline() {
+    baseline_of(
+        scale_pivot_field(),
+        "shelf_settings_colour_scale_pivot_field_light",
+        Mode::Light,
+    );
+}
+
+#[test]
+fn colours_scale_row_pivot_field_dark_matches_its_baseline() {
+    baseline_of(
+        scale_pivot_field(),
+        "shelf_settings_colour_scale_pivot_field_dark",
+        Mode::Dark,
+    );
+}
+
+#[test]
+fn colours_scheme_row_diverging_strip_light_matches_its_baseline() {
+    baseline_of(
+        diverging_strip_list(),
+        "shelf_settings_colour_scheme_diverging_strip_light",
+        Mode::Light,
+    );
+}
+
+#[test]
+fn colours_scheme_row_diverging_strip_dark_matches_its_baseline() {
+    baseline_of(
+        diverging_strip_list(),
+        "shelf_settings_colour_scheme_diverging_strip_dark",
+        Mode::Dark,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The pivot and steps rows found by name, and the diverging scheme's edges.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_pivot_off_auto_beyond_the_displayed_precision_reads_the_same_on_both_rows() {
+    let attrs = "colorScale: diverging\ncolorPivot: 3.470004";
+    let scale = colour_row(attrs, SCALE_ROW, &ramp_scales());
+    let pivot = colour_row(attrs, PIVOT_ROW, &ramp_scales());
+    assert_eq!(pivot.value, "3.47");
+    assert!(!pivot.set && !scale.parameter_set(), "muted: it is auto");
+    let stage = Stage::new(Mode::Light);
+    let mut list = off_scale_row(attrs);
+    let frame = stage.draw(&mut list);
+    let row = drawn_row(&frame, SCALE_ROW);
+    assert_eq!(row_text(&frame, row), "diverging about 3.47");
+    assert_eq!(
+        ink_of_text(&frame, row, "3.47"),
+        chrome::colour(semantic(false).text.muted)
+    );
+}
+
+/// A list turned to the settings with the cursor on the row found by name.
+fn on_named_row(attrs: &str, name: &'static str) -> ColumnList {
+    let mut list = turned_over(profiled_settings(attrs, &ramp_scales()));
+    assert!(list.open_on_row(name));
+    list
+}
+
+#[test]
+fn typing_into_the_pivot_row_found_by_name_keeps_a_pivot_and_not_a_tick_count() {
+    let mut list = on_named_row("colorScale: diverging\ncolorPivot: 3.47", PIVOT_ROW);
+    list.feed_events(&enter());
+    list.feed_events(&text("2.5"));
+    let reports = list.feed_events(&enter());
+    assert!(reports.contains(&set(
+        PIVOT_ROW,
+        SettingValue::Number(Number::new(2.5).unwrap())
+    )));
+}
+
+#[test]
+fn typing_into_the_steps_row_found_by_name_keeps_a_count_of_steps() {
+    let mut list = on_named_row("colorScale: quantize\ncolorN: 5", STEPS_ROW);
+    list.feed_events(&enter());
+    list.feed_events(&text("9"));
+    let reports = list.feed_events(&enter());
+    assert!(reports.contains(&set(STEPS_ROW, SettingValue::Count(9))));
+    let mut list = on_named_row("colorScale: quantize\ncolorN: 5", STEPS_ROW);
+    list.feed_events(&enter());
+    list.feed_events(&text("1"));
+    let reports = list.feed_events(&enter());
+    assert!(!reports.iter().any(|r| matches!(r, ListReport::Set(_))));
+}
+
+#[test]
+fn a_scheme_off_the_diverging_strip_steps_to_rdbu_and_back_to_the_pair() {
+    let row = colour_row(
+        "colorScale: diverging\ncolorPivot: 1\ncolorScheme: blues",
+        SCHEME_ROW,
+        &ramp_scales(),
+    );
+    assert_eq!(row.stepped(1), Some(word("rdbu")));
+    assert_eq!(row.stepped(-1), Some(SettingValue::Auto));
+}
+
+/// **Choosing the pair on the scheme row replaces an analyst's colours with it**,
+/// as it writes it where none is: the key written is the one drawn. **A step of
+/// the scale to diverging leaves those colours**, and writes the pair only where
+/// the plot writes no range.
+#[test]
+fn choosing_the_pair_replaces_an_analysts_colours_and_a_scale_step_keeps_them() {
+    use brightfield_shell::shelf_edit::{put_colour_scale, put_diverging_scheme};
+    use brightfield_spec::analysis::ComponentPath;
+    let spec_of = |attrs: &str| {
+        let source = format!(
+            "data:\n  t:\n    - {{ a: 1 }}\nplot:\n  - mark: dot\n    data: {{ from: t }}\n    x: a\n    y: a\nwidth: 600\nheight: 300\n{attrs}\n"
+        );
+        parse_spec(&source, Format::Yaml).unwrap().spec
+    };
+    let root = ComponentPath("root".to_string());
+    let keys = |spec: &brightfield_spec::ast::Spec| {
+        let plot = plot_at_path(spec, "root").unwrap();
+        (
+            plot.attributes.contains_key("colorScheme"),
+            plot.attributes.get("colorRange").cloned(),
+        )
+    };
+    let own_range = "colorRange: [\"#111111\", \"#222222\", \"#333333\"]";
+    let mut own = spec_of(&format!(
+        "colorScale: diverging\ncolorScheme: rdbu\n{own_range}"
+    ));
+    let before = keys(&own).1;
+    let mut none = spec_of("colorScale: diverging\ncolorScheme: rdbu");
+    put_diverging_scheme(&mut own, &root, false).unwrap();
+    put_diverging_scheme(&mut none, &root, false).unwrap();
+    assert_eq!(
+        keys(&own),
+        keys(&none),
+        "the pair replaces the analyst's colours"
+    );
+    assert!(keys(&own).1.is_some() && keys(&own).1 != before);
+
+    let mut own = spec_of(own_range);
+    let before = keys(&own).1;
+    put_colour_scale(
+        &mut own,
+        &root,
+        &ColourScaleWrite::Diverging { pivot: None },
+    )
+    .unwrap();
+    assert_eq!(
+        keys(&own).1,
+        before,
+        "a scale step keeps the analyst's colours"
+    );
+    let mut bare = spec_of("");
+    put_colour_scale(
+        &mut bare,
+        &root,
+        &ColourScaleWrite::Diverging { pivot: None },
+    )
+    .unwrap();
+    assert!(
+        keys(&bare).1.is_some(),
+        "the pair is written where no range is"
+    );
+}
+
+#[test]
+fn the_domain_row_reads_auto_with_the_drawn_ends_fixed_or_two_ends() {
+    let auto = colour_row("", DOMAIN_ROW, &ramp_scales());
+    assert_eq!((auto.value.as_str(), auto.set), ("auto", false));
+    assert_eq!(
+        auto.range.as_ref().and_then(|r| r.drawn),
+        Ends::new(0.0, 10.0)
+    );
+    let fixed = colour_row("colorDomain: Fixed", DOMAIN_ROW, &ramp_scales());
+    assert_eq!((fixed.value.as_str(), fixed.set), ("fixed", true));
+    let ends = colour_row("colorDomain: [0, 4]", DOMAIN_ROW, &ramp_scales());
+    assert_eq!((ends.value.as_str(), ends.set), ("0 \u{2013} 4", true));
+    assert!(ends.by_name);
+}
+
+#[test]
+fn the_domain_row_steps_between_auto_and_fixed() {
+    let auto = colour_row("", DOMAIN_ROW, &ramp_scales());
+    assert_eq!(auto.stepped(1), Some(SettingValue::Word("fixed".into())));
+    let fixed = colour_row("colorDomain: Fixed", DOMAIN_ROW, &ramp_scales());
+    assert_eq!(fixed.stepped(-1), Some(SettingValue::Auto));
+}
+
+#[test]
+fn the_domain_row_is_muted_on_a_colour_of_names() {
+    assert!(colour_row("", DOMAIN_ROW, &names_scales()).reason.is_some());
+}
+
+/// The domain row found by name with the cursor on it, reading auto: the ends
+/// the colours were drawn over follow it, muted.
+fn domain_row_list() -> ColumnList {
+    let mut list = turned_over(profiled_settings("", &ramp_scales()));
+    list.feed_events(&typed(egui::Key::Slash, "/"));
+    for (key, letter) in [
+        (egui::Key::D, "d"),
+        (egui::Key::O, "o"),
+        (egui::Key::M, "m"),
+    ] {
+        list.feed_events(&typed(key, letter));
+    }
+    list.feed_events(&enter());
+    assert_eq!(list.setting_cursor().map(|r| r.name), Some(DOMAIN_ROW));
+    list
+}
+
+#[test]
+fn colours_domain_row_light_matches_its_baseline() {
+    baseline_of(
+        domain_row_list(),
+        "shelf_settings_colour_domain_row_light",
+        Mode::Light,
+    );
+}
+
+#[test]
+fn colours_domain_row_dark_matches_its_baseline() {
+    baseline_of(
+        domain_row_list(),
+        "shelf_settings_colour_domain_row_dark",
+        Mode::Dark,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The pivot and steps rows' dots, and the rows of a plot with nothing on colour.
+// ---------------------------------------------------------------------------
+
+/// Colour's rows for a plot whose attributes are `attrs`, with colour bound as
+/// `colour` says, profiled by [`income_moments`] and drawn against a ramp.
+fn colour_rows_bound(attrs: &str, colour: Binding) -> Vec<SettingRow> {
+    let source = format!(
+        "data:\n  t:\n    - {{ a: 1 }}\nplot:\n  - mark: dot\n    data: {{ from: t }}\n    x: a\n    y: a\nwidth: 600\nheight: 300\n{attrs}\n"
+    );
+    let spec = parse_spec(&source, Format::Yaml)
+        .expect("the spec parses")
+        .spec;
+    let plot = plot_at_path(&spec, "root").expect("the root is its plot");
+    let moments = income_moments();
+    let channels = ShelfChannels {
+        colour,
+        ..channels()
+    };
+    ChannelSettings::of_plot_profiled(
+        &spec,
+        plot,
+        "root",
+        &channels,
+        &ramp_scales(),
+        &[MarkKind::Dot],
+        Some(&moments),
+    )
+    .rows(ShelfChannel::Colour)
+    .to_vec()
+}
+
+fn named(rows: &[SettingRow], name: &str) -> SettingRow {
+    rows.iter()
+        .find(|r| r.name == name)
+        .unwrap_or_else(|| panic!("colour has no {name} row"))
+        .clone()
+}
+
+/// **The pivot row carries its dot for a pivot of its own, and the steps row for
+/// a count of its own: neither shows the other's.**
+#[test]
+fn the_pivot_and_steps_rows_are_each_set_by_their_own_value() {
+    let bound = || Binding::Column("median_income".to_string());
+
+    let rows = colour_rows_bound("colorScale: diverging\ncolorPivot: 9", bound());
+    assert!(
+        named(&rows, PIVOT_ROW).set,
+        "a pivot of 9 is not the median's"
+    );
+    assert!(
+        !named(&rows, STEPS_ROW).set,
+        "the steps row is muted on diverging and has no count of its own to dot"
+    );
+
+    let rows = colour_rows_bound("colorScale: quantize\ncolorN: 7", bound());
+    assert!(
+        named(&rows, STEPS_ROW).set,
+        "seven steps is not the default five"
+    );
+    assert!(
+        !named(&rows, PIVOT_ROW).set,
+        "the pivot row is muted on steps and has no pivot of its own to dot"
+    );
+
+    let rows = colour_rows_bound("colorScale: diverging\ncolorPivot: 3.47", bound());
+    assert!(
+        !named(&rows, PIVOT_ROW).set,
+        "the median's own pivot reads auto"
+    );
+    let rows = colour_rows_bound("colorScale: quantize\ncolorN: 5", bound());
+    assert!(!named(&rows, STEPS_ROW).set, "five steps reads auto");
+}
+
+/// **With nothing on colour, the scale and domain rows read their auto, unset,
+/// whatever the file holds**: the keys draw nothing, and the muted rows offer
+/// no way to clear them, so they carry no dot.
+#[test]
+fn with_nothing_on_colour_the_scale_and_domain_rows_read_auto() {
+    let rows = colour_rows_bound("colorScale: diverging\ncolorDomain: Fixed", Binding::Unset);
+    let scale = named(&rows, SCALE_ROW);
+    assert_eq!(scale.value, "linear");
+    assert!(!scale.set, "a stale scale key carries no dot");
+    assert!(
+        scale.reason.is_some(),
+        "the row stays muted with its reason"
+    );
+    let domain = named(&rows, DOMAIN_ROW);
+    assert_eq!(domain.value, "auto");
+    assert!(!domain.set, "a stale domain key carries no dot");
+    assert!(
+        domain.reason.is_some(),
+        "the row stays muted with its reason"
+    );
+
+    let rows = colour_rows_bound("colorDomain: [0, 10]", Binding::Unset);
+    let domain = named(&rows, DOMAIN_ROW);
+    assert_eq!(domain.value, "auto");
+    assert!(
+        !domain.set,
+        "typed ends with nothing on colour carry no dot"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Colours of the analyst's own.
+// ---------------------------------------------------------------------------
+
+/// **On a linear scale the scheme row reads an analyst's own `colorRange` as
+/// custom, set, painted in those colours; `l` reaches the strip's first scheme
+/// and `h` goes nowhere.** brightfield's pair is not the analyst's and reads as
+/// the scheme.
+#[test]
+fn on_linear_the_scheme_row_reads_own_colours_as_custom() {
+    let own = "colorRange: ['#1b7837', '#f7f7f7', '#762a83']";
+    let row = colour_row(own, SCHEME_ROW, &ramp_scales());
+    assert_eq!((row.value.as_str(), row.set), ("custom", true));
+    assert_eq!(row.stepped(1), Some(word("viridis")));
+    assert_eq!(row.stepped(-1), None);
+    let painted = row
+        .colour
+        .as_ref()
+        .and_then(|f| f.range.clone())
+        .expect("the row carries the colours it paints");
+    assert_eq!(painted.len(), 3);
+
+    let one = colour_row("colorRange: ['#1b7837']", SCHEME_ROW, &ramp_scales());
+    assert_eq!(
+        one.value, "viridis",
+        "one colour is no ramp, and draws none"
+    );
+
+    let row = colour_row(
+        &format!("colorScale: diverging\ncolorRange: {}", pair_text()),
+        SCHEME_ROW,
+        &ramp_scales(),
+    );
+    assert_eq!(row.value, "blue-red", "the pair is brightfield's own");
+}
+
+/// **A scheme chosen over an analyst's colours on a linear scale names it and
+/// takes the colours out; `⌫` takes them out and names viridis only where a
+/// scheme is named.**
+#[test]
+fn a_scheme_chosen_over_own_colours_takes_them_out() {
+    use brightfield_shell::shelf_edit::put_scheme_over_range;
+    use brightfield_spec::analysis::ComponentPath;
+    let spec_of = |attrs: &str| {
+        let source = format!(
+            "data:\n  t:\n    - {{ a: 1 }}\nplot:\n  - mark: dot\n    data: {{ from: t }}\n    x: a\n    y: a\nwidth: 600\nheight: 300\n{attrs}\n"
+        );
+        parse_spec(&source, Format::Yaml).unwrap().spec
+    };
+    let root = ComponentPath("root".to_string());
+    let keys = |spec: &brightfield_spec::ast::Spec| {
+        let plot = plot_at_path(spec, "root").unwrap();
+        (
+            plot.attributes.get("colorScheme").and_then(|v| match v {
+                brightfield_spec::ast::SpecValue::String(s) => Some(s.clone()),
+                _ => None,
+            }),
+            plot.attributes.contains_key("colorRange"),
+        )
+    };
+    let own = "colorRange: ['#1b7837', '#f7f7f7', '#762a83']";
+
+    let mut spec = spec_of(&format!("colorScheme: viridis\n{own}"));
+    put_scheme_over_range(&mut spec, &root, Some(SequentialScheme::Blues)).unwrap();
+    assert_eq!(keys(&spec), (Some("blues".to_string()), false));
+
+    let mut spec = spec_of(&format!("colorScheme: viridis\n{own}"));
+    let edits = put_scheme_over_range(&mut spec, &root, Some(SequentialScheme::Viridis)).unwrap();
+    assert_eq!(keys(&spec), (Some("viridis".to_string()), false));
+    assert_eq!(
+        edits.len(),
+        1,
+        "the scheme already named, the range out alone"
+    );
+
+    let mut spec = spec_of(own);
+    put_scheme_over_range(&mut spec, &root, None).unwrap();
+    assert_eq!(
+        keys(&spec),
+        (None, false),
+        "⌫ names no scheme the plot did not"
+    );
+    let mut spec = spec_of(&format!("colorScheme: blues\n{own}"));
+    put_scheme_over_range(&mut spec, &root, None).unwrap();
+    assert_eq!(keys(&spec), (Some("viridis".to_string()), false));
+}
+
+/// **On a stepped scale over the analyst's own colours, the steps row is muted
+/// with its reason**: the chart draws one step per colour and leaves `colorN`
+/// unread, so the row has no count to set, and the scale row opens no count
+/// field. The scheme row reads the colours as custom.
+#[test]
+fn on_steps_over_own_colours_the_steps_row_is_muted() {
+    let attrs = "colorScale: quantize\ncolorN: 7\ncolorRange: ['#1b7837', '#f7f7f7', '#762a83']";
+    let rows = colour_rows_bound(attrs, Binding::Column("median_income".to_string()));
+    let scheme = named(&rows, SCHEME_ROW);
+    assert_eq!((scheme.value.as_str(), scheme.set), ("custom", true));
+    let steps = named(&rows, STEPS_ROW);
+    assert_eq!(
+        steps.reason.as_deref(),
+        Some("the file's own colours set the count")
+    );
+    assert!(!steps.set, "a muted count carries no dot");
+    assert!(!steps.takes_field(), "the muted row takes no count");
+    let scale = named(&rows, SCALE_ROW);
+    assert!(
+        !scale.takes_field(),
+        "the scale row opens no count field over the file's own colours"
+    );
+    assert_eq!(
+        scale.colour.as_ref().and_then(|f| f.count),
+        None,
+        "the scale row shows no count behind its word"
+    );
+    assert!(!scale.parameter_set(), "an unread count is not set");
+}
+
+/// **A stepped scale over brightfield's own pair is stepped by its colours
+/// too**: the renderer draws one step per colour of any range it reads, the pair
+/// included, so the count the file writes is unread here as well.
+#[test]
+fn on_steps_over_the_pair_the_count_is_unread() {
+    let attrs = format!(
+        "colorScale: quantize\ncolorN: 7\ncolorRange: {}",
+        pair_text()
+    );
+    let rows = colour_rows_bound(&attrs, Binding::Column("median_income".to_string()));
+    let steps = named(&rows, STEPS_ROW);
+    assert_eq!(
+        steps.reason.as_deref(),
+        Some("the file's own colours set the count")
+    );
+    let scale = named(&rows, SCALE_ROW);
+    assert!(!scale.takes_field());
+    assert_eq!(scale.colour.as_ref().and_then(|f| f.count), None);
+    assert!(!scale.parameter_set());
+}
+
+/// **A scale or domain the file writes that the shelf does not offer is read as
+/// the file's and left alone**: `symlog` and a `$param` read as written, set,
+/// and muted with the reason, so neither a step, `⌫` nor a click on the dot
+/// writes over them.
+#[test]
+fn a_scale_or_domain_the_shelf_does_not_offer_reads_as_the_files() {
+    for (attrs, word) in [
+        ("colorScale: symlog", "symlog"),
+        ("colorScale: $scale", "$scale"),
+    ] {
+        let rows = colour_rows_bound(attrs, Binding::Column("median_income".to_string()));
+        let scale = named(&rows, SCALE_ROW);
+        assert_eq!((scale.value.as_str(), scale.set), (word, true), "{attrs}");
+        assert_eq!(
+            scale.reason.as_deref(),
+            Some("the file writes this scale itself, and the shelf leaves it as written"),
+            "{attrs}"
+        );
+        assert!(
+            !scale.takes_field(),
+            "{attrs}: the muted row opens no field"
+        );
+    }
+
+    let rows = colour_rows_bound(
+        "colorDomain: $ends",
+        Binding::Column("median_income".to_string()),
+    );
+    let domain = named(&rows, DOMAIN_ROW);
+    assert_eq!((domain.value.as_str(), domain.set), ("$ends", true));
+    assert_eq!(
+        domain.reason.as_deref(),
+        Some("the file writes this domain itself, and the shelf leaves it as written")
+    );
+    assert!(!domain.takes_field());
+}
+
+/// **A `$param` scale that holds diverging still shows its pivot's dot**: the
+/// scale row reads the file's word, but the pivot row is set by the scale the
+/// file resolves to and the pivot it writes.
+#[test]
+fn a_param_scale_holding_diverging_sets_the_pivot_row() {
+    let rows = colour_rows_bound(
+        "params:\n  s: diverging\ncolorScale: $s\ncolorPivot: 7",
+        Binding::Column("median_income".to_string()),
+    );
+    assert_eq!(named(&rows, SCALE_ROW).value, "$s");
+    let pivot = named(&rows, PIVOT_ROW);
+    assert!(pivot.reason.is_none(), "{:?}", pivot.reason);
+    assert!(pivot.set, "a pivot of 7 against the profile's auto is set");
 }

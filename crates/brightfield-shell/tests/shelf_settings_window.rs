@@ -364,7 +364,7 @@ fn from_the_x_settings_y_opens_the_y_settings_and_tab_on_colour_turns_to_its_set
     win.type_letter(egui::Key::J, "j");
     assert_eq!(
         win.setting_cursor(),
-        Some(REVERSE_ROW),
+        Some(SCALE_ROW),
         "j still reaches colour's second row"
     );
 }
