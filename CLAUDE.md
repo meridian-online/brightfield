@@ -18,7 +18,7 @@ Feature cards, specs, and decisions for Brightfield are tracked centrally, outsi
 
 Run `cargo xtask ci` before every push; it is the one gate. It runs, in order, the steps a pull request's checks run, stops at the first that fails, and ends with a summary naming each step, its wall time, and the steps the failure skipped. CI's jobs call the same steps by name, so a green run here is a claim about the set CI runs. `cargo xtask ci --list` names the steps, and `cargo xtask ci --step <name>` re-runs one of them.
 
-Before each commit, run the steps that check what a commit carries, `cargo xtask ci --step fmt`, `--step clippy`, `--step comment-citations` and `--step public-hygiene`, and the tests the change touches. The full run waits for the push because it is long: between 4 and 55 minutes on a 16 GB Mac in October 2026, depending on the build cache.
+Before each commit, after `git add`, run `cargo xtask ci --step fmt`, `--step clippy`, `--step comment-citations` and `--step public-hygiene`, and the tests the change touches; `public-hygiene` scans the content of tracked files, so it misses a file not yet added. After each commit, run `--step commit-messages`, which scans the branch's commit messages, so a planning identifier in one is caught before the branch is pushed. The full run waits for the push because it is long: between 4 and 55 minutes on a 16 GB Mac in October 2026, depending on the build cache.
 
 A full run needs the pinned toolchain, `cargo-deny`, `python3`, a clone of `open-analytics` beside this checkout, and the pinned DuckDB CLI in `target/duckdb-cli`. A step missing one of them stops and says what to install or where to put it.
 
