@@ -1857,7 +1857,12 @@ fn colour_rows(
             .then(|| resolve_colour_steps(plot, &spec.params).unwrap_or(DEFAULT_COLOUR_STEPS)),
         diverging,
     };
-    let scale_word = if diverging {
+    // With nothing on colour the file's scale and domain keys draw nothing, and
+    // the muted rows offer no way to clear them: those rows read their auto,
+    // unset, as the legend row does.
+    let scale_word = if !bound {
+        "linear"
+    } else if diverging {
         "diverging"
     } else if quantize {
         "steps"
@@ -1874,7 +1879,15 @@ fn colour_rows(
             unbound(SCALE_UNBOUND).or_else(|| names.then(|| SCALE_NAMES.to_string())),
         )
     };
-    let parameter_set = scale.parameter_set();
+    // Each parameter row is set by its own value alone, so a muted row never
+    // shows the other's dot.
+    let pivot_set = bound
+        && diverging
+        && match (facts.pivot, facts.auto_pivot) {
+            (Some(pivot), Some(auto)) => pivot_text(pivot) != pivot_text(auto),
+            _ => false,
+        };
+    let steps_set = bound && quantize && facts.count.is_some_and(|n| n != DEFAULT_COLOUR_STEPS);
     let pivot = SettingRow {
         by_name: true,
         kind: SettingKind::Typed,
@@ -1882,7 +1895,7 @@ fn colour_rows(
         ..row(
             PIVOT_ROW,
             facts.pivot.map(pivot_text).unwrap_or_default(),
-            parameter_set,
+            pivot_set,
             PIVOT_SAYS,
             unbound(PIVOT_UNBOUND).or_else(|| (!diverging).then(|| PIVOT_OFF.to_string())),
         )
@@ -1894,7 +1907,7 @@ fn colour_rows(
         ..row(
             STEPS_ROW,
             facts.count.map(|n| n.to_string()).unwrap_or_default(),
-            parameter_set,
+            steps_set,
             STEPS_SAYS,
             unbound(STEPS_UNBOUND).or_else(|| (!quantize).then(|| STEPS_OFF.to_string())),
         )
@@ -1965,12 +1978,12 @@ fn colour_rows(
         }),
         ..row(
             DOMAIN_ROW,
-            match (fixed, set_ends) {
-                (true, _) => FIXED_DOMAIN.to_string(),
-                (false, Some(ends)) => ends_text(ends),
-                (false, None) => AUTO.to_string(),
+            match (bound, fixed, set_ends) {
+                (true, true, _) => FIXED_DOMAIN.to_string(),
+                (true, false, Some(ends)) => ends_text(ends),
+                _ => AUTO.to_string(),
             },
-            fixed || set_ends.is_some(),
+            bound && (fixed || set_ends.is_some()),
             DOMAIN_SAYS,
             unbound(DOMAIN_UNBOUND).or_else(|| names.then(|| DOMAIN_NAMES.to_string())),
         )

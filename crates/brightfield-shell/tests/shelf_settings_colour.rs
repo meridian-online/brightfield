@@ -1913,3 +1913,107 @@ fn colours_domain_row_dark_matches_its_baseline() {
         Mode::Dark,
     );
 }
+
+// ---------------------------------------------------------------------------
+// The pivot and steps rows' dots, and the rows of a plot with nothing on colour.
+// ---------------------------------------------------------------------------
+
+/// Colour's rows for a plot whose attributes are `attrs`, with colour bound as
+/// `colour` says, profiled by [`income_moments`] and drawn against a ramp.
+fn colour_rows_bound(attrs: &str, colour: Binding) -> Vec<SettingRow> {
+    let source = format!(
+        "data:\n  t:\n    - {{ a: 1 }}\nplot:\n  - mark: dot\n    data: {{ from: t }}\n    x: a\n    y: a\nwidth: 600\nheight: 300\n{attrs}\n"
+    );
+    let spec = parse_spec(&source, Format::Yaml)
+        .expect("the spec parses")
+        .spec;
+    let plot = plot_at_path(&spec, "root").expect("the root is its plot");
+    let moments = income_moments();
+    let channels = ShelfChannels {
+        colour,
+        ..channels()
+    };
+    ChannelSettings::of_plot_profiled(
+        &spec,
+        plot,
+        "root",
+        &channels,
+        &ramp_scales(),
+        &[MarkKind::Dot],
+        Some(&moments),
+    )
+    .rows(ShelfChannel::Colour)
+    .to_vec()
+}
+
+fn named(rows: &[SettingRow], name: &str) -> SettingRow {
+    rows.iter()
+        .find(|r| r.name == name)
+        .unwrap_or_else(|| panic!("colour has no {name} row"))
+        .clone()
+}
+
+/// **The pivot row carries its dot for a pivot of its own, and the steps row for
+/// a count of its own: neither shows the other's.**
+#[test]
+fn the_pivot_and_steps_rows_are_each_set_by_their_own_value() {
+    let bound = || Binding::Column("median_income".to_string());
+
+    let rows = colour_rows_bound("colorScale: diverging\ncolorPivot: 9", bound());
+    assert!(
+        named(&rows, PIVOT_ROW).set,
+        "a pivot of 9 is not the median's"
+    );
+    assert!(
+        !named(&rows, STEPS_ROW).set,
+        "the steps row is muted on diverging and has no count of its own to dot"
+    );
+
+    let rows = colour_rows_bound("colorScale: quantize\ncolorN: 7", bound());
+    assert!(
+        named(&rows, STEPS_ROW).set,
+        "seven steps is not the default five"
+    );
+    assert!(
+        !named(&rows, PIVOT_ROW).set,
+        "the pivot row is muted on steps and has no pivot of its own to dot"
+    );
+
+    let rows = colour_rows_bound("colorScale: diverging\ncolorPivot: 3.47", bound());
+    assert!(
+        !named(&rows, PIVOT_ROW).set,
+        "the median's own pivot reads auto"
+    );
+    let rows = colour_rows_bound("colorScale: quantize\ncolorN: 5", bound());
+    assert!(!named(&rows, STEPS_ROW).set, "five steps reads auto");
+}
+
+/// **With nothing on colour, the scale and domain rows read their auto, unset,
+/// whatever the file holds**: the keys draw nothing, and the muted rows offer
+/// no way to clear them, so they carry no dot.
+#[test]
+fn with_nothing_on_colour_the_scale_and_domain_rows_read_auto() {
+    let rows = colour_rows_bound("colorScale: diverging\ncolorDomain: Fixed", Binding::Unset);
+    let scale = named(&rows, SCALE_ROW);
+    assert_eq!(scale.value, "linear");
+    assert!(!scale.set, "a stale scale key carries no dot");
+    assert!(
+        scale.reason.is_some(),
+        "the row stays muted with its reason"
+    );
+    let domain = named(&rows, DOMAIN_ROW);
+    assert_eq!(domain.value, "auto");
+    assert!(!domain.set, "a stale domain key carries no dot");
+    assert!(
+        domain.reason.is_some(),
+        "the row stays muted with its reason"
+    );
+
+    let rows = colour_rows_bound("colorDomain: [0, 10]", Binding::Unset);
+    let domain = named(&rows, DOMAIN_ROW);
+    assert_eq!(domain.value, "auto");
+    assert!(
+        !domain.set,
+        "typed ends with nothing on colour carry no dot"
+    );
+}
