@@ -483,8 +483,9 @@ pub fn put_colour(
     // A domain and a pivot belong to the column they were set against: a new
     // column takes a set domain out and a diverging scale's pivot is read afresh.
     if !edits.is_empty() {
-        // Only a domain the domain row writes goes: `Fixed`, or two ends. A
-        // `$param` or a word the shelf does not offer is the file's own.
+        // A domain the domain row writes goes, `Fixed` or two ends, as
+        // `a_column_change_leaves_a_param_domain` holds: a `$param` or a word the
+        // shelf does not offer is the file's own.
         if matches!(
             target.attributes.get("colorDomain"),
             Some(SpecValue::Array(_))
