@@ -2153,8 +2153,36 @@ fn on_steps_over_own_colours_the_steps_row_is_muted() {
     );
     assert!(!steps.set, "a muted count carries no dot");
     assert!(!steps.takes_field(), "the muted row takes no count");
+    let scale = named(&rows, SCALE_ROW);
     assert!(
-        !named(&rows, SCALE_ROW).takes_field(),
+        !scale.takes_field(),
         "the scale row opens no count field over the file's own colours"
     );
+    assert_eq!(
+        scale.colour.as_ref().and_then(|f| f.count),
+        None,
+        "the scale row shows no count behind its word"
+    );
+    assert!(!scale.parameter_set(), "an unread count is not set");
+}
+
+/// **A stepped scale over brightfield's own pair is stepped by its colours
+/// too**: the renderer draws one step per colour of any range it reads, the pair
+/// included, so the count the file writes is unread here as well.
+#[test]
+fn on_steps_over_the_pair_the_count_is_unread() {
+    let attrs = format!(
+        "colorScale: quantize\ncolorN: 7\ncolorRange: {}",
+        pair_text()
+    );
+    let rows = colour_rows_bound(&attrs, Binding::Column("median_income".to_string()));
+    let steps = named(&rows, STEPS_ROW);
+    assert_eq!(
+        steps.reason.as_deref(),
+        Some("the file's own colours set the count")
+    );
+    let scale = named(&rows, SCALE_ROW);
+    assert!(!scale.takes_field());
+    assert_eq!(scale.colour.as_ref().and_then(|f| f.count), None);
+    assert!(!scale.parameter_set());
 }

@@ -1530,11 +1530,11 @@ pub enum ColourDomain {
 /// A `colorDomain` value read as the domain it fixes: a list of two finite
 /// numbers with the low end first, or a non-empty list of strings.
 ///
-/// A string (Mosaic's `Fixed`, which asks for the data's own domain held still
-/// and which this build leaves unread), a list of any other shape, a pair of
-/// numbers with the high end first or equal, and a list that mixes strings
-/// with numbers are no domain, and a plot that writes one draws as a file
-/// without the key does.
+/// A string, a list of any other shape, a pair of numbers with the high end
+/// first or equal, and a list that mixes strings with numbers are no domain
+/// here. Mosaic's `Fixed` is one of them: it fixes no ends of its own, and
+/// [`resolve_fixed_domains`] reads it instead, as a request to hold the colour
+/// scale's ends from the plot's first draw.
 #[must_use]
 pub fn colour_domain(value: &SpecValue) -> Option<ColourDomain> {
     let SpecValue::Array(items) = value else {

@@ -944,12 +944,19 @@ pub const CUSTOM_RANGE: &str = "custom";
 /// draw.
 #[must_use]
 pub fn own_colour_range(spec: &Spec, plot: &PlotNode) -> Option<Vec<[f32; 4]>> {
+    drawn_colour_range(spec, plot)
+        .filter(|colours| !brightfield_render::scale::is_own_diverging_range(colours))
+}
+
+/// The colours of any `colorRange` on `plot` the renderer draws: two or more
+/// that it reads as colours, brightfield's pair included. A stepped scale over
+/// them draws one step per colour and leaves `colorN` unread.
+fn drawn_colour_range(spec: &Spec, plot: &PlotNode) -> Option<Vec<[f32; 4]>> {
     let colours = resolve_colour_range(plot, &spec.params)?
         .into_iter()
         .map(|name| brightfield_render::mark::parse_colour_literal(name).map(|c| c.components))
         .collect::<Option<Vec<[f32; 4]>>>()?;
-    (colours.len() >= 2 && !brightfield_render::scale::is_own_diverging_range(&colours))
-        .then_some(colours)
+    (colours.len() >= 2).then_some(colours)
 }
 
 /// The schemes colour's scheme row offers on a diverging scale: brightfield's pair,
@@ -1476,7 +1483,7 @@ impl SettingRow {
                         .is_some_and(|f| match self.value.as_str() {
                             "diverging" => true,
                             // Colours the file writes set a stepped scale's count.
-                            "steps" => f.range.is_none(),
+                            "steps" => f.count.is_some(),
                             _ => false,
                         })))
     }
@@ -1683,7 +1690,8 @@ pub struct ColourScaleFacts {
     /// diverging scale whose file writes no pivot it is the pivot the chart drew,
     /// so that file reads auto. `None` where neither is known.
     pub auto_pivot: Option<f64>,
-    /// The count the file writes, else the default. `None` off steps.
+    /// The count the file writes, else the default. `None` off steps, and on a
+    /// stepped scale over colours the file writes, whose count they set.
     pub count: Option<usize>,
     /// Whether the scale is diverging, which the scheme row offers its own two
     /// schemes for.
@@ -1903,7 +1911,9 @@ fn colour_rows(
         } else {
             moments.map(auto_pivot).or(drawn_pivot)
         },
-        count: quantize
+        // Colours the file writes set a stepped scale's count, so there is no
+        // count to show, compare or type.
+        count: (quantize && drawn_colour_range(spec, plot).is_none())
             .then(|| resolve_colour_steps(plot, &spec.params).unwrap_or(DEFAULT_COLOUR_STEPS)),
         diverging,
         range: own_colour_range(spec, plot),
@@ -1936,7 +1946,7 @@ fn colour_rows(
     let pivot_set = diverging && scale.parameter_set();
     // Over colours of the analyst's own, the chart draws one step per colour
     // and leaves `colorN` unread, so the steps row has no count to set.
-    let own_steps = quantize && facts.range.is_some();
+    let own_steps = quantize && facts.count.is_none();
     let steps_set = quantize && !own_steps && scale.parameter_set();
     let pivot = SettingRow {
         by_name: true,
