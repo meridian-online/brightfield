@@ -2135,3 +2135,26 @@ fn a_scheme_chosen_over_own_colours_takes_them_out() {
     put_scheme_over_range(&mut spec, &root, None).unwrap();
     assert_eq!(keys(&spec), (Some("viridis".to_string()), false));
 }
+
+/// **On a stepped scale over the analyst's own colours, the steps row is muted
+/// with its reason**: the chart draws one step per colour and leaves `colorN`
+/// unread, so the row has no count to set, and the scale row opens no count
+/// field. The scheme row reads the colours as custom.
+#[test]
+fn on_steps_over_own_colours_the_steps_row_is_muted() {
+    let attrs = "colorScale: quantize\ncolorN: 7\ncolorRange: ['#1b7837', '#f7f7f7', '#762a83']";
+    let rows = colour_rows_bound(attrs, Binding::Column("median_income".to_string()));
+    let scheme = named(&rows, SCHEME_ROW);
+    assert_eq!((scheme.value.as_str(), scheme.set), ("custom", true));
+    let steps = named(&rows, STEPS_ROW);
+    assert_eq!(
+        steps.reason.as_deref(),
+        Some("the file's own colours set the count")
+    );
+    assert!(!steps.set, "a muted count carries no dot");
+    assert!(!steps.takes_field(), "the muted row takes no count");
+    assert!(
+        !named(&rows, SCALE_ROW).takes_field(),
+        "the scale row opens no count field over the file's own colours"
+    );
+}

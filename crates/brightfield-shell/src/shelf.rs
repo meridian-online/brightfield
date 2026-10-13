@@ -1051,6 +1051,10 @@ const DOMAIN_UNBOUND: &str = "nothing is on colour, so there are no ends to set"
 /// Why the pivot row does not apply to a plot with nothing on colour.
 const PIVOT_UNBOUND: &str = "nothing is on colour, so there is no pivot to set";
 
+/// Why the steps row does not apply to a stepped scale over colours the file
+/// writes, which give one step each.
+const STEPS_OWN_COLOURS: &str = "the file's own colours set the count";
+
 /// Why the steps row does not apply to a plot with nothing on colour.
 const STEPS_UNBOUND: &str = "nothing is on colour, so there are no steps to set";
 
@@ -1466,8 +1470,15 @@ impl SettingRow {
             && (self.kind == SettingKind::Typed
                 || self.name == FORMAT_ROW
                 || (self.name == SCALE_ROW
-                    && matches!(self.value.as_str(), "diverging" | "steps")
-                    && self.colour.is_some()))
+                    && self
+                        .colour
+                        .as_ref()
+                        .is_some_and(|f| match self.value.as_str() {
+                            "diverging" => true,
+                            // Colours the file writes set a stepped scale's count.
+                            "steps" => f.range.is_none(),
+                            _ => false,
+                        })))
     }
 
     /// What one step `by` from the row's own does, or `None` where the row does
@@ -1923,7 +1934,10 @@ fn colour_rows(
     // row never shows the other's dot. The scale row reads linear with nothing
     // on colour, so neither is set then.
     let pivot_set = diverging && scale.parameter_set();
-    let steps_set = quantize && scale.parameter_set();
+    // Over colours of the analyst's own, the chart draws one step per colour
+    // and leaves `colorN` unread, so the steps row has no count to set.
+    let own_steps = quantize && facts.range.is_some();
+    let steps_set = quantize && !own_steps && scale.parameter_set();
     let pivot = SettingRow {
         by_name: true,
         kind: SettingKind::Typed,
@@ -1945,7 +1959,9 @@ fn colour_rows(
             facts.count.map(|n| n.to_string()).unwrap_or_default(),
             steps_set,
             STEPS_SAYS,
-            unbound(STEPS_UNBOUND).or_else(|| (!quantize).then(|| STEPS_OFF.to_string())),
+            unbound(STEPS_UNBOUND)
+                .or_else(|| (!quantize).then(|| STEPS_OFF.to_string()))
+                .or_else(|| own_steps.then(|| STEPS_OWN_COLOURS.to_string())),
         )
     };
     // Colours of the analyst's own are drawn in place of any scheme, on every
