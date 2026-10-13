@@ -53,24 +53,27 @@ jobs:
     # ---------------------------------------------------------------------
     runs-on: macos-15
     # The ceiling is each shard's own, from its `timeout` in the matrix below.
-    # Each is 1.25 times that shard's slowest of three warm runs made under the
-    # split, rounded up to a whole minute. The three runs are the three
-    # attempts of run 37903443493 (commit b212fc8), and a shard's time is its
-    # job's start to its end in that attempt's job list, in minutes:
+    # Each is 1.25 times that shard's slowest warm run in the table, rounded up
+    # to a whole minute, and is never lowered below the one it replaces. A
+    # shard's time is its job's start to its end, in minutes. The runs are the
+    # six green runs of this workflow between commits 78f5e87 and 175da74, and
+    # one run on commit 236fbdc where default-2 was cancelled at its old
+    # 24-minute ceiling (a lower bound on that shard's time, counted as its
+    # slowest). Every one restored the cache `main` saved.
     #
-    #   shard         attempt 1  attempt 2  attempt 3   ceiling
-    #   one-thread-1       21.1       18.0       20.1        27
-    #   one-thread-2       18.1       20.5       28.5        36
-    #   default-1          18.8       17.7       16.4        24
-    #   default-2          18.8       15.1       16.1        24
-    #   default-3          13.0       12.2       16.2        21
+    #   shard         fastest  slowest   ceiling
+    #   one-thread-1     16.8     21.6        27
+    #   one-thread-2     17.5     20.6        36   (28.5 in an earlier run)
+    #   default-1        15.0     18.3        24
+    #   default-2        14.9    >25.2        32
+    #   default-3        13.6     20.5        26
     #
     # A warm run restores the cache `main` saved. A run that restores none
     # compiles every dependency: the one run made that way (run 37898248271,
     # before the cache key was set) took 26.8 to 34.1 minutes on four of its
     # shards, and these ceilings are not sized for it. Raise them for any run
-    # that is expected to restore no cache, and derive them again from three
-    # warm runs when the shards change.
+    # that is expected to restore no cache, and derive them again from recent
+    # warm runs when the shards change or a shard is cancelled at its ceiling.
     timeout-minutes: ${{ matrix.timeout }}
 
     # `fail-fast: false` because a red shard must not cancel the others: a run
@@ -92,9 +95,9 @@ jobs:
           - name: default-1
             timeout: 24
           - name: default-2
-            timeout: 24
+            timeout: 32
           - name: default-3
-            timeout: 21
+            timeout: 26
 
     # The shard names itself to the command in these four variables; with
     # none of them set, as on a person's machine, a test step runs its whole
