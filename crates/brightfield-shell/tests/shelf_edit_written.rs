@@ -658,6 +658,32 @@ fn a_column_of_names_leaves_a_scale_the_shelf_did_not_write() {
     assert_eq!(plot.attributes.get("colorN"), Some(&SpecValue::Integer(7)));
 }
 
+/// A column change takes out only a domain the domain row writes: a `$param`
+/// domain is the file's and stays.
+#[test]
+fn a_column_change_leaves_a_param_domain() {
+    let mut opened = open("colour_param_domain_stays");
+    put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .unwrap();
+    let param = SpecValue::Param(brightfield_spec::ast::ParamRef::new("ends"));
+    put_setting(
+        &mut opened.spec,
+        &opened.hero,
+        "colorDomain",
+        &SpecValue::Null,
+        &SettingWrite::Value(param.clone()),
+    )
+    .unwrap();
+    put_colour(&mut opened.spec, &opened.hero, "house_age", &opened.table).unwrap();
+    let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+    assert_eq!(plot.attributes.get("colorDomain"), Some(&param));
+}
+
 #[test]
 fn a_number_column_on_a_diverging_plot_is_given_no_scheme() {
     let mut opened = diverging_on("colour_diverging_no_scheme", "median_income");

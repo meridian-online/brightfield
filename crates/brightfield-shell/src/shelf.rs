@@ -1630,14 +1630,9 @@ impl SettingRow {
         let Some(facts) = &self.colour else {
             return false;
         };
-        match (
-            self.value.as_str(),
-            facts.pivot,
-            facts.auto_pivot,
-            facts.count,
-        ) {
-            ("diverging", Some(pivot), Some(auto), _) => pivot_text(pivot) != pivot_text(auto),
-            ("steps", _, _, Some(count)) => count != DEFAULT_COLOUR_STEPS,
+        match self.value.as_str() {
+            "diverging" => facts.pivot_set(),
+            "steps" => facts.steps_set(),
             _ => false,
         }
     }
@@ -1726,6 +1721,25 @@ pub struct ColourScaleFacts {
 
 // Pivots and colours are finite where present, so `==` is reflexive.
 impl Eq for ColourScaleFacts {}
+
+impl ColourScaleFacts {
+    /// Whether the pivot differs from auto at the precision the row shows it.
+    #[must_use]
+    pub fn pivot_set(&self) -> bool {
+        match (self.pivot, self.auto_pivot) {
+            (Some(pivot), Some(auto)) => pivot_text(pivot) != pivot_text(auto),
+            _ => false,
+        }
+    }
+
+    /// Whether the count differs from brightfield's five. `None` counts, a
+    /// scale off steps or one whose colours set the count, are not set.
+    #[must_use]
+    pub fn steps_set(&self) -> bool {
+        self.count
+            .is_some_and(|count| count != DEFAULT_COLOUR_STEPS)
+    }
+}
 
 /// What the format row carries beyond its value, read from the plot and the scale
 /// the chart was drawn against.
@@ -1971,13 +1985,13 @@ fn colour_rows(
         )
     };
     // Each parameter row is set by its own value on its own scale, so a muted
-    // row never shows the other's dot. The scale row reads linear with nothing
-    // on colour, so neither is set then.
-    let pivot_set = diverging && scale.parameter_set();
+    // row never shows the other's dot. The scale is the one the file resolves
+    // to, a `$param`'s included, and with nothing on colour neither is set.
+    let pivot_set = bound && diverging && facts.pivot_set();
     // Over colours of the analyst's own, the chart draws one step per colour
     // and leaves `colorN` unread, so the steps row has no count to set.
     let own_steps = quantize && facts.count.is_none();
-    let steps_set = quantize && !own_steps && scale.parameter_set();
+    let steps_set = bound && quantize && !own_steps && facts.steps_set();
     let pivot = SettingRow {
         by_name: true,
         kind: SettingKind::Typed,

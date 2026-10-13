@@ -2223,3 +2223,18 @@ fn a_scale_or_domain_the_shelf_does_not_offer_reads_as_the_files() {
     );
     assert!(!domain.takes_field());
 }
+
+/// **A `$param` scale that holds diverging still shows its pivot's dot**: the
+/// scale row reads the file's word, but the pivot row is set by the scale the
+/// file resolves to and the pivot it writes.
+#[test]
+fn a_param_scale_holding_diverging_sets_the_pivot_row() {
+    let rows = colour_rows_bound(
+        "params:\n  s: diverging\ncolorScale: $s\ncolorPivot: 7",
+        Binding::Column("median_income".to_string()),
+    );
+    assert_eq!(named(&rows, SCALE_ROW).value, "$s");
+    let pivot = named(&rows, PIVOT_ROW);
+    assert!(pivot.reason.is_none(), "{:?}", pivot.reason);
+    assert!(pivot.set, "a pivot of 7 against the profile's auto is set");
+}
