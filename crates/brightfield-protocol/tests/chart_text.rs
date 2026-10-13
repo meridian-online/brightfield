@@ -774,12 +774,12 @@ fn a_column_the_quotes_cannot_hold_is_written_in_the_serialisers_spelling() {
     assert_eq!(parse(&written), applied_fresh(&text, &edit));
 }
 
-/// Taking out an attribute takes out its line and, by arcform's rule of
-/// comment ownership, a comment flush above it; the comment after the plot's
-/// last attribute, the comment on a kept line and the comment on each tile
-/// stay.
+/// Taking out an attribute takes out its line and nothing else: the comment
+/// flush above it, which arcform's rule of comment ownership would take with
+/// it, stays, and so do the comment after the plot's last attribute, the
+/// comment on a kept line and the comment on each tile.
 #[test]
-fn a_comment_flush_above_a_removed_line_goes_with_it_and_the_rest_stay() {
+fn a_comment_flush_above_a_removed_line_stays_and_so_do_the_rest() {
     let text = "\
 vconcat:
   # the tile
@@ -801,13 +801,51 @@ vconcat:
 ";
     let edit = remove("root/vconcat[0]", "yScale");
     let written = write_chart_edit(text, &edit).expect("the edit is written");
-    assert_eq!(
-        written,
-        text.replace(
-            "    # log until the outliers are gone\n    yScale: log\n",
-            ""
-        )
-    );
+    assert_eq!(written, text.replace("    yScale: log\n", ""));
+    assert_eq!(parse(&written), applied_fresh(text, &edit));
+}
+
+/// A comment of several lines flush above a removed line stays whole, a
+/// section comment at the mapping's parent indent among them, and a comment
+/// with the same words elsewhere in the file does not stand in for it.
+#[test]
+fn a_comment_of_several_lines_above_a_removed_line_stays_whole() {
+    let text = "\
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+# the axes
+# log until the outliers are gone
+yScale: log
+# log until the outliers are gone
+width: 300
+";
+    let edit = remove("root", "yScale");
+    let written = write_chart_edit(text, &edit).expect("the edit is written");
+    assert_eq!(written, text.replace("yScale: log\n", ""));
+    assert_eq!(parse(&written), applied_fresh(text, &edit));
+}
+
+/// Taking out the colour legend keeps the comment flush above its item.
+#[test]
+fn taking_out_the_colour_legend_keeps_the_comment_above_it() {
+    let text = "\
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    fill: b
+  # the key to the colours
+  - legend: color
+width: 300
+";
+    let edit = ChartEdit::RemoveColourLegend {
+        plot: ComponentPath("root".to_string()),
+    };
+    let written = write_chart_edit(text, &edit).expect("the edit is written");
+    assert_eq!(written, text.replace("  - legend: color\n", ""));
     assert_eq!(parse(&written), applied_fresh(text, &edit));
 }
 
