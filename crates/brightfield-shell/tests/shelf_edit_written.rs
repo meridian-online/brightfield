@@ -542,6 +542,90 @@ fn a_new_column_on_colour_takes_a_set_domain_out_and_re_reads_the_pivot() {
     );
 }
 
+/// The diverging scale's own keys after `number` is on colour and stepped to
+/// diverging about 2.
+fn diverging_on(name: &str, number: &str) -> Opened {
+    let mut opened = open(name);
+    put_colour(&mut opened.spec, &opened.hero, number, &opened.table).unwrap();
+    put_colour_scale(
+        &mut opened.spec,
+        &opened.hero,
+        &ColourScaleWrite::Diverging {
+            pivot: Number::new(2.0),
+        },
+    )
+    .unwrap();
+    opened
+}
+
+#[test]
+fn a_column_of_names_takes_the_ramps_scale_and_pair_out() {
+    let mut opened = diverging_on("colour_names_after_diverging", "median_income");
+    let mut names = opened.table[0].clone();
+    names.name = "district".to_string();
+    names.type_name = "VARCHAR".to_string();
+    names.moments = None;
+    opened.table.push(names);
+
+    put_colour(&mut opened.spec, &opened.hero, "district", &opened.table).unwrap();
+    let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+    for key in [
+        "colorScale",
+        "colorPivot",
+        "colorN",
+        "colorRange",
+        "colorScheme",
+    ] {
+        assert!(
+            !plot.attributes.contains_key(key),
+            "{key} goes with the ramp a column of names does not paint"
+        );
+    }
+
+    // An analyst's own range stays: only brightfield's pair is its own to take.
+    let mut opened = open("colour_names_keep_own_range");
+    put_colour(
+        &mut opened.spec,
+        &opened.hero,
+        "median_income",
+        &opened.table,
+    )
+    .unwrap();
+    let own = SpecValue::Array(
+        ["#1b7837", "#f7f7f7", "#762a83"]
+            .map(|c| SpecValue::String(c.to_string()))
+            .to_vec(),
+    );
+    put_setting(
+        &mut opened.spec,
+        &opened.hero,
+        "colorRange",
+        &SpecValue::Null,
+        &SettingWrite::Value(own.clone()),
+    )
+    .unwrap();
+    let mut names = opened.table[0].clone();
+    names.name = "district".to_string();
+    names.type_name = "VARCHAR".to_string();
+    names.moments = None;
+    opened.table.push(names);
+    put_colour(&mut opened.spec, &opened.hero, "district", &opened.table).unwrap();
+    let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+    assert_eq!(plot.attributes.get("colorRange"), Some(&own));
+}
+
+#[test]
+fn a_number_column_on_a_diverging_plot_is_given_no_scheme() {
+    let mut opened = diverging_on("colour_diverging_no_scheme", "median_income");
+    put_colour(&mut opened.spec, &opened.hero, "house_age", &opened.table).unwrap();
+    let plot = plot_at_path(&opened.spec, &opened.hero.0).unwrap();
+    assert!(
+        !plot.attributes.contains_key("colorScheme"),
+        "a diverging scale draws its pair, so no scheme is named beside it"
+    );
+    assert!(plot.attributes.contains_key("colorRange"), "the pair stays");
+}
+
 #[test]
 fn a_column_change_writes_a_pivot_only_on_a_diverging_plot() {
     // Linear and stepped plots hold no pivot, and a column change gives them none.

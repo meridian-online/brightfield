@@ -412,7 +412,11 @@ pub fn put_setting(
 /// **Why a set domain and pivot go.** Both were values of the old column, so a
 /// new column takes a set `colorDomain` out, and a diverging scale's
 /// `colorPivot` is written again as the new column's auto pivot (taken out where
-/// the column has no profile to read one from).
+/// the column has no profile to read one from). A column of names takes out the
+/// scale brightfield wrote for a ramp as well: `colorScale`, `colorPivot`,
+/// `colorN` and its own pair, since names paint by category. An analyst's own
+/// `colorRange` stays. A diverging scale, or a plot with a written range, is
+/// given no scheme, since neither draws one.
 ///
 /// # Errors
 ///
@@ -454,14 +458,19 @@ pub fn put_colour(
         })
         .collect();
 
+    let ramp = table
+        .iter()
+        .find(|c| c.name == column)
+        .is_some_and(|c| is_ramp_type(&c.type_name));
+    let diverging = resolve_colour_scale_diverging(target, &spec.params);
     // A column already on the colour yields no fill edit, so it names no
-    // scheme either: the plot reads as the analyst left it.
+    // scheme either: the plot reads as the analyst left it. A diverging scale
+    // and a written range are drawn without a scheme, so neither is given one.
     let names_scheme = !edits.is_empty()
+        && ramp
+        && !diverging
         && !target.attributes.contains_key(SCHEME_KEY)
-        && table
-            .iter()
-            .find(|c| c.name == column)
-            .is_some_and(|c| is_ramp_type(&c.type_name));
+        && !target.attributes.contains_key("colorRange");
     if names_scheme {
         edits.push(ChartEdit::SetPlotAttribute {
             plot: plot.clone(),
@@ -479,7 +488,25 @@ pub fn put_colour(
                 key: "colorDomain".to_string(),
             });
         }
-        if resolve_colour_scale_diverging(target, &spec.params) {
+        if !ramp {
+            // A column of names paints by category, so the scale brightfield
+            // wrote for a ramp goes with it: its kind, pivot and count, and its
+            // own pair. An analyst's own range stays.
+            for key in ["colorScale", "colorPivot", "colorN"] {
+                if target.attributes.contains_key(key) {
+                    edits.push(ChartEdit::RemovePlotAttribute {
+                        plot: plot.clone(),
+                        key: key.to_string(),
+                    });
+                }
+            }
+            if holds_own_pair(target.attributes.get("colorRange")) {
+                edits.push(ChartEdit::RemovePlotAttribute {
+                    plot: plot.clone(),
+                    key: "colorRange".to_string(),
+                });
+            }
+        } else if diverging {
             let moments = table
                 .iter()
                 .find(|c| c.name == column)
