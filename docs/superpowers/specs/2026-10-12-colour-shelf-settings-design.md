@@ -33,9 +33,9 @@ The scale row steps through linear, diverging and steps with `←` `→` (or `h`
 
 | Value | Keys written | Keys removed |
 |---|---|---|
-| linear | none | `colorScale`, `colorPivot`, `colorN`, and the diverging pair's `colorRange` |
-| diverging | `colorScale: diverging`, `colorPivot: <auto pivot>`, `colorRange: <the light theme's three stops>` | `colorScheme`, `colorN` |
-| steps | `colorScale: quantize`, `colorN: 5`, `colorScheme: viridis` | `colorPivot`, the diverging pair's `colorRange` |
+| linear | `colorScheme: viridis` where the pair's `colorRange` is taken out | `colorScale`, `colorPivot`, `colorN`, and the diverging pair's `colorRange` |
+| diverging | `colorScale: diverging`, `colorPivot: <auto pivot>`, `colorRange: <the light theme's three stops>` where no range of the analyst's is written | `colorScheme`, `colorN` |
+| steps | `colorScale: quantize`, `colorN: 5`, and `colorScheme: viridis` where the plot names no scheme or held the pair | `colorPivot`, the diverging pair's `colorRange` |
 
 The pivot and the count are written as soon as their scale is chosen, because Mosaic's defaults differ: its diverging pivot is 0, and its quantize thresholds are rounded.
 
@@ -69,7 +69,7 @@ The domain row reads one of three values:
 - Typed ends write `colorDomain: [lo, hi]`.
 - A reset removes `colorDomain`.
 
-The domain row is muted with its reason when colour paints names. Putting a different column on colour removes a set domain and a set pivot, since both were values of the old column.
+The domain row is muted with its reason when colour paints names. Putting a different column on colour removes a set domain, since it was a value of the old column, and on a diverging scale writes the pivot again as the new column's auto. A column of names also takes out the scale the shelf wrote for a ramp: a literal `colorScale: diverging` or `quantize`, the numbers written beside it as `colorPivot` and `colorN`, and the pair. A `$param`, a scale the shelf does not offer, and an analyst's own `colorRange` stay. A `colorScale` or `colorDomain` the shelf does not offer, such as `symlog` or a `$param`, reads on its row as the file's, set and muted with the reason, and the row writes nothing over it.
 
 The reader:
 
