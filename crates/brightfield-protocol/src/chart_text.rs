@@ -41,9 +41,9 @@
 //! - A [`ChartEdit::RemoveColourLegend`], the edit that takes the item the one
 //!   above wrote back out. Each colour legend item of the plot's list is taken
 //!   out with arcform's delete of a list item, which removes the item's own
-//!   lines, a comment flush above it by arcform's rule of comment ownership,
-//!   and the blank lines that followed it; the lines around it stay as they
-//!   were. A plot that holds none is the spec as it was, so the text comes
+//!   lines and the blank lines that followed it; a comment flush above it,
+//!   which arcform's rule of comment ownership would take too, is written
+//!   back in its place, and the lines around it stay as they were. A plot that holds none is the spec as it was, so the text comes
 //!   back unchanged. Written back with [`ChartEdit::AddColourLegend`] the item
 //!   lands after the list's last item, so it returns to its place when it was
 //!   the last.
@@ -58,13 +58,22 @@
 //!   of its line stays with it
 //!   (`each_legend_move_on_a_plot_in_a_concat_keeps_the_files_comments`). The
 //!   legend each move writes is the one the reducer made, in the whole-spec
-//!   serialiser's spelling; a comment on the legend's own lines is not kept.
+//!   serialiser's spelling; a comment on the legend's own lines is not kept,
+//!   and a comment flush above a legend a move takes out is. It stays where
+//!   the legend was, so after a lift it follows the plot's lines and can come
+//!   to head the next entry of a concat
+//!   (`taking_a_legend_out_from_either_place_keeps_the_comment_above_it`).
 //!   Between right and none the move is the item edits' splice.
 //! - A [`ChartEdit::RemovePlotAttribute`], the edit that takes a map's
-//!   projection out. The key's line is taken out. By arcform's rule of comment
-//!   ownership a comment flush above the line, indented no deeper than it, is
-//!   that line's header and goes with it; every other comment stays
-//!   (`a_comment_flush_above_a_removed_line_goes_with_it_and_the_rest_stay`).
+//!   projection out, and the edit each settings-list reset makes. The key's
+//!   line is taken out and every comment stays. By arcform's rule of comment
+//!   ownership a comment flush above the line is that line's header and goes
+//!   with it, so the writer puts it back: the comment is the analyst's text,
+//!   and a reset is a statement about one value, not about their note
+//!   (`a_comment_flush_above_a_removed_line_stays_and_so_do_the_rest`). Kept
+//!   where the line was, the comment then sits flush above the next key, and
+//!   by the same rule heads it: a value set again lands after the mapping's
+//!   last key, not back under the comment.
 //!
 //! Change mark type, add mark and remove mark are refused by kind until each
 //! has a writer of its own.
@@ -315,7 +324,7 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
         key: key.to_string(),
     };
     for splice in splices {
-        match apply_yaml_edits(text, &splice) {
+        match apply_keeping_headers(text, &splice) {
             Ok(written) => {
                 let reads_back = parse_spec(&written, Format::Yaml).ok().map(|out| out.spec);
                 if reads_back.as_ref() == Some(&edited) {
@@ -325,11 +334,7 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
                     key: key.to_string(),
                 };
             }
-            Err(e) => {
-                refusal = ChartTextRefusal::Splice {
-                    detail: e.to_string(),
-                };
-            }
+            Err(e) => refusal = e,
         }
     }
     Err(refusal)
@@ -395,6 +400,61 @@ fn delete_legend_items(parsed: &Spec, plot_path: &str, route: Vec<PathPart>) -> 
         .collect()
 }
 
+/// `edits` applied to `text` one at a time, each [`SpecEdit::Delete`] keeping
+/// the comment flush above the element it takes out.
+///
+/// arcform's delete takes that comment with the element, by its rule of comment
+/// ownership. A removal here is a statement about one value, not about the
+/// analyst's note, so the comment is written back where the element was. To
+/// find it, the delete is also run over the text with each comment line made
+/// unique: the comment lines that run takes out, from the first line it
+/// changes, are the header.
+fn apply_keeping_headers(text: &str, edits: &[SpecEdit]) -> Result<String, ChartTextRefusal> {
+    let splice = |text: &str, edit: &SpecEdit| {
+        apply_yaml_edits(text, std::slice::from_ref(edit)).map_err(|e| ChartTextRefusal::Splice {
+            detail: e.to_string(),
+        })
+    };
+    let mut text = text.to_string();
+    for edit in edits {
+        let written = splice(&text, edit)?;
+        if !matches!(edit, SpecEdit::Delete { .. }) {
+            text = written;
+            continue;
+        }
+        let lines: Vec<&str> = text.split_inclusive('\n').collect();
+        let probe: String = lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let body = line.trim_end_matches(['\r', '\n']);
+                let indent = &body[..body.len() - body.trim_start().len()];
+                if body.trim_start().starts_with('#') {
+                    format!("{indent}#~{i}{}", &line[body.len()..])
+                } else {
+                    (*line).to_string()
+                }
+            })
+            .collect();
+        let probed = splice(&probe, edit)?;
+        let before: Vec<&str> = probe.split_inclusive('\n').collect();
+        let after: Vec<&str> = probed.split_inclusive('\n').collect();
+        let start = before
+            .iter()
+            .zip(&after)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let header = before[start..]
+            .iter()
+            .take_while(|line| line.trim_start().starts_with("#~") && !after.contains(line))
+            .count();
+        let at: usize = lines[..start].iter().map(|line| line.len()).sum();
+        let kept: String = lines[start..start + header].concat();
+        text = format!("{}{kept}{}", &written[..at], &written[at..]);
+    }
+    Ok(text)
+}
+
 /// The keys a chart file's root mapping holds for the spec rather than for its
 /// root component — the keys the parser's root walk takes before it reads the
 /// rest as the component (`parse.rs`, `walk_root`'s match).
@@ -450,7 +510,7 @@ fn place_colour_legend(
             )?],
         ),
         (None, LegendPlacement::None) => {
-            splice(text, &delete_legend_items(parsed, plot_path, route))
+            apply_keeping_headers(text, &delete_legend_items(parsed, plot_path, route))
         }
         (None, LegendPlacement::Below) => {
             let mut edits = delete_legend_items(parsed, plot_path, route.clone());
@@ -495,7 +555,7 @@ fn place_colour_legend(
             let parent = route[..route.len().saturating_sub(2)].to_vec();
             let mut concat = parent.clone();
             concat.push(PathPart::from(VCONCAT_KEY));
-            let mut edits: Vec<SpecEdit> = legends
+            let deletes: Vec<SpecEdit> = legends
                 .iter()
                 .rev()
                 .map(|&index| {
@@ -504,19 +564,25 @@ fn place_colour_legend(
                     SpecEdit::Delete { path }
                 })
                 .collect();
+            let mut moved = apply_keeping_headers(text, &deletes)?;
             let after = plot_path_after(parsed, edit);
             let route = if after == plot_path {
                 route
             } else {
-                edits.push(SpecEdit::Lift {
-                    path: parent.clone(),
-                    key: VCONCAT_KEY.to_string(),
-                });
+                moved = splice(
+                    &moved,
+                    &[SpecEdit::Lift {
+                        path: parent.clone(),
+                        key: VCONCAT_KEY.to_string(),
+                    }],
+                )?;
                 parent
             };
-            let moved = splice(text, &edits)?;
             if at == LegendPlacement::None {
-                return splice(&moved, &delete_legend_items(parsed, plot_path, route));
+                return apply_keeping_headers(
+                    &moved,
+                    &delete_legend_items(parsed, plot_path, route),
+                );
             }
             let item = plot_at_path(edited, &after)
                 .and_then(|p| p.items.last())

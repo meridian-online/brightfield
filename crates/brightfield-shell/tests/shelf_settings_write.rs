@@ -514,6 +514,21 @@ fn a_key_the_plot_inherits_from_plot_defaults_is_written_on_the_plot_and_wins() 
     assert!(matches!(edit, Some(ChartEdit::SetPlotAttribute { .. })));
 }
 
+/// `⌫` on a set row takes the key's line out and leaves the analyst's comment
+/// above it, and every other byte of the file, as it was.
+#[test]
+fn backspace_on_a_set_row_keeps_the_comment_above_its_key() {
+    let text = format!("{BASE}# log until the outliers are gone\nxScale: log\n");
+    let linear = SpecValue::String("linear".to_string());
+    let (edit, written) = through_save(&text, "xScale", &linear, &SettingWrite::Auto);
+    assert!(
+        matches!(edit, Some(ChartEdit::RemovePlotAttribute { .. })),
+        "{edit:?}"
+    );
+    assert_eq!(written, text.replace("xScale: log\n", ""));
+    assert!(!row_in(&written, SCALE_ROW).set, "the row reads auto");
+}
+
 /// **AC3.** A value equal to brightfield's own is the key taken out, and `⌫`
 /// takes out the axis's own key and nothing else: with `grid:` naming both
 /// axes, the row then reads the value from `grid`, as set, and the foot says so.
