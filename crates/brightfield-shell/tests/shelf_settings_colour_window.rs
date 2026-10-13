@@ -988,6 +988,41 @@ fn a_typed_pivot_previews_and_enter_keeps_it_with_its_dot() {
     assert!(text.contains("colorPivot: 2"), "{text}");
 }
 
+/// **The pivot row found by name opens on the pivot the file holds, not the one
+/// the row displays**: `Enter` and `Enter` again with nothing typed keep a pivot
+/// past four figures whole, rather than rounding it to what the row reads.
+#[test]
+fn opening_the_pivot_row_and_keeping_it_leaves_a_fine_pivot_whole() {
+    let mut win = Window::housing("pivot-whole");
+    win.keep_on_colour("median_income");
+    win.open_colour_settings();
+    win.move_to_row(SCALE_ROW);
+    win.type_letter(egui::Key::L, "l");
+    win.press(egui::Key::Enter);
+    win.run(vec![egui::Event::Text("3.470004".to_owned())]);
+    win.press(egui::Key::Enter);
+    assert_eq!(
+        win.row(SCALE_ROW).colour.and_then(|c| c.pivot),
+        Some(3.470004),
+        "fixture check: the typed pivot is kept"
+    );
+    win.find_row(PIVOT_ROW);
+    assert_eq!(
+        win.row(PIVOT_ROW).value,
+        "3.47",
+        "the row displays four figures"
+    );
+    win.press(egui::Key::Enter);
+    win.press(egui::Key::Enter);
+    win.save();
+    let text = win.chart_text();
+    assert_eq!(
+        lines_of_key(&text, "colorPivot"),
+        ["colorPivot: 3.470004"],
+        "{text}"
+    );
+}
+
 /// **On a diverging scale the scheme row steps between brightfield's pair and
 /// `rdbu`**: `l` names `rdbu` and takes the pair's colours out, and `h` takes the
 /// scheme out and writes the pair back.

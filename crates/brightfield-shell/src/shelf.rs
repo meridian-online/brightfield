@@ -2884,6 +2884,14 @@ impl ColumnList {
                 .as_ref()
                 .and_then(|facts| facts.specifier.clone())
                 .unwrap_or_default()
+        } else if row.name == PIVOT_ROW {
+            // The pivot the file holds, as the scale row opens on: the row
+            // displays four figures, and keeping that would round the file's.
+            row.colour
+                .as_ref()
+                .and_then(|f| f.pivot)
+                .map(end_text)
+                .unwrap_or_default()
         } else if row.name == TITLE_ROW && row.value == NO_TITLE {
             match self.channels.binding(self.channel) {
                 Some(Binding::Column(name)) => name.clone(),
