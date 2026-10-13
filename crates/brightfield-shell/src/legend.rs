@@ -1470,7 +1470,7 @@ mod tests {
         };
         let bottom = 120.0;
         let mut drawn = None;
-        ctx.run_ui(
+        let _ = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
