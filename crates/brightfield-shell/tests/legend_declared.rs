@@ -17,7 +17,7 @@
 
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{blocks, right_band_width, right_blocks, LegendSpec};
+use brightfield_shell::legend::{blocks, draw_right, right_band_width, right_blocks, LegendSpec};
 use brightfield_shell::pipeline::{compose_spec_str, compose_spec_str_at, Composed, LiveDashboard};
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -424,5 +424,30 @@ fn a_plot_laid_out_too_narrow_for_its_band_shares_its_box_with_it() {
         plot.width >= f64::from(composed.width) / 2.0 - 0.5,
         "the plot {plot:?} kept less than half a page {} wide",
         composed.width
+    );
+
+    // Drawn, the block the legend reports, which the ring is drawn round, is
+    // inside the band too, though a whole block is wider than the band.
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(400.0, 400.0),
+        )),
+        ..Default::default()
+    };
+    let mut drawn = Vec::new();
+    let _ = ctx.run_ui(raw, |ui| {
+        drawn = draw_right(ui, egui::Pos2::ZERO, &composed);
+    });
+    let band = egui::Rect::from_min_size(
+        egui::pos2(band.x as f32, band.y as f32),
+        egui::vec2(band.width as f32, band.height as f32),
+    );
+    assert_eq!(drawn.len(), 1, "one legend drawn: {drawn:?}");
+    assert!(
+        band.expand(0.5).contains_rect(drawn[0].1),
+        "the block {:?} reported for the ring leaves the band {band:?}",
+        drawn[0].1
     );
 }
