@@ -472,7 +472,7 @@ impl ChartItem {
         let drag_page = page_of(self.drag.map(|d| d.by));
         let pan_page = page_of(self.pan.map(|p| p.by));
 
-        // Gestures and the transient overlay, before the legend band so
+        // Gestures and the transient overlay, before the legends so
         // the frame borrow ends inside this scope.
         //
         // Read against THIS frame's origin: the press edge, the hover
@@ -1223,31 +1223,23 @@ impl Item<ChartDoc> for ChartItem {
 
         // The dashboard is laid out into the room this pane has left, so the
         // raster below is a re-layout of the chart at the pane's size rather
-        // than a fixed picture the window was sized around. The legend band is
-        // drawn beside the raster rather than inside it, so it comes off the
-        // offer — [`legend::band_width`] is the whole of what the band takes,
-        // gap included, and it is the same term `chart_window_size` uses.
-        let reserved = legend::band_width(&doc.composed);
+        // than a fixed picture the window was sized around. A legend at a
+        // plot's right is inside that room: the plot gave its band up out of
+        // its own box ([`legend::carve_right`]).
         let room = ui.available_size();
         // A changed composition needs a frame to be rastered in:
         // [`ChartDoc::present`] runs at the top of `MeridianApp::draw`, before
         // the dock reaches this pane, so the texture painted below this call is
         // the previous composition stretched into the new rect. The gesture
         // paths further down act on the same signal for the same reason.
-        if doc.reflow_to(egui::vec2(room.x - reserved, room.y)) {
+        if doc.reflow_to(room) {
             cx.request_repaint();
         }
 
-        let h = doc.composed.height;
-        let band = legend::band_width(&doc.composed);
-
-        // The raster and, when any plot calls for one, the legend band beside
-        // it — OUTSIDE the plot rect, in the chart's margin, by layout rather
-        // than by hope.
+        // The raster. Each legend is drawn after it, in the band its plot gave
+        // up: OUTSIDE every plot's rect, by layout rather than by hope.
         let ctx = ui.ctx().clone();
         let textured = doc.canvas_texture().is_some();
-        let mut legend_rect = None;
-        let mut rights: Vec<(usize, egui::Rect)> = Vec::new();
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
 
@@ -1284,10 +1276,9 @@ impl Item<ChartDoc> for ChartItem {
                     Item::ui(&mut module, doc, ui, cx);
                     // The module reserved its raster inside the child `Ui`
                     // `module_frame` hands it, and a child's allocations do not
-                    // move the parent's cursor. Unadvanced, the legend band
-                    // below would be laid out at the raster's own x and sit on
-                    // the data — which is the one thing the band's whole
-                    // geometry exists to prevent.
+                    // move the parent's cursor. Unadvanced, the room allocated
+                    // under the raster for a legend below its plot would be
+                    // laid out at the raster's own top and sit on the data.
                     if let Some(rect) = doc.raster_rect {
                         ui.advance_cursor_after_rect(rect);
                     }
@@ -1432,30 +1423,28 @@ impl Item<ChartDoc> for ChartItem {
                     set_surface_cursor(ui.ctx(), SurfaceCursor::Grab);
                 }
             }
-
-            // The legend band, drawn from the same scales the raster was
-            // composed against. The gap is allocated space, so the band's
-            // rect and the raster's are disjoint by geometry, not by paint.
-            if band > 0.0 {
-                ui.add_space(meridian_design::spacing::CONTROL_GAP);
-                let (band_rect, _) = ui.allocate_exact_size(
-                    egui::vec2(legend::block_width(), h as f32),
-                    egui::Sense::hover(),
-                );
-                legend_rect = Some(band_rect);
-                if textured {
-                    rights = legend::draw_band(ui, band_rect, rect.top(), &doc.composed, mode);
-                }
-            }
         });
-        doc.legend_rect = legend_rect;
+
+        // **The legend at a plot's right**, drawn from the same scales the
+        // raster was composed against, into the band the plot gave up for it.
+        // `legend_rect` is the hero's band, in window space.
+        let mut rights: Vec<(usize, egui::Rect)> = Vec::new();
+        doc.legend_rect = doc.raster_rect.and_then(|raster| {
+            let band = doc.composed.plots.get(HERO_PLOT)?.legend_right?;
+            Some(egui::Rect::from_min_size(
+                raster.min + egui::vec2(band.x as f32, band.y as f32),
+                egui::vec2(band.width as f32, band.height as f32),
+            ))
+        });
+        if let (Some(raster), true) = (doc.raster_rect, textured) {
+            rights = legend::draw_right(ui, raster.min, &doc.composed);
+        }
 
         // **The legend under its plot**, when the file puts it there. The layout
         // reserved the band out of the height this pane offered it, so the
         // raster above is already the height that is left; what this adds is
         // the room under the raster that the band stands in, and the legend
-        // drawn into the layout's own rect. `legend_rect` stays the band at the
-        // right, which this placement does not reserve.
+        // drawn into the layout's own rect.
         let mut belows: Vec<(usize, egui::Rect)> = Vec::new();
         if let Some(raster) = doc.raster_rect {
             let overhang = legend::below_overhang(&doc.composed);
@@ -1492,9 +1481,14 @@ impl Item<ChartDoc> for ChartItem {
                 ));
                 // The ring is cut back at the pane's edge as it is at the data
                 // area, so where the legend is the last thing in the pane the
-                // ring's outer side lies on the edge and is still drawn.
+                // ring's outer side lies on the edge and is still drawn. On the
+                // canvas the clip spans the grid's view as well, so the edge is
+                // the hero's own view.
+                let pane = doc.pane_views.map_or(ui.clip_rect(), |views| {
+                    views.first.intersect(ui.clip_rect())
+                });
                 ui.painter().rect_stroke(
-                    legend::ring_rect(block, data).intersect(ui.clip_rect()),
+                    legend::ring_rect(block, data).intersect(pane),
                     0.0,
                     egui::Stroke::new(legend::RING_WIDTH, hue),
                     egui::StrokeKind::Inside,
@@ -2362,6 +2356,7 @@ mod tests {
             committed_rect: None,
             legend_declared: false,
             legend_below: None,
+            legend_right: None,
             axes: brightfield_render::axis::PlotAxes::default(),
         }
     }

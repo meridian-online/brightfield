@@ -22,7 +22,7 @@ use brightfield_protocol::layout::Flow;
 use brightfield_render::VelloRenderer;
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::band_width;
+use brightfield_shell::legend::right_blocks;
 use brightfield_shell::pipeline::{compose_spec_str, compose_spec_str_at, LiveDashboard};
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -296,12 +296,12 @@ fn resizing_the_window_relays_out_the_chart_without_a_restart() {
 }
 
 // ---------------------------------------------------------------------------
-// The legend band, and the offer it comes off
+// The legend band, inside the offer
 // ---------------------------------------------------------------------------
 
 /// The same scatter with a `fill:` channel and the `legend: color` item that
-/// puts a legend on it, so its scales call for a legend band and `band_width`
-/// is non-zero.
+/// puts a legend on it, so its scales call for a legend and the plot gives up
+/// a band at its right for it.
 const LEGEND_640_400: &str = "data:
   t:
     - { x: 1, y: 3, g: A }
@@ -334,15 +334,16 @@ fn settled_at(source: &str, size: egui::Vec2) -> (MeridianApp, egui::Context) {
     (app, ctx)
 }
 
-/// The offer is floored to whole points, so the raster plus its band can fall
-/// short of the pane's content box by up to the fraction that was floored away.
+/// The offer is floored to whole points, so the raster and the band at its right
+/// can fall short of the pane's content box by up to the fraction that was
+/// floored away.
 const FLOOR_SLACK: f32 = 1.0;
 
 #[test]
 fn a_legend_bearing_chart_and_its_band_together_fill_the_pane() {
     let composed = compose_spec_str(LEGEND_640_400, None).expect("the fixture composes");
     assert!(
-        band_width(&composed) > 0.0,
+        !right_blocks(&composed).is_empty(),
         "the fixture's file puts no legend on its plot, so this measures nothing"
     );
 

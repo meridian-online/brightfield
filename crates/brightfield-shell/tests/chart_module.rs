@@ -205,12 +205,9 @@ fn the_pane_draws_a_registry_authored_picture() {
 /// **The legend band stays out of the data on the module route too.**
 ///
 /// The module reserves its raster inside the child `Ui` that `module_frame`
-/// hands it, and a child's allocations do not move the parent's cursor — so the
-/// band the pane allocates *after* the module has drawn is laid out at the
-/// raster's own x unless the pane advances that cursor itself. Delete
-/// `ui.advance_cursor_after_rect` from the module arm in `chart_item.rs` and
-/// this test prints the two rects it then measures, with the band inside the
-/// cells.
+/// hands it, and the pane draws the legend after it, into the band the plot
+/// gave up, placed from the raster's rect. A band placed from anywhere else
+/// lands on the cells, and this test prints the two rects it then measures.
 ///
 /// `count-grid` is the fixture because its `fill: { count: }` yields the
 /// sequential fill scale a legend is drawn for and its block holds the
@@ -224,16 +221,21 @@ fn the_pane_draws_a_registry_authored_picture() {
 #[test]
 fn the_legend_band_stays_out_of_the_data_on_the_module_route() {
     let (composed, authored) = authored_by(chart_kinds::COUNT_GRID, grid_fields(), GRID_BLOCK);
+    let plot = composed.plots[0].rect;
     let (raster, legend) = laid_out(composed, Some(authored));
     let raster = raster.expect("the module drew no raster");
     let legend = legend.expect(
         "the fixture's premise is a picture that draws a legend band; \
-         with none reserved this test could not see the overlap it exists for",
+         with none given up this test could not see the overlap it exists for",
+    );
+    let cells = egui::Rect::from_min_size(
+        raster.min + egui::vec2(plot.x as f32, plot.y as f32),
+        egui::vec2(plot.width as f32, plot.height as f32),
     );
     assert!(
-        !raster.intersects(legend),
-        "the legend band was laid out on the data: raster {raster:?}, legend \
-         {legend:?}"
+        !cells.intersects(legend) && raster.expand(0.5).contains_rect(legend),
+        "the legend band was laid out on the data or off the page: plot {cells:?}, \
+         raster {raster:?}, legend {legend:?}"
     );
 }
 

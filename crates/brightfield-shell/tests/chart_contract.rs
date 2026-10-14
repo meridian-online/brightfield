@@ -473,21 +473,21 @@ fn the_window_is_sized_from_the_inspector_rails_declared_width() {
 
     // Across: the navigator rail and the inspector rail take their own
     // declared widths off the window, and the pane frame insets what is left
-    // again on both sides. The content box holds the raster AND the legend
-    // margin band beside it — dashboard.yaml's scatter maps fill, so its band
-    // is real here, and a `band_width` nobody budgeted would come straight out
-    // of the raster's pixels.
+    // again on both sides. The content box holds the raster, and the legend
+    // with it: dashboard.yaml's scatter maps fill, and the scatter gives the
+    // band its legend stands in up out of its own box, so the band is inside
+    // the raster and no term of its own here.
     let content_w =
         w - arrangement::NAVIGATOR_RAIL_WIDTH - arrangement::INSPECTOR_RAIL_WIDTH - 2.0 * inset;
-    let need_w = composed.width as f32 + brightfield_shell::legend::band_width(&composed);
+    let need_w = composed.width as f32;
     assert!(
-        brightfield_shell::legend::band_width(&composed) > 0.0,
+        !brightfield_shell::legend::right_blocks(&composed).is_empty(),
         "dashboard.yaml maps fill, so this walk must include a real band"
     );
     assert!(
         content_w >= need_w,
         "the chart pane's content box is {content_w:.2}pt across for a \
-         {need_w:.0}pt raster+legend — something will be clipped"
+         {need_w:.0}pt raster — something will be clipped"
     );
 
     // Down: the title band, the locator band and the ledger rail come off the

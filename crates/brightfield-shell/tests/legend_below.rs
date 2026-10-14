@@ -16,7 +16,7 @@
 
 use brightfield_shell::design::Mode;
 use brightfield_shell::legend::{
-    band_width, below_blocks, below_overhang, blocks, draw_below, ramp_strip_colours, LegendSpec,
+    below_blocks, below_overhang, blocks, draw_below, ramp_strip_colours, LegendSpec,
     BELOW_RAMP_HEIGHT, BELOW_RAMP_MAX_WIDTH,
 };
 use brightfield_shell::pipeline::{compose_spec_str, Composed, LiveDashboard};
@@ -330,7 +330,7 @@ fn a_string_column_draws_its_swatches_in_a_row() {
 }
 
 /// **AC2.** In that file no legend is drawn at the plot's right and no band is
-/// reserved there: the plot is as wide as the same plot with no legend.
+/// given up there: the plot is as wide as the same plot with no legend.
 #[test]
 fn nothing_is_drawn_or_reserved_at_the_right_of_a_plot_whose_legend_is_below() {
     for fill in ["v", "g"] {
@@ -341,9 +341,8 @@ fn nothing_is_drawn_or_reserved_at_the_right_of_a_plot_whose_legend_is_below() {
             blocks(&composed)
         );
         assert_eq!(
-            band_width(&composed),
-            0.0,
-            "{fill}: a band is reserved at the right"
+            composed.plots[0].legend_right, None,
+            "{fill}: a band is given up at the right"
         );
 
         let with = laid_out(&below(fill));
@@ -440,8 +439,8 @@ fn a_plot_holding_the_item_still_draws_its_legend_at_the_right() {
         other => panic!("the plot holding the item drew {other:?} at its right"),
     }
     assert!(
-        band_width(&composed) > 0.0,
-        "no band at the right of the upper plot"
+        composed.plots[0].legend_right.is_some() && composed.plots[1].legend_right.is_none(),
+        "the band at the right is not the upper plot's alone"
     );
     match &below_blocks(&composed)[..] {
         [(1, LegendSpec::Sequential { .. }, _)] => {}
@@ -449,14 +448,11 @@ fn a_plot_holding_the_item_still_draws_its_legend_at_the_right() {
     }
 
     let app = laid_out(&source);
-    let doc = app.chart_doc();
-    let (raster, legend) = (
-        doc.raster_rect.expect("a raster"),
-        doc.legend_rect.expect("a band at the right"),
-    );
+    let upper = app.composed_plot_rects()[0];
+    let legend = app.chart_doc().legend_rect.expect("a band at the right");
     assert!(
-        legend.min.x >= raster.max.x,
-        "the band {legend:?} is not at the right of the raster {raster:?}"
+        legend.min.x >= upper.max.x,
+        "the band {legend:?} is not at the right of the upper plot {upper:?}"
     );
 }
 
@@ -485,10 +481,9 @@ fn a_legend_under_a_plot_with_no_colour_scale_gives_the_colour_plot_none() {
         blocks(&composed),
         below_blocks(&composed)
     );
-    assert_eq!(
-        band_width(&composed),
-        0.0,
-        "a band is reserved at the right"
+    assert!(
+        composed.plots.iter().all(|p| p.legend_right.is_none()),
+        "a band is given up at the right"
     );
     assert!(
         !composed.plots[0].legend_declared,

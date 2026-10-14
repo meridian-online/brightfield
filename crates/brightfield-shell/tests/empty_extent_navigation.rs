@@ -25,7 +25,7 @@ use brightfield_engine::ProfileOutcome;
 use brightfield_shell::app::GridLayout;
 use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{band_width, blocks, LegendSpec};
+use brightfield_shell::legend::{blocks, LegendSpec};
 use brightfield_shell::pipeline::LiveDashboard;
 use brightfield_shell::shelf_edit::put_colour;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -365,7 +365,10 @@ fn a_coloured_map_with_no_data_beneath_it_draws_no_legend_and_keeps_its_fill_col
         "the coloured hero draws no legend before it is panned"
     );
     assert_eq!(blocks(composed).len(), 1, "the legend's block");
-    assert!(band_width(composed) > 0.0, "the legend's band");
+    assert!(
+        composed.plots[0].legend_right.is_some(),
+        "the legend's band"
+    );
 
     // The reproduction the first test in this file names: two settled pans, each
     // carrying the map further off the data.
@@ -393,8 +396,7 @@ fn a_coloured_map_with_no_data_beneath_it_draws_no_legend_and_keeps_its_fill_col
         "a legend block is drawn for a plot navigated to an empty extent"
     );
     assert_eq!(
-        band_width(composed),
-        0.0,
-        "a band is reserved for a legend a plot navigated to an empty extent does not draw"
+        hero.legend_right, None,
+        "a band is given up for a legend a plot navigated to an empty extent does not draw"
     );
 }

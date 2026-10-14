@@ -575,11 +575,11 @@ fn window_around(composed: &Composed, page_h: f32) -> (f32, f32) {
     // left, read out of the arrangement rather than restated here.
     let (across, down) = chrome_budget(Surface::Chart);
 
-    // The legend band is a term, not a bite: a dashboard whose scales call
-    // for a margin legend gets the band's width beside the raster, and one
-    // that calls for none contributes zero — read from the component that
-    // draws it, like every other term here.
-    let pane_w = composed.width as f32 + crate::legend::band_width(composed) + 2.0 * inset;
+    // A legend is no term here: at a plot's right it stands in a band the
+    // plot gave up out of its own box, and under a plot in one the layout
+    // carved from its column, so the window a page asks for is the one it asks
+    // for with no legend.
+    let pane_w = composed.width as f32 + 2.0 * inset;
     let w = (pane_w + across).ceil();
 
     let pane_h = page_h + chart_toolbar_band(composed) + 2.0 * inset;
@@ -639,7 +639,7 @@ enum Surface {
 /// logical points — `0.0` for a dashboard with no gesture-bindable plot,
 /// where the collapsing `Toolbar` draws no row at all.
 ///
-/// Like the legend band, a term read from the components that produce it: the
+/// A term read from the components that produce it: the
 /// row is the toolbar button's real height — the binding's control height,
 /// floored by the meridian style's `interact_size.y` (`control::HEIGHT_MD`),
 /// which egui applies to every button — and the style's vertical item spacing
@@ -3576,6 +3576,13 @@ impl MeridianApp {
     #[must_use]
     pub const fn grid_layout(&self) -> crate::app::GridLayout {
         self.grid_layout
+    }
+
+    /// Put the grid pane in `layout`, as a throw of the switch on its header
+    /// band does from the next frame on. For a capture whose script is fixed
+    /// before the window lays out, and so cannot aim a click at the switch.
+    pub fn set_grid_layout(&mut self, layout: crate::app::GridLayout) {
+        self.grid_layout = layout;
     }
 
     /// **Where the table's one grid sits** — the canvas or the ledger. The
@@ -9726,10 +9733,9 @@ fn draw_canvas_pane_group(
             from_x,
             split: crate::app::PaneSplit::Rehomed { lead: summaries },
         });
-        let reserved = crate::legend::band_width(&charts.doc.composed);
         let laid = egui::Rect::from_min_size(
             map_body.min,
-            egui::vec2(from_x + tile_width + reserved, map_body.height()),
+            egui::vec2(from_x + tile_width, map_body.height()),
         );
         draw_chart_body(
             ui,
@@ -9931,10 +9937,9 @@ fn draw_transposed_pane_group(
         from_x,
         split: crate::app::PaneSplit::Rehomed { lead: summaries },
     });
-    let reserved = crate::legend::band_width(&charts.doc.composed);
     let laid = egui::Rect::from_min_size(
         map_body.min,
-        egui::vec2(from_x + tile_width + reserved, map_body.height()),
+        egui::vec2(from_x + tile_width, map_body.height()),
     );
     draw_chart_body(
         ui,

@@ -22,7 +22,7 @@ use brightfield_engine::ProfileOutcome;
 use brightfield_shell::capture::capture_png;
 use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{band_width, below_blocks, blocks, LegendSpec};
+use brightfield_shell::legend::{below_blocks, blocks, LegendSpec};
 use brightfield_shell::pipeline::LiveDashboard;
 use brightfield_shell::shelf_edit::put_colour;
 use brightfield_shell::window::Boot;
@@ -133,9 +133,8 @@ fn hero_with_legend_below() -> Boot {
         "the hero draws a legend at its right as well"
     );
     assert_eq!(
-        band_width(&composed),
-        0.0,
-        "a band is reserved at the right"
+        composed.plots[0].legend_right, None,
+        "the hero gave up a band at its right"
     );
 
     let mut boot = Boot::charts(composed);

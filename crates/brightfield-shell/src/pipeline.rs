@@ -16,7 +16,8 @@
 //! Standalone-legend relocation is ported for one placement: a colour
 //! legend under the plot it is for in a `vconcat` is drawn in the band the layout
 //! reserved for it ([`PlotHandle::legend_below`]). A standalone legend placed
-//! any other way is drawn at the plot's right. A plot's `colorScheme` is ported:
+//! any other way is drawn at the plot's right, in a band the plot gives up out
+//! of its own box ([`PlotHandle::legend_right`]). A plot's `colorScheme` is ported:
 //! it reaches the ramps of its dot, raster, heatmap, cell, hexbin and geo marks,
 //! and so their legend. Each mark
 //! draws EVERY materialised chunk — its result batches are assembled into one
@@ -69,6 +70,7 @@ use brightfield_spec::analysis::{
     analyse_spec, build_brushable_bindings, BrushKind, ComponentPath,
 };
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
+use brightfield_spec::edit::{colour_legend_placement, LegendPlacement};
 use brightfield_spec::layout::{
     collect_plot_nodes, grid_switch, literal_attribute, param_held_axis_warnings,
     param_held_colour_warnings, placed_plots, plot_label, read_domains_in, resolve_axis_ends_in,
@@ -233,6 +235,14 @@ pub struct PlotHandle {
     /// pane draws the legend into the rect and reserves nothing beside the plot.
     /// Set by the crate-private `legend::declare_legends`, `None` until then.
     pub legend_below: Option<Rect>,
+    /// **The band at this plot's right that its legend is drawn in**, on the
+    /// same plane as [`Self::rect`], when the file puts the legend there and
+    /// the plot's scales call for one. The plot gave the band up out of its own
+    /// box ([`crate::legend::carve_right`]), so [`Self::rect`] is that box less
+    /// the band and the gap before it, and the plots beside it keep the boxes
+    /// the layout gave them. `None` for a plot with no legend and for one whose legend is
+    /// under it ([`Self::legend_below`]).
+    pub legend_right: Option<Rect>,
     /// **Where each part of this plot's axes is drawn** — the title, the tick
     /// labels and the axis line of x and of y, as the render crate reports them
     /// from the axes it drew. In the plot's own scene, the tile's top-left corner
@@ -1014,6 +1024,7 @@ fn compose(
         &ViewExtents::new(),
         &beyond,
         &mut PlotPins::new(),
+        &mut None,
         viewport,
         mode,
         // A one-shot compose passes an empty `ViewExtents::new()` above, so
@@ -1089,6 +1100,13 @@ pub struct LiveDashboard {
     /// to outlive the composition that produced it. The one-shot compose path
     /// holds no equivalent and needs none.
     pins: PlotPins,
+    /// The plots the last composition drew a legend at the right of, by path,
+    /// or `None` before the first. The next composition carves its bands from
+    /// these first, so a plot whose file and scales disagree about its legend
+    /// (a legend item left over a plot with nothing on colour) is drawn once
+    /// per composition rather than twice. Like [`Self::pins`], it outlives the
+    /// composition that produced it; the one-shot path starts from the file.
+    right_legends: Option<Vec<String>>,
     /// The box this dashboard composes into, in logical pixels — what a
     /// surface hands over through [`LiveDashboard::set_viewport`] once it
     /// knows how much room the chart has.
@@ -1166,6 +1184,7 @@ impl LiveDashboard {
             base_dir: spec_dir.map(Path::to_path_buf),
             view_extents: ViewExtents::new(),
             pins: PlotPins::new(),
+            right_legends: None,
             viewport: Rect::zero(),
             sample_is_automatic: false,
             mode: Mode::Light,
@@ -1212,6 +1231,7 @@ impl LiveDashboard {
             base_dir: spec_dir.map(Path::to_path_buf),
             view_extents: ViewExtents::new(),
             pins: PlotPins::new(),
+            right_legends: None,
             viewport: Rect::zero(),
             sample_is_automatic: false,
             mode: Mode::Light,
@@ -1414,6 +1434,7 @@ impl LiveDashboard {
             &self.view_extents,
             &beyond,
             &mut self.pins,
+            &mut self.right_legends,
             self.viewport,
             self.mode,
             Some(self.coordinator.session()),
@@ -2114,6 +2135,10 @@ fn compose_from_results(
     extents: &ViewExtents,
     beyond_frame: &[bool],
     pins: &mut PlotPins,
+    // The plots the last composition drew a legend at the right of, read as
+    // this one's first guess and written with its answer; `None` guesses from
+    // the file. See `LiveDashboard::right_legends`.
+    right_legends: &mut Option<Vec<String>>,
     viewport: Rect,
     mode: Mode,
     // The live session, for the one thing this function cannot get from its
@@ -2184,557 +2209,593 @@ fn compose_from_results(
     let plot_nodes = collect_plot_nodes(spec);
     let brushable = build_brushable_bindings(spec);
 
-    // Own each plot's scene; place them below.
-    let mut placements: Vec<(f64, f64, Scene)> = Vec::new();
-    let mut plots: Vec<PlotHandle> = Vec::new();
-    for plot in &placed {
-        let Some(group) = groups.iter().find(|g| g.plot_path == plot.path) else {
-            continue;
-        };
-
-        // The extent this plot is navigated to, if any — read from the ONE
-        // store the engine also filters on, so the axes and the numbers cannot
-        // describe different ranges.
-        let plot_extent = extents.get(&plot.path);
-
-        // The renderers this plot draws through: the marks `configured_renderer`
-        // names take the plot's `colorScheme`. The name is read from the spec
-        // this composition draws, so a plot redrawn after a gesture, or after
-        // the param its `colorScheme` names was written, draws in the scheme
-        // it names now. A name no renderer draws, and no name, draw the
-        // default ramp. Both lookups below read this one registry, the
-        // empty-under-navigation fallback included.
-        //
-        // A plot's `colorScale` and `colorPivot` ride the same route: read from
-        // the spec this composition draws, so a param that holds either is read
-        // as it stands now, and handed to the dot renderers beside the scheme.
-        // `diverging` is the one scale named here; any other draws the linear
-        // ramp, and the parser has said so. The scheme the plot WROTE is kept
-        // apart from the one it draws, because a diverging scale with no scheme
-        // is the design system's blue-red pair and not the sequential default.
-        let plot_node = plot_nodes
+    // **The plots that give up the right of their box to a legend.** A legend
+    // at a plot's right stands beside that plot and nowhere else, so the plot
+    // is drawn in its box less the band ([`crate::legend::carve_right`]) and
+    // the band is recorded on its handle. Whether a plot draws one is known
+    // only once its scales exist, so the plots are drawn against what the file
+    // says, and drawn again when the scales disagree: a legend item over a plot
+    // with nothing on colour draws no legend and gives up no room, and a
+    // standalone legend with no `for:` falls to the one plot whose scales call
+    // for it. Carving changes neither a plot's scales nor what the file
+    // declares, so the second pass draws what the first one found. The first
+    // guess is the last composition's answer when there is one, so a plot the
+    // file and the scales disagree about is drawn twice once, not on every
+    // re-present.
+    let mut carved: Vec<String> = right_legends.clone().unwrap_or_else(|| {
+        placed
             .iter()
-            .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| node);
-        let written_scheme = plot_node
-            .and_then(|node| resolve_colour_scheme_name(node, &spec.params))
-            .and_then(SequentialScheme::from_wire);
-        let scheme = written_scheme.unwrap_or_default();
-        let colour_scale = match plot_node {
-            Some(node) if resolve_colour_scale_diverging(node, &spec.params) => {
-                ColourScale::Diverging {
-                    pivot: resolve_colour_pivot(node, &spec.params),
-                    scheme: written_scheme,
-                }
-            }
-            _ => ColourScale::Linear,
-        };
-        let registry = default_renderers_scaled(scheme, colour_scale);
-
-        // Backs `chart_data` in the empty-under-navigation fallback below —
-        // declared here, ahead of `chart_data`, so it outlives the borrows
-        // `chart_data` takes of it (Rust drops locals in reverse declaration
-        // order, and a `ChartData` is exactly as long-lived as the `&Scene`
-        // built from it needs).
-        let mut synthetic_batches: Vec<RecordBatch> = Vec::new();
-        let mut chart_data: Vec<ChartData<'_>> = Vec::new();
-        // Set by the empty-under-navigation fallback below, and there alone,
-        // once it has actually populated `chart_data` rather than merely
-        // attempted to — see [`PlotHandle::navigated_empty`].
-        let mut navigated_empty = false;
-        let mut plot_marks: Vec<MarkKind> = Vec::new();
-        let mut plot_domains = UnsampledDomains::default();
-        let mut plot_x_column: Option<String> = None;
-        let mut plot_y_column: Option<String> = None;
-        let mut plot_group_column: Option<String> = None;
-        let mut plot_fill_column: Option<String> = None;
-        // The marks this plot DREW, in draw order — the candidates a hover can
-        // read. A mark the engine refused is not on screen, so a pointer
-        // cannot be resting on it, and offering it here would hand a reader a
-        // row from a layer they cannot see.
-        let mut drawn: Vec<usize> = Vec::new();
-        for &mi in &group.mark_indices {
-            let Some(batch) = batches.get(mi).and_then(|b| b.as_ref()) else {
+            .filter(|p| colour_legend_placement(spec, &p.path) == LegendPlacement::Right)
+            .map(|p| p.path.clone())
+            .collect()
+    });
+    let mut passes = 0;
+    let (placements, plots) = loop {
+        passes += 1;
+        // Own each plot's scene; place them below.
+        let mut placements: Vec<(f64, f64, Scene)> = Vec::new();
+        let mut plots: Vec<PlotHandle> = Vec::new();
+        for plot in &placed {
+            let (rect, legend_right) = if carved.contains(&plot.path) {
+                let (rect, band) = crate::legend::carve_right(plot.rect);
+                (rect, Some(band))
+            } else {
+                (plot.rect, None)
+            };
+            let Some(group) = groups.iter().find(|g| g.plot_path == plot.path) else {
                 continue;
             };
-            let renderer: &dyn MarkRenderer = match find_renderer(&registry, kinds[mi]) {
-                Some(r) => r,
-                None => {
-                    eprintln!("warning: no renderer for mark {mi} — skipping");
-                    continue;
-                }
-            };
-            plot_marks.push(kinds[mi]);
-            drawn.push(mi);
-            if plot_x_column.is_none() {
-                plot_x_column = channel_maps[mi].get(Channel::X).map(str::to_string);
-            }
-            if plot_y_column.is_none() {
-                plot_y_column = channel_maps[mi].get(Channel::Y).map(str::to_string);
-            }
-            if plot_group_column.is_none() {
-                plot_group_column = channel_maps[mi].stacked_group().map(str::to_string);
-            }
-            if plot_fill_column.is_none() {
-                plot_fill_column = channel_maps[mi].get(Channel::Fill).map(str::to_string);
-            }
-            // A mark is sampled exactly when the session produced unsampled
-            // facts for it; `drawn` is what actually arrived, `of` is what the
-            // same query returns without the clause.
-            let sample = facts.get(mi).and_then(Option::as_ref).map(|f| SampleFact {
-                drawn: batch.num_rows() as u64,
-                of: f.rows,
-            });
-            if let Some(f) = facts.get(mi).and_then(Option::as_ref) {
-                // Unioned across the plot's marks for the reason the categories
-                // below are, and it bites harder here: the colour channel has a
-                // containment test that refuses a domain it cannot trust, and
-                // the positional one has none, so one mark's extent installed
-                // over the plot clips its siblings out of the frame entirely.
-                for (channel, measured) in [(Channel::X, f.x_domain), (Channel::Y, f.y_domain)] {
-                    if let Some(measured) = measured {
-                        plot_domains.merge_extent(channel, measured);
-                    }
-                }
-                // Keyed by the channel's Mosaic wire name on the way out of the
-                // engine, which owns no view vocabulary. Unioned across the
-                // plot's marks, because the scale this is checked against is: a
-                // plot draws one scale per channel and its drawn domain is the
-                // union of what its marks drew, so the measured set has to be
-                // the union of what its marks measured or the comparison is
-                // between two differently-assembled lists.
-                for (wire, cats) in &f.categories {
-                    let Some(channel) = Channel::from_wire(wire) else {
-                        continue;
-                    };
-                    plot_domains.merge_categories(channel, cats);
-                }
-                // The band channels' unsampled ORDER, keyed and unioned the
-                // same way, and kept apart from the sets above because it is a
-                // different quantity: a band scale reads the order, a colour
-                // scale reads only the membership.
-                for (wire, cats) in &f.band_categories {
-                    let Some(channel) = Channel::from_wire(wire) else {
-                        continue;
-                    };
-                    plot_domains.merge_band_categories(channel, cats);
-                }
-            }
-            chart_data.push(ChartData {
-                batch,
-                channel_map: &channel_maps[mi],
-                renderer,
-                layout: ChartLayout::new(plot.rect.width, plot.rect.height),
-                view_extent: plot_extent,
-                highlight: None,
-                sample,
-                beyond_frame: beyond_frame.get(mi).copied().unwrap_or(false),
-            });
-        }
-        if chart_data.is_empty() {
-            // A plot whose marks each queried clean and came back with no
-            // rows — no engine refusal touched this group (`mark_faults`
-            // carries no entry for any of its marks) and the plot itself has
-            // a navigated extent in force. That second condition is what
-            // makes this the empty-under-NAVIGATION case rather than an
-            // ordinary empty result: an unnavigated plot with no marks to
-            // draw keeps today's behaviour (dropped below), because there is
-            // no "held frame" for it to stay honest about.
-            let no_faults = !group
-                .mark_indices
+
+            // The extent this plot is navigated to, if any — read from the ONE
+            // store the engine also filters on, so the axes and the numbers cannot
+            // describe different ranges.
+            let plot_extent = extents.get(&plot.path);
+
+            // The renderers this plot draws through: the marks `configured_renderer`
+            // names take the plot's `colorScheme`. The name is read from the spec
+            // this composition draws, so a plot redrawn after a gesture, or after
+            // the param its `colorScheme` names was written, draws in the scheme
+            // it names now. A name no renderer draws, and no name, draw the
+            // default ramp. Both lookups below read this one registry, the
+            // empty-under-navigation fallback included.
+            //
+            // A plot's `colorScale` and `colorPivot` ride the same route: read from
+            // the spec this composition draws, so a param that holds either is read
+            // as it stands now, and handed to the dot renderers beside the scheme.
+            // `diverging` is the one scale named here; any other draws the linear
+            // ramp, and the parser has said so. The scheme the plot WROTE is kept
+            // apart from the one it draws, because a diverging scale with no scheme
+            // is the design system's blue-red pair and not the sequential default.
+            let plot_node = plot_nodes
                 .iter()
-                .any(|mi| mark_faults.iter().any(|f| f.mark == *mi));
-            if let (true, Some(session)) = (
-                plot_extent.is_some() && no_faults && any_real_batch,
-                session,
-            ) {
-                // Fetch each mark's real column types first, with no
-                // `ChartData` borrowing `synthetic_batches` yet — the second
-                // pass below is what turns them into entries, once this
-                // plot's own marks have a home apiece. A schema miss on any
-                // of them (the source has since vanished, say) abandons the
-                // whole plot rather than drawing one layer's axes and not the
-                // other's, so `chart_data` stays empty and the plot is
-                // dropped exactly as it would be without this fallback.
-                let renderers: Vec<(usize, &(dyn MarkRenderer + Send + Sync))> = group
-                    .mark_indices
-                    .iter()
-                    .filter_map(|&mi| find_renderer(&registry, kinds[mi]).map(|r| (mi, r)))
-                    .collect();
-                if renderers.len() == group.mark_indices.len() {
-                    for &(mi, _) in &renderers {
-                        if let Ok(schema) = session.mark_schema(mi) {
-                            synthetic_batches.push(RecordBatch::new_empty(schema));
-                        }
-                    }
-                    if synthetic_batches.len() == renderers.len() {
-                        for (k, &(mi, renderer)) in renderers.iter().enumerate() {
-                            plot_marks.push(kinds[mi]);
-                            drawn.push(mi);
-                            if plot_x_column.is_none() {
-                                plot_x_column =
-                                    channel_maps[mi].get(Channel::X).map(str::to_string);
-                            }
-                            if plot_y_column.is_none() {
-                                plot_y_column =
-                                    channel_maps[mi].get(Channel::Y).map(str::to_string);
-                            }
-                            if plot_fill_column.is_none() {
-                                plot_fill_column =
-                                    channel_maps[mi].get(Channel::Fill).map(str::to_string);
-                            }
-                            chart_data.push(ChartData {
-                                batch: &synthetic_batches[k],
-                                channel_map: &channel_maps[mi],
-                                renderer,
-                                layout: ChartLayout::new(plot.rect.width, plot.rect.height),
-                                view_extent: plot_extent,
-                                highlight: None,
-                                // Zero rows either way, and no sampling
-                                // clause dropped any of them — the frame is
-                                // empty because the reader navigated it there.
-                                sample: None,
-                                beyond_frame: beyond_frame.get(mi).copied().unwrap_or(false),
-                            });
-                        }
-                        navigated_empty = true;
-                    } else {
-                        synthetic_batches.clear();
+                .find(|(p, _)| *p == plot.path)
+                .map(|(_, node)| node);
+            let written_scheme = plot_node
+                .and_then(|node| resolve_colour_scheme_name(node, &spec.params))
+                .and_then(SequentialScheme::from_wire);
+            let scheme = written_scheme.unwrap_or_default();
+            let colour_scale = match plot_node {
+                Some(node) if resolve_colour_scale_diverging(node, &spec.params) => {
+                    ColourScale::Diverging {
+                        pivot: resolve_colour_pivot(node, &spec.params),
+                        scheme: written_scheme,
                     }
                 }
+                _ => ColourScale::Linear,
+            };
+            let registry = default_renderers_scaled(scheme, colour_scale);
+
+            // Backs `chart_data` in the empty-under-navigation fallback below —
+            // declared here, ahead of `chart_data`, so it outlives the borrows
+            // `chart_data` takes of it (Rust drops locals in reverse declaration
+            // order, and a `ChartData` is exactly as long-lived as the `&Scene`
+            // built from it needs).
+            let mut synthetic_batches: Vec<RecordBatch> = Vec::new();
+            let mut chart_data: Vec<ChartData<'_>> = Vec::new();
+            // Set by the empty-under-navigation fallback below, and there alone,
+            // once it has actually populated `chart_data` rather than merely
+            // attempted to — see [`PlotHandle::navigated_empty`].
+            let mut navigated_empty = false;
+            let mut plot_marks: Vec<MarkKind> = Vec::new();
+            let mut plot_domains = UnsampledDomains::default();
+            let mut plot_x_column: Option<String> = None;
+            let mut plot_y_column: Option<String> = None;
+            let mut plot_group_column: Option<String> = None;
+            let mut plot_fill_column: Option<String> = None;
+            // The marks this plot DREW, in draw order — the candidates a hover can
+            // read. A mark the engine refused is not on screen, so a pointer
+            // cannot be resting on it, and offering it here would hand a reader a
+            // row from a layer they cannot see.
+            let mut drawn: Vec<usize> = Vec::new();
+            for &mi in &group.mark_indices {
+                let Some(batch) = batches.get(mi).and_then(|b| b.as_ref()) else {
+                    continue;
+                };
+                let renderer: &dyn MarkRenderer = match find_renderer(&registry, kinds[mi]) {
+                    Some(r) => r,
+                    None => {
+                        eprintln!("warning: no renderer for mark {mi} — skipping");
+                        continue;
+                    }
+                };
+                plot_marks.push(kinds[mi]);
+                drawn.push(mi);
+                if plot_x_column.is_none() {
+                    plot_x_column = channel_maps[mi].get(Channel::X).map(str::to_string);
+                }
+                if plot_y_column.is_none() {
+                    plot_y_column = channel_maps[mi].get(Channel::Y).map(str::to_string);
+                }
+                if plot_group_column.is_none() {
+                    plot_group_column = channel_maps[mi].stacked_group().map(str::to_string);
+                }
+                if plot_fill_column.is_none() {
+                    plot_fill_column = channel_maps[mi].get(Channel::Fill).map(str::to_string);
+                }
+                // A mark is sampled exactly when the session produced unsampled
+                // facts for it; `drawn` is what actually arrived, `of` is what the
+                // same query returns without the clause.
+                let sample = facts.get(mi).and_then(Option::as_ref).map(|f| SampleFact {
+                    drawn: batch.num_rows() as u64,
+                    of: f.rows,
+                });
+                if let Some(f) = facts.get(mi).and_then(Option::as_ref) {
+                    // Unioned across the plot's marks for the reason the categories
+                    // below are, and it bites harder here: the colour channel has a
+                    // containment test that refuses a domain it cannot trust, and
+                    // the positional one has none, so one mark's extent installed
+                    // over the plot clips its siblings out of the frame entirely.
+                    for (channel, measured) in [(Channel::X, f.x_domain), (Channel::Y, f.y_domain)]
+                    {
+                        if let Some(measured) = measured {
+                            plot_domains.merge_extent(channel, measured);
+                        }
+                    }
+                    // Keyed by the channel's Mosaic wire name on the way out of the
+                    // engine, which owns no view vocabulary. Unioned across the
+                    // plot's marks, because the scale this is checked against is: a
+                    // plot draws one scale per channel and its drawn domain is the
+                    // union of what its marks drew, so the measured set has to be
+                    // the union of what its marks measured or the comparison is
+                    // between two differently-assembled lists.
+                    for (wire, cats) in &f.categories {
+                        let Some(channel) = Channel::from_wire(wire) else {
+                            continue;
+                        };
+                        plot_domains.merge_categories(channel, cats);
+                    }
+                    // The band channels' unsampled ORDER, keyed and unioned the
+                    // same way, and kept apart from the sets above because it is a
+                    // different quantity: a band scale reads the order, a colour
+                    // scale reads only the membership.
+                    for (wire, cats) in &f.band_categories {
+                        let Some(channel) = Channel::from_wire(wire) else {
+                            continue;
+                        };
+                        plot_domains.merge_band_categories(channel, cats);
+                    }
+                }
+                chart_data.push(ChartData {
+                    batch,
+                    channel_map: &channel_maps[mi],
+                    renderer,
+                    layout: ChartLayout::new(rect.width, rect.height),
+                    view_extent: plot_extent,
+                    highlight: None,
+                    sample,
+                    beyond_frame: beyond_frame.get(mi).copied().unwrap_or(false),
+                });
             }
             if chart_data.is_empty() {
-                continue;
-            }
-        }
-
-        // Axis + plot titles, then grow the margins to reserve their band.
-        let title_maps: Vec<&ChannelMap> = chart_data.iter().map(|d| d.channel_map).collect();
-        let titles = plot_nodes
-            .iter()
-            .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| resolve_titles(node, &title_maps))
-            .unwrap_or_default();
-        drop(title_maps);
-
-        // Axis insets so edge marks render whole inside the frame clip.
-        let explicit_insets = plot_nodes
-            .iter()
-            .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| resolve_plot_insets(node))
-            .unwrap_or_default();
-        let inset_entries: Vec<_> = chart_data
-            .iter()
-            .map(|d| (d.batch, d.channel_map, d.renderer))
-            .collect();
-        let insets = resolve_insets_for_marks(explicit_insets, &inset_entries, DEFAULT_SCALE_INSET);
-        drop(inset_entries);
-
-        // The margins the spec declared, laid over the defaults: what the
-        // author wrote is the floor and what the plot's own furniture needs
-        // grows it, never the other way round.
-        let declared_margins = plot_nodes
-            .iter()
-            .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| resolve_plot_margins(node))
-            .unwrap_or_default();
-
-        // Three bands, reserved the same way: one for the axis titles, one for
-        // the sampling notice, and the title row an untitled axis's count of
-        // the rows past its fixed ends is drawn in. Growing the margin is what
-        // makes the device removable later without disturbing anything else's
-        // geometry.
-        // What this plot's spec asked to hold still, and what it is holding
-        // still so far. The pin is READ before the draw and CAPTURED after, so
-        // the first composition draws against its own inference (there is
-        // nothing to hold to yet) and every later one draws against that.
-        let fixed = plot_nodes
-            .iter()
-            .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| resolve_fixed_domains(node))
-            .unwrap_or_default();
-        let held_pins = pins.get(&plot.path).cloned().unwrap_or_default();
-        // The ends the spec wrote as two numbers, read from the spec this
-        // composition draws so a param that holds them is read as it stands
-        // now. They are laid over what the plot holds and are not stored with
-        // it: the next composition reads them again.
-        let written_ends = plot_nodes
-            .iter()
-            .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| read_domains_in(node, &spec.params))
-            .unwrap_or_default();
-        let plot_pins = held_pins.clone().with_written_ends(&written_ends);
-
-        // Which of this plot's marks count their rows past an end the file
-        // fixed, index for index with `chart_data`: a dot whose plan returns
-        // rows one for one. A dot that aggregates or bins draws a mark per
-        // group, and the emitter's plan is what says so.
-        let counts_rows: Vec<bool> = drawn
-            .iter()
-            .zip(&plot_marks)
-            .map(|(&mi, &kind)| {
-                mark_counts_rows_past(kind)
-                    && plan_for_mark(spec, mi, None, None).is_ok_and(|p| plan_returns_rows(&p))
-            })
-            .collect();
-        // The axes whose count has a row to be drawn in. Read off the file, not
-        // the rows, so the frame holds still when a brush moves the count.
-        let counted_axes = if counts_rows.contains(&true) {
-            FixedEnds {
-                x: plot_pins.x_written,
-                y: plot_pins.y_written,
-            }
-        } else {
-            FixedEnds::default()
-        };
-
-        let plot_sample = chart_data.iter().find_map(|d| d.sample);
-        let margins = rows_past_band_margins(
-            sample_band_margins(
-                grow_margins(Margins::default().with_declared(declared_margins), &titles),
-                plot_sample.is_some(),
-            ),
-            &titles,
-            counted_axes,
-        );
-        let layout = ChartLayout::with_margins_and_insets(
-            plot.rect.width,
-            plot.rect.height,
-            margins,
-            insets,
-        );
-        for d in &mut chart_data {
-            d.layout = layout;
-        }
-
-        // What this plot's spec asked each positional axis's ticks to target
-        // — `xTicks`/`yTicks`. A plot that asks for neither reads back its
-        // default via `TickCounts::x_target`/`y_target` inside the draw call
-        // below, same as before this resolver existed. The six axis keys below
-        // are read from the spec this composition draws, so a param that holds
-        // one is read as it stands now.
-        let tick_counts = plot_nodes
-            .iter()
-            .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| resolve_tick_counts_in(node, &spec.params))
-            .unwrap_or_default();
-
-        // What this plot's spec asked each positional axis's tick TEXT to
-        // follow — `xTickFormat`/`yTickFormat`, when it wrote a number or a date
-        // format.
-        // A plot that asks for neither draws the text its axes drew before a
-        // format could be asked for.
-        let tick_formats = plot_nodes
-            .iter()
-            .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| resolve_tick_formats_in(node, &spec.params))
-            .unwrap_or_default();
-
-        // Which positional axes this plot's spec asked to draw gridlines —
-        // `grid`, `xGrid`, `yGrid`. A plot that asks for none draws them on
-        // both axes, as before these keys were read.
-        let grid = plot_nodes
-            .iter()
-            .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| resolve_grid_lines_in(node, &spec.params))
-            .unwrap_or_default();
-
-        // Where this plot's spec asked each positional axis to start and end —
-        // `xZero`, `xNice`, `yZero`, `yNice`. A plot that asks for none carries
-        // its axes no further than its data and its marks take them, as before
-        // these keys were read.
-        let axis_ends = plot_nodes
-            .iter()
-            .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| resolve_axis_ends_in(node, &spec.params))
-            .unwrap_or_default();
-
-        // Which way this plot's spec asked each positional axis to run —
-        // `xReverse`, `yReverse`. A plot that asks for neither draws x from the
-        // left edge to the right and y from the bottom to the top, as before
-        // these keys were read. The scales this builds are the ones the plot
-        // handle keeps, so the brush inverts a pixel through the axis as drawn.
-        let axis_reverse = plot_nodes
-            .iter()
-            .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| resolve_axis_reverse_in(node, &spec.params))
-            .unwrap_or_default();
-
-        // Whether this plot's spec asked its colour to run the other way —
-        // `colorReverse`, read from the spec this composition draws so a param
-        // that holds it is read as it stands now. The dots are the marks that
-        // turn it: a plot that draws none keeps the ramp it draws today.
-        let colour_reverse = plot_node
-            .is_some_and(|node| resolve_colour_reverse(node, &spec.params))
-            && colour_reverse_applies(&plot_marks);
-
-        // The ends and colours the plot's spec wrote for its colour —
-        // `colorDomain` and `colorRange` — and the steps it cuts the ramp into,
-        // `colorScale: quantize` with `colorN`, read from the spec this
-        // composition draws so a param that holds any of them is read as it
-        // stands now. The dots are the marks that take them, as they are
-        // `colorReverse`'s: a plot with no dot among its marks keeps the ramp it
-        // draws today (`a_cell_a_heatmap_and_a_raster_keep_their_ramp`).
-        let colour_override = plot_node
-            .filter(|_| colour_override_applies(&plot_marks))
-            .map(|node| ColourOverride::of_plot(node, &spec.params))
-            .unwrap_or_default();
-
-        let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
-        // `draw_inline_legend = false`: the legend is NOT baked into the data
-        // scene. The shell draws it as a native margin panel outside the plot
-        // rect, from the scales returned here — one legend per chart, one
-        // source of truth, and no in-plot swatch block a margin copy could
-        // drift from or that could sit on top of the marks.
-        let (mut scene, scales) = build_multi_mark_scene_pinned(
-            &refs,
-            false,
-            &titles,
-            &plot_domains,
-            &plot_pins,
-            tick_counts,
-            tick_formats.clone(),
-            grid,
-            axis_ends,
-            axis_reverse,
-            &colour_override,
-            colour_reverse,
-            ink,
-        );
-        // Where the axes just drawn put their title, labels and line, taken
-        // from the routine that drew them and kept on the plot's handle.
-        let axes = plot_axis_targets(&refs, &titles, tick_counts, &tick_formats, &scales);
-        // The rows past each end the draw held at the file's numbers, counted
-        // over the marks that draw rows and drawn at that end. Taken here, on
-        // every composition, so a re-present after a brush counts the rows the
-        // brush left.
-        let counted: Vec<&ChartData<'_>> = refs
-            .iter()
-            .zip(&counts_rows)
-            .filter_map(|(entry, &counts)| counts.then_some(*entry))
-            .collect();
-        let rows_past = count_rows_past(
-            &counted,
-            &scales,
-            written_ends_held(&plot_pins, &refs, &scales),
-        );
-        render_rows_past(&mut scene, &layout, &scales, rows_past, ink);
-        drop(counted);
-        drop(refs);
-        drop(chart_data);
-
-        for warning in plot_nodes
-            .iter()
-            .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| {
-                // A key given through a `$param` that holds a value its judge
-                // refuses is named as the same value written in the file is;
-                // the parser could not, having no value to judge.
-                let mut found = param_held_axis_warnings(node, &spec.params);
-                found.extend(param_held_colour_warnings(node, &spec.params));
-                found.extend(crossed_tick_formats(node, spec, &tick_formats, &scales));
-                found.extend(inert_axis_instructions(
-                    &plot_label(&plot.path, node),
-                    node,
-                    spec,
-                    axis_ends,
-                    tick_counts,
-                    &tick_formats,
-                    axis_reverse,
-                    &written_ends,
-                    &scales,
-                ));
-                found
-            })
-            .unwrap_or_default()
-        {
-            if !composed_warnings.contains(&warning) {
-                composed_warnings.push(warning);
-            }
-        }
-
-        if !fixed.is_empty() {
-            let mut held = held_pins;
-            held.capture(&scales, fixed);
-            pins.insert(plot.path.clone(), held);
-        }
-
-        // REFUSE rather than draw a confidently wrong picture. A sampled plot
-        // whose scale set carries a channel `apply_unsampled_domains` cannot
-        // restore renders a value in a different place, or a different colour,
-        // than the complete one — under a notice that says only that rows were
-        // dropped. Checked here because here is where the scales exist — one
-        // seam covering `--force-sample` on `brightfield-shot`, on the live
-        // window, and every re-present after a gesture, rather than three
-        // argument parsers each remembering.
-        //
-        // The list this reads is derived from the scales and the domains, so it
-        // narrows on its own as restorations become available rather than being
-        // edited: a colour channel whose set `plot_domains` carries is no longer
-        // in it.
-        if plot_sample.is_some() {
-            let unrestorable = unrestorable_under_sampling(&scales, &plot_domains);
-            if !unrestorable.is_empty() {
-                let names: Vec<&str> = unrestorable.iter().map(|(c, _)| c.wire_name()).collect();
-                let faults: Vec<String> = unrestorable
+                // A plot whose marks each queried clean and came back with no
+                // rows — no engine refusal touched this group (`mark_faults`
+                // carries no entry for any of its marks) and the plot itself has
+                // a navigated extent in force. That second condition is what
+                // makes this the empty-under-NAVIGATION case rather than an
+                // ordinary empty result: an unnavigated plot with no marks to
+                // draw keeps today's behaviour (dropped below), because there is
+                // no "held frame" for it to stay honest about.
+                let no_faults = !group
+                    .mark_indices
                     .iter()
-                    .map(|(c, why)| format!("{} is {}", c.wire_name(), why.reason()))
-                    .collect();
-                let names = names.join(", ");
-                return Err(format!(
-                    "refusing to sample plot {}: {}. The sampled render would place or colour \
+                    .any(|mi| mark_faults.iter().any(|f| f.mark == *mi));
+                if let (true, Some(session)) = (
+                    plot_extent.is_some() && no_faults && any_real_batch,
+                    session,
+                ) {
+                    // Fetch each mark's real column types first, with no
+                    // `ChartData` borrowing `synthetic_batches` yet — the second
+                    // pass below is what turns them into entries, once this
+                    // plot's own marks have a home apiece. A schema miss on any
+                    // of them (the source has since vanished, say) abandons the
+                    // whole plot rather than drawing one layer's axes and not the
+                    // other's, so `chart_data` stays empty and the plot is
+                    // dropped exactly as it would be without this fallback.
+                    let renderers: Vec<(usize, &(dyn MarkRenderer + Send + Sync))> = group
+                        .mark_indices
+                        .iter()
+                        .filter_map(|&mi| find_renderer(&registry, kinds[mi]).map(|r| (mi, r)))
+                        .collect();
+                    if renderers.len() == group.mark_indices.len() {
+                        for &(mi, _) in &renderers {
+                            if let Ok(schema) = session.mark_schema(mi) {
+                                synthetic_batches.push(RecordBatch::new_empty(schema));
+                            }
+                        }
+                        if synthetic_batches.len() == renderers.len() {
+                            for (k, &(mi, renderer)) in renderers.iter().enumerate() {
+                                plot_marks.push(kinds[mi]);
+                                drawn.push(mi);
+                                if plot_x_column.is_none() {
+                                    plot_x_column =
+                                        channel_maps[mi].get(Channel::X).map(str::to_string);
+                                }
+                                if plot_y_column.is_none() {
+                                    plot_y_column =
+                                        channel_maps[mi].get(Channel::Y).map(str::to_string);
+                                }
+                                if plot_fill_column.is_none() {
+                                    plot_fill_column =
+                                        channel_maps[mi].get(Channel::Fill).map(str::to_string);
+                                }
+                                chart_data.push(ChartData {
+                                    batch: &synthetic_batches[k],
+                                    channel_map: &channel_maps[mi],
+                                    renderer,
+                                    layout: ChartLayout::new(rect.width, rect.height),
+                                    view_extent: plot_extent,
+                                    highlight: None,
+                                    // Zero rows either way, and no sampling
+                                    // clause dropped any of them — the frame is
+                                    // empty because the reader navigated it there.
+                                    sample: None,
+                                    beyond_frame: beyond_frame.get(mi).copied().unwrap_or(false),
+                                });
+                            }
+                            navigated_empty = true;
+                        } else {
+                            synthetic_batches.clear();
+                        }
+                    }
+                }
+                if chart_data.is_empty() {
+                    continue;
+                }
+            }
+
+            // Axis + plot titles, then grow the margins to reserve their band.
+            let title_maps: Vec<&ChannelMap> = chart_data.iter().map(|d| d.channel_map).collect();
+            let titles = plot_nodes
+                .iter()
+                .find(|(p, _)| *p == plot.path)
+                .map(|(_, node)| resolve_titles(node, &title_maps))
+                .unwrap_or_default();
+            drop(title_maps);
+
+            // Axis insets so edge marks render whole inside the frame clip.
+            let explicit_insets = plot_nodes
+                .iter()
+                .find(|(p, _)| *p == plot.path)
+                .map(|(_, node)| resolve_plot_insets(node))
+                .unwrap_or_default();
+            let inset_entries: Vec<_> = chart_data
+                .iter()
+                .map(|d| (d.batch, d.channel_map, d.renderer))
+                .collect();
+            let insets =
+                resolve_insets_for_marks(explicit_insets, &inset_entries, DEFAULT_SCALE_INSET);
+            drop(inset_entries);
+
+            // The margins the spec declared, laid over the defaults: what the
+            // author wrote is the floor and what the plot's own furniture needs
+            // grows it, never the other way round.
+            let declared_margins = plot_nodes
+                .iter()
+                .find(|(p, _)| *p == plot.path)
+                .map(|(_, node)| resolve_plot_margins(node))
+                .unwrap_or_default();
+
+            // Three bands, reserved the same way: one for the axis titles, one for
+            // the sampling notice, and the title row an untitled axis's count of
+            // the rows past its fixed ends is drawn in. Growing the margin is what
+            // makes the device removable later without disturbing anything else's
+            // geometry.
+            // What this plot's spec asked to hold still, and what it is holding
+            // still so far. The pin is READ before the draw and CAPTURED after, so
+            // the first composition draws against its own inference (there is
+            // nothing to hold to yet) and every later one draws against that.
+            let fixed = plot_nodes
+                .iter()
+                .find(|(p, _)| *p == plot.path)
+                .map(|(_, node)| resolve_fixed_domains(node))
+                .unwrap_or_default();
+            let held_pins = pins.get(&plot.path).cloned().unwrap_or_default();
+            // The ends the spec wrote as two numbers, read from the spec this
+            // composition draws so a param that holds them is read as it stands
+            // now. They are laid over what the plot holds and are not stored with
+            // it: the next composition reads them again.
+            let written_ends = plot_nodes
+                .iter()
+                .find(|(p, _)| *p == plot.path)
+                .map(|(_, node)| read_domains_in(node, &spec.params))
+                .unwrap_or_default();
+            let plot_pins = held_pins.clone().with_written_ends(&written_ends);
+
+            // Which of this plot's marks count their rows past an end the file
+            // fixed, index for index with `chart_data`: a dot whose plan returns
+            // rows one for one. A dot that aggregates or bins draws a mark per
+            // group, and the emitter's plan is what says so.
+            let counts_rows: Vec<bool> = drawn
+                .iter()
+                .zip(&plot_marks)
+                .map(|(&mi, &kind)| {
+                    mark_counts_rows_past(kind)
+                        && plan_for_mark(spec, mi, None, None).is_ok_and(|p| plan_returns_rows(&p))
+                })
+                .collect();
+            // The axes whose count has a row to be drawn in. Read off the file, not
+            // the rows, so the frame holds still when a brush moves the count.
+            let counted_axes = if counts_rows.contains(&true) {
+                FixedEnds {
+                    x: plot_pins.x_written,
+                    y: plot_pins.y_written,
+                }
+            } else {
+                FixedEnds::default()
+            };
+
+            let plot_sample = chart_data.iter().find_map(|d| d.sample);
+            let margins = rows_past_band_margins(
+                sample_band_margins(
+                    grow_margins(Margins::default().with_declared(declared_margins), &titles),
+                    plot_sample.is_some(),
+                ),
+                &titles,
+                counted_axes,
+            );
+            let layout =
+                ChartLayout::with_margins_and_insets(rect.width, rect.height, margins, insets);
+            for d in &mut chart_data {
+                d.layout = layout;
+            }
+
+            // What this plot's spec asked each positional axis's ticks to target
+            // — `xTicks`/`yTicks`. A plot that asks for neither reads back its
+            // default via `TickCounts::x_target`/`y_target` inside the draw call
+            // below, same as before this resolver existed. The six axis keys below
+            // are read from the spec this composition draws, so a param that holds
+            // one is read as it stands now.
+            let tick_counts = plot_nodes
+                .iter()
+                .find(|(p, _)| *p == plot.path)
+                .map(|(_, node)| resolve_tick_counts_in(node, &spec.params))
+                .unwrap_or_default();
+
+            // What this plot's spec asked each positional axis's tick TEXT to
+            // follow — `xTickFormat`/`yTickFormat`, when it wrote a number or a date
+            // format.
+            // A plot that asks for neither draws the text its axes drew before a
+            // format could be asked for.
+            let tick_formats = plot_nodes
+                .iter()
+                .find(|(p, _)| *p == plot.path)
+                .map(|(_, node)| resolve_tick_formats_in(node, &spec.params))
+                .unwrap_or_default();
+
+            // Which positional axes this plot's spec asked to draw gridlines —
+            // `grid`, `xGrid`, `yGrid`. A plot that asks for none draws them on
+            // both axes, as before these keys were read.
+            let grid = plot_nodes
+                .iter()
+                .find(|(p, _)| *p == plot.path)
+                .map(|(_, node)| resolve_grid_lines_in(node, &spec.params))
+                .unwrap_or_default();
+
+            // Where this plot's spec asked each positional axis to start and end —
+            // `xZero`, `xNice`, `yZero`, `yNice`. A plot that asks for none carries
+            // its axes no further than its data and its marks take them, as before
+            // these keys were read.
+            let axis_ends = plot_nodes
+                .iter()
+                .find(|(p, _)| *p == plot.path)
+                .map(|(_, node)| resolve_axis_ends_in(node, &spec.params))
+                .unwrap_or_default();
+
+            // Which way this plot's spec asked each positional axis to run —
+            // `xReverse`, `yReverse`. A plot that asks for neither draws x from the
+            // left edge to the right and y from the bottom to the top, as before
+            // these keys were read. The scales this builds are the ones the plot
+            // handle keeps, so the brush inverts a pixel through the axis as drawn.
+            let axis_reverse = plot_nodes
+                .iter()
+                .find(|(p, _)| *p == plot.path)
+                .map(|(_, node)| resolve_axis_reverse_in(node, &spec.params))
+                .unwrap_or_default();
+
+            // Whether this plot's spec asked its colour to run the other way —
+            // `colorReverse`, read from the spec this composition draws so a param
+            // that holds it is read as it stands now. The dots are the marks that
+            // turn it: a plot that draws none keeps the ramp it draws today.
+            let colour_reverse = plot_node
+                .is_some_and(|node| resolve_colour_reverse(node, &spec.params))
+                && colour_reverse_applies(&plot_marks);
+
+            // The ends and colours the plot's spec wrote for its colour —
+            // `colorDomain` and `colorRange` — and the steps it cuts the ramp into,
+            // `colorScale: quantize` with `colorN`, read from the spec this
+            // composition draws so a param that holds any of them is read as it
+            // stands now. The dots are the marks that take them, as they are
+            // `colorReverse`'s: a plot with no dot among its marks keeps the ramp it
+            // draws today (`a_cell_a_heatmap_and_a_raster_keep_their_ramp`).
+            let colour_override = plot_node
+                .filter(|_| colour_override_applies(&plot_marks))
+                .map(|node| ColourOverride::of_plot(node, &spec.params))
+                .unwrap_or_default();
+
+            let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
+            // `draw_inline_legend = false`: the legend is NOT baked into the data
+            // scene. The shell draws it as a native margin panel outside the plot
+            // rect, from the scales returned here — one legend per chart, one
+            // source of truth, and no in-plot swatch block a margin copy could
+            // drift from or that could sit on top of the marks.
+            let (mut scene, scales) = build_multi_mark_scene_pinned(
+                &refs,
+                false,
+                &titles,
+                &plot_domains,
+                &plot_pins,
+                tick_counts,
+                tick_formats.clone(),
+                grid,
+                axis_ends,
+                axis_reverse,
+                &colour_override,
+                colour_reverse,
+                ink,
+            );
+            // Where the axes just drawn put their title, labels and line, taken
+            // from the routine that drew them and kept on the plot's handle.
+            let axes = plot_axis_targets(&refs, &titles, tick_counts, &tick_formats, &scales);
+            // The rows past each end the draw held at the file's numbers, counted
+            // over the marks that draw rows and drawn at that end. Taken here, on
+            // every composition, so a re-present after a brush counts the rows the
+            // brush left.
+            let counted: Vec<&ChartData<'_>> = refs
+                .iter()
+                .zip(&counts_rows)
+                .filter_map(|(entry, &counts)| counts.then_some(*entry))
+                .collect();
+            let rows_past = count_rows_past(
+                &counted,
+                &scales,
+                written_ends_held(&plot_pins, &refs, &scales),
+            );
+            render_rows_past(&mut scene, &layout, &scales, rows_past, ink);
+            drop(counted);
+            drop(refs);
+            drop(chart_data);
+
+            for warning in plot_nodes
+                .iter()
+                .find(|(p, _)| *p == plot.path)
+                .map(|(_, node)| {
+                    // A key given through a `$param` that holds a value its judge
+                    // refuses is named as the same value written in the file is;
+                    // the parser could not, having no value to judge.
+                    let mut found = param_held_axis_warnings(node, &spec.params);
+                    found.extend(param_held_colour_warnings(node, &spec.params));
+                    found.extend(crossed_tick_formats(node, spec, &tick_formats, &scales));
+                    found.extend(inert_axis_instructions(
+                        &plot_label(&plot.path, node),
+                        node,
+                        spec,
+                        axis_ends,
+                        tick_counts,
+                        &tick_formats,
+                        axis_reverse,
+                        &written_ends,
+                        &scales,
+                    ));
+                    found
+                })
+                .unwrap_or_default()
+            {
+                if !composed_warnings.contains(&warning) {
+                    composed_warnings.push(warning);
+                }
+            }
+
+            if !fixed.is_empty() {
+                let mut held = held_pins;
+                held.capture(&scales, fixed);
+                pins.insert(plot.path.clone(), held);
+            }
+
+            // REFUSE rather than draw a confidently wrong picture. A sampled plot
+            // whose scale set carries a channel `apply_unsampled_domains` cannot
+            // restore renders a value in a different place, or a different colour,
+            // than the complete one — under a notice that tells the reader rows
+            // were dropped and not that any value moved. Checked here because here is where the scales exist — one
+            // seam covering `--force-sample` on `brightfield-shot`, on the live
+            // window, and every re-present after a gesture, rather than three
+            // argument parsers each remembering.
+            //
+            // The list this reads is derived from the scales and the domains, so it
+            // narrows on its own as restorations become available rather than being
+            // edited: a colour channel whose set `plot_domains` carries is no longer
+            // in it.
+            if plot_sample.is_some() {
+                let unrestorable = unrestorable_under_sampling(&scales, &plot_domains);
+                if !unrestorable.is_empty() {
+                    let names: Vec<&str> =
+                        unrestorable.iter().map(|(c, _)| c.wire_name()).collect();
+                    let faults: Vec<String> = unrestorable
+                        .iter()
+                        .map(|(c, why)| format!("{} is {}", c.wire_name(), why.reason()))
+                        .collect();
+                    let names = names.join(", ");
+                    return Err(format!(
+                        "refusing to sample plot {}: {}. The sampled render would place or colour \
                      the same value differently from the complete one, and the sampling notice \
                      would not say so. Drop {names} from this plot, or bind {names} to a column \
                      whose domain the unsampled query can put back.",
-                    plot.path,
-                    faults.join("; "),
-                ));
+                        plot.path,
+                        faults.join("; "),
+                    ));
+                }
             }
-        }
 
-        placements.push((plot.rect.x, plot.rect.y, scene));
+            placements.push((rect.x, rect.y, scene));
 
-        let gesture = brushable
-            .iter()
-            .find(|b| b.parent_plot.0 == plot.path)
-            .map(|b| GestureBinding {
-                selection: b.selection.clone(),
-                contributor: b.parent_plot.clone(),
-                kind: b.kind,
-                x_column: b.channels.x.clone(),
-                y_column: b.channels.y.clone(),
-            });
-        let hover = hover_layer(&drawn, &marks, &channel_maps, &scales);
-        plots.push(PlotHandle {
-            path: plot.path.clone(),
-            rect: plot.rect,
-            scales,
-            layout,
-            marks: plot_marks,
-            gesture,
-            x_column: plot_x_column,
-            y_column: plot_y_column,
-            group_column: plot_group_column,
-            fill_column: plot_fill_column,
-            stack_offset: plot_nodes
+            let gesture = brushable
                 .iter()
-                .find(|(p, _)| *p == plot.path)
-                .map(|(_, node)| resolve_plot_stack_offset(node))
-                .unwrap_or_default(),
-            sample: plot_sample,
-            rows_past,
-            hover,
-            navigated_empty,
-            // Set by `ink_committed_selections` alone — a one-shot
-            // composition has no session to hold a selection and does not
-            // call it, so it stays `None` here.
-            committed_rect: None,
-            legend_declared: false,
-            legend_below: None,
-            axes,
-        });
-    }
-    crate::legend::declare_legends(spec, viewport, &mut plots);
+                .find(|b| b.parent_plot.0 == plot.path)
+                .map(|b| GestureBinding {
+                    selection: b.selection.clone(),
+                    contributor: b.parent_plot.clone(),
+                    kind: b.kind,
+                    x_column: b.channels.x.clone(),
+                    y_column: b.channels.y.clone(),
+                });
+            let hover = hover_layer(&drawn, &marks, &channel_maps, &scales);
+            plots.push(PlotHandle {
+                path: plot.path.clone(),
+                rect,
+                scales,
+                layout,
+                marks: plot_marks,
+                gesture,
+                x_column: plot_x_column,
+                y_column: plot_y_column,
+                group_column: plot_group_column,
+                fill_column: plot_fill_column,
+                stack_offset: plot_nodes
+                    .iter()
+                    .find(|(p, _)| *p == plot.path)
+                    .map(|(_, node)| resolve_plot_stack_offset(node))
+                    .unwrap_or_default(),
+                sample: plot_sample,
+                rows_past,
+                hover,
+                navigated_empty,
+                // Set by `ink_committed_selections` alone — a one-shot
+                // composition has no session to hold a selection and does not
+                // call it, so it stays `None` here.
+                committed_rect: None,
+                legend_declared: false,
+                legend_below: None,
+                legend_right,
+                axes,
+            });
+        }
+        crate::legend::declare_legends(spec, viewport, &mut plots);
+        let drawn = crate::legend::right_legend_paths(&plots);
+        if drawn == carved || passes == 2 {
+            *right_legends = Some(drawn);
+            break (placements, plots);
+        }
+        carved = drawn;
+    };
 
     if placements.is_empty() {
         // Carry the reasons out with the failure. When EVERY mark is refused
@@ -3424,6 +3485,7 @@ plot:
             &ViewExtents::new(),
             &[],
             &mut PlotPins::new(),
+            &mut None,
             Rect::zero(),
             Mode::Light,
             None,
@@ -3441,6 +3503,7 @@ plot:
             &ViewExtents::new(),
             &[],
             &mut PlotPins::new(),
+            &mut None,
             Rect::zero(),
             Mode::Light,
             None,
@@ -3465,6 +3528,7 @@ plot:
             &ViewExtents::new(),
             &[],
             &mut PlotPins::new(),
+            &mut None,
             Rect::zero(),
             Mode::Light,
             None,
@@ -3524,6 +3588,7 @@ plot:
             &ViewExtents::new(),
             &[],
             &mut PlotPins::new(),
+            &mut None,
             Rect::zero(),
             Mode::Light,
             None,

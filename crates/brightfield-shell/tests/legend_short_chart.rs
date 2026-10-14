@@ -4,8 +4,8 @@
 //! top, so a chart shorter than the name's row, a gap and the ramp used to draw
 //! the ramp past the band's foot, where the painter cut it.
 //!
-//! The legend is drawn through `legend::draw_band` into a headless egui context
-//! over a band the height of the chart — the rect the chart pane reserves — and
+//! The legend is drawn through `legend::draw_right` into a headless egui context
+//! over a band the height of the chart — the rect the plot gives up — and
 //! read back as the shapes it painted, as `legend_column_name.rs` does for a
 //! tall chart. Each test is about where ink went. The photographs of the short
 //! charts, in both themes, are at the foot of the file.
@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use brightfield_shell::capture::capture_png;
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{band_width, draw_band, ramp_floor, LegendSpec, RAMP_HEIGHT};
+use brightfield_shell::legend::{draw_right, ramp_floor, LegendSpec, RAMP_HEIGHT};
 use brightfield_shell::pipeline::{compose_spec_str, Composed};
 use brightfield_shell::window::Boot;
 use meridian_design::spacing;
@@ -74,17 +74,25 @@ enum Ink {
     Fill(egui::Rect, egui::Color32),
 }
 
-/// The band the chart pane reserves for `composed`: level with the raster and as
-/// tall as the chart.
+/// The band `composed`'s plot gave up for its legend, level with the plot and
+/// as tall as it, with its top-left corner at ([`BAND_LEFT`], [`RASTER_TOP`]).
 fn band_of(composed: &Composed) -> egui::Rect {
+    let r = composed.plots[0]
+        .legend_right
+        .expect("the plot gave up a band for its legend");
     egui::Rect::from_min_size(
         egui::pos2(BAND_LEFT, RASTER_TOP),
-        egui::vec2(band_width(composed), composed.height as f32),
+        egui::vec2(r.width as f32, r.height as f32),
     )
 }
 
-/// What `draw_band` paints for `composed` into `band`, in paint order.
+/// What `draw_right` paints for `composed`, its plot's band standing at `band`'s
+/// top-left corner, in paint order.
 fn painted(composed: &Composed, band: egui::Rect) -> Vec<Ink> {
+    let r = composed.plots[0]
+        .legend_right
+        .expect("the plot gave up a band for its legend");
+    let origin = band.min - egui::vec2(r.x as f32, r.y as f32);
     let ctx = egui::Context::default();
     let raw = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
@@ -94,7 +102,7 @@ fn painted(composed: &Composed, band: egui::Rect) -> Vec<Ink> {
         ..Default::default()
     };
     let out = ctx.run_ui(raw, |ui| {
-        draw_band(ui, band, RASTER_TOP, composed, Mode::Light);
+        draw_right(ui, origin, composed);
     });
     let mut ink = Vec::new();
     for clipped in &out.shapes {
@@ -348,10 +356,13 @@ fn a_chart_taller_than_the_block_draws_the_whole_ramp_where_it_always_did() {
             let composed = compose(height, attrs);
             let band = band_of(&composed);
             let ink = painted(&composed, band);
-            let tall = band.with_max_y(band.min.y + 600.0);
+            let mut tall = compose(height, attrs);
+            if let Some(r) = tall.plots[0].legend_right.as_mut() {
+                r.height = 600.0;
+            }
             assert_eq!(
                 ink,
-                painted(&composed, tall),
+                painted(&tall, band),
                 "{height} {attrs:?}: the ink moved with the band's height"
             );
             let (top, foot) = Legend::read(&ink).ramp().expect("a ramp is drawn");

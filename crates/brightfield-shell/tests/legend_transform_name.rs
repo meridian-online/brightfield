@@ -11,7 +11,7 @@
 //! in place: an aggregate over a named column is that column's name, so a rule
 //! that named every hexbin `count` goes red here.
 //!
-//! The legend is drawn through `legend::draw_band` (at the plot's right) and
+//! The legend is drawn through `legend::draw_right` (at the plot's right) and
 //! `legend::draw_below` (under it) over a composed page, into a headless egui
 //! context, and read back as the text it painted. The look of it, in both themes,
 //! is `legend_transform_baseline.rs`.
@@ -19,7 +19,7 @@
 //! The specs carry their data inline, so the run needs no file beside it.
 
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{band_width, draw_band, draw_below, LegendSpec};
+use brightfield_shell::legend::{draw_below, draw_right, LegendSpec};
 use brightfield_shell::pipeline::{compose_spec_str, Composed};
 
 /// The band's left edge in the headless context, and the raster's top.
@@ -98,11 +98,11 @@ fn painted(composed: &Composed, paint: impl Fn(&mut egui::Ui, &Composed)) -> Vec
 /// The text of the legend at the plot's right, in paint order.
 fn band_text(composed: &Composed) -> Vec<String> {
     painted(composed, |ui, composed| {
-        let band = egui::Rect::from_min_size(
-            egui::pos2(BAND_LEFT, RASTER_TOP),
-            egui::vec2(band_width(composed), 600.0),
-        );
-        draw_band(ui, band, RASTER_TOP, composed, Mode::Light);
+        let r = composed.plots[0]
+            .legend_right
+            .expect("the plot gave up a band for its legend");
+        let origin = egui::pos2(BAND_LEFT - r.x as f32, RASTER_TOP - r.y as f32);
+        draw_right(ui, origin, composed);
     })
 }
 

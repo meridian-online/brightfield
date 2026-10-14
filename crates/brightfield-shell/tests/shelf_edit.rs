@@ -20,7 +20,7 @@ use brightfield_render::VelloRenderer;
 use brightfield_shell::chart_kinds;
 use brightfield_shell::data_file::{self, OpenedFile};
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{band_width, LegendSpec};
+use brightfield_shell::legend::{right_band_width, LegendSpec};
 use brightfield_shell::pipeline::LiveDashboard;
 use brightfield_shell::shelf_edit::{put_colour, put_column, ShelfRefusal};
 use brightfield_shell::startup::default_layout;
@@ -960,8 +960,8 @@ fn hero_legend(app: &MeridianApp) -> Option<LegendSpec> {
 
 /// **A page loaded from the edited spec draws a sequential legend for the colour
 /// column beside the plot, and a column put on colour afterwards moves the
-/// legend's ends.** The legend spans the column, the band the page reserved for
-/// it holds it, and the band is clear of the raster the map is drawn on.
+/// legend's ends.** The legend spans the column, the band the map gave up for
+/// it holds it, and the band is beside the map, clear of it.
 #[test]
 fn a_column_put_on_the_maps_colour_draws_a_legend_beside_the_plot_and_a_replaced_colour_moves_it() {
     let o = open("colour-legend");
@@ -976,17 +976,21 @@ fn a_column_put_on_the_maps_colour_draws_a_legend_beside_the_plot_and_a_replaced
     };
     let beside_the_plot = |app: &MeridianApp| {
         let doc = app.chart_doc();
-        let (legend, raster) = (
+        let (legend, map) = (
             doc.legend_rect.expect("the page recorded no legend band"),
-            doc.raster_rect.expect("the page recorded no raster"),
+            app.composed_plot_rects()[0],
         );
         assert!(
-            band_width(&doc.composed) > 0.0,
-            "a legend was derived and no band was reserved for it"
+            doc.composed.plots[0].legend_right.is_some(),
+            "a legend was derived and no band was given up for it"
         );
         assert!(
-            !legend.intersects(raster),
-            "the legend band {legend:?} overlaps the raster {raster:?}: a legend is on the data"
+            !legend.intersects(map),
+            "the legend band {legend:?} overlaps the map {map:?}: a legend is on the data"
+        );
+        assert!(
+            legend.left() >= map.right() && legend.left() - map.right() <= right_band_width(),
+            "the legend band {legend:?} is not beside the map {map:?}"
         );
     };
 
@@ -999,7 +1003,7 @@ fn a_column_put_on_the_maps_colour_draws_a_legend_beside_the_plot_and_a_replaced
     assert_eq!(
         plain.chart_doc().legend_rect,
         None,
-        "the generated map already reserves a legend band"
+        "the generated map already gives up a legend band"
     );
 
     let by_value = page(&[VALUE]);
@@ -1060,8 +1064,11 @@ fn a_page_loaded_from_a_chart_holding_the_legend_item_draws_it_and_one_without_t
         "the chart holding the item drew no sequential legend: {:?}",
         hero_legend(&with)
     );
-    let band = band_width(&with.chart_doc().composed);
-    assert!(band > 0.0, "the chart holding the item reserved no band");
+    let band = right_band_width();
+    assert!(
+        with.chart_doc().composed.plots[0].legend_right.is_some(),
+        "the chart holding the item gave up no band"
+    );
     assert!(
         with.chart_doc().legend_rect.is_some(),
         "the chart holding the item recorded no legend band"
@@ -1073,9 +1080,9 @@ fn a_page_loaded_from_a_chart_holding_the_legend_item_draws_it_and_one_without_t
         "the chart with the item taken out drew a legend"
     );
     assert_eq!(
-        band_width(&without.chart_doc().composed),
-        0.0,
-        "the chart with the item taken out reserved a band"
+        without.chart_doc().composed.plots[0].legend_right,
+        None,
+        "the chart with the item taken out gave up a band"
     );
     assert_eq!(
         without.chart_doc().legend_rect,
@@ -1089,8 +1096,8 @@ fn a_page_loaded_from_a_chart_holding_the_legend_item_draws_it_and_one_without_t
         "taking the item out took the colour scale with it"
     );
     let (r_with, r_without) = (
-        with.chart_doc().raster_rect.expect("a raster"),
-        without.chart_doc().raster_rect.expect("a raster"),
+        with.composed_plot_rects()[0],
+        without.composed_plot_rects()[0],
     );
     assert!(
         r_without.width() >= r_with.width() + band - 1.0,
@@ -1147,8 +1154,8 @@ fn a_chart_coloured_from_the_shelf_draws_its_legend_after_the_edit_and_after_the
             hero_legend(page)
         );
         assert!(
-            band_width(&page.chart_doc().composed) > 0.0,
-            "{when}: no band was reserved for the legend"
+            page.chart_doc().composed.plots[0].legend_right.is_some(),
+            "{when}: no band was given up for the legend"
         );
         assert!(
             page.chart_doc().legend_rect.is_some(),

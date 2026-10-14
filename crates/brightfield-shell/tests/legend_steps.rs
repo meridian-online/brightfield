@@ -4,7 +4,7 @@
 //! boundaries under them.** The stack is as tall as the continuous ramp a number
 //! column draws in the same room, to within the rounding.
 //!
-//! The legend is drawn through `legend::draw_band` and `legend::draw_below` into a
+//! The legend is drawn through `legend::draw_right` and `legend::draw_below` into a
 //! headless egui context and read back as the shapes it painted, as
 //! `legend_short_chart.rs` and `legend_below.rs` do for the ramp. Each test is
 //! about where ink went.
@@ -15,8 +15,8 @@ use brightfield_render::channel::Channel;
 use brightfield_render::scale::Scale;
 use brightfield_shell::design::Mode;
 use brightfield_shell::legend::{
-    band_width, below_blocks, draw_band, draw_below, kept_labels, step_block_size,
-    BELOW_RAMP_MAX_WIDTH, RAMP_HEIGHT,
+    below_blocks, draw_below, draw_right, kept_labels, step_block_size, BELOW_RAMP_MAX_WIDTH,
+    RAMP_HEIGHT,
 };
 use brightfield_shell::pipeline::{compose_spec_str, Composed};
 
@@ -108,15 +108,27 @@ fn shapes(run: impl FnOnce(&mut egui::Ui)) -> Vec<Ink> {
     ink
 }
 
-/// What `draw_band` paints for `composed`: the band the chart pane reserves is
-/// level with the raster and as tall as the chart.
-fn at_right(composed: &Composed) -> Vec<Ink> {
+/// The band `composed`'s first plot gave up for its legend, placed with its
+/// top-left corner at ([`BAND_LEFT`], [`RASTER_TOP`]), and the page origin that
+/// puts it there for `draw_right`.
+fn placed_band(composed: &Composed) -> (egui::Pos2, egui::Rect) {
+    let r = composed.plots[0]
+        .legend_right
+        .expect("the plot gave up a band for its legend");
+    let origin = egui::pos2(BAND_LEFT - r.x as f32, RASTER_TOP - r.y as f32);
     let band = egui::Rect::from_min_size(
         egui::pos2(BAND_LEFT, RASTER_TOP),
-        egui::vec2(band_width(composed), composed.height as f32),
+        egui::vec2(r.width as f32, r.height as f32),
     );
+    (origin, band)
+}
+
+/// What `draw_right` paints for `composed`: the band the plot gave up is level
+/// with the plot and as tall as it.
+fn at_right(composed: &Composed) -> Vec<Ink> {
+    let (origin, _) = placed_band(composed);
     shapes(|ui| {
-        draw_band(ui, band, RASTER_TOP, composed, Mode::Light);
+        draw_right(ui, origin, composed);
     })
 }
 
