@@ -17,7 +17,9 @@
 
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{blocks, draw_right, right_band_width, right_blocks, LegendSpec};
+use brightfield_shell::legend::{
+    block_width, blocks, draw_right, right_band_width, right_blocks, LegendSpec,
+};
 use brightfield_shell::pipeline::{compose_spec_str, compose_spec_str_at, Composed, LiveDashboard};
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -443,6 +445,10 @@ fn a_plot_laid_out_too_narrow_for_its_band_shares_its_box_with_it() {
     let band = egui::Rect::from_min_size(
         egui::pos2(band.x as f32, band.y as f32),
         egui::vec2(band.width as f32, band.height as f32),
+    );
+    assert!(
+        band.width() < block_width(),
+        "the band {band:?} holds a whole block, so the cut is not tested"
     );
     assert_eq!(drawn.len(), 1, "one legend drawn: {drawn:?}");
     assert!(
