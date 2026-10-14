@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use brightfield_shell::capture::capture_png;
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{band_width, legend_name};
+use brightfield_shell::legend::{legend_name, right_blocks};
 use brightfield_shell::pipeline::compose_spec_str;
 use brightfield_shell::window::Boot;
 
@@ -53,7 +53,7 @@ fn baseline(name: &str, mode: Mode, block: &str, word: &str) {
         "{name}: the legend's name"
     );
     assert!(
-        band_width(&composed) > 0.0,
+        !right_blocks(&composed).is_empty(),
         "{name}: no band for the legend"
     );
 

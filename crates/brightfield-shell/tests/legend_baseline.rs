@@ -25,7 +25,7 @@ use brightfield_engine::ProfileOutcome;
 use brightfield_shell::capture::capture_png;
 use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{band_width, LegendSpec};
+use brightfield_shell::legend::{right_blocks, LegendSpec};
 use brightfield_shell::pipeline::LiveDashboard;
 use brightfield_shell::shelf_edit::put_colour;
 use brightfield_shell::window::Boot;
@@ -126,14 +126,17 @@ fn coloured_hero(with_item: bool, diverging: bool) -> Boot {
             is_the_scale(LegendSpec::of_plot(&composed.plots[0]), diverging),
             "the hero holding the item draws no legend of the scale it was given"
         );
-        assert!(band_width(&composed) > 0.0, "no band for the legend");
+        assert!(
+            composed.plots[0].legend_right.is_some(),
+            "the hero gave up no band for the legend"
+        );
     } else {
         assert_eq!(
             LegendSpec::of_plot(&composed.plots[0]),
             None,
             "the hero without the item draws a legend"
         );
-        assert_eq!(band_width(&composed), 0.0, "a band for no legend");
+        assert!(right_blocks(&composed).is_empty(), "a band for no legend");
     }
 
     let mut boot = Boot::charts(composed);

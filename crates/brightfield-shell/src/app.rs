@@ -949,8 +949,10 @@ pub struct ChartDoc {
     /// reason [`Self::viewport`] is: the no-legend-overlaps-data exercise
     /// holds disjointness over rects a real layout pass produced.
     pub raster_rect: Option<egui::Rect>,
-    /// The rect the legend band occupied last frame — `None` when the
-    /// dashboard calls for no legend, which is itself an assertable fact.
+    /// The band the hero's legend at its right occupied last frame, in
+    /// window-space logical points — `None` when the hero draws no legend
+    /// there, which is itself an assertable fact. Inside the raster, beside
+    /// the hero's rect: the hero gave the band up out of its own box.
     pub legend_rect: Option<egui::Rect>,
     /// **Each histogram tile's scale switch, as the last frame drew it** — see
     /// [`ScaleSwitchDrawn`].

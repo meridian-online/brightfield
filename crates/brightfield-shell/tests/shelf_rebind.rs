@@ -567,14 +567,15 @@ fn e_c_and_keeping_median_house_value_paints_the_points_with_a_legend_beside_the
     let Some(LegendSpec::Sequential { .. }) = LegendSpec::from_scales(&win.hero().scales) else {
         panic!("the hero derives no sequential legend for median_house_value");
     };
-    let doc = win.app.chart_doc();
-    let (legend, raster) = (
-        doc.legend_rect.expect("the page reserved no legend band"),
-        doc.raster_rect.expect("the page recorded no raster"),
-    );
+    let legend = win
+        .app
+        .chart_doc()
+        .legend_rect
+        .expect("the hero gave up no legend band");
+    let hero = win.app.composed_plot_rects()[0];
     assert!(
-        legend.left() >= raster.right() - 0.5,
-        "the legend {legend:?} is not beside the plot's raster {raster:?}"
+        legend.left() >= hero.right() - 0.5,
+        "the legend {legend:?} is not beside the hero {hero:?}"
     );
     assert!(
         win.cell_names(ShelfChannel::Colour, VALUE),

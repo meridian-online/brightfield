@@ -3,7 +3,7 @@
 //! of a coloured chart is told what the colour measures by the legend itself,
 //! because a saved picture and the audience it is shown to do not see the shelf.
 //!
-//! The legend is drawn through `legend::draw_band` over a composed page, into a
+//! The legend is drawn through `legend::draw_right` over a composed page, into a
 //! headless egui context, and read back as the shapes it painted: the text a
 //! reader would read and the strips of the ramp, each at the point it was placed.
 //! So every fact here is a fact about where ink went, which is what a green
@@ -14,8 +14,7 @@
 
 use brightfield_shell::design::Mode;
 use brightfield_shell::legend::{
-    band_width, block_width, draw_band, draw_below_block, ramp_strip_colours, LegendSpec,
-    RAMP_HEIGHT,
+    block_width, draw_below_block, draw_right, ramp_strip_colours, LegendSpec, RAMP_HEIGHT,
 };
 use brightfield_shell::pipeline::{compose_spec_str, Composed};
 use brightfield_spec::layout::BELOW_LEGEND_HEIGHT;
@@ -76,13 +75,25 @@ impl Ink {
     }
 }
 
-/// What `draw_band` paints for `composed`, in paint order, with the band it was
-/// given: the band starts at [`BAND_LEFT`] and is as wide as the page reserves.
-fn painted(composed: &Composed) -> (egui::Rect, Vec<Ink>) {
+/// The band `composed`'s first plot gave up for its legend, placed with its
+/// top-left corner at ([`BAND_LEFT`], [`RASTER_TOP`]), and the page origin that
+/// puts it there for `draw_right`.
+fn placed_band(composed: &Composed) -> (egui::Pos2, egui::Rect) {
+    let r = composed.plots[0]
+        .legend_right
+        .expect("the plot gave up a band for its legend");
+    let origin = egui::pos2(BAND_LEFT - r.x as f32, RASTER_TOP - r.y as f32);
     let band = egui::Rect::from_min_size(
         egui::pos2(BAND_LEFT, RASTER_TOP),
-        egui::vec2(band_width(composed), 600.0),
+        egui::vec2(r.width as f32, r.height as f32),
     );
+    (origin, band)
+}
+
+/// What `draw_right` paints for `composed`, in paint order, with the band it
+/// drew into: the band starts at [`BAND_LEFT`] and is the one the plot gave up.
+fn painted(composed: &Composed) -> (egui::Rect, Vec<Ink>) {
+    let (origin, band) = placed_band(composed);
     let ctx = egui::Context::default();
     let raw = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
@@ -92,7 +103,7 @@ fn painted(composed: &Composed) -> (egui::Rect, Vec<Ink>) {
         ..Default::default()
     };
     let out = ctx.run_ui(raw, |ui| {
-        draw_band(ui, band, RASTER_TOP, composed, Mode::Light);
+        draw_right(ui, origin, composed);
     });
     (band, ink_of(&out))
 }
@@ -309,8 +320,7 @@ fn a_long_name_is_cut_short_inside_the_column_and_the_band_stays_as_wide() {
     let composed = compose(&page(long, long, ""));
     assert_eq!(composed.plots[0].fill_column.as_deref(), Some(long));
     assert_eq!(
-        band_width(&composed),
-        band_width(&short),
+        composed.plots[0].rect.width, short.plots[0].rect.width,
         "a long name widened the band"
     );
 

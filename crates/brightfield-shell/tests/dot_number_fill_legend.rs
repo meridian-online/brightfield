@@ -4,7 +4,7 @@
 //!
 //! The shell's legend reads the plot's *fill scale* (`LegendSpec::from_scales`),
 //! and a dot's number fill used to leave that scale a `Linear` — which the
-//! legend derives no legend from — so the page drew no legend and no reserved band. The
+//! legend derives no legend from — so the page drew no legend and gave up no band. The
 //! paint itself is held in `brightfield-render`'s `tests/dot_number_fill.rs`,
 //! over the renderer; this file holds the other half through the real pipeline:
 //! spec text → DuckDB → per-plot scales → the legend and the band it reserves.
@@ -18,7 +18,7 @@ use brightfield_render::channel::Channel;
 use brightfield_render::scale::Scale;
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{band_width, LegendSpec};
+use brightfield_shell::legend::{right_blocks, LegendSpec};
 use brightfield_shell::pipeline::{compose_spec_str, Composed};
 use brightfield_shell::window::{chart_window_size, Boot, MeridianApp};
 
@@ -56,8 +56,8 @@ fn compose(layers: &str) -> Composed {
 }
 
 /// One headless layout pass at the window the shell would ask for, returning
-/// the document with its recorded rects.
-fn laid_out(composed: Composed) -> ChartDoc {
+/// the document with its recorded rects and the plot's rect in window space.
+fn laid_out(composed: Composed) -> (ChartDoc, egui::Rect) {
     let (w, h) = chart_window_size(&composed);
     let mut app = MeridianApp::headless(Boot::charts(composed), Mode::Light);
     let ctx = egui::Context::default();
@@ -71,17 +71,18 @@ fn laid_out(composed: Composed) -> ChartDoc {
     for _ in 0..2 {
         let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
     }
+    let plot = app.composed_plot_rects()[0];
     let doc = app.chart_doc();
     let mut out = ChartDoc::headless(Composed::empty());
     out.viewport = doc.viewport;
     out.raster_rect = doc.raster_rect;
     out.legend_rect = doc.legend_rect;
-    out
+    (out, plot)
 }
 
 /// **AC1.** A dot filled by a number column draws a sequential legend, and the
 /// legend is the fill scale the marks were painted against — its ends span the
-/// column's values — in a band beside the raster, not on it.
+/// column's values — in a band beside the plot, not on it.
 #[test]
 fn a_number_fill_on_a_dot_draws_a_sequential_legend_beside_the_plot() {
     let composed = compose(&with_legend(&dot("v")));
@@ -112,16 +113,16 @@ fn a_number_fill_on_a_dot_draws_a_sequential_legend_beside_the_plot() {
     );
 
     assert!(
-        band_width(&composed) > 0.0,
-        "a legend was derived but no band was reserved for it"
+        !right_blocks(&composed).is_empty(),
+        "a legend was derived but no band was given up for it"
     );
-    let doc = laid_out(composed);
+    let (doc, plot) = laid_out(composed);
     let raster = doc.raster_rect.expect("the raster's rect is recorded");
     let legend = doc.legend_rect.expect("the legend's band is recorded");
     let viewport = doc.viewport.expect("the pane's content box is recorded");
     assert!(
-        !legend.intersects(raster),
-        "the legend band {legend:?} overlaps the raster {raster:?} — a legend is on the data"
+        !legend.intersects(plot),
+        "the legend band {legend:?} overlaps the plot {plot:?} — a legend is on the data"
     );
     assert!(
         viewport.contains_rect(legend) && viewport.contains_rect(raster),
@@ -156,7 +157,7 @@ fn a_literal_ghost_layer_leaves_the_second_layers_ramp_and_its_legend() {
     }
 }
 
-/// **AC3, through the pipeline.** A literal fill draws no legend and reserves no
+/// **AC3, through the pipeline.** A literal fill draws no legend and gives up no
 /// band; a string column draws the categorical legend it drew before.
 #[test]
 fn a_literal_fill_and_a_string_fill_draw_the_legends_they_drew_before() {
@@ -165,7 +166,10 @@ fn a_literal_fill_and_a_string_fill_draw_the_legends_they_drew_before() {
         LegendSpec::from_scales(&literal.plots[0].scales).is_none(),
         "a literal fill drew a legend"
     );
-    assert_eq!(band_width(&literal), 0.0, "a literal fill reserved a band");
+    assert!(
+        right_blocks(&literal).is_empty(),
+        "a literal fill gave up a band"
+    );
 
     let by_string = compose(&dot("g"));
     match LegendSpec::from_scales(&by_string.plots[0].scales) {

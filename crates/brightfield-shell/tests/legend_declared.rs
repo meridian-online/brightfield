@@ -4,8 +4,8 @@
 //! say no legend. A plot now draws its legend when its own items hold a
 //! `legend: color`, when a standalone colour legend names it by `for:`, or when
 //! a standalone colour legend with no `for:` stands in a file whose one plot
-//! with a colour scale it is; and the band the legend sits in is reserved for
-//! such a plot and no other.
+//! with a colour scale it is; and such a plot, and no other, gives up the band
+//! at its right that the legend sits in.
 //!
 //! What a legend shows is still read from the plot's scales, so an item over a
 //! plot with no colour scale draws nothing. The tests here hold both halves
@@ -17,7 +17,7 @@
 
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{band_width, blocks, LegendSpec};
+use brightfield_shell::legend::{blocks, right_band_width, right_blocks, LegendSpec};
 use brightfield_shell::pipeline::{compose_spec_str, Composed, LiveDashboard};
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -76,9 +76,16 @@ fn drawn(composed: &Composed) -> Vec<Option<LegendSpec>> {
     out
 }
 
+/// What a headless layout recorded: the document's rects, and the first plot's
+/// rect in window space.
+struct Laid {
+    doc: ChartDoc,
+    plot: egui::Rect,
+}
+
 /// `source` settled in [`WINDOW`] over a live document, so the pane re-lays the
 /// chart into the room it has left, and the rects that layout recorded.
-fn laid_out(source: &str) -> ChartDoc {
+fn laid_out(source: &str) -> Laid {
     let mut live = LiveDashboard::load_str(source, None).expect("loads live");
     let composed = live.present().expect("first paint");
     let boot = Boot {
@@ -97,19 +104,20 @@ fn laid_out(source: &str) -> ChartDoc {
     for _ in 0..4 {
         let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
     }
+    let plot = app.composed_plot_rects()[0];
     let doc = app.chart_doc();
     let mut out = ChartDoc::headless(Composed::empty());
     out.raster_rect = doc.raster_rect;
     out.legend_rect = doc.legend_rect;
-    out
+    Laid { doc: out, plot }
 }
 
 /// A plot with `fill`, composed and laid out with the legend item and without it.
 struct Pair {
     with: Composed,
     without: Composed,
-    with_doc: ChartDoc,
-    without_doc: ChartDoc,
+    with_doc: Laid,
+    without_doc: Laid,
 }
 
 fn pair(fill: &str) -> Pair {
@@ -123,19 +131,25 @@ fn pair(fill: &str) -> Pair {
     }
 }
 
-/// The rect of the legend band must sit to the right of the raster.
-fn at_the_right(doc: &ChartDoc, what: &str) {
-    let raster = doc.raster_rect.expect("a raster");
-    let legend = doc.legend_rect.expect("a legend band");
+/// The rect of the legend band must sit to the right of the plot, inside the
+/// raster the plot is drawn in.
+fn at_the_right(laid: &Laid, what: &str) {
+    let raster = laid.doc.raster_rect.expect("a raster");
+    let legend = laid.doc.legend_rect.expect("a legend band");
+    let plot = laid.plot;
     assert!(
-        legend.min.x >= raster.max.x,
-        "{what}: the legend band {legend:?} is not at the right of the raster {raster:?}"
+        legend.min.x >= plot.max.x,
+        "{what}: the legend band {legend:?} is not at the right of the plot {plot:?}"
+    );
+    assert!(
+        raster.expand(0.5).contains_rect(legend),
+        "{what}: the legend band {legend:?} leaves the raster {raster:?}"
     );
 }
 
 /// **AC1.** A number column on `fill` with the item draws its sequential legend
-/// in the margin at the right; the same plot with the item taken out draws none,
-/// reserves no band, and the plot takes the width the band held.
+/// in a band at its right; the same plot with the item taken out draws none,
+/// gives up no band, and the plot takes the width the band held.
 #[test]
 fn a_number_fill_draws_its_legend_with_the_item_and_none_without_it() {
     let p = pair("v");
@@ -145,8 +159,10 @@ fn a_number_fill_draws_its_legend_with_the_item_and_none_without_it() {
         "the plot holding the item drew {:?}",
         drawn(&p.with)
     );
-    let band = band_width(&p.with);
-    assert!(band > 0.0, "the plot holding the item reserved no band");
+    assert!(
+        p.with.plots[0].legend_right.is_some(),
+        "the plot holding the item gave up no band"
+    );
     at_the_right(&p.with_doc, "with the item");
 
     assert_eq!(
@@ -155,12 +171,11 @@ fn a_number_fill_draws_its_legend_with_the_item_and_none_without_it() {
         "the plot without the item drew a legend"
     );
     assert_eq!(
-        band_width(&p.without),
-        0.0,
-        "the plot without the item reserved a band"
+        p.without.plots[0].legend_right, None,
+        "the plot without the item gave up a band"
     );
     assert_eq!(
-        p.without_doc.legend_rect, None,
+        p.without_doc.doc.legend_rect, None,
         "the plot without the item recorded a legend band"
     );
     // The colour is still on the marks: the file said no legend, not no colour.
@@ -169,10 +184,8 @@ fn a_number_fill_draws_its_legend_with_the_item_and_none_without_it() {
         "taking the item out took the colour scale with it"
     );
 
-    let (r_with, r_without) = (
-        p.with_doc.raster_rect.expect("a raster"),
-        p.without_doc.raster_rect.expect("a raster"),
-    );
+    let band = right_band_width();
+    let (r_with, r_without) = (p.with_doc.plot, p.without_doc.plot);
     assert!(
         r_without.width() >= r_with.width() + band - 1.0,
         "the plot did not take the width the band held: {} with the item, {} without, band {band}",
@@ -195,18 +208,21 @@ fn a_string_fill_draws_swatches_with_the_item_and_none_without_it() {
         other => panic!("the plot holding the item drew {other:?}"),
     }
     assert!(
-        band_width(&p.with) > 0.0,
-        "the plot holding the item reserved no band"
+        !right_blocks(&p.with).is_empty(),
+        "the plot holding the item gave up no band"
     );
     at_the_right(&p.with_doc, "with the item");
 
     assert_eq!(drawn(&p.without), vec![None], "swatches drawn with no item");
-    assert_eq!(band_width(&p.without), 0.0, "a band reserved with no item");
-    assert_eq!(p.without_doc.legend_rect, None);
+    assert!(
+        right_blocks(&p.without).is_empty(),
+        "a band given up with no item"
+    );
+    assert_eq!(p.without_doc.doc.legend_rect, None);
 }
 
 /// **AC3.** An item over a plot with no colour scale draws no legend and
-/// reserves no band: a literal fill, no fill at all, and an item for another
+/// gives up no band, so the plot keeps its whole box: a literal fill, no fill at all, and an item for another
 /// channel over a plot that does have a colour scale.
 #[test]
 fn an_item_over_a_plot_with_no_colour_scale_draws_nothing() {
@@ -215,7 +231,14 @@ fn an_item_over_a_plot_with_no_colour_scale_draws_nothing() {
         dot("\"#aaaaaa\"", 2)
     )));
     assert_eq!(drawn(&literal), vec![None], "a literal fill drew a legend");
-    assert_eq!(band_width(&literal), 0.0, "a literal fill reserved a band");
+    assert_eq!(
+        literal.plots[0].legend_right, None,
+        "a literal fill gave up a band"
+    );
+    assert_eq!(
+        literal.plots[0].rect.width, 420.0,
+        "a literal fill's plot is drawn narrower than its box"
+    );
 
     let none = compose(&one_plot(
         "  - mark: dot\n    data: { from: t }\n    x: x\n    y: y\n  - legend: color\n",
@@ -226,9 +249,8 @@ fn an_item_over_a_plot_with_no_colour_scale_draws_nothing() {
         "a plot with no fill drew a legend"
     );
     assert_eq!(
-        band_width(&none),
-        0.0,
-        "a plot with no fill reserved a band"
+        none.plots[0].legend_right, None,
+        "a plot with no fill gave up a band"
     );
 
     let opacity = compose(&one_plot(&format!("{}  - legend: opacity\n", dot("v", 2))));
@@ -238,9 +260,8 @@ fn an_item_over_a_plot_with_no_colour_scale_draws_nothing() {
         "an opacity legend put a colour legend on the plot"
     );
     assert_eq!(
-        band_width(&opacity),
-        0.0,
-        "an opacity legend reserved a band"
+        opacity.plots[0].legend_right, None,
+        "an opacity legend gave up a band"
     );
 }
 
@@ -259,8 +280,8 @@ fn a_standalone_legend_that_names_its_plot_by_for_keeps_the_legend_at_its_right(
         other => panic!("the named plot drew {other:?}"),
     }
     assert!(
-        band_width(&composed) > 0.0,
-        "the named plot reserved no band"
+        composed.plots[0].legend_right.is_some(),
+        "the named plot gave up no band"
     );
     at_the_right(&laid_out(&source), "named by for:");
 }
@@ -281,7 +302,10 @@ fn a_standalone_legend_with_no_for_belongs_to_the_files_one_colour_plot() {
         "the one colour plot drew {:?}",
         drawn(&alone)
     );
-    assert!(band_width(&alone) > 0.0, "no band for the one colour plot");
+    assert!(
+        alone.plots[0].legend_right.is_some(),
+        "no band for the one colour plot"
+    );
     at_the_right(&laid_out(&alone_source), "one colour plot, no for:");
 
     let beside = compose(&format!(
@@ -297,6 +321,14 @@ fn a_standalone_legend_with_no_for_belongs_to_the_files_one_colour_plot() {
         matches!(d[1], Some(LegendSpec::Categorical { .. })),
         "the file's one colour plot drew {:?}",
         d[1]
+    );
+    assert_eq!(
+        (
+            beside.plots[0].legend_right,
+            beside.plots[1].legend_right.is_some()
+        ),
+        (None, true),
+        "the band is not the file's one colour plot's alone"
     );
 }
 
@@ -316,7 +348,14 @@ fn a_standalone_legend_with_no_for_among_two_colour_plots_belongs_to_neither() {
         vec![None, None],
         "an unnamed legend picked a plot out of two"
     );
-    assert_eq!(band_width(&two), 0.0, "an unnamed legend reserved a band");
+    assert!(
+        right_blocks(&two).is_empty(),
+        "an unnamed legend gave up a band"
+    );
+    assert!(
+        two.plots.iter().all(|p| p.legend_right.is_none()),
+        "a plot gave up a band for a legend it does not draw"
+    );
 
     let opacity = compose(&format!(
         "{}hconcat:\n{}  - legend: opacity\n",
@@ -348,5 +387,12 @@ fn a_standalone_legend_that_names_one_plot_leaves_the_other_without() {
         "the plot the legend names drew {:?}",
         d[1]
     );
-    assert!(band_width(&composed) > 0.0, "no band for the named plot");
+    assert_eq!(
+        (
+            composed.plots[0].legend_right,
+            composed.plots[1].legend_right.is_some()
+        ),
+        (None, true),
+        "the band is not the named plot's alone"
+    );
 }

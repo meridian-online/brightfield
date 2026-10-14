@@ -5,9 +5,9 @@
 #
 #   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/legend-standalone.yaml --out legend.png --vello-only
 #
-# The shell draws that legend in a band it reserves at the right of the plot's
-# raster, outside the data. The node says the plot has a legend and `for:` says
-# which plot it is, so the scale appears once, on the far right.
+# The shell draws that legend in a band the plot gives up at its right, outside
+# the data. The node says the plot has a legend and `for:` says which plot it
+# is, so the scale appears once, beside that plot.
 data:
   t:
     - { x: 1, y: 3, grp: alpha }

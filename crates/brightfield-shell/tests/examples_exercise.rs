@@ -1,10 +1,10 @@
 //! The examples exercise: every chart spec in `examples/*.yaml`, composed and
 //! laid out, held to the legend law — **no legend overlaps data, anywhere.**
 //!
-//! GPU-free on purpose. The law is geometric — the legend band is a rect the
-//! chart pane reserves *beside* the raster, outside the plot rect — so it can
-//! be held over rects a real layout pass produced, for every example at once,
-//! in a test that runs without an adapter. (What the band's pixels look like
+//! GPU-free on purpose. The law is geometric — the legend band is a rect a plot
+//! gives up at its right, outside its own rect — so it can be held over rects
+//! a real composition and layout pass produced, for every example at once, in
+//! a test that runs without an adapter. (What the band's pixels look like
 //! is the pixel tier's question; whether they can sit on the data is settled
 //! here, structurally.)
 //!
@@ -12,12 +12,12 @@
 //! `chart_window_size` asks for, two frames run (font atlas + layout settle,
 //! as the capture path does), and the recorded rects read back:
 //!
-//! - the raster rect and the legend rect are **disjoint** — the margin panel
-//!   is outside the data by layout, not by hope;
-//! - both sit inside the pane's content box — the window budgeted for the
-//!   band rather than letting it bite the raster;
-//! - a spec whose scales call for no legend, or whose file puts none on the
-//!   plot, reserves **no** band at all.
+//! - each legend band and every plot rect are **disjoint** — the legend is
+//!   outside the data by layout, not by hope;
+//! - each band sits on the page, and the raster and the hero's band sit inside
+//!   the pane's content box;
+//! - a plot whose scales call for no legend, or whose file puts none on it,
+//!   gives up **no** band at all.
 //!
 //! Accuracy rides the same pass: each plot's legend derivation is compared
 //! against the scale set that plot was composed with — entries exactly the
@@ -35,9 +35,10 @@ use brightfield_render::channel::Channel;
 use brightfield_render::scale::Scale;
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{band_width, blocks, legend_name, LegendSpec};
+use brightfield_shell::legend::{blocks, legend_name, right_blocks, LegendSpec};
 use brightfield_shell::pipeline::{compose_spec, Composed};
 use brightfield_shell::window::{chart_window_size, Boot, MeridianApp};
+use brightfield_spec::layout::Rect;
 
 /// Every top-level example spec, by path. `examples/protocol/` and
 /// `examples/live/` are other views' fixtures; the chart pipeline's corpus is
@@ -123,30 +124,64 @@ fn no_legend_overlaps_data_in_any_example() {
 
     let mut with_legend = 0usize;
     for (name, composed) in composed {
-        let banded = band_width(&composed) > 0.0;
+        // On the page plane: each band is clear of every plot, its own
+        // included, and on the page; and a plot that draws no legend at its
+        // right gave up no band for one.
+        let banded = right_blocks(&composed);
+        for (i, plot) in composed.plots.iter().enumerate() {
+            let drawn = banded.iter().any(|(at, _, _)| *at == i);
+            assert_eq!(
+                plot.legend_right.is_some(),
+                drawn,
+                "{name}: plot {i} gave up a band {:?} for a legend it draws: {drawn}",
+                plot.legend_right
+            );
+        }
+        let page = Rect::new(
+            0.0,
+            0.0,
+            f64::from(composed.width),
+            f64::from(composed.height),
+        );
+        for (i, _, band) in &banded {
+            for (j, plot) in composed.plots.iter().enumerate() {
+                assert!(
+                    !overlaps(band, &plot.rect),
+                    "{name}: plot {i}'s legend band {band:?} overlaps plot {j}'s rect \
+                     {:?} — a legend is sitting on the data",
+                    plot.rect
+                );
+            }
+            assert!(
+                within(band, &page),
+                "{name}: plot {i}'s legend band {band:?} leaves the page {page:?}"
+            );
+        }
+        let hero_banded = composed
+            .plots
+            .first()
+            .is_some_and(|p| p.legend_right.is_some());
+
         let doc = laid_out(composed);
         let raster = doc.raster_rect.expect("recorded");
         let viewport = doc.viewport.expect("recorded");
-
         match doc.legend_rect {
             Some(legend) => {
-                assert!(banded, "{name}: a band was drawn though no plot holds a legend that its scales call for");
-                with_legend += 1;
                 assert!(
-                    !legend.intersects(raster),
-                    "{name}: the legend band {legend:?} overlaps the raster \
-                     {raster:?} — a legend is sitting on the data"
+                    hero_banded,
+                    "{name}: a band was drawn though the first plot gave up none"
                 );
+                with_legend += 1;
                 assert!(
                     viewport.contains_rect(legend),
                     "{name}: the legend band {legend:?} leaves the pane's \
-                     content box {viewport:?} — the window did not budget it"
+                     content box {viewport:?}"
                 );
             }
             None => {
                 assert!(
-                    !banded,
-                    "{name}: a legend was drawn but no band was reserved for it"
+                    !hero_banded,
+                    "{name}: the first plot gave up a band and none was recorded"
                 );
             }
         }
@@ -160,6 +195,20 @@ fn no_legend_overlaps_data_in_any_example() {
         "only {with_legend} examples produced a margin legend — the law was \
          held over almost nothing"
     );
+}
+
+/// Whether two page-plane rects share any area. Rects that only touch along an
+/// edge do not.
+fn overlaps(a: &Rect, b: &Rect) -> bool {
+    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+}
+
+/// Whether `inner` lies inside `outer`, to within half a point.
+fn within(inner: &Rect, outer: &Rect) -> bool {
+    inner.x >= outer.x - 0.5
+        && inner.y >= outer.y - 0.5
+        && inner.x + inner.width <= outer.x + outer.width + 0.5
+        && inner.y + inner.height <= outer.y + outer.height + 0.5
 }
 
 /// Accuracy, per plot: the margin legend is the displayed scale, verbatim —
@@ -226,7 +275,7 @@ fn declares_colour_legend(text: &str) -> bool {
 /// **The file decides, over the corpus.** An example whose text holds no
 /// `legend: color` line draws no legend, though its scales may call for one; an
 /// example that holds one over a plot with a colour scale draws that plot's
-/// legend, at the right of the raster and clear of it, whether the item stands
+/// legend, at the right of the plot and clear of it, whether the item stands
 /// in the plot or beside it as a standalone legend in an `hconcat`. A
 /// standalone legend under its plot in a `vconcat` draws under it instead, which
 /// `legend_below.rs` holds.
@@ -264,13 +313,13 @@ fn an_example_draws_a_legend_when_its_file_holds_a_colour_legend_node() {
             "{name}: the file holds a legend node over a plot with a colour scale, \
              and no legend was drawn"
         );
-        let doc = laid_out(composed);
-        let raster = doc.raster_rect.expect("recorded");
-        let legend = doc.legend_rect.expect("a legend band was recorded");
-        assert!(
-            legend.min.x >= raster.max.x,
-            "{name}: the legend band {legend:?} is not at the right of the raster {raster:?}"
-        );
+        for (i, _, band) in right_blocks(&composed) {
+            let plot = composed.plots[i].rect;
+            assert!(
+                band.x >= plot.x + plot.width,
+                "{name}: the legend band {band:?} is not at the right of plot {i}'s rect {plot:?}"
+            );
+        }
     }
     assert!(
         with_node >= 3,

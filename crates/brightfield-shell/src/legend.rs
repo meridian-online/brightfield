@@ -15,13 +15,18 @@
 //! ([`crate::pipeline`] passes `draw_inline_legend = false`), and this module
 //! is the only legend there is: one block per chart, derived from the
 //! [`ScaleSet`] that chart was *actually drawn against* — the same value, not
-//! a re-inference — placed in a reserved band beside the raster. Accuracy is
-//! structural: the swatch colours are the palette the marks were painted with,
-//! byte for byte, and the labels are the scale's own categories.
+//! a re-inference — placed in a band at the right of the plot it is for. Accuracy
+//! is structural: the swatch colours are the palette the marks were painted
+//! with, byte for byte, and the labels are the scale's own categories.
 //!
-//! The band is outside the presented raster by construction, which is what
-//! makes "no legend overlaps data" a property a headless test can hold over
-//! every example spec rather than a hope about pixel placement.
+//! The plot gives that band up out of its own box ([`carve_right`]): the
+//! composition draws the plot in what is left and records the band on its
+//! handle ([`PlotHandle::legend_right`]). So the band is outside every plot's
+//! rect by construction, which is what makes "no legend overlaps data" a
+//! property a headless test can hold over every example spec rather than a hope
+//! about pixel placement. And it stands beside its own plot, wherever that plot
+//! is on the page: on a generated dashboard, beside the hero rather than past
+//! the column of tiles.
 //!
 //! # The second placement: under the plot
 //!
@@ -32,7 +37,7 @@
 //! as the plot, and lays the plot out in the height above it, so the band is
 //! carved from the pane's height and the window the shell asks for is the one it
 //! asks for with no legend. [`below_blocks`] lists those legends, [`blocks`] and
-//! [`band_width`] leave them out — a plot's legend is drawn once, in one place —
+//! [`right_blocks`] leave them out — a plot's legend is drawn once, in one place —
 //! and [`draw_below`] draws each into its rect, the ramp running left to right
 //! with its values under it, or the swatches in a row.
 
@@ -238,9 +243,9 @@ pub(crate) fn declare_legends(spec: &Spec, viewport: Rect, plots: &mut [PlotHand
 /// scales call for one, and whose legend the file does not put under it
 /// ([`below_blocks`] lists those).
 ///
-/// [`band_width`] and [`draw_band`] both read this list, so the band is
-/// reserved when a block is drawn into it, and a block is drawn for the plots
-/// that reserved it; `legend_declared.rs` reads the same list.
+/// The composition keeps the same plots (`right_legend_paths`), and carves a band
+/// out of each plot listed here and out of no other; [`right_blocks`] pairs each
+/// with its band, and `legend_declared.rs` reads the same list.
 #[must_use]
 pub fn blocks(composed: &Composed) -> Vec<(usize, LegendSpec)> {
     composed
@@ -290,21 +295,50 @@ pub fn below_overhang(composed: &Composed) -> f32 {
         .fold(0.0, f32::max)
 }
 
-/// The width the chart pane's legend band consumes, in logical points — `0.0`
-/// when [`blocks`] is empty, which keeps a legendless dashboard's window
-/// byte-identical to what it was before the band existed, and gives a plot with
-/// no legend item the width the band would have held. Includes the gap between
-/// the raster and the band.
-///
-/// Read by [`crate::window::chart_window_size`], so the band is a term of the
-/// window arithmetic rather than a bite out of the raster's budget.
+/// What a plot gives up at its right for the legend drawn there, in logical
+/// points: the gap between the plot and the block, and the block's width.
 #[must_use]
-pub fn band_width(composed: &Composed) -> f32 {
-    if blocks(composed).is_empty() {
-        0.0
-    } else {
-        spacing::CONTROL_GAP + block_width()
-    }
+pub fn right_band_width() -> f32 {
+    spacing::CONTROL_GAP + block_width()
+}
+
+/// Split a plot's box into the rect the plot is drawn in and the band at its
+/// right that its legend is drawn in, both on the page plane.
+///
+/// The band comes out of the plot's own box, as the band under a plot comes out
+/// of its column's height, so a legend stands beside the plot it is for and
+/// nothing else on the page moves to make room for it. That is what keeps a
+/// generated dashboard's legend beside its hero rather than past the column of
+/// tiles. The plot keeps a width of at least one point, so a box narrower than
+/// the band still lays out.
+#[must_use]
+pub fn carve_right(rect: Rect) -> (Rect, Rect) {
+    let band = f64::from(right_band_width());
+    let width = (rect.width - band).max(1.0);
+    let gap = f64::from(spacing::CONTROL_GAP);
+    let plot = Rect::new(rect.x, rect.y, width, rect.height);
+    let legend = Rect::new(
+        rect.x + width + gap,
+        rect.y,
+        f64::from(block_width()),
+        rect.height,
+    );
+    (plot, legend)
+}
+
+/// The paths of the plots whose legend is drawn at their right: the plots the
+/// file puts a legend on, whose scales call for one, and whose legend the file
+/// does not put under them. The composition carves a band out of each of these
+/// plots ([`carve_right`]) and draws them again if the set it guessed from the
+/// file is not this one.
+#[must_use]
+pub(crate) fn right_legend_paths(plots: &[PlotHandle]) -> Vec<String> {
+    plots
+        .iter()
+        .filter(|plot| plot.legend_below.is_none())
+        .filter(|plot| LegendSpec::of_plot(plot).is_some())
+        .map(|plot| plot.path.clone())
+        .collect()
 }
 
 /// The reserved column a counting aggregate lands in. `fill: { count: }` binds
@@ -347,39 +381,56 @@ pub fn legend_name(plot: &PlotHandle) -> Option<&str> {
     transform.or(column.map(|_| COUNT_NAME))
 }
 
-/// Draw every plot's legend into the reserved band beside the raster.
+/// The legend blocks the page draws in a band at their plot's right, as `(plot
+/// index, legend, band)`, in plot order: [`blocks`] with the band each plot gave
+/// up for its legend ([`PlotHandle::legend_right`]). The band is on the page
+/// plane, beside the plot's rect.
+#[must_use]
+pub fn right_blocks(composed: &Composed) -> Vec<(usize, LegendSpec, Rect)> {
+    blocks(composed)
+        .into_iter()
+        .filter_map(|(i, legend)| {
+            let band = composed.plots[i].legend_right?;
+            Some((i, legend, band))
+        })
+        .collect()
+}
+
+/// Draw every plot's legend that sits at its right, each into the band the plot
+/// gave up for it, level with the plot's top: one legend per chart, beside the
+/// chart it describes.
 ///
-/// `band` is the rect the chart pane reserved — entirely outside the
-/// presented raster — and `raster_top` is the raster rect's top in the same
-/// (window-space) coordinates, so each block can sit level with the plot it
-/// describes: one legend per chart, at its chart's height, scoped to what
-/// that chart shows.
+/// `origin` is the raster rect's top-left in window-space coordinates, so a band
+/// on the page plane lands where the composition put it. The band is as tall as
+/// its plot, so that is the room a block has. A number legend's ramp gives way
+/// to that room, and its value labels do not (`draw_block` says how).
 ///
-/// The band is as tall as its chart, so a block's room is what is left of the
-/// band under its plot's top. A number legend's ramp gives way to that room, and
-/// its value labels do not (`draw_block` says how).
+/// The ink is the page's ([`Composed::mode`]) rather than the chrome's, because
+/// the band is part of the page: the block is drawn on the page's background,
+/// beside the plot.
 ///
 /// Returns the rect each block drew, with the index of the plot it describes.
-pub fn draw_band(
+pub fn draw_right(
     ui: &egui::Ui,
-    band: egui::Rect,
-    raster_top: f32,
+    origin: egui::Pos2,
     composed: &Composed,
-    mode: Mode,
 ) -> Vec<(usize, egui::Rect)> {
-    let painter = ui.painter_at(band);
+    let mode = composed.mode;
     let mut drawn = Vec::new();
-    for (i, legend) in blocks(composed) {
-        let y = raster_top + composed.plots[i].rect.y as f32;
-        let rect = draw_block(
-            &painter,
-            egui::pos2(band.left(), y),
+    for (i, legend, rect) in right_blocks(composed) {
+        let band = egui::Rect::from_min_size(
+            origin + egui::vec2(rect.x as f32, rect.y as f32),
+            egui::vec2(rect.width as f32, rect.height as f32),
+        );
+        let block = draw_block(
+            &ui.painter_at(band),
+            band.min,
             band.bottom(),
             &legend,
             legend_name(&composed.plots[i]),
             mode,
         );
-        drawn.push((i, rect));
+        drawn.push((i, block));
     }
     drawn
 }
@@ -1191,7 +1242,7 @@ mod tests {
             },
         );
         assert_eq!(LegendSpec::from_scales(&scales), None);
-        assert_eq!(band_width(&Composed::empty()), 0.0);
+        assert!(blocks(&Composed::empty()).is_empty());
     }
 
     /// A sequential scale derives a ramp legend with its domain ends.

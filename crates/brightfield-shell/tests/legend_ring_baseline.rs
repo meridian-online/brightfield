@@ -1,14 +1,15 @@
 //! **The ring round the hero's legend while colour's list is open: committed
-//! baselines, in both themes, with the legend under the plot, and pixel checks
-//! that the ring runs down each side of the band, stands 4 points off it, and
-//! keeps out of the plot's data area.** With the list closed, or with no legend, the
+//! baselines, in both themes, with the legend under the plot, and with it at the
+//! plot's right in each of the grid's two layouts, and pixel checks that the
+//! ring runs down each side of the band, stands 4 points off it, and keeps out
+//! of the plot's data area.** With the list closed, or with no legend, the
 //! pictures are checked for the ring's absence and not photographed.
 //!
-//! The legend at the plot's right has no picture here. A generated dashboard
-//! places that band at the page's far right, past its tile column, where the
-//! hero's pane does not show it, and a page of one chart does not carve the
-//! shelf band that opens colour's list. The right-hand ring's geometry is the
-//! `ring_rect` unit tests'.
+//! The legend at the right is the shelf's default, and on a generated dashboard
+//! it stands in a band the hero gives up out of its own box, so it is beside the
+//! hero in the hero's pane, whether the grid beside it is drawn as rows or as
+//! columns of tiles. The pictures at the right hold that: the band lies inside
+//! the hero's pane, and the ring round it does too.
 //!
 //! The fixture is the housing sample with `median_income` kept on colour, so its
 //! page has a single coloured plot and these tests do not tell the hero's own
@@ -20,7 +21,7 @@
 
 use std::path::PathBuf;
 
-use brightfield_shell::app::CHART;
+use brightfield_shell::app::{GridLayout, CHART};
 use brightfield_shell::capture::capture_png_staged;
 use brightfield_shell::design::Mode;
 use brightfield_shell::legend::RING_GAP;
@@ -44,6 +45,9 @@ fn scratch(name: &str) -> PathBuf {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Placement {
+    /// The legend at the plot's right, colour's list open on its settings, with
+    /// the grid drawn in this layout.
+    Right(GridLayout),
     /// The legend under the plot, colour's list open on its settings.
     Below,
     /// The legend under the plot, colour's list opened and then closed again.
@@ -79,6 +83,10 @@ struct Seen {
     data: Option<egui::Rect>,
     /// The band under the plot.
     below: Option<egui::Rect>,
+    /// The band at the hero's right.
+    right: Option<egui::Rect>,
+    /// The box the hero's pane draws the page in.
+    hero_pane: Option<egui::Rect>,
     open: bool,
 }
 
@@ -93,7 +101,8 @@ fn capture(name: &str, mode: Mode, placement: Placement) -> (image::RgbaImage, S
     // `e` hands the keys to the shelf band, `c` opens colour's cell: its list.
     // One `j` puts the list's cursor on `median_income`, the first column, and
     // Enter keeps it on colour and closes the list. The legend row is the third of
-    // colour's settings, and `l` steps it from right to below, and again to none.
+    // colour's settings, at the right until it is set, and `l` steps it from right
+    // to below, and again to none.
     let mut script = vec![Vec::new(), Vec::new()];
     script.extend([
         key(egui::Key::E, "e"),
@@ -113,6 +122,7 @@ fn capture(name: &str, mode: Mode, placement: Placement) -> (image::RgbaImage, S
     // Frames for the chart to be drawn again over the colour it was given.
     script.extend((0..6).map(|_| Vec::new()));
     let steps = match placement {
+        Placement::Right(_) => 0,
         Placement::Below | Placement::BelowClosed => 1,
         Placement::None => 2,
     };
@@ -152,6 +162,9 @@ fn capture(name: &str, mode: Mode, placement: Placement) -> (image::RgbaImage, S
         script,
         |app| {
             app.set_shelf_band_drawn(true);
+            if let Placement::Right(layout) = placement {
+                app.set_grid_layout(layout);
+            }
             assert!(app.focus_pane(PaneKey::new(CHART)));
         },
         |app| {
@@ -180,6 +193,8 @@ fn capture(name: &str, mode: Mode, placement: Placement) -> (image::RgbaImage, S
                             )
                         });
             }
+            seen.right = doc.legend_rect;
+            seen.hero_pane = doc.pane_views.map(|views| views.first);
             seen.open = doc.colour_list_open;
         },
     )
@@ -276,6 +291,85 @@ fn the_ring_below_light_baseline() {
 #[test]
 fn the_ring_below_dark_baseline() {
     baseline("legend_ring_below_dark", Mode::Dark);
+}
+
+/// The right-hand baseline: the band beside the hero, inside the hero's pane,
+/// and the ring round the legend in it, clear of the data area and of the pane
+/// beside it.
+fn right_baseline(name: &str, mode: Mode, layout: GridLayout) {
+    let (image, seen) = capture(name, mode, Placement::Right(layout));
+    assert!(seen.open, "{name}: colour's list is not open");
+    let data = seen.data.expect("the hero has a data area");
+    let band = seen.right.expect("a band at the hero's right");
+    let pane = seen.hero_pane.expect("the canvas drew the hero's pane");
+    assert!(
+        band.left() >= data.right(),
+        "{name}: the band {band:?} is not at the right of the data area {data:?}"
+    );
+    assert!(
+        pane.expand(0.5).contains_rect(band),
+        "{name}: the band {band:?} leaves the hero's pane {pane:?}"
+    );
+    // The ring is looked for round the band, past the data area: the block in
+    // the band is the legend, and the ring stands the gap off it.
+    let region = band
+        .expand(RING_GAP + 3.0)
+        .intersect(egui::Rect::from_min_max(
+            egui::pos2(data.right(), 0.0),
+            egui::pos2(image.width() as f32, image.height() as f32),
+        ));
+    let ring = hue_pixels(&image, region, mode).expect("a ring stands round the legend");
+    assert!(
+        ring.left() >= data.right() - 0.5,
+        "{name}: the ring {ring:?} reaches into the data area {data:?}"
+    );
+    assert!(
+        pane.expand(0.5).contains_rect(ring),
+        "{name}: the ring {ring:?} leaves the hero's pane {pane:?}"
+    );
+    assert!(
+        ring.height() > 2.0 * RING_GAP && ring.width() > 2.0 * RING_GAP,
+        "{name}: the ring {ring:?} is not round a block"
+    );
+    egui_kittest::image_snapshot(&image, name);
+}
+
+/// **The ring round the legend at the hero's right, the grid on its rows —
+/// light.**
+#[test]
+fn the_ring_at_the_right_on_rows_light_baseline() {
+    right_baseline(
+        "legend_ring_right_rows_light",
+        Mode::Light,
+        GridLayout::Rows,
+    );
+}
+
+/// **The same in dark.**
+#[test]
+fn the_ring_at_the_right_on_rows_dark_baseline() {
+    right_baseline("legend_ring_right_rows_dark", Mode::Dark, GridLayout::Rows);
+}
+
+/// **The ring round the legend at the hero's right, the grid drawn as columns of
+/// tiles — light.** The layout the legend used to be drawn over a tile in.
+#[test]
+fn the_ring_at_the_right_on_columns_light_baseline() {
+    right_baseline(
+        "legend_ring_right_columns_light",
+        Mode::Light,
+        GridLayout::Columns,
+    );
+}
+
+/// **The same in dark.**
+#[test]
+fn the_ring_at_the_right_on_columns_dark_baseline() {
+    right_baseline(
+        "legend_ring_right_columns_dark",
+        Mode::Dark,
+        GridLayout::Columns,
+    );
 }
 
 /// **With no legend there is nothing to ring**, though colour's list is open:

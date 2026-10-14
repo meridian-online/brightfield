@@ -169,10 +169,14 @@ fn an_occupied_bin_reaches_the_full_height_under_normalise() {
 
     let before = raster(resting, "resting.png");
     let tops_before = ink_tops(&before, &frame);
+    // Most of the frame's columns: the bins cover the axis but for the gaps
+    // between them. A count rather than a share would move with the plot's
+    // width, which gives up a band for its legend.
     assert!(
-        tops_before.len() > 200,
-        "fixture check: the resting histogram has bars to measure, not {}",
-        tops_before.len()
+        tops_before.len() * 2 > (frame.x1 - frame.x0) as usize,
+        "fixture check: the resting histogram has bars to measure, not {} in {} columns",
+        tops_before.len(),
+        frame.x1 - frame.x0
     );
     assert_eq!(
         distinct_tops(&tops_before),
