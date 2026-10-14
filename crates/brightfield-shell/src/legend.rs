@@ -309,20 +309,16 @@ pub fn right_band_width() -> f32 {
 /// of its column's height, so a legend stands beside the plot it is for and
 /// nothing else on the page moves to make room for it. That is what keeps a
 /// generated dashboard's legend beside its hero rather than past the column of
-/// tiles. The plot keeps a width of at least one point, so a box narrower than
-/// the band still lays out.
+/// tiles. In a box less than twice [`right_band_width`] wide the band takes
+/// half the box and the plot the other half, so both stay inside it; the
+/// block's painter cuts the legend at the band's edge.
 #[must_use]
 pub fn carve_right(rect: Rect) -> (Rect, Rect) {
-    let band = f64::from(right_band_width());
-    let width = (rect.width - band).max(1.0);
-    let gap = f64::from(spacing::CONTROL_GAP);
+    let band = f64::from(right_band_width()).min(rect.width / 2.0);
+    let gap = f64::from(spacing::CONTROL_GAP).min(band);
+    let width = rect.width - band;
     let plot = Rect::new(rect.x, rect.y, width, rect.height);
-    let legend = Rect::new(
-        rect.x + width + gap,
-        rect.y,
-        f64::from(block_width()),
-        rect.height,
-    );
+    let legend = Rect::new(rect.x + width + gap, rect.y, band - gap, rect.height);
     (plot, legend)
 }
 
@@ -1422,6 +1418,47 @@ mod tests {
             NumberFit::Labels,
             "under the floor draws the labels alone"
         );
+    }
+
+    /// A plot gives up the gap and the block at its right, and the band ends
+    /// where the plot's box did.
+    #[test]
+    fn a_plot_gives_up_the_band_at_its_right_out_of_its_own_box() {
+        let boxed = Rect::new(10.0, 20.0, 600.0, 300.0);
+        let (plot, band) = carve_right(boxed);
+        let taken = f64::from(right_band_width());
+        assert_eq!((plot.x, plot.y, plot.height), (10.0, 20.0, 300.0));
+        assert_eq!(plot.width, 600.0 - taken);
+        assert_eq!(
+            band.x,
+            plot.x + plot.width + f64::from(spacing::CONTROL_GAP)
+        );
+        assert_eq!(band.width, f64::from(block_width()));
+        assert_eq!((band.y, band.height), (20.0, 300.0));
+        assert_eq!(band.x + band.width, boxed.x + boxed.width);
+    }
+
+    /// In a box too narrow for the band beside a plot, the band takes half the
+    /// box and the plot the other half, and neither leaves the box.
+    #[test]
+    fn a_box_narrower_than_twice_the_band_is_shared_in_half() {
+        let narrow = f64::from(right_band_width());
+        for width in [narrow * 1.5, narrow, 40.0, 4.0] {
+            let boxed = Rect::new(10.0, 0.0, width, 100.0);
+            let (plot, band) = carve_right(boxed);
+            assert_eq!(plot.width, width / 2.0, "{width}: the plot");
+            assert!(
+                band.x >= plot.x + plot.width,
+                "{width}: the band overlaps the plot"
+            );
+            assert!(
+                (band.x + band.width - (boxed.x + boxed.width)).abs() < 1e-9,
+                "{width}: the band ends at {} in a box ending at {}",
+                band.x + band.width,
+                boxed.x + boxed.width
+            );
+            assert!(band.width >= 0.0, "{width}: a band of negative width");
+        }
     }
 
     /// The ring is the block grown by 4 on every side, and cut back on a side

@@ -18,9 +18,10 @@
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
 use brightfield_shell::legend::{blocks, right_band_width, right_blocks, LegendSpec};
-use brightfield_shell::pipeline::{compose_spec_str, Composed, LiveDashboard};
+use brightfield_shell::pipeline::{compose_spec_str, compose_spec_str_at, Composed, LiveDashboard};
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_spec::layout::Rect;
 
 /// The window every layout here is settled in: wide and tall enough that no
 /// spec below is offered less room than it declared.
@@ -394,5 +395,34 @@ fn a_standalone_legend_that_names_one_plot_leaves_the_other_without() {
         ),
         (None, true),
         "the band is not the named plot's alone"
+    );
+}
+
+/// **A plot laid out narrower than its band shares its box with it**: composed
+/// into a box 160 points wide, the plot holding the item keeps half the box and
+/// its legend's band the other half, and the band neither crosses the plot nor
+/// leaves the page.
+#[test]
+fn a_plot_laid_out_too_narrow_for_its_band_shares_its_box_with_it() {
+    let source = one_plot(&format!("{}  - legend: color\n", dot("g", 2)));
+    let composed = compose_spec_str_at(&source, None, Rect::new(0.0, 0.0, 160.0, 300.0))
+        .unwrap_or_else(|e| panic!("the spec must compose: {e}"));
+    let plot = composed.plots[0].rect;
+    let band = composed.plots[0]
+        .legend_right
+        .expect("the plot holding the item gave up a band");
+    assert!(
+        band.x >= plot.x + plot.width,
+        "the band {band:?} crosses the plot {plot:?}"
+    );
+    assert!(
+        band.x + band.width <= f64::from(composed.width) + 0.5,
+        "the band {band:?} leaves the page {} wide",
+        composed.width
+    );
+    assert!(
+        plot.width >= f64::from(composed.width) / 2.0 - 0.5,
+        "the plot {plot:?} kept less than half a page {} wide",
+        composed.width
     );
 }

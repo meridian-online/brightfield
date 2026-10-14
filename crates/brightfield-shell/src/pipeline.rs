@@ -1024,6 +1024,7 @@ fn compose(
         &ViewExtents::new(),
         &beyond,
         &mut PlotPins::new(),
+        &mut None,
         viewport,
         mode,
         // A one-shot compose passes an empty `ViewExtents::new()` above, so
@@ -1099,6 +1100,13 @@ pub struct LiveDashboard {
     /// to outlive the composition that produced it. The one-shot compose path
     /// holds no equivalent and needs none.
     pins: PlotPins,
+    /// The plots the last composition drew a legend at the right of, by path,
+    /// or `None` before the first. The next composition carves its bands from
+    /// these first, so a plot whose file and scales disagree about its legend
+    /// (a legend item left over a plot with nothing on colour) is drawn once
+    /// per composition rather than twice. Like [`Self::pins`], it outlives the
+    /// composition that produced it; the one-shot path starts from the file.
+    right_legends: Option<Vec<String>>,
     /// The box this dashboard composes into, in logical pixels — what a
     /// surface hands over through [`LiveDashboard::set_viewport`] once it
     /// knows how much room the chart has.
@@ -1176,6 +1184,7 @@ impl LiveDashboard {
             base_dir: spec_dir.map(Path::to_path_buf),
             view_extents: ViewExtents::new(),
             pins: PlotPins::new(),
+            right_legends: None,
             viewport: Rect::zero(),
             sample_is_automatic: false,
             mode: Mode::Light,
@@ -1222,6 +1231,7 @@ impl LiveDashboard {
             base_dir: spec_dir.map(Path::to_path_buf),
             view_extents: ViewExtents::new(),
             pins: PlotPins::new(),
+            right_legends: None,
             viewport: Rect::zero(),
             sample_is_automatic: false,
             mode: Mode::Light,
@@ -1424,6 +1434,7 @@ impl LiveDashboard {
             &self.view_extents,
             &beyond,
             &mut self.pins,
+            &mut self.right_legends,
             self.viewport,
             self.mode,
             Some(self.coordinator.session()),
@@ -2124,6 +2135,10 @@ fn compose_from_results(
     extents: &ViewExtents,
     beyond_frame: &[bool],
     pins: &mut PlotPins,
+    // The plots the last composition drew a legend at the right of, read as
+    // this one's first guess and written with its answer; `None` guesses from
+    // the file. See `LiveDashboard::right_legends`.
+    right_legends: &mut Option<Vec<String>>,
     viewport: Rect,
     mode: Mode,
     // The live session, for the one thing this function cannot get from its
@@ -2203,12 +2218,17 @@ fn compose_from_results(
     // with nothing on colour draws no legend and gives up no room, and a
     // standalone legend with no `for:` falls to the one plot whose scales call
     // for it. Carving changes neither a plot's scales nor what the file
-    // declares, so the second pass draws what the first one found.
-    let mut carved: Vec<String> = placed
-        .iter()
-        .filter(|p| colour_legend_placement(spec, &p.path) == LegendPlacement::Right)
-        .map(|p| p.path.clone())
-        .collect();
+    // declares, so the second pass draws what the first one found. The first
+    // guess is the last composition's answer when there is one, so a plot the
+    // file and the scales disagree about is drawn twice once, not on every
+    // re-present.
+    let mut carved: Vec<String> = right_legends.clone().unwrap_or_else(|| {
+        placed
+            .iter()
+            .filter(|p| colour_legend_placement(spec, &p.path) == LegendPlacement::Right)
+            .map(|p| p.path.clone())
+            .collect()
+    });
     let mut passes = 0;
     let (placements, plots) = loop {
         passes += 1;
@@ -2771,6 +2791,7 @@ fn compose_from_results(
         crate::legend::declare_legends(spec, viewport, &mut plots);
         let drawn = crate::legend::right_legend_paths(&plots);
         if drawn == carved || passes == 2 {
+            *right_legends = Some(drawn);
             break (placements, plots);
         }
         carved = drawn;
@@ -3464,6 +3485,7 @@ plot:
             &ViewExtents::new(),
             &[],
             &mut PlotPins::new(),
+            &mut None,
             Rect::zero(),
             Mode::Light,
             None,
@@ -3481,6 +3503,7 @@ plot:
             &ViewExtents::new(),
             &[],
             &mut PlotPins::new(),
+            &mut None,
             Rect::zero(),
             Mode::Light,
             None,
@@ -3505,6 +3528,7 @@ plot:
             &ViewExtents::new(),
             &[],
             &mut PlotPins::new(),
+            &mut None,
             Rect::zero(),
             Mode::Light,
             None,
@@ -3564,6 +3588,7 @@ plot:
             &ViewExtents::new(),
             &[],
             &mut PlotPins::new(),
+            &mut None,
             Rect::zero(),
             Mode::Light,
             None,
