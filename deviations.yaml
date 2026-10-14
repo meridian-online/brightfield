@@ -306,12 +306,21 @@ deviations:
       end and blue at the high end, as Mosaic does. A scheme that is named,
       `viridis` or `blues` say, is drawn about the pivot with its middle colour
       at the pivot.
+
+      On a diverging scale, a `colorRange` that holds the design system's pair
+      as the shelf writes it, the blue pole, the light theme's middle and the red pole, each within
+      one 8-bit step, is read as that pair and drawn in the theme the chart is
+      drawn in, so dark mode gets its dark middle. Any other `colorRange` of two
+      or more colours is drawn as written.
     rationale: |
       The design system's pair has a neutral midpoint so that "nothing" reads
       as nothing, and its arms are tuned to the chart surface in both themes.
       Blue sits at the low end, where rdbu puts red, so a spec that wants
       Mosaic's colours writes `colorScheme: rdbu`, and only the default
       differs.
+      Mosaic has no scheme of that name, so the shelf writes the pair's
+      colours into the file, which Mosaic on a white page draws as brightfield
+      draws it in light mode.
     affected_specs: []
     conformance_layers_suppressed: [3]
   - id: DEV-0010
@@ -504,5 +513,37 @@ deviations:
       changes. It is drawn for the marks whose batch holds rows, since a count
       of bins or groups presented as a count of rows would mislead in the
       direction the count exists to correct.
+    affected_specs: []
+    conformance_layers_suppressed: [3]
+  - id: DEV-0016
+    surface: "colour — a pinned colour domain (`colorDomain: Fixed`)"
+    mosaic_behaviour: |
+      Mosaic accepts `Fixed` at `colorDomain` as it does at `xDomain` and
+      `yDomain`: the colour scale's domain is fixed after the first render, on
+      whatever data the marks then hold, and later filtering leaves it where it
+      is, whether the colour paints numbers or names.
+    brightfield_behaviour: |
+      `colorDomain: Fixed` is read as a pin on a colour that paints numbers. The
+      pin holds the two ends of a ramp, a diverging scale or a stepped one, and a
+      diverging scale's pivot, from the scales the plot's first composition drew
+      against, so a plot whose first render is already filtered pins the
+      filtered ends, as Mosaic does. The pin keeps the scale's own colours and
+      kind, and a fresh scale of another kind (the colour moved from a ramp to
+      names, or from a ramp to a diverging scale) stands as inferred.
+
+      Two cases are NOT pinned, and a spec using one gets a colour inferred from
+      the rows it is currently drawing: `Fixed` on a colour that paints
+      category names, and a number column on `stroke`, which builds no ramp
+      here. Where the shelf's domain row sets `fixed`, the edit rebuilds the
+      dashboard and the rebuild drops any committed selection, so the pin is
+      taken from the unfiltered rows.
+    rationale: |
+      A colour is pinned so that a value keeps its colour while another tile
+      sweeps the rows, which lets a reader compare the subset with the whole.
+      The capture moment is copied from Mosaic for the reason DEV-0005 gives
+      for the positional pins. A categorical colour already keeps a name's
+      colour by the name's slot in the palette, so the unread case changes
+      which names a legend lists under a filter rather than any colour, and it
+      is left for a change of its own.
     affected_specs: []
     conformance_layers_suppressed: [3]
