@@ -426,7 +426,9 @@ pub fn draw_right(
             legend_name(&composed.plots[i]),
             mode,
         );
-        drawn.push((i, block));
+        // The painter cuts the block at the band, and so does what it reports:
+        // the ring drawn round it stays in the band a narrow plot gave up.
+        drawn.push((i, block.intersect(band)));
     }
     drawn
 }

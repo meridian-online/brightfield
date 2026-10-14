@@ -2714,8 +2714,8 @@ fn compose_from_results(
             // REFUSE rather than draw a confidently wrong picture. A sampled plot
             // whose scale set carries a channel `apply_unsampled_domains` cannot
             // restore renders a value in a different place, or a different colour,
-            // than the complete one — under a notice that says rows were dropped
-            // and does not say that. Checked here because here is where the scales exist — one
+            // than the complete one — under a notice that tells the reader rows
+            // were dropped and not that any value moved. Checked here because here is where the scales exist — one
             // seam covering `--force-sample` on `brightfield-shot`, on the live
             // window, and every re-present after a gesture, rather than three
             // argument parsers each remembering.
