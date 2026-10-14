@@ -90,9 +90,18 @@ struct Seen {
     open: bool,
 }
 
+/// Held for the whole of a capture. Each capture opens the same sample, and
+/// opening it writes the generated spec beside it; two at once each watch the
+/// file the other wrote, and the status line of either picture can read that
+/// the spec changed on disk.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Capture the window with colour's list open and the legend at `placement`, and
 /// give back the picture with what the window said about where things stood.
 fn capture(name: &str, mode: Mode, placement: Placement) -> (image::RgbaImage, Seen) {
+    let _one = ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
     let boot = Boot::data_file(fixture().to_str().expect("utf-8 path")).expect("the sample opens");
     let size = boot.window_size();
