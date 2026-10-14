@@ -52,6 +52,45 @@
 //! columns that opens under a cell, its query, `j` `k` and `Enter` belong to
 //! the list, and the band returns `false` for them, as
 //! `a_key_with_a_modifier_and_the_lists_keys_are_not_the_bands` holds.
+//!
+//! # Colour's settings
+//!
+//! Colour's head rows are scheme, scale, legend and reverse; domain, pivot and
+//! steps are reached by typing their names. Each row reads auto until it is set
+//! and carries a dot once it is, and a reset (`⌫`, or a click on the dot) puts
+//! it back. A row that does not apply is drawn muted with its reason, and with
+//! nothing on colour every row but scheme and reverse is muted and writes
+//! nothing.
+//!
+//! **Where brightfield's default differs from Mosaic's, the file names it.**
+//! Choosing diverging writes the pivot and choosing steps writes the count at
+//! once, because Mosaic's pivot is 0 and its steps are rounded thresholds; a
+//! reset on pivot or steps writes the auto value back rather than taking the
+//! key out. A row tells a set value from the default by comparing values at
+//! the precision it displays. The auto pivot is zero where the column crosses
+//! zero and its median otherwise, read from the table's load-time profile so
+//! it does not move under a sweep.
+//!
+//! The scheme is picked by eye from a strip of ramps. On diverging the auto
+//! scheme is brightfield's blue-red pair, written as a `colorRange` of its
+//! light theme's three stops since Mosaic has no scheme of that name
+//! (DEV-0009). An analyst's own `colorRange` is drawn in place of any scheme,
+//! reads as *custom*, and no automatic write removes it.
+//!
+//! The domain row steps between auto and fixed (`colorDomain: Fixed`, read as
+//! a pin, DEV-0016) and takes two typed ends. Putting a different column on
+//! colour takes out a set domain, writes a diverging pivot again for the new
+//! column, and, for a column of names, takes out the scale the shelf wrote for
+//! a ramp. A scale or domain the shelf does not offer, such as `symlog` or a
+//! `$param`, reads on its row as the file's, set and muted, and the row writes
+//! nothing over it.
+//!
+//! The legend row places the legend at the right (a legend item in the plot),
+//! below it (a `vconcat` of the plot and a `legend: color`), or nowhere, and
+//! reads the placement the file holds; a file with no legend node draws none.
+//! While colour's list is open, a ring in colour's hue is drawn round the
+//! legend, cut back so it stays out of the plot's data area. The legend is a
+//! block, so it gets a ring where an axis gets a bar.
 
 use std::sync::OnceLock;
 
