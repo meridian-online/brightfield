@@ -239,8 +239,8 @@ pub struct PlotHandle {
     /// same plane as [`Self::rect`], when the file puts the legend there and
     /// the plot's scales call for one. The plot gave the band up out of its own
     /// box ([`crate::legend::carve_right`]), so [`Self::rect`] is that box less
-    /// the band and the gap before it, and nothing else on the page moved to
-    /// make room. `None` for a plot with no legend and for one whose legend is
+    /// the band and the gap before it, and the plots beside it keep the boxes
+    /// the layout gave them. `None` for a plot with no legend and for one whose legend is
     /// under it ([`Self::legend_below`]).
     pub legend_right: Option<Rect>,
     /// **Where each part of this plot's axes is drawn** — the title, the tick
@@ -2694,8 +2694,8 @@ fn compose_from_results(
             // REFUSE rather than draw a confidently wrong picture. A sampled plot
             // whose scale set carries a channel `apply_unsampled_domains` cannot
             // restore renders a value in a different place, or a different colour,
-            // than the complete one — under a notice that says only that rows were
-            // dropped. Checked here because here is where the scales exist — one
+            // than the complete one — under a notice that says rows were dropped
+            // and does not say that. Checked here because here is where the scales exist — one
             // seam covering `--force-sample` on `brightfield-shot`, on the live
             // window, and every re-present after a gesture, rather than three
             // argument parsers each remembering.
