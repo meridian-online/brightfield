@@ -1944,7 +1944,7 @@ impl Session {
             ));
         };
         // DuckDB rejects `ALL` after an order list, so
-        // the tie-break names every column by position instead: the same total
+        // the tie-break lists the step's columns by position instead: the same total
         // order `ORDER BY ALL` gives. The order sits on lines of its own so a
         // trailing `--` comment ends before what follows it, and has no
         // parentheses because a direction (`DESC`) is not an expression.
