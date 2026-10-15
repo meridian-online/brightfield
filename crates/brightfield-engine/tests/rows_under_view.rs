@@ -382,3 +382,24 @@ fn duckdbs_words_are_keywords_and_a_column_name_is_not() {
         assert!(!session.is_keyword(word).unwrap(), "{word}");
     }
 }
+
+/// **An order naming a column the step does not have is refused by the count,
+/// in DuckDB's words**, as the window read refuses it; an order that binds
+/// leaves the count as it was.
+#[test]
+fn an_order_naming_a_missing_column_is_refused_by_the_count() {
+    let session = session();
+    let refused = session
+        .step_rows_count_view(0, RowsAudience::Reader, &view(None, Some("house_ag")))
+        .expect_err("an order naming no column of the step counts");
+    assert!(
+        refused.to_string().contains("house_ag"),
+        "the refusal does not name the column: {refused}"
+    );
+    assert_eq!(
+        session
+            .step_rows_count_view(0, RowsAudience::Reader, &view(None, Some("house_age DESC")))
+            .unwrap(),
+        ALL_ROWS
+    );
+}

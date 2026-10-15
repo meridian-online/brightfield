@@ -29,6 +29,11 @@ use crate::design::Mode;
 use crate::pipeline::LiveDashboard;
 
 /// The band's height, in logical points, taken off the foot of the grid tile.
+///
+/// 26 is the height of the band in the frame it was designed in, not a step of
+/// the design system's spacing or control scale: no rung of that ladder is 26,
+/// so moving it onto the nearest token would change the band rather than tidy
+/// it.
 pub const FOOT_BAND_HEIGHT: f32 = 26.0;
 
 /// The radius of the dot a field carries while its applied text is in no file.
@@ -90,10 +95,19 @@ enum Sign {
     IsNot,
     Over,
     Under,
+    AtLeast,
+    AtMost,
 }
 
 impl Sign {
-    const ALL: [Self; 4] = [Self::Is, Self::IsNot, Self::Over, Self::Under];
+    const ALL: [Self; 6] = [
+        Self::Is,
+        Self::IsNot,
+        Self::Over,
+        Self::Under,
+        Self::AtLeast,
+        Self::AtMost,
+    ];
 
     const fn sql(self) -> &'static str {
         match self {
@@ -101,6 +115,8 @@ impl Sign {
             Self::IsNot => "!=",
             Self::Over => ">",
             Self::Under => "<",
+            Self::AtLeast => ">=",
+            Self::AtMost => "<=",
         }
     }
 
@@ -111,16 +127,23 @@ impl Sign {
             Self::IsNot => "is not",
             Self::Over => "over",
             Self::Under => "under",
+            Self::AtLeast => "at least",
+            Self::AtMost => "at most",
         }
     }
 
-    /// The comparison a typed key asks for: `=`, `!`, `>` or `<`.
-    fn typed(text: &str) -> Option<Self> {
-        match text {
-            "=" => Some(Self::Is),
-            "!" => Some(Self::IsNot),
-            ">" => Some(Self::Over),
-            "<" => Some(Self::Under),
+    /// The comparison a typed key asks for: `=`, `!`, `>` or `<`. An `=`
+    /// typed directly after a comparison key extends it, so `>` `=` asks `>=`,
+    /// `<` `=` asks `<=` and `!` `=` stays `!=`.
+    fn typed(text: &str, after: Option<Self>) -> Option<Self> {
+        match (text, after) {
+            ("=", Some(Self::Over)) => Some(Self::AtLeast),
+            ("=", Some(Self::Under)) => Some(Self::AtMost),
+            ("=", Some(Self::IsNot)) => Some(Self::IsNot),
+            ("=", _) => Some(Self::Is),
+            ("!", _) => Some(Self::IsNot),
+            (">", _) => Some(Self::Over),
+            ("<", _) => Some(Self::Under),
             _ => None,
         }
     }
@@ -139,8 +162,8 @@ impl FromCell {
     /// analyst has written something else.
     fn read<'t>(&self, text: &'t str) -> Option<(Sign, &'t str)> {
         let rest = text.strip_prefix(self.column.as_str())?.strip_prefix(' ')?;
-        // No sign is a prefix of another, so the order they are tried in does
-        // not matter.
+        // A sign must be followed by a space, so `>` does not read `>= 28`
+        // and the order the signs are tried in does not matter.
         Sign::ALL.into_iter().find_map(|sign| {
             let value = rest.strip_prefix(sign.sql())?.strip_prefix(' ')?;
             (!value.is_empty()).then_some((sign, value))
@@ -168,6 +191,12 @@ struct Asking {
     select_value: bool,
     /// Whether the field held the keyboard at the end of the last draw.
     had_focus: bool,
+    /// The comparison key typed last, while no other key has been since: what
+    /// an `=` extends.
+    last_sign: Option<Sign>,
+    /// Whether Enter was pressed this frame, for the draw to apply once the
+    /// field has taken the frame's own typing.
+    enter: bool,
     /// The text last tried against the step.
     tried: Option<String>,
     /// The view the grid reads while asking: the last one that parsed, or
@@ -228,6 +257,8 @@ impl FootState {
             focus: true,
             select_value,
             had_focus: false,
+            last_sign: None,
+            enter: false,
             tried: None,
             preview: None,
             refusal: None,
@@ -237,6 +268,14 @@ impl FootState {
     /// Stop editing, leaving the applied view as it was.
     pub(crate) fn cancel(&mut self) -> Option<FootField> {
         self.asking.take().map(|a| a.field)
+    }
+
+    /// Whether the field being edited held the keyboard at the end of the last
+    /// draw — whether Enter and Esc are the field's rather than the window's.
+    /// A field opened and not yet drawn, or drawn nowhere, does not hold them.
+    #[must_use]
+    pub fn holds_keys(&self) -> bool {
+        self.asking.as_ref().is_some_and(|a| a.had_focus)
     }
 
     /// The view Enter applies: `applied` with the edited field's text, when
@@ -394,19 +433,26 @@ impl ChartDoc {
         self.grid_foot.cancel()
     }
 
-    /// **Enter**: apply the edited field's text as the grid's view, and put the
-    /// cursor on the first row shown, in its column. A text DuckDB refused, or
-    /// one not yet tried, is not applied and the field keeps asking. Says
-    /// which field it applied.
-    pub fn foot_enter(&mut self) -> Option<FootField> {
-        let (field, view) = self.grid_foot.entered(self.grid_view())?;
-        self.grid_foot.cancel();
+    /// **Enter**: ask the band's next draw to apply the edited field's text.
+    /// The draw applies it once the field has taken the frame's own typing, so
+    /// a last key or a paste in the same frame as Enter is part of what is
+    /// applied ([`foot_band`]). Whether a field is being edited.
+    pub fn foot_press_enter(&mut self) -> bool {
+        let Some(asking) = self.grid_foot.asking.as_mut() else {
+            return false;
+        };
+        asking.enter = true;
+        true
+    }
+
+    /// Apply `view` as the grid's view from the band, and put the cursor on the
+    /// first row shown, in its column.
+    fn apply_foot_view(&mut self, view: RowsView) {
         self.apply_grid_view(view);
         if let Some(at) = self.grid_cursor.as_mut() {
             at.row = 0;
             self.grid_cursor_reveal = true;
         }
-        Some(field)
     }
 }
 
@@ -470,18 +516,24 @@ fn swap_signs(ui: &egui::Ui, asking: &mut Asking) -> bool {
     let mut open = true;
     ui.input_mut(|input| {
         input.events.retain(|event| {
-            let egui::Event::Text(typed) = event else {
-                return true;
+            let typed = match event {
+                egui::Event::Text(typed) if open => typed,
+                // A paste replaces the value as the field types it.
+                egui::Event::Paste(_) => {
+                    open = false;
+                    asking.last_sign = None;
+                    return true;
+                }
+                _ => return true,
             };
-            if !open {
-                return true;
-            }
-            let Some(sign) = Sign::typed(typed) else {
+            let Some(sign) = Sign::typed(typed, asking.last_sign) else {
                 open = false;
+                asking.last_sign = None;
                 return true;
             };
             if let Some((_, value)) = cell.read(&asking.text) {
                 asking.text = format!("{} {} {value}", cell.column, sign.sql());
+                asking.last_sign = Some(sign);
                 swapped = true;
             }
             false
@@ -618,6 +670,11 @@ pub fn foot_band(
                 select_value(child.ctx(), asking);
             }
         }
+        let before_show = state
+            .asking
+            .as_ref()
+            .filter(|_| editing)
+            .map(|a| a.text.clone());
         let text: &mut String = match state.asking.as_mut().filter(|_| editing) {
             Some(asking) => &mut asking.text,
             None => &mut idle_text,
@@ -647,8 +704,23 @@ pub fn foot_band(
                 continue;
             }
             asking.had_focus = focused;
+            if before_show.as_deref() != Some(asking.text.as_str()) {
+                // The field typed something itself: an `=` now extends nothing.
+                asking.last_sign = None;
+            }
             if try_text(doc, asking) {
                 outcome.repaint = true;
+            }
+            // Enter, resolved after the field has taken this frame's typing, so
+            // what is applied is the text the field holds now.
+            if std::mem::take(&mut asking.enter) {
+                if let Some((_, view)) = state.entered(&applied) {
+                    state.asking = None;
+                    texts[slot] = field.of(&view).unwrap_or_default().to_owned();
+                    doc.apply_foot_view(view);
+                    child.memory_mut(|m| m.surrender_focus(field.id()));
+                    outcome.repaint = true;
+                }
             }
         } else if interactive && response.has_focus() {
             state.ask(field, idle_text);

@@ -4591,7 +4591,7 @@ impl MeridianApp {
                     .exact_size(rail_collapsed(ledger))
             } else {
                 Panel::bottom(panel_id(ledger, false).with(ledger_holds))
-                    .default_size(ledger_open_extent(ledger, ledger_holds, mode))
+                    .default_size(ledger_open_extent(ledger, ledger_holds, grid_layout, mode))
                     .min_size(rail_min(ledger))
                     .resizable(true)
             };
@@ -6067,26 +6067,30 @@ impl MeridianApp {
     }
 
     /// **Enter and Esc for the field of the grid's foot row being edited**,
-    /// ahead of every other handler of either key: Enter applies the field's
-    /// text as the grid's view and Esc puts the field back. Both take the
-    /// keyboard from the field. Esc has already taken it by the time this runs
+    /// ahead of every other handler of either key: Enter asks the band to
+    /// apply the field's text as the grid's view and Esc puts the field back.
+    /// Both take the keyboard from the field. Esc has already taken it by the time this runs
     /// (egui lets go of the focused widget on Esc as the frame begins), which
     /// is why the keys are read here rather than in the field's own draw: a
     /// later handler would read the Esc as the window's.
     fn grid_foot_keys(&mut self, ctx: &egui::Context) {
         use egui::{Key, Modifiers};
-        if self.overlay.is_some() || self.charts.doc.foot_asking().is_none() {
+        // Only a field that held the keyboard at the end of the last draw takes
+        // them: one opened and not yet drawn, or drawn nowhere, leaves both
+        // keys to the window.
+        if self.overlay.is_some() || !self.charts.doc.grid_foot().holds_keys() {
             return;
         }
-        let done = if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-            self.charts.doc.foot_cancel()
-        } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
-            self.charts.doc.foot_enter()
-        } else {
-            None
-        };
-        if let Some(field) = done {
-            ctx.memory_mut(|m| m.surrender_focus(field.id()));
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            if let Some(field) = self.charts.doc.foot_cancel() {
+                ctx.memory_mut(|m| m.surrender_focus(field.id()));
+            }
+            ctx.request_repaint();
+        } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
+            && self.charts.doc.foot_press_enter()
+        {
+            // Applied by the band's draw, after the field has taken the
+            // frame's own typing — see `ChartDoc::foot_press_enter`.
             ctx.request_repaint();
         }
     }
@@ -8999,8 +9003,8 @@ enum LedgerHolds {
 /// tab strip, the pane's header band and inset, and the compact column band
 /// the grid draws in this spot — then
 /// [`arrangement::LEDGER_GRID_ROWS`] rows at [`crate::data_grid::row_height`],
-/// then the row at the grid's foot ([`crate::grid_foot::FOOT_BAND_HEIGHT`]),
-/// then the rail's foot. The foot is the band the status rail floats in or the
+/// then, in the rows `layout`, the row at the grid's foot
+/// ([`crate::grid_foot::FOOT_BAND_HEIGHT`]), then the rail's foot. The foot is the band the status rail floats in or the
 /// pane's own inset, whichever is taller, and not the two summed: the floating
 /// band lies over the inset, so summing them leaves a slice of a sixth row
 /// showing above the band. Each term is the function that draws it, so a
@@ -9012,7 +9016,12 @@ enum LedgerHolds {
 /// # Panics
 ///
 /// If the region is not a rail — as [`band_extent`].
-fn ledger_open_extent(ledger: &Region, holds: LedgerHolds, mode: Mode) -> f32 {
+fn ledger_open_extent(
+    ledger: &Region,
+    holds: LedgerHolds,
+    layout: crate::app::GridLayout,
+    mode: Mode,
+) -> f32 {
     let declared = rail_default(ledger);
     if holds == LedgerHolds::Record {
         return declared;
@@ -9025,9 +9034,14 @@ fn ledger_open_extent(ledger: &Region, holds: LedgerHolds, mode: Mode) -> f32 {
     let status =
         overlay_extent(arrangement::default_arrangement().expect_region(arrangement::STATUS_BAND));
     let foot = chrome::pane_content_inset().max(status);
-    (above + rows + crate::grid_foot::FOOT_BAND_HEIGHT + foot)
-        .ceil()
-        .max(declared)
+    // The row at the grid's foot is drawn under the rows layout's table only;
+    // the columns layout draws none.
+    let band = if layout == crate::app::GridLayout::Rows {
+        crate::grid_foot::FOOT_BAND_HEIGHT
+    } else {
+        0.0
+    };
+    (above + rows + band + foot).ceil().max(declared)
 }
 
 /// What a rail refuses to narrow past.

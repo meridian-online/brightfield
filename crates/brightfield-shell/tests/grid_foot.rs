@@ -245,10 +245,10 @@ fn a_comparison_key_replaces_the_sign_and_keeps_the_value() {
 
     let frame = win.doc().navigated();
     for (typed, sign, word) in [
+        ("=", "=", "is"),
         (">", ">", "over"),
         ("!", "!=", "is not"),
         ("<", "<", "under"),
-        ("=", "=", "is"),
     ] {
         if typed == "=" {
             // `=` is the chart's zoom key too; the field holds the keyboard.
@@ -412,6 +412,11 @@ fn a_refused_condition_keeps_the_rows_and_says_why() {
         win.key(egui::Key::Enter);
         assert_eq!(win.doc().grid_view().condition, None, "{refused} applied");
         assert_eq!(win.drawn().rows, 240);
+        assert_eq!(
+            win.asking(),
+            Some((FootField::Where, refused.to_owned())),
+            "Enter on {refused} closed the field"
+        );
     }
 }
 
@@ -532,5 +537,149 @@ fn o_on_a_cell_asks_order_by_that_column() {
     assert_eq!(
         win.asking(),
         Some((FootField::OrderBy, "house_age".to_owned()))
+    );
+}
+
+/// **`=` directly after a comparison key extends it**: `>` `=` asks `>=` and
+/// reads *at least*, `<` `=` asks `<=` and reads *at most*, and `!` `=` stays
+/// `!=`.
+#[test]
+fn an_equals_after_a_comparison_key_extends_it() {
+    for (keys, sign, word) in [
+        ([">", "="], ">=", "at least"),
+        (["<", "="], "<=", "at most"),
+        (["!", "="], "!=", "is not"),
+    ] {
+        let mut win = Window::housing();
+        win.press_cell(2, HOUSE_AGE);
+        let value = win.cursor_value();
+        win.key(egui::Key::W);
+        for key in keys {
+            win.type_text(key);
+        }
+        assert_eq!(
+            win.asking(),
+            Some((FootField::Where, format!("house_age {sign} {value}"))),
+            "after {keys:?}"
+        );
+        assert_eq!(
+            win.foot_status(),
+            Some(format!("house_age {word} {value}")),
+            "after {keys:?}"
+        );
+        let want = win
+            .engine_count(&format!("house_age {sign} {value}"))
+            .unwrap();
+        assert_eq!(win.drawn().rows, want, "after {keys:?}");
+    }
+}
+
+/// **Enter applies the text the field holds after the frame's own keys**: a
+/// last character, or a paste, that lands in the frame Enter does is applied
+/// with it.
+#[test]
+fn a_last_key_and_enter_in_one_frame_apply_the_text_the_field_holds() {
+    for last in [
+        egui::Event::Text("4".to_owned()),
+        egui::Event::Paste("4".to_owned()),
+    ] {
+        let mut win = Window::housing();
+        win.press_cell(2, HOUSE_AGE);
+        win.key(egui::Key::W);
+        win.run(vec![last.clone(), press(egui::Key::Enter)]);
+        win.settle();
+        assert_eq!(win.asking(), None, "{last:?}: the field still asks");
+        assert_eq!(
+            win.doc().grid_view().condition.as_deref(),
+            Some("house_age = 4"),
+            "{last:?}"
+        );
+        let want = win.engine_count("house_age = 4").unwrap();
+        assert_eq!(win.drawn().rows, want, "{last:?}");
+    }
+}
+
+/// **An order naming a column the step does not have is refused while it is
+/// typed, in DuckDB's words, and Enter applies nothing.**
+#[test]
+fn an_unknown_column_in_order_by_is_refused_and_enter_applies_nothing() {
+    let mut win = Window::housing();
+    win.press_cell(2, HOUSE_AGE);
+    win.key(egui::Key::O);
+    win.app
+        .chart_doc_mut()
+        .foot_offer(FootField::OrderBy, String::new());
+    win.settle();
+    win.type_text("house_ag");
+
+    let said = win.foot_status().expect("the status band says why");
+    assert!(
+        said.contains("house_ag"),
+        "the refusal is not DuckDB's: {said}"
+    );
+    win.key(egui::Key::Enter);
+    assert_eq!(win.doc().grid_view().order, None, "the order was applied");
+    assert_eq!(
+        win.asking(),
+        Some((FootField::OrderBy, "house_ag".to_owned()))
+    );
+    assert_eq!(win.drawn().rows, 240);
+    assert!(
+        win.doc().grid_drawn().is_some(),
+        "the grid drew no table under the refused order"
+    );
+}
+
+/// **Esc and Enter stay the window's until the field has held the keys**: a
+/// field opened by `foot_offer` and not yet drawn does not take them.
+#[test]
+fn esc_is_the_windows_until_the_field_has_held_the_keys() {
+    let mut win = Window::housing();
+    win.app
+        .chart_doc_mut()
+        .foot_offer(FootField::Where, "house_age > 30".to_owned());
+    // The same frame: the field has not been drawn, so the Esc is not its.
+    win.run(vec![press(egui::Key::Escape)]);
+    assert!(win.asking().is_some(), "a field never drawn took the Esc");
+    win.settle();
+    win.key(egui::Key::Escape);
+    assert_eq!(win.asking(), None, "the drawn field did not take the Esc");
+}
+
+/// **A view changes the grid only**: the chart on the same step reads every
+/// row it read before, while a condition is previewed and once it is applied.
+#[test]
+fn a_chart_on_the_same_step_keeps_its_rows_under_the_grids_view() {
+    let mut win = Window::housing();
+    let chart_rows = |win: &mut Window| -> u64 {
+        let doc = win.app.chart_doc_mut();
+        let mark = doc.live_dashboard().map_or(0, LiveDashboard::rows_mark);
+        let session = doc.live_coordinator().expect("a live session").session();
+        session
+            .step_rows_count(mark, RowsAudience::Plot)
+            .expect("the chart's rows count")
+    };
+    let before = chart_rows(&mut win);
+    assert_eq!(before, 240);
+
+    win.press_cell(2, HOUSE_AGE);
+    win.key(egui::Key::W);
+    win.type_text(">");
+    assert!(
+        win.drawn().rows < 240,
+        "the grid did not follow the preview"
+    );
+    assert_eq!(
+        chart_rows(&mut win),
+        before,
+        "the preview narrowed the chart"
+    );
+
+    win.key(egui::Key::Enter);
+    assert!(win.drawn().rows < 240);
+    assert_eq!(
+        chart_rows(&mut win),
+        before,
+        "the applied view narrowed the chart"
     );
 }
