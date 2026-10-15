@@ -2032,8 +2032,9 @@ impl Session {
     ///
     /// As [`Self::execute_step_rows_window_view`]; a `column` the step does
     /// not have is DuckDB's own [`EngineError::QueryFailed`]. A `row` past the
-    /// end of the view is [`EngineError::NoSuchRow`], so it is never mistaken
-    /// for a NULL cell.
+    /// end of the view is [`EngineError::NoSuchRow`], so it is not read as a
+    /// NULL cell, as `a_row_past_the_end_is_not_a_null_cell` in
+    /// `crates/brightfield-engine/tests/rows_under_view.rs` reads.
     pub fn cell_literal(
         &self,
         index: usize,
