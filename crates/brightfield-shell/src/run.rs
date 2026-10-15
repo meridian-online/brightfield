@@ -302,6 +302,61 @@ impl Run {
     }
 }
 
+/// The child that is `arc` run with `args` in `dir`: this binary under
+/// [`RUNNER_ENV`], colour off, no stdin, and the staged engine when one sits
+/// beside `program`.
+fn arc_command(program: &Path, dir: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(dir)
+        .env(RUNNER_ENV, "1")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null());
+    if let Some(engine) = staged_engine_beside(program) {
+        command.env(ENGINE_ENV, engine);
+    }
+    command
+}
+
+/// What one call of `arc` left: its two streams apart, and whether it exited 0.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArcOutput {
+    /// What `arc` printed on stdout, which is where its JSON and its one-line
+    /// answers go.
+    pub stdout: String,
+    /// What `arc` printed on stderr with its colour codes removed, which is
+    /// where a refusal goes.
+    pub stderr: String,
+    /// Whether `arc` exited 0.
+    pub succeeded: bool,
+}
+
+/// Run `arc` with `args` in `dir` through `runner`, and wait for it.
+///
+/// Unlike a run, which merges the two streams into one log, this keeps them
+/// apart: a caller reads JSON from stdout and shows stderr as the refusal. A
+/// runner that cannot be started comes back as a failed output whose stderr
+/// says so.
+#[must_use]
+pub fn arc_with_args(runner: &Runner, dir: &Path, args: &[&str]) -> ArcOutput {
+    match arc_command(runner.program(), dir, args).output() {
+        Ok(output) => ArcOutput {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: without_colour_codes(&String::from_utf8_lossy(&output.stderr)),
+            succeeded: output.status.success(),
+        },
+        Err(e) => ArcOutput {
+            stdout: String::new(),
+            stderr: format!(
+                "could not start the runner {}: {e}",
+                runner.program().display()
+            ),
+            succeeded: false,
+        },
+    }
+}
+
 /// Start the child, wait for it, and say what it left.
 ///
 /// Which record is this run's is decided by **what was not there before**,
@@ -310,17 +365,7 @@ impl Run {
 /// outcome as this one's.
 fn run_to_completion(program: &Path, dir: &Path) -> Finished {
     let before: BTreeSet<PathBuf> = record_paths_newest_first(dir).into_iter().collect();
-    let mut command = Command::new(program);
-    command
-        .arg("run")
-        .current_dir(dir)
-        .env(RUNNER_ENV, "1")
-        .env("NO_COLOR", "1")
-        .stdin(Stdio::null());
-    if let Some(engine) = staged_engine_beside(program) {
-        command.env(ENGINE_ENV, engine);
-    }
-    let output = command.output();
+    let output = arc_command(program, dir, &["run"]).output();
     let output = match output {
         Ok(output) => output,
         Err(e) => {

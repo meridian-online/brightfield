@@ -98,6 +98,7 @@ pub mod interval_drag;
 pub mod legend;
 pub mod navigation;
 pub mod one_step;
+pub mod operation;
 pub mod overlays;
 pub mod pipeline;
 pub mod protocol;
