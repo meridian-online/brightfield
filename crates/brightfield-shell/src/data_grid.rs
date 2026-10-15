@@ -1447,6 +1447,13 @@ pub const PREVIEW_LABEL: &str =
 /// counts its rows: a preview claims no count.
 pub const PREVIEW_COUNT: &str = "first page \u{b7} preview";
 
+/// What a step's grid says while its preview is being read.
+pub const PREVIEW_READING: &str = "Reading a preview\u{2026}";
+
+/// How many previews' pages the document keeps, so going back to a step's
+/// grid shows its page without reading the file again.
+const PREVIEW_PAGES_KEPT: usize = 8;
+
 /// **What the window asks the grid to preview**: a generated step, and the
 /// chain from the data file that makes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1488,12 +1495,118 @@ impl PreviewRequest {
     }
 }
 
+/// What one preview read gave: the page, or why there is none.
+type PreviewRead = std::sync::Arc<Result<GridPage, brightfield_engine::PreviewRefusal>>;
+
+/// Where a preview stands.
+#[derive(Clone, Debug)]
+enum PreviewShown {
+    /// The read is under way on a worker.
+    Reading,
+    /// The read finished.
+    Read(PreviewRead),
+}
+
+/// What a read is kept under: the rows asked for, the data file as it stood
+/// when it was read (so a file changed on disk is read again), and the size
+/// limit it was read under.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PreviewKey {
+    step: String,
+    data: std::path::PathBuf,
+    root_table: String,
+    chain: Vec<(String, brightfield_engine::PreviewOp)>,
+    modified: Option<std::time::SystemTime>,
+    len: Option<u64>,
+    limit: u64,
+}
+
+impl PreviewKey {
+    fn of(request: &PreviewRequest, limit: u64) -> Self {
+        let meta = std::fs::metadata(&request.data).ok();
+        Self {
+            step: request.step.clone(),
+            data: request.data.clone(),
+            root_table: request.root_table.clone(),
+            chain: request.chain.clone(),
+            modified: meta.as_ref().and_then(|m| m.modified().ok()),
+            len: meta.map(|m| m.len()),
+            limit,
+        }
+    }
+}
+
+/// **The document's preview reads**: the pages read so far, the newest last,
+/// and the one read under way on a worker.
+///
+/// A read runs off the UI thread because it loads the whole data file, and a
+/// file near the size limit would hold a frame for as long as that takes. The
+/// worker asks for a repaint when it is done, so the page lands on the next
+/// frame.
+#[derive(Default)]
+pub(crate) struct PreviewReads {
+    kept: Vec<(PreviewKey, PreviewRead)>,
+    pending: Option<(
+        PreviewKey,
+        std::sync::mpsc::Receiver<Result<GridPage, brightfield_engine::PreviewRefusal>>,
+    )>,
+    started: usize,
+}
+
+impl PreviewReads {
+    /// Where the read of `request` under `key` stands, starting it on a worker
+    /// when it is neither kept nor under way.
+    fn shown(
+        &mut self,
+        key: &PreviewKey,
+        request: &PreviewRequest,
+        ctx: &egui::Context,
+    ) -> PreviewShown {
+        if let Some((_, read)) = self.kept.iter().find(|(k, _)| k == key) {
+            return PreviewShown::Read(read.clone());
+        }
+        if let Some((pending, answer)) = &self.pending {
+            if pending == key {
+                let read = match answer.try_recv() {
+                    Ok(read) => read,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => return PreviewShown::Reading,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Err(brightfield_engine::PreviewRefusal::Engine(
+                            "the preview's read stopped without an answer".to_string(),
+                        ))
+                    }
+                };
+                self.pending = None;
+                let read = std::sync::Arc::new(read);
+                if self.kept.len() >= PREVIEW_PAGES_KEPT {
+                    self.kept.remove(0);
+                }
+                self.kept.push((key.clone(), read.clone()));
+                return PreviewShown::Read(read);
+            }
+        }
+        let (send, answer) = std::sync::mpsc::channel();
+        let asked = request.clone();
+        let limit = key.limit;
+        let wake = ctx.clone();
+        std::thread::spawn(move || {
+            // A receiver dropped for another step's read is not an error: the
+            // page is simply not wanted any more.
+            let _ = send.send(read_preview(&asked, limit));
+            wake.request_repaint();
+        });
+        self.pending = Some((key.clone(), answer));
+        self.started += 1;
+        PreviewShown::Reading
+    }
+}
+
 /// **A generated step's grid, while it shows a preview**: what was asked, and
-/// the page read for it or why there is none.
+/// the page read for it, why there is none, or that it is still being read.
 #[derive(Clone, Debug)]
 pub struct GridPreview {
     request: PreviewRequest,
-    shown: Result<GridPage, brightfield_engine::PreviewRefusal>,
+    shown: PreviewShown,
     /// Whether a key asked the band to filter or sort this step, so the status
     /// band says why it cannot.
     said: bool,
@@ -1509,13 +1622,25 @@ impl GridPreview {
     /// The page read, or `None` when the step could not be previewed.
     #[must_use]
     pub fn page(&self) -> Option<&GridPage> {
-        self.shown.as_ref().ok()
+        match &self.shown {
+            PreviewShown::Read(read) => read.as_ref().as_ref().ok(),
+            PreviewShown::Reading => None,
+        }
     }
 
     /// Why the step could not be previewed, when it could not.
     #[must_use]
     pub fn refusal(&self) -> Option<&brightfield_engine::PreviewRefusal> {
-        self.shown.as_ref().err()
+        match &self.shown {
+            PreviewShown::Read(read) => read.as_ref().as_ref().err(),
+            PreviewShown::Reading => None,
+        }
+    }
+
+    /// Whether the page is still being read.
+    #[must_use]
+    pub const fn is_reading(&self) -> bool {
+        matches!(self.shown, PreviewShown::Reading)
     }
 
     /// Whether the run record says the step ran.
@@ -1549,24 +1674,28 @@ impl GridPreview {
     }
 
     /// The empty state a step that could not be previewed draws: why, and Run
-    /// as the way on.
+    /// as the way on, worded for whether the step has run.
     fn refused_state(&self, refusal: &brightfield_engine::PreviewRefusal) -> EmptyState {
         use brightfield_model::profile_model::thousands;
         let run = self.request.run_named();
+        let way_on = if self.request.ran {
+            format!("Its run's table is not shown here yet; {run} the Protocol to run it again.")
+        } else {
+            format!("It has not been run; {run} the Protocol to make its table.")
+        };
         match refusal {
             brightfield_engine::PreviewRefusal::TooLarge { bytes } => EmptyState::new(
                 ICON_DATA,
                 "The data file is too large to preview",
                 format!(
-                    "It is {} bytes on disk, more than brightfield previews. {run} the \
-                     Protocol to make this step's table.",
+                    "It is {} bytes on disk, more than brightfield previews. {way_on}",
                     thousands(*bytes)
                 ),
             ),
             brightfield_engine::PreviewRefusal::Engine(msg) => EmptyState::new(
                 ICON_DATA,
                 "This step cannot be previewed",
-                format!("{msg}. It has not been run; {run} the Protocol to make its table."),
+                format!("{msg}. {way_on}"),
             ),
         }
     }
@@ -1607,39 +1736,50 @@ impl ChartDoc {
     }
 
     /// **Show `request`'s preview in the grid**, or the session's rows again
-    /// with `None`. A page already read for the same rows is kept, so a frame
-    /// that asks again reads nothing; a different step's page is read here, on
-    /// a connection of its own (see [`brightfield_engine::preview_first_page`]).
+    /// with `None`. A page read for the same rows from the same file is kept,
+    /// so a frame that asks again, or a return to the step's grid, reads
+    /// nothing; otherwise the page is read on a worker, on a connection of its
+    /// own (see [`brightfield_engine::preview_first_page`]), and the grid says
+    /// it is reading until the page lands. `ctx` is what the worker wakes.
     ///
     /// The cursor and any field being edited named cells of other rows, so
     /// either change of what the grid shows lets go of them.
-    pub fn show_preview(&mut self, request: Option<PreviewRequest>) {
+    pub fn show_preview(&mut self, request: Option<PreviewRequest>, ctx: &egui::Context) {
         let Some(request) = request else {
             if self.grid_preview.take().is_some() {
                 self.grid_cursor = None;
             }
             return;
         };
-        if let Some(held) = self.grid_preview.as_mut() {
-            if held.request.same_rows(&request) {
-                held.request = request;
-                return;
+        let said = match &self.grid_preview {
+            Some(held) if held.request.same_rows(&request) => held.said,
+            _ => {
+                self.grid_foot.cancel();
+                self.grid_cursor = None;
+                false
             }
-        }
-        self.grid_foot.cancel();
-        self.grid_cursor = None;
-        let shown = read_preview(&request, self.preview_file_limit);
+        };
+        let key = PreviewKey::of(&request, self.preview_file_limit);
+        let shown = self.preview_reads.shown(&key, &request, ctx);
         self.grid_preview = Some(GridPreview {
             request,
             shown,
-            said: false,
+            said,
         });
+    }
+
+    /// How many preview reads this document has started — what a test reads to
+    /// see a return to a step's grid served from the page already read.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn preview_reads_started(&self) -> usize {
+        self.preview_reads.started
     }
 
     /// Preview only files of at most `bytes` on disk, in place of
     /// [`brightfield_engine::PREVIEW_FILE_LIMIT_BYTES`], so a test reaches the
     /// refusal without a file that large. A preview already read is read
-    /// again under the new limit.
+    /// again under the new limit, which is part of what its page is kept under.
     #[doc(hidden)]
     pub fn set_preview_file_limit(&mut self, bytes: u64) {
         self.preview_file_limit = bytes;
@@ -1997,7 +2137,19 @@ impl DataGridItem {
                 );
                 chrome::empty_state(&mut inside, &preview.refused_state(refusal), mode);
             }
-            (None, None) => {}
+            (None, None) => {
+                let mut inside = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(table_rect)
+                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                );
+                inside.add_space(spacing::SPACE_2);
+                inside.label(
+                    egui::RichText::new(PREVIEW_READING)
+                        .font(cell_font())
+                        .color(chrome::colour(sem.text.muted)),
+                );
+            }
         }
         let counts = drawn.as_ref().map_or((0, 0), |d| (d.rows, d.columns));
         let mut foot = std::mem::take(&mut doc.grid_foot);

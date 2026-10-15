@@ -247,3 +247,24 @@ fn refusal(msg: &str, bytes: u64) -> PreviewRefusal {
     }
     PreviewRefusal::Engine(msg.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn running_out_of_memory_is_too_large_to_preview() {
+        let msg = "Out of Memory Error: failed to allocate data of size 64.0 MiB \
+                   (1.9 GiB/2.0 GiB used)";
+        assert_eq!(
+            refusal(msg, 1_234),
+            PreviewRefusal::TooLarge { bytes: 1_234 }
+        );
+    }
+
+    #[test]
+    fn another_failure_keeps_duckdbs_words() {
+        let msg = "Binder Error: Referenced column \"nope\" not found";
+        assert_eq!(refusal(msg, 1), PreviewRefusal::Engine(msg.to_string()));
+    }
+}

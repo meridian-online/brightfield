@@ -924,6 +924,9 @@ pub struct ChartDoc {
     pub(crate) grid_preview: Option<crate::data_grid::GridPreview>,
     /// The largest data file a preview reads, in bytes on disk.
     pub(crate) preview_file_limit: u64,
+    /// The preview pages read so far and the read under way, kept across
+    /// visits to a step's grid. See [`crate::data_grid::PreviewReads`].
+    pub(crate) preview_reads: crate::data_grid::PreviewReads,
     /// **What the operation panel reads**: the table the node in view makes,
     /// and the description of the operation in hand as the window last handed
     /// it over. See [`crate::operation_panel`].
@@ -1279,6 +1282,7 @@ impl ChartDoc {
             grid_foot: crate::grid_foot::FootState::default(),
             grid_preview: None,
             preview_file_limit: brightfield_engine::PREVIEW_FILE_LIMIT_BYTES,
+            preview_reads: crate::data_grid::PreviewReads::default(),
             operation: crate::operation_panel::OperationState::default(),
             grid_layout_switch: None,
             grid_spot_switch: None,
@@ -1347,6 +1351,7 @@ impl ChartDoc {
             grid_foot: crate::grid_foot::FootState::default(),
             grid_preview: None,
             preview_file_limit: brightfield_engine::PREVIEW_FILE_LIMIT_BYTES,
+            preview_reads: crate::data_grid::PreviewReads::default(),
             operation: crate::operation_panel::OperationState::default(),
             grid_layout_switch: None,
             grid_spot_switch: None,

@@ -1498,7 +1498,9 @@ impl Boot {
         // otherwise, and its grid shows a preview labelled as one. A folder of
         // that shape whose generated model was edited away from arc's template
         // is refused here, naming the step, rather than opened or rendered.
-        if let Some(generated) = crate::generated::generated_protocol_in(&text, &dir)? {
+        if let Some(generated) = crate::generated::generated_protocol_in(&text, &dir)?
+            .filter(|g| beside_its_manifest(&g.data, &dir))
+        {
             if sample.is_some() {
                 return Err(format!(
                     "{spec}: a sample rate is pushed into a plot's own query, and the dashboard \
@@ -4656,7 +4658,7 @@ impl MeridianApp {
                 ),
             };
             let previewed = preview.is_some();
-            self.charts.doc.show_preview(preview);
+            self.charts.doc.show_preview(preview, ui.ctx());
             // **A grid of a node the engine does not hold**: the label of the
             // node whose grid the canvas holds, when that node is not the table
             // the session read. The one grid lists the session's rows, so drawn
@@ -8007,8 +8009,13 @@ impl MeridianApp {
         };
         let model = &self.protocol.doc.model;
         let generated = model.generated()?;
-        let label = model.label_of(node)?;
-        let step = generated.steps.iter().find(|s| s.name == label)?;
+        // The graph spells a table as DuckDB resolves it, case folded, while
+        // the step keeps the case it was named with.
+        let label = model.label_of(node)?.to_lowercase();
+        let step = generated
+            .steps
+            .iter()
+            .find(|s| s.name.to_lowercase() == label)?;
         let op = |s: &crate::generated::GeneratedStep| match s.operation {
             KnownOperation::FilterRows => PreviewOp::Where(s.argument.clone()),
             KnownOperation::SortRows => PreviewOp::OrderBy(s.argument.clone()),
@@ -8018,7 +8025,11 @@ impl MeridianApp {
         // number of steps.
         let mut chain = vec![(step.name.clone(), op(step))];
         let mut on = step.on.as_str();
-        while let Some(before) = generated.steps.iter().find(|s| s.name == on) {
+        while let Some(before) = generated
+            .steps
+            .iter()
+            .find(|s| s.name.to_lowercase() == on.to_lowercase())
+        {
             if chain.len() > generated.steps.len() {
                 return None;
             }
@@ -9002,11 +9013,20 @@ fn grid_cursor_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
     use brightfield_model::profile_model::thousands;
     let table = doc.grid_drawn()?;
     let cursor = table.cursor.as_ref()?;
-    let mut text = format!(
-        "row {} of {}",
-        thousands(cursor.at.row + 1),
-        thousands(table.rows)
-    );
+    // A preview claims no count, so its row is placed on the first page and
+    // not among the step's rows.
+    let mut text = if doc.grid_preview().is_some() {
+        format!(
+            "row {} of the first page \u{b7} preview",
+            thousands(cursor.at.row + 1)
+        )
+    } else {
+        format!(
+            "row {} of {}",
+            thousands(cursor.at.row + 1),
+            thousands(table.rows)
+        )
+    };
     for part in [&cursor.column, &cursor.value].into_iter().flatten() {
         text.push_str(" · ");
         text.push_str(part);
@@ -9038,6 +9058,26 @@ fn grid_foot_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
         },
         hide: HideAffordance::WithRail,
     })
+}
+
+/// Whether the data file `data` sits in `dir`, the folder of the manifest that
+/// names it. A Protocol opened through its data file is kept in the data
+/// file's own folder ([`crate::one_step`]), so a manifest elsewhere naming it
+/// is not that Protocol's, and is left to the route any other manifest takes.
+fn beside_its_manifest(data: &std::path::Path, dir: &std::path::Path) -> bool {
+    let folder = data
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let dir = if dir.as_os_str().is_empty() {
+        std::path::Path::new(".")
+    } else {
+        dir
+    };
+    match (folder.canonicalize(), dir.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// The stable id `grid_foot_status_entry` writes — the handle a test reads the

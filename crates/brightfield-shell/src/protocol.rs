@@ -1894,17 +1894,21 @@ impl ProtocolModel {
     /// graph the canvas draws.
     #[must_use]
     pub fn node_of_step_table(&self, name: &str) -> Option<&AssetId> {
-        viewable_nodes(&self.graph_collapsed).find(|id| self.label_of(id) == Some(name))
+        // The graph spells a table case folded, as DuckDB resolves it.
+        let name = name.to_lowercase();
+        viewable_nodes(&self.graph_collapsed)
+            .find(|id| self.label_of(id).map(str::to_lowercase).as_deref() == Some(&*name))
     }
 
-    /// Whether the run record says the step `name` ran: its row on the Steps
-    /// sheet has a status other than not run.
+    /// Whether the run record says the step `name` ran and succeeded: its row
+    /// on the Steps sheet reads ok. A step whose last run failed has no table
+    /// to work from, so it does not count.
     #[must_use]
     pub fn step_ran(&self, name: &str) -> bool {
         self.sheet
             .rows()
             .iter()
-            .any(|row| row.name == name && row.status != NOT_RUN)
+            .any(|row| row.name == name && row.status == "ok")
     }
 
     /// Select the table the step `name` makes, as a click on its row would.

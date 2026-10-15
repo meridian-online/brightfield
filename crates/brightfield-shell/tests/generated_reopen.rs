@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use brightfield_engine::RowsView;
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::data_grid::{PREVIEW_COUNT, PREVIEW_LABEL, PREVIEW_ROWS};
+use brightfield_shell::data_grid::{PREVIEW_COUNT, PREVIEW_LABEL, PREVIEW_READING, PREVIEW_ROWS};
 use brightfield_shell::design::Mode;
 use brightfield_shell::protocol::{SpineRole, OFFLINE_VAR};
 use brightfield_shell::run::Runner;
@@ -97,6 +97,8 @@ struct Window {
     ctx: egui::Context,
     screen: egui::Rect,
     texts: Vec<String>,
+    /// Whether any frame since the last click drew the reading state.
+    saw_reading: bool,
 }
 
 impl Window {
@@ -107,6 +109,7 @@ impl Window {
             ctx: egui::Context::default(),
             screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0)),
             texts: Vec::new(),
+            saw_reading: false,
         };
         win.settle();
         win
@@ -124,6 +127,7 @@ impl Window {
             collect_text(&clipped.shape, &mut texts);
         }
         self.texts = texts;
+        self.saw_reading |= self.drew(PREVIEW_READING);
     }
 
     fn settle(&mut self) {
@@ -151,8 +155,26 @@ impl Window {
             .filter(|row| row.role == SpineRole::View && row.label == "grid")
             .unwrap_or_else(|| panic!("no grid row stands under {node:?}"));
         let centre = grid.rect.center();
+        self.saw_reading = false;
         self.run(vec![egui::Event::PointerMoved(centre)]);
         self.run(vec![button(centre, true), button(centre, false)]);
+        self.settle();
+        self.wait_for_preview();
+    }
+
+    /// Draw frames until the preview the grid shows is no longer being read.
+    fn wait_for_preview(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while self
+            .app
+            .chart_doc()
+            .grid_preview()
+            .is_some_and(|p| p.is_reading())
+        {
+            assert!(Instant::now() < deadline, "the preview never arrived");
+            std::thread::sleep(Duration::from_millis(5));
+            self.run(Vec::new());
+        }
         self.settle();
     }
 
@@ -324,6 +346,7 @@ fn a_never_run_steps_grid_shows_a_labelled_first_page() {
 
     win.click_grid_under(FILTER_STEP);
 
+    assert!(win.saw_reading, "no frame said the preview was being read");
     assert!(win.drew(PREVIEW_LABEL), "the preview label was not drawn");
     let ages = win.preview_cells("house_age");
     assert_eq!(ages.len() as u64, PREVIEW_ROWS);
@@ -344,6 +367,108 @@ fn a_never_run_steps_grid_shows_a_labelled_first_page() {
         "the grid scrolls past the first page"
     );
     assert_eq!(win.status_of(FILTER_STEP), "not run");
+
+    // The cursor's line places the row on the first page and counts nothing.
+    win.press_cell(0, 1);
+    let row_lines: Vec<&String> = win.texts.iter().filter(|t| t.starts_with("row ")).collect();
+    assert!(
+        row_lines
+            .iter()
+            .any(|t| t.starts_with("row 1 of the first page \u{b7} preview")),
+        "{row_lines:?}"
+    );
+    assert!(
+        !row_lines
+            .iter()
+            .any(|t| t.contains(&PREVIEW_ROWS.to_string())),
+        "the cursor's line claims a count: {row_lines:?}"
+    );
+}
+
+#[test]
+fn a_return_to_a_steps_grid_reads_nothing_again() {
+    let root = TempDir::new("return");
+    let folder = saved_folder(&root, Some("house_age > 28"), None);
+    let mut win = reopen(&folder);
+    win.click_grid_under(FILTER_STEP);
+    assert_eq!(win.app.chart_doc().preview_reads_started(), 1);
+
+    win.click_grid_under("california_housing");
+    assert!(win.app.chart_doc().grid_preview().is_none());
+    win.click_grid_under(FILTER_STEP);
+
+    assert_eq!(
+        win.app.chart_doc().preview_reads_started(),
+        1,
+        "the return read the file again"
+    );
+    assert!(!win.saw_reading, "the return drew the reading state");
+    assert!(win.drew(PREVIEW_LABEL));
+}
+
+#[test]
+fn a_name_with_capitals_previews_and_is_selected_after_save() {
+    let root = TempDir::new("capitals");
+    let folder = root.0.join("data");
+    std::fs::create_dir_all(&folder).expect("the data file's folder");
+    let data = folder.join("Housing.parquet");
+    std::fs::write(&data, starts::HOUSING_PARQUET).expect("the housing file writes");
+    let boot = Boot::data_file(&data.to_string_lossy()).expect("the housing file opens");
+    let mut win = Window::over(boot);
+    win.app.chart_doc_mut().apply_grid_view(RowsView {
+        condition: Some("house_age > 28".to_owned()),
+        order: None,
+    });
+    win.settle();
+    win.app
+        .save_protocol(&win.ctx)
+        .expect("the window has a Protocol to save")
+        .expect("the Save records");
+    win.settle();
+    let step = "Housing_filtered_by_house_age";
+    assert!(
+        win.app
+            .protocol_model()
+            .selected()
+            .is_some_and(|id| id.to_lowercase().contains(&step.to_lowercase())),
+        "the new step is not selected: {:?}",
+        win.app.protocol_model().selected()
+    );
+
+    let mut win = reopen(&folder);
+    win.click_grid_under(&step.to_lowercase());
+    assert!(win.drew(PREVIEW_LABEL), "the preview label was not drawn");
+}
+
+#[test]
+fn a_manifest_outside_the_data_files_folder_is_not_opened_this_way() {
+    let root = TempDir::new("elsewhere");
+    let folder = saved_folder(&root, Some("house_age > 28"), None);
+    // The data file moves into a folder of its own, and the manifest and the
+    // load name it there.
+    let inner = folder.join("data");
+    std::fs::create_dir_all(&inner).expect("the inner folder");
+    std::fs::rename(
+        folder.join(starts::HOUSING_FILE),
+        inner.join(starts::HOUSING_FILE),
+    )
+    .expect("the data file moves");
+    let spelled = format!("./{}", starts::HOUSING_FILE);
+    let moved = format!("data/{}", starts::HOUSING_FILE);
+    for file in [
+        folder.join("arcform.yaml"),
+        folder.join("models").join("load.sql"),
+    ] {
+        let text = std::fs::read_to_string(&file).expect("the file reads");
+        assert!(text.contains(&spelled), "{text}");
+        std::fs::write(&file, text.replace(&spelled, &moved)).expect("the file writes");
+    }
+
+    let refused = Boot::open(&manifest(&folder), Flow::Vertical, None)
+        .err()
+        .expect("a manifest away from its data file opened through it");
+
+    assert!(refused.contains(OFFLINE_VAR), "{refused}");
 }
 
 #[test]
