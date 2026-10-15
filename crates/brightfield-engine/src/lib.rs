@@ -2033,23 +2033,7 @@ impl Session {
     /// The column names `sql`'s parse tree references, distinct, in order of
     /// first appearance. `sql` must already have passed the one-statement gate.
     fn parsed_columns(&self, sql: &str) -> Result<Vec<String>, String> {
-        let literal = sql.replace('\'', "''");
-        let json: String = self
-            .conn
-            .query_row(
-                &format!("SELECT json_serialize_sql('{literal}')"),
-                [],
-                |r| r.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        let tree: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-        if tree.get("error").and_then(serde_json::Value::as_bool) == Some(true) {
-            return Err(tree
-                .get("error_message")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("DuckDB could not parse it")
-                .to_string());
-        }
+        let tree = serialized_sql(&self.conn, sql)?;
         let mut out = Vec::new();
         collect_column_refs(&tree, &mut out);
         Ok(out)
@@ -4190,6 +4174,135 @@ fn unordered_window_sql(rows_sql: &str, offset: u64, limit: u64) -> String {
         "SELECT * FROM ({rows_sql}) AS bf_step_rows \
          ORDER BY ALL LIMIT {limit} OFFSET {offset}"
     )
+}
+
+/// DuckDB's parse tree of `sql`, from `json_serialize_sql` on `conn`, or
+/// DuckDB's message when it cannot parse it. The function only parses: nothing
+/// in `sql` is bound or run.
+fn serialized_sql(conn: &duckdb::Connection, sql: &str) -> Result<serde_json::Value, String> {
+    let literal = sql.replace('\'', "''");
+    let json: String = conn
+        .query_row(
+            &format!("SELECT json_serialize_sql('{literal}')"),
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let tree: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    if tree.get("error").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Err(tree
+            .get("error_message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("DuckDB could not parse it")
+            .to_string());
+    }
+    Ok(tree)
+}
+
+/// What [`plain_select`] reads in a `SELECT * FROM <table> …` statement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlainSelect {
+    /// The one table the statement reads, as DuckDB names it.
+    pub table: String,
+    /// Whether the statement has a `WHERE` clause.
+    pub has_where: bool,
+    /// The type of each result modifier, in order (`ORDER_MODIFIER`,
+    /// `LIMIT_MODIFIER`, `DISTINCT_MODIFIER`, …).
+    pub modifiers: Vec<String>,
+}
+
+/// Read `sql` with DuckDB's parser as a plain `SELECT * FROM <table>`
+/// statement: one statement, a select node rather than a set operation such
+/// as `UNION`, no `WITH`, a select list of one bare `*`, a `FROM` of one base
+/// table with no alias, sample or time travel, and no `GROUP BY`, `HAVING`,
+/// `QUALIFY` or `USING SAMPLE`. It reports the parts left to vary: the table,
+/// whether there is a `WHERE`, and the result modifiers.
+///
+/// It parses on a fresh in-memory database, for the reason
+/// [`condition_statement_count`] gives.
+///
+/// # Errors
+///
+/// DuckDB's message when it cannot parse `sql`, or the first way the statement
+/// departs from that shape.
+pub fn plain_select(sql: &str) -> Result<PlainSelect, String> {
+    use serde_json::Value;
+    let conn = duckdb::Connection::open_in_memory().map_err(|e| e.to_string())?;
+    let tree = serialized_sql(&conn, sql)?;
+    let statements = tree
+        .get("statements")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    let [statement] = statements else {
+        return Err(format!(
+            "it reads as {} statements, not one",
+            statements.len()
+        ));
+    };
+    let node = &statement["node"];
+    let empty = |v: &Value| match v {
+        Value::Null => true,
+        Value::Array(items) => items.is_empty(),
+        Value::String(text) => text.is_empty(),
+        Value::Bool(b) => !b,
+        _ => false,
+    };
+    if node["type"] != "SELECT_NODE" {
+        return Err(format!("it is a {} rather than one SELECT", node["type"]));
+    }
+    if !empty(&node["cte_map"]["map"]) {
+        return Err("it opens with a WITH".to_string());
+    }
+    let star_is_bare = |star: &Value| {
+        star["class"] == "STAR"
+            && [
+                "relation_name",
+                "exclude_list",
+                "replace_list",
+                "columns",
+                "expr",
+                "qualified_exclude_list",
+                "rename_list",
+            ]
+            .iter()
+            .all(|key| empty(&star[*key]))
+    };
+    match node["select_list"].as_array().map(Vec::as_slice) {
+        Some([star]) if star_is_bare(star) => {}
+        _ => return Err("its select list is not one bare `*`".to_string()),
+    }
+    let from = &node["from_table"];
+    let plain_table = from["type"] == "BASE_TABLE"
+        && ["alias", "sample", "column_name_alias", "at_clause"]
+            .iter()
+            .all(|key| empty(&from[*key]));
+    let Some(table) = from["table_name"].as_str().filter(|_| plain_table) else {
+        return Err("it does not read one plain table".to_string());
+    };
+    for key in [
+        "group_expressions",
+        "group_sets",
+        "having",
+        "sample",
+        "qualify",
+    ] {
+        if !empty(&node[key]) {
+            return Err(format!("it has a {key}"));
+        }
+    }
+    if node["aggregate_handling"] != "STANDARD_HANDLING" {
+        return Err("it groups its rows".to_string());
+    }
+    Ok(PlainSelect {
+        table: table.to_string(),
+        has_where: !node["where_clause"].is_null(),
+        modifiers: node["modifiers"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .map(|m| m["type"].as_str().unwrap_or("").to_string())
+            .collect(),
+    })
 }
 
 /// The rule a condition is held to, as the error a read returns.

@@ -214,25 +214,46 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
     // engine's filtered read wraps it, and an order followed by `\n, 1`, as the
     // window read follows it with its tie-break columns. A `;` left in either
     // then cuts the probe short and fails to parse, and the probe adds no
-    // operand an unfinished clause (`BETWEEN 1`) could take as its own. A
-    // condition must also read as one statement bare, as arc wrote it, so one
-    // that closes the engine's parenthesis and opens another (`1) OR (1`) is
-    // refused too.
-    let probes = match operation {
-        KnownOperation::FilterRows => vec![
-            brightfield_engine::condition_statement_count(&format!("(\n{argument}\n)")),
-            brightfield_engine::condition_statement_count(argument),
-        ],
-        KnownOperation::SortRows => vec![brightfield_engine::order_statement_count(&format!(
-            "{argument}\n, 1"
-        ))],
-    };
-    for statements in probes {
-        match statements {
-            Ok(1) => {}
-            Ok(n) => return refuse(&format!("its clause reads as {n} statements, not one")),
-            Err(e) => return refuse(&format!("DuckDB cannot read its clause: {e}")),
+    // operand an unfinished clause (`BETWEEN 1`) could take as its own.
+    let statements = match operation {
+        KnownOperation::FilterRows => {
+            brightfield_engine::condition_statement_count(&format!("(\n{argument}\n)"))
         }
+        KnownOperation::SortRows => {
+            brightfield_engine::order_statement_count(&format!("{argument}\n, 1"))
+        }
+    };
+    match statements {
+        Ok(1) => {}
+        Ok(n) => return refuse(&format!("its clause reads as {n} statements, not one")),
+        Err(e) => return refuse(&format!("DuckDB cannot read its clause: {e}")),
+    }
+    // The probe above judges the argument in the engine's form; this judges
+    // the statement the model is, as arc wrote it. A clause can parse as one
+    // statement and still turn the model into something else, such as a
+    // `UNION` that returns the table twice, or close the engine's parenthesis
+    // and open another (`1) OR (1`), so the whole query must read as a plain
+    // `SELECT *` from `on` carrying only the one clause the operation writes.
+    let query = format!(
+        "SELECT *\nFROM {spelled}\n{}{argument}\n",
+        operation.clause()
+    );
+    let shape = match brightfield_engine::plain_select(&query) {
+        Ok(shape) => shape,
+        Err(e) => return refuse(&format!("its query is not a plain `SELECT *`: {e}")),
+    };
+    if shape.table != on {
+        return refuse(&format!("its query reads {:?}, not {on:?}", shape.table));
+    }
+    let clause_only = match operation {
+        KnownOperation::FilterRows => shape.has_where && shape.modifiers.is_empty(),
+        KnownOperation::SortRows => !shape.has_where && shape.modifiers == ["ORDER_MODIFIER"],
+    };
+    if !clause_only {
+        return refuse(&format!(
+            "its query carries more than its `{}` clause",
+            operation.clause().trim_end()
+        ));
     }
     Ok(GeneratedStep {
         name: step_name.to_string(),
@@ -542,6 +563,32 @@ mod tests {
         let text = FILTER.replace("house_age > 28", "1) OR (1");
         let err = parse_generated("x", &text).expect_err("an unbalanced condition is refused");
         assert!(err.contains("\"x\""), "{err}");
+    }
+
+    #[test]
+    fn a_clause_that_turns_the_query_into_something_else_is_refused() {
+        let text = FILTER.replace(
+            "house_age > 28",
+            "(SELECT true) UNION ALL SELECT * FROM california_housing",
+        );
+        let err = parse_generated("x", &text).expect_err("a UNION is refused");
+        assert!(err.contains("\"x\""), "{err}");
+        for order in [
+            "a UNION SELECT * FROM t",
+            "a LIMIT 5",
+            "(SELECT 1) UNION ALL SELECT * FROM t ORDER BY a",
+        ] {
+            let text = format!(
+                "-- generated: sort-rows on t\nCREATE OR REPLACE TABLE \"y\" AS\nSELECT *\nFROM t\nORDER BY {order};\n"
+            );
+            let err = parse_generated("y", &text).expect_err("more than an order is refused");
+            assert!(err.contains("\"y\""), "{order}: {err}");
+        }
+        for condition in ["a > 1 GROUP BY ALL", "a > 1 LIMIT 5", "a > 1 QUALIFY true"] {
+            let text = FILTER.replace("house_age > 28", condition);
+            let err = parse_generated("x", &text).expect_err("more than a condition is refused");
+            assert!(err.contains("\"x\""), "{condition}: {err}");
+        }
     }
 
     #[test]
