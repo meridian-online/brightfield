@@ -208,9 +208,16 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
     if argument.trim().is_empty() {
         return refuse("its clause is empty");
     }
+    // DuckDB ignores an empty statement after the last, so `x;;` and `x; -- n`
+    // count as one. A term joined on after the argument, on its own line, is a
+    // syntax error behind any `;` left in it and reads the same otherwise.
     let statements = match operation {
-        KnownOperation::FilterRows => brightfield_engine::condition_statement_count(argument),
-        KnownOperation::SortRows => brightfield_engine::order_statement_count(argument),
+        KnownOperation::FilterRows => {
+            brightfield_engine::condition_statement_count(&format!("{argument}\nAND 1"))
+        }
+        KnownOperation::SortRows => {
+            brightfield_engine::order_statement_count(&format!("{argument}\n, 1"))
+        }
     };
     match statements {
         Ok(1) => {}
@@ -494,6 +501,17 @@ mod tests {
         let text = FILTER.replace("house_age > 28", "name = 'a;b' AND \"c;d\" > 1 /* ; */");
         let s = parse_generated("x", &text).expect("a `;` in a literal or comment is fine");
         assert_eq!(s.argument, "name = 'a;b' AND \"c;d\" > 1 /* ; */");
+    }
+
+    #[test]
+    fn a_trailing_empty_statement_is_refused() {
+        for tail in ["28;;", "28; -- note;"] {
+            let text = FILTER.replace("28;", tail);
+            let err = parse_generated("x", &text).expect_err("a trailing `;` is refused");
+            assert!(err.contains("\"x\""), "{tail}: {err}");
+        }
+        let sort = "-- generated: sort-rows on t\nCREATE OR REPLACE TABLE \"y\" AS\nSELECT *\nFROM t\nORDER BY a;;\n";
+        assert!(parse_generated("y", sort).is_err());
     }
 
     #[test]
