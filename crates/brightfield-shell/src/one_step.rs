@@ -23,8 +23,8 @@
 //! manifest.** A Save that records a grid view adds a generated step through
 //! `arc operation record`, and the manifest is then arc's to extend: Save and
 //! Run leave the manifest, the load's model, and the steps and models arc
-//! appended, as they are (writing the load's model back only when it is
-//! missing), and refuse a folder whose manifest of several steps is not this
+//! appended, as they are (writing the load's model back when it is missing),
+//! and refuse a folder whose manifest of several steps is not this
 //! file's, saying why (see [`OneStepProtocol::save_to`]).
 //!
 //! A run is `arc`'s, started by [`crate::run`] over the spec [`OneStepProtocol::save_to`]
@@ -410,7 +410,7 @@ enum SaveWrites {
 impl OneStepProtocol {
     /// What [`Self::save_to`] may write for the manifest at `path` in `dir`.
     ///
-    /// A manifest of several steps is this file's only when its first step is
+    /// A manifest of several steps is this file's when its first step is
     /// brightfield's load of this file — the file named by its one
     /// `depends_on:` entry, its model at [`MODEL_PATH`] and that model making
     /// this file's table — and the steps after it are ones arc generated.

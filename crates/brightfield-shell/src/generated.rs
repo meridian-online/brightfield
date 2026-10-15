@@ -353,7 +353,9 @@ pub fn generated_protocol_for(
 /// [`generated_protocol_for`], reading the load's model as `load_model`
 /// rather than from [`MODEL_PATH`] on disk: what the folder would be with
 /// that model written, so a Save can tell a missing model it may write back
-/// from a folder it must not touch, before it writes anything.
+/// from a folder it must not touch before it writes the model
+/// (`a_missing_load_model_is_written_back_by_save` in
+/// `tests/save_records_operation.rs`).
 ///
 /// # Errors
 ///
