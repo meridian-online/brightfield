@@ -892,6 +892,45 @@ pub struct ChartDoc {
     /// by a key's move and spent by that draw — see
     /// [`crate::data_grid::TableCursor::reveal`].
     pub grid_cursor_reveal: bool,
+    /// **The view the data grid reads through** — a condition and an order
+    /// over the step in front, applied to the grid's rows and to nothing else.
+    /// The charts on the same step keep the rows the load gave them. Empty
+    /// means the whole table. It is not in any file until a Save records it,
+    /// so a non-empty view marks the document unsaved
+    /// ([`Self::grid_view_unrecorded`]); cleared when the document is
+    /// replaced, since it named rows of the replaced document's table. After
+    /// a Save that recorded the condition and was refused the order, it keeps
+    /// both: the condition is held as recorded ([`Self::grid_condition_held`])
+    /// and the order waits for the next Save.
+    grid_view: brightfield_engine::RowsView,
+    /// **The step the view's condition was recorded as, while the order is
+    /// not**: a Save recorded the condition and arc refused the order. The
+    /// grid keeps showing both, the condition reads as recorded, and the order
+    /// is recorded on this step's table by the next Save. `None` otherwise,
+    /// since a view recorded whole leaves the row.
+    grid_condition_held: Option<String>,
+    /// Set when the applied view has just become fully recorded, so the window
+    /// takes on the Protocol the folder now holds; see
+    /// [`Self::take_grid_view_settled`].
+    grid_view_settled: bool,
+    /// **The row at the grid's foot**: the field being edited, the preview
+    /// the grid reads while it is, and what the band drew. Cleared when the
+    /// document is replaced, with the view it edits.
+    pub(crate) grid_foot: crate::grid_foot::FootState,
+    /// **The first page of a generated step nobody has run**, while the grid
+    /// shows that step: the window sets it from what the canvas holds, and
+    /// the grid draws it in place of the session's rows. See
+    /// [`crate::data_grid::GridPreview`].
+    pub(crate) grid_preview: Option<crate::data_grid::GridPreview>,
+    /// The largest data file a preview reads, in bytes on disk.
+    pub(crate) preview_file_limit: u64,
+    /// The preview pages read so far and the read under way, kept across
+    /// visits to a step's grid. See [`crate::data_grid::PreviewReads`].
+    pub(crate) preview_reads: crate::data_grid::PreviewReads,
+    /// **What the operation panel reads**: the table the node in view makes,
+    /// and the description of the operation in hand as the window last handed
+    /// it over. See [`crate::operation_panel`].
+    pub(crate) operation: crate::operation_panel::OperationState,
     /// **Whether a pointer gesture is holding a page origin**, as of the last
     /// frame the chart pane drew.
     ///
@@ -1237,6 +1276,14 @@ impl ChartDoc {
             grid_density: None,
             grid_cursor: None,
             grid_cursor_reveal: false,
+            grid_view: brightfield_engine::RowsView::default(),
+            grid_condition_held: None,
+            grid_view_settled: false,
+            grid_foot: crate::grid_foot::FootState::default(),
+            grid_preview: None,
+            preview_file_limit: brightfield_engine::PREVIEW_FILE_LIMIT_BYTES,
+            preview_reads: crate::data_grid::PreviewReads::default(),
+            operation: crate::operation_panel::OperationState::default(),
             grid_layout_switch: None,
             grid_spot_switch: None,
             transposed_rows: Vec::new(),
@@ -1298,6 +1345,14 @@ impl ChartDoc {
             grid_density: None,
             grid_cursor: None,
             grid_cursor_reveal: false,
+            grid_view: brightfield_engine::RowsView::default(),
+            grid_condition_held: None,
+            grid_view_settled: false,
+            grid_foot: crate::grid_foot::FootState::default(),
+            grid_preview: None,
+            preview_file_limit: brightfield_engine::PREVIEW_FILE_LIMIT_BYTES,
+            preview_reads: crate::data_grid::PreviewReads::default(),
+            operation: crate::operation_panel::OperationState::default(),
             grid_layout_switch: None,
             grid_spot_switch: None,
             transposed_rows: Vec::new(),
@@ -1418,6 +1473,11 @@ impl ChartDoc {
         self.grid_density = None;
         self.grid_cursor = None;
         self.grid_cursor_reveal = false;
+        self.grid_view = brightfield_engine::RowsView::default();
+        self.grid_condition_held = None;
+        self.grid_view_settled = false;
+        self.grid_foot = crate::grid_foot::FootState::default();
+        self.grid_preview = None;
         self.grid_layout_switch = None;
         self.grid_spot_switch = None;
         self.transposed_rows = Vec::new();
@@ -1486,6 +1546,112 @@ impl ChartDoc {
     #[must_use]
     pub const fn has_unsaved_edit(&self) -> bool {
         !self.pending_edits.is_empty() || self.stepped_back.is_some()
+    }
+
+    /// The view the data grid reads through; see the field's note above.
+    #[must_use]
+    pub const fn grid_view(&self) -> &brightfield_engine::RowsView {
+        &self.grid_view
+    }
+
+    /// Whether the document holds work no file does: an edit made since the
+    /// last Save ([`Self::has_unsaved_edit`]) or an applied grid view not yet
+    /// recorded ([`Self::grid_view_unrecorded`]). The one definition every
+    /// reader of *unsaved* shares.
+    #[must_use]
+    pub fn has_unsaved_work(&self) -> bool {
+        self.has_unsaved_edit() || self.grid_view_unrecorded()
+    }
+
+    /// The unrecorded part of the grid view in words for the close question,
+    /// or nothing when no part is unrecorded: `Grid view · where house_age = 28 · order by x`.
+    #[must_use]
+    pub fn grid_view_line(&self) -> Option<String> {
+        if !self.grid_view_unrecorded() {
+            return None;
+        }
+        let mut line = "Grid view".to_string();
+        if let Some(c) = self.grid_condition_unrecorded() {
+            line.push_str(&format!(" \u{b7} where {c}"));
+        }
+        if let Some(o) = &self.grid_view.order {
+            line.push_str(&format!(" \u{b7} order by {o}"));
+        }
+        Some(line)
+    }
+
+    /// Apply `view` to the data grid. The grid's next draw reads through it;
+    /// the cache is keyed on it, so no page read through the previous view is
+    /// shown. An empty view shows the whole table and leaves nothing unrecorded.
+    ///
+    /// While a recorded condition is held ([`Self::grid_condition_held`]) the
+    /// condition is not the caller's to change: `view`'s order is taken and
+    /// the held condition kept. An empty order then leaves nothing unrecorded,
+    /// so the view leaves the row and the window takes on the Protocol.
+    pub fn apply_grid_view(&mut self, mut view: brightfield_engine::RowsView) {
+        if self.grid_condition_held.is_some() {
+            if view.order.is_none() {
+                self.settle_grid_view();
+                return;
+            }
+            view.condition.clone_from(&self.grid_view.condition);
+        }
+        self.grid_view = view;
+    }
+
+    /// Whether some part of the applied grid view is in no file: the grid
+    /// shows rows no file says it should.
+    #[must_use]
+    pub fn grid_view_unrecorded(&self) -> bool {
+        self.grid_condition_unrecorded().is_some() || self.grid_view.order.is_some()
+    }
+
+    /// The applied condition, when no file holds it.
+    #[must_use]
+    pub fn grid_condition_unrecorded(&self) -> Option<&str> {
+        self.grid_condition_held
+            .is_none()
+            .then_some(self.grid_view.condition.as_deref())
+            .flatten()
+    }
+
+    /// The step a Save recorded the applied condition as, while the order it
+    /// was applied with is not recorded yet: the table the order goes on, and
+    /// the reason the `where` field is read-only.
+    #[must_use]
+    pub fn grid_condition_held(&self) -> Option<&str> {
+        self.grid_condition_held.as_deref()
+    }
+
+    /// The applied condition has been recorded as the step `step`. With no
+    /// order applied the whole view is recorded and leaves the row. With one,
+    /// the grid goes on showing both: the condition reads as recorded and is
+    /// held, and the order is recorded on `step`'s table next.
+    pub fn mark_grid_condition_recorded(&mut self, step: String) {
+        if self.grid_view.order.is_none() {
+            self.settle_grid_view();
+        } else {
+            self.grid_condition_held = Some(step);
+        }
+    }
+
+    /// The applied order has been recorded, and with it the rest of the view,
+    /// which leaves the row.
+    pub fn mark_grid_order_recorded(&mut self) {
+        self.settle_grid_view();
+    }
+
+    fn settle_grid_view(&mut self) {
+        self.grid_view = brightfield_engine::RowsView::default();
+        self.grid_condition_held = None;
+        self.grid_view_settled = true;
+    }
+
+    /// Whether the applied view became fully recorded since this was last
+    /// asked: what tells the window to take on the Protocol the folder holds
+    /// now. Asking clears it.
+    pub fn take_grid_view_settled(&mut self) -> bool {
+        std::mem::take(&mut self.grid_view_settled)
     }
 
     /// **Save the chart beside the Protocol: write the edits made since the
@@ -2912,6 +3078,11 @@ impl ChartDoc {
         self.controls.clear();
         self.grid_layout_switch = None;
         self.grid_spot_switch = None;
+        // A band the last frame did not draw holds no keys this frame, however
+        // it held them when it was last drawn.
+        if self.grid_foot.drawn.take().is_none() {
+            self.grid_foot.release_keys();
+        }
     }
 
     /// Move the grid's cursor one cell along `step`, and say whether it moved.
@@ -3902,8 +4073,8 @@ pub(crate) const CONTROLS_SHARE: f32 = 0.2;
 const ICON_CONTROLS: Icon = Icon("sliders");
 
 /// The chart document's registry: the chart canvas, its data-grid peer, the
-/// controls rail, and the spec editor, where each sits, and the verbs that
-/// show and hide them.
+/// controls rail, the spec editor, the Versions panel and the operation panel,
+/// where each sits, and the verbs that show and hide them.
 ///
 /// This is the **only** declaration of this document's panes. The window's
 /// default arrangement ([`window_tree`](brightfield_workbench::window_tree)),
@@ -3942,6 +4113,7 @@ pub fn chart_registry_with(gallery: bool) -> ItemRegistry<ChartDoc> {
         },
         crate::editor::editor_spec(),
         crate::versions::versions_spec(),
+        crate::operation_panel::operation_spec(),
     ];
     if gallery {
         specs.push(crate::gallery::gallery_spec());

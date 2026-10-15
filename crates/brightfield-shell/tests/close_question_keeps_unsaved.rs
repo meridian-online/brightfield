@@ -897,3 +897,24 @@ fn more_edits_than_the_card_lists_end_in_a_count_and_the_card_is_no_taller() {
         framed.height()
     );
 }
+
+/// An applied grid view that no file holds is unsaved work: closing asks, and
+/// the question lists the view beside the shelf's edits.
+#[test]
+fn a_view_alone_makes_the_close_ask_and_the_question_names_it() {
+    let mut s = Session::open("view-only");
+    assert!(!s.marked());
+    s.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("house_age = 28".to_string()),
+            order: None,
+        });
+    s.settle();
+    assert!(s.marked(), "a view left the title unmarked");
+    s.request_close();
+    assert!(s.cancelled_close, "the close went through over a view");
+    let want = "Grid view \u{b7} where house_age = 28";
+    assert_eq!(s.question().edits, [want]);
+    assert_eq!(bullet_rows(&s), [want]);
+}

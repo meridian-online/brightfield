@@ -2471,7 +2471,11 @@ fn drawn_rows(
     // the table. The band's own cells say exactly where that text is, so this
     // drops what falls inside them and keeps the body.
     let band: Vec<egui::Rect> = drawn.band.iter().map(|cell| cell.cell).collect();
-    let in_the_band = |pos: egui::Pos2| band.iter().any(|r| r.contains(pos));
+    // Nor is the row at the grid's foot, which holds the fields and the count.
+    let foot = app.chart_doc().foot_drawn().map(|f| f.rect);
+    let in_the_band = |pos: egui::Pos2| {
+        band.iter().any(|r| r.contains(pos)) || foot.is_some_and(|f| f.contains(pos))
+    };
 
     // The header row names the columns; it is the row whose cells are drawn
     // from `HOUSING_HEADERS` rather than from the data. Found rather than
@@ -2973,7 +2977,15 @@ fn the_band_scrolls_with_its_columns_and_not_with_its_rows() {
     // The body's own cells, by the text they carry — the reference the band's
     // movement is compared against. Read below the band so the band's own
     // galleys are not in it.
-    let body_rect = egui::Rect::from_min_max(egui::pos2(pane.left(), pane.top() + 200.0), pane.max);
+    // Above the row at the grid's foot, which does not scroll with the table.
+    let foot_top = app
+        .chart_doc()
+        .foot_drawn()
+        .map_or(pane.bottom(), |f| f.rect.top());
+    let body_rect = egui::Rect::from_min_max(
+        egui::pos2(pane.left(), pane.top() + 200.0),
+        egui::pos2(pane.right(), foot_top),
+    );
     // **Keyed by the text AND the row it was drawn in.** A value the table
     // holds twice — `4.04` in two of the grid pane's nine columns — is one
     // entry in a map keyed by the text alone, and which of the two cells that

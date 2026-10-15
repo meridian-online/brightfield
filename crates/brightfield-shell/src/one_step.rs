@@ -19,6 +19,14 @@
 //! reads it back is [`crate::protocol::load_protocol_str`], which derives the
 //! lineage graph from its text.
 //!
+//! **Once the folder holds steps arc appended, Save stops writing the
+//! manifest.** A Save that records a grid view adds a generated step through
+//! `arc operation record`, and the manifest is then arc's to extend: Save and
+//! Run leave the manifest, the load's model, and the steps and models arc
+//! appended, as they are (writing the load's model back when it is missing),
+//! and refuse a folder whose manifest of several steps is not this
+//! file's, saying why (see [`OneStepProtocol::save_to`]).
+//!
 //! A run is `arc`'s, started by [`crate::run`] over the spec [`OneStepProtocol::save_to`]
 //! wrote, and it leaves its record under this Protocol's directory where
 //! `arc run` leaves one. [`OneStepProtocol::inputs_with_last_run`] is what
@@ -253,17 +261,57 @@ impl OneStepProtocol {
     /// and the same steps — and the newest such record wins; a directory without
     /// one leaves the declaration as [`Self::inputs`] built it.
     ///
+    /// **A folder holding steps arc generated after the load is taken whole**:
+    /// the manifest on disk is read with its models, so the Steps sheet lists
+    /// every step and a record of the run of all of them is accepted, where
+    /// this one-step declaration would refuse it as a run of other steps. See
+    /// [`crate::generated::generated_protocol_in`] for the shape.
+    ///
     /// # Errors
     ///
-    /// As [`Self::inputs`]. A record that will not read is not an error: it is
-    /// reported and passed over.
+    /// As [`Self::inputs`], and a folder of generated steps one of which does
+    /// not match arc's template, named in the message. A record that will not
+    /// read is not an error: it is reported and passed over.
     pub fn inputs_with_last_run(&self) -> Result<ProtocolInputs, String> {
-        let mut inputs = self.inputs()?;
+        let mut inputs = self.folder_inputs()?;
         for view in crate::run::records_newest_first(&self.dir, &self.name) {
             if inputs.adopt_run(&view) {
                 break;
             }
         }
+        Ok(inputs)
+    }
+
+    /// The declaration the folder holds now: [`Self::inputs`], or, when the
+    /// folder's manifest holds steps arc generated after **this file's own
+    /// load**, that manifest read with its models, carrying this Protocol's
+    /// columns and source as [`Self::inputs`] does.
+    ///
+    /// A manifest whose load is another data file's (two files share a
+    /// folder, and the other was Saved with steps) is not this Protocol's, and
+    /// this file opens as its one step. A manifest of this file whose
+    /// generated steps will not read opens as the one step too, with
+    /// [`ProtocolInputs::folder_refused`] saying which step and why.
+    fn folder_inputs(&self) -> Result<ProtocolInputs, String> {
+        let manifest = Self::manifest_path_in(&self.dir);
+        let Ok(text) = std::fs::read_to_string(&manifest) else {
+            return self.inputs();
+        };
+        let generated = match crate::generated::generated_protocol_for(&text, &self.dir, self) {
+            Ok(Some(generated)) => generated,
+            Ok(None) => return self.inputs(),
+            Err(e) => {
+                let mut inputs = self.inputs()?;
+                inputs.folder_refused = Some(e);
+                return Ok(inputs);
+            }
+        };
+        let mut inputs = crate::protocol::load_protocol_offline(&manifest.to_string_lossy())?;
+        inputs.hold_table(self.table_id());
+        inputs.columns.clone_from(&self.columns);
+        inputs.tiles.clone_from(&self.tiles);
+        inputs.source = Some(self.clone());
+        inputs.generated = Some(generated);
         Ok(inputs)
     }
 
@@ -297,11 +345,24 @@ impl OneStepProtocol {
     /// refused here rather than written. Either refusal leaves the directory
     /// untouched.
     ///
+    /// **The two files are written only while they are this module's**: when
+    /// the folder has no manifest, or its manifest still holds one step. A
+    /// manifest of more steps whose load is this file's own and whose later
+    /// steps arc generated is left as it is, and so is its load's model, which
+    /// is written back only when it is missing. Any other manifest of more
+    /// steps is refused in words naming why: a hand-written Protocol whose
+    /// first step loads no data file, another data file's Protocol, a load
+    /// through a model brightfield did not write, or steps it did not
+    /// generate (see the private `writes_beside`). A manifest that is there
+    /// and will not load is refused before anything is written, rather than
+    /// written over or passed by.
+    ///
     /// # Errors
     ///
     /// If the loader refuses the manifest, if the model does not parse into a
-    /// clean graph, or if the directory or either file cannot be written. Each
-    /// carries the reason.
+    /// clean graph, if the folder's own manifest is there and will not load or
+    /// is another Protocol's, or if the directory or either file cannot be
+    /// written. Each carries the reason.
     pub fn save_to(&self, dir: &Path) -> Result<PathBuf, String> {
         brightfield_protocol::parse_manifest_str(&self.manifest)
             .map_err(|e| format!("the spec brightfield wrote will not load: {e}"))?;
@@ -313,6 +374,10 @@ impl OneStepProtocol {
             ));
         }
         let manifest = Self::manifest_path_in(dir);
+        let writes = self.writes_beside(&manifest, dir)?;
+        if writes == SaveWrites::Nothing {
+            return Ok(manifest);
+        }
         let model = dir.join(MODEL_PATH);
         let models_dir = model
             .parent()
@@ -320,9 +385,131 @@ impl OneStepProtocol {
         std::fs::create_dir_all(models_dir)
             .map_err(|e| format!("{}: {e}", models_dir.display()))?;
         std::fs::write(&model, &self.model).map_err(|e| format!("{}: {e}", model.display()))?;
-        std::fs::write(&manifest, &self.manifest)
-            .map_err(|e| format!("{}: {e}", manifest.display()))?;
+        if writes == SaveWrites::Both {
+            std::fs::write(&manifest, &self.manifest)
+                .map_err(|e| format!("{}: {e}", manifest.display()))?;
+        }
         Ok(manifest)
+    }
+}
+
+/// What [`OneStepProtocol::save_to`] writes into a folder that holds a
+/// manifest it may write beside.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SaveWrites {
+    /// The manifest and the load's model: the folder has no manifest, or one
+    /// of at most one step.
+    Both,
+    /// Nothing: the manifest holds steps arc generated after this file's own
+    /// load, and the load's model on disk is the one brightfield writes.
+    Nothing,
+    /// The load's model alone: as [`Self::Nothing`], with the model missing
+    /// from the folder, so it is written back for the manifest to load.
+    LoadModel,
+}
+
+impl OneStepProtocol {
+    /// What [`Self::save_to`] may write for the manifest at `path` in `dir`.
+    ///
+    /// A manifest of several steps is this file's when its first step is
+    /// brightfield's load of this file — the file named by its one
+    /// `depends_on:` entry, its model at [`MODEL_PATH`] and that model making
+    /// this file's table — and the steps after it are ones arc generated.
+    /// **A load model missing from the folder is written back** when the
+    /// manifest names this file at [`MODEL_PATH`] and the steps read as
+    /// generated over the model brightfield would write: the manifest still
+    /// says what the model was, and writing it is what makes the folder run
+    /// again. That is decided before anything is written, so a folder refused
+    /// for any other reason is left untouched.
+    ///
+    /// # Errors
+    ///
+    /// Each worded by its cause, naming the manifest: it cannot be read or
+    /// will not load (writing over it would erase what it holds, and leaving it
+    /// would answer a Save over a folder `arc run` refuses); its first step
+    /// loads no data file, so it is a hand-written Protocol; its first step
+    /// loads another data file, so it is that file's Protocol; its load is this
+    /// file's through a model brightfield did not write, at another path or
+    /// changed so it no longer makes this file's table; the steps after the
+    /// load are not ones arc generated; or a generated step will not read, in
+    /// the words naming the step.
+    fn writes_beside(&self, path: &Path, dir: &Path) -> Result<SaveWrites, String> {
+        if !path.exists() {
+            return Ok(SaveWrites::Both);
+        }
+        let at = path.display();
+        let refuse = |e: &dyn std::fmt::Display| {
+            format!("the manifest at {at} will not load: {e}; not overwriting it")
+        };
+        let text = std::fs::read_to_string(path).map_err(|e| refuse(&e))?;
+        let manifest = brightfield_protocol::parse_manifest_str(&text).map_err(|e| refuse(&e))?;
+        let Some(load) = manifest.steps.first().filter(|_| manifest.steps.len() > 1) else {
+            return Ok(SaveWrites::Both);
+        };
+        let same_file = |d: &Path| match (d.canonicalize(), self.data.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        match data_file_of_load(load, dir) {
+            None => {
+                return Err(format!(
+                    "the manifest at {at} is a hand-written Protocol: its first step does not \
+                     load a data file; not overwriting it"
+                ));
+            }
+            Some(other) if !same_file(&other) => {
+                return Err(format!(
+                    "the manifest at {at} is another data file's Protocol: its first step \
+                     loads {}, not {}; not overwriting it",
+                    other.display(),
+                    self.spelled
+                ));
+            }
+            Some(_) => {}
+        }
+        match load.sql.as_deref().map(Path::new) {
+            Some(model) if model == Path::new(MODEL_PATH) => {}
+            other => {
+                return Err(format!(
+                    "the manifest at {at} loads {} through {}, a model brightfield did not \
+                     write (it writes {MODEL_PATH}); not overwriting it",
+                    self.spelled,
+                    other.map_or_else(|| "no model".to_string(), |m| m.display().to_string())
+                ));
+            }
+        }
+        let model = dir.join(MODEL_PATH);
+        let missing = !model.exists();
+        if !missing {
+            let makes_ours = std::fs::read_to_string(&model)
+                .ok()
+                .and_then(|m| crate::generated::load_table(&m))
+                .is_some_and(|t| t.eq_ignore_ascii_case(&self.name));
+            if !makes_ours {
+                return Err(format!(
+                    "the load model {} has been changed and no longer makes the table {}, so \
+                     it is not the one brightfield writes; not overwriting it",
+                    model.display(),
+                    self.name
+                ));
+            }
+        }
+        let read = if missing {
+            crate::generated::generated_protocol_with_load(&text, dir, self, &self.model)
+        } else {
+            crate::generated::generated_protocol_for(&text, dir, self)
+        };
+        match read {
+            Ok(Some(_)) if missing => Ok(SaveWrites::LoadModel),
+            Ok(Some(_)) => Ok(SaveWrites::Nothing),
+            Ok(None) => Err(format!(
+                "the manifest at {at} holds steps after the load that brightfield did not \
+                 generate; not overwriting it"
+            )),
+            Err(e) => Err(format!(
+                "the manifest at {at} will not read: {e}; not overwriting it"
+            )),
+        }
     }
 }
 
@@ -348,6 +535,14 @@ pub fn data_file_named_by(text: &str, dir: &Path) -> Option<PathBuf> {
     let [step] = manifest.steps.as_slice() else {
         return None;
     };
+    data_file_of_load(step, dir)
+}
+
+/// The data file `step` loads, when it is a `sql:` step with exactly one
+/// `depends_on:` entry that resolves against `dir` to a file this build opens.
+/// [`data_file_named_by`] asks it of a lone step; the reader of a folder that
+/// holds generated steps after the load asks it of the first.
+pub(crate) fn data_file_of_load(step: &brightfield_protocol::Step, dir: &Path) -> Option<PathBuf> {
     step.sql.as_ref()?;
     let [dep] = step.depends_on.as_slice() else {
         return None;
@@ -387,7 +582,7 @@ fn reader_for(path: &Path) -> &'static str {
 /// REPLACE TABLE` target, into `produces:`, and read back out of the SQL by
 /// [`brightfield_protocol::graph`] — so it crosses a parser twice, and a name
 /// that survives both without quoting is a name neither can spell differently.
-fn table_name(path: &Path) -> String {
+pub(crate) fn table_name(path: &Path) -> String {
     let stem = path
         .file_stem()
         .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
