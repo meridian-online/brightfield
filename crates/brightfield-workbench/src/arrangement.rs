@@ -541,11 +541,13 @@ impl Arrangement {
 /// The navigator rail's panes.
 static NAVIGATOR_PANES: &[ItemId] = &[ItemId::new("protocol-outline")];
 
-/// The inspector rail's panes — the protocol's operator inspector and the
-/// chart's, behind the rail's own selector.
+/// The inspector rail's panes — the protocol's operator inspector, the
+/// chart's, and the panel that explains the operation the grid's foot row is
+/// asking — behind the rail's own selector.
 static INSPECTOR_PANES: &[ItemId] = &[
     ItemId::new("protocol-inspector"),
     ItemId::new("chart-controls"),
+    ItemId::new("operation-inspector"),
 ];
 
 /// The ledger rail's panes — the run record, the document that declares the

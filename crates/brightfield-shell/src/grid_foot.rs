@@ -185,6 +185,9 @@ struct Asking {
     field: FootField,
     text: String,
     from_cell: Option<FromCell>,
+    /// The name of the cursor's column, when a key on the cursor opened the
+    /// field: what the operation panel names as the column in hand.
+    column: Option<String>,
     /// Whether the next draw gives the field the keyboard.
     focus: bool,
     /// Whether the next draw selects the value.
@@ -250,10 +253,12 @@ impl FootState {
         let select_value = from_cell
             .as_ref()
             .is_some_and(|cell| cell.value_range(&text).is_some());
+        let column = from_cell.as_ref().map(|cell| cell.name.clone());
         self.asking = Some(Asking {
             field,
             text,
             from_cell,
+            column,
             focus: true,
             select_value,
             had_focus: false,
@@ -263,6 +268,13 @@ impl FootState {
             preview: None,
             refusal: None,
         });
+    }
+
+    /// The name of the cursor's column, when a key on the cursor opened the
+    /// field being edited.
+    #[must_use]
+    pub fn asked_column(&self) -> Option<&str> {
+        self.asking.as_ref()?.column.as_deref()
     }
 
     /// Stop editing, leaving the applied view as it was.
@@ -417,6 +429,9 @@ impl ChartDoc {
             return false;
         };
         self.grid_foot.ask(FootField::OrderBy, cell.column);
+        if let Some(asking) = self.grid_foot.asking.as_mut() {
+            asking.column = Some(cell.name);
+        }
         true
     }
 

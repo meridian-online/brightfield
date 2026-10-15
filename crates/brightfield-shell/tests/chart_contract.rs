@@ -19,6 +19,7 @@ use brightfield_shell::app::{chart_registry, chart_registry_with, ChartDoc, CHAR
 use brightfield_shell::data_grid::DATA;
 use brightfield_shell::design::Mode;
 use brightfield_shell::editor::EDITOR;
+use brightfield_shell::operation_panel::OPERATION;
 use brightfield_shell::pipeline::{compose_spec, Composed};
 use brightfield_shell::versions::VERSIONS;
 use brightfield_shell::window::{chart_toolbar_band, chart_window_size, Boot, MeridianApp};
@@ -110,6 +111,11 @@ fn the_empty_document_has_nothing_in_it() {
 /// checked from the other side: over this fixture the pane must be empty and
 /// say so, and the half this test exists for, the pane not being empty when a
 /// version is listed, is pinned where a store is held, in `versions_panel.rs`.
+///
+/// **The operation panel is exempt on the same terms**: it explains the
+/// operation the grid's foot row is asking, and over this fixture nothing is
+/// asked, so it must be empty and say so. The panel drawing an operation in
+/// hand is pinned in `operation_panel.rs`, where a key asks one.
 #[test]
 fn no_pane_is_empty_over_a_real_dashboard() {
     let doc = loaded();
@@ -127,6 +133,14 @@ fn no_pane_is_empty_over_a_real_dashboard() {
                 empty.headline, "No version is recorded",
                 "the Versions pane is empty over a document with no store, and says so"
             );
+            continue;
+        }
+        if id == OPERATION {
+            let empty = subject
+                .empty_state
+                .as_ref()
+                .expect("nothing is asked over this fixture, so the operation panel says so");
+            assert_eq!(empty.headline, "No operation in hand");
             continue;
         }
         assert!(

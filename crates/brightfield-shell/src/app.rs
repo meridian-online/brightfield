@@ -907,6 +907,10 @@ pub struct ChartDoc {
     /// the grid reads while it is, and what the band drew. Cleared when the
     /// document is replaced, with the view it edits.
     pub(crate) grid_foot: crate::grid_foot::FootState,
+    /// **What the operation panel reads**: the table the node in view makes,
+    /// and the description of the operation in hand as the window last handed
+    /// it over. See [`crate::operation_panel`].
+    pub(crate) operation: crate::operation_panel::OperationState,
     /// **Whether a pointer gesture is holding a page origin**, as of the last
     /// frame the chart pane drew.
     ///
@@ -1255,6 +1259,7 @@ impl ChartDoc {
             grid_view: brightfield_engine::RowsView::default(),
             grid_view_recorded: true,
             grid_foot: crate::grid_foot::FootState::default(),
+            operation: crate::operation_panel::OperationState::default(),
             grid_layout_switch: None,
             grid_spot_switch: None,
             transposed_rows: Vec::new(),
@@ -1319,6 +1324,7 @@ impl ChartDoc {
             grid_view: brightfield_engine::RowsView::default(),
             grid_view_recorded: true,
             grid_foot: crate::grid_foot::FootState::default(),
+            operation: crate::operation_panel::OperationState::default(),
             grid_layout_switch: None,
             grid_spot_switch: None,
             transposed_rows: Vec::new(),
@@ -3986,8 +3992,8 @@ pub(crate) const CONTROLS_SHARE: f32 = 0.2;
 const ICON_CONTROLS: Icon = Icon("sliders");
 
 /// The chart document's registry: the chart canvas, its data-grid peer, the
-/// controls rail, and the spec editor, where each sits, and the verbs that
-/// show and hide them.
+/// controls rail, the spec editor, the Versions panel and the operation panel,
+/// where each sits, and the verbs that show and hide them.
 ///
 /// This is the **only** declaration of this document's panes. The window's
 /// default arrangement ([`window_tree`](brightfield_workbench::window_tree)),
@@ -4026,6 +4032,7 @@ pub fn chart_registry_with(gallery: bool) -> ItemRegistry<ChartDoc> {
         },
         crate::editor::editor_spec(),
         crate::versions::versions_spec(),
+        crate::operation_panel::operation_spec(),
     ];
     if gallery {
         specs.push(crate::gallery::gallery_spec());

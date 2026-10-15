@@ -2041,6 +2041,9 @@ fn wire_columns(chart: &mut ChartDoc, model: &ProtocolModel, table: &TableHandle
     }));
     chart.set_column_facts(model.columns());
     chart.set_tile_columns(tiles);
+    // The table the node in view makes, which the operation panel names: the
+    // table's own label, not the name of the step that makes it.
+    chart.set_operation_table(model.table_label().map(str::to_owned));
 }
 
 /// The protocol half of the window: its document and its live items.
@@ -2275,6 +2278,15 @@ pub struct MeridianApp {
     /// gives one — see [`crate::run::Runner`] for why a window does not assume
     /// the process it is in.
     runner: Option<crate::run::Runner>,
+    /// arc's descriptions of the operations, asked through [`Self::runner`]
+    /// and kept for the session, past any one document. Made on the first
+    /// frame that needs one, since its wake asks the frame's context to draw
+    /// again when an answer lands.
+    descriptions: Option<crate::operation::Descriptions>,
+    /// Whether the key that asked the field at the grid's foot opened the
+    /// Inspector rail, which was collapsed: Esc from the field collapses it
+    /// again only then.
+    opened_rail_for_ask: bool,
     /// Where each Save of the chart records a version. `None` until
     /// [`MeridianApp::keeping_history`] gives one, so a window built without it,
     /// as a suite builds one, records no version — see [`brightfield_protocol::HistoryStore`].
@@ -2676,6 +2688,8 @@ impl MeridianApp {
             fetching: None,
             running: None,
             runner: None,
+            descriptions: None,
+            opened_rail_for_ask: false,
             history: None,
             remote_files: None,
             door_open_file: None,
@@ -3872,6 +3886,51 @@ impl MeridianApp {
         self.charts.doc.versions_mut().set_env(clock, home);
     }
 
+    /// **Open the Inspector rail on the operation panel**, for a key that has
+    /// just asked a field at the grid's foot, remembering whether the rail was
+    /// collapsed so Esc can put it back.
+    fn open_rail_on_operation(&mut self) {
+        self.opened_rail_for_ask = self.collapsed.remove(&arrangement::INSPECTOR_RAIL);
+        if let Some(at) = region_panes(
+            arrangement::default_arrangement().expect_region(arrangement::INSPECTOR_RAIL),
+        )
+        .iter()
+        .position(|item| *item == crate::operation_panel::OPERATION)
+        {
+            self.inspector_panel = at;
+        }
+    }
+
+    /// Hand the operation panel the state of arc's description of the
+    /// operation in hand, asking for it on the first frame that has one in
+    /// hand. A window with no runner has none to ask, and the panel says so.
+    fn sync_operation(&mut self, ctx: &egui::Context) {
+        use crate::operation::{DescriptionState, Descriptions};
+        use crate::operation_panel::Described;
+        let Some(hand) = self.charts.doc.operation_in_hand() else {
+            // Nothing is asked, however the asking ended, so a later Esc from
+            // a field opened some other way shuts no rail.
+            self.opened_rail_for_ask = false;
+            self.charts.doc.set_described(Described::Nothing);
+            return;
+        };
+        let described = match &self.runner {
+            None => Described::Missing("this window has no runner to ask arc".to_owned()),
+            Some(runner) => {
+                let descriptions = self.descriptions.get_or_insert_with(|| {
+                    let ctx = ctx.clone();
+                    Descriptions::with_wake(move || ctx.request_repaint())
+                });
+                match descriptions.get(runner, hand.long_name) {
+                    DescriptionState::Pending => Described::Reading,
+                    DescriptionState::Ready(d) => Described::Ready(d.clone()),
+                    DescriptionState::Failed(why) => Described::Missing(why.to_owned()),
+                }
+            }
+        };
+        self.charts.doc.set_described(described);
+    }
+
     /// Bring the Versions panel's listing up to date for a frame in which it is,
     /// or is not, the panel the ledger rail shows.
     fn sync_versions(&mut self, shown: bool) {
@@ -4431,6 +4490,7 @@ impl MeridianApp {
             self.sync_versions(
                 !ledger_collapsed && ledger_panes[ledger_panel] == crate::versions::VERSIONS,
             );
+            self.sync_operation(ui.ctx());
 
             // Each strip's words are the panes' own `Subject` titles, read
             // before the closures below take their borrows of the documents.
@@ -6055,6 +6115,7 @@ impl MeridianApp {
                 }
             };
             if asked {
+                self.open_rail_on_operation();
                 // The field takes the keyboard on this frame's draw, so the
                 // text the same keystroke made is the key's, not the field's.
                 ctx.input_mut(|i| {
@@ -6084,6 +6145,11 @@ impl MeridianApp {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             if let Some(field) = self.charts.doc.foot_cancel() {
                 ctx.memory_mut(|m| m.surrender_focus(field.id()));
+            }
+            // The rail the key opened is shut again; one that was open before
+            // the key stays open.
+            if std::mem::take(&mut self.opened_rail_for_ask) {
+                self.collapsed.insert(arrangement::INSPECTOR_RAIL);
             }
             ctx.request_repaint();
         } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
