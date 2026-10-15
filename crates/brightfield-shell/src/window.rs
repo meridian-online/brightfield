@@ -7945,6 +7945,10 @@ impl MeridianApp {
     /// leaves the first recorded, as it is in the folder. A view recorded whole
     /// leaves the grid's row ([`ChartDoc::mark_grid_order_recorded`]).
     ///
+    /// Each recording runs `arc operation record` on the calling thread, so a
+    /// Save or Run waits on arc for each part it records, as it already waits
+    /// on the files it writes.
+    ///
     /// # Errors
     ///
     /// arc's words for the first recording it refused, or why there was no
