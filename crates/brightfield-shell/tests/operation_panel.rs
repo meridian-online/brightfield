@@ -428,3 +428,139 @@ fn escape_from_a_field_a_press_opened_leaves_the_rail_open() {
         "Esc shut a rail no key opened for this asking"
     );
 }
+
+/// Open the rail by its collapse control, when it is collapsed.
+fn open_rail(win: &mut Window) {
+    if win.app.rail_is_collapsed(INSPECTOR_RAIL) {
+        let collapse = win
+            .app
+            .rail_collapse_rect(INSPECTOR_RAIL)
+            .expect("the collapsed rail draws its control");
+        win.click(collapse.center());
+    }
+    assert!(
+        !win.app.rail_is_collapsed(INSPECTOR_RAIL),
+        "the rail did not open"
+    );
+}
+
+/// **Esc puts back the pane the rail was on** when the key moved an open rail
+/// to the operation panel.
+#[test]
+fn escape_puts_the_rail_back_on_the_pane_it_was_on() {
+    let mut win = Window::housing(Some(runner()));
+    open_rail(&mut win);
+    let before = win.app.rail_pane_title(INSPECTOR_RAIL);
+    assert_ne!(before.as_deref(), Some(PANE_TITLE));
+
+    win.press_cell(2, HOUSE_AGE);
+    win.keystroke(egui::Key::W, "w");
+    assert!(win.showing_operation_pane());
+    win.key(egui::Key::Escape);
+    assert_eq!(win.doc().foot_asking(), None);
+    assert!(!win.app.rail_is_collapsed(INSPECTOR_RAIL));
+    assert_eq!(
+        win.app.rail_pane_title(INSPECTOR_RAIL),
+        before,
+        "Esc left the rail on the operation panel"
+    );
+}
+
+/// **A grid with no table in view opens no operation panel**: the key still
+/// asks, but there is no operation in hand to explain, so the rail stays as
+/// it was, and Esc leaves it so.
+///
+/// A headless window draws a grid over a data file and nothing else, so the
+/// table is taken away from one: the state a chart spec, a shipped start or a
+/// node's grid in a Protocol of several steps leaves the panel in.
+#[test]
+fn a_grid_with_no_table_in_view_leaves_the_rail_alone() {
+    let mut win = Window::housing(Some(runner()));
+    win.app.chart_doc_mut().set_operation_table(None);
+    for open in [false, true] {
+        if open {
+            open_rail(&mut win);
+        }
+        no_panel_for_a_grid_with_no_table(&mut win);
+    }
+}
+
+fn no_panel_for_a_grid_with_no_table(win: &mut Window) {
+    let collapsed = win.app.rail_is_collapsed(INSPECTOR_RAIL);
+    let pane = win.app.rail_pane_title(INSPECTOR_RAIL);
+
+    win.press_cell(2, HOUSE_AGE);
+    win.keystroke(egui::Key::W, "w");
+    assert!(
+        win.doc().foot_asking().is_some(),
+        "the key did not ask, so this test proves nothing"
+    );
+    assert_eq!(win.doc().operation_in_hand(), None);
+    assert_eq!(win.app.rail_is_collapsed(INSPECTOR_RAIL), collapsed);
+    assert_eq!(win.app.rail_pane_title(INSPECTOR_RAIL), pane);
+
+    win.key(egui::Key::Escape);
+    assert_eq!(win.doc().foot_asking(), None);
+    assert_eq!(win.app.rail_is_collapsed(INSPECTOR_RAIL), collapsed);
+    assert_eq!(win.app.rail_pane_title(INSPECTOR_RAIL), pane);
+}
+
+/// **An empty `where` still reads as asked**: the field is this parameter's
+/// and holds nothing yet.
+#[test]
+fn an_emptied_where_still_reads_as_asked() {
+    let arc = described("filter-rows");
+    let where_ = arc
+        .parameters
+        .iter()
+        .find(|p| p.key == "where")
+        .expect("arc's filter-rows takes `where`");
+    let mut win = Window::housing(Some(runner()));
+    win.press_cell(2, HOUSE_AGE);
+    win.keystroke(egui::Key::W, "w");
+    win.app
+        .chart_doc_mut()
+        .foot_offer(FootField::Where, String::new());
+    win.settle();
+    let drawn = win.until_rail_draws(&where_.description);
+    assert!(has(&drawn, "where"), "{drawn:?}");
+    assert!(
+        has(&drawn, "asked"),
+        "an empty `where` lost its marker: {drawn:?}"
+    );
+}
+
+/// **A rail moved by hand during an ask is the user's**: Esc leaves it where
+/// they put it.
+///
+/// A press on the rail's control takes the keyboard from the field, which
+/// ends the asking on its own, so this holds the outcome rather than the
+/// window forgetting the rail on the press itself: no key toggles the rail
+/// while the field keeps the keyboard.
+#[test]
+fn a_rail_toggled_by_hand_during_an_ask_is_left_alone_by_escape() {
+    let mut win = Window::housing(Some(runner()));
+    win.press_cell(2, HOUSE_AGE);
+    win.keystroke(egui::Key::W, "w");
+    assert!(win.showing_operation_pane());
+    // Collapse it by hand, then open it again, while the field still asks.
+    for _ in 0..2 {
+        let collapse = win
+            .app
+            .rail_collapse_rect(INSPECTOR_RAIL)
+            .expect("the rail draws its control");
+        win.click(collapse.center());
+    }
+    assert!(!win.app.rail_is_collapsed(INSPECTOR_RAIL));
+    // The clicks took the keyboard from the field; give it back by the band.
+    if win.doc().foot_asking().is_none() {
+        let band = win.doc().foot_drawn().expect("the band drew").rect;
+        win.click(egui::pos2(band.left() + 80.0, band.center().y));
+    }
+    assert!(win.doc().foot_asking().is_some());
+    win.key(egui::Key::Escape);
+    assert!(
+        !win.app.rail_is_collapsed(INSPECTOR_RAIL),
+        "Esc shut a rail the user had opened by hand"
+    );
+}

@@ -261,7 +261,8 @@ impl Item<ChartDoc> for OperationPane {
                         ui,
                         mode,
                         &role.name,
-                        value.map(|v| (v, from)),
+                        value,
+                        value.map(|_| from),
                         &role.description,
                     );
                 }
@@ -269,12 +270,17 @@ impl Item<ChartDoc> for OperationPane {
                 ui.add_space(spacing::SPACE_4);
                 caption(ui, mode, "VALUES");
                 for parameter in &description.parameters {
-                    let held = field
-                        .is_some_and(|f| parameter_of(f) == parameter.key)
-                        .then_some(hand.value.as_deref())
-                        .flatten()
-                        .map(|v| (v, ValueFrom::Asked));
-                    row(ui, mode, &parameter.key, held, &parameter.description);
+                    // The field's own parameter reads as asked even while the
+                    // field holds nothing.
+                    let held = field.is_some_and(|f| parameter_of(f) == parameter.key);
+                    row(
+                        ui,
+                        mode,
+                        &parameter.key,
+                        hand.value.as_deref().filter(|_| held),
+                        held.then_some(ValueFrom::Asked),
+                        &parameter.description,
+                    );
                     offered(ui, mode, parameter);
                 }
             });
@@ -293,18 +299,27 @@ fn caption(ui: &mut egui::Ui, mode: Mode, text: &str) {
 
 /// One thing the operation reads or takes: its name, the value brightfield
 /// holds for it and where that came from, and arc's sentence for it.
-fn row(ui: &mut egui::Ui, mode: Mode, name: &str, value: Option<(&str, ValueFrom)>, said: &str) {
+fn row(
+    ui: &mut egui::Ui,
+    mode: Mode,
+    name: &str,
+    value: Option<&str>,
+    from: Option<ValueFrom>,
+    said: &str,
+) {
     let sem = semantic(mode.is_dark());
     let muted = chrome::colour(sem.text.muted);
     ui.add_space(spacing::SPACE_2);
     ui.horizontal_wrapped(|ui| {
         ui.label(egui::RichText::new(name).font(ui_font()).color(muted));
-        if let Some((value, from)) = value {
+        if let Some(value) = value {
             ui.label(
                 egui::RichText::new(value)
                     .font(ui_font())
                     .color(chrome::colour(sem.text.primary)),
             );
+        }
+        if let Some(from) = from {
             ui.label(
                 egui::RichText::new(from.words())
                     .font(ui_font())

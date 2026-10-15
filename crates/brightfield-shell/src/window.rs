@@ -2046,6 +2046,15 @@ fn wire_columns(chart: &mut ChartDoc, model: &ProtocolModel, table: &TableHandle
     chart.set_operation_table(model.table_label().map(str::to_owned));
 }
 
+/// How the Inspector rail stood before a key moved it to the operation panel.
+#[derive(Clone, Copy, Debug)]
+struct RailBeforeAsk {
+    /// Whether it was collapsed.
+    collapsed: bool,
+    /// The pane it was on.
+    panel: usize,
+}
+
 /// The protocol half of the window: its document and its live items.
 struct ProtocolView {
     doc: ProtocolDoc,
@@ -2283,10 +2292,11 @@ pub struct MeridianApp {
     /// frame that needs one, since its wake asks the frame's context to draw
     /// again when an answer lands.
     descriptions: Option<crate::operation::Descriptions>,
-    /// Whether the key that asked the field at the grid's foot opened the
-    /// Inspector rail, which was collapsed: Esc from the field collapses it
-    /// again only then.
-    opened_rail_for_ask: bool,
+    /// How the Inspector rail stood before the key that asked the field at the
+    /// grid's foot moved it to the operation panel, so Esc from the field puts
+    /// it back. `None` when no key moved it, or the user has moved it by hand
+    /// since.
+    rail_before_ask: Option<RailBeforeAsk>,
     /// Where each Save of the chart records a version. `None` until
     /// [`MeridianApp::keeping_history`] gives one, so a window built without it,
     /// as a suite builds one, records no version — see [`brightfield_protocol::HistoryStore`].
@@ -2689,7 +2699,7 @@ impl MeridianApp {
             running: None,
             runner: None,
             descriptions: None,
-            opened_rail_for_ask: false,
+            rail_before_ask: None,
             history: None,
             remote_files: None,
             door_open_file: None,
@@ -3886,18 +3896,46 @@ impl MeridianApp {
         self.charts.doc.versions_mut().set_env(clock, home);
     }
 
+    /// Where the operation panel sits among the Inspector rail's panes.
+    fn operation_pane_index() -> Option<usize> {
+        region_panes(arrangement::default_arrangement().expect_region(arrangement::INSPECTOR_RAIL))
+            .iter()
+            .position(|item| *item == crate::operation_panel::OPERATION)
+    }
+
     /// **Open the Inspector rail on the operation panel**, for a key that has
-    /// just asked a field at the grid's foot, remembering whether the rail was
-    /// collapsed so Esc can put it back.
+    /// just asked a field at the grid's foot, remembering how the rail stood
+    /// so Esc can put it back.
+    ///
+    /// Only when there is an operation in hand to explain: a grid with no
+    /// table in view asks with nothing for the panel to say, and the rail is
+    /// left as it is.
     fn open_rail_on_operation(&mut self) {
-        self.opened_rail_for_ask = self.collapsed.remove(&arrangement::INSPECTOR_RAIL);
-        if let Some(at) = region_panes(
-            arrangement::default_arrangement().expect_region(arrangement::INSPECTOR_RAIL),
-        )
-        .iter()
-        .position(|item| *item == crate::operation_panel::OPERATION)
-        {
-            self.inspector_panel = at;
+        if self.charts.doc.operation_in_hand().is_none() {
+            return;
+        }
+        let Some(at) = Self::operation_pane_index() else {
+            return;
+        };
+        self.rail_before_ask = Some(RailBeforeAsk {
+            collapsed: self.collapsed.remove(&arrangement::INSPECTOR_RAIL),
+            panel: self.inspector_panel,
+        });
+        self.inspector_panel = at;
+    }
+
+    /// **Put the Inspector rail back** as it stood before the key moved it,
+    /// for Esc from the field: the pane it was on, if it is still on the
+    /// operation panel, and collapsed, if it was.
+    fn restore_rail_after_ask(&mut self) {
+        let Some(before) = self.rail_before_ask.take() else {
+            return;
+        };
+        if Some(self.inspector_panel) == Self::operation_pane_index() {
+            self.inspector_panel = before.panel;
+        }
+        if before.collapsed {
+            self.collapsed.insert(arrangement::INSPECTOR_RAIL);
         }
     }
 
@@ -3909,11 +3947,17 @@ impl MeridianApp {
         use crate::operation_panel::Described;
         let Some(hand) = self.charts.doc.operation_in_hand() else {
             // Nothing is asked, however the asking ended, so a later Esc from
-            // a field opened some other way shuts no rail.
-            self.opened_rail_for_ask = false;
+            // a field opened some other way moves no rail.
+            self.rail_before_ask = None;
             self.charts.doc.set_described(Described::Nothing);
             return;
         };
+        // A description the cache holds does not change for the session, so
+        // one already handed over is not copied again each frame.
+        if matches!(self.charts.doc.described(), Described::Ready(d) if d.long_name == hand.long_name)
+        {
+            return;
+        }
         let described = match &self.runner {
             None => Described::Missing("this window has no runner to ask arc".to_owned()),
             Some(runner) => {
@@ -5215,6 +5259,11 @@ impl MeridianApp {
                 self.inspector_panel = next;
                 self.collapsed.remove(&arrangement::INSPECTOR_RAIL);
             }
+            // A rail the user moves by hand is theirs: Esc from the field no
+            // longer puts it back.
+            if picks.inspector.is_some() || picks.collapse.contains(&arrangement::INSPECTOR_RAIL) {
+                self.rail_before_ask = None;
+            }
             if picks.run {
                 self.run_protocol(&ctx);
             }
@@ -6146,11 +6195,9 @@ impl MeridianApp {
             if let Some(field) = self.charts.doc.foot_cancel() {
                 ctx.memory_mut(|m| m.surrender_focus(field.id()));
             }
-            // The rail the key opened is shut again; one that was open before
-            // the key stays open.
-            if std::mem::take(&mut self.opened_rail_for_ask) {
-                self.collapsed.insert(arrangement::INSPECTOR_RAIL);
-            }
+            // The rail the key moved goes back as it stood: shut again if the
+            // key opened it, and on the pane it was on.
+            self.restore_rail_after_ask();
             ctx.request_repaint();
         } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
             && self.charts.doc.foot_press_enter()
