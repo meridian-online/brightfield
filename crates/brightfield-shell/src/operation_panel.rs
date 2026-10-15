@@ -141,6 +141,12 @@ impl ChartDoc {
         })
     }
 
+    /// The table the node in view makes, as the documents were last joined.
+    #[must_use]
+    pub fn operation_table(&self) -> Option<&str> {
+        self.operation.table.as_deref()
+    }
+
     /// Say which table the node in view makes: what the panel names as the
     /// table in hand.
     pub fn set_operation_table(&mut self, table: Option<String>) {

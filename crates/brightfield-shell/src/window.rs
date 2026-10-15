@@ -2046,6 +2046,34 @@ fn wire_columns(chart: &mut ChartDoc, model: &ProtocolModel, table: &TableHandle
     chart.set_operation_table(model.table_label().map(str::to_owned));
 }
 
+/// One `arc operation record` of `operation` on `on` as the step `name`, with
+/// the operation's one argument.
+fn record_one(
+    runner: &crate::run::Runner,
+    dir: &std::path::Path,
+    operation: crate::generated::KnownOperation,
+    on: &str,
+    name: &str,
+    argument: &str,
+) -> Result<(), String> {
+    crate::operation::record(
+        runner,
+        dir,
+        operation.long_name(),
+        on,
+        name,
+        &[(operation.argument_key(), argument)],
+    )
+    .map(|_| ())
+}
+
+/// Why a Save did not complete: the Protocol could not be written, or arc
+/// refused to record an applied view.
+enum Refused {
+    Writing(String),
+    Recording(String),
+}
+
 /// How the Inspector rail stood before a key moved it to the operation panel.
 #[derive(Clone, Copy, Debug)]
 struct RailBeforeAsk {
@@ -4124,6 +4152,11 @@ impl MeridianApp {
         // reloads the Protocol document, and a frame should draw the state the
         // run left rather than one frame of the state before it.
         self.poll_run(&ctx);
+        // A view the foot band left with nothing unrecorded since the last
+        // frame: the window takes on the Protocol the folder holds now.
+        if self.charts.doc.take_grid_view_settled() {
+            self.adopt_saved_protocol();
+        }
         // A close request that arrived with this frame, read ahead of the
         // draw: it is the operating system's, or the window's own close
         // coming back, and `Self::closing` tells them apart.
@@ -7730,6 +7763,14 @@ impl MeridianApp {
     /// Write this window's Protocol to disk: `arcform.yaml` and its one model,
     /// in the data file's own directory, and the chart beside them.
     ///
+    /// **Then each applied grid view is recorded through arc**
+    /// ([`Self::record_applied_views`]), as steps appended to that manifest,
+    /// which a later Save leaves as it is. A recording arc refused raises a
+    /// banner in arc's words, leaves the view applied and the mark on, and is
+    /// this Save's failure, so a close that saved first stays open. Once
+    /// nothing is left unrecorded the window takes on the Protocol the folder
+    /// now holds.
+    ///
     /// **The chart is written after the Protocol and is its own success.** The
     /// edits made to it since the last Save go into `panels/<name>.yaml` under
     /// the same directory, through [`ChartDoc::save_chart_beside`], and the
@@ -7757,10 +7798,13 @@ impl MeridianApp {
     pub fn save_protocol(&mut self, ctx: &egui::Context) -> Option<Result<PathBuf, String>> {
         let banner = NotificationId::new("save-protocol");
         let source = self.protocol.doc.model.source()?.clone();
-        let written = source.save_to(&source.dir);
-        match &written {
-            Ok(path) => {
-                self.notifications.dismiss(banner);
+        let written = source
+            .save_to(&source.dir)
+            .map_err(Refused::Writing)
+            .and_then(|path| {
+                let recorded = self.record_applied_views();
+                // The Protocol was written whether or not a view was recorded:
+                // remember it, and write the chart, which is its own success.
                 let name = self.protocol.doc.model.protocol.clone();
                 let run = self.recorded_run_state();
                 // `path` is spelled against this process's working
@@ -7774,20 +7818,173 @@ impl MeridianApp {
                     self.grid_spot,
                     now_secs(),
                 );
+                self.save_chart_beside_protocol(&source);
+                recorded.map(|_| path).map_err(Refused::Recording)
+            });
+        let written = match written {
+            Ok(path) => {
+                self.notifications.dismiss(banner);
+                let name = self.protocol.doc.model.protocol.clone();
                 self.toasts
                     .push(Toast::new(Severity::Success, format!("Saved {name}")));
-                self.save_chart_beside_protocol(&source);
+                if self.charts.doc.take_grid_view_settled() {
+                    self.adopt_saved_protocol();
+                }
+                Ok(path)
             }
-            Err(e) => {
-                eprintln!("could not save the Protocol: {e}");
-                self.notifications.raise(
-                    Notification::new(banner, Severity::Error, "Could not save this Protocol")
-                        .body(e.clone()),
-                );
+            Err(refused) => {
+                let (title, why) = match refused {
+                    Refused::Writing(why) => ("Could not save this Protocol", why),
+                    Refused::Recording(why) => ("Could not record the grid view", why),
+                };
+                eprintln!("could not save the Protocol: {why}");
+                self.notifications
+                    .raise(Notification::new(banner, Severity::Error, title).body(why.clone()));
+                Err(why)
             }
-        }
+        };
         ctx.request_repaint();
         Some(written)
+    }
+
+    /// **Record each applied grid view through arc as a generated step**: the
+    /// condition as `filter-rows`, then the order as `sort-rows` on the
+    /// condition's table, each named by its effect
+    /// ([`crate::generated::step_name_for`]) with a name no step of the folder
+    /// holds. Answers the names recorded, in order.
+    ///
+    /// `--on` is the table the node in view makes, which for a data file is
+    /// the load's table, never the step's own name. A part already recorded is
+    /// not recorded again: after a Save that recorded the condition and not
+    /// the order, this records only the order, on the condition's step.
+    ///
+    /// Each part is marked recorded as arc takes it, so a refusal of the second
+    /// leaves the first recorded, as it is in the folder. A view recorded whole
+    /// leaves the grid's row ([`ChartDoc::mark_grid_order_recorded`]).
+    ///
+    /// # Errors
+    ///
+    /// arc's words for the first recording it refused, or why there was no
+    /// runner to ask. The parts after it are not tried.
+    pub fn record_applied_views(&mut self) -> Result<Vec<String>, String> {
+        use crate::generated::{generated_protocol_in, step_name_for, KnownOperation};
+        if !self.charts.doc.grid_view_unrecorded() {
+            return Ok(Vec::new());
+        }
+        let Some(source) = self.protocol.doc.model.source().cloned() else {
+            return Ok(Vec::new());
+        };
+        let runner = self
+            .runner
+            .clone()
+            .ok_or("this window was started without a runner to record the grid view with")?;
+        let manifest_path = crate::one_step::OneStepProtocol::manifest_path_in(&source.dir);
+        let manifest_text = std::fs::read_to_string(&manifest_path)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        let manifest = brightfield_protocol::parse_manifest_str(&manifest_text)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        let mut taken: std::collections::BTreeSet<String> =
+            manifest.steps.iter().map(|s| s.name.clone()).collect();
+        let root = generated_protocol_in(&manifest_text, &source.dir)
+            .ok()
+            .flatten()
+            .map_or_else(|| source.name.clone(), |g| g.root_table);
+        let in_view = self
+            .charts
+            .doc
+            .operation_table()
+            .map_or_else(|| root.clone(), str::to_owned);
+        let mut recorded = Vec::new();
+
+        if let Some(condition) = self
+            .charts
+            .doc
+            .grid_condition_unrecorded()
+            .map(str::to_owned)
+        {
+            let columns = self.view_columns(KnownOperation::FilterRows, &condition);
+            let name = step_name_for(KnownOperation::FilterRows, &root, &columns, &taken);
+            record_one(
+                &runner,
+                &source.dir,
+                KnownOperation::FilterRows,
+                &in_view,
+                &name,
+                &condition,
+            )?;
+            taken.insert(name.clone());
+            self.charts.doc.mark_grid_condition_recorded(name.clone());
+            recorded.push(name);
+        }
+        if let Some(order) = self.charts.doc.grid_view().order.clone() {
+            let on = self
+                .charts
+                .doc
+                .grid_condition_held()
+                .map_or_else(|| in_view.clone(), str::to_owned);
+            let columns = self.view_columns(KnownOperation::SortRows, &order);
+            let name = step_name_for(KnownOperation::SortRows, &root, &columns, &taken);
+            record_one(
+                &runner,
+                &source.dir,
+                KnownOperation::SortRows,
+                &on,
+                &name,
+                &order,
+            )?;
+            self.charts.doc.mark_grid_order_recorded();
+            recorded.push(name);
+        }
+        Ok(recorded)
+    }
+
+    /// The columns a view's condition or order names, as DuckDB parses it;
+    /// none when there is no session to ask or it will not parse, which
+    /// names the step by its effect alone.
+    fn view_columns(
+        &mut self,
+        operation: crate::generated::KnownOperation,
+        text: &str,
+    ) -> Vec<String> {
+        use crate::generated::KnownOperation;
+        let Some(coordinator) = self.charts.doc.live_coordinator() else {
+            return Vec::new();
+        };
+        let session = coordinator.session();
+        match operation {
+            KnownOperation::FilterRows => session.condition_columns(text),
+            KnownOperation::SortRows => session.order_columns(text),
+        }
+        .unwrap_or_default()
+    }
+
+    /// **Take on the Protocol the folder holds now**, after a Save or a Run
+    /// recorded the applied views and nothing is left unrecorded.
+    ///
+    /// The manifest is read back as written, so the Steps sheet lists the
+    /// steps arc appended. The document keeps the data file it came from as
+    /// its source, so Save and Run go on writing the load and running the
+    /// folder, and the charts stay on the load's table.
+    fn adopt_saved_protocol(&mut self) {
+        let Some(source) = self.protocol.doc.model.source().cloned() else {
+            return;
+        };
+        let manifest = crate::one_step::OneStepProtocol::manifest_path_in(&source.dir);
+        match crate::protocol::load_protocol_offline(&manifest.to_string_lossy()) {
+            Ok(mut inputs) => {
+                inputs.hold_table(source.table_id());
+                inputs.columns.clone_from(&source.columns);
+                inputs.tiles.clone_from(&source.tiles);
+                inputs.source = Some(source);
+                self.protocol.doc.open(inputs);
+                wire_columns(
+                    &mut self.charts.doc,
+                    &self.protocol.doc.model,
+                    &self.charts.inspector_table,
+                );
+            }
+            Err(e) => eprintln!("the saved Protocol could not be taken on: {e}"),
+        }
     }
 
     /// The chart half of [`Self::save_protocol`]: write the edits held since
@@ -7847,7 +8044,9 @@ impl MeridianApp {
     ///
     /// What it does before it returns is cheap and its failures are the
     /// reader's to see at once: the spec is written where Save writes it,
-    /// because `arc run` reads `arcform.yaml` off disk, and a run is started on
+    /// because `arc run` reads `arcform.yaml` off disk, the applied grid views
+    /// are recorded as Save records them (a refusal is a banner and no run),
+    /// and a run is started on
     /// a worker ([`crate::run::Run::begin`]). What it does not do is wait. The
     /// private `poll_run`, at the head of [`Self::draw`], lands the run on the
     /// frame after it finishes, by reloading the document through
@@ -7879,6 +8078,12 @@ impl MeridianApp {
         };
         if let Err(e) = source.save_to(&source.dir) {
             return refused(self, e);
+        }
+        if let Err(e) = self.record_applied_views() {
+            return refused(self, e);
+        }
+        if self.charts.doc.take_grid_view_settled() {
+            self.adopt_saved_protocol();
         }
         let Some(runner) = self.runner.as_ref() else {
             return refused(

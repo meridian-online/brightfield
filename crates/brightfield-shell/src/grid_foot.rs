@@ -383,11 +383,19 @@ impl ChartDoc {
         self.grid_foot.drawn.as_ref()
     }
 
-    /// The line the status band draws for the field being edited; see
-    /// [`FootState::said`].
+    /// The line the status band draws for the band: for the field being
+    /// edited, [`FootState::said`]; otherwise, while a recorded condition is
+    /// held ([`ChartDoc::grid_condition_held`]), that it is recorded and how to
+    /// change it.
     #[must_use]
     pub fn foot_said(&self) -> Option<String> {
-        self.grid_foot.said()
+        self.grid_foot.said().or_else(|| {
+            self.grid_condition_held().map(|step| {
+                format!(
+                    "where is already recorded as {step}; record or empty order by to change it"
+                )
+            })
+        })
     }
 
     /// The view the grid reads this frame; see [`FootState::read_view`].
@@ -399,7 +407,14 @@ impl ChartDoc {
     /// **Open `field` with `text` in it**, whatever the text came from: the
     /// entry point a key, a click on the field and typed SQL share. The grid
     /// follows the text once it parses; nothing is applied until Enter.
+    ///
+    /// `where` does not open while a recorded condition is held: the grid
+    /// shows what the folder makes plus the pending order, and an edited
+    /// condition would show rows no step makes.
     pub fn foot_offer(&mut self, field: FootField, text: String) {
+        if field == FootField::Where && self.grid_condition_held().is_some() {
+            return;
+        }
         self.grid_foot.ask(field, text);
     }
 
@@ -408,9 +423,13 @@ impl ChartDoc {
     /// NULL cell, which no `=` matches. The literal is read from the stored
     /// value through the view the grid shows, never from the text drawn.
     ///
-    /// Whether it opened: with no cursor, no live session, or a cell the step
-    /// no longer has, nothing opens.
+    /// Whether it opened: with no cursor, no live session, a cell the step
+    /// no longer has, or a recorded condition held (see [`Self::foot_offer`]),
+    /// nothing opens.
     pub fn ask_where_at_cursor(&mut self) -> bool {
+        if self.grid_condition_held().is_some() {
+            return false;
+        }
         let Some((cell, literal)) = self.cursor_cell() else {
             return false;
         };
@@ -640,7 +659,11 @@ pub fn foot_band(
     let room = (count_at.x - spacing::SPACE_3 - left).max(0.0);
     let split = left + room * WHERE_SHARE;
     let applied = doc.grid_view().clone();
-    let unrecorded = doc.grid_view_unrecorded();
+    let unrecorded = [
+        doc.grid_condition_unrecorded().is_some(),
+        applied.order.is_some(),
+    ];
+    let condition_held = doc.grid_condition_held().is_some();
     let mut texts = [String::new(), String::new()];
     let mut dots = [false, false];
 
@@ -661,7 +684,7 @@ pub fn foot_band(
         );
         let mut x = from + word_size.x + spacing::SPACE_2;
         // The dot, while the field's applied text is in no file.
-        if unrecorded && field.of(&applied).is_some() {
+        if unrecorded[slot] {
             let centre = egui::pos2(x + DOT_RADIUS, rect.center().y);
             painter.circle_filled(centre, DOT_RADIUS, ink);
             x += 2.0 * DOT_RADIUS + spacing::SPACE_2;
@@ -673,8 +696,9 @@ pub fn foot_band(
         );
         let editing = state.asking.as_ref().is_some_and(|a| a.field == field);
         // The order field takes typing only once a key has opened it; a press
-        // opens the condition field.
-        let interactive = editing || (field == FootField::Where && state.asking.is_none());
+        // opens the condition field, unless a recorded condition is held.
+        let interactive =
+            editing || (field == FootField::Where && state.asking.is_none() && !condition_held);
 
         let mut child = ui.new_child(
             egui::UiBuilder::new()

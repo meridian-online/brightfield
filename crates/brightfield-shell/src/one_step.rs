@@ -297,6 +297,12 @@ impl OneStepProtocol {
     /// refused here rather than written. Either refusal leaves the directory
     /// untouched.
     ///
+    /// **The manifest is written only while it is this module's**: when the
+    /// folder has none, or its manifest still holds one step. A manifest of
+    /// more steps holds steps arc appended (a Save's recorded views among
+    /// them), which this one-step text does not carry, so it is left as it is
+    /// and only the load's model is written.
+    ///
     /// # Errors
     ///
     /// If the loader refuses the manifest, if the model does not parse into a
@@ -320,10 +326,21 @@ impl OneStepProtocol {
         std::fs::create_dir_all(models_dir)
             .map_err(|e| format!("{}: {e}", models_dir.display()))?;
         std::fs::write(&model, &self.model).map_err(|e| format!("{}: {e}", model.display()))?;
-        std::fs::write(&manifest, &self.manifest)
-            .map_err(|e| format!("{}: {e}", manifest.display()))?;
+        if manifest_is_ours(&manifest) {
+            std::fs::write(&manifest, &self.manifest)
+                .map_err(|e| format!("{}: {e}", manifest.display()))?;
+        }
         Ok(manifest)
     }
+}
+
+/// Whether [`OneStepProtocol::save_to`] may write the manifest at `path`: there
+/// is none, or the one there holds no more than one step.
+fn manifest_is_ours(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return !path.exists();
+    };
+    brightfield_protocol::parse_manifest_str(&text).is_ok_and(|m| m.steps.len() <= 1)
 }
 
 /// The data file a **one-step Protocol** reads, resolved against `dir` — or

@@ -900,9 +900,16 @@ pub struct ChartDoc {
     /// ([`Self::grid_view_unrecorded`]); cleared when the document is
     /// replaced, since it named rows of the replaced document's table.
     grid_view: brightfield_engine::RowsView,
-    /// Whether [`Self::grid_view`] has been recorded to a file. Set by
-    /// [`Self::apply_grid_view`] to `false`.
-    grid_view_recorded: bool,
+    /// **The step the view's condition was recorded as, while the order is
+    /// not**: a Save recorded the condition and arc refused the order. The
+    /// grid keeps showing both, the condition reads as recorded, and the order
+    /// is recorded on this step's table by the next Save. `None` otherwise,
+    /// since a view recorded whole leaves the row.
+    grid_condition_held: Option<String>,
+    /// Set when the applied view has just become fully recorded, so the window
+    /// takes on the Protocol the folder now holds; see
+    /// [`Self::take_grid_view_settled`].
+    grid_view_settled: bool,
     /// **The row at the grid's foot**: the field being edited, the preview
     /// the grid reads while it is, and what the band drew. Cleared when the
     /// document is replaced, with the view it edits.
@@ -1257,7 +1264,8 @@ impl ChartDoc {
             grid_cursor: None,
             grid_cursor_reveal: false,
             grid_view: brightfield_engine::RowsView::default(),
-            grid_view_recorded: true,
+            grid_condition_held: None,
+            grid_view_settled: false,
             grid_foot: crate::grid_foot::FootState::default(),
             operation: crate::operation_panel::OperationState::default(),
             grid_layout_switch: None,
@@ -1322,7 +1330,8 @@ impl ChartDoc {
             grid_cursor: None,
             grid_cursor_reveal: false,
             grid_view: brightfield_engine::RowsView::default(),
-            grid_view_recorded: true,
+            grid_condition_held: None,
+            grid_view_settled: false,
             grid_foot: crate::grid_foot::FootState::default(),
             operation: crate::operation_panel::OperationState::default(),
             grid_layout_switch: None,
@@ -1446,7 +1455,8 @@ impl ChartDoc {
         self.grid_cursor = None;
         self.grid_cursor_reveal = false;
         self.grid_view = brightfield_engine::RowsView::default();
-        self.grid_view_recorded = true;
+        self.grid_condition_held = None;
+        self.grid_view_settled = false;
         self.grid_foot = crate::grid_foot::FootState::default();
         self.grid_layout_switch = None;
         self.grid_spot_switch = None;
@@ -1533,15 +1543,15 @@ impl ChartDoc {
         self.has_unsaved_edit() || self.grid_view_unrecorded()
     }
 
-    /// The unrecorded grid view in words for the close question, or nothing
-    /// when the view is empty or recorded: `Grid view · where house_age = 28 · order by x`.
+    /// The unrecorded part of the grid view in words for the close question,
+    /// or nothing when no part is unrecorded: `Grid view · where house_age = 28 · order by x`.
     #[must_use]
     pub fn grid_view_line(&self) -> Option<String> {
         if !self.grid_view_unrecorded() {
             return None;
         }
         let mut line = "Grid view".to_string();
-        if let Some(c) = &self.grid_view.condition {
+        if let Some(c) = self.grid_condition_unrecorded() {
             line.push_str(&format!(" \u{b7} where {c}"));
         }
         if let Some(o) = &self.grid_view.order {
@@ -1553,24 +1563,82 @@ impl ChartDoc {
     /// Apply `view` to the data grid. The grid's next draw reads through it;
     /// the cache is keyed on it, so no page read through the previous view is
     /// shown. An empty view shows the whole table and leaves nothing unrecorded.
-    pub fn apply_grid_view(&mut self, view: brightfield_engine::RowsView) {
-        self.grid_view_recorded = false;
+    ///
+    /// While a recorded condition is held ([`Self::grid_condition_held`]) the
+    /// condition is not the caller's to change: `view`'s order is taken and
+    /// the held condition kept. An empty order then leaves nothing unrecorded,
+    /// so the view leaves the row and the window takes on the Protocol.
+    pub fn apply_grid_view(&mut self, mut view: brightfield_engine::RowsView) {
+        if self.grid_condition_held.is_some() {
+            if view.order.is_none() {
+                self.settle_grid_view();
+                return;
+            }
+            view.condition.clone_from(&self.grid_view.condition);
+        }
         self.grid_view = view;
     }
 
-    /// Whether the applied grid view is neither empty nor recorded: the grid
+    /// Whether some part of the applied grid view is in no file: the grid
     /// shows rows no file says it should.
     #[must_use]
     pub fn grid_view_unrecorded(&self) -> bool {
-        !self.grid_view_recorded && self.grid_view != brightfield_engine::RowsView::default()
+        self.grid_condition_unrecorded().is_some() || self.grid_view.order.is_some()
     }
 
-    /// The applied grid view has been recorded, so the row holds no part of it
-    /// that is not in a file. Clears the applied view: the recorded part leaves
-    /// the row, and the whole table shows again.
+    /// The applied condition, when no file holds it.
+    #[must_use]
+    pub fn grid_condition_unrecorded(&self) -> Option<&str> {
+        self.grid_condition_held
+            .is_none()
+            .then_some(self.grid_view.condition.as_deref())
+            .flatten()
+    }
+
+    /// The step a Save recorded the applied condition as, while the order it
+    /// was applied with is not recorded yet: the table the order goes on, and
+    /// the reason the `where` field is read-only.
+    #[must_use]
+    pub fn grid_condition_held(&self) -> Option<&str> {
+        self.grid_condition_held.as_deref()
+    }
+
+    /// The applied view has been recorded whole, so the row holds no part of
+    /// it that is not in a file. Clears the applied view: the recorded part
+    /// leaves the row, and the whole table shows again.
     pub fn mark_grid_view_recorded(&mut self) {
+        self.settle_grid_view();
+    }
+
+    /// The applied condition has been recorded as the step `step`. With no
+    /// order applied the whole view is recorded and leaves the row. With one,
+    /// the grid goes on showing both: the condition reads as recorded and is
+    /// held, and the order is recorded on `step`'s table next.
+    pub fn mark_grid_condition_recorded(&mut self, step: String) {
+        if self.grid_view.order.is_none() {
+            self.settle_grid_view();
+        } else {
+            self.grid_condition_held = Some(step);
+        }
+    }
+
+    /// The applied order has been recorded, and with it the rest of the view,
+    /// which leaves the row.
+    pub fn mark_grid_order_recorded(&mut self) {
+        self.settle_grid_view();
+    }
+
+    fn settle_grid_view(&mut self) {
         self.grid_view = brightfield_engine::RowsView::default();
-        self.grid_view_recorded = true;
+        self.grid_condition_held = None;
+        self.grid_view_settled = true;
+    }
+
+    /// Whether the applied view became fully recorded since this was last
+    /// asked: what tells the window to take on the Protocol the folder holds
+    /// now. Asking clears it.
+    pub fn take_grid_view_settled(&mut self) -> bool {
+        std::mem::take(&mut self.grid_view_settled)
     }
 
     /// **Save the chart beside the Protocol: write the edits made since the
