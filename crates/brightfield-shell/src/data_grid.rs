@@ -1862,6 +1862,14 @@ impl GridPreview {
                     thousands(*bytes)
                 ),
             ),
+            brightfield_engine::PreviewRefusal::TookTooLong { deadline } => EmptyState::new(
+                ICON_DATA,
+                "This step takes too long to preview",
+                format!(
+                    "Its preview ran past {} seconds and was stopped. {way_on}",
+                    deadline.as_secs()
+                ),
+            ),
             brightfield_engine::PreviewRefusal::Engine(msg) => EmptyState::new(
                 ICON_DATA,
                 "This step cannot be previewed",

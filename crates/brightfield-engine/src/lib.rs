@@ -26,8 +26,8 @@ pub use duckdb::arrow::datatypes::SchemaRef;
 pub use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
 pub use preview::{
-    preview_first_page, preview_first_page_with_limit, FileReader, PreviewOp, PreviewRefusal,
-    PREVIEW_FILE_LIMIT_BYTES,
+    preview_first_page, preview_first_page_with_limit, preview_first_page_within, FileReader,
+    PreviewOp, PreviewRefusal, PREVIEW_DEADLINE, PREVIEW_FILE_LIMIT_BYTES,
 };
 pub use profile::{
     Bars, ColumnMoments, ColumnProfile, Distribution, ProfileOutcome, ScanTally, SourceProfile,

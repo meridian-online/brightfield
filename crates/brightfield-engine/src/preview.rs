@@ -21,7 +21,11 @@
 //!   compressed Parquet can take several times its size once loaded (the
 //!   measurement is on `Session::materialise_source`). Running out of memory is
 //!   [`PreviewRefusal::TooLarge`], the same answer as a file over the limit,
-//!   and not an engine error.
+//!   and not an engine error. A memory limit does not bound time, so the read
+//!   also runs against [`PREVIEW_DEADLINE`]: a condition whose subquery counts
+//!   to a quadrillion holds almost no memory, and past the deadline the
+//!   connection is interrupted and the read ends as
+//!   [`PreviewRefusal::TookTooLong`].
 //!
 //! A step is previewed through the steps before it: a sort on a filter reads
 //! the filter, then the sort. A sort's page is read in its own order, then every
@@ -31,6 +35,9 @@
 //! rows or their range.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use duckdb::Connection;
 
@@ -42,6 +49,10 @@ pub const PREVIEW_FILE_LIMIT_BYTES: u64 = 256 * 1024 * 1024;
 /// The memory a preview's connection may use, with spilling shut off beside
 /// it so the limit refuses rather than writes to disk.
 const PREVIEW_MEMORY_LIMIT: &str = "2GB";
+
+/// The longest a preview read may take, load and steps together, before its
+/// connection is interrupted: 30 seconds.
+pub const PREVIEW_DEADLINE: Duration = Duration::from_secs(30);
 
 /// The DuckDB reader a data file is loaded with, by its extension: the same
 /// dispatch the load a data file opens as writes into its model.
@@ -94,6 +105,12 @@ pub enum PreviewRefusal {
         /// The data file's size on disk.
         bytes: u64,
     },
+    /// The read ran past its deadline ([`PREVIEW_DEADLINE`] outside a test)
+    /// and was interrupted.
+    TookTooLong {
+        /// The deadline it ran past.
+        deadline: Duration,
+    },
     /// DuckDB refused a statement, in its own words.
     Engine(String),
 }
@@ -104,6 +121,11 @@ impl std::fmt::Display for PreviewRefusal {
             Self::TooLarge { bytes } => {
                 write!(f, "the data file is too large to preview ({bytes} bytes)")
             }
+            Self::TookTooLong { deadline } => write!(
+                f,
+                "the preview took longer than {} seconds and was stopped",
+                deadline.as_secs()
+            ),
             Self::Engine(msg) => f.write_str(msg),
         }
     }
@@ -122,7 +144,8 @@ impl std::fmt::Display for PreviewRefusal {
 /// # Errors
 ///
 /// [`PreviewRefusal::TooLarge`] for a file over the limit or a read that ran
-/// out of memory; otherwise [`PreviewRefusal::Engine`] with DuckDB's words,
+/// out of memory; [`PreviewRefusal::TookTooLong`] for a read still running at
+/// [`PREVIEW_DEADLINE`]; otherwise [`PreviewRefusal::Engine`] with DuckDB's words,
 /// which for a condition that reaches outside the database say that external
 /// access is off.
 pub fn preview_first_page(
@@ -157,14 +180,51 @@ pub fn preview_first_page_with_limit(
     limit: u64,
     file_limit_bytes: u64,
 ) -> Result<Vec<RecordBatch>, PreviewRefusal> {
+    preview_first_page_within(
+        data,
+        reader,
+        root_table,
+        chain,
+        limit,
+        file_limit_bytes,
+        PREVIEW_DEADLINE,
+    )
+}
+
+/// [`preview_first_page_with_limit`] against a deadline of `deadline`, so a
+/// test can reach [`PreviewRefusal::TookTooLong`] without waiting out
+/// [`PREVIEW_DEADLINE`].
+///
+/// # Errors
+///
+/// As [`preview_first_page`], with `deadline` in place of the deadline.
+#[doc(hidden)]
+pub fn preview_first_page_within(
+    data: &Path,
+    reader: FileReader,
+    root_table: &str,
+    chain: &[(String, PreviewOp)],
+    limit: u64,
+    file_limit_bytes: u64,
+    deadline: Duration,
+) -> Result<Vec<RecordBatch>, PreviewRefusal> {
     let bytes = std::fs::metadata(data)
         .map_err(|e| PreviewRefusal::Engine(format!("{}: {e}", data.display())))?
         .len();
     if bytes > file_limit_bytes {
         return Err(PreviewRefusal::TooLarge { bytes });
     }
-    let refused = |e: duckdb::Error| refusal(&e.to_string(), bytes);
-    let conn = Connection::open_in_memory().map_err(refused)?;
+    let conn = Connection::open_in_memory().map_err(|e| refusal(&e.to_string(), bytes))?;
+    // Taken before any SQL runs, and dropped (stopping the watch) on every
+    // way out of this function.
+    let watch = Watchdog::start(&conn, deadline);
+    let refused = |e: duckdb::Error| {
+        if watch.fired() {
+            PreviewRefusal::TookTooLong { deadline }
+        } else {
+            refusal(&e.to_string(), bytes)
+        }
+    };
     // The limit and the spill before the load, so the load is held to them.
     conn.execute_batch(&format!(
         "SET memory_limit='{PREVIEW_MEMORY_LIMIT}'; SET max_temp_directory_size='0B';"
@@ -219,7 +279,66 @@ pub fn preview_first_page_with_limit(
         .query_arrow(duckdb::params![])
         .map_err(refused)?
         .collect();
+    // An interrupt that landed between statements is not an error from any
+    // of them, and the page it leaves is not to be trusted as complete.
+    if watch.fired() {
+        return Err(PreviewRefusal::TookTooLong { deadline });
+    }
     Ok(batches)
+}
+
+/// **Interrupts a connection that is still working at its deadline.**
+///
+/// A thread waits out the deadline; if the read has not finished by then it
+/// marks the watch fired and interrupts the connection, and keeps
+/// interrupting it every few milliseconds until the read gives up, because an
+/// interrupt that lands between two statements stops neither. Dropping the
+/// watch tells the thread the read is over and waits for it to go.
+struct Watchdog {
+    fired: Arc<AtomicBool>,
+    done: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Watchdog {
+    fn start(conn: &Connection, deadline: Duration) -> Self {
+        let handle = conn.interrupt_handle();
+        let fired = Arc::new(AtomicBool::new(false));
+        let (done, over) = std::sync::mpsc::channel::<()>();
+        let flag = fired.clone();
+        let thread = std::thread::spawn(move || {
+            if over.recv_timeout(deadline) != Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                return;
+            }
+            flag.store(true, Ordering::SeqCst);
+            loop {
+                handle.interrupt();
+                if over.recv_timeout(Duration::from_millis(5))
+                    != Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                {
+                    return;
+                }
+            }
+        });
+        Self {
+            fired,
+            done: Some(done),
+            thread: Some(thread),
+        }
+    }
+
+    fn fired(&self) -> bool {
+        self.fired.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        drop(self.done.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// `name` as a double-quoted identifier, an embedded quote doubled.

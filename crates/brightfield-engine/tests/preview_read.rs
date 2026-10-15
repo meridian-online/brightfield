@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use brightfield_engine::{
-    preview_first_page, preview_first_page_with_limit, FileReader, PreviewOp, PreviewRefusal,
-    RecordBatch,
+    preview_first_page, preview_first_page_with_limit, preview_first_page_within, FileReader,
+    PreviewOp, PreviewRefusal, RecordBatch, PREVIEW_FILE_LIMIT_BYTES,
 };
 use duckdb::arrow::array::{Array, Float64Array};
 
@@ -210,6 +210,47 @@ fn a_file_over_the_limit_is_not_read() {
     .expect_err("a file over the limit was read");
 
     assert_eq!(refused, PreviewRefusal::TooLarge { bytes });
+}
+
+#[test]
+fn a_condition_that_runs_past_the_deadline_is_stopped() {
+    // Almost no memory, so the memory limit never stops it: only the deadline
+    // does.
+    let deadline = std::time::Duration::from_millis(300);
+    let started = std::time::Instant::now();
+    let refused = preview_first_page_within(
+        &housing(),
+        FileReader::Parquet,
+        ROOT,
+        &[filter(
+            "forever",
+            "(SELECT sum(range) FROM range(1000000000000000)) > 0",
+        )],
+        10,
+        PREVIEW_FILE_LIMIT_BYTES,
+        deadline,
+    )
+    .expect_err("a condition counting to a quadrillion finished");
+
+    assert_eq!(refused, PreviewRefusal::TookTooLong { deadline });
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "the interrupt took {:?} to stop the read",
+        started.elapsed()
+    );
+
+    // The next read is not held up by the one stopped.
+    let page = preview_first_page_within(
+        &housing(),
+        FileReader::Parquet,
+        ROOT,
+        &[filter("kept", "house_age > 28")],
+        5,
+        PREVIEW_FILE_LIMIT_BYTES,
+        std::time::Duration::from_secs(60),
+    )
+    .expect("the following preview reads");
+    assert_eq!(rows(&page), 5);
 }
 
 #[test]
