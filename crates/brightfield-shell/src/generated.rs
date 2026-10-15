@@ -121,8 +121,77 @@ fn unspell_table(spelled: &str) -> Option<String> {
             }
             Some(out)
         }
-        None => Some(spelled.to_string()),
+        None => {
+            let plain = !spelled.is_empty()
+                && !spelled.starts_with(|c: char| c.is_ascii_digit())
+                && spelled
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_');
+            plain.then(|| spelled.to_string())
+        }
     }
+}
+
+/// Split a table spelling off the front of `text`: a double-quoted name up to
+/// its closing quote (a doubled quote inside is part of the name), or a bare
+/// name up to the first space. Gives the spelling and what follows it.
+fn split_spelling(text: &str) -> Option<(&str, &str)> {
+    if !text.starts_with('"') {
+        return Some(text.split_at(text.find(' ').unwrap_or(text.len())));
+    }
+    let bytes = text.as_bytes();
+    let mut i = 1;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            if bytes.get(i + 1) == Some(&b'"') {
+                i += 2;
+                continue;
+            }
+            return Some(text.split_at(i + 1));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Whether `sql` holds a `;` outside single-quoted strings, double-quoted
+/// identifiers and `--` and `/* */` comments, which would end the statement.
+fn has_bare_semicolon(sql: &str) -> bool {
+    let b = sql.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b';' => return true,
+            q @ (b'\'' | b'"') => {
+                i += 1;
+                while i < b.len() {
+                    if b[i] == q {
+                        if b.get(i + 1) == Some(&q) {
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    i += 1;
+                }
+            }
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Read the model arc wrote for the step `step_name`.
@@ -137,11 +206,14 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
             "step {step_name:?} carries the generated header but {what}"
         ))
     };
-    let text = model_sql.strip_suffix('\n').unwrap_or(model_sql);
+    let model_sql = model_sql.replace("\r\n", "\n");
+    let text = model_sql.strip_suffix('\n').unwrap_or(&model_sql);
     let mut lines = text.splitn(5, '\n');
     let header = lines.next().unwrap_or("");
     let Some(said) = header.strip_prefix(HEADER) else {
-        return refuse("its first line is not the header");
+        return Err(format!(
+            "step {step_name:?} is not a generated step: its model does not open with `{HEADER}`"
+        ));
     };
     let Some((long, on)) = said.trim_start().split_once(" on ") else {
         return refuse("its header does not say `<operation> on <table>`");
@@ -176,6 +248,9 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
     if argument.trim().is_empty() {
         return refuse("its clause is empty");
     }
+    if has_bare_semicolon(argument) {
+        return refuse("its clause holds a `;` that would end the statement and begin another");
+    }
     Ok(GeneratedStep {
         name: step_name.to_string(),
         operation,
@@ -189,8 +264,9 @@ fn load_table(model: &str) -> Option<String> {
     let rest = model
         .trim_start()
         .strip_prefix("CREATE OR REPLACE TABLE ")?;
-    let (name, _) = rest.split_once(" AS")?;
-    unspell_table(name.trim())
+    let (name, after) = split_spelling(rest)?;
+    after.starts_with(" AS").then_some(())?;
+    unspell_table(name)
 }
 
 /// Whether `model` opens with arc's generated header.
@@ -204,8 +280,10 @@ fn has_header(model: &str) -> bool {
 /// The folder at `dir`, whose manifest reads `manifest_text`, as a data-file
 /// load followed by steps arc generated.
 ///
-/// `Ok(None)` is a folder that is not that shape, with no generated header in
-/// any step model, so the caller goes on as it did before.
+/// `Ok(None)` is a folder that is not that shape, so the caller goes on as it
+/// did before: a manifest that is not a Protocol, fewer than two steps, no
+/// generated header in any step after the first, or a first step that is not a
+/// data-file load.
 ///
 /// # Errors
 ///
@@ -288,8 +366,9 @@ fn slug(text: &str) -> String {
     out.trim_matches('_').to_string()
 }
 
-/// A name for a new step by its effect: `<root>_<word>_by_<column>` when the
-/// condition names exactly one column, `<root>_<word>` otherwise, and a
+/// A name for a new step by its effect: `<root>_<word>_by_<column>` when a
+/// filter's condition names exactly one column or a sort has any (its first),
+/// `<root>_<word>` otherwise, and a
 /// numeric suffix when the name is taken.
 ///
 /// The column and the root are slugged first, so the name is one arc's step-name
@@ -305,8 +384,13 @@ pub fn step_name_for(
         s if s.is_empty() => "table".to_string(),
         s => s,
     };
-    let base = match columns {
-        [one] if !slug(one).is_empty() => format!("{root}_{}_by_{}", operation.word(), slug(one)),
+    let named = match (operation, columns) {
+        (KnownOperation::FilterRows, [one]) => Some(slug(one)),
+        (KnownOperation::SortRows, [first, ..]) => Some(slug(first)),
+        _ => None,
+    };
+    let base = match named {
+        Some(col) if !col.is_empty() => format!("{root}_{}_by_{col}", operation.word()),
         _ => format!("{root}_{}", operation.word()),
     };
     if !taken.contains(&base) {
@@ -426,6 +510,60 @@ mod tests {
             &taken(&["x_sorted", "x_sorted_2"]),
         );
         assert_eq!(name, "x_sorted_3");
+    }
+
+    #[test]
+    fn a_second_statement_smuggled_into_the_clause_is_refused() {
+        let text = FILTER.replace("28;", "28;\nDELETE FROM california_housing;");
+        let err = parse_generated("x", &text).expect_err("two statements are refused");
+        assert!(err.contains("\"x\""), "{err}");
+        let text = FILTER.replace("house_age > 28", "name = 'a;b' AND \"c;d\" > 1 /* ; */");
+        let s = parse_generated("x", &text).expect("a `;` in a literal or comment is fine");
+        assert_eq!(s.argument, "name = 'a;b' AND \"c;d\" > 1 /* ; */");
+    }
+
+    #[test]
+    fn a_multi_line_sort_and_crlf_both_parse() {
+        let text = "-- generated: sort-rows on t\r\nCREATE OR REPLACE TABLE \"y\" AS\r\nSELECT *\r\nFROM t\r\nORDER BY a DESC,\r\n  b;\r\n";
+        let s = parse_generated("y", text).expect("CRLF is tolerated");
+        assert_eq!(s.argument, "a DESC,\n  b");
+    }
+
+    #[test]
+    fn a_bare_from_must_be_a_plain_identifier() {
+        let text = FILTER
+            .replace("on california_housing", "on my table")
+            .replace("FROM california_housing", "FROM my table");
+        assert!(parse_generated("x", &text).is_err());
+    }
+
+    #[test]
+    fn a_load_table_name_is_split_at_its_closing_quote() {
+        let got = load_table("CREATE OR REPLACE TABLE \"a AS b\" AS SELECT 1;\n");
+        assert_eq!(got.as_deref(), Some("a AS b"));
+        assert_eq!(
+            load_table("CREATE OR REPLACE TABLE t AS SELECT 1;").as_deref(),
+            Some("t")
+        );
+    }
+
+    #[test]
+    fn a_non_generated_step_is_not_called_a_generated_one() {
+        let err = parse_generated("x", "SELECT 1;").expect_err("no header");
+        assert!(err.contains("not a generated step"), "{err}");
+    }
+
+    #[test]
+    fn a_sort_over_several_columns_names_the_first() {
+        let name = step_name_for(
+            KnownOperation::SortRows,
+            "t",
+            &cols(&["median_income", "house_age"]),
+            &taken(&[]),
+        );
+        assert_eq!(name, "t_sorted_by_median_income");
+        let empty_root = step_name_for(KnownOperation::SortRows, "!!", &cols(&["a"]), &taken(&[]));
+        assert_eq!(empty_root, "table_sorted_by_a");
     }
 
     #[test]
