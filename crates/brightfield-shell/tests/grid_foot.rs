@@ -540,6 +540,130 @@ fn o_on_a_cell_asks_order_by_that_column() {
     );
 }
 
+/// The first column of the housing sample, as numbers.
+fn housing_median_incomes() -> Vec<f64> {
+    std::fs::read_to_string(data("california_housing_sample.csv"))
+        .expect("the sample reads")
+        .lines()
+        .skip(1)
+        .map(|l| l.split(',').next().unwrap().parse().unwrap())
+        .collect()
+}
+
+/// **`o` on a column opens `order by` with the caret after the column**, so
+/// typing extends it.
+#[test]
+fn o_on_a_column_opens_order_by_that_column_with_the_caret_after_it() {
+    let mut win = Window::housing();
+    win.press_cell(2, 0);
+    win.key(egui::Key::O);
+    assert_eq!(
+        win.asking(),
+        Some((FootField::OrderBy, "median_income".to_owned()))
+    );
+    win.type_text(" desc");
+    assert_eq!(
+        win.asking(),
+        Some((FootField::OrderBy, "median_income desc".to_owned()))
+    );
+}
+
+/// **Typing `desc` and Enter sorts the grid**: the first row holds the
+/// column's maximum.
+#[test]
+fn typing_desc_and_enter_sorts_the_grid() {
+    let mut win = Window::housing();
+    win.press_cell(2, 0);
+    win.key(egui::Key::O);
+    win.type_text(" desc");
+    win.key(egui::Key::Enter);
+
+    assert_eq!(win.asking(), None);
+    assert_eq!(
+        win.doc().grid_view().order.as_deref(),
+        Some("median_income desc")
+    );
+    let max = housing_median_incomes()
+        .into_iter()
+        .fold(f64::MIN, f64::max);
+    win.press_cell(0, 0);
+    let first: f64 = win.cursor_value().parse().expect("a number");
+    assert!(
+        (first - max).abs() < 1e-9,
+        "{first} is not the maximum {max}"
+    );
+    assert!(win.app.carries_unsaved_mark());
+    assert!(win.doc().foot_drawn().unwrap().order_dot);
+}
+
+/// **A condition and an order hold together**: applying the order keeps the
+/// applied condition's rows.
+#[test]
+fn a_condition_and_an_order_hold_together() {
+    let mut win = Window::housing();
+    win.press_cell(2, HOUSE_AGE);
+    win.key(egui::Key::W);
+    win.key(egui::Key::Enter);
+    let condition = win.doc().grid_view().condition.clone().expect("applied");
+    let want = win.engine_count(&condition).unwrap();
+    assert!(want > 0 && want < 240, "a count that tells nothing: {want}");
+
+    win.press_cell(0, 0);
+    win.key(egui::Key::O);
+    win.type_text(" desc");
+    win.key(egui::Key::Enter);
+
+    let view = win.doc().grid_view();
+    assert_eq!(view.condition.as_deref(), Some(condition.as_str()));
+    assert_eq!(view.order.as_deref(), Some("median_income desc"));
+    assert_eq!(win.drawn().rows, want);
+    let band = win.doc().foot_drawn().unwrap().clone();
+    assert!(band.where_dot && band.order_dot);
+    let top: f64 = {
+        win.press_cell(0, 0);
+        win.cursor_value().parse().unwrap()
+    };
+    let rows: Vec<f64> = housing_median_incomes();
+    assert!(rows.iter().any(|v| (v - top).abs() < 1e-9));
+}
+
+/// **A refused order keeps the rows**: `median_income; select 1` is not one
+/// ordering, so Enter applies nothing.
+#[test]
+fn a_refused_order_keeps_the_rows() {
+    let mut win = Window::housing();
+    win.press_cell(2, 0);
+    win.key(egui::Key::O);
+    win.type_text("; select 1");
+    assert!(win.doc().grid_foot().refused(), "a second statement passed");
+    win.key(egui::Key::Enter);
+    assert_eq!(win.doc().grid_view().order, None);
+    assert_eq!(win.asking().map(|a| a.0), Some(FootField::OrderBy));
+    assert_eq!(win.drawn().rows, 240);
+}
+
+/// **An emptied order shows the natural order**: Enter on an empty field
+/// clears the applied order.
+#[test]
+fn an_emptied_order_shows_the_natural_order() {
+    let mut win = Window::housing();
+    win.press_cell(2, 0);
+    win.key(egui::Key::O);
+    win.type_text(" desc");
+    win.key(egui::Key::Enter);
+    assert!(win.doc().grid_view().order.is_some());
+
+    win.key(egui::Key::O);
+    win.app
+        .chart_doc_mut()
+        .foot_offer(FootField::OrderBy, String::new());
+    win.settle();
+    win.key(egui::Key::Enter);
+    assert_eq!(win.doc().grid_view().order, None);
+    assert_eq!(win.asking(), None);
+    assert_eq!(win.drawn().rows, 240);
+}
+
 /// **`=` directly after a comparison key extends it**: `>` `=` asks `>=` and
 /// reads *at least*, `<` `=` asks `<=` and reads *at most*, and `!` `=` stays
 /// `!=`.
