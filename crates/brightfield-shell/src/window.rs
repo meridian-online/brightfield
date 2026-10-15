@@ -3076,8 +3076,7 @@ impl MeridianApp {
     /// closes is exactly a window that says it has something to lose.
     #[must_use]
     pub fn carries_unsaved_mark(&self) -> bool {
-        (self.charts.doc.has_unsaved_edit() || self.charts.doc.grid_view_unrecorded())
-            && !self.front_door_is_live()
+        self.charts.doc.has_unsaved_work() && !self.front_door_is_live()
     }
 
     /// [`Self::title`] without the unsaved mark: the name of the subject, for
@@ -4039,7 +4038,7 @@ impl MeridianApp {
         // one sent. The top bar reads `title` each frame; the OS title is
         // pushed, and a tile's switch is thrown mid-frame, after the openers
         // that push one have run.
-        let marked = self.charts.doc.has_unsaved_edit();
+        let marked = self.charts.doc.has_unsaved_work();
         if marked != self.title_marked {
             self.title_marked = marked;
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
@@ -6364,9 +6363,11 @@ impl MeridianApp {
         let changes = target
             .as_deref()
             .map_or_else(Vec::new, |file| self.charts.doc.unsaved_changes(file));
+        let mut edits = crate::versions::change_lines(&changes, &tile_of);
+        edits.extend(self.charts.doc.grid_view_line());
         CloseQuestion {
             file,
-            edits: crate::versions::change_lines(&changes, &tile_of),
+            edits,
             not_kept: None,
             focused: None,
         }
@@ -6485,7 +6486,7 @@ impl MeridianApp {
     /// edit it did not keep.
     fn save_for_close(&mut self, ctx: &egui::Context) -> bool {
         match self.save_protocol(ctx) {
-            Some(Ok(_)) => !self.charts.doc.has_unsaved_edit(),
+            Some(Ok(_)) => !self.charts.doc.has_unsaved_work(),
             Some(Err(_)) => false,
             None => {
                 self.notifications.raise(

@@ -531,3 +531,37 @@ fn an_applied_view_raises_the_unsaved_mark() {
     live.app.chart_doc_mut().mark_grid_view_recorded();
     assert!(!live.app.carries_unsaved_mark());
 }
+
+/// The title the window pushes to the OS follows the view too, and an empty
+/// view drops the mark.
+#[test]
+fn the_pushed_title_shows_the_mark_for_a_view_and_an_empty_view_drops_it() {
+    let mut live = Live::open(housing_boot());
+    live.settle();
+    live.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("house_age = 28".to_string()),
+            order: None,
+        });
+    live.titles.clear();
+    live.settle();
+    assert!(
+        live.titles.last().is_some_and(|t| t.contains(UNSAVED_MARK)),
+        "the OS title was not marked: {:?}",
+        live.titles
+    );
+    live.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView::default());
+    live.titles.clear();
+    live.settle();
+    assert!(!live.app.carries_unsaved_mark());
+    assert!(
+        live.titles
+            .last()
+            .is_some_and(|t| !t.contains(UNSAVED_MARK)),
+        "the OS title kept the mark: {:?}",
+        live.titles
+    );
+}

@@ -1043,7 +1043,29 @@ fn changing_the_view_is_never_served_from_the_unfiltered_cache() {
     harness.state_mut().0.apply_grid_view(age_is(28));
     harness.run();
     assert_eq!(harness.query_all_by_label("10").count(), 0);
-    assert_eq!(harness.get_all_by_label("28").count(), 2);
+    // The first visible row is house `b`, and its house_age cell reads 28.
+    let first = harness.get_by_label("b").rect().top();
+    let age = harness
+        .get_all_by_label("28")
+        .find(|n| (n.rect().top() - first).abs() < 0.5)
+        .expect("the first visible row's house_age cell reads 28");
+    assert!(age.rect().width() > 0.0);
+}
+
+#[test]
+fn a_condition_that_keeps_no_rows_blames_the_condition_not_a_brush() {
+    let mut harness = grid_harness(live_doc(HOUSES));
+    harness.run();
+    harness.state_mut().0.apply_grid_view(age_is(99));
+    harness.run();
+    assert_eq!(harness.state().0.grid_drawn().expect("table").rows, 0);
+    harness.get_by_label("0 rows match the grid's condition.");
+    assert_eq!(
+        harness
+            .query_all_by_label("0 rows under the current selection.")
+            .count(),
+        0
+    );
 }
 
 #[test]

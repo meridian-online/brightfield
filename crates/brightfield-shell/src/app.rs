@@ -899,7 +899,7 @@ pub struct ChartDoc {
     /// so a non-empty view marks the document unsaved
     /// ([`Self::grid_view_unrecorded`]); cleared when the document is
     /// replaced, since it named rows of the replaced document's table.
-    pub grid_view: brightfield_engine::RowsView,
+    grid_view: brightfield_engine::RowsView,
     /// Whether [`Self::grid_view`] has been recorded to a file. Set by
     /// [`Self::apply_grid_view`] to `false`.
     grid_view_recorded: bool,
@@ -1503,6 +1503,38 @@ impl ChartDoc {
     #[must_use]
     pub const fn has_unsaved_edit(&self) -> bool {
         !self.pending_edits.is_empty() || self.stepped_back.is_some()
+    }
+
+    /// The view the data grid reads through; see the field's note above.
+    #[must_use]
+    pub const fn grid_view(&self) -> &brightfield_engine::RowsView {
+        &self.grid_view
+    }
+
+    /// Whether the document holds work no file does: an edit made since the
+    /// last Save ([`Self::has_unsaved_edit`]) or an applied grid view not yet
+    /// recorded ([`Self::grid_view_unrecorded`]). The one definition every
+    /// reader of *unsaved* shares.
+    #[must_use]
+    pub fn has_unsaved_work(&self) -> bool {
+        self.has_unsaved_edit() || self.grid_view_unrecorded()
+    }
+
+    /// The unrecorded grid view in words for the close question, or `None`
+    /// when there is none: `Grid view · where house_age = 28 · order by x`.
+    #[must_use]
+    pub fn grid_view_line(&self) -> Option<String> {
+        if !self.grid_view_unrecorded() {
+            return None;
+        }
+        let mut line = "Grid view".to_string();
+        if let Some(c) = &self.grid_view.condition {
+            line.push_str(&format!(" \u{b7} where {c}"));
+        }
+        if let Some(o) = &self.grid_view.order {
+            line.push_str(&format!(" \u{b7} order by {o}"));
+        }
+        Some(line)
     }
 
     /// Apply `view` to the data grid. The grid's next draw reads through it;

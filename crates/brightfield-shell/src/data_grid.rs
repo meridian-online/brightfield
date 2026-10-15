@@ -1844,7 +1844,7 @@ impl Item<ChartDoc> for DataGridItem {
             at: doc.grid_cursor,
             reveal: std::mem::take(&mut doc.grid_cursor_reveal),
         };
-        let view = doc.grid_view.clone();
+        let view = doc.grid_view().clone();
         doc.activity.begin(Activity::EngineQuery);
         let mut drawn = None;
         let mut names = Vec::new();
@@ -1912,9 +1912,15 @@ impl Item<ChartDoc> for DataGridItem {
 
         if self.cache.error.is_none() && self.cache.total == 0 {
             // A real answer, not an empty pane: the query ran and selected
-            // nothing under the current interaction state.
+            // nothing, under the grid's own condition when it has one and
+            // otherwise under the current interaction state.
+            let said = if self.cache.view.condition.is_some() {
+                "0 rows match the grid's condition."
+            } else {
+                "0 rows under the current selection."
+            };
             ui.label(
-                egui::RichText::new("0 rows under the current selection.")
+                egui::RichText::new(said)
                     .font(cell_font())
                     .color(chrome::colour(sem.text.muted)),
             );
