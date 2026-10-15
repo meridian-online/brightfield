@@ -950,6 +950,32 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Move the grid's cursor to the cell on the right; stops at the last column",
             scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row l = right (vim, VisiData); the arrow is its twin; the Grid context keeps it apart from the Workspace's dive-in and pan-right" }),
         },
+        // ---- the row at the grid's foot: a key on the cursor's cell opens one
+        //      of its two fields filled in from that cell. View-tier: the field
+        //      changes which rows the grid shows, and no file is written until
+        //      a Save records it. ----
+        VerbEntry {
+            longname: "filter-rows-at-cursor",
+            tier: CommandTier::View,
+            binding_specs: vec![grid("w")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Ask the grid's rows a condition: the where field opens with the cursor's column equal to its value",
+            scores: Some(Scores { frequency: 4, mnemonic: 5, convention: 3, motor_note: "w = where, the clause the field writes; o beside it for order by" }),
+        },
+        VerbEntry {
+            longname: "sort-rows-at-cursor",
+            tier: CommandTier::View,
+            binding_specs: vec![grid("o")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Sort the grid's rows: the order by field opens with the cursor's column",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 3, motor_note: "o = order by, the clause the field writes; w beside it for where" }),
+        },
         // ---- the Versions panel's cursor: one row of the ledger's list of a
         //      chart's saved versions. The chart is drawn as the version under
         //      the cursor; Enter steps the chart back to it as an unsaved edit,
@@ -1425,6 +1451,8 @@ mod tests {
             "move-cursor-up",
             "move-cursor-left",
             "move-cursor-right",
+            "filter-rows-at-cursor",
+            "sort-rows-at-cursor",
             "move-version-cursor-down",
             "move-version-cursor-up",
             "step-back-to-version",
@@ -1669,6 +1697,8 @@ mod tests {
             ("left", "move-cursor-left"),
             ("l", "move-cursor-right"),
             ("right", "move-cursor-right"),
+            ("w", "filter-rows-at-cursor"),
+            ("o", "sort-rows-at-cursor"),
         ];
         for (keys, longname) in expected {
             assert_eq!(in_grid(keys), vec![longname], "Grid context, `{keys}`");

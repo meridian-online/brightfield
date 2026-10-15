@@ -231,6 +231,8 @@ mod tests {
             ("left", "move-cursor-left"),
             ("l", "move-cursor-right"),
             ("right", "move-cursor-right"),
+            ("w", "filter-rows-at-cursor"),
+            ("o", "sort-rows-at-cursor"),
         ] {
             assert_eq!(
                 t.resolves(keys, DispatchContext::GridFocused),

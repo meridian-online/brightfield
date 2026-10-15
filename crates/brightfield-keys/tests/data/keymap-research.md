@@ -156,6 +156,15 @@ looking, and moving it writes nothing.
 | `move-cursor-left` | `h` · `left` | 5 / 4 / 5 | home-row `h` = left (vim, VisiData); the arrow is its twin; the Grid context keeps it apart from the Workspace's `pop-out` and `pan-left` |
 | `move-cursor-right` | `l` · `right` | 5 / 4 / 5 | home-row `l` = right (vim, VisiData); the arrow is its twin; the Grid context keeps it apart from the Workspace's `dive-in` and `pan-right` |
 
+### The row at the grid's foot — a condition and an order asked from the cursor's cell
+
+Under the table sits a band with a `where` field and an `order by` field. A key on the cursor's cell opens one of them filled in from that cell: `w` opens `where` with the cell's column equal to its value, and `o` opens `order by` with the cell's column. Both resolve in the Grid context, so they act only with the grid focused. Both are **View**-tier: the field changes which rows the grid shows, and no file is written until a Save records it.
+
+| longname | key(s) | freq / mnem / conv | motor note |
+|----------|--------|--------------------|------------|
+| `filter-rows-at-cursor` | `w` | 4 / 5 / 3 | `w` = where, the clause the field writes; `o` beside it for order by |
+| `sort-rows-at-cursor` | `o` | 3 / 5 / 3 | `o` = order by, the clause the field writes; `w` beside it for where |
+
 ### The Versions panel's cursor — a row of a chart's saved versions, in a key context of its own
 
 The ledger's Versions panel lists a chart's saved versions, newest first. With the panel focused, a

@@ -23,7 +23,7 @@
 
 use std::path::PathBuf;
 
-use brightfield_engine::RowsAudience;
+use brightfield_engine::{RowsAudience, RowsView};
 use brightfield_render::channel::Channel;
 use brightfield_shell::app::{GridLayout, HoverReadout};
 use brightfield_shell::data_grid::fetch_page;
@@ -1113,9 +1113,15 @@ fn surfaces(app: &mut MeridianApp) -> Surfaces {
         .live_coordinator()
         .expect("a live document")
         .session();
-    let grid = fetch_page(session, mark, 0..8, RowsAudience::Reader)
-        .expect("the grid reads")
-        .rows;
+    let grid = fetch_page(
+        session,
+        mark,
+        0..8,
+        RowsAudience::Reader,
+        &RowsView::default(),
+    )
+    .expect("the grid reads")
+    .rows;
     Surfaces {
         selection,
         plots,

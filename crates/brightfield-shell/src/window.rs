@@ -1491,6 +1491,28 @@ impl Boot {
                 ..boot
             });
         }
+        // A folder holding a data-file load and then steps arc generated opens
+        // the same way, through the data file, and its steps are laid out from
+        // the manifest by `OneStepProtocol::inputs_with_last_run`. Nothing is
+        // run: each generated step reads as not run until a run's record says
+        // otherwise, and its grid shows a preview labelled as one. A folder of
+        // that shape whose generated model was edited away from arc's template
+        // is refused here, naming the step, rather than opened or rendered. A
+        // load that is not brightfield's own, or that reads a file in another
+        // folder, is not that shape, and falls through to the manifest route.
+        if let Some(generated) = crate::generated::generated_protocol_in(&text, &dir)? {
+            if sample.is_some() {
+                return Err(format!(
+                    "{spec}: a sample rate is pushed into a plot's own query, and the dashboard \
+                     generated for a data file has no authored plot to push it into. Open it \
+                     without the flag."
+                ));
+            }
+            return Self::saved_protocol(&generated.data.to_string_lossy()).map(|boot| Self {
+                opened_id: Some(remembered_id(spec)),
+                ..boot
+            });
+        }
         if brightfield_protocol::is_protocol_manifest(&text) {
             if !crate::protocol::offline_optin() {
                 return Err(crate::protocol::run_less_manifest_refusal(spec));
@@ -1780,6 +1802,9 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "j" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::J)),
         "k" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::K)),
         "l" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::L)),
+        // The grid's two keys that open a field of the row at its foot.
+        "w" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::W)),
+        "o" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::O)),
         "left" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowLeft)),
         "right" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowRight)),
         "up" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)),
@@ -2038,6 +2063,46 @@ fn wire_columns(chart: &mut ChartDoc, model: &ProtocolModel, table: &TableHandle
     }));
     chart.set_column_facts(model.columns());
     chart.set_tile_columns(tiles);
+    // The table the node in view makes, which the operation panel names: the
+    // table's own label, not the name of the step that makes it.
+    chart.set_operation_table(model.table_label().map(str::to_owned));
+}
+
+/// One `arc operation record` of `operation` on `on` as the step `name`, with
+/// the operation's one argument.
+fn record_one(
+    runner: &crate::run::Runner,
+    dir: &std::path::Path,
+    operation: crate::generated::KnownOperation,
+    on: &str,
+    name: &str,
+    argument: &str,
+) -> Result<(), String> {
+    crate::operation::record(
+        runner,
+        dir,
+        operation.long_name(),
+        on,
+        name,
+        &[(operation.argument_key(), argument)],
+    )
+    .map(|_| ())
+}
+
+/// Why a Save did not complete: the Protocol could not be written, or arc
+/// refused to record an applied view.
+enum Refused {
+    Writing(String),
+    Recording(String),
+}
+
+/// How the Inspector rail stood before a key moved it to the operation panel.
+#[derive(Clone, Copy, Debug)]
+struct RailBeforeAsk {
+    /// Whether it was collapsed.
+    collapsed: bool,
+    /// The pane it was on.
+    panel: usize,
 }
 
 /// The protocol half of the window: its document and its live items.
@@ -2272,6 +2337,16 @@ pub struct MeridianApp {
     /// gives one — see [`crate::run::Runner`] for why a window does not assume
     /// the process it is in.
     runner: Option<crate::run::Runner>,
+    /// arc's descriptions of the operations, asked through [`Self::runner`]
+    /// and kept for the session, past any one document. Made on the first
+    /// frame that needs one, since its wake asks the frame's context to draw
+    /// again when an answer lands.
+    descriptions: Option<crate::operation::Descriptions>,
+    /// How the Inspector rail stood before the key that asked the field at the
+    /// grid's foot moved it to the operation panel, so Esc from the field puts
+    /// it back. `None` when no key moved it, or the asking it moved the rail
+    /// for has ended, however it ended ([`Self::sync_operation`]).
+    rail_before_ask: Option<RailBeforeAsk>,
     /// Where each Save of the chart records a version. `None` until
     /// [`MeridianApp::keeping_history`] gives one, so a window built without it,
     /// as a suite builds one, records no version — see [`brightfield_protocol::HistoryStore`].
@@ -2673,6 +2748,8 @@ impl MeridianApp {
             fetching: None,
             running: None,
             runner: None,
+            descriptions: None,
+            rail_before_ask: None,
             history: None,
             remote_files: None,
             door_open_file: None,
@@ -2718,6 +2795,7 @@ impl MeridianApp {
         // window was built over — the same derivation `documents_changed`
         // runs on a later document swap.
         app.apply_rail_defaults();
+        app.say_folder_refused();
         // The restored spot is put through the move rather than left as the
         // field the struct literal wrote: the rail defaults above close the
         // ledger for a one-step Protocol, and a grid whose spot is the ledger
@@ -3028,6 +3106,32 @@ impl MeridianApp {
         // Protocol's open rail standing over an empty document it has no
         // step to summarise.
         self.apply_rail_defaults();
+        self.say_folder_refused();
+    }
+
+    /// Raise the banner saying why the steps the folder's manifest holds after
+    /// the load were not laid out, or take it down when they were — see
+    /// [`ProtocolInputs::folder_refused`]. Called wherever a Protocol document
+    /// is taken on.
+    fn say_folder_refused(&mut self) {
+        let banner = NotificationId::new("folder-steps");
+        match self.protocol.doc.model.folder_refused() {
+            Some(why) => {
+                let why = why.to_string();
+                eprintln!("the folder's steps were not laid out: {why}");
+                self.notifications.raise(
+                    Notification::new(
+                        banner,
+                        Severity::Error,
+                        "The steps saved beside this file could not be read",
+                    )
+                    .body(format!("{why}. Only the file's load is shown.")),
+                );
+            }
+            None => {
+                self.notifications.dismiss(banner);
+            }
+        }
     }
 
     /// The pane the window's chrome is reading from, if any.
@@ -3076,7 +3180,7 @@ impl MeridianApp {
     /// closes is exactly a window that says it has something to lose.
     #[must_use]
     pub fn carries_unsaved_mark(&self) -> bool {
-        self.charts.doc.has_unsaved_edit() && !self.front_door_is_live()
+        self.charts.doc.has_unsaved_work() && !self.front_door_is_live()
     }
 
     /// [`Self::title`] without the unsaved mark: the name of the subject, for
@@ -3582,6 +3686,21 @@ impl MeridianApp {
     /// band does from the next frame on. For a capture whose script is fixed
     /// before the window lays out, and so cannot aim a click at the switch.
     pub fn set_grid_layout(&mut self, layout: crate::app::GridLayout) {
+        self.take_grid_layout(layout, None);
+    }
+
+    /// Put the grid in `layout`. **The foot row is drawn only in the rows
+    /// layout**, so a field of it being asked is put back as Esc puts it back
+    /// when the grid leaves that layout, rail and all, rather than left asking
+    /// where no band draws it. `ctx`, when there is one, takes the keyboard
+    /// back from the field.
+    fn take_grid_layout(&mut self, layout: crate::app::GridLayout, ctx: Option<&egui::Context>) {
+        if layout != crate::app::GridLayout::Rows && self.charts.doc.foot_asking().is_some() {
+            if let (Some(field), Some(ctx)) = (self.charts.doc.foot_cancel(), ctx) {
+                ctx.memory_mut(|m| m.surrender_focus(field.id()));
+            }
+            self.restore_rail_after_ask();
+        }
         self.grid_layout = layout;
     }
 
@@ -3869,6 +3988,85 @@ impl MeridianApp {
         self.charts.doc.versions_mut().set_env(clock, home);
     }
 
+    /// Where the operation panel sits among the Inspector rail's panes.
+    fn operation_pane_index() -> Option<usize> {
+        region_panes(arrangement::default_arrangement().expect_region(arrangement::INSPECTOR_RAIL))
+            .iter()
+            .position(|item| *item == crate::operation_panel::OPERATION)
+    }
+
+    /// **Open the Inspector rail on the operation panel**, for a key that has
+    /// just asked a field at the grid's foot, remembering how the rail stood
+    /// so Esc can put it back.
+    ///
+    /// Only when there is an operation in hand to explain: a grid with no
+    /// table in view asks with nothing for the panel to say, and the rail is
+    /// left as it is.
+    fn open_rail_on_operation(&mut self) {
+        if self.charts.doc.operation_in_hand().is_none() {
+            return;
+        }
+        let Some(at) = Self::operation_pane_index() else {
+            return;
+        };
+        self.rail_before_ask = Some(RailBeforeAsk {
+            collapsed: self.collapsed.remove(&arrangement::INSPECTOR_RAIL),
+            panel: self.inspector_panel,
+        });
+        self.inspector_panel = at;
+    }
+
+    /// **Put the Inspector rail back** as it stood before the key moved it,
+    /// for Esc from the field: the pane it was on, if it is still on the
+    /// operation panel, and collapsed, if it was.
+    fn restore_rail_after_ask(&mut self) {
+        let Some(before) = self.rail_before_ask.take() else {
+            return;
+        };
+        if Some(self.inspector_panel) == Self::operation_pane_index() {
+            self.inspector_panel = before.panel;
+        }
+        if before.collapsed {
+            self.collapsed.insert(arrangement::INSPECTOR_RAIL);
+        }
+    }
+
+    /// Hand the operation panel the state of arc's description of the
+    /// operation in hand, asking for it on the first frame that has one in
+    /// hand. A window with no runner has none to ask, and the panel says so.
+    fn sync_operation(&mut self, ctx: &egui::Context) {
+        use crate::operation::{DescriptionState, Descriptions};
+        use crate::operation_panel::Described;
+        let Some(hand) = self.charts.doc.operation_in_hand() else {
+            // Nothing is asked, however the asking ended, so a later Esc from
+            // a field opened some other way moves no rail.
+            self.rail_before_ask = None;
+            self.charts.doc.set_described(Described::Nothing);
+            return;
+        };
+        // A description the cache holds does not change for the session, so
+        // one already handed over is not copied again each frame.
+        if matches!(self.charts.doc.described(), Described::Ready(d) if d.long_name == hand.long_name)
+        {
+            return;
+        }
+        let described = match &self.runner {
+            None => Described::Missing("this window has no runner to ask arc".to_owned()),
+            Some(runner) => {
+                let descriptions = self.descriptions.get_or_insert_with(|| {
+                    let ctx = ctx.clone();
+                    Descriptions::with_wake(move || ctx.request_repaint())
+                });
+                match descriptions.get(runner, hand.long_name) {
+                    DescriptionState::Pending => Described::Reading,
+                    DescriptionState::Ready(d) => Described::Ready(d.clone()),
+                    DescriptionState::Failed(why) => Described::Missing(why.to_owned()),
+                }
+            }
+        };
+        self.charts.doc.set_described(described);
+    }
+
     /// Bring the Versions panel's listing up to date for a frame in which it is,
     /// or is not, the panel the ledger rail shows.
     fn sync_versions(&mut self, shown: bool) {
@@ -4018,6 +4216,11 @@ impl MeridianApp {
         // reloads the Protocol document, and a frame should draw the state the
         // run left rather than one frame of the state before it.
         self.poll_run(&ctx);
+        // A view the foot band left with nothing unrecorded since the last
+        // frame: the window takes on the Protocol the folder holds now.
+        if self.charts.doc.take_grid_view_settled() {
+            self.adopt_saved_protocol();
+        }
         // A close request that arrived with this frame, read ahead of the
         // draw: it is the operating system's, or the window's own close
         // coming back, and `Self::closing` tells them apart.
@@ -4038,7 +4241,7 @@ impl MeridianApp {
         // one sent. The top bar reads `title` each frame; the OS title is
         // pushed, and a tile's switch is thrown mid-frame, after the openers
         // that push one have run.
-        let marked = self.charts.doc.has_unsaved_edit();
+        let marked = self.charts.doc.has_unsaved_work();
         if marked != self.title_marked {
             self.title_marked = marked;
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
@@ -4126,6 +4329,9 @@ impl MeridianApp {
         // canvas does not draw.
         self.charts.doc.begin_controls_frame();
 
+        // The grid's foot row's Enter and Esc, ahead of every other handler:
+        // while one of its fields is edited, the two keys are the field's.
+        self.grid_foot_keys(&ctx);
         // The shelf's keys, ahead of every other bare key: while the band or
         // its list holds them, they are not the frame verbs' or an overlay
         // opener's.
@@ -4425,6 +4631,7 @@ impl MeridianApp {
             self.sync_versions(
                 !ledger_collapsed && ledger_panes[ledger_panel] == crate::versions::VERSIONS,
             );
+            self.sync_operation(ui.ctx());
 
             // Each strip's words are the panes' own `Subject` titles, read
             // before the closures below take their borrows of the documents.
@@ -4480,20 +4687,31 @@ impl MeridianApp {
             // that file loaded into, which is the name the spine's own row
             // carries. Read here, before the borrows below take the documents
             // apart, for the reason `canvas_name` is.
-            let grid_title = self.protocol.doc.model.table_label().map_or_else(
-                || "Grid".to_string(),
-                |table| format!("Grid \u{b7} {table}"),
-            );
+            //
+            // **A generated step's grid shows its preview**, read on a
+            // connection of its own from the data file, so it is named after
+            // the step rather than the table the session holds.
+            let preview = self.preview_request();
+            let grid_title = match &preview {
+                Some(request) => format!("Grid \u{b7} {}", request.step),
+                None => self.protocol.doc.model.table_label().map_or_else(
+                    || "Grid".to_string(),
+                    |table| format!("Grid \u{b7} {table}"),
+                ),
+            };
+            let previewed = preview.is_some();
+            self.charts.doc.show_preview(preview, ui.ctx());
             // **A grid of a node the engine does not hold**: the label of the
             // node whose grid the canvas holds, when that node is not the table
             // the session read. The one grid lists the session's rows, so drawn
             // here it would put the table's rows under another node's name;
             // what the canvas draws instead is an empty state naming the node.
+            // A generated step's grid is not one: its preview is drawn instead.
             let grid_unheld: Option<String> = match self.canvas_holds() {
                 CanvasHolds::View {
                     node,
                     view: NodeView::Grid,
-                } if self.protocol.doc.model.table() != Some(node) => Some(
+                } if !previewed && self.protocol.doc.model.table() != Some(node) => Some(
                     self.protocol
                         .doc
                         .model
@@ -4585,7 +4803,7 @@ impl MeridianApp {
                     .exact_size(rail_collapsed(ledger))
             } else {
                 Panel::bottom(panel_id(ledger, false).with(ledger_holds))
-                    .default_size(ledger_open_extent(ledger, ledger_holds, mode))
+                    .default_size(ledger_open_extent(ledger, ledger_holds, grid_layout, mode))
                     .min_size(rail_min(ledger))
                     .resizable(true)
             };
@@ -5109,7 +5327,7 @@ impl MeridianApp {
             self.strips = strips;
             self.canvas_panes = canvas_panes;
             self.canvas_scroll = canvas_scroll;
-            self.grid_layout = grid_layout;
+            self.take_grid_layout(grid_layout, Some(ui.ctx()));
             self.canvas_split = canvas_split;
             // …and into the arrangement the shell saves, in the same
             // sentence. A drag that moved the edge and stopped there would be
@@ -6022,6 +6240,11 @@ impl MeridianApp {
     /// the help sheet lists for the grid are the keys that move it. A key is
     /// consumed whether or not the cursor could move, so a move off the
     /// table's edge does not fall through to a frame verb.
+    ///
+    /// The two keys that ask the foot row (`filter-rows-at-cursor` and
+    /// `sort-rows-at-cursor`) ask it only while the grid draws its rows
+    /// layout, the one layout that draws the row; in the columns layout they
+    /// are consumed and ask nothing.
     fn grid_cursor_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
         if graph_on_canvas
             || self.overlay.is_some()
@@ -6030,13 +6253,67 @@ impl MeridianApp {
         {
             return;
         }
+        let band_drawn = self.grid_layout == crate::app::GridLayout::Rows;
         for (token, longname) in self.grid_bindings.clone() {
-            let Some(step) = crate::data_grid::CursorStep::of_verb(longname) else {
-                continue;
+            let asked = match longname {
+                "filter-rows-at-cursor" => {
+                    consume_token(ctx, token) && band_drawn && self.charts.doc.ask_where_at_cursor()
+                }
+                "sort-rows-at-cursor" => {
+                    consume_token(ctx, token) && band_drawn && self.charts.doc.ask_order_at_cursor()
+                }
+                _ => {
+                    let Some(step) = crate::data_grid::CursorStep::of_verb(longname) else {
+                        continue;
+                    };
+                    if consume_token(ctx, token) && self.charts.doc.move_grid_cursor(step) {
+                        ctx.request_repaint();
+                    }
+                    continue;
+                }
             };
-            if consume_token(ctx, token) && self.charts.doc.move_grid_cursor(step) {
+            if asked {
+                self.open_rail_on_operation();
+                // The field takes the keyboard on this frame's draw, so the
+                // text the same keystroke made is the key's, not the field's.
+                ctx.input_mut(|i| {
+                    i.events
+                        .retain(|e| !matches!(e, egui::Event::Text(t) if t == token));
+                });
                 ctx.request_repaint();
             }
+        }
+    }
+
+    /// **Enter and Esc for the field of the grid's foot row being edited**,
+    /// ahead of every other handler of either key: Enter asks the band to
+    /// apply the field's text as the grid's view and Esc puts the field back.
+    /// Both take the keyboard from the field. Esc has already taken it by the time this runs
+    /// (egui lets go of the focused widget on Esc as the frame begins), which
+    /// is why the keys are read here rather than in the field's own draw: a
+    /// later handler would read the Esc as the window's.
+    fn grid_foot_keys(&mut self, ctx: &egui::Context) {
+        use egui::{Key, Modifiers};
+        // Only a field that held the keyboard at the end of the last draw takes
+        // them: one opened and not yet drawn, or drawn nowhere, leaves both
+        // keys to the window.
+        if self.overlay.is_some() || !self.charts.doc.grid_foot().holds_keys() {
+            return;
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            if let Some(field) = self.charts.doc.foot_cancel() {
+                ctx.memory_mut(|m| m.surrender_focus(field.id()));
+            }
+            // The rail the key moved goes back as it stood: shut again if the
+            // key opened it, and on the pane it was on.
+            self.restore_rail_after_ask();
+            ctx.request_repaint();
+        } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
+            && self.charts.doc.foot_press_enter()
+        {
+            // Applied by the band's draw, after the field has taken the
+            // frame's own typing — see `ChartDoc::foot_press_enter`.
+            ctx.request_repaint();
         }
     }
 
@@ -6363,9 +6640,11 @@ impl MeridianApp {
         let changes = target
             .as_deref()
             .map_or_else(Vec::new, |file| self.charts.doc.unsaved_changes(file));
+        let mut edits = crate::versions::change_lines(&changes, &tile_of);
+        edits.extend(self.charts.doc.grid_view_line());
         CloseQuestion {
             file,
-            edits: crate::versions::change_lines(&changes, &tile_of),
+            edits,
             not_kept: None,
             focused: None,
         }
@@ -6484,7 +6763,7 @@ impl MeridianApp {
     /// edit it did not keep.
     fn save_for_close(&mut self, ctx: &egui::Context) -> bool {
         match self.save_protocol(ctx) {
-            Some(Ok(_)) => !self.charts.doc.has_unsaved_edit(),
+            Some(Ok(_)) => !self.charts.doc.has_unsaved_work(),
             Some(Err(_)) => false,
             None => {
                 self.notifications.raise(
@@ -6796,6 +7075,13 @@ impl MeridianApp {
         if !graph_on_canvas {
             if let Some(address) = grid_cursor_status_entry(&self.charts.doc) {
                 entries.insert(0, address);
+            }
+        }
+        // The field of the grid's foot row being edited leads it: what the
+        // comparison is, or why DuckDB refused the text.
+        if !graph_on_canvas {
+            if let Some(foot) = grid_foot_status_entry(&self.charts.doc) {
+                entries.insert(0, foot);
             }
         }
         // A saved version drawn in place of the chart leads it: the picture is
@@ -7558,6 +7844,16 @@ impl MeridianApp {
     /// Write this window's Protocol to disk: `arcform.yaml` and its one model,
     /// in the data file's own directory, and the chart beside them.
     ///
+    /// **Then each applied grid view is recorded through arc**
+    /// ([`Self::record_applied_views`]), as steps appended to that manifest,
+    /// which a later Save leaves as it is. A recording arc refused raises a
+    /// banner in arc's words, leaves the view applied and the mark on, and is
+    /// this Save's failure, so a close that saved first stays open; the
+    /// Protocol file was written all the same, so the chart is still written
+    /// and the path still remembered. Once
+    /// nothing is left unrecorded the window takes on the Protocol the folder
+    /// now holds.
+    ///
     /// **The chart is written after the Protocol and is its own success.** The
     /// edits made to it since the last Save go into `panels/<name>.yaml` under
     /// the same directory, through [`ChartDoc::save_chart_beside`], and the
@@ -7585,10 +7881,13 @@ impl MeridianApp {
     pub fn save_protocol(&mut self, ctx: &egui::Context) -> Option<Result<PathBuf, String>> {
         let banner = NotificationId::new("save-protocol");
         let source = self.protocol.doc.model.source()?.clone();
-        let written = source.save_to(&source.dir);
-        match &written {
-            Ok(path) => {
-                self.notifications.dismiss(banner);
+        let written = source
+            .save_to(&source.dir)
+            .map_err(Refused::Writing)
+            .and_then(|path| {
+                let recorded = self.record_applied_views();
+                // The Protocol was written whether or not a view was recorded:
+                // remember it, and write the chart, which is its own success.
                 let name = self.protocol.doc.model.protocol.clone();
                 let run = self.recorded_run_state();
                 // `path` is spelled against this process's working
@@ -7602,20 +7901,245 @@ impl MeridianApp {
                     self.grid_spot,
                     now_secs(),
                 );
+                self.save_chart_beside_protocol(&source);
+                recorded.map(|_| path).map_err(Refused::Recording)
+            });
+        let written = match written {
+            Ok(path) => {
+                self.notifications.dismiss(banner);
+                let name = self.protocol.doc.model.protocol.clone();
                 self.toasts
                     .push(Toast::new(Severity::Success, format!("Saved {name}")));
-                self.save_chart_beside_protocol(&source);
+                if self.charts.doc.take_grid_view_settled() {
+                    self.adopt_saved_protocol();
+                }
+                Ok(path)
             }
-            Err(e) => {
-                eprintln!("could not save the Protocol: {e}");
-                self.notifications.raise(
-                    Notification::new(banner, Severity::Error, "Could not save this Protocol")
-                        .body(e.clone()),
-                );
+            Err(refused) => {
+                let (title, why) = match refused {
+                    Refused::Writing(why) => ("Could not save this Protocol", why),
+                    Refused::Recording(why) => ("Could not record the grid view", why),
+                };
+                eprintln!("could not save the Protocol: {why}");
+                self.notifications
+                    .raise(Notification::new(banner, Severity::Error, title).body(why.clone()));
+                Err(why)
             }
-        }
+        };
         ctx.request_repaint();
         Some(written)
+    }
+
+    /// **Record each applied grid view through arc as a generated step**: the
+    /// condition as `filter-rows`, then the order as `sort-rows` on the
+    /// condition's table, each named by its effect
+    /// ([`crate::generated::step_name_for`]) with a name no step of the folder
+    /// holds. Answers the names recorded, in order.
+    ///
+    /// `--on` is the table the node in view makes, which for a data file is
+    /// the load's table, never the step's own name. A part already recorded is
+    /// not recorded again: after a Save that recorded the condition and not
+    /// the order, this records only the order, on the condition's step.
+    ///
+    /// Each part is marked recorded as arc takes it, so a refusal of the second
+    /// leaves the first recorded, as it is in the folder. A view recorded whole
+    /// leaves the grid's row ([`ChartDoc::mark_grid_order_recorded`]).
+    ///
+    /// Each recording runs `arc operation record` on the calling thread, so a
+    /// Save or Run waits on arc for each part it records, as it already waits
+    /// on the files it writes.
+    ///
+    /// # Errors
+    ///
+    /// arc's words for the first recording it refused, or why there was no
+    /// runner to ask. The parts after it are not tried.
+    pub fn record_applied_views(&mut self) -> Result<Vec<String>, String> {
+        use crate::generated::{generated_protocol_in, step_name_for, KnownOperation};
+        if !self.charts.doc.grid_view_unrecorded() {
+            return Ok(Vec::new());
+        }
+        let Some(source) = self.protocol.doc.model.source().cloned() else {
+            return Ok(Vec::new());
+        };
+        let runner = self
+            .runner
+            .clone()
+            .ok_or("this window was started without a runner to record the grid view with")?;
+        let manifest_path = crate::one_step::OneStepProtocol::manifest_path_in(&source.dir);
+        let manifest_text = std::fs::read_to_string(&manifest_path)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        let manifest = brightfield_protocol::parse_manifest_str(&manifest_text)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        let mut taken: std::collections::BTreeSet<String> =
+            manifest.steps.iter().map(|s| s.name.clone()).collect();
+        let root = generated_protocol_in(&manifest_text, &source.dir)
+            .ok()
+            .flatten()
+            .map_or_else(|| source.name.clone(), |g| g.root_table);
+        let in_view = self
+            .charts
+            .doc
+            .operation_table()
+            .map_or_else(|| root.clone(), str::to_owned);
+        let mut recorded = Vec::new();
+
+        if let Some(condition) = self
+            .charts
+            .doc
+            .grid_condition_unrecorded()
+            .map(str::to_owned)
+        {
+            let columns = self.view_columns(KnownOperation::FilterRows, &condition);
+            let name = step_name_for(KnownOperation::FilterRows, &root, &columns, &taken);
+            record_one(
+                &runner,
+                &source.dir,
+                KnownOperation::FilterRows,
+                &in_view,
+                &name,
+                &condition,
+            )?;
+            taken.insert(name.clone());
+            self.charts.doc.mark_grid_condition_recorded(name.clone());
+            recorded.push(name);
+        }
+        if let Some(order) = self.charts.doc.grid_view().order.clone() {
+            let on = self
+                .charts
+                .doc
+                .grid_condition_held()
+                .map_or_else(|| in_view.clone(), str::to_owned);
+            let columns = self.view_columns(KnownOperation::SortRows, &order);
+            let name = step_name_for(KnownOperation::SortRows, &root, &columns, &taken);
+            record_one(
+                &runner,
+                &source.dir,
+                KnownOperation::SortRows,
+                &on,
+                &name,
+                &order,
+            )?;
+            self.charts.doc.mark_grid_order_recorded();
+            recorded.push(name);
+        }
+        Ok(recorded)
+    }
+
+    /// The columns a view's condition or order names, as DuckDB parses it;
+    /// none when there is no session to ask or it will not parse, which
+    /// names the step by its effect alone.
+    fn view_columns(
+        &mut self,
+        operation: crate::generated::KnownOperation,
+        text: &str,
+    ) -> Vec<String> {
+        use crate::generated::KnownOperation;
+        let Some(coordinator) = self.charts.doc.live_coordinator() else {
+            return Vec::new();
+        };
+        let session = coordinator.session();
+        match operation {
+            KnownOperation::FilterRows => session.condition_columns(text),
+            KnownOperation::SortRows => session.order_columns(text),
+        }
+        .unwrap_or_default()
+    }
+
+    /// **The preview the grid should show this frame**: the canvas holds the
+    /// grid of a node that is the table a generated step makes, so the grid
+    /// previews that step through its chain from the data file. `None`
+    /// otherwise.
+    fn preview_request(&self) -> Option<crate::data_grid::PreviewRequest> {
+        use crate::generated::KnownOperation;
+        use brightfield_engine::PreviewOp;
+        let CanvasHolds::View {
+            node,
+            view: NodeView::Grid,
+        } = self.canvas_holds()
+        else {
+            return None;
+        };
+        let model = &self.protocol.doc.model;
+        let generated = model.generated()?;
+        // The graph spells a table as DuckDB resolves it, case folded, while
+        // the step keeps the case it was named with.
+        let label = model.label_of(node)?.to_lowercase();
+        let step = generated
+            .steps
+            .iter()
+            .find(|s| s.name.to_lowercase() == label)?;
+        let op = |s: &crate::generated::GeneratedStep| match s.operation {
+            KnownOperation::FilterRows => PreviewOp::Where(s.argument.clone()),
+            KnownOperation::SortRows => PreviewOp::OrderBy(s.argument.clone()),
+        };
+        // Back from the step to the load, through the table each step reads;
+        // each reads one an earlier step makes, so the walk ends within the
+        // number of steps.
+        let mut chain = vec![(step.name.clone(), op(step))];
+        let mut on = step.on.as_str();
+        while let Some(before) = generated
+            .steps
+            .iter()
+            .find(|s| s.name.to_lowercase() == on.to_lowercase())
+        {
+            if chain.len() > generated.steps.len() {
+                return None;
+            }
+            chain.push((before.name.clone(), op(before)));
+            on = before.on.as_str();
+        }
+        chain.reverse();
+        let fields = match step.operation {
+            KnownOperation::FilterRows => [step.argument.clone(), String::new()],
+            KnownOperation::SortRows => [String::new(), step.argument.clone()],
+        };
+        Some(crate::data_grid::PreviewRequest {
+            step: step.name.clone(),
+            data: generated.data.clone(),
+            root_table: generated.root_table.clone(),
+            chain,
+            fields,
+            ran: model.step_ran(&step.name),
+            run_key: self.run_binding.map(str::to_owned),
+        })
+    }
+
+    /// **Take on the Protocol the folder holds now**, after a Save or a Run
+    /// recorded the applied views and nothing is left unrecorded.
+    ///
+    /// The manifest is read back as written, so the Steps sheet lists the
+    /// steps arc appended. The document keeps the data file it came from as
+    /// its source, so Save and Run go on writing the load and running the
+    /// folder, and the charts stay on the load's table. The ledger rail takes
+    /// the default a Protocol of several steps opens with, and the newest step
+    /// arc generated is selected.
+    fn adopt_saved_protocol(&mut self) {
+        let Some(source) = self.protocol.doc.model.source().cloned() else {
+            return;
+        };
+        // Through the call opening the folder makes, so what the window shows
+        // after a Save is what reopening the folder would show.
+        match source.inputs_with_last_run() {
+            Ok(inputs) => {
+                let newest = inputs
+                    .generated
+                    .as_ref()
+                    .and_then(|g| g.steps.last())
+                    .map(|step| step.name.clone());
+                self.protocol.doc.open(inputs);
+                if let Some(newest) = newest {
+                    self.protocol.doc.model.select_step_table(&newest);
+                }
+                self.apply_rail_defaults();
+                self.say_folder_refused();
+                wire_columns(
+                    &mut self.charts.doc,
+                    &self.protocol.doc.model,
+                    &self.charts.inspector_table,
+                );
+            }
+            Err(e) => eprintln!("the saved Protocol could not be taken on: {e}"),
+        }
     }
 
     /// The chart half of [`Self::save_protocol`]: write the edits held since
@@ -7675,7 +8199,9 @@ impl MeridianApp {
     ///
     /// What it does before it returns is cheap and its failures are the
     /// reader's to see at once: the spec is written where Save writes it,
-    /// because `arc run` reads `arcform.yaml` off disk, and a run is started on
+    /// because `arc run` reads `arcform.yaml` off disk, the applied grid views
+    /// are recorded as Save records them (a refusal is a banner and no run),
+    /// and a run is started on
     /// a worker ([`crate::run::Run::begin`]). What it does not do is wait. The
     /// private `poll_run`, at the head of [`Self::draw`], lands the run on the
     /// frame after it finishes, by reloading the document through
@@ -7707,6 +8233,12 @@ impl MeridianApp {
         };
         if let Err(e) = source.save_to(&source.dir) {
             return refused(self, e);
+        }
+        if let Err(e) = self.record_applied_views() {
+            return refused(self, e);
+        }
+        if self.charts.doc.take_grid_view_settled() {
+            self.adopt_saved_protocol();
         }
         let Some(runner) = self.runner.as_ref() else {
             return refused(
@@ -7787,6 +8319,7 @@ impl MeridianApp {
         match source.inputs_with_last_run() {
             Ok(inputs) => {
                 self.protocol.doc.open(inputs);
+                self.say_folder_refused();
                 wire_columns(
                     &mut self.charts.doc,
                     &self.protocol.doc.model,
@@ -8534,11 +9067,20 @@ fn grid_cursor_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
     use brightfield_model::profile_model::thousands;
     let table = doc.grid_drawn()?;
     let cursor = table.cursor.as_ref()?;
-    let mut text = format!(
-        "row {} of {}",
-        thousands(cursor.at.row + 1),
-        thousands(table.rows)
-    );
+    // A preview claims no count, so its row is placed on the first page and
+    // not among the step's rows.
+    let mut text = if doc.grid_preview().is_some() {
+        format!(
+            "row {} of the first page \u{b7} preview",
+            thousands(cursor.at.row + 1)
+        )
+    } else {
+        format!(
+            "row {} of {}",
+            thousands(cursor.at.row + 1),
+            thousands(table.rows)
+        )
+    };
     for part in [&cursor.column, &cursor.value].into_iter().flatten() {
         text.push_str(" · ");
         text.push_str(part);
@@ -8551,6 +9093,30 @@ fn grid_cursor_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
         hide: HideAffordance::WithRail,
     })
 }
+
+/// The status band's line for the field of the grid's foot row being edited:
+/// the comparison a condition filled in from a cell makes, in words —
+/// `house_age over 28` — or DuckDB's words for a text it refused, which leaves
+/// the rows as they were.
+fn grid_foot_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
+    let text = doc.foot_said()?;
+    let refused = doc.grid_foot().refused();
+    Some(StatusEntry {
+        id: GRID_FOOT_STATUS_ID,
+        side: StatusSide::Leading,
+        text,
+        tone: if refused {
+            Tone::Warning
+        } else {
+            Tone::Neutral
+        },
+        hide: HideAffordance::WithRail,
+    })
+}
+
+/// The stable id `grid_foot_status_entry` writes — the handle a test reads the
+/// line by.
+pub const GRID_FOOT_STATUS_ID: &str = "grid-foot";
 
 /// The status band's line naming the last column kept from the shelf, in the
 /// shelf's words, with the key that takes it back —
@@ -8915,7 +9481,8 @@ enum LedgerHolds {
 /// tab strip, the pane's header band and inset, and the compact column band
 /// the grid draws in this spot — then
 /// [`arrangement::LEDGER_GRID_ROWS`] rows at [`crate::data_grid::row_height`],
-/// then the rail's foot. The foot is the band the status rail floats in or the
+/// then, in the rows `layout`, the row at the grid's foot
+/// ([`crate::grid_foot::FOOT_BAND_HEIGHT`]), then the rail's foot. The foot is the band the status rail floats in or the
 /// pane's own inset, whichever is taller, and not the two summed: the floating
 /// band lies over the inset, so summing them leaves a slice of a sixth row
 /// showing above the band. Each term is the function that draws it, so a
@@ -8927,7 +9494,12 @@ enum LedgerHolds {
 /// # Panics
 ///
 /// If the region is not a rail — as [`band_extent`].
-fn ledger_open_extent(ledger: &Region, holds: LedgerHolds, mode: Mode) -> f32 {
+fn ledger_open_extent(
+    ledger: &Region,
+    holds: LedgerHolds,
+    layout: crate::app::GridLayout,
+    mode: Mode,
+) -> f32 {
     let declared = rail_default(ledger);
     if holds == LedgerHolds::Record {
         return declared;
@@ -8940,7 +9512,14 @@ fn ledger_open_extent(ledger: &Region, holds: LedgerHolds, mode: Mode) -> f32 {
     let status =
         overlay_extent(arrangement::default_arrangement().expect_region(arrangement::STATUS_BAND));
     let foot = chrome::pane_content_inset().max(status);
-    (above + rows + foot).ceil().max(declared)
+    // The row at the grid's foot is drawn under the rows layout's table only;
+    // the columns layout draws none.
+    let band = if layout == crate::app::GridLayout::Rows {
+        crate::grid_foot::FOOT_BAND_HEIGHT
+    } else {
+        0.0
+    };
+    (above + rows + band + foot).ceil().max(declared)
 }
 
 /// What a rail refuses to narrow past.
@@ -10664,6 +11243,12 @@ fn draw_ledger_grid_pane(
     charts.doc.transposed_rows.clear();
     charts.doc.set_min_page_height(0.0);
     charts.doc.grid_density = Some(GridDensity::Compact);
+    // The ledger reaches the window's foot, where the status band floats over
+    // it, so the grid is drawn above the band: the row at the grid's foot
+    // would otherwise sit under it.
+    let status =
+        overlay_extent(arrangement::default_arrangement().expect_region(arrangement::STATUS_BAND));
+    let body = body.with_max_y(body.bottom().min(rect.bottom() - status).max(body.top()));
     draw_chart_body(
         ui,
         body,

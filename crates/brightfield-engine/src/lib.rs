@@ -12,6 +12,7 @@ pub mod error;
 pub mod facts;
 pub mod nearest;
 pub mod preagg;
+pub mod preview;
 pub mod profile;
 pub mod semantic;
 
@@ -24,6 +25,10 @@ pub use brightfield_sql::ir::Predicate as SqlPredicate;
 pub use duckdb::arrow::datatypes::SchemaRef;
 pub use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
+pub use preview::{
+    preview_first_page, preview_first_page_with_limit, preview_first_page_within, FileReader,
+    PreviewOp, PreviewRefusal, PREVIEW_DEADLINE, PREVIEW_FILE_LIMIT_BYTES,
+};
 pub use profile::{
     Bars, ColumnMoments, ColumnProfile, Distribution, ProfileOutcome, ScanTally, SourceProfile,
     StatementScans,
@@ -1176,6 +1181,22 @@ impl Session {
         )
     }
 
+    /// Whether `word` is one of the words DuckDB's parser knows, reserved or
+    /// not (`duckdb_keywords()`), compared without regard to case — the test a
+    /// column name must pass to be written bare in SQL.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB failed to list its keywords.
+    pub fn is_keyword(&self, word: &str) -> Result<bool, duckdb::Error> {
+        let found: i64 = self.conn.query_row(
+            "SELECT count(*) FROM duckdb_keywords() WHERE lower(keyword_name) = lower(?)",
+            duckdb::params![word],
+            |r| r.get(0),
+        )?;
+        Ok(found > 0)
+    }
+
     /// What the linked DuckDB calls its platform and its version, e.g.
     /// `("osx_arm64", "v1.5.2")`.
     ///
@@ -1718,7 +1739,47 @@ impl Session {
         audience: RowsAudience,
         condition: &str,
     ) -> Result<u64, EngineError> {
-        let rows_sql = self.step_rows_sql_where(index, audience, condition)?;
+        let view = RowsView {
+            condition: Some(condition.to_string()),
+            order: None,
+        };
+        self.step_rows_count_view(index, audience, &view)
+    }
+
+    /// [`Self::step_rows_count`] under `view`: the rows its condition keeps.
+    /// The order does not change a count, but it is still held to its rule and
+    /// bound against the step's columns, so a view refuses the same way
+    /// whichever read it is handed to: an order the window read would refuse —
+    /// a column the step does not have, or `ALL` — is DuckDB's error here
+    /// too (`an_order_naming_a_missing_column_is_refused_by_the_count` in
+    /// `crates/brightfield-engine/tests/rows_under_view.rs`).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::step_rows_count_where`], plus [`EngineError::OrderRefused`],
+    /// and DuckDB's own [`EngineError::QueryFailed`] for an order that does not
+    /// bind.
+    pub fn step_rows_count_view(
+        &self,
+        index: usize,
+        audience: RowsAudience,
+        view: &RowsView,
+    ) -> Result<u64, EngineError> {
+        if let Some(order) = &view.order {
+            gate_order(order)?;
+        }
+        let rows_sql = self.step_rows_sql_view(index, audience, view)?;
+        if view.order.is_some() {
+            // The read the grid pages with, at no rows: bound and planned
+            // exactly as a window is, so an order the window read refuses
+            // (`ALL`, which DuckDB takes alone but not before the tie-break
+            // positions) is refused here too, and the check and the read
+            // cannot disagree.
+            let probe = self.window_view_sql(index, 0, 0, audience, view)?;
+            self.query_arrow_raw(&probe).map_err(|e| {
+                self.classify_query_failure(index, &self.mark_kind_at(index), probe.clone(), e)
+            })?;
+        }
         self.count_rows(index, &rows_sql)
     }
 
@@ -1764,23 +1825,24 @@ impl Session {
         audience: RowsAudience,
         condition: &str,
     ) -> Result<String, EngineError> {
-        let refused = |refusal| EngineError::ConditionRefused {
-            condition: condition.to_string(),
-            refusal,
-        };
-        match condition_statement_count(condition) {
-            Ok(1) => {}
-            Ok(statements) => {
-                return Err(refused(error::ConditionRefusal::SecondStatement {
-                    statements,
-                }))
-            }
-            Err(message) => return Err(refused(error::ConditionRefusal::Unparseable { message })),
-        }
+        gate_condition(condition)?;
         let rows_sql = self.step_rows_sql(index, audience)?;
         Ok(format!(
             "SELECT * FROM ({rows_sql}) AS bf_step_rows_where WHERE (\n{condition}\n)"
         ))
+    }
+
+    /// The emitted rows SQL narrowed by `view`'s condition, if it has one.
+    fn step_rows_sql_view(
+        &self,
+        index: usize,
+        audience: RowsAudience,
+        view: &RowsView,
+    ) -> Result<String, EngineError> {
+        match &view.condition {
+            Some(condition) => self.step_rows_sql_where(index, audience, condition),
+            None => self.step_rows_sql(index, audience),
+        }
     }
 
     /// `count(*)` over `rows_sql`, for the mark at `index` — the body both
@@ -1871,12 +1933,228 @@ impl Session {
         audience: RowsAudience,
         condition: &str,
     ) -> Result<Vec<RecordBatch>, EngineError> {
-        let rows_sql = self.step_rows_sql_where(index, audience, condition)?;
-        self.window_rows(index, &rows_sql, offset, limit)
+        let view = RowsView {
+            condition: Some(condition.to_string()),
+            order: None,
+        };
+        self.execute_step_rows_window_view(index, offset, limit, audience, &view)
+    }
+
+    /// [`Self::execute_step_rows_window`] under `view`: its condition narrows
+    /// the rows and its order, when set, leads the sort, with the step's columns
+    /// after it so that ties between equal keys still fall in one fixed order
+    /// and adjacent pages neither repeat nor lose a row.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::step_rows_count_view`].
+    pub fn execute_step_rows_window_view(
+        &self,
+        index: usize,
+        offset: u64,
+        limit: u64,
+        audience: RowsAudience,
+        view: &RowsView,
+    ) -> Result<Vec<RecordBatch>, EngineError> {
+        let sql = self.window_view_sql(index, offset, limit, audience, view)?;
+        self.query_arrow_raw(&sql).map_err(|e| {
+            self.classify_query_failure(index, &self.mark_kind_at(index), sql.clone(), e)
+        })
+    }
+
+    /// The SQL of the window `view` reads: the page, ordered.
+    fn window_view_sql(
+        &self,
+        index: usize,
+        offset: u64,
+        limit: u64,
+        audience: RowsAudience,
+        view: &RowsView,
+    ) -> Result<String, EngineError> {
+        if let Some(order) = &view.order {
+            gate_order(order)?;
+        }
+        let rows_sql = self.step_rows_sql_view(index, audience, view)?;
+        let Some(order) = &view.order else {
+            return Ok(unordered_window_sql(&rows_sql, offset, limit));
+        };
+        // DuckDB rejects `ALL` after an order list, so the tie-break lists
+        // the step's columns by position instead, giving the same total order
+        // `ORDER BY ALL` does. The order sits on lines of its own so a
+        // trailing `--` comment ends before what follows it, and has no
+        // parentheses because a direction (`DESC`) is not an expression.
+        let described = format!("SELECT count(*) FROM (DESCRIBE SELECT * FROM ({rows_sql}))");
+        let width: i64 = self
+            .conn
+            .query_row(&described, [], |r| r.get(0))
+            .map_err(|e| {
+                self.classify_query_failure(index, &self.mark_kind_at(index), described.clone(), e)
+            })?;
+        Ok(ordered_window_sql(&rows_sql, order, width, offset, limit))
+    }
+
+    /// The distinct columns `condition` names, in order of first appearance,
+    /// as DuckDB's own parser reads them (`json_serialize_sql` over
+    /// `SELECT 1 FROM t WHERE <condition>`).
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::ConditionRefused`] as the reads refuse it.
+    ///
+    /// Columns referenced inside a subquery are reported too.
+    pub fn condition_columns(&self, condition: &str) -> Result<Vec<String>, EngineError> {
+        gate_condition(condition)?;
+        self.parsed_columns(&format!("SELECT 1 FROM t WHERE {condition}"))
+            .map_err(|message| EngineError::ConditionRefused {
+                condition: condition.to_string(),
+                refusal: error::ConditionRefusal::Unparseable { message },
+            })
+    }
+
+    /// [`Self::condition_columns`] for an order
+    /// (`SELECT 1 FROM t ORDER BY <order>`).
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::OrderRefused`] as the reads refuse it.
+    ///
+    /// Columns referenced inside a subquery are reported too.
+    pub fn order_columns(&self, order: &str) -> Result<Vec<String>, EngineError> {
+        gate_order(order)?;
+        self.parsed_columns(&format!("SELECT 1 FROM t ORDER BY {order}"))
+            .map_err(|message| EngineError::OrderRefused {
+                order: order.to_string(),
+                refusal: error::ConditionRefusal::Unparseable { message },
+            })
+    }
+
+    /// The column names `sql`'s parse tree references, distinct, in order of
+    /// first appearance. `sql` must already have passed the one-statement gate.
+    fn parsed_columns(&self, sql: &str) -> Result<Vec<String>, String> {
+        let tree = serialized_sql(&self.conn, sql)?;
+        let mut out = Vec::new();
+        collect_column_refs(&tree, &mut out);
+        Ok(out)
+    }
+
+    /// The value of `column` in row `row` (counting from 0) of the step under
+    /// `view`, as the text of a SQL literal that equals it.
+    ///
+    /// The row is the one a window under the same view shows at that position:
+    /// the read is `OFFSET row LIMIT 1` through the same ordered SQL.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::execute_step_rows_window_view`]; a `column` the step does
+    /// not have is DuckDB's own [`EngineError::QueryFailed`]. A `row` past the
+    /// end of the view is [`EngineError::NoSuchRow`], so it is not read as a
+    /// NULL cell, as `a_row_past_the_end_is_not_a_null_cell` in
+    /// `crates/brightfield-engine/tests/rows_under_view.rs` reads.
+    pub fn cell_literal(
+        &self,
+        index: usize,
+        audience: RowsAudience,
+        view: &RowsView,
+        row: u64,
+        column: &str,
+    ) -> Result<CellLiteral, EngineError> {
+        use duckdb::arrow::array::{
+            Array, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
+            Int8Array, StringArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+        };
+        use duckdb::arrow::datatypes::{DataType, TimeUnit};
+        let window = self.window_view_sql(index, row, 1, audience, view)?;
+        let quoted = column.replace('"', "\"\"");
+        let sql = format!(
+            "SELECT \"{quoted}\", CAST(\"{quoted}\" AS VARCHAR) AS bf_cell_text \
+             FROM ({window}) AS bf_cell"
+        );
+        let batches = self.query_arrow_raw(&sql).map_err(|e| {
+            self.classify_query_failure(index, &self.mark_kind_at(index), sql.clone(), e)
+        })?;
+        let Some(batch) = batches.iter().find(|b| b.num_rows() > 0) else {
+            return Err(EngineError::NoSuchRow { row });
+        };
+        let value = batch.column(0);
+        if value.is_null(0) {
+            return Ok(CellLiteral::Null);
+        }
+        let text = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .map(|a| a.value(0).to_string())
+            .unwrap_or_default();
+        let quote = |t: &str| format!("'{}'", t.replace('\'', "''"));
+        macro_rules! shown {
+            ($t:ty) => {
+                value
+                    .as_any()
+                    .downcast_ref::<$t>()
+                    .map(|a| a.value(0).to_string())
+            };
+        }
+        let literal = match value.data_type() {
+            DataType::Int8 => shown!(Int8Array),
+            DataType::Int16 => shown!(Int16Array),
+            DataType::Int32 => shown!(Int32Array),
+            DataType::Int64 => shown!(Int64Array),
+            DataType::UInt8 => shown!(UInt8Array),
+            DataType::UInt16 => shown!(UInt16Array),
+            DataType::UInt32 => shown!(UInt32Array),
+            DataType::UInt64 => shown!(UInt64Array),
+            DataType::Boolean => shown!(BooleanArray),
+            DataType::Float32 | DataType::Float64 => {
+                let f = match value.data_type() {
+                    DataType::Float32 => value
+                        .as_any()
+                        .downcast_ref::<Float32Array>()
+                        .map(|a| f64::from(a.value(0))),
+                    _ => value
+                        .as_any()
+                        .downcast_ref::<Float64Array>()
+                        .map(|a| a.value(0)),
+                };
+                f.map(|f| {
+                    if f.is_finite() && f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0 {
+                        // A whole number below 2^53 as its digits: DuckDB
+                        // reads them as an integer that compares equal to
+                        // the double exactly, and `house_age = 28` reads as
+                        // the analyst would write it where `2.8e1` would not.
+                        #[allow(clippy::cast_possible_truncation)]
+                        let whole = f as i64;
+                        whole.to_string()
+                    } else if f.is_finite() {
+                        // Exponent form: DuckDB reads a literal with an
+                        // exponent as a DOUBLE, where plain digits with a
+                        // point read as a DECIMAL that rounds a tiny or huge
+                        // value. The text is Rust's shortest one that parses
+                        // back to the same float; for an f32 widened to f64
+                        // that is the widened value the column holds.
+                        format!("{f:e}")
+                    } else {
+                        format!("{}::DOUBLE", quote(&text))
+                    }
+                })
+            }
+            DataType::Utf8 => Some(quote(&text)),
+            DataType::Date32 | DataType::Date64 => Some(format!("DATE {}", quote(&text))),
+            DataType::Timestamp(TimeUnit::Nanosecond, None) => {
+                Some(format!("{}::TIMESTAMP_NS", quote(&text)))
+            }
+            DataType::Timestamp(_, None) => Some(format!("TIMESTAMP {}", quote(&text))),
+            DataType::Timestamp(_, Some(_)) => Some(format!("TIMESTAMPTZ {}", quote(&text))),
+            _ => None,
+        };
+        // A type with no literal form of its own is compared by its text.
+        Ok(CellLiteral::Value(literal.unwrap_or_else(|| quote(&text))))
     }
 
     /// `ORDER BY ALL LIMIT limit OFFSET offset` over `rows_sql`, for the mark
-    /// at `index` — the body both window reads run.
+    /// at `index` — the read of a window with no order of its own. A window
+    /// under a [`RowsView`] with an order builds its SQL in
+    /// [`Self::window_view_sql`], which shares [`unordered_window_sql`] for the
+    /// case without one.
     fn window_rows(
         &self,
         index: usize,
@@ -1884,10 +2162,7 @@ impl Session {
         offset: u64,
         limit: u64,
     ) -> Result<Vec<RecordBatch>, EngineError> {
-        let sql = format!(
-            "SELECT * FROM ({rows_sql}) AS bf_step_rows \
-             ORDER BY ALL LIMIT {limit} OFFSET {offset}"
-        );
+        let sql = unordered_window_sql(rows_sql, offset, limit);
         self.query_arrow_raw(&sql).map_err(|e| {
             self.classify_query_failure(index, &self.mark_kind_at(index), sql.clone(), e)
         })
@@ -3827,15 +4102,29 @@ fn read_distributions(batches: &[RecordBatch], asks: &[DistributionAsk]) -> Vec<
 ///
 /// A condition holding a NUL byte cannot reach DuckDB's C API at all, and is
 /// reported as unparseable in this function's words rather than DuckDB's.
+pub fn condition_statement_count(condition: &str) -> Result<usize, String> {
+    probe_statement_count(&format!("SELECT 1 WHERE {condition}"), "condition")
+}
+
+/// [`condition_statement_count`]'s rule for an order: how many statements
+/// DuckDB's parser reads in `SELECT 1 ORDER BY <order>`.
+pub fn order_statement_count(order: &str) -> Result<usize, String> {
+    probe_statement_count(&format!("SELECT 1 ORDER BY {order}"), "order")
+}
+
+/// The statements DuckDB's parser reads in `probe`, which holds `what` — the
+/// body both counts above share, so the two refuse by one method.
 // The one `unsafe` in the workspace. The `duckdb` crate's own `prepare` calls
 // `duckdb_extract_statements` too, and then runs the statements before the last;
 // this probe must run none of them, so the C API is called directly. The SAFETY
 // comment on the block below gives the contract the call upholds.
 #[allow(unsafe_code)]
-fn condition_statement_count(condition: &str) -> Result<usize, String> {
+fn probe_statement_count(probe: &str, what: &str) -> Result<usize, String> {
     use duckdb::ffi;
-    let Ok(probe) = std::ffi::CString::new(format!("SELECT 1 WHERE {condition}")) else {
-        return Err("the condition holds a NUL byte, which DuckDB cannot be handed".to_string());
+    let Ok(probe) = std::ffi::CString::new(probe) else {
+        return Err(format!(
+            "the {what} holds a NUL byte, which DuckDB cannot be handed"
+        ));
     };
     // SAFETY: `db` and `con` stay null until DuckDB fills them and are checked
     // for success before use; `extracted` is destroyed once
@@ -3852,13 +4141,15 @@ fn condition_statement_count(condition: &str) -> Result<usize, String> {
         let mut db: ffi::duckdb_database = std::ptr::null_mut();
         if ffi::duckdb_open(std::ptr::null(), &mut db) != ffi::DuckDBSuccess {
             ffi::duckdb_close(&mut db);
-            return Err("DuckDB could not open a database to parse the condition in".to_string());
+            return Err(format!(
+                "DuckDB could not open a database to parse the {what} in"
+            ));
         }
         let mut con: ffi::duckdb_connection = std::ptr::null_mut();
         if ffi::duckdb_connect(db, &mut con) != ffi::DuckDBSuccess {
             ffi::duckdb_disconnect(&mut con);
             ffi::duckdb_close(&mut db);
-            return Err("DuckDB could not connect to parse the condition".to_string());
+            return Err(format!("DuckDB could not connect to parse the {what}"));
         }
         let mut extracted: ffi::duckdb_extracted_statements = std::ptr::null_mut();
         // `0` on a parse error, else the number of statements.
@@ -3866,7 +4157,7 @@ fn condition_statement_count(condition: &str) -> Result<usize, String> {
         let outcome = if count == 0 {
             let message = ffi::duckdb_extract_statements_error(extracted);
             Err(if message.is_null() {
-                "DuckDB could not parse the condition and gave no reason".to_string()
+                format!("DuckDB could not parse the {what} and gave no reason")
             } else {
                 std::ffi::CStr::from_ptr(message)
                     .to_string_lossy()
@@ -3880,6 +4171,239 @@ fn condition_statement_count(condition: &str) -> Result<usize, String> {
         ffi::duckdb_close(&mut db);
         outcome
     }
+}
+
+/// The window SQL over `rows_sql` ordered by `ORDER BY ALL`, the one text the
+/// reads with no order of their own run.
+fn unordered_window_sql(rows_sql: &str, offset: u64, limit: u64) -> String {
+    format!(
+        "SELECT * FROM ({rows_sql}) AS bf_step_rows \
+         ORDER BY ALL LIMIT {limit} OFFSET {offset}"
+    )
+}
+
+/// The window SQL over `rows_sql` ordered by `order`, then by each of its
+/// `width` columns by position, so ties between equal keys still fall in one
+/// fixed order. The order sits on lines of its own, so a trailing `--` comment
+/// in it ends before the tie-break and the `LIMIT` that follow.
+fn ordered_window_sql(rows_sql: &str, order: &str, width: i64, offset: u64, limit: u64) -> String {
+    let ties = (1..=width)
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "SELECT * FROM ({rows_sql}) AS bf_step_rows \
+         ORDER BY \n{order}\n, {ties} LIMIT {limit} OFFSET {offset}"
+    )
+}
+
+/// DuckDB's parse tree of `sql`, from `json_serialize_sql` on `conn`, or
+/// DuckDB's message when it cannot parse it. The function only parses: nothing
+/// in `sql` is bound or run.
+fn serialized_sql(conn: &duckdb::Connection, sql: &str) -> Result<serde_json::Value, String> {
+    let literal = sql.replace('\'', "''");
+    let json: String = conn
+        .query_row(
+            &format!("SELECT json_serialize_sql('{literal}')"),
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let tree: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    if tree.get("error").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Err(tree
+            .get("error_message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("DuckDB could not parse it")
+            .to_string());
+    }
+    Ok(tree)
+}
+
+/// What [`plain_select`] reads in a `SELECT * FROM <table> …` statement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlainSelect {
+    /// The one table the statement reads, as DuckDB names it.
+    pub table: String,
+    /// Whether the statement has a `WHERE` clause.
+    pub has_where: bool,
+    /// The type of each result modifier, in order (`ORDER_MODIFIER`,
+    /// `LIMIT_MODIFIER`, `DISTINCT_MODIFIER`, …).
+    pub modifiers: Vec<String>,
+}
+
+/// Read `sql` with DuckDB's parser as a plain `SELECT * FROM <table>`
+/// statement: one statement, a select node rather than a set operation such
+/// as `UNION`, no `WITH`, a select list of one bare `*`, a `FROM` of one base
+/// table with no alias, sample or time travel, and no `GROUP BY`, `HAVING`,
+/// `QUALIFY` or `USING SAMPLE`. It reports the parts left to vary: the table,
+/// whether there is a `WHERE`, and the result modifiers.
+///
+/// It parses on a fresh in-memory database, for the reason
+/// [`condition_statement_count`] gives.
+///
+/// # Errors
+///
+/// DuckDB's message when it cannot parse `sql`, or the first way the statement
+/// departs from that shape.
+pub fn plain_select(sql: &str) -> Result<PlainSelect, String> {
+    use serde_json::Value;
+    let conn = duckdb::Connection::open_in_memory().map_err(|e| e.to_string())?;
+    let tree = serialized_sql(&conn, sql)?;
+    let statements = tree
+        .get("statements")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    let [statement] = statements else {
+        return Err(format!(
+            "it reads as {} statements, not one",
+            statements.len()
+        ));
+    };
+    let node = &statement["node"];
+    let empty = |v: &Value| match v {
+        Value::Null => true,
+        Value::Array(items) => items.is_empty(),
+        Value::String(text) => text.is_empty(),
+        Value::Bool(b) => !b,
+        _ => false,
+    };
+    if node["type"] != "SELECT_NODE" {
+        return Err(format!("it is a {} rather than one SELECT", node["type"]));
+    }
+    if !empty(&node["cte_map"]["map"]) {
+        return Err("it opens with a WITH".to_string());
+    }
+    let star_is_bare = |star: &Value| {
+        star["class"] == "STAR"
+            && [
+                "relation_name",
+                "exclude_list",
+                "replace_list",
+                "columns",
+                "expr",
+                "qualified_exclude_list",
+                "rename_list",
+            ]
+            .iter()
+            .all(|key| empty(&star[*key]))
+    };
+    match node["select_list"].as_array().map(Vec::as_slice) {
+        Some([star]) if star_is_bare(star) => {}
+        _ => return Err("its select list is not one bare `*`".to_string()),
+    }
+    let from = &node["from_table"];
+    let plain_table = from["type"] == "BASE_TABLE"
+        && ["alias", "sample", "column_name_alias", "at_clause"]
+            .iter()
+            .all(|key| empty(&from[*key]));
+    let Some(table) = from["table_name"].as_str().filter(|_| plain_table) else {
+        return Err("it does not read one plain table".to_string());
+    };
+    for key in [
+        "group_expressions",
+        "group_sets",
+        "having",
+        "sample",
+        "qualify",
+    ] {
+        if !empty(&node[key]) {
+            return Err(format!("it has a {key}"));
+        }
+    }
+    if node["aggregate_handling"] != "STANDARD_HANDLING" {
+        return Err("it groups its rows".to_string());
+    }
+    Ok(PlainSelect {
+        table: table.to_string(),
+        has_where: !node["where_clause"].is_null(),
+        modifiers: node["modifiers"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .map(|m| m["type"].as_str().unwrap_or("").to_string())
+            .collect(),
+    })
+}
+
+/// The rule a condition is held to, as the error a read returns.
+fn gate_condition(condition: &str) -> Result<(), EngineError> {
+    let refused = |refusal| EngineError::ConditionRefused {
+        condition: condition.to_string(),
+        refusal,
+    };
+    match condition_statement_count(condition) {
+        Ok(1) => Ok(()),
+        Ok(statements) => Err(refused(error::ConditionRefusal::SecondStatement {
+            statements,
+        })),
+        Err(message) => Err(refused(error::ConditionRefusal::Unparseable { message })),
+    }
+}
+
+/// [`gate_condition`] for an order.
+fn gate_order(order: &str) -> Result<(), EngineError> {
+    let refused = |refusal| EngineError::OrderRefused {
+        order: order.to_string(),
+        refusal,
+    };
+    match order_statement_count(order) {
+        Ok(1) => Ok(()),
+        Ok(statements) => Err(refused(error::ConditionRefusal::SecondStatement {
+            statements,
+        })),
+        Err(message) => Err(refused(error::ConditionRefusal::Unparseable { message })),
+    }
+}
+
+/// Push the last `column_names` element of each `COLUMN_REF` node under
+/// `node` onto `out`, skipping a name already there.
+fn collect_column_refs(node: &serde_json::Value, out: &mut Vec<String>) {
+    match node {
+        serde_json::Value::Object(map) => {
+            if map.get("class").and_then(serde_json::Value::as_str) == Some("COLUMN_REF") {
+                if let Some(name) = map
+                    .get("column_names")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|names| names.last())
+                    .and_then(serde_json::Value::as_str)
+                {
+                    if !out.iter().any(|seen| seen == name) {
+                        out.push(name.to_string());
+                    }
+                }
+            }
+            for value in map.values() {
+                collect_column_refs(value, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_column_refs(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A view of a step's rows: a condition that narrows them and an order that
+/// sorts them, each SQL text used as written under the one-statement rule. A
+/// view is an argument to a read, not session state.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct RowsView {
+    /// A SQL condition the rows must meet.
+    pub condition: Option<String>,
+    /// A SQL `ORDER BY` list the rows are sorted by.
+    pub order: Option<String>,
+}
+
+/// One cell, as a literal a condition can compare a column to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CellLiteral {
+    /// The cell is NULL, which no `=` matches.
+    Null,
+    /// SQL literal text equal to the cell.
+    Value(String),
 }
 
 #[cfg(test)]

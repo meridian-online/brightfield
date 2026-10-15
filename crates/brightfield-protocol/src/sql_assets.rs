@@ -253,9 +253,20 @@ struct RelationCollector {
     ctes: BTreeSet<String>,
 }
 
-/// Canonical relation key: lowercased rendering of the (possibly dotted) name.
+/// Canonical relation key: the (possibly dotted) name's parts, lowercased and
+/// joined with `.`, each identifier read as its value rather than as written,
+/// so a quoted `"t"` and a bare `t` are one relation, as they are to DuckDB.
+/// arc writes a generated step's `CREATE` target quoted and the step reading
+/// it with a bare `FROM`; keyed as written, the two would be two tables.
 fn object_name_key(name: &ObjectName) -> String {
-    name.to_string().to_lowercase()
+    name.0
+        .iter()
+        .map(|part| match part.as_ident() {
+            Some(ident) => ident.value.to_lowercase(),
+            None => part.to_string().to_lowercase(),
+        })
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 /// File path argument names some DuckDB `read_*` functions accept in named
@@ -824,6 +835,35 @@ mod tests {
                 assert!(consumed_relations.contains("a"), "sibling still explodes");
             }
             other => panic!("third statement must parse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_quoted_target_and_a_bare_read_name_one_relation() {
+        let made = extract_statement_assets(
+            "CREATE OR REPLACE TABLE \"kept\" AS\nSELECT *\nFROM \"Main\".housing\nWHERE x > 1;",
+        );
+        let read =
+            extract_statement_assets("CREATE OR REPLACE TABLE \"sorted\" AS SELECT * FROM kept");
+        match (&made[0], &read[0]) {
+            (
+                StatementAssets::Parsed {
+                    produced,
+                    consumed_relations: made_reads,
+                    ..
+                },
+                StatementAssets::Parsed {
+                    consumed_relations, ..
+                },
+            ) => {
+                assert_eq!(produced.as_deref(), Some("kept"));
+                assert!(made_reads.contains("main.housing"), "{made_reads:?}");
+                assert!(
+                    consumed_relations.contains("kept"),
+                    "{consumed_relations:?}"
+                );
+            }
+            other => panic!("expected both to parse, got {other:?}"),
         }
     }
 
