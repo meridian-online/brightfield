@@ -1176,6 +1176,22 @@ impl Session {
         )
     }
 
+    /// Whether `word` is one of the words DuckDB's parser knows, reserved or
+    /// not (`duckdb_keywords()`), compared without regard to case — the test a
+    /// column name must pass to be written bare in SQL.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB failed to list its keywords.
+    pub fn is_keyword(&self, word: &str) -> Result<bool, duckdb::Error> {
+        let found: i64 = self.conn.query_row(
+            "SELECT count(*) FROM duckdb_keywords() WHERE lower(keyword_name) = lower(?)",
+            duckdb::params![word],
+            |r| r.get(0),
+        )?;
+        Ok(found > 0)
+    }
+
     /// What the linked DuckDB calls its platform and its version, e.g.
     /// `("osx_arm64", "v1.5.2")`.
     ///

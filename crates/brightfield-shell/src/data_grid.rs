@@ -119,6 +119,7 @@ use crate::column_header::{
     ColumnHeaderFrame, GridDensity,
 };
 use crate::design::Mode;
+use crate::grid_foot::{foot_band, FOOT_BAND_HEIGHT};
 use crate::pipeline::LiveDashboard;
 
 // ---------------------------------------------------------------------------
@@ -1839,12 +1840,29 @@ impl Item<ChartDoc> for DataGridItem {
         };
         // The cursor, read off the document before the session borrows it.
         // A key's move asks for one scroll to the cursor's cell, and this draw
-        // is where it is spent.
+        // is where it is spent. While a field of the row at the foot holds the
+        // keyboard the grid draws no cursor: the keys are the field's.
+        let asking = doc.foot_asking().is_some();
         let cursor = TableCursor {
-            at: doc.grid_cursor,
+            at: doc.grid_cursor.filter(|_| !asking),
             reveal: std::mem::take(&mut doc.grid_cursor_reveal),
         };
-        let view = doc.grid_view().clone();
+        // The view the rows are read through: the one applied, or while a
+        // field is edited, the last text of it that parsed.
+        let view = doc.grid_read_view().clone();
+        // **The row at the foot**, carved off the bottom of the pane as the
+        // shelf band is carved off the head of the hero's: the table is drawn
+        // in what is left.
+        let room = ui.available_rect_before_wrap();
+        let foot_rect = egui::Rect::from_min_max(
+            egui::pos2(
+                room.left(),
+                room.bottom() - FOOT_BAND_HEIGHT.min(room.height()),
+            ),
+            room.max,
+        );
+        let table_rect =
+            egui::Rect::from_min_max(room.min, egui::pos2(room.right(), foot_rect.top()));
         doc.activity.begin(Activity::EngineQuery);
         let mut drawn = None;
         let mut names = Vec::new();
@@ -1857,23 +1875,40 @@ impl Item<ChartDoc> for DataGridItem {
             // `grid_state_id`.
             let set = &self.set_widths;
             drawn = Some(
-                ui.scope_builder(egui::UiBuilder::new().id(grid_state_id()), |ui| {
-                    show_table_sized(
-                        ui,
-                        DATA.as_str(),
-                        mode,
-                        &mut source,
-                        ColumnWidths::Natural,
-                        header,
-                        set,
-                        Some(cursor),
-                    )
-                })
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .id(grid_state_id())
+                        .max_rect(table_rect),
+                    |ui| {
+                        show_table_sized(
+                            ui,
+                            DATA.as_str(),
+                            mode,
+                            &mut source,
+                            ColumnWidths::Natural,
+                            header,
+                            set,
+                            Some(cursor),
+                        )
+                    },
+                )
                 .inner,
             );
             names = source.columns().iter().map(|c| c.name.clone()).collect();
         }
         doc.activity.end(Activity::EngineQuery);
+        // The band reads the counts off the table this frame drew, and the
+        // columns a key on the cursor's cell names.
+        let counts = drawn.as_ref().map_or((0, 0), |d| (d.rows, d.columns));
+        let mut foot = std::mem::take(&mut doc.grid_foot);
+        if !names.is_empty() {
+            foot.columns.clone_from(&names);
+        }
+        let outcome = foot_band(ui, foot_rect, doc, &mut foot, counts, mode);
+        doc.grid_foot = foot;
+        if outcome.repaint {
+            cx.request_repaint();
+        }
         if let Some(drawn) = &drawn {
             // A frame whose rows have not arrived draws no columns, and that
             // is not a different table — only a different set of names is.

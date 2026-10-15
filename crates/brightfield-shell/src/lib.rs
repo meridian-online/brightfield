@@ -92,6 +92,7 @@ pub mod data_grid;
 pub mod devtools;
 pub mod editor;
 pub mod gallery;
+pub mod grid_foot;
 pub mod inspector;
 pub mod interval_drag;
 pub mod legend;

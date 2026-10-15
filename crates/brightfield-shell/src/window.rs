@@ -1780,6 +1780,9 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "j" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::J)),
         "k" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::K)),
         "l" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::L)),
+        // The grid's two keys that open a field of the row at its foot.
+        "w" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::W)),
+        "o" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::O)),
         "left" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowLeft)),
         "right" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowRight)),
         "up" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)),
@@ -4126,6 +4129,9 @@ impl MeridianApp {
         // canvas does not draw.
         self.charts.doc.begin_controls_frame();
 
+        // The grid's foot row's Enter and Esc, ahead of every other handler:
+        // while one of its fields is edited, the two keys are the field's.
+        self.grid_foot_keys(&ctx);
         // The shelf's keys, ahead of every other bare key: while the band or
         // its list holds them, they are not the frame verbs' or an overlay
         // opener's.
@@ -6031,12 +6037,57 @@ impl MeridianApp {
             return;
         }
         for (token, longname) in self.grid_bindings.clone() {
-            let Some(step) = crate::data_grid::CursorStep::of_verb(longname) else {
-                continue;
+            let asked = match longname {
+                "filter-rows-at-cursor" => {
+                    consume_token(ctx, token) && self.charts.doc.ask_where_at_cursor()
+                }
+                "sort-rows-at-cursor" => {
+                    consume_token(ctx, token) && self.charts.doc.ask_order_at_cursor()
+                }
+                _ => {
+                    let Some(step) = crate::data_grid::CursorStep::of_verb(longname) else {
+                        continue;
+                    };
+                    if consume_token(ctx, token) && self.charts.doc.move_grid_cursor(step) {
+                        ctx.request_repaint();
+                    }
+                    continue;
+                }
             };
-            if consume_token(ctx, token) && self.charts.doc.move_grid_cursor(step) {
+            if asked {
+                // The field takes the keyboard on this frame's draw, so the
+                // text the same keystroke made is the key's, not the field's.
+                ctx.input_mut(|i| {
+                    i.events
+                        .retain(|e| !matches!(e, egui::Event::Text(t) if t == token));
+                });
                 ctx.request_repaint();
             }
+        }
+    }
+
+    /// **Enter and Esc for the field of the grid's foot row being edited**,
+    /// ahead of every other handler of either key: Enter applies the field's
+    /// text as the grid's view and Esc puts the field back. Both take the
+    /// keyboard from the field. Esc has already taken it by the time this runs
+    /// (egui lets go of the focused widget on Esc as the frame begins), which
+    /// is why the keys are read here rather than in the field's own draw: a
+    /// later handler would read the Esc as the window's.
+    fn grid_foot_keys(&mut self, ctx: &egui::Context) {
+        use egui::{Key, Modifiers};
+        if self.overlay.is_some() || self.charts.doc.foot_asking().is_none() {
+            return;
+        }
+        let done = if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.charts.doc.foot_cancel()
+        } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
+            self.charts.doc.foot_enter()
+        } else {
+            None
+        };
+        if let Some(field) = done {
+            ctx.memory_mut(|m| m.surrender_focus(field.id()));
+            ctx.request_repaint();
         }
     }
 
@@ -6798,6 +6849,13 @@ impl MeridianApp {
         if !graph_on_canvas {
             if let Some(address) = grid_cursor_status_entry(&self.charts.doc) {
                 entries.insert(0, address);
+            }
+        }
+        // The field of the grid's foot row being edited leads it: what the
+        // comparison is, or why DuckDB refused the text.
+        if !graph_on_canvas {
+            if let Some(foot) = grid_foot_status_entry(&self.charts.doc) {
+                entries.insert(0, foot);
             }
         }
         // A saved version drawn in place of the chart leads it: the picture is
@@ -8554,6 +8612,30 @@ fn grid_cursor_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
     })
 }
 
+/// The status band's line for the field of the grid's foot row being edited:
+/// the comparison a condition filled in from a cell makes, in words —
+/// `house_age over 28` — or DuckDB's words for a text it refused, which leaves
+/// the rows as they were.
+fn grid_foot_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
+    let text = doc.foot_said()?;
+    let refused = doc.grid_foot().refused();
+    Some(StatusEntry {
+        id: GRID_FOOT_STATUS_ID,
+        side: StatusSide::Leading,
+        text,
+        tone: if refused {
+            Tone::Warning
+        } else {
+            Tone::Neutral
+        },
+        hide: HideAffordance::WithRail,
+    })
+}
+
+/// The stable id `grid_foot_status_entry` writes — the handle a test reads the
+/// line by.
+pub const GRID_FOOT_STATUS_ID: &str = "grid-foot";
+
 /// The status band's line naming the last column kept from the shelf, in the
 /// shelf's words, with the key that takes it back —
 /// `x axis: longitude → median_income · u undo`. Clicking it sends the verb the
@@ -8917,6 +8999,7 @@ enum LedgerHolds {
 /// tab strip, the pane's header band and inset, and the compact column band
 /// the grid draws in this spot — then
 /// [`arrangement::LEDGER_GRID_ROWS`] rows at [`crate::data_grid::row_height`],
+/// then the row at the grid's foot ([`crate::grid_foot::FOOT_BAND_HEIGHT`]),
 /// then the rail's foot. The foot is the band the status rail floats in or the
 /// pane's own inset, whichever is taller, and not the two summed: the floating
 /// band lies over the inset, so summing them leaves a slice of a sixth row
@@ -8942,7 +9025,9 @@ fn ledger_open_extent(ledger: &Region, holds: LedgerHolds, mode: Mode) -> f32 {
     let status =
         overlay_extent(arrangement::default_arrangement().expect_region(arrangement::STATUS_BAND));
     let foot = chrome::pane_content_inset().max(status);
-    (above + rows + foot).ceil().max(declared)
+    (above + rows + crate::grid_foot::FOOT_BAND_HEIGHT + foot)
+        .ceil()
+        .max(declared)
 }
 
 /// What a rail refuses to narrow past.
@@ -10666,6 +10751,12 @@ fn draw_ledger_grid_pane(
     charts.doc.transposed_rows.clear();
     charts.doc.set_min_page_height(0.0);
     charts.doc.grid_density = Some(GridDensity::Compact);
+    // The ledger reaches the window's foot, where the status band floats over
+    // it, so the grid is drawn above the band: the row at the grid's foot
+    // would otherwise sit under it.
+    let status =
+        overlay_extent(arrangement::default_arrangement().expect_region(arrangement::STATUS_BAND));
+    let body = body.with_max_y(body.bottom().min(rect.bottom() - status).max(body.top()));
     draw_chart_body(
         ui,
         body,

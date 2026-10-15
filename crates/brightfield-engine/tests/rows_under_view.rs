@@ -368,3 +368,17 @@ fn a_row_past_the_end_is_not_a_null_cell() {
         "{result:?}"
     );
 }
+
+/// **DuckDB's own words are keywords, reserved or not, whatever their case,
+/// and a column name that is none of them is not.** The shell writes a column
+/// bare only when it is not one.
+#[test]
+fn duckdbs_words_are_keywords_and_a_column_name_is_not() {
+    let session = session();
+    for word in ["order", "ORDER", "select", "where", "year"] {
+        assert!(session.is_keyword(word).unwrap(), "{word}");
+    }
+    for word in ["house_age", "median_income", "median income"] {
+        assert!(!session.is_keyword(word).unwrap(), "{word}");
+    }
+}

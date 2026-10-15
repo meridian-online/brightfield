@@ -903,6 +903,10 @@ pub struct ChartDoc {
     /// Whether [`Self::grid_view`] has been recorded to a file. Set by
     /// [`Self::apply_grid_view`] to `false`.
     grid_view_recorded: bool,
+    /// **The row at the grid's foot**: the field being edited, the preview
+    /// the grid reads while it is, and what the band drew. Cleared when the
+    /// document is replaced, with the view it edits.
+    pub(crate) grid_foot: crate::grid_foot::FootState,
     /// **Whether a pointer gesture is holding a page origin**, as of the last
     /// frame the chart pane drew.
     ///
@@ -1250,6 +1254,7 @@ impl ChartDoc {
             grid_cursor_reveal: false,
             grid_view: brightfield_engine::RowsView::default(),
             grid_view_recorded: true,
+            grid_foot: crate::grid_foot::FootState::default(),
             grid_layout_switch: None,
             grid_spot_switch: None,
             transposed_rows: Vec::new(),
@@ -1313,6 +1318,7 @@ impl ChartDoc {
             grid_cursor_reveal: false,
             grid_view: brightfield_engine::RowsView::default(),
             grid_view_recorded: true,
+            grid_foot: crate::grid_foot::FootState::default(),
             grid_layout_switch: None,
             grid_spot_switch: None,
             transposed_rows: Vec::new(),
@@ -1435,6 +1441,7 @@ impl ChartDoc {
         self.grid_cursor_reveal = false;
         self.grid_view = brightfield_engine::RowsView::default();
         self.grid_view_recorded = true;
+        self.grid_foot = crate::grid_foot::FootState::default();
         self.grid_layout_switch = None;
         self.grid_spot_switch = None;
         self.transposed_rows = Vec::new();
@@ -2984,6 +2991,7 @@ impl ChartDoc {
         self.controls.clear();
         self.grid_layout_switch = None;
         self.grid_spot_switch = None;
+        self.grid_foot.drawn = None;
     }
 
     /// Move the grid's cursor one cell along `step`, and say whether it moved.

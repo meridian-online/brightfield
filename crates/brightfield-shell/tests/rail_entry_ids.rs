@@ -248,6 +248,13 @@ const RAIL_IDS: &[(&str, Owner, Reach)] = &[
         Reach::Declared("needs a press on a cell of a live grid; `tests/grid_cursor.rs` reads it"),
     ),
     (
+        "grid-foot",
+        Owner::One("<window>"),
+        Reach::Declared(
+            "needs a field of the grid's foot row opened on a live grid; `tests/grid_foot.rs` reads it",
+        ),
+    ),
+    (
         "version-shown",
         Owner::One("<window>"),
         Reach::Declared(
