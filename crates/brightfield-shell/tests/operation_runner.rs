@@ -155,7 +155,12 @@ fn descriptions_are_pending_then_ready_and_a_failure_is_kept() {
         settled(&mut cache, &runner(), "sort-rows"),
         Ok("sort-rows".to_string())
     );
-    assert!(woken.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+    // The worker sends the answer before it wakes, so wait for the wake.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while woken.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        assert!(std::time::Instant::now() < until, "the wake never came");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 
     let missing = Runner::at("/nonexistent/brightfield-runner");
     let first = settled(&mut cache, &missing, "filter-rows").expect_err("no runner");
