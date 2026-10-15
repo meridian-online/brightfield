@@ -1576,7 +1576,7 @@ pub(crate) struct PreviewReads {
 static PREVIEW_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// How many preview workers are inside [`PREVIEW_GATE`] now, and the most
-/// there have ever been at once, across every document.
+/// there have been at once in this process, whichever documents started them.
 static PREVIEW_WORKERS_LIVE: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 static PREVIEW_WORKERS_MOST_LIVE: std::sync::atomic::AtomicUsize =
@@ -1924,15 +1924,16 @@ impl ChartDoc {
         self.preview_reads.hooks.held.clone()
     }
 
-    /// How many preview workers are reading now, across every document.
+    /// How many preview workers are reading now, whichever documents started
+    /// them.
     #[doc(hidden)]
     #[must_use]
     pub fn preview_workers_live(&self) -> usize {
         PREVIEW_WORKERS_LIVE.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// The most preview workers that have read at once, across every document
-    /// this process has opened.
+    /// The most preview workers that have read at once in this process,
+    /// whichever documents started them.
     #[doc(hidden)]
     #[must_use]
     pub fn preview_workers_most_live(&self) -> usize {
