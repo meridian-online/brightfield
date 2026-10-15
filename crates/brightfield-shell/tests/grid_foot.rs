@@ -685,8 +685,8 @@ fn a_chart_on_the_same_step_keeps_its_rows_under_the_grids_view() {
 }
 
 /// **`ALL` as an order is refused while it is typed**, because the grid's read
-/// puts its tie-break after the order and DuckDB takes `ALL` only alone; Enter
-/// applies nothing.
+/// puts its tie-break after the order and DuckDB refuses `ALL` followed by
+/// more; Enter applies nothing.
 #[test]
 fn all_as_an_order_is_refused_and_enter_applies_nothing() {
     let mut win = Window::housing();
