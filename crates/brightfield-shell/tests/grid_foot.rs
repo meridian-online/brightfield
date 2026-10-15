@@ -12,7 +12,8 @@
 //! record, the band's record, the text the frame drew — and the counts it
 //! compares against are the engine's own, asked through the same session.
 
-use brightfield_engine::RowsAudience;
+use brightfield_engine::coordinator::Interaction;
+use brightfield_engine::{RowsAudience, SqlPredicate};
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::data_grid::{GridCursor, TableDrawn};
 use brightfield_shell::design::Mode;
@@ -20,8 +21,14 @@ use brightfield_shell::grid_foot::{count_text, FootField, FOOT_BAND_HEIGHT};
 use brightfield_shell::pipeline::LiveDashboard;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp, GRID_FOOT_STATUS_ID};
+use brightfield_spec::analysis::ComponentPath;
+use brightfield_sql::ir::ScalarValue;
 
 fn data(name: &str) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(name);
+    if path.is_absolute() {
+        return path;
+    }
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/data")
         .join(name)
@@ -85,6 +92,21 @@ impl Window {
 
     fn housing() -> Self {
         Self::open("california_housing_sample.csv")
+    }
+
+    /// Commit `predicate` to the generated dashboard's selection, as a gesture
+    /// on the first plot would.
+    fn select(&mut self, predicate: SqlPredicate) {
+        let first = ComponentPath(self.doc().composed.plots[0].path.clone());
+        assert!(self
+            .app
+            .chart_doc_mut()
+            .apply_interaction(Interaction::Select {
+                name: brightfield_shell::dashboard::SELECTION.to_string(),
+                contributor: first,
+                predicate,
+            }));
+        self.settle();
     }
 
     fn run(&mut self, events: Vec<egui::Event>) {
@@ -882,4 +904,60 @@ fn the_count_says_when_a_selection_narrows_it() {
         win.doc().foot_drawn().expect("the band drew").count,
         count_text(240, win.drawn().columns, false)
     );
+
+    // A brush on the dashboard whose grid reads the layer the selection filters.
+    win.select(SqlPredicate::Interval {
+        column: "longitude".to_string(),
+        lo: ScalarValue::Float(-122.5),
+        hi: ScalarValue::Float(-121.0),
+        meta: None,
+    });
+    let drawn = win.drawn();
+    assert!(
+        drawn.rows > 0 && drawn.rows < 240,
+        "the brush did not narrow the grid: {}",
+        drawn.rows
+    );
+    assert_eq!(
+        win.doc().foot_drawn().expect("the band drew").count,
+        count_text(drawn.rows, drawn.columns, true)
+    );
+}
+
+/// **A selection the grid's rows are not filtered by leaves the count
+/// unqualified**: a dashboard of a date and a category draws tiles that
+/// highlight their selection rather than filter by it, so the grid keeps
+/// every row while the selection holds a clause.
+#[test]
+fn a_selection_that_only_highlights_leaves_the_count_as_it_is() {
+    let dir = std::env::temp_dir().join(format!("bf-grid-foot-highlight-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a temp folder");
+    let path = dir.join("visits.csv");
+    let mut csv = String::from("day,region\n");
+    for i in 0..30 {
+        let region = ["north", "south", "east"][i % 3];
+        csv.push_str(&format!("2026-01-{:02},{region}\n", i % 28 + 1));
+    }
+    std::fs::write(&path, csv).expect("the CSV writes");
+    let mut win = Window::open(path.to_str().expect("utf-8 path"));
+
+    win.select(SqlPredicate::Point {
+        column: "region".to_string(),
+        values: vec![ScalarValue::Text("north".to_string())],
+        meta: None,
+    });
+
+    assert!(win.doc().selection_active(), "the selection holds nothing");
+    assert!(!win
+        .doc()
+        .live_dashboard()
+        .expect("a live dashboard")
+        .rows_narrowed());
+    let drawn = win.drawn();
+    assert_eq!(drawn.rows, 30, "the grid was narrowed after all");
+    assert_eq!(
+        win.doc().foot_drawn().expect("the band drew").count,
+        count_text(30, drawn.columns, false)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

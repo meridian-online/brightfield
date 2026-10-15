@@ -1716,6 +1716,26 @@ impl LiveDashboard {
         presenting_rows_mark(&self.spec)
     }
 
+    /// **Whether the rows read at [`Self::rows_mark`] are narrowed by a
+    /// selection now**: that mark's `filterBy:` names a selection holding a
+    /// clause ([`Self::selection_clauses`]). A selection that only highlights,
+    /// or one the rows mark is not filtered by, leaves those rows as they are,
+    /// so it is not a narrowing however much it holds.
+    #[must_use]
+    pub fn rows_narrowed(&self) -> bool {
+        let marks = collect_marks(&self.spec);
+        let Some(MarkData::From {
+            filter_by: Some(by),
+            ..
+        }) = marks.get(self.rows_mark()).and_then(|m| m.data.as_ref())
+        else {
+            return false;
+        };
+        self.selection_clauses()
+            .iter()
+            .any(|(name, _)| *name == by.0)
+    }
+
     /// ordered by name — the store's own values, resolved through the very
     /// [`compile_selection`] every emitted query resolves them through, so a
     /// surface that shows one of these clauses is showing the string DuckDB

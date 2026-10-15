@@ -39,10 +39,11 @@
 //! from the load.
 //!
 //! **Save records the condition alone, not a chart's selection.** While a
-//! crossfilter selection is live the grid's rows are narrowed by it as well as
-//! by the condition, so the band's count says it is under the current selection
-//! ([`count_text`]); the step Save records keeps the rows the condition keeps,
-//! whatever was selected when it was saved.
+//! selection the grid's rows are filtered by holds a clause, they are narrowed
+//! by it as well as by the condition, so the band's count says it is under the
+//! current selection ([`count_text`]). A selection that only highlights does
+//! not narrow them, and the count says nothing of it. The step Save records
+//! keeps the rows the condition keeps, whatever was selected when it was saved.
 //!
 //! **The row works on the loaded table's grid.** On a generated step's grid the
 //! band shows the step's own argument read-only, and the key puts the reason on
@@ -660,7 +661,8 @@ fn select_value(ctx: &egui::Context, asking: &Asking) {
 }
 
 /// The count at the band's trailing end: `240 rows · 9 columns`, or, while a
-/// chart's selection narrows the grid, `12 rows under the current selection ·
+/// chart's selection narrows the grid's own rows
+/// ([`LiveDashboard::rows_narrowed`]), `12 rows under the current selection ·
 /// 9 columns`, so a count read off the band is not taken for the condition's
 /// alone: Save records the condition and not the selection.
 #[must_use]
@@ -719,7 +721,12 @@ pub fn foot_band(
     let count = if fixed.is_some() {
         crate::data_grid::PREVIEW_COUNT.to_owned()
     } else {
-        count_text(rows, columns, doc.selection_active())
+        count_text(
+            rows,
+            columns,
+            doc.live_dashboard()
+                .is_some_and(LiveDashboard::rows_narrowed),
+        )
     };
     let pad = spacing::SPACE_2;
     let count_galley = painter.layout_no_wrap(count.clone(), font.clone(), muted);
