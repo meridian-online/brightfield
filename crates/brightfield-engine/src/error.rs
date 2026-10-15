@@ -64,6 +64,19 @@ pub enum EngineError {
         refusal: ConditionRefusal,
     },
 
+    /// A step-rows read was handed an order that would put a second statement
+    /// on the session's connection, or that DuckDB cannot parse as one.
+    ///
+    /// The rule is [`Self::ConditionRefused`]'s, probed as
+    /// `SELECT 1 ORDER BY <order>`.
+    #[error("the order `{order}` was refused: {refusal}")]
+    OrderRefused {
+        /// The order, exactly as it was handed to the read.
+        order: String,
+        /// Which rule refused it.
+        refusal: ConditionRefusal,
+    },
+
     /// Upstream SQL emission failed.
     #[error("emit failed: {cause}")]
     EmitFailed {

@@ -1718,7 +1718,30 @@ impl Session {
         audience: RowsAudience,
         condition: &str,
     ) -> Result<u64, EngineError> {
-        let rows_sql = self.step_rows_sql_where(index, audience, condition)?;
+        let view = RowsView {
+            condition: Some(condition.to_string()),
+            order: None,
+        };
+        self.step_rows_count_view(index, audience, &view)
+    }
+
+    /// [`Self::step_rows_count`] under `view`: the rows its condition keeps.
+    /// The order does not change a count, but it is still held to its rule, so
+    /// a view refuses the same way whichever read it is handed to.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::step_rows_count_where`], plus [`EngineError::OrderRefused`].
+    pub fn step_rows_count_view(
+        &self,
+        index: usize,
+        audience: RowsAudience,
+        view: &RowsView,
+    ) -> Result<u64, EngineError> {
+        if let Some(order) = &view.order {
+            gate_order(order)?;
+        }
+        let rows_sql = self.step_rows_sql_view(index, audience, view)?;
         self.count_rows(index, &rows_sql)
     }
 
@@ -1764,23 +1787,24 @@ impl Session {
         audience: RowsAudience,
         condition: &str,
     ) -> Result<String, EngineError> {
-        let refused = |refusal| EngineError::ConditionRefused {
-            condition: condition.to_string(),
-            refusal,
-        };
-        match condition_statement_count(condition) {
-            Ok(1) => {}
-            Ok(statements) => {
-                return Err(refused(error::ConditionRefusal::SecondStatement {
-                    statements,
-                }))
-            }
-            Err(message) => return Err(refused(error::ConditionRefusal::Unparseable { message })),
-        }
+        gate_condition(condition)?;
         let rows_sql = self.step_rows_sql(index, audience)?;
         Ok(format!(
             "SELECT * FROM ({rows_sql}) AS bf_step_rows_where WHERE (\n{condition}\n)"
         ))
+    }
+
+    /// The emitted rows SQL narrowed by `view`'s condition, if it has one.
+    fn step_rows_sql_view(
+        &self,
+        index: usize,
+        audience: RowsAudience,
+        view: &RowsView,
+    ) -> Result<String, EngineError> {
+        match &view.condition {
+            Some(condition) => self.step_rows_sql_where(index, audience, condition),
+            None => self.step_rows_sql(index, audience),
+        }
     }
 
     /// `count(*)` over `rows_sql`, for the mark at `index` — the body both
@@ -1871,8 +1895,226 @@ impl Session {
         audience: RowsAudience,
         condition: &str,
     ) -> Result<Vec<RecordBatch>, EngineError> {
-        let rows_sql = self.step_rows_sql_where(index, audience, condition)?;
-        self.window_rows(index, &rows_sql, offset, limit)
+        let view = RowsView {
+            condition: Some(condition.to_string()),
+            order: None,
+        };
+        self.execute_step_rows_window_view(index, offset, limit, audience, &view)
+    }
+
+    /// [`Self::execute_step_rows_window`] under `view`: its condition narrows
+    /// the rows and its order, when set, leads the sort, with every column
+    /// after it so that ties between equal keys still fall in one fixed order
+    /// and adjacent pages neither repeat nor lose a row.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::step_rows_count_view`].
+    pub fn execute_step_rows_window_view(
+        &self,
+        index: usize,
+        offset: u64,
+        limit: u64,
+        audience: RowsAudience,
+        view: &RowsView,
+    ) -> Result<Vec<RecordBatch>, EngineError> {
+        let sql = self.window_view_sql(index, offset, limit, audience, view)?;
+        self.query_arrow_raw(&sql).map_err(|e| {
+            self.classify_query_failure(index, &self.mark_kind_at(index), sql.clone(), e)
+        })
+    }
+
+    /// The SQL of the window `view` reads: the page, ordered.
+    fn window_view_sql(
+        &self,
+        index: usize,
+        offset: u64,
+        limit: u64,
+        audience: RowsAudience,
+        view: &RowsView,
+    ) -> Result<String, EngineError> {
+        if let Some(order) = &view.order {
+            gate_order(order)?;
+        }
+        let rows_sql = self.step_rows_sql_view(index, audience, view)?;
+        let Some(order) = &view.order else {
+            return Ok(format!(
+                "SELECT * FROM ({rows_sql}) AS bf_step_rows \
+                 ORDER BY ALL LIMIT {limit} OFFSET {offset}"
+            ));
+        };
+        // DuckDB takes `ALL` only as the whole ORDER BY, not after a list, so
+        // the tie-break names every column by position instead: the same total
+        // order `ORDER BY ALL` gives. The order sits on lines of its own so a
+        // trailing `--` comment ends before what follows it, and has no
+        // parentheses because a direction (`DESC`) is not an expression.
+        let described = format!("SELECT count(*) FROM (DESCRIBE SELECT * FROM ({rows_sql}))");
+        let width: i64 = self
+            .conn
+            .query_row(&described, [], |r| r.get(0))
+            .map_err(|e| {
+                self.classify_query_failure(index, &self.mark_kind_at(index), described.clone(), e)
+            })?;
+        let ties = (1..=width)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(format!(
+            "SELECT * FROM ({rows_sql}) AS bf_step_rows \
+             ORDER BY \n{order}\n, {ties} LIMIT {limit} OFFSET {offset}"
+        ))
+    }
+
+    /// The distinct columns `condition` names, in order of first appearance,
+    /// as DuckDB's own parser reads them (`json_serialize_sql` over
+    /// `SELECT 1 FROM t WHERE <condition>`).
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::ConditionRefused`] as the reads refuse it.
+    pub fn condition_columns(&self, condition: &str) -> Result<Vec<String>, EngineError> {
+        gate_condition(condition)?;
+        self.parsed_columns(&format!("SELECT 1 FROM t WHERE {condition}"))
+            .map_err(|message| EngineError::ConditionRefused {
+                condition: condition.to_string(),
+                refusal: error::ConditionRefusal::Unparseable { message },
+            })
+    }
+
+    /// [`Self::condition_columns`] for an order
+    /// (`SELECT 1 FROM t ORDER BY <order>`).
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::OrderRefused`] as the reads refuse it.
+    pub fn order_columns(&self, order: &str) -> Result<Vec<String>, EngineError> {
+        gate_order(order)?;
+        self.parsed_columns(&format!("SELECT 1 FROM t ORDER BY {order}"))
+            .map_err(|message| EngineError::OrderRefused {
+                order: order.to_string(),
+                refusal: error::ConditionRefusal::Unparseable { message },
+            })
+    }
+
+    /// The column names `sql`'s parse tree references, distinct, in order of
+    /// first appearance. `sql` must already have passed the one-statement gate.
+    fn parsed_columns(&self, sql: &str) -> Result<Vec<String>, String> {
+        let literal = sql.replace('\'', "''");
+        let json: String = self
+            .conn
+            .query_row(
+                &format!("SELECT json_serialize_sql('{literal}')"),
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let tree: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+        if tree.get("error").and_then(serde_json::Value::as_bool) == Some(true) {
+            return Err(tree
+                .get("error_message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("DuckDB could not parse it")
+                .to_string());
+        }
+        let mut out = Vec::new();
+        collect_column_refs(&tree, &mut out);
+        Ok(out)
+    }
+
+    /// The value of `column` in row `row` (counting from 0) of the step under
+    /// `view`, as the text of a SQL literal that equals it.
+    ///
+    /// The row is the one a window under the same view shows at that position:
+    /// the read is `OFFSET row LIMIT 1` through the same ordered SQL.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::execute_step_rows_window_view`]; a `column` the step does
+    /// not have is DuckDB's own [`EngineError::QueryFailed`].
+    pub fn cell_literal(
+        &self,
+        index: usize,
+        audience: RowsAudience,
+        view: &RowsView,
+        row: u64,
+        column: &str,
+    ) -> Result<CellLiteral, EngineError> {
+        use duckdb::arrow::array::{
+            Array, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
+            Int8Array, StringArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+        };
+        use duckdb::arrow::datatypes::DataType;
+        let window = self.window_view_sql(index, row, 1, audience, view)?;
+        let quoted = column.replace('"', "\"\"");
+        let sql = format!(
+            "SELECT \"{quoted}\", CAST(\"{quoted}\" AS VARCHAR) AS bf_cell_text \
+             FROM ({window}) AS bf_cell"
+        );
+        let batches = self.query_arrow_raw(&sql).map_err(|e| {
+            self.classify_query_failure(index, &self.mark_kind_at(index), sql.clone(), e)
+        })?;
+        let Some(batch) = batches.iter().find(|b| b.num_rows() > 0) else {
+            return Ok(CellLiteral::Null);
+        };
+        let value = batch.column(0);
+        if value.is_null(0) {
+            return Ok(CellLiteral::Null);
+        }
+        let text = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .map(|a| a.value(0).to_string())
+            .unwrap_or_default();
+        let quote = |t: &str| format!("'{}'", t.replace('\'', "''"));
+        macro_rules! shown {
+            ($t:ty) => {
+                value
+                    .as_any()
+                    .downcast_ref::<$t>()
+                    .map(|a| a.value(0).to_string())
+            };
+        }
+        let literal = match value.data_type() {
+            DataType::Int8 => shown!(Int8Array),
+            DataType::Int16 => shown!(Int16Array),
+            DataType::Int32 => shown!(Int32Array),
+            DataType::Int64 => shown!(Int64Array),
+            DataType::UInt8 => shown!(UInt8Array),
+            DataType::UInt16 => shown!(UInt16Array),
+            DataType::UInt32 => shown!(UInt32Array),
+            DataType::UInt64 => shown!(UInt64Array),
+            DataType::Boolean => shown!(BooleanArray),
+            DataType::Float32 | DataType::Float64 => {
+                let f = match value.data_type() {
+                    DataType::Float32 => value
+                        .as_any()
+                        .downcast_ref::<Float32Array>()
+                        .map(|a| f64::from(a.value(0))),
+                    _ => value
+                        .as_any()
+                        .downcast_ref::<Float64Array>()
+                        .map(|a| a.value(0)),
+                };
+                f.map(|f| {
+                    if f.is_finite() {
+                        // Rust's shortest representation that parses back to
+                        // the same float; for an f32 widened to f64 that is
+                        // the widened value, which is the one the column holds.
+                        f.to_string()
+                    } else {
+                        format!("{}::DOUBLE", quote(&text))
+                    }
+                })
+            }
+            DataType::Utf8 => Some(quote(&text)),
+            DataType::Date32 | DataType::Date64 => Some(format!("DATE {}", quote(&text))),
+            DataType::Timestamp(_, None) => Some(format!("TIMESTAMP {}", quote(&text))),
+            DataType::Timestamp(_, Some(_)) => Some(format!("TIMESTAMPTZ {}", quote(&text))),
+            _ => None,
+        };
+        // A type with no literal form of its own is compared by its text.
+        Ok(CellLiteral::Value(literal.unwrap_or_else(|| quote(&text))))
     }
 
     /// `ORDER BY ALL LIMIT limit OFFSET offset` over `rows_sql`, for the mark
@@ -3833,9 +4075,24 @@ fn read_distributions(batches: &[RecordBatch], asks: &[DistributionAsk]) -> Vec<
 // comment on the block below gives the contract the call upholds.
 #[allow(unsafe_code)]
 fn condition_statement_count(condition: &str) -> Result<usize, String> {
+    probe_statement_count(&format!("SELECT 1 WHERE {condition}"), "condition")
+}
+
+/// [`condition_statement_count`]'s rule for an order: how many statements
+/// DuckDB's parser reads in `SELECT 1 ORDER BY <order>`.
+fn order_statement_count(order: &str) -> Result<usize, String> {
+    probe_statement_count(&format!("SELECT 1 ORDER BY {order}"), "order")
+}
+
+/// The statements DuckDB's parser reads in `probe`, which holds `what` — the
+/// body both counts above share, so the two refuse by one method.
+#[allow(unsafe_code)]
+fn probe_statement_count(probe: &str, what: &str) -> Result<usize, String> {
     use duckdb::ffi;
-    let Ok(probe) = std::ffi::CString::new(format!("SELECT 1 WHERE {condition}")) else {
-        return Err("the condition holds a NUL byte, which DuckDB cannot be handed".to_string());
+    let Ok(probe) = std::ffi::CString::new(probe) else {
+        return Err(format!(
+            "the {what} holds a NUL byte, which DuckDB cannot be handed"
+        ));
     };
     // SAFETY: `db` and `con` stay null until DuckDB fills them and are checked
     // for success before use; `extracted` is destroyed once
@@ -3852,13 +4109,15 @@ fn condition_statement_count(condition: &str) -> Result<usize, String> {
         let mut db: ffi::duckdb_database = std::ptr::null_mut();
         if ffi::duckdb_open(std::ptr::null(), &mut db) != ffi::DuckDBSuccess {
             ffi::duckdb_close(&mut db);
-            return Err("DuckDB could not open a database to parse the condition in".to_string());
+            return Err(format!(
+                "DuckDB could not open a database to parse the {what} in"
+            ));
         }
         let mut con: ffi::duckdb_connection = std::ptr::null_mut();
         if ffi::duckdb_connect(db, &mut con) != ffi::DuckDBSuccess {
             ffi::duckdb_disconnect(&mut con);
             ffi::duckdb_close(&mut db);
-            return Err("DuckDB could not connect to parse the condition".to_string());
+            return Err(format!("DuckDB could not connect to parse the {what}"));
         }
         let mut extracted: ffi::duckdb_extracted_statements = std::ptr::null_mut();
         // `0` on a parse error, else the number of statements.
@@ -3866,7 +4125,7 @@ fn condition_statement_count(condition: &str) -> Result<usize, String> {
         let outcome = if count == 0 {
             let message = ffi::duckdb_extract_statements_error(extracted);
             Err(if message.is_null() {
-                "DuckDB could not parse the condition and gave no reason".to_string()
+                format!("DuckDB could not parse the {what} and gave no reason")
             } else {
                 std::ffi::CStr::from_ptr(message)
                     .to_string_lossy()
@@ -3880,6 +4139,86 @@ fn condition_statement_count(condition: &str) -> Result<usize, String> {
         ffi::duckdb_close(&mut db);
         outcome
     }
+}
+
+/// The rule a condition is held to, as the error a read returns.
+fn gate_condition(condition: &str) -> Result<(), EngineError> {
+    let refused = |refusal| EngineError::ConditionRefused {
+        condition: condition.to_string(),
+        refusal,
+    };
+    match condition_statement_count(condition) {
+        Ok(1) => Ok(()),
+        Ok(statements) => Err(refused(error::ConditionRefusal::SecondStatement {
+            statements,
+        })),
+        Err(message) => Err(refused(error::ConditionRefusal::Unparseable { message })),
+    }
+}
+
+/// [`gate_condition`] for an order.
+fn gate_order(order: &str) -> Result<(), EngineError> {
+    let refused = |refusal| EngineError::OrderRefused {
+        order: order.to_string(),
+        refusal,
+    };
+    match order_statement_count(order) {
+        Ok(1) => Ok(()),
+        Ok(statements) => Err(refused(error::ConditionRefusal::SecondStatement {
+            statements,
+        })),
+        Err(message) => Err(refused(error::ConditionRefusal::Unparseable { message })),
+    }
+}
+
+/// Push the last `column_names` element of every `COLUMN_REF` node under
+/// `node` onto `out`, skipping a name already there.
+fn collect_column_refs(node: &serde_json::Value, out: &mut Vec<String>) {
+    match node {
+        serde_json::Value::Object(map) => {
+            if map.get("class").and_then(serde_json::Value::as_str) == Some("COLUMN_REF") {
+                if let Some(name) = map
+                    .get("column_names")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|names| names.last())
+                    .and_then(serde_json::Value::as_str)
+                {
+                    if !out.iter().any(|seen| seen == name) {
+                        out.push(name.to_string());
+                    }
+                }
+            }
+            for value in map.values() {
+                collect_column_refs(value, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_column_refs(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A view of a step's rows: a condition that narrows them and an order that
+/// sorts them, each SQL text used as written under the one-statement rule. A
+/// view is an argument to a read, not session state.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct RowsView {
+    /// A SQL condition the rows must meet.
+    pub condition: Option<String>,
+    /// A SQL `ORDER BY` list the rows are sorted by.
+    pub order: Option<String>,
+}
+
+/// One cell, as a literal a condition can compare a column to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CellLiteral {
+    /// The cell is NULL, which no `=` matches.
+    Null,
+    /// SQL literal text equal to the cell.
+    Value(String),
 }
 
 #[cfg(test)]
