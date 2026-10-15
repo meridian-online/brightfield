@@ -93,7 +93,7 @@
   - `clearing_the_view_restores_the_whole_table`.
   - `an_applied_view_raises_the_unsaved_mark`: this is a window test in `tests/chart_save_unsaved_mark.rs`. Apply a view and assert `carries_unsaved_mark()`.
 - [ ] **Step 2: Run the tests to see them fail.** Run `cargo +1.95.0 test -p brightfield-shell --test data_grid --test chart_save_unsaved_mark`.
-- [ ] **Step 3: Implement.** Add the field, the cache key, and the view threaded through `EngineRows::new` and `fetch_page`. Extend `carries_unsaved_mark` to `(has_unsaved_edit() || grid_view_unrecorded()) && !front_door_is_live()`. The close question reads the same predicate, so it needs no change; confirm with `tests/close_question_keeps_unsaved.rs`.
+- [ ] **Step 3: Implement.** Add the field, the cache key, and the view threaded through `EngineRows::new` and `fetch_page`. Extend `carries_unsaved_mark` to `(has_unsaved_edit() || grid_view_unrecorded()) && !front_door_is_live()`. Every other reader of `has_unsaved_edit()` that stands for "unsaved work" reads the widened predicate too: the OS window title push and `save_for_close`'s success test. The close question's body names an unrecorded view alongside the shelf's edits. Confirm with `tests/close_question_keeps_unsaved.rs`.
 - [ ] **Step 4: Run the tests to see them pass.** Same command, plus `--test grid_cursor --test close_question_keeps_unsaved`.
 - [ ] **Step 5: Commit** with the message "Hold a grid view on the document and read the grid through it".
 
@@ -133,6 +133,7 @@
 - [ ] **Step 2: Run the tests to see them fail.** Run `cargo +1.95.0 test -p brightfield-shell --test grid_foot` and `cargo +1.95.0 test -p brightfield-keys`.
 - [ ] **Step 3: Implement.**
   - The field is brightfield's own `TextEdit`, with no prompt glyph, starting with its word.
+  - The prefilled column is quoted with `sql_ident::quote` when it needs quoting (a reserved word, a space), so the offered condition always parses. Test it with a column named `order` or `median income` in a CSV fixture.
   - While the field has focus, `grid_cursor_keys` must not consume keys. It is already gated on `egui_wants_keyboard_input`; confirm this in a test.
   - Use `foot_offer` so the key is not the only way in.
 - [ ] **Step 4: Run the tests to see them pass.** Run the same commands plus `--test grid_cursor --test rail_entry_ids --test status_rail`. Redraw any moved baseline: `data_grid` and `dashboard_baseline` will move, because the band takes 26 from the table.
@@ -245,6 +246,7 @@
   - `a_one_step_folder_is_not_this_shape`, which gives `Ok(None)`.
   - `names_carry_the_one_column_the_condition_names`, which gives `california_housing_filtered_by_house_age`.
   - `names_fall_back_without_a_single_column`: zero and two columns both give `california_housing_filtered`.
+  - `a_column_arc_would_refuse_in_a_name_is_slugged`: the column is turned into a slug before it goes in the name (characters outside `[A-Za-z0-9_]` become `_`, runs of `_` collapse, leading and trailing `_` are trimmed), so `#rooms` gives `california_housing_filtered_by_rooms` and ` price ` gives `…_by_price`. A column with nothing left after slugging falls back to `<root table>_<word>`. The root table is slugged the same way.
   - `a_taken_name_gets_a_suffix`: with `{x, x_2}` taken, the result is `x_3`.
   - `a_sort_names_its_first_column`, which gives `california_housing_sorted_by_median_income`.
 - [ ] **Step 2: Run them to see them fail.** Run `cargo +1.95.0 test -p brightfield-shell --lib generated` and `--test generated_steps`.
@@ -277,7 +279,8 @@
 - [ ] **Step 2: Run them to see them fail.** Run `cargo +1.95.0 test -p brightfield-shell --test save_records_operation`.
 - [ ] **Step 3: Implement.**
   - `save_protocol` and `run_protocol` call `save_to`, then `record_applied_views`, filter first. Each gets `--on` from the table the node in front makes, and its name from `step_name_for` with the manifest's current step names as `taken`.
-  - Stop at the first refusal.
+  - Stop at the first refusal. A partial Save (filter recorded, sort refused) keeps the grid as the analyst saw it: the condition stays shown but reads as recorded (no dot), the order stays applied and unrecorded, and the document remembers the table the order must go `--on` (the filter's new table). The next Save records only the unrecorded part, on that table. The window adopts the Protocol only once nothing is left unrecorded. Refine Task 2's `mark_grid_view_recorded` into per-part recording for this. Test it: `a_partial_save_keeps_the_grid_and_records_the_rest_on_the_filters_table`.
+  - `save_protocol` reports failure when a recording is refused, so `save_for_close` does not close the window over an unrecorded view. Test it: `closing_after_a_refused_recording_keeps_the_window`.
   - On success, adopt the result through Task 9's open path. Until Task 9 lands, adopt through `load_protocol_offline` and mark the test `#[ignore]` with the reason. Task 9 removes the `#[ignore]`.
 - [ ] **Step 4: Run them to see them pass.** Same command, plus `--test one_step_protocol --test run_control --test chart_save_unsaved_mark`, and `cargo +1.95.0 test -p brightfield-protocol`.
 - [ ] **Step 5: Commit** with the message "Record applied views through arc on Save".
@@ -303,6 +306,7 @@
   - `a_chain_previews_through_its_chain`.
   - `a_condition_that_reads_another_file_fails`: `house_age > (SELECT count(*) FROM read_csv('/etc/hosts'))` gives `Engine(msg)`, and `msg` mentions external access.
   - `a_file_over_the_limit_is_not_read`: call a test-only `preview_first_page_with_limit` with a 1-byte limit. It gives `TooLarge`.
+  - `a_path_holding_a_quote_still_previews`: the data file sits in a folder whose name holds `'`.
 - [ ] **Step 2: Write the failing window tests** in `generated_reopen.rs`. Build each folder by Save through the window or by Task 5's `record`.
   - `a_load_plus_generated_folder_opens_as_a_protocol_without_the_offline_variable`: two steps, the ledger open, and the generated step `not run`.
   - `opening_starts_no_run`: no new file appears under `build/.arcform/runs`.
@@ -314,8 +318,8 @@
 - [ ] **Step 3: Run them to see them fail.** Run `cargo +1.95.0 test -p brightfield-engine --test preview_read` and `cargo +1.95.0 test -p brightfield-shell --test generated_reopen`.
 - [ ] **Step 4: Implement.**
   - The preview opens `Connection::open_in_memory()` and checks the size limit before reading.
-  - It runs `CREATE TABLE <root> AS SELECT * FROM <reader>('<path>')`, then `SET enable_external_access = false`, then `SET lock_configuration = true`.
-  - It then creates each chain step as a table and reads the last one's first page, with `ORDER BY <order_by>, ALL` for a sort and `ORDER BY ALL` otherwise.
+  - It sets `memory_limit` (the builder's call: 2 GB) and disables spilling to disk, then runs `CREATE TABLE <root> AS SELECT * FROM <reader>('<path>')` with `'` in the path doubled, then `SET enable_external_access = false`, then `SET lock_configuration = true`. An out-of-memory failure is `TooLarge`, which offers Run, not an engine error.
+  - It then creates each chain step as a table and reads the last one's first page. A sort orders by `ORDER BY <order_by>, 1, 2, …, n` (the step's columns by position, as Task 1's ordered window does, because DuckDB refuses `, ALL` after another key); otherwise `ORDER BY ALL`.
 - [ ] **Step 5: Run them to see them pass.** Same commands, plus `--test save_records_operation` with Task 8's `#[ignore]` removed, and `--test one_step_protocol --test reload_data_file --test protocol_contract`.
 - [ ] **Step 6: Commit** with the message "Reopen a folder of generated steps with a labelled preview".
 
