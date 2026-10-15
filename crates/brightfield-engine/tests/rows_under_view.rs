@@ -2,8 +2,8 @@
 //!
 //! **A view is an argument to the read, not state.** The count and the window
 //! take a `RowsView`; nothing about the session changes. The order leads the
-//! sort and `ORDER BY ALL` follows it, so rows that tie on the order still page
-//! in one fixed sequence. The columns a condition or an order names, and the
+//! sort and the step's columns follow it, so rows that tie on the order still
+//! page in one fixed sequence. The columns a condition or an order names, and the
 //! literal a cell equals, are read through the same session, which is what a
 //! grid's foot band builds an operation from.
 //!
@@ -94,15 +94,29 @@ fn a_view_with_only_a_condition_reads_what_the_where_read_reads() {
             .unwrap(),
         3_402
     );
-    for offset in [0, 500, 3_000] {
-        let a = session
-            .execute_step_rows_window_view(0, offset, 500, RowsAudience::Reader, &v)
-            .unwrap();
-        let b = session
-            .execute_step_rows_window_where(0, offset, 500, RowsAudience::Reader, "house_age > 40")
-            .unwrap();
-        assert_eq!(a, b, "the page at {offset} is the same under both reads");
-    }
+    // The `_where` read delegates to the view read, so it cannot vouch for
+    // it. These are checked against the file instead: every row on every page
+    // meets the condition, and the pages are the unconditioned pages with the
+    // rows that fail it removed, in the same total order.
+    let kept = pages(&session, &v, 500);
+    assert_eq!(rows(&kept), 3_402);
+    assert!(doubles(&kept, "house_age").iter().all(|a| *a > 40.0));
+    let everything = pages(&session, &view(None, None), 1000);
+    let cols = ["longitude", "latitude", "house_age", "median_income"];
+    let tuples = |b: &[RecordBatch]| {
+        let c: Vec<Vec<f64>> = cols.iter().map(|n| doubles(b, n)).collect();
+        (0..c[0].len())
+            .map(|i| c.iter().map(|col| col[i].to_bits()).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    };
+    let ages = doubles(&everything, "house_age");
+    let expected: Vec<_> = tuples(&everything)
+        .into_iter()
+        .zip(ages)
+        .filter(|(_, age)| *age > 40.0)
+        .map(|(t, _)| t)
+        .collect();
+    assert_eq!(tuples(&kept), expected);
 }
 
 #[test]
@@ -270,4 +284,87 @@ fn literals_quote_strings_and_type_dates() {
     assert_eq!(at(1, "name"), CellLiteral::Null);
     assert_eq!(at(1, "d"), CellLiteral::Null);
     let _ = std::fs::remove_file(path);
+}
+
+/// A parquet file at a unique path, built by DuckDB from `select`.
+fn parquet_of(name: &str, select: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("bf_{name}_{}.parquet", std::process::id()));
+    let conn = duckdb::Connection::open_in_memory().unwrap();
+    conn.execute_batch(&format!(
+        "COPY ({select}) TO '{}' (FORMAT PARQUET)",
+        path.display()
+    ))
+    .unwrap();
+    path
+}
+
+#[test]
+fn a_floats_literal_keeps_its_own_row_at_any_magnitude() {
+    let path = parquet_of(
+        "floats",
+        "SELECT * FROM (VALUES \
+           (1, 5.743562329073703e-10::DOUBLE, 3.272414146871332e-11::REAL), \
+           (2, 7.314219491610719e-16::DOUBLE, 1.5e-30::REAL), \
+           (3, 1e300::DOUBLE, 3.4e38::REAL), \
+           (4, 0.1::DOUBLE, 0.1::REAL)) t(id, d, r)",
+    );
+    let session = session_over(path.to_str().unwrap(), "id", "d");
+    let v = view(None, Some("id"));
+    for row in 0..4 {
+        for column in ["d", "r"] {
+            let CellLiteral::Value(literal) = session
+                .cell_literal(0, RowsAudience::Reader, &v, row, column)
+                .unwrap()
+            else {
+                panic!("not NULL");
+            };
+            assert!(literal.len() < 40, "`{literal}` stays short");
+            let n = session
+                .step_rows_count_view(
+                    0,
+                    RowsAudience::Reader,
+                    &view(Some(&format!("{column} = {literal}")), None),
+                )
+                .unwrap();
+            assert!(n >= 1, "`{column} = {literal}` keeps row {row}");
+        }
+    }
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn a_nanosecond_timestamp_keeps_its_precision() {
+    let path = parquet_of(
+        "ns",
+        "SELECT 1 AS id, TIMESTAMP_NS '2024-01-31 12:00:00.123456789' AS ts",
+    );
+    let session = session_over(path.to_str().unwrap(), "id", "id");
+    let v = view(None, None);
+    let CellLiteral::Value(literal) = session
+        .cell_literal(0, RowsAudience::Reader, &v, 0, "ts")
+        .unwrap()
+    else {
+        panic!("not NULL");
+    };
+    assert!(literal.contains("123456789"), "{literal}");
+    let n = session
+        .step_rows_count_view(
+            0,
+            RowsAudience::Reader,
+            &view(Some(&format!("ts = {literal}")), None),
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn a_row_past_the_end_is_not_a_null_cell() {
+    let session = session();
+    let v = view(Some("house_age = 28"), None);
+    let result = session.cell_literal(0, RowsAudience::Reader, &v, 375, "house_age");
+    assert!(
+        matches!(result, Err(EngineError::NoSuchRow { row: 375 })),
+        "{result:?}"
+    );
 }

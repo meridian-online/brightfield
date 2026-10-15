@@ -1938,14 +1938,11 @@ impl Session {
         }
         let rows_sql = self.step_rows_sql_view(index, audience, view)?;
         let Some(order) = &view.order else {
-            return Ok(format!(
-                "SELECT * FROM ({rows_sql}) AS bf_step_rows \
-                 ORDER BY ALL LIMIT {limit} OFFSET {offset}"
-            ));
+            return Ok(unordered_window_sql(&rows_sql, offset, limit));
         };
-        // DuckDB rejects `ALL` after an order list, so
-        // the tie-break lists the step's columns by position instead: the same total
-        // order `ORDER BY ALL` gives. The order sits on lines of its own so a
+        // DuckDB rejects `ALL` after an order list, so the tie-break lists
+        // the step's columns by position instead, giving the same total order
+        // `ORDER BY ALL` does. The order sits on lines of its own so a
         // trailing `--` comment ends before what follows it, and has no
         // parentheses because a direction (`DESC`) is not an expression.
         let described = format!("SELECT count(*) FROM (DESCRIBE SELECT * FROM ({rows_sql}))");
@@ -1972,6 +1969,8 @@ impl Session {
     /// # Errors
     ///
     /// [`EngineError::ConditionRefused`] as the reads refuse it.
+    ///
+    /// Columns referenced inside a subquery are reported too.
     pub fn condition_columns(&self, condition: &str) -> Result<Vec<String>, EngineError> {
         gate_condition(condition)?;
         self.parsed_columns(&format!("SELECT 1 FROM t WHERE {condition}"))
@@ -1987,6 +1986,8 @@ impl Session {
     /// # Errors
     ///
     /// [`EngineError::OrderRefused`] as the reads refuse it.
+    ///
+    /// Columns referenced inside a subquery are reported too.
     pub fn order_columns(&self, order: &str) -> Result<Vec<String>, EngineError> {
         gate_order(order)?;
         self.parsed_columns(&format!("SELECT 1 FROM t ORDER BY {order}"))
@@ -2030,7 +2031,9 @@ impl Session {
     /// # Errors
     ///
     /// As [`Self::execute_step_rows_window_view`]; a `column` the step does
-    /// not have is DuckDB's own [`EngineError::QueryFailed`].
+    /// not have is DuckDB's own [`EngineError::QueryFailed`]. A `row` past the
+    /// end of the view is [`EngineError::NoSuchRow`], so it is never mistaken
+    /// for a NULL cell.
     pub fn cell_literal(
         &self,
         index: usize,
@@ -2043,7 +2046,7 @@ impl Session {
             Array, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
             Int8Array, StringArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
         };
-        use duckdb::arrow::datatypes::DataType;
+        use duckdb::arrow::datatypes::{DataType, TimeUnit};
         let window = self.window_view_sql(index, row, 1, audience, view)?;
         let quoted = column.replace('"', "\"\"");
         let sql = format!(
@@ -2054,7 +2057,7 @@ impl Session {
             self.classify_query_failure(index, &self.mark_kind_at(index), sql.clone(), e)
         })?;
         let Some(batch) = batches.iter().find(|b| b.num_rows() > 0) else {
-            return Ok(CellLiteral::Null);
+            return Err(EngineError::NoSuchRow { row });
         };
         let value = batch.column(0);
         if value.is_null(0) {
@@ -2098,10 +2101,13 @@ impl Session {
                 };
                 f.map(|f| {
                     if f.is_finite() {
-                        // Rust's shortest representation that parses back to
-                        // the same float; for an f32 widened to f64 that is
-                        // the widened value, which is the one the column holds.
-                        f.to_string()
+                        // Exponent form: DuckDB reads a literal with an
+                        // exponent as a DOUBLE, where plain digits with a
+                        // point read as a DECIMAL that rounds a tiny or huge
+                        // value. The text is Rust's shortest one that parses
+                        // back to the same float; for an f32 widened to f64
+                        // that is the widened value the column holds.
+                        format!("{f:e}")
                     } else {
                         format!("{}::DOUBLE", quote(&text))
                     }
@@ -2109,6 +2115,9 @@ impl Session {
             }
             DataType::Utf8 => Some(quote(&text)),
             DataType::Date32 | DataType::Date64 => Some(format!("DATE {}", quote(&text))),
+            DataType::Timestamp(TimeUnit::Nanosecond, None) => {
+                Some(format!("{}::TIMESTAMP_NS", quote(&text)))
+            }
             DataType::Timestamp(_, None) => Some(format!("TIMESTAMP {}", quote(&text))),
             DataType::Timestamp(_, Some(_)) => Some(format!("TIMESTAMPTZ {}", quote(&text))),
             _ => None,
@@ -2118,7 +2127,10 @@ impl Session {
     }
 
     /// `ORDER BY ALL LIMIT limit OFFSET offset` over `rows_sql`, for the mark
-    /// at `index` — the body both window reads run.
+    /// at `index` — the read of a window with no order of its own. A window
+    /// under a [`RowsView`] with an order builds its SQL in
+    /// [`Self::window_view_sql`], which shares [`unordered_window_sql`] for the
+    /// case without one.
     fn window_rows(
         &self,
         index: usize,
@@ -2126,10 +2138,7 @@ impl Session {
         offset: u64,
         limit: u64,
     ) -> Result<Vec<RecordBatch>, EngineError> {
-        let sql = format!(
-            "SELECT * FROM ({rows_sql}) AS bf_step_rows \
-             ORDER BY ALL LIMIT {limit} OFFSET {offset}"
-        );
+        let sql = unordered_window_sql(rows_sql, offset, limit);
         self.query_arrow_raw(&sql).map_err(|e| {
             self.classify_query_failure(index, &self.mark_kind_at(index), sql.clone(), e)
         })
@@ -4069,11 +4078,6 @@ fn read_distributions(batches: &[RecordBatch], asks: &[DistributionAsk]) -> Vec<
 ///
 /// A condition holding a NUL byte cannot reach DuckDB's C API at all, and is
 /// reported as unparseable in this function's words rather than DuckDB's.
-// The one `unsafe` in the workspace. The `duckdb` crate's own `prepare` calls
-// `duckdb_extract_statements` too, and then runs the statements before the last;
-// this probe must run none of them, so the C API is called directly. The SAFETY
-// comment on the block below gives the contract the call upholds.
-#[allow(unsafe_code)]
 fn condition_statement_count(condition: &str) -> Result<usize, String> {
     probe_statement_count(&format!("SELECT 1 WHERE {condition}"), "condition")
 }
@@ -4086,6 +4090,10 @@ fn order_statement_count(order: &str) -> Result<usize, String> {
 
 /// The statements DuckDB's parser reads in `probe`, which holds `what` — the
 /// body both counts above share, so the two refuse by one method.
+// The one `unsafe` in the workspace. The `duckdb` crate's own `prepare` calls
+// `duckdb_extract_statements` too, and then runs the statements before the last;
+// this probe must run none of them, so the C API is called directly. The SAFETY
+// comment on the block below gives the contract the call upholds.
 #[allow(unsafe_code)]
 fn probe_statement_count(probe: &str, what: &str) -> Result<usize, String> {
     use duckdb::ffi;
@@ -4139,6 +4147,15 @@ fn probe_statement_count(probe: &str, what: &str) -> Result<usize, String> {
         ffi::duckdb_close(&mut db);
         outcome
     }
+}
+
+/// The window SQL over `rows_sql` ordered by `ORDER BY ALL`, the one text the
+/// reads with no order of their own run.
+fn unordered_window_sql(rows_sql: &str, offset: u64, limit: u64) -> String {
+    format!(
+        "SELECT * FROM ({rows_sql}) AS bf_step_rows \
+         ORDER BY ALL LIMIT {limit} OFFSET {offset}"
+    )
 }
 
 /// The rule a condition is held to, as the error a read returns.

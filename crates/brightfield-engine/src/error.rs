@@ -77,6 +77,13 @@ pub enum EngineError {
         refusal: ConditionRefusal,
     },
 
+    /// A cell was asked for in a row past the end of the view.
+    #[error("the view has no row {row}")]
+    NoSuchRow {
+        /// The row asked for, counting from 0.
+        row: u64,
+    },
+
     /// Upstream SQL emission failed.
     #[error("emit failed: {cause}")]
     EmitFailed {
