@@ -1552,7 +1552,7 @@ type PreviewAnswer = Result<GridPage, brightfield_engine::PreviewRefusal>;
 /// for a repaint when it is done, so the page lands on the next frame.
 ///
 /// That bound is **process-wide**, not per document: each worker reads inside
-/// [`PREVIEW_GATE`], so a document opened while the one it replaced still has
+/// a [`PreviewGate`] the documents share, so a document opened while the one it replaced still has
 /// a worker reading waits for that worker before its own read begins, and
 /// shows its reading state meanwhile.
 ///
@@ -1570,24 +1570,69 @@ pub(crate) struct PreviewReads {
     hooks: PreviewHooks,
 }
 
-/// The one preview read the process runs at a time. A worker holds it from
+/// **The one preview read that runs at a time.** A worker holds `read` from
 /// before it reads until it has its answer, whichever document started it, so
-/// a worker left reading by a document since replaced still counts.
-static PREVIEW_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// a worker left reading by a document since replaced still counts. `live`
+/// counts the workers inside it, and `most_live` the most there have been.
+#[derive(Default)]
+pub(crate) struct PreviewGate {
+    read: std::sync::Mutex<()>,
+    live: std::sync::atomic::AtomicUsize,
+    most_live: std::sync::atomic::AtomicUsize,
+}
 
-/// How many preview workers are inside [`PREVIEW_GATE`] now, and the most
-/// there have been at once in this process, whichever documents started them.
-static PREVIEW_WORKERS_LIVE: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-static PREVIEW_WORKERS_MOST_LIVE: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+/// The gate every document in the process reads behind, unless a test gave
+/// its thread one of its own.
+static SHARED_PREVIEW_GATE: std::sync::LazyLock<std::sync::Arc<PreviewGate>> =
+    std::sync::LazyLock::new(std::sync::Arc::default);
 
-/// Test-only controls over the preview worker: holding it before it reads and
-/// making the next one panic.
-#[derive(Clone, Default)]
+thread_local! {
+    /// The gate documents made on this thread read behind, in place of
+    /// [`SHARED_PREVIEW_GATE`], once [`use_own_preview_gate_on_this_thread`]
+    /// has been called on it.
+    static THREADS_PREVIEW_GATE: std::cell::RefCell<Option<std::sync::Arc<PreviewGate>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Give the documents made on this thread from now on a preview gate of their
+/// own, shared with each other and with no other thread's; a second call keeps
+/// the gate the first made. Tests in one binary run on threads of their own,
+/// so with this none waits behind another's reads, while two documents made
+/// within one test still read behind one gate.
+#[doc(hidden)]
+pub fn use_own_preview_gate_on_this_thread() {
+    THREADS_PREVIEW_GATE.with(|gate| {
+        gate.borrow_mut()
+            .get_or_insert_with(std::sync::Arc::default);
+    });
+}
+
+/// Test-only controls over the preview worker: holding it before it reads,
+/// making the next one panic, and counting this document's workers from
+/// their start to their answer. The gate is not test-only: it is the shared
+/// one outside a test.
+#[derive(Clone)]
 pub(crate) struct PreviewHooks {
+    gate: std::sync::Arc<PreviewGate>,
     held: std::sync::Arc<std::sync::atomic::AtomicBool>,
     panic_next: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    live: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    most_live: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Default for PreviewHooks {
+    fn default() -> Self {
+        let gate = THREADS_PREVIEW_GATE
+            .with(|gate| gate.borrow().clone())
+            .unwrap_or_else(|| SHARED_PREVIEW_GATE.clone());
+        Self {
+            gate,
+            held: std::sync::Arc::default(),
+            panic_next: std::sync::Arc::default(),
+            live: std::sync::Arc::default(),
+            most_live: std::sync::Arc::default(),
+        }
+    }
 }
 
 impl PreviewReads {
@@ -1637,13 +1682,17 @@ impl PreviewReads {
         let hooks = self.hooks.clone();
         std::thread::spawn(move || {
             use std::sync::atomic::Ordering;
+            let mine = hooks.live.fetch_add(1, Ordering::SeqCst) + 1;
+            hooks.most_live.fetch_max(mine, Ordering::SeqCst);
             // A worker that panicked inside the gate poisons it; the gate
             // guards no data, so the next worker goes in anyway.
-            let gate = PREVIEW_GATE
+            let gate = hooks
+                .gate
+                .read
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let live = PREVIEW_WORKERS_LIVE.fetch_add(1, Ordering::SeqCst) + 1;
-            PREVIEW_WORKERS_MOST_LIVE.fetch_max(live, Ordering::SeqCst);
+            let live = hooks.gate.live.fetch_add(1, Ordering::SeqCst) + 1;
+            hooks.gate.most_live.fetch_max(live, Ordering::SeqCst);
             while hooks.held.load(Ordering::SeqCst) {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
@@ -1652,8 +1701,9 @@ impl PreviewReads {
             } else {
                 Some(read_preview(&asked, limit))
             };
-            PREVIEW_WORKERS_LIVE.fetch_sub(1, Ordering::SeqCst);
+            hooks.gate.live.fetch_sub(1, Ordering::SeqCst);
             drop(gate);
+            hooks.live.fetch_sub(1, Ordering::SeqCst);
             // A worker told to fail drops its sender unsent, which is what a
             // panic leaves the receiver with.
             if let Some(read) = read {
@@ -1924,20 +1974,39 @@ impl ChartDoc {
         self.preview_reads.hooks.held.clone()
     }
 
-    /// How many preview workers are reading now, whichever documents started
-    /// them.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn preview_workers_live(&self) -> usize {
-        PREVIEW_WORKERS_LIVE.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    /// The most preview workers that have read at once in this process,
+    /// How many preview workers are reading inside this document's gate now,
     /// whichever documents started them.
     #[doc(hidden)]
     #[must_use]
+    pub fn preview_gate_live(&self) -> usize {
+        self.preview_reads
+            .hooks
+            .gate
+            .live
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The most preview workers that have read inside this document's gate at
+    /// once, whichever documents started them.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn preview_gate_most_live(&self) -> usize {
+        self.preview_reads
+            .hooks
+            .gate
+            .most_live
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The most preview workers this document has had between their start
+    /// and their answer at once, waiting at the gate or reading inside it.
+    #[doc(hidden)]
+    #[must_use]
     pub fn preview_workers_most_live(&self) -> usize {
-        PREVIEW_WORKERS_MOST_LIVE.load(std::sync::atomic::Ordering::SeqCst)
+        self.preview_reads
+            .hooks
+            .most_live
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Preview only files of at most `bytes` on disk, in place of

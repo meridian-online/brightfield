@@ -17,7 +17,10 @@ use std::time::{Duration, Instant};
 
 use brightfield_engine::RowsView;
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::data_grid::{PREVIEW_COUNT, PREVIEW_LABEL, PREVIEW_READING, PREVIEW_ROWS};
+use brightfield_shell::data_grid::{
+    use_own_preview_gate_on_this_thread, PREVIEW_COUNT, PREVIEW_LABEL, PREVIEW_READING,
+    PREVIEW_ROWS,
+};
 use brightfield_shell::design::Mode;
 use brightfield_shell::protocol::{SpineRole, OFFLINE_VAR};
 use brightfield_shell::run::Runner;
@@ -102,7 +105,10 @@ struct Window {
 }
 
 impl Window {
+    /// The window's documents read their previews behind a gate of this
+    /// test's own, so no test here waits behind another's reads.
     fn over(boot: Boot) -> Self {
+        use_own_preview_gate_on_this_thread();
         let mut win = Self {
             app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light)
                 .running_with(Some(runner())),
@@ -250,6 +256,29 @@ impl Window {
             .position(|c| c.name == column)
             .unwrap_or_else(|| panic!("the preview has no column {column}"));
         page.rows.iter().map(|row| row[at].text.clone()).collect()
+    }
+}
+
+/// Holds the preview workers of the document it was taken from before they
+/// read, until it is released or dropped — so a test that fails while holding
+/// them leaves no worker waiting.
+struct Hold(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Hold {
+    fn on(win: &Window) -> Self {
+        let held = win.app.chart_doc().preview_hold();
+        held.store(true, std::sync::atomic::Ordering::SeqCst);
+        Self(held)
+    }
+
+    fn release(&self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        self.release();
     }
 }
 
@@ -589,7 +618,7 @@ fn one_preview_worker_runs_at_a_time_and_a_step_is_read_once() {
     let root = TempDir::new("one-worker");
     let folder = saved_folder(&root, Some("house_age > 28"), Some("median_income DESC"));
     let mut win = reopen(&folder);
-    win.app.chart_doc().hold_preview_reads(true);
+    let hold = Hold::on(&win);
 
     // A, then B while A is read, then back to A before it lands.
     win.click_grid_only(FILTER_STEP);
@@ -601,7 +630,7 @@ fn one_preview_worker_runs_at_a_time_and_a_step_is_read_once() {
         "a read started while another was under way"
     );
 
-    win.app.chart_doc().hold_preview_reads(false);
+    hold.release();
     win.wait_for_preview();
     assert!(win.drew(PREVIEW_LABEL), "the filter's preview did not land");
     for _ in 0..20 {
@@ -678,13 +707,13 @@ fn a_read_lost_while_nobody_waits_for_it_is_not_reported_on_the_next_visit() {
     let root = TempDir::new("lost-away");
     let folder = saved_folder(&root, Some("house_age > 28"), None);
     let mut win = reopen(&folder);
-    win.app.chart_doc().hold_preview_reads(true);
+    let hold = Hold::on(&win);
     win.app.chart_doc().fail_next_preview_read();
     win.click_grid_only(FILTER_STEP);
 
     // Away to the load's grid, and the worker ends there without an answer.
     win.click_grid_only("california_housing");
-    win.app.chart_doc().hold_preview_reads(false);
+    hold.release();
     for _ in 0..20 {
         std::thread::sleep(Duration::from_millis(5));
         win.run(Vec::new());
@@ -706,29 +735,28 @@ fn a_document_opened_over_a_read_still_under_way_waits_for_it() {
     let other = TempDir::new("replacing");
     let second = saved_folder(&other, Some("house_age > 28"), None);
     let mut win = reopen(&first);
-    let held = win.app.chart_doc().preview_hold();
-    held.store(true, std::sync::atomic::Ordering::SeqCst);
+    let hold = Hold::on(&win);
     win.click_grid_only(FILTER_STEP);
     let deadline = Instant::now() + Duration::from_secs(60);
-    while win.app.chart_doc().preview_workers_live() == 0 {
+    while win.app.chart_doc().preview_gate_live() == 0 {
         assert!(Instant::now() < deadline, "the first read never began");
         std::thread::sleep(Duration::from_millis(5));
     }
 
-    // The document is replaced while its worker is still reading, and the
-    // new one asks for a read of its own.
-    let ctx = win.ctx.clone();
-    win.app.open_protocol_path(&ctx, &manifest(&second));
-    win.settle();
+    // The document goes away with its worker still reading, and a document
+    // of its own, opened after it, asks for a read.
+    drop(win);
+    let mut win = reopen(&second);
     win.click_grid_only(FILTER_STEP);
     for _ in 0..40 {
         std::thread::sleep(Duration::from_millis(5));
         win.run(Vec::new());
         assert!(
-            win.app.chart_doc().preview_workers_live() <= 1,
+            win.app.chart_doc().preview_gate_live() <= 1,
             "two preview reads ran at once"
         );
     }
+    assert_eq!(win.app.chart_doc().preview_reads_started(), 1);
     assert!(
         win.app
             .chart_doc()
@@ -741,14 +769,14 @@ fn a_document_opened_over_a_read_still_under_way_waits_for_it() {
         "the waiting read drew no reading state"
     );
 
-    held.store(false, std::sync::atomic::Ordering::SeqCst);
+    hold.release();
     win.wait_for_preview();
 
     assert!(
         win.drew(PREVIEW_LABEL),
         "the new document's preview did not land"
     );
-    assert_eq!(win.app.chart_doc().preview_workers_most_live(), 1);
+    assert_eq!(win.app.chart_doc().preview_gate_most_live(), 1);
 }
 
 #[test]
