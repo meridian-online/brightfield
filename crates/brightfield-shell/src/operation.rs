@@ -9,6 +9,8 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Arc;
 
 use crate::run::{arc_with_args, Runner};
 
@@ -21,7 +23,9 @@ pub struct OperationDescription {
     pub summary: String,
     /// What the step reads: the table and the column.
     pub reads: Vec<Role>,
-    /// What the operation takes, in arc's order of key.
+    /// What the operation takes, in the order of `serde_json::Map`: by key
+    /// unless the build enables its `preserve_order` feature, which this crate
+    /// does not ask for.
     pub parameters: Vec<Parameter>,
 }
 
@@ -191,23 +195,14 @@ pub fn record(
     name: &str,
     args: &[(&str, &str)],
 ) -> Result<String, String> {
-    let dir_text = dir.to_string_lossy();
     let pairs: Vec<String> = args.iter().map(|(k, v)| format!("{k}={v}")).collect();
-    let mut argv: Vec<&str> = vec![
-        "operation",
-        "record",
-        operation,
-        "--on",
-        on,
-        "--name",
-        name,
-        "--dir",
-        &dir_text,
-    ];
+    let mut argv: Vec<&str> = vec!["operation", "record", operation, "--on", on, "--name", name];
     for pair in &pairs {
         argv.push("--arg");
         argv.push(pair);
     }
+    // No `--dir`: the child stands in `dir`, and arc's default is its working
+    // directory. Passing `dir` too would resolve a relative one twice.
     let out = arc_with_args(runner, dir, &argv);
     if out.succeeded {
         Ok(out.stdout.trim().to_string())
@@ -216,32 +211,89 @@ pub fn record(
     }
 }
 
+/// Where one description stands, as [`Descriptions::get`] reports it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DescriptionState<'a> {
+    /// The child has been asked and has not answered. A caller draws nothing
+    /// for it yet and asks again on a later frame.
+    Pending,
+    /// arc's description.
+    Ready(&'a OperationDescription),
+    /// Why there is none: arc's refusal, or why the runner could not be
+    /// started. Kept for the session, so a missing runner is not started again.
+    Failed(&'a str),
+}
+
+enum Entry {
+    Asked(Receiver<Result<OperationDescription, String>>),
+    Answered(Result<OperationDescription, String>),
+}
+
 /// The descriptions fetched this session, one per operation.
 ///
 /// `arc` does not change what it says of an operation while the pin is fixed,
-/// so each is asked once. A failed describe is kept too, with its message: a
-/// missing runner would otherwise be started again on every frame.
-#[derive(Debug, Default)]
+/// so each is asked once. A failed describe is kept too, with its message.
+///
+/// The ask runs on a worker thread, because [`Descriptions::get`] is called on
+/// every frame and a runner that hangs must not freeze the window. The wake
+/// given to [`Descriptions::with_wake`] is called when an answer arrives, so a
+/// window can ask egui for a repaint; with none, callers poll.
+#[derive(Default)]
 pub struct Descriptions {
-    by_name: BTreeMap<String, Result<OperationDescription, String>>,
+    by_name: BTreeMap<String, Entry>,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl std::fmt::Debug for Descriptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Descriptions")
+            .field("asked", &self.by_name.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Descriptions {
-    /// The description of `long_name`, asking arc on the first call
-    /// (`descriptions_keep_a_failed_describe_without_asking_again`).
-    ///
-    /// # Errors
-    ///
-    /// The message the first ask failed with.
-    pub fn get(
-        &mut self,
-        runner: &Runner,
-        long_name: &str,
-    ) -> Result<&OperationDescription, String> {
-        self.by_name
-            .entry(long_name.to_string())
-            .or_insert_with(|| describe(runner, long_name))
-            .as_ref()
-            .map_err(Clone::clone)
+    /// A cache that calls `wake` from the worker when an answer arrives.
+    #[must_use]
+    pub fn with_wake(wake: impl Fn() + Send + Sync + 'static) -> Self {
+        Self {
+            by_name: BTreeMap::new(),
+            wake: Some(Arc::new(wake)),
+        }
+    }
+
+    /// The state of `long_name`'s description, starting the ask on the first
+    /// call (`descriptions_are_pending_then_ready_and_a_failure_is_kept`).
+    pub fn get(&mut self, runner: &Runner, long_name: &str) -> DescriptionState<'_> {
+        if !self.by_name.contains_key(long_name) {
+            let (tx, rx) = mpsc::channel();
+            let runner = runner.clone();
+            let name = long_name.to_string();
+            let wake = self.wake.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(describe(&runner, &name));
+                if let Some(wake) = wake {
+                    wake();
+                }
+            });
+            self.by_name.insert(long_name.to_string(), Entry::Asked(rx));
+        }
+        let entry = self.by_name.get_mut(long_name).expect("just inserted");
+        if let Entry::Asked(rx) = entry {
+            match rx.try_recv() {
+                Ok(answer) => *entry = Entry::Answered(answer),
+                Err(TryRecvError::Empty) => return DescriptionState::Pending,
+                Err(TryRecvError::Disconnected) => {
+                    *entry = Entry::Answered(Err(format!(
+                        "the ask for {long_name} stopped without an answer"
+                    )));
+                }
+            }
+        }
+        match entry {
+            Entry::Answered(Ok(d)) => DescriptionState::Ready(d),
+            Entry::Answered(Err(e)) => DescriptionState::Failed(e),
+            Entry::Asked(_) => DescriptionState::Pending,
+        }
     }
 }

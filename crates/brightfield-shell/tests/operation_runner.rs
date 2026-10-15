@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use brightfield_shell::data_file;
-use brightfield_shell::operation::{self, Descriptions};
+use brightfield_shell::operation::{self, DescriptionState, Descriptions};
 use brightfield_shell::run::Runner;
 use brightfield_shell::starts;
 
@@ -127,19 +127,42 @@ fn an_unknown_operation_is_refused_in_arcs_words() {
     assert!(err.starts_with("no operation or operator called"), "{err}");
 }
 
+/// Poll `cache` for `name` until it is no longer pending, within a bound.
+fn settled(cache: &mut Descriptions, runner: &Runner, name: &str) -> Result<String, String> {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        match cache.get(runner, name) {
+            DescriptionState::Ready(d) => return Ok(d.long_name.clone()),
+            DescriptionState::Failed(e) => return Err(e.to_string()),
+            DescriptionState::Pending => {
+                assert!(std::time::Instant::now() < until, "still pending");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+}
+
 #[test]
-fn descriptions_keep_a_failed_describe_without_asking_again() {
-    let mut cache = Descriptions::default();
+fn descriptions_are_pending_then_ready_and_a_failure_is_kept() {
+    let woken = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = woken.clone();
+    let mut cache = Descriptions::with_wake(move || {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    // The first call only starts the ask; it does not wait for the child.
+    assert_eq!(cache.get(&runner(), "sort-rows"), DescriptionState::Pending);
+    assert_eq!(
+        settled(&mut cache, &runner(), "sort-rows"),
+        Ok("sort-rows".to_string())
+    );
+    assert!(woken.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+
     let missing = Runner::at("/nonexistent/brightfield-runner");
-    let first = cache.get(&missing, "filter-rows").expect_err("no runner");
+    let first = settled(&mut cache, &missing, "filter-rows").expect_err("no runner");
     assert!(first.contains("could not start the runner"), "{first}");
-    // A working runner now would answer, but the failure is the session's answer.
-    let second = cache.get(&runner(), "filter-rows").expect_err("kept");
+    // A working runner would answer now, but the failure is the session's answer.
+    let second = settled(&mut cache, &runner(), "filter-rows").expect_err("kept");
     assert_eq!(first, second);
-    let ok = cache
-        .get(&runner(), "sort-rows")
-        .expect("sort-rows describes");
-    assert_eq!(ok.long_name, "sort-rows");
 }
 
 #[test]
@@ -188,4 +211,37 @@ fn record_refuses_a_step_as_on() {
     );
     assert!(!err.starts_with("error:"), "{err}");
     assert_eq!(snapshot(dir.path()), before, "the folder is untouched");
+}
+
+#[test]
+fn record_into_a_relative_directory_lands_in_that_directory() {
+    // A relative path is resolved against this process's working directory, so
+    // the folder is made under it and removed after.
+    let name = format!("bf-relative-{}", std::process::id());
+    let here = std::env::current_dir().expect("a working directory");
+    let abs = TempDir(here.join(&name));
+    std::fs::create_dir_all(abs.path()).expect("the folder");
+    let data = abs.path().join(starts::HOUSING_FILE);
+    std::fs::write(&data, starts::HOUSING_PARQUET).expect("the housing file writes");
+    let opened = data_file::open(&data.to_string_lossy()).expect("the housing file opens");
+    opened
+        .protocol
+        .save_to(abs.path())
+        .expect("the Protocol saves");
+
+    operation::record(
+        &runner(),
+        Path::new(&name),
+        "filter-rows",
+        "california_housing",
+        "california_housing_filtered_by_house_age",
+        &[("where", "house_age > 28")],
+    )
+    .expect("a relative folder records");
+    let manifest = std::fs::read_to_string(abs.path().join("arcform.yaml")).expect("manifest");
+    assert_eq!(manifest.matches("- name:").count(), 2, "{manifest}");
+    assert!(
+        !abs.path().join(&name).exists(),
+        "no folder inside the folder"
+    );
 }
