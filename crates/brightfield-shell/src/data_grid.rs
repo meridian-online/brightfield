@@ -62,6 +62,27 @@
 //! exists to reject, and at crosswalk scale it is the first thing that would
 //! fall over.
 //!
+//! # A view, and a preview
+//!
+//! **A view** is the condition and order the grid's foot row asks
+//! ([`crate::grid_foot`]). It is passed to each read
+//! ([`brightfield_engine::Session::execute_step_rows_window_view`] and its
+//! count) rather than held on the step, so a chart over the same step keeps
+//! its rows. [`GridCache`] is keyed on the view beside the generation and the
+//! mark, so a page read through one view is not served under another. An
+//! order is read with every column by position after it, so pages over ties
+//! do not tear.
+//!
+//! **A preview** is what a generated step nobody has run shows, since it has
+//! no table yet: the step's first page, recomputed from the data file on a
+//! connection of its own ([`brightfield_engine::preview_first_page`]) off the
+//! UI thread, under [`PREVIEW_LABEL`]. It does not scroll past
+//! [`PREVIEW_ROWS`], and the foot row's count reads [`PREVIEW_COUNT`] where a
+//! table's grid counts its rows, because a preview claims no count. A file too
+//! large to preview, or a condition DuckDB refuses there, leaves an empty grid
+//! that says why and offers Run. The step still reads *not run*: a preview
+//! writes no run record and does not touch arc's working database.
+//!
 //! # Meridian cell chrome
 //!
 //! One table treatment, used by the DuckDB grid **and** the protocol Steps

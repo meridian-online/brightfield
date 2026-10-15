@@ -19,6 +19,12 @@
 //! reads it back is [`crate::protocol::load_protocol_str`], which derives the
 //! lineage graph from its text.
 //!
+//! **Once the folder holds steps arc appended, Save stops writing the
+//! manifest.** A Save that records a grid view adds a generated step through
+//! `arc operation record`, and the manifest is then arc's to extend: Save and
+//! Run write the load's model and leave the manifest, and the steps and models
+//! arc appended, as they are (see [`OneStepProtocol::save_to`]).
+//!
 //! A run is `arc`'s, started by [`crate::run`] over the spec [`OneStepProtocol::save_to`]
 //! wrote, and it leaves its record under this Protocol's directory where
 //! `arc run` leaves one. [`OneStepProtocol::inputs_with_last_run`] is what

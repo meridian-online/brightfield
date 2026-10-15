@@ -2116,7 +2116,15 @@ impl Session {
                         .map(|a| a.value(0)),
                 };
                 f.map(|f| {
-                    if f.is_finite() {
+                    if f.is_finite() && f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0 {
+                        // A whole number below 2^53 as its digits: DuckDB
+                        // reads them as an integer that compares equal to
+                        // the double exactly, and `house_age = 28` reads as
+                        // the analyst would write it where `2.8e1` would not.
+                        #[allow(clippy::cast_possible_truncation)]
+                        let whole = f as i64;
+                        whole.to_string()
+                    } else if f.is_finite() {
                         // Exponent form: DuckDB reads a literal with an
                         // exponent as a DOUBLE, where plain digits with a
                         // point read as a DECIMAL that rounds a tiny or huge

@@ -332,6 +332,51 @@ fn a_floats_literal_keeps_its_own_row_at_any_magnitude() {
     let _ = std::fs::remove_file(path);
 }
 
+/// A double holding a whole number is offered as its digits, the way an
+/// analyst writes it, and still keeps its own row.
+#[test]
+fn a_whole_doubles_literal_is_its_digits() {
+    let path = parquet_of(
+        "whole",
+        "SELECT * FROM (VALUES \
+           (1, 28.0::DOUBLE, 28.0::REAL), \
+           (2, -3.0::DOUBLE, 0.0::REAL), \
+           (3, 9007199254740992.0::DOUBLE, 1e20::REAL)) t(id, d, r)",
+    );
+    let session = session_over(path.to_str().unwrap(), "id", "d");
+    let v = view(None, Some("id"));
+    let at = |row, column| {
+        let CellLiteral::Value(literal) = session
+            .cell_literal(0, RowsAudience::Reader, &v, row, column)
+            .unwrap()
+        else {
+            panic!("not NULL");
+        };
+        literal
+    };
+    assert_eq!(at(0, "d"), "28");
+    assert_eq!(at(0, "r"), "28");
+    assert_eq!(at(1, "d"), "-3");
+    assert_eq!(at(1, "r"), "0");
+    // At 2^53 and past it a double no longer holds every whole number, so
+    // the exponent form stays.
+    assert!(at(2, "d").contains('e'), "{}", at(2, "d"));
+    for row in 0..3 {
+        for column in ["d", "r"] {
+            let literal = at(row, column);
+            let n = session
+                .step_rows_count_view(
+                    0,
+                    RowsAudience::Reader,
+                    &view(Some(&format!("{column} = {literal}")), None),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "`{column} = {literal}` keeps row {row} alone");
+        }
+    }
+    let _ = std::fs::remove_file(path);
+}
+
 #[test]
 fn a_nanosecond_timestamp_keeps_its_precision() {
     let path = parquet_of(

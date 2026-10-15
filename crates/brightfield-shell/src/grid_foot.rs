@@ -16,7 +16,38 @@
 //! is a preview, held here and apart from the document's applied view, so Esc
 //! goes back to the applied view and only Enter raises the unsaved mark.
 //!
+//! **The key is `w` for `where` and `o` for `order by`**
+//! ([`ChartDoc::ask_order_at_cursor`], which opens the field on the cursor's
+//! column with the caret after it). Both are provisional until the key
+//! registry's scores settle them. The literal a `where` is filled in with is
+//! read from the stored value and not from the text the cell shows: strings
+//! are quoted, dates and timestamps typed, a double holding a whole number
+//! below 2^53 is written as its digits and any other float in a form that
+//! reads back exactly, and a NULL cell offers `is null`, because `= NULL`
+//! keeps nothing.
+//!
+//! **Enter applies** the text as the document's grid view
+//! ([`ChartDoc::apply_grid_view`]), and writes no file. The field carries a dot
+//! while its text is in no file, and the window's unsaved mark and its close
+//! question cover the view as they cover a chart edit. Save records the view
+//! through arc as a generated step (see [`crate::operation`]). An emptied field
+//! and Enter show the whole table again.
+//!
+//! **A view refines the node in front; it is not a new node.** The grid reads
+//! the same step with the condition and the order passed to the read, so a
+//! chart over that step keeps its rows, and after Save the charts still draw
+//! from the load.
+//!
+//! **The row works on the loaded table's grid.** On a generated step's grid the
+//! band shows the step's own argument read-only, and the key puts the reason on
+//! the status band: a step without a run offers Run, and one that has run says
+//! filtering a saved step comes in a later version. Filtering a step starts
+//! from a run of it, never from its preview, and showing a run's table is later
+//! work.
+//!
 //! [`ChartDoc::ask_where_at_cursor`]: crate::app::ChartDoc::ask_where_at_cursor
+//! [`ChartDoc::ask_order_at_cursor`]: crate::app::ChartDoc::ask_order_at_cursor
+//! [`ChartDoc::apply_grid_view`]: crate::app::ChartDoc::apply_grid_view
 //! [`ChartDoc::foot_offer`]: crate::app::ChartDoc::foot_offer
 
 use brightfield_engine::{CellLiteral, RowsAudience, RowsView, Session};

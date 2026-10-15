@@ -14,6 +14,17 @@
 //! hand each frame and hands it to the document ([`ChartDoc::set_described`])
 //! before the panes draw. The pane only reads it.
 //!
+//! **What it draws**: under *target*, each role arc says the operation reads
+//! (the table and the column), with arc's sentence and where the value came
+//! from, the node in view or the cursor; under *values*, each parameter, with
+//! the value from the field or *asked* while the field is still being asked,
+//! and the comparisons or directions arc offers for it, by word and sign.
+//!
+//! **The key that asks opens the rail on this pane**, and Esc from the field
+//! shuts the rail again when the key was what opened it, or puts it back on the
+//! pane it was showing. A grid with no table in view has no operation in hand,
+//! and the rail is left as it was.
+//!
 //! **The panel changes no value.** Editing a value here is later work.
 
 use brightfield_keys::BindingContext;

@@ -6,6 +6,23 @@
 //! comparisons and the refusals are arc's. Each call runs the runner with an
 //! argument list ([`arc_with_args`]), reads JSON from stdout, and treats
 //! stderr as the refusal.
+//!
+//! **Save records through arc.** Each view applied in the grid's foot row is
+//! recorded by [`record`] as `filter-rows` for the condition, then `sort-rows`
+//! for the order on the condition's new table, so the same operation writes
+//! the same file however it is recorded, and the Protocol's history shows who
+//! recorded what. `--on` is the table the node in view makes (for a data file,
+//! the load's table, not the step). Save asks for no name: the window names
+//! each step by its effect, `<table>_<effect>_by_<column>`, with the column
+//! DuckDB finds in the condition (see [`crate::generated::step_name_for`]).
+//! A refusal is shown in arc's words and leaves the view applied and unsaved;
+//! a part arc already recorded stays recorded, and the next Save records the
+//! rest on the table it must go on.
+//!
+//! **A description is fetched once per operation for the session**, off the
+//! UI thread ([`Descriptions`]), because it cannot change while arc's pin is
+//! fixed. With no runner, or a describe that fails, the foot row still asks
+//! and the operation panel says why it has nothing to show.
 
 use std::collections::BTreeMap;
 use std::path::Path;
