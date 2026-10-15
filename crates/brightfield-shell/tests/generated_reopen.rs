@@ -591,6 +591,7 @@ fn one_preview_worker_runs_at_a_time_and_a_step_is_read_once() {
     let mut win = reopen(&folder);
     win.app.chart_doc().hold_preview_reads(true);
 
+    // A, then B while A is read, then back to A before it lands.
     win.click_grid_only(FILTER_STEP);
     win.click_grid_only(SORT_STEP);
     win.click_grid_only(FILTER_STEP);
@@ -603,7 +604,18 @@ fn one_preview_worker_runs_at_a_time_and_a_step_is_read_once() {
     win.app.chart_doc().hold_preview_reads(false);
     win.wait_for_preview();
     assert!(win.drew(PREVIEW_LABEL), "the filter's preview did not land");
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(5));
+        win.run(Vec::new());
+    }
+    assert_eq!(
+        win.app.chart_doc().preview_reads_started(),
+        1,
+        "B was read though nobody went back to it"
+    );
+
     win.click_grid_under(SORT_STEP);
+    assert!(win.drew(PREVIEW_LABEL), "the sort's preview did not land");
     win.click_grid_under(FILTER_STEP);
 
     let doc = win.app.chart_doc();
@@ -613,6 +625,35 @@ fn one_preview_worker_runs_at_a_time_and_a_step_is_read_once() {
         "a step was read more than once"
     );
     assert_eq!(doc.preview_workers_most_live(), 1);
+}
+
+#[test]
+fn a_data_file_rewritten_while_its_steps_grid_is_open_is_read_again() {
+    let root = TempDir::new("rewritten");
+    let folder = saved_folder(&root, Some("house_age > 28"), None);
+    let mut win = reopen(&folder);
+    win.click_grid_under(FILTER_STEP);
+    assert_eq!(win.app.chart_doc().preview_reads_started(), 1);
+
+    let data = folder.join(starts::HOUSING_FILE);
+    let later = std::fs::metadata(&data)
+        .and_then(|m| m.modified())
+        .expect("the file's time")
+        + Duration::from_secs(60);
+    std::fs::File::options()
+        .write(true)
+        .open(&data)
+        .and_then(|f| f.set_modified(later))
+        .expect("the file's time is moved on");
+    win.run(Vec::new());
+    win.wait_for_preview();
+
+    assert_eq!(
+        win.app.chart_doc().preview_reads_started(),
+        2,
+        "the rewritten file kept the old page"
+    );
+    assert!(win.drew(PREVIEW_LABEL));
 }
 
 #[test]
@@ -628,6 +669,32 @@ fn a_read_that_ends_without_an_answer_is_read_again_on_the_next_visit() {
     win.click_grid_under("california_housing");
     win.click_grid_under(FILTER_STEP);
 
+    assert!(win.drew(PREVIEW_LABEL), "the next visit did not read again");
+    assert_eq!(win.app.chart_doc().preview_reads_started(), 2);
+}
+
+#[test]
+fn a_read_lost_while_nobody_waits_for_it_is_not_reported_on_the_next_visit() {
+    let root = TempDir::new("lost-away");
+    let folder = saved_folder(&root, Some("house_age > 28"), None);
+    let mut win = reopen(&folder);
+    win.app.chart_doc().hold_preview_reads(true);
+    win.app.chart_doc().fail_next_preview_read();
+    win.click_grid_only(FILTER_STEP);
+
+    // Away to the load's grid, and the worker ends there without an answer.
+    win.click_grid_only("california_housing");
+    win.app.chart_doc().hold_preview_reads(false);
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(5));
+        win.run(Vec::new());
+    }
+    win.click_grid_under(FILTER_STEP);
+
+    assert!(
+        !win.drew("stopped without an answer"),
+        "a lost read leaked into the next visit"
+    );
     assert!(win.drew(PREVIEW_LABEL), "the next visit did not read again");
     assert_eq!(win.app.chart_doc().preview_reads_started(), 2);
 }

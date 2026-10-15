@@ -1577,9 +1577,10 @@ pub(crate) struct PreviewHooks {
 
 impl PreviewReads {
     /// Take a finished read off the worker, if one has finished: keep its
-    /// page, or forget a worker that ended without an answer; then start the
+    /// page, or forget a worker that ended without an answer, noting it as
+    /// lost only when `visited` is the step it was reading; then start the
     /// request waiting behind it.
-    fn poll(&mut self, ctx: &egui::Context) {
+    fn poll(&mut self, ctx: &egui::Context, visited: Option<&PreviewKey>) {
         if let Some((key, answer)) = &self.in_flight {
             match answer.try_recv() {
                 Ok(read) => {
@@ -1589,7 +1590,7 @@ impl PreviewReads {
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => return,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.lost = Some(key.clone());
+                    self.lost = (visited == Some(key)).then(|| key.clone());
                     self.in_flight = None;
                 }
             }
@@ -1652,7 +1653,7 @@ impl PreviewReads {
         request: &PreviewRequest,
         ctx: &egui::Context,
     ) -> PreviewShown {
-        self.poll(ctx);
+        self.poll(ctx, Some(key));
         // A lost read is told only to a visit to its own step that is waiting
         // for it; any other visit forgets it, and its step is read afresh.
         if self.lost.take().as_ref() == Some(key) {
@@ -1666,7 +1667,9 @@ impl PreviewReads {
             return PreviewShown::Read(read.clone());
         }
         match &self.in_flight {
-            Some((reading, _)) if reading == key => {}
+            // The step on screen is the one being read: a request queued
+            // before the visit came back to it is no longer wanted.
+            Some((reading, _)) if reading == key => self.queued = None,
             Some(_) => self.queued = Some((key.clone(), request.clone())),
             None => self.start(key.clone(), request, ctx),
         }
@@ -1679,6 +1682,8 @@ impl PreviewReads {
 #[derive(Clone, Debug)]
 pub struct GridPreview {
     request: PreviewRequest,
+    /// What `shown` was read under, so a file changed on disk is read again.
+    key: PreviewKey,
     shown: PreviewShown,
     /// Whether a key asked the band to filter or sort this step, so the status
     /// band says why it cannot.
@@ -1820,7 +1825,7 @@ impl ChartDoc {
     pub fn show_preview(&mut self, request: Option<PreviewRequest>, ctx: &egui::Context) {
         let Some(request) = request else {
             // A read under way still lands, and the one waiting still starts.
-            self.preview_reads.poll(ctx);
+            self.preview_reads.poll(ctx, None);
             if self.grid_preview.take().is_some() {
                 self.grid_cursor = None;
             }
@@ -1837,24 +1842,27 @@ impl ChartDoc {
         // A visit that already has its answer keeps it, so an answer that is
         // not kept (a read that ended without one) is shown for this visit
         // and read again on the next.
+        // The key is taken afresh each frame, so a data file rewritten while
+        // its step's grid is open is read again.
+        let key = PreviewKey::of(&request, self.preview_file_limit);
         let answered = match &self.grid_preview {
-            Some(held) if held.request.same_rows(&request) && !held.is_reading() => {
+            Some(held)
+                if held.request.same_rows(&request) && held.key == key && !held.is_reading() =>
+            {
                 Some(held.shown.clone())
             }
             _ => None,
         };
         let shown = match answered {
             Some(shown) => {
-                self.preview_reads.poll(ctx);
+                self.preview_reads.poll(ctx, Some(&key));
                 shown
             }
-            None => {
-                let key = PreviewKey::of(&request, self.preview_file_limit);
-                self.preview_reads.shown(&key, &request, ctx)
-            }
+            None => self.preview_reads.shown(&key, &request, ctx),
         };
         self.grid_preview = Some(GridPreview {
             request,
+            key,
             shown,
             said,
         });
