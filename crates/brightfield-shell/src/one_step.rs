@@ -350,8 +350,9 @@ impl OneStepProtocol {
     /// manifest of more steps whose load is this file's own and whose later
     /// steps arc generated is left as it is, and so is its load's model, which
     /// is written back only when it is missing. Any other manifest of more
-    /// steps is refused in words naming why: another data file's Protocol, a
-    /// load through a model brightfield did not write, or steps it did not
+    /// steps is refused in words naming why: a hand-written Protocol whose
+    /// first step loads no data file, another data file's Protocol, a load
+    /// through a model brightfield did not write, or steps it did not
     /// generate (see the private `writes_beside`). A manifest that is there
     /// and will not load is refused before anything is written, rather than
     /// written over or passed by.
@@ -426,7 +427,8 @@ impl OneStepProtocol {
     /// Each worded by its cause, naming the manifest: it cannot be read or
     /// will not load (writing over it would erase what it holds, and leaving it
     /// would answer a Save over a folder `arc run` refuses); its first step
-    /// loads another data file, so it is another Protocol; its load is this
+    /// loads no data file, so it is a hand-written Protocol; its first step
+    /// loads another data file, so it is that file's Protocol; its load is this
     /// file's through a model brightfield did not write, at another path or
     /// changed so it no longer makes this file's table; the steps after the
     /// load are not ones arc generated; or a generated step will not read, in
@@ -448,12 +450,22 @@ impl OneStepProtocol {
             (Ok(a), Ok(b)) => a == b,
             _ => false,
         };
-        if !data_file_of_load(load, dir).is_some_and(|d| same_file(&d)) {
-            return Err(format!(
-                "the manifest at {at} is another data file's Protocol: its first step does \
-                 not load {}; not overwriting it",
-                self.spelled
-            ));
+        match data_file_of_load(load, dir) {
+            None => {
+                return Err(format!(
+                    "the manifest at {at} is a hand-written Protocol: its first step does not \
+                     load a data file; not overwriting it"
+                ));
+            }
+            Some(other) if !same_file(&other) => {
+                return Err(format!(
+                    "the manifest at {at} is another data file's Protocol: its first step \
+                     loads {}, not {}; not overwriting it",
+                    other.display(),
+                    self.spelled
+                ));
+            }
+            Some(_) => {}
         }
         match load.sql.as_deref().map(Path::new) {
             Some(model) if model == Path::new(MODEL_PATH) => {}

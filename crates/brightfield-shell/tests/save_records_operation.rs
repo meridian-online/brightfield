@@ -680,7 +680,18 @@ type RefusalCase = (&'static str, fn(&Path), &'static str);
 
 #[test]
 fn a_folder_save_will_not_write_is_refused_for_its_own_cause() {
-    let cases: [RefusalCase; 3] = [
+    let cases: [RefusalCase; 4] = [
+        (
+            "hand-written",
+            |folder| {
+                rewrite(
+                    &folder.join("arcform.yaml"),
+                    "'./california_housing.parquet'",
+                    "raw_rows",
+                );
+            },
+            "a hand-written Protocol: its first step does not load a data file",
+        ),
         (
             "changed-load",
             |folder| {

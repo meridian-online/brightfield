@@ -1702,7 +1702,6 @@ impl LiveDashboard {
         self.coordinator.session().sql_cache_len()
     }
 
-    /// **What each live selection currently HOLDS**, as `(name, clause)` pairs
     /// **The mark index this dashboard's rows are read at** by a surface that
     /// is not a plot — [`presenting_rows_mark`] over the spec this dashboard
     /// was composed from.
@@ -1736,6 +1735,7 @@ impl LiveDashboard {
             .any(|(name, _)| *name == by.0)
     }
 
+    /// **What each live selection currently HOLDS**, as `(name, clause)` pairs
     /// ordered by name — the store's own values, resolved through the very
     /// [`compile_selection`] every emitted query resolves them through, so a
     /// surface that shows one of these clauses is showing the string DuckDB
