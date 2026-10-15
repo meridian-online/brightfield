@@ -233,7 +233,9 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
     // statement and still turn the model into something else, such as a
     // `UNION` that returns the table twice, or close the engine's parenthesis
     // and open another (`1) OR (1`), so the whole query must read as a plain
-    // `SELECT *` from `on` carrying only the one clause the operation writes.
+    // `SELECT *` from `on` with the one clause the operation writes and no
+    // other, as
+    // `a_clause_that_turns_the_query_into_something_else_is_refused` reads.
     let query = format!(
         "SELECT *\nFROM {spelled}\n{}{argument}\n",
         operation.clause()
