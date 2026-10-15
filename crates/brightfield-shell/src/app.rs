@@ -2991,7 +2991,11 @@ impl ChartDoc {
         self.controls.clear();
         self.grid_layout_switch = None;
         self.grid_spot_switch = None;
-        self.grid_foot.drawn = None;
+        // A band the last frame did not draw holds no keys this frame, however
+        // it held them when it was last drawn.
+        if self.grid_foot.drawn.take().is_none() {
+            self.grid_foot.release_keys();
+        }
     }
 
     /// Move the grid's cursor one cell along `step`, and say whether it moved.

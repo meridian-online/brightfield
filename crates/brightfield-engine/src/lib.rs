@@ -1744,9 +1744,9 @@ impl Session {
     /// [`Self::step_rows_count`] under `view`: the rows its condition keeps.
     /// The order does not change a count, but it is still held to its rule and
     /// bound against the step's columns, so a view refuses the same way
-    /// whichever read it is handed to: an order naming a column the step does
-    /// not have is DuckDB's binder error here, not only on the window read
-    /// (`an_order_naming_a_missing_column_is_refused_by_the_count` in
+    /// whichever read it is handed to: an order the window read would refuse —
+    /// a column the step does not have, or `ALL` — is DuckDB's error here
+    /// too (`an_order_naming_a_missing_column_is_refused_by_the_count` in
     /// `crates/brightfield-engine/tests/rows_under_view.rs`).
     ///
     /// # Errors
@@ -1764,11 +1764,13 @@ impl Session {
             gate_order(order)?;
         }
         let rows_sql = self.step_rows_sql_view(index, audience, view)?;
-        if let Some(order) = &view.order {
-            // Bound and planned, no row read: `LIMIT 0` over the ordered rows.
-            // The order sits on lines of its own, as the window read writes it.
-            let probe =
-                format!("SELECT * FROM ({rows_sql}) AS bf_step_rows ORDER BY \n{order}\n LIMIT 0");
+        if view.order.is_some() {
+            // The read the grid pages with, at no rows: bound and planned
+            // exactly as a window is, so an order the window read refuses
+            // (`ALL`, which DuckDB takes alone but not before the tie-break
+            // positions) is refused here too, and the check and the read
+            // cannot disagree.
+            let probe = self.window_view_sql(index, 0, 0, audience, view)?;
             self.query_arrow_raw(&probe).map_err(|e| {
                 self.classify_query_failure(index, &self.mark_kind_at(index), probe.clone(), e)
             })?;

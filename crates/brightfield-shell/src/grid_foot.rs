@@ -270,6 +270,14 @@ impl FootState {
         self.asking.take().map(|a| a.field)
     }
 
+    /// Forget that the field being edited held the keyboard: the band was not
+    /// drawn, so Enter and Esc are the window's until it is again.
+    pub(crate) fn release_keys(&mut self) {
+        if let Some(asking) = self.asking.as_mut() {
+            asking.had_focus = false;
+        }
+    }
+
     /// Whether the field being edited held the keyboard at the end of the last
     /// draw — whether Enter and Esc are the field's rather than the window's.
     /// A field opened and not yet drawn, or drawn nowhere, does not hold them.

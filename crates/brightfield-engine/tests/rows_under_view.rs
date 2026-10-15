@@ -396,6 +396,23 @@ fn an_order_naming_a_missing_column_is_refused_by_the_count() {
         refused.to_string().contains("house_ag"),
         "the refusal does not name the column: {refused}"
     );
+    // `ALL` is an order DuckDB takes alone but not before the tie-break the
+    // window read appends, so the count refuses what the window would.
+    for order in ["ALL", "all desc"] {
+        let v = view(None, Some(order));
+        assert!(
+            session
+                .step_rows_count_view(0, RowsAudience::Reader, &v)
+                .is_err(),
+            "{order}: the count took an order the window read refuses"
+        );
+        assert!(
+            session
+                .execute_step_rows_window_view(0, 0, 10, RowsAudience::Reader, &v)
+                .is_err(),
+            "{order}: the window read took it, so the count need not refuse it"
+        );
+    }
     assert_eq!(
         session
             .step_rows_count_view(0, RowsAudience::Reader, &view(None, Some("house_age DESC")))

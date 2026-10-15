@@ -683,3 +683,47 @@ fn a_chart_on_the_same_step_keeps_its_rows_under_the_grids_view() {
         "the applied view narrowed the chart"
     );
 }
+
+/// **`ALL` as an order is refused while it is typed**, because the grid's read
+/// puts its tie-break after the order and DuckDB takes `ALL` only alone; Enter
+/// applies nothing.
+#[test]
+fn all_as_an_order_is_refused_and_enter_applies_nothing() {
+    let mut win = Window::housing();
+    win.press_cell(2, HOUSE_AGE);
+    win.key(egui::Key::O);
+    win.app
+        .chart_doc_mut()
+        .foot_offer(FootField::OrderBy, String::new());
+    win.settle();
+    win.type_text("all");
+    assert!(
+        win.doc().grid_foot().refused(),
+        "`all` was taken as an order"
+    );
+    assert!(win.foot_status().is_some(), "the status band says nothing");
+    win.key(egui::Key::Enter);
+    assert_eq!(win.doc().grid_view().order, None, "`all` was applied");
+    assert_eq!(win.drawn().rows, 240);
+}
+
+/// **A field the last frame did not draw holds no keys**: with the grid laid
+/// out as columns the band is drawn nowhere, and Esc is left to the window.
+#[test]
+fn a_field_not_drawn_last_frame_holds_no_keys() {
+    let mut win = Window::housing();
+    win.press_cell(2, HOUSE_AGE);
+    win.key(egui::Key::W);
+    assert!(win.doc().grid_foot().holds_keys());
+
+    win.app
+        .set_grid_layout(brightfield_shell::app::GridLayout::Columns);
+    win.settle();
+    assert!(
+        win.doc().foot_drawn().is_none(),
+        "the band drew in the columns layout"
+    );
+    assert!(!win.doc().grid_foot().holds_keys());
+    win.key(egui::Key::Escape);
+    assert!(win.asking().is_some(), "a band drawn nowhere took the Esc");
+}
