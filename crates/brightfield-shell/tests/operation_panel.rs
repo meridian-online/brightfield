@@ -529,38 +529,3 @@ fn an_emptied_where_still_reads_as_asked() {
         "an empty `where` lost its marker: {drawn:?}"
     );
 }
-
-/// **A rail moved by hand during an ask is the user's**: Esc leaves it where
-/// they put it.
-///
-/// A press on the rail's control takes the keyboard from the field, which
-/// ends the asking on its own, so this holds the outcome rather than the
-/// window forgetting the rail on the press itself: no key toggles the rail
-/// while the field keeps the keyboard.
-#[test]
-fn a_rail_toggled_by_hand_during_an_ask_is_left_alone_by_escape() {
-    let mut win = Window::housing(Some(runner()));
-    win.press_cell(2, HOUSE_AGE);
-    win.keystroke(egui::Key::W, "w");
-    assert!(win.showing_operation_pane());
-    // Collapse it by hand, then open it again, while the field still asks.
-    for _ in 0..2 {
-        let collapse = win
-            .app
-            .rail_collapse_rect(INSPECTOR_RAIL)
-            .expect("the rail draws its control");
-        win.click(collapse.center());
-    }
-    assert!(!win.app.rail_is_collapsed(INSPECTOR_RAIL));
-    // The clicks took the keyboard from the field; give it back by the band.
-    if win.doc().foot_asking().is_none() {
-        let band = win.doc().foot_drawn().expect("the band drew").rect;
-        win.click(egui::pos2(band.left() + 80.0, band.center().y));
-    }
-    assert!(win.doc().foot_asking().is_some());
-    win.key(egui::Key::Escape);
-    assert!(
-        !win.app.rail_is_collapsed(INSPECTOR_RAIL),
-        "Esc shut a rail the user had opened by hand"
-    );
-}

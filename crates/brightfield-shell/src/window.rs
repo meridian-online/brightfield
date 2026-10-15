@@ -2294,8 +2294,8 @@ pub struct MeridianApp {
     descriptions: Option<crate::operation::Descriptions>,
     /// How the Inspector rail stood before the key that asked the field at the
     /// grid's foot moved it to the operation panel, so Esc from the field puts
-    /// it back. `None` when no key moved it, or the user has moved it by hand
-    /// since.
+    /// it back. `None` when no key moved it, or the asking it moved the rail
+    /// for has ended, however it ended ([`Self::sync_operation`]).
     rail_before_ask: Option<RailBeforeAsk>,
     /// Where each Save of the chart records a version. `None` until
     /// [`MeridianApp::keeping_history`] gives one, so a window built without it,
@@ -5258,11 +5258,6 @@ impl MeridianApp {
             if let Some(next) = picks.inspector {
                 self.inspector_panel = next;
                 self.collapsed.remove(&arrangement::INSPECTOR_RAIL);
-            }
-            // A rail the user moves by hand is theirs: Esc from the field no
-            // longer puts it back.
-            if picks.inspector.is_some() || picks.collapse.contains(&arrangement::INSPECTOR_RAIL) {
-                self.rail_before_ask = None;
             }
             if picks.run {
                 self.run_protocol(&ctx);
