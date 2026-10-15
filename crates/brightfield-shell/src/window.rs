@@ -3686,6 +3686,21 @@ impl MeridianApp {
     /// band does from the next frame on. For a capture whose script is fixed
     /// before the window lays out, and so cannot aim a click at the switch.
     pub fn set_grid_layout(&mut self, layout: crate::app::GridLayout) {
+        self.take_grid_layout(layout, None);
+    }
+
+    /// Put the grid in `layout`. **The foot row is drawn only in the rows
+    /// layout**, so a field of it being asked is put back as Esc puts it back
+    /// when the grid leaves that layout, rail and all, rather than left asking
+    /// where no band draws it. `ctx`, when there is one, takes the keyboard
+    /// back from the field.
+    fn take_grid_layout(&mut self, layout: crate::app::GridLayout, ctx: Option<&egui::Context>) {
+        if layout != crate::app::GridLayout::Rows && self.charts.doc.foot_asking().is_some() {
+            if let (Some(field), Some(ctx)) = (self.charts.doc.foot_cancel(), ctx) {
+                ctx.memory_mut(|m| m.surrender_focus(field.id()));
+            }
+            self.restore_rail_after_ask();
+        }
         self.grid_layout = layout;
     }
 
@@ -5312,7 +5327,7 @@ impl MeridianApp {
             self.strips = strips;
             self.canvas_panes = canvas_panes;
             self.canvas_scroll = canvas_scroll;
-            self.grid_layout = grid_layout;
+            self.take_grid_layout(grid_layout, Some(ui.ctx()));
             self.canvas_split = canvas_split;
             // …and into the arrangement the shell saves, in the same
             // sentence. A drag that moved the edge and stopped there would be
@@ -6225,6 +6240,11 @@ impl MeridianApp {
     /// the help sheet lists for the grid are the keys that move it. A key is
     /// consumed whether or not the cursor could move, so a move off the
     /// table's edge does not fall through to a frame verb.
+    ///
+    /// The two keys that ask the foot row (`filter-rows-at-cursor` and
+    /// `sort-rows-at-cursor`) ask it only while the grid draws its rows
+    /// layout, the one layout that draws the row; in the columns layout they
+    /// are consumed and ask nothing.
     fn grid_cursor_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
         if graph_on_canvas
             || self.overlay.is_some()
@@ -6233,13 +6253,14 @@ impl MeridianApp {
         {
             return;
         }
+        let band_drawn = self.grid_layout == crate::app::GridLayout::Rows;
         for (token, longname) in self.grid_bindings.clone() {
             let asked = match longname {
                 "filter-rows-at-cursor" => {
-                    consume_token(ctx, token) && self.charts.doc.ask_where_at_cursor()
+                    consume_token(ctx, token) && band_drawn && self.charts.doc.ask_where_at_cursor()
                 }
                 "sort-rows-at-cursor" => {
-                    consume_token(ctx, token) && self.charts.doc.ask_order_at_cursor()
+                    consume_token(ctx, token) && band_drawn && self.charts.doc.ask_order_at_cursor()
                 }
                 _ => {
                     let Some(step) = crate::data_grid::CursorStep::of_verb(longname) else {

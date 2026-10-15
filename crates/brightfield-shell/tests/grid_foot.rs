@@ -23,6 +23,7 @@ use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp, GRID_FOOT_STATUS_ID};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_sql::ir::ScalarValue;
+use brightfield_workbench::arrangement::INSPECTOR_RAIL;
 
 fn data(name: &str) -> std::path::PathBuf {
     let path = std::path::PathBuf::from(name);
@@ -866,12 +867,15 @@ fn all_as_an_order_is_refused_and_enter_applies_nothing() {
     assert_eq!(win.drawn().rows, 240);
 }
 
-/// **A field the last frame did not draw holds no keys**: with the grid laid
-/// out as columns the band is drawn nowhere, and Esc is left to the window.
+/// **A field the grid stops drawing is put back**: with the grid laid out as
+/// columns the band is drawn nowhere, so the field being asked is put back as
+/// Esc puts it back, and holds no keys.
 #[test]
 fn a_field_not_drawn_last_frame_holds_no_keys() {
     let mut win = Window::housing();
     win.press_cell(2, HOUSE_AGE);
+    let collapsed = win.app.rail_is_collapsed(INSPECTOR_RAIL);
+    let pane = win.app.rail_pane_title(INSPECTOR_RAIL);
     win.key(egui::Key::W);
     assert!(win.doc().grid_foot().holds_keys());
 
@@ -883,8 +887,48 @@ fn a_field_not_drawn_last_frame_holds_no_keys() {
         "the band drew in the columns layout"
     );
     assert!(!win.doc().grid_foot().holds_keys());
-    win.key(egui::Key::Escape);
-    assert!(win.asking().is_some(), "a band drawn nowhere took the Esc");
+    assert!(
+        win.asking().is_none(),
+        "the field still asks, drawn nowhere"
+    );
+    assert_eq!(win.app.rail_is_collapsed(INSPECTOR_RAIL), collapsed);
+    assert_eq!(win.app.rail_pane_title(INSPECTOR_RAIL), pane);
+
+    win.app
+        .set_grid_layout(brightfield_shell::app::GridLayout::Rows);
+    win.settle();
+    assert!(win.asking().is_none(), "back in rows the field was asking");
+}
+
+/// **The keys that ask the foot row ask nothing in the columns layout**, the
+/// layout that draws no row: no field opens and the Inspector rail stays as
+/// it was.
+#[test]
+fn w_and_o_ask_nothing_in_the_columns_layout() {
+    let mut win = Window::housing();
+    win.press_cell(2, HOUSE_AGE);
+    win.app
+        .set_grid_layout(brightfield_shell::app::GridLayout::Columns);
+    win.settle();
+    let collapsed = win.app.rail_is_collapsed(INSPECTOR_RAIL);
+    let pane = win.app.rail_pane_title(INSPECTOR_RAIL);
+
+    for key in [egui::Key::W, egui::Key::O] {
+        win.key(key);
+        assert!(
+            win.asking().is_none(),
+            "{key:?} asked in the columns layout"
+        );
+        assert_eq!(win.app.rail_is_collapsed(INSPECTOR_RAIL), collapsed);
+        assert_eq!(win.app.rail_pane_title(INSPECTOR_RAIL), pane);
+    }
+
+    // The same key on the same cursor asks once the rows are back.
+    win.app
+        .set_grid_layout(brightfield_shell::app::GridLayout::Rows);
+    win.settle();
+    win.key(egui::Key::W);
+    assert_eq!(win.asking().map(|a| a.0), Some(FootField::Where));
 }
 
 /// **Under a chart's selection the count says so**, because the rows it counts
