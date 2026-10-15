@@ -1903,7 +1903,7 @@ impl Session {
     }
 
     /// [`Self::execute_step_rows_window`] under `view`: its condition narrows
-    /// the rows and its order, when set, leads the sort, with every column
+    /// the rows and its order, when set, leads the sort, with the step's columns
     /// after it so that ties between equal keys still fall in one fixed order
     /// and adjacent pages neither repeat nor lose a row.
     ///
@@ -1943,7 +1943,7 @@ impl Session {
                  ORDER BY ALL LIMIT {limit} OFFSET {offset}"
             ));
         };
-        // DuckDB takes `ALL` only as the whole ORDER BY, not after a list, so
+        // DuckDB rejects `ALL` after an order list (it is the whole ORDER BY or nothing), so
         // the tie-break names every column by position instead: the same total
         // order `ORDER BY ALL` gives. The order sits on lines of its own so a
         // trailing `--` comment ends before what follows it, and has no
@@ -4171,7 +4171,7 @@ fn gate_order(order: &str) -> Result<(), EngineError> {
     }
 }
 
-/// Push the last `column_names` element of every `COLUMN_REF` node under
+/// Push the last `column_names` element of each `COLUMN_REF` node under
 /// `node` onto `out`, skipping a name already there.
 fn collect_column_refs(node: &serde_json::Value, out: &mut Vec<String>) {
     match node {
