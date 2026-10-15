@@ -348,6 +348,14 @@ pub fn data_file_named_by(text: &str, dir: &Path) -> Option<PathBuf> {
     let [step] = manifest.steps.as_slice() else {
         return None;
     };
+    data_file_of_load(step, dir)
+}
+
+/// The data file `step` loads, when it is a `sql:` step with exactly one
+/// `depends_on:` entry that resolves against `dir` to a file this build opens.
+/// [`data_file_named_by`] asks it of a lone step; the reader of a folder that
+/// holds generated steps after the load asks it of the first.
+pub(crate) fn data_file_of_load(step: &brightfield_protocol::Step, dir: &Path) -> Option<PathBuf> {
     step.sql.as_ref()?;
     let [dep] = step.depends_on.as_slice() else {
         return None;
