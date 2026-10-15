@@ -16,7 +16,7 @@ use brightfield_engine::RowsAudience;
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::data_grid::{GridCursor, TableDrawn};
 use brightfield_shell::design::Mode;
-use brightfield_shell::grid_foot::{FootField, FOOT_BAND_HEIGHT};
+use brightfield_shell::grid_foot::{count_text, FootField, FOOT_BAND_HEIGHT};
 use brightfield_shell::pipeline::LiveDashboard;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp, GRID_FOOT_STATUS_ID};
@@ -623,8 +623,21 @@ fn a_condition_and_an_order_hold_together() {
         win.press_cell(0, 0);
         win.cursor_value().parse().unwrap()
     };
-    let rows: Vec<f64> = housing_median_incomes();
-    assert!(rows.iter().any(|v| (v - top).abs() < 1e-9));
+    // The first row is the largest income among the rows the condition
+    // keeps, as the engine counts them.
+    let above = win
+        .engine_count(&format!("({condition}) AND median_income > {top} + 1e-6"))
+        .unwrap();
+    assert_eq!(
+        above, 0,
+        "{above} kept rows earn more than the top row's {top}"
+    );
+    let at = win
+        .engine_count(&format!(
+            "({condition}) AND abs(median_income - {top}) < 1e-6"
+        ))
+        .unwrap();
+    assert!(at > 0, "no kept row earns the top row's {top}");
 }
 
 /// **A refused order keeps the rows**: `median_income; select 1` is not one
@@ -850,4 +863,23 @@ fn a_field_not_drawn_last_frame_holds_no_keys() {
     assert!(!win.doc().grid_foot().holds_keys());
     win.key(egui::Key::Escape);
     assert!(win.asking().is_some(), "a band drawn nowhere took the Esc");
+}
+
+/// **Under a chart's selection the count says so**, because the rows it counts
+/// are narrowed by the selection as well as the condition, and Save records
+/// the condition alone.
+#[test]
+fn the_count_says_when_a_selection_narrows_it() {
+    assert_eq!(count_text(1_240, 9, false), "1,240 rows \u{b7} 9 columns");
+    assert_eq!(
+        count_text(12, 9, true),
+        "12 rows under the current selection \u{b7} 9 columns"
+    );
+    let mut win = Window::housing();
+    assert!(!win.doc().selection_active());
+    win.settle();
+    assert_eq!(
+        win.doc().foot_drawn().expect("the band drew").count,
+        count_text(240, win.drawn().columns, false)
+    );
 }

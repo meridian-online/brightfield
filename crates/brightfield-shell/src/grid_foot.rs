@@ -38,6 +38,12 @@
 //! chart over that step keeps its rows, and after Save the charts still draw
 //! from the load.
 //!
+//! **Save records the condition alone, not a chart's selection.** While a
+//! crossfilter selection is live the grid's rows are narrowed by it as well as
+//! by the condition, so the band's count says it is under the current selection
+//! ([`count_text`]); the step Save records keeps the rows the condition keeps,
+//! whatever was selected when it was saved.
+//!
 //! **The row works on the loaded table's grid.** On a generated step's grid the
 //! band shows the step's own argument read-only, and the key puts the reason on
 //! the status band: a step without a run offers Run, and one that has run says
@@ -653,6 +659,25 @@ fn select_value(ctx: &egui::Context, asking: &Asking) {
     egui::TextEdit::store_state(ctx, id, state);
 }
 
+/// The count at the band's trailing end: `240 rows · 9 columns`, or, while a
+/// chart's selection narrows the grid, `12 rows under the current selection ·
+/// 9 columns`, so a count read off the band is not taken for the condition's
+/// alone: Save records the condition and not the selection.
+#[must_use]
+pub fn count_text(rows: u64, columns: usize, under_selection: bool) -> String {
+    use brightfield_model::profile_model::thousands;
+    let under = if under_selection {
+        " under the current selection"
+    } else {
+        ""
+    };
+    format!(
+        "{} rows{under} \u{b7} {} columns",
+        thousands(rows),
+        thousands(columns as u64)
+    )
+}
+
 /// **Draw the band in `rect`**: each field after its word, the not-recorded dot
 /// on a field whose applied text is in no file, and the count of `rows` and
 /// `columns` at the trailing end.
@@ -676,7 +701,6 @@ pub fn foot_band(
     fixed: Option<&[String; 2]>,
     mode: Mode,
 ) -> FootOutcome {
-    use brightfield_model::profile_model::thousands;
     let sem = semantic(mode.is_dark());
     let painter = ui.painter_at(rect);
     let muted = chrome::colour(sem.text.muted);
@@ -695,11 +719,7 @@ pub fn foot_band(
     let count = if fixed.is_some() {
         crate::data_grid::PREVIEW_COUNT.to_owned()
     } else {
-        format!(
-            "{} rows \u{b7} {} columns",
-            thousands(rows),
-            thousands(columns as u64)
-        )
+        count_text(rows, columns, doc.selection_active())
     };
     let pad = spacing::SPACE_2;
     let count_galley = painter.layout_no_wrap(count.clone(), font.clone(), muted);

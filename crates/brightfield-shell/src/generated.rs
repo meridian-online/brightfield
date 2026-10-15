@@ -469,7 +469,7 @@ fn slug(text: &str) -> String {
 /// A name for a new step by its effect: `<root>_<word>_by_<column>` when a
 /// filter's condition names exactly one column or a sort has any (its first),
 /// `<root>_<word>` otherwise, and a
-/// numeric suffix when the name is taken.
+/// numeric suffix when the name is taken, in any case.
 ///
 /// The column and the root are slugged first, so the name is one arc's step-name
 /// check admits.
@@ -493,12 +493,16 @@ pub fn step_name_for(
         Some(col) if !col.is_empty() => format!("{root}_{}_by_{col}", operation.word()),
         _ => format!("{root}_{}", operation.word()),
     };
-    if !taken.contains(&base) {
+    // DuckDB's table names are not case-sensitive, so `HOUSE_AGE` is taken by
+    // a step named `house_age`.
+    let taken: BTreeSet<String> = taken.iter().map(|t| t.to_lowercase()).collect();
+    let free = |c: &String| !taken.contains(&c.to_lowercase());
+    if free(&base) {
         return base;
     }
     (2..)
         .map(|n| format!("{base}_{n}"))
-        .find(|c| !taken.contains(c))
+        .find(free)
         .unwrap_or(base)
 }
 
@@ -610,6 +614,20 @@ mod tests {
             &taken(&["x_sorted", "x_sorted_2"]),
         );
         assert_eq!(name, "x_sorted_3");
+    }
+
+    #[test]
+    fn a_name_taken_in_another_case_gets_a_suffix() {
+        let name = step_name_for(
+            KnownOperation::FilterRows,
+            "Housing",
+            &cols(&["HOUSE_AGE"]),
+            &taken(&[
+                "housing_filtered_by_house_age",
+                "HOUSING_FILTERED_BY_HOUSE_AGE_2",
+            ]),
+        );
+        assert_eq!(name, "Housing_filtered_by_HOUSE_AGE_3");
     }
 
     #[test]
