@@ -52,29 +52,31 @@ jobs:
     # kittest.toml — do NOT blanket-loosen the floor to make it green.
     # ---------------------------------------------------------------------
     runs-on: macos-15
-    # The ceiling is each shard's own, from its `timeout` in the matrix below.
-    # Each is 1.25 times that shard's slowest warm run in the table, rounded up
-    # to a whole minute, and is never lowered below the one it replaces. A
-    # shard's time is its job's start to its end, in minutes. The runs are the
-    # six green runs 38191865784, 38301132291, 38304447941, 38344717939,
-    # 38346718201 and 38356362413, and the first attempt of run 38362995731,
-    # where default-2 was cancelled at its old 24-minute ceiling (a lower bound
-    # on that shard's time, counted as its slowest). Every one restored the
-    # cache `main` saved.
+    # The ceiling is the `timeout` in the matrix below, the same 36 minutes for
+    # every shard, because the `target-seconds:` figures further down pack the
+    # shards to within a minute of each other's test time on the runs they
+    # were measured from. A shard's time is
+    # about 10 minutes the shards all pay (restoring the cache, reclaiming
+    # disk, compiling) plus its share of the tests, about 13 minutes. Three
+    # measures set the figure:
     #
-    #   shard         fastest  slowest   ceiling
-    #   one-thread-1     16.8     21.6        27
-    #   one-thread-2     17.5     20.6        36   (28.5 in an earlier run)
-    #   default-1        15.0     18.3        24
-    #   default-2        14.9    >25.2        32
-    #   default-3        13.6     20.5        26
+    #   - The slowest warm shard measured was cancelled at its old 27-minute
+    #     ceiling 27.9 minutes after it started (one-thread-1, run
+    #     38801679565), a lower bound on that shard's time.
+    #     1.25 times it is 35.
+    #   - A pull request that changes `Cargo.lock` misses the cache key and
+    #     restores an older cache, so it compiles the changed crates again:
+    #     10.5 minutes against 3.5 warm on run 38775072378, whose three
+    #     cancelled shards were stopped by their ceilings and not by a test.
+    #     That puts a balanced shard near 30.
+    #   - No ceiling is lowered below the one it replaces, and the highest was
+    #     36.
     #
-    # A warm run restores the cache `main` saved. A run that restores none
-    # compiles every dependency: the one run made that way (run 37898248271,
-    # before the cache key was set) took 26.8 to 34.1 minutes on four of its
-    # shards, and these ceilings are not sized for it. Raise them for any run
-    # that is expected to restore no cache, and derive them again from recent
-    # warm runs when the shards change or a shard is cancelled at its ceiling.
+    # A run that restores no cache at all compiles every dependency: the one
+    # run made that way (run 37898248271, before the cache key was set) took
+    # 26.8 to 34.1 minutes on four of its shards with the shards unbalanced.
+    # When a shard is cancelled at the ceiling, measure the targets again from
+    # recent runs and refresh the `target-seconds:` lines before raising it.
     timeout-minutes: ${{ matrix.timeout }}
 
     # `fail-fast: false` because a red shard must not cancel the others: a run
@@ -90,15 +92,15 @@ jobs:
       matrix:
         include:
           - name: one-thread-1
-            timeout: 27
+            timeout: 36
           - name: one-thread-2
             timeout: 36
           - name: default-1
-            timeout: 24
+            timeout: 36
           - name: default-2
-            timeout: 32
+            timeout: 36
           - name: default-3
-            timeout: 26
+            timeout: 36
 
     # The shard names itself to the command in these four variables; with
     # none of them set, as on a person's machine, a test step runs its whole
@@ -327,30 +329,49 @@ jobs:
       # metadata`, runs only its own part, and prints all of them, so each
       # target runs on exactly one shard and a target nobody weighed still
       # runs. A local `cargo xtask ci` runs each whole group instead. The seconds are the `target-seconds:` lines below: the length of
-      # each target's `test result:` on `main` run 37873286168, for every
-      # target of 20 seconds or more, plus four stand-ins. `@lib`, `@bins` and
+      # each target's `test result:`, the longer of `main` run 38801331864 and
+      # pull request run 38775011347, rounded up, for every target of 10
+      # seconds or more, plus four stand-ins. `@lib`, `@bins` and
       # `@doc` are the three groups cargo selects by flag and not by name, and
       # `@protocols` is the two steps that run after the suite on the last
       # shard. A target with no line counts as 2 seconds. A figure gone stale
       # makes one shard longer than the others and loses no target.
-      # target-seconds: @bins=18 @doc=2 @lib=38 @protocols=30
-      # target-seconds: automatic_sample=42 axis_vocabulary_rows_past=28
-      # target-seconds: canvas_pane_group=54 chart_save_close_asks=24
-      # target-seconds: chart_save_reopens_chart=25
-      # target-seconds: chart_save_reopens_relative=44
-      # target-seconds: chart_save_writes_chart=29 close_question_baseline=26
-      # target-seconds: close_question_keeps_unsaved=34 colour_literals=41
-      # target-seconds: dashboard_baseline=113 examples_exercise=38
-      # target-seconds: front_door=71 grid_spot=40 legend_short_chart=31
-      # target-seconds: navigation_extent=22 navigator_spine=30
-      # target-seconds: open_materialise=74 protocol_frame_crop=22
-      # target-seconds: sampled_export=76 saved_protocol_working_directory=25
-      # target-seconds: shelf_band_window=46 shelf_column_route=63
-      # target-seconds: shelf_fallback=81 shelf_rebind=95 shelf_save=70
-      # target-seconds: shelf_settings_format=35 shelf_settings_typed=107
-      # target-seconds: shelf_settings_write=40 shelf_undo=139 surfaces=126
-      # target-seconds: tile_scale_switch=20 versions_panel=87
-      # target-seconds: versions_step_back=131 workflow_graph_baseline=20
+      # target-seconds: @bins=19 @doc=2 @lib=44 @protocols=30
+      # target-seconds: automatic_sample=43 axis_vocabulary_inert=15
+      # target-seconds: axis_vocabulary_rows_past=30 canvas_pane_group=65
+      # target-seconds: chart_save_close_asks=29 chart_save_records_version=22
+      # target-seconds: chart_save_reopens_chart=34
+      # target-seconds: chart_save_reopens_relative=48
+      # target-seconds: chart_save_unsaved_mark=19 chart_save_writes_chart=37
+      # target-seconds: close_question_baseline=28
+      # target-seconds: close_question_keeps_unsaved=37 colour_literals=46
+      # target-seconds: colour_vocabulary_domain=18 committed_brush_move=13
+      # target-seconds: dashboard_baseline=119 data_file=12 examples_exercise=38
+      # target-seconds: frame_ink=11 front_door=93 generated_reopen=87
+      # target-seconds: generated_steps=26 ghosted_histogram=11 grid_foot=38
+      # target-seconds: grid_spot=52 hover_readout=16 interval_slider=15
+      # target-seconds: keyed_canvas=17 legend_baseline=21 legend_ring=18
+      # target-seconds: legend_ring_baseline=84 legend_short_chart=41
+      # target-seconds: legend_steps=14 legend_transform_baseline=11
+      # target-seconds: log_binned_histogram=13 navigation_extent=27
+      # target-seconds: navigator_spine=32 one_step_protocol=13
+      # target-seconds: open_materialise=71 operation_from_the_cursor=18
+      # target-seconds: operation_panel=15 outline_list=20
+      # target-seconds: protocol_degrade_channel=13 protocol_frame_crop=30
+      # target-seconds: ranked_category_bars=18 region_gate=15
+      # target-seconds: reload_data_file=12 run_control=23 sampled_export=88
+      # target-seconds: save_records_operation=42
+      # target-seconds: saved_protocol_working_directory=30 scripted_open=16
+      # target-seconds: shelf_band=17 shelf_band_window=59 shelf_column_route=80
+      # target-seconds: shelf_edit=27 shelf_fallback=124 shelf_rebind=95
+      # target-seconds: shelf_save=69 shelf_settings_axis_click=115
+      # target-seconds: shelf_settings_colour_window=285
+      # target-seconds: shelf_settings_format=36 shelf_settings_range_window=65
+      # target-seconds: shelf_settings_typed=122 shelf_settings_window=18
+      # target-seconds: shelf_settings_write=50 shelf_undo=179 sorted_bar_ink=11
+      # target-seconds: square_look=16 surfaces=128 text_ink_frame=12
+      # target-seconds: tile_scale_switch=22 versions_panel=120
+      # target-seconds: versions_step_back=179 workflow_graph_baseline=20
       #
       # `--locked` because Cargo.lock is tracked: without it CI would happily
       # re-resolve around the committed lock and go green on a dependency graph
