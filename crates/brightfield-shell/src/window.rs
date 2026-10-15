@@ -3076,7 +3076,8 @@ impl MeridianApp {
     /// closes is exactly a window that says it has something to lose.
     #[must_use]
     pub fn carries_unsaved_mark(&self) -> bool {
-        self.charts.doc.has_unsaved_edit() && !self.front_door_is_live()
+        (self.charts.doc.has_unsaved_edit() || self.charts.doc.grid_view_unrecorded())
+            && !self.front_door_is_live()
     }
 
     /// [`Self::title`] without the unsaved mark: the name of the subject, for

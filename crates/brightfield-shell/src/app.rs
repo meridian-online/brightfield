@@ -892,6 +892,17 @@ pub struct ChartDoc {
     /// by a key's move and spent by that draw — see
     /// [`crate::data_grid::TableCursor::reveal`].
     pub grid_cursor_reveal: bool,
+    /// **The view the data grid reads through** — a condition and an order
+    /// over the step in front, applied to the grid's rows and to nothing else.
+    /// The charts on the same step keep the rows the load gave them. Empty
+    /// means the whole table. It is not in any file until a Save records it,
+    /// so a non-empty view marks the document unsaved
+    /// ([`Self::grid_view_unrecorded`]); cleared when the document is
+    /// replaced, since it named rows of the replaced document's table.
+    pub grid_view: brightfield_engine::RowsView,
+    /// Whether [`Self::grid_view`] has been recorded to a file. Set by
+    /// [`Self::apply_grid_view`] to `false`.
+    grid_view_recorded: bool,
     /// **Whether a pointer gesture is holding a page origin**, as of the last
     /// frame the chart pane drew.
     ///
@@ -1237,6 +1248,8 @@ impl ChartDoc {
             grid_density: None,
             grid_cursor: None,
             grid_cursor_reveal: false,
+            grid_view: brightfield_engine::RowsView::default(),
+            grid_view_recorded: true,
             grid_layout_switch: None,
             grid_spot_switch: None,
             transposed_rows: Vec::new(),
@@ -1298,6 +1311,8 @@ impl ChartDoc {
             grid_density: None,
             grid_cursor: None,
             grid_cursor_reveal: false,
+            grid_view: brightfield_engine::RowsView::default(),
+            grid_view_recorded: true,
             grid_layout_switch: None,
             grid_spot_switch: None,
             transposed_rows: Vec::new(),
@@ -1418,6 +1433,8 @@ impl ChartDoc {
         self.grid_density = None;
         self.grid_cursor = None;
         self.grid_cursor_reveal = false;
+        self.grid_view = brightfield_engine::RowsView::default();
+        self.grid_view_recorded = true;
         self.grid_layout_switch = None;
         self.grid_spot_switch = None;
         self.transposed_rows = Vec::new();
@@ -1486,6 +1503,29 @@ impl ChartDoc {
     #[must_use]
     pub const fn has_unsaved_edit(&self) -> bool {
         !self.pending_edits.is_empty() || self.stepped_back.is_some()
+    }
+
+    /// Apply `view` to the data grid. The grid's next draw reads through it;
+    /// the cache is keyed on it, so no page read through the previous view is
+    /// shown. An empty view shows the whole table and leaves nothing unrecorded.
+    pub fn apply_grid_view(&mut self, view: brightfield_engine::RowsView) {
+        self.grid_view_recorded = false;
+        self.grid_view = view;
+    }
+
+    /// Whether the applied grid view is neither empty nor recorded: the grid
+    /// shows rows no file says it should.
+    #[must_use]
+    pub fn grid_view_unrecorded(&self) -> bool {
+        !self.grid_view_recorded && self.grid_view != brightfield_engine::RowsView::default()
+    }
+
+    /// The applied grid view has been recorded, so the row holds no part of it
+    /// that is not in a file. Clears the applied view: the recorded part leaves
+    /// the row, and the whole table shows again.
+    pub fn mark_grid_view_recorded(&mut self) {
+        self.grid_view = brightfield_engine::RowsView::default();
+        self.grid_view_recorded = true;
     }
 
     /// **Save the chart beside the Protocol: write the edits made since the

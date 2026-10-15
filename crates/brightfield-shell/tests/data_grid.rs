@@ -26,7 +26,7 @@
 //!    the five-state workbench vocabulary and no second one.
 
 use brightfield_engine::coordinator::{Coordinator, Interaction};
-use brightfield_engine::{RecordBatch, RowsAudience, SqlPredicate};
+use brightfield_engine::{RecordBatch, RowsAudience, RowsView, SqlPredicate};
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::data_grid::{fetch_page, DataGridItem, GridPage, PAGE_PAD};
 use brightfield_shell::design::Mode;
@@ -138,8 +138,14 @@ fn a_window_of_a_million_row_table_returns_only_the_window() {
 
     // The read the grid scrolls with: a mid-table window, sized like a
     // viewport. Only the window comes back.
-    let page =
-        fetch_page(session, 0, 500_000..500_100, RowsAudience::Reader).expect("window fetch");
+    let page = fetch_page(
+        session,
+        0,
+        500_000..500_100,
+        RowsAudience::Reader,
+        &RowsView::default(),
+    )
+    .expect("window fetch");
     assert_eq!(page.rows.len(), 100, "exactly the window, nothing more");
     assert_eq!(page.window, 500_000..500_100);
     assert_eq!(
@@ -158,8 +164,14 @@ fn a_window_of_a_million_row_table_returns_only_the_window() {
     assert_eq!(page.rows[0][0].text, "500000");
 
     // A window at the tail clamps rather than reading past the end.
-    let tail =
-        fetch_page(session, 0, 999_990..1_000_000, RowsAudience::Reader).expect("tail fetch");
+    let tail = fetch_page(
+        session,
+        0,
+        999_990..1_000_000,
+        RowsAudience::Reader,
+        &RowsView::default(),
+    )
+    .expect("tail fetch");
     assert_eq!(tail.rows.len(), 10);
     assert_eq!(tail.rows[9][0].text, "999999");
 }
@@ -176,7 +188,14 @@ fn the_windowed_reads_bypass_the_mark_caches() {
 
     let session = coord.session();
     for start in [0_u64, 1, 2, 3] {
-        let _ = fetch_page(session, 0, start..start + 2, RowsAudience::Reader).expect("window");
+        let _ = fetch_page(
+            session,
+            0,
+            start..start + 2,
+            RowsAudience::Reader,
+            &RowsView::default(),
+        )
+        .expect("window");
         let _ = session
             .step_rows_count(0, RowsAudience::Reader)
             .expect("count");
@@ -241,12 +260,26 @@ fn re_reading_one_window_of_an_order_unstable_source_is_byte_identical() {
     // time, is the contract a scrollbar rests on.
     let window = 2_000..2_100;
     let first = page_texts(
-        &fetch_page(session, 0, window.clone(), RowsAudience::Reader).expect("first read"),
+        &fetch_page(
+            session,
+            0,
+            window.clone(),
+            RowsAudience::Reader,
+            &RowsView::default(),
+        )
+        .expect("first read"),
     );
     assert_eq!(first.len(), 100, "exactly the window came back");
     for read in 1..=5 {
         let again = page_texts(
-            &fetch_page(session, 0, window.clone(), RowsAudience::Reader).expect("re-read"),
+            &fetch_page(
+                session,
+                0,
+                window.clone(),
+                RowsAudience::Reader,
+                &RowsView::default(),
+            )
+            .expect("re-read"),
         );
         assert_eq!(
             again, first,
@@ -264,8 +297,16 @@ fn adjacent_windows_of_an_order_unstable_source_tile_the_full_read() {
         .expect("count");
 
     // The whole step in one ordered read — the reference row set.
-    let full =
-        page_texts(&fetch_page(session, 0, 0..total, RowsAudience::Reader).expect("full read"));
+    let full = page_texts(
+        &fetch_page(
+            session,
+            0,
+            0..total,
+            RowsAudience::Reader,
+            &RowsView::default(),
+        )
+        .expect("full read"),
+    );
     assert_eq!(full.len(), total as usize);
 
     // The same step as adjacent windows, sized to misalign with any internal
@@ -278,7 +319,14 @@ fn adjacent_windows_of_an_order_unstable_source_tile_the_full_read() {
     while start < total {
         let end = (start + 97).min(total);
         tiled.extend(page_texts(
-            &fetch_page(session, 0, start..end, RowsAudience::Reader).expect("page"),
+            &fetch_page(
+                session,
+                0,
+                start..end,
+                RowsAudience::Reader,
+                &RowsView::default(),
+            )
+            .expect("page"),
         ));
         start = end;
     }
@@ -331,6 +379,7 @@ fn the_grids_windowed_read_agrees_with_the_chart_under_a_brush() {
                 mark,
                 start..(start + 2).min(total),
                 RowsAudience::Plot,
+                &RowsView::default(),
             )
             .expect("page");
             assert!(page.rows.len() <= 2, "no page exceeds its window");
@@ -443,13 +492,21 @@ fn the_rows_pane_reads_the_filtered_layer_and_drops_no_contributors_clause() {
     );
 
     // …and the rows themselves, through the code the pane scrolls with.
-    let page = fetch_page(session, mark, 0..2, RowsAudience::Reader).expect("page");
+    let page = fetch_page(
+        session,
+        mark,
+        0..2,
+        RowsAudience::Reader,
+        &RowsView::default(),
+    )
+    .expect("page");
     assert_eq!(
         page_texts(&page),
         vec![vec!["4".to_string()], vec!["5".to_string()]],
         "the pane's own read path lists the rows inside the brush"
     );
-    let ghost_page = fetch_page(session, 0, 0..2, RowsAudience::Reader).expect("ghost page");
+    let ghost_page = fetch_page(session, 0, 0..2, RowsAudience::Reader, &RowsView::default())
+        .expect("ghost page");
     assert_eq!(
         page_texts(&ghost_page),
         vec![vec!["1".to_string()], vec!["2".to_string()]],
@@ -930,4 +987,73 @@ fn data_grid_light_snapshot() {
 #[test]
 fn data_grid_dark_snapshot() {
     grid_snapshot(Mode::Dark, "data_grid_dark");
+}
+
+// ---------------------------------------------------------------------------
+// The grid reads through the document's view.
+// ---------------------------------------------------------------------------
+
+/// Five houses, two of them 28 years old.
+const HOUSES: &str = r#"
+data:
+  t:
+    - { id: a, house_age: 10 }
+    - { id: b, house_age: 28 }
+    - { id: c, house_age: 28 }
+    - { id: d, house_age: 40 }
+    - { id: e, house_age: 52 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: house_age
+    y: house_age
+"#;
+
+fn age_is(n: u32) -> RowsView {
+    RowsView {
+        condition: Some(format!("house_age = {n}")),
+        order: None,
+    }
+}
+
+#[test]
+fn an_applied_condition_reads_only_the_rows_it_keeps() {
+    let mut harness = grid_harness(live_doc(HOUSES));
+    harness.run();
+    harness.state_mut().0.apply_grid_view(age_is(28));
+    harness.run();
+    let shown = harness.state().0.grid_drawn().expect("table").rows;
+    let engine = harness
+        .state_mut()
+        .0
+        .live_coordinator()
+        .expect("live")
+        .session()
+        .step_rows_count_where(0, RowsAudience::Reader, "house_age = 28")
+        .expect("count");
+    assert_eq!(engine, 2);
+    assert_eq!(shown, engine, "the grid counts what the engine keeps");
+}
+
+#[test]
+fn changing_the_view_is_never_served_from_the_unfiltered_cache() {
+    let mut harness = grid_harness(live_doc(HOUSES));
+    harness.run();
+    assert_eq!(harness.get_all_by_label("10").count(), 1);
+    harness.state_mut().0.apply_grid_view(age_is(28));
+    harness.run();
+    assert_eq!(harness.query_all_by_label("10").count(), 0);
+    assert_eq!(harness.get_all_by_label("28").count(), 2);
+}
+
+#[test]
+fn clearing_the_view_restores_the_whole_table() {
+    let mut harness = grid_harness(live_doc(HOUSES));
+    harness.run();
+    harness.state_mut().0.apply_grid_view(age_is(28));
+    harness.run();
+    harness.state_mut().0.apply_grid_view(RowsView::default());
+    harness.run();
+    assert_eq!(harness.state().0.grid_drawn().expect("table").rows, 5);
+    assert_eq!(harness.get_all_by_label("10").count(), 1);
 }

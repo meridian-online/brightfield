@@ -512,3 +512,22 @@ fn opening_a_data_file_after_an_edit_starts_unmarked() {
         live.app.title()
     );
 }
+
+/// An applied grid view is a change the file does not hold, so the title says
+/// so; clearing it, or recording it, takes the mark away.
+#[test]
+fn an_applied_view_raises_the_unsaved_mark() {
+    let mut live = Live::open(housing_boot());
+    live.settle();
+    assert!(!live.app.carries_unsaved_mark());
+    live.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("house_age = 28".to_string()),
+            order: None,
+        });
+    live.settle();
+    assert!(live.app.carries_unsaved_mark());
+    live.app.chart_doc_mut().mark_grid_view_recorded();
+    assert!(!live.app.carries_unsaved_mark());
+}

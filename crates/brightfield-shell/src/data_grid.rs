@@ -100,7 +100,7 @@ use arrow::compute::cast;
 use arrow::datatypes::DataType;
 
 use brightfield_engine::error::EngineError;
-use brightfield_engine::{RecordBatch, RowsAudience, Session};
+use brightfield_engine::{RecordBatch, RowsAudience, RowsView, Session};
 use brightfield_keys::BindingContext;
 use brightfield_protocol::{sheet, StepRow};
 use brightfield_workbench::registry::Slot;
@@ -1181,9 +1181,11 @@ pub fn fetch_page(
     mark_index: usize,
     window: Range<u64>,
     audience: RowsAudience,
+    view: &RowsView,
 ) -> Result<GridPage, EngineError> {
     let limit = window.end.saturating_sub(window.start);
-    let batches = session.execute_step_rows_window(mark_index, window.start, limit, audience)?;
+    let batches =
+        session.execute_step_rows_window_view(mark_index, window.start, limit, audience, view)?;
     let (columns, rows) = tabulate(&batches);
     let held = window.start..window.start + rows.len() as u64;
     Ok(GridPage {
@@ -1256,6 +1258,11 @@ pub struct GridCache {
     /// would otherwise serve the previous document's rows under the new one's
     /// mark.
     mark: Option<usize>,
+    /// The view the held rows were read through, a third key beside the
+    /// generation and the mark: a condition or an order changes which rows
+    /// the window holds, so rows read through another view must never be
+    /// served under this one.
+    view: RowsView,
     /// `count(*)` over the step's rows SQL at that generation.
     total: u64,
     /// The step's columns.
@@ -1290,6 +1297,7 @@ pub struct EngineRows<'a> {
     session: &'a Session,
     mark_index: usize,
     generation: u64,
+    view: &'a RowsView,
     cache: &'a mut GridCache,
 }
 
@@ -1304,10 +1312,14 @@ impl<'a> EngineRows<'a> {
         session: &'a Session,
         mark_index: usize,
         generation: u64,
+        view: &'a RowsView,
         cache: &'a mut GridCache,
     ) -> Self {
-        if cache.generation != Some(generation) || cache.mark != Some(mark_index) {
-            match session.step_rows_count(mark_index, RowsAudience::Reader) {
+        if cache.generation != Some(generation)
+            || cache.mark != Some(mark_index)
+            || cache.view != *view
+        {
+            match session.step_rows_count_view(mark_index, RowsAudience::Reader, view) {
                 Ok(total) => {
                     cache.total = total;
                     cache.error = None;
@@ -1322,6 +1334,7 @@ impl<'a> EngineRows<'a> {
             cache.rows.clear();
             cache.generation = Some(generation);
             cache.mark = Some(mark_index);
+            cache.view = view.clone();
         }
         // The schema has to exist before the table can lay out at all — the
         // column count is the table's shape — and it only arrives with a
@@ -1334,6 +1347,7 @@ impl<'a> EngineRows<'a> {
                 mark_index,
                 0..cache.total.min(PAGE_PAD),
                 RowsAudience::Reader,
+                view,
             ) {
                 Ok(page) => {
                     cache.window = page.window;
@@ -1349,6 +1363,7 @@ impl<'a> EngineRows<'a> {
             session,
             mark_index,
             generation,
+            view,
             cache,
         }
     }
@@ -1381,6 +1396,7 @@ impl RowSource for EngineRows<'_> {
             self.mark_index,
             start..end,
             RowsAudience::Reader,
+            self.view,
         ) {
             Ok(page) => {
                 self.cache.window = page.window;
@@ -1828,13 +1844,14 @@ impl Item<ChartDoc> for DataGridItem {
             at: doc.grid_cursor,
             reveal: std::mem::take(&mut doc.grid_cursor_reveal),
         };
+        let view = doc.grid_view.clone();
         doc.activity.begin(Activity::EngineQuery);
         let mut drawn = None;
         let mut names = Vec::new();
         if let Some(coordinator) = doc.live_coordinator() {
             let generation = coordinator.generation();
             let session = coordinator.session();
-            let mut source = EngineRows::new(session, mark, generation, &mut self.cache);
+            let mut source = EngineRows::new(session, mark, generation, &view, &mut self.cache);
             // Under the grid's own id rather than the spot's, so the scroll
             // and the widths are the grid's wherever it is — see
             // `grid_state_id`.
