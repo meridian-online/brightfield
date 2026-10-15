@@ -154,46 +154,6 @@ fn split_spelling(text: &str) -> Option<(&str, &str)> {
     None
 }
 
-/// Whether `sql` holds a `;` outside single-quoted strings, double-quoted
-/// identifiers and `--` and `/* */` comments, which would end the statement.
-fn has_bare_semicolon(sql: &str) -> bool {
-    let b = sql.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b';' => return true,
-            q @ (b'\'' | b'"') => {
-                i += 1;
-                while i < b.len() {
-                    if b[i] == q {
-                        if b.get(i + 1) == Some(&q) {
-                            i += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    i += 1;
-                }
-            }
-            b'-' if b.get(i + 1) == Some(&b'-') => {
-                while i < b.len() && b[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'/' if b.get(i + 1) == Some(&b'*') => {
-                i += 2;
-                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
-                    i += 1;
-                }
-                i += 1;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    false
-}
-
 /// Read the model arc wrote for the step `step_name`.
 ///
 /// # Errors
@@ -248,8 +208,14 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
     if argument.trim().is_empty() {
         return refuse("its clause is empty");
     }
-    if has_bare_semicolon(argument) {
-        return refuse("its clause holds a `;` that would end the statement and begin another");
+    let statements = match operation {
+        KnownOperation::FilterRows => brightfield_engine::condition_statement_count(argument),
+        KnownOperation::SortRows => brightfield_engine::order_statement_count(argument),
+    };
+    match statements {
+        Ok(1) => {}
+        Ok(n) => return refuse(&format!("its clause reads as {n} statements, not one")),
+        Err(e) => return refuse(&format!("DuckDB cannot read its clause: {e}")),
     }
     Ok(GeneratedStep {
         name: step_name.to_string(),
@@ -517,6 +483,14 @@ mod tests {
         let text = FILTER.replace("28;", "28;\nDELETE FROM california_housing;");
         let err = parse_generated("x", &text).expect_err("two statements are refused");
         assert!(err.contains("\"x\""), "{err}");
+        for sneaky in [
+            "x = E'\\''; DELETE FROM california_housing; SELECT 'x'",
+            "x = $$'$$; DELETE FROM california_housing; SELECT 'x'",
+        ] {
+            let text = FILTER.replace("house_age > 28", sneaky);
+            let err = parse_generated("x", &text).expect_err("a second statement is refused");
+            assert!(err.contains("\"x\""), "{sneaky}: {err}");
+        }
         let text = FILTER.replace("house_age > 28", "name = 'a;b' AND \"c;d\" > 1 /* ; */");
         let s = parse_generated("x", &text).expect("a `;` in a literal or comment is fine");
         assert_eq!(s.argument, "name = 'a;b' AND \"c;d\" > 1 /* ; */");

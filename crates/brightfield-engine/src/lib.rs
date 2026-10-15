@@ -4112,13 +4112,13 @@ fn read_distributions(batches: &[RecordBatch], asks: &[DistributionAsk]) -> Vec<
 ///
 /// A condition holding a NUL byte cannot reach DuckDB's C API at all, and is
 /// reported as unparseable in this function's words rather than DuckDB's.
-fn condition_statement_count(condition: &str) -> Result<usize, String> {
+pub fn condition_statement_count(condition: &str) -> Result<usize, String> {
     probe_statement_count(&format!("SELECT 1 WHERE {condition}"), "condition")
 }
 
 /// [`condition_statement_count`]'s rule for an order: how many statements
 /// DuckDB's parser reads in `SELECT 1 ORDER BY <order>`.
-fn order_statement_count(order: &str) -> Result<usize, String> {
+pub fn order_statement_count(order: &str) -> Result<usize, String> {
     probe_statement_count(&format!("SELECT 1 ORDER BY {order}"), "order")
 }
 
