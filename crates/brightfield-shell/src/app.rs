@@ -1520,8 +1520,8 @@ impl ChartDoc {
         self.has_unsaved_edit() || self.grid_view_unrecorded()
     }
 
-    /// The unrecorded grid view in words for the close question, or `None`
-    /// when there is none: `Grid view · where house_age = 28 · order by x`.
+    /// The unrecorded grid view in words for the close question, or nothing
+    /// when the view is empty or recorded: `Grid view · where house_age = 28 · order by x`.
     #[must_use]
     pub fn grid_view_line(&self) -> Option<String> {
         if !self.grid_view_unrecorded() {
