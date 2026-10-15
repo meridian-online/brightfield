@@ -209,20 +209,30 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
         return refuse("its clause is empty");
     }
     // DuckDB ignores an empty statement after the last, so `x;;` and `x; -- n`
-    // count as one. A term joined on after the argument, on its own line, is a
-    // syntax error behind any `;` left in it and reads the same otherwise.
-    let statements = match operation {
-        KnownOperation::FilterRows => {
-            brightfield_engine::condition_statement_count(&format!("{argument}\nAND 1"))
-        }
-        KnownOperation::SortRows => {
-            brightfield_engine::order_statement_count(&format!("{argument}\n, 1"))
-        }
+    // count as one on their own. Each argument is therefore probed in the form
+    // the engine later reads it in: a condition inside `(\n…\n)`, as the
+    // engine's filtered read wraps it, and an order followed by `\n, 1`, as the
+    // window read follows it with its tie-break columns. A `;` left in either
+    // then cuts the probe short and fails to parse, and the probe adds no
+    // operand an unfinished clause (`BETWEEN 1`) could take as its own. A
+    // condition must also read as one statement bare, as arc wrote it, so one
+    // that closes the engine's parenthesis and opens another (`1) OR (1`) is
+    // refused too.
+    let probes = match operation {
+        KnownOperation::FilterRows => vec![
+            brightfield_engine::condition_statement_count(&format!("(\n{argument}\n)")),
+            brightfield_engine::condition_statement_count(argument),
+        ],
+        KnownOperation::SortRows => vec![brightfield_engine::order_statement_count(&format!(
+            "{argument}\n, 1"
+        ))],
     };
-    match statements {
-        Ok(1) => {}
-        Ok(n) => return refuse(&format!("its clause reads as {n} statements, not one")),
-        Err(e) => return refuse(&format!("DuckDB cannot read its clause: {e}")),
+    for statements in probes {
+        match statements {
+            Ok(1) => {}
+            Ok(n) => return refuse(&format!("its clause reads as {n} statements, not one")),
+            Err(e) => return refuse(&format!("DuckDB cannot read its clause: {e}")),
+        }
     }
     Ok(GeneratedStep {
         name: step_name.to_string(),
@@ -512,6 +522,36 @@ mod tests {
         }
         let sort = "-- generated: sort-rows on t\nCREATE OR REPLACE TABLE \"y\" AS\nSELECT *\nFROM t\nORDER BY a;;\n";
         assert!(parse_generated("y", sort).is_err());
+    }
+
+    #[test]
+    fn an_unfinished_between_is_refused() {
+        for unfinished in [
+            "house_age BETWEEN 1",
+            "house_age NOT BETWEEN 1",
+            "house_age BETWEEN SYMMETRIC 1",
+        ] {
+            let text = FILTER.replace("house_age > 28", unfinished);
+            let err = parse_generated("x", &text).expect_err("an unfinished clause is refused");
+            assert!(err.contains("\"x\""), "{unfinished}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_condition_that_breaks_out_of_the_engines_parentheses_is_refused() {
+        let text = FILTER.replace("house_age > 28", "1) OR (1");
+        let err = parse_generated("x", &text).expect_err("an unbalanced condition is refused");
+        assert!(err.contains("\"x\""), "{err}");
+    }
+
+    #[test]
+    fn a_clause_ending_in_a_line_comment_parses() {
+        let text = FILTER.replace("house_age > 28", "house_age > 28 -- keep old");
+        let s = parse_generated("x", &text).expect("a trailing line comment is fine");
+        assert_eq!(s.argument, "house_age > 28 -- keep old");
+        let sort = "-- generated: sort-rows on t\nCREATE OR REPLACE TABLE \"y\" AS\nSELECT *\nFROM t\nORDER BY a DESC -- newest first;\n";
+        let s = parse_generated("y", sort).expect("a trailing line comment in a sort is fine");
+        assert_eq!(s.argument, "a DESC -- newest first");
     }
 
     #[test]
