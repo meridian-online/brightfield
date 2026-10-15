@@ -864,3 +864,136 @@ fn a_column_with_capitals_previews_and_is_selected_after_save() {
     let ages = win.preview_cells("Age");
     assert_eq!(ages, vec!["31", "45", "29"]);
 }
+
+/// The generated model in `folder`, by the header arc opens it with.
+fn generated_model(folder: &Path) -> PathBuf {
+    std::fs::read_dir(folder.join("models"))
+        .expect("the models folder")
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| std::fs::read_to_string(p).is_ok_and(|t| t.starts_with("-- generated:")))
+        .expect("a generated model")
+}
+
+/// Rewrite `file` with `from` replaced by `to`, which must occur in it.
+fn rewrite(file: &Path, from: &str, to: &str) {
+    let text = std::fs::read_to_string(file).expect("the file reads");
+    assert!(text.contains(from), "{from:?} is not in {text}");
+    std::fs::write(file, text.replace(from, to)).expect("the file writes");
+}
+
+#[test]
+fn a_load_brightfield_did_not_write_is_not_opened_this_way() {
+    // A load that makes a table of another name.
+    let root = TempDir::new("renamed-table");
+    let folder = saved_folder(&root, Some("house_age > 28"), None);
+    rewrite(
+        &folder.join("models").join("load.sql"),
+        "TABLE california_housing AS",
+        "TABLE housing AS",
+    );
+    let model = generated_model(&folder);
+    rewrite(&model, "on california_housing", "on housing");
+    rewrite(&model, "FROM california_housing", "FROM housing");
+    let refused = Boot::open(&manifest(&folder), Flow::Vertical, None)
+        .err()
+        .expect("a load of another table opened as brightfield's");
+    assert!(refused.contains(OFFLINE_VAR), "{refused}");
+
+    // A load whose model is at another path.
+    let root = TempDir::new("renamed-model");
+    let folder = saved_folder(&root, Some("house_age > 28"), None);
+    std::fs::rename(
+        folder.join("models").join("load.sql"),
+        folder.join("models").join("00_load.sql"),
+    )
+    .expect("the load's model moves");
+    rewrite(
+        &folder.join("arcform.yaml"),
+        "sql: models/load.sql",
+        "sql: models/00_load.sql",
+    );
+    let refused = Boot::open(&manifest(&folder), Flow::Vertical, None)
+        .err()
+        .expect("a load at another path opened as brightfield's");
+    assert!(refused.contains(OFFLINE_VAR), "{refused}");
+}
+
+#[test]
+fn a_manifest_outside_the_data_files_folder_is_not_refused_for_its_steps() {
+    let root = TempDir::new("elsewhere-edited");
+    let folder = saved_folder(&root, Some("house_age > 28"), None);
+    let inner = folder.join("data");
+    std::fs::create_dir_all(&inner).expect("the inner folder");
+    std::fs::rename(
+        folder.join(starts::HOUSING_FILE),
+        inner.join(starts::HOUSING_FILE),
+    )
+    .expect("the data file moves");
+    let spelled = format!("./{}", starts::HOUSING_FILE);
+    let moved = format!("data/{}", starts::HOUSING_FILE);
+    rewrite(&folder.join("arcform.yaml"), &spelled, &moved);
+    rewrite(&folder.join("models").join("load.sql"), &spelled, &moved);
+    rewrite(&generated_model(&folder), "SELECT *", "SELECT house_age");
+
+    let refused = Boot::open(&manifest(&folder), Flow::Vertical, None)
+        .err()
+        .expect("a manifest away from its data file opened through it");
+
+    assert!(refused.contains(OFFLINE_VAR), "{refused}");
+    assert!(
+        !refused.contains(FILTER_STEP),
+        "refused for a step it does not open: {refused}"
+    );
+}
+
+#[test]
+fn a_data_file_beside_a_hand_edited_step_opens_its_load_and_says_why() {
+    let root = TempDir::new("edited-beside");
+    let folder = saved_folder(&root, Some("house_age > 28"), None);
+    rewrite(&generated_model(&folder), "SELECT *", "SELECT house_age");
+    let before = files_under(&folder)
+        .into_iter()
+        .map(|p| {
+            let bytes = std::fs::read(&p).expect("a readable file");
+            (p, bytes)
+        })
+        .collect::<Vec<_>>();
+
+    let boot = Boot::data_file(&folder.join(starts::HOUSING_FILE).to_string_lossy())
+        .expect("the data file opens");
+    let mut win = Window::over(boot);
+
+    let names: Vec<String> = win
+        .app
+        .protocol_model()
+        .sheet()
+        .rows()
+        .iter()
+        .map(|r| r.name.clone())
+        .collect();
+    assert_eq!(names, vec!["load".to_string()]);
+    let banner = win
+        .app
+        .notifications()
+        .iter()
+        .find(|n| n.title == "The steps saved beside this file could not be read")
+        .map(|n| n.body.clone().unwrap_or_default())
+        .expect("no banner says why the steps were not laid out");
+    assert!(banner.contains(FILTER_STEP), "{banner}");
+
+    let err = win
+        .app
+        .save_protocol(&win.ctx)
+        .expect("the window has a Protocol to save")
+        .expect_err("a Save over the unreadable steps was not refused");
+    assert!(err.contains(FILTER_STEP), "{err}");
+    let after = files_under(&folder)
+        .into_iter()
+        .map(|p| {
+            let bytes = std::fs::read(&p).expect("a readable file");
+            (p, bytes)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(after, before, "the refused Save wrote into the folder");
+}

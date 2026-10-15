@@ -108,7 +108,7 @@ struct Window {
     /// test, which needs a Unix runner script.
     #[cfg_attr(not(unix), allow(dead_code))]
     sent_close: bool,
-    _root: TempDir,
+    _root: Option<TempDir>,
 }
 
 impl Window {
@@ -122,13 +122,20 @@ impl Window {
         std::fs::create_dir_all(&folder).expect("the data file's folder");
         let data = folder.join(starts::HOUSING_FILE);
         std::fs::write(&data, starts::HOUSING_PARQUET).expect("the housing file writes");
-        let boot = Boot::data_file(&data.to_string_lossy()).expect("the housing file opens");
+        Self::over_file(&data, runner, Some(root))
+    }
+
+    /// A window over the data file `data`, keeping `root` for its life.
+    fn over_file(data: &Path, runner: Runner, root: Option<TempDir>) -> Self {
+        let folder = data.parent().expect("the file's folder").to_path_buf();
+        let history = root
+            .as_ref()
+            .map_or_else(|| folder.join("history"), |root| root.0.join("history"));
+        let boot = Boot::data_file(&data.to_string_lossy()).expect("the data file opens");
         let mut win = Self {
             app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light)
                 .running_with(Some(runner))
-                .keeping_history(Some(brightfield_protocol::HistoryStore::At(
-                    root.0.join("history"),
-                ))),
+                .keeping_history(Some(brightfield_protocol::HistoryStore::At(history))),
             ctx: egui::Context::default(),
             screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0)),
             folder,
@@ -585,4 +592,51 @@ fn a_save_over_a_manifest_that_will_not_load_says_so_and_writes_nothing() {
         "no banner carries the refusal {err:?}"
     );
     assert_eq!(snapshot(&win.folder), before, "the folder was written");
+}
+
+#[test]
+fn a_file_beside_another_files_saved_steps_opens_alone_and_does_not_save_over_them() {
+    let root = TempDir::new("two-files");
+    let folder = root.0.join("data");
+    std::fs::create_dir_all(&folder).expect("the data files' folder");
+    let a = folder.join("a.csv");
+    let b = folder.join("b.csv");
+    std::fs::write(&a, "x,y\n1,2\n3,4\n5,6\n").expect("a writes");
+    std::fs::write(&b, "x,y\n7,8\n9,10\n").expect("b writes");
+
+    let mut first = Window::over_file(&a, runner(), None);
+    first.apply(Some("x > 1"), None);
+    first.save().expect("a's Save records");
+    let a_steps = first.steps();
+    assert_eq!(a_steps.len(), 2, "{a_steps:?}");
+    let manifest = std::fs::read(folder.join("arcform.yaml")).expect("a's manifest");
+    let load = std::fs::read(folder.join("models").join("load.sql")).expect("a's load");
+
+    let mut second = Window::over_file(&b, runner(), None);
+    let shown: Vec<String> = second
+        .app
+        .protocol_model()
+        .sheet()
+        .rows()
+        .iter()
+        .map(|r| r.name.clone())
+        .collect();
+    assert_eq!(shown, vec!["load".to_string()], "b shows a's steps");
+
+    let err = second
+        .save()
+        .expect_err("b's Save over a's steps was not refused");
+
+    assert!(err.contains("another Protocol's"), "{err}");
+    assert!(second.banners_any(&err), "no banner carries {err:?}");
+    assert_eq!(
+        std::fs::read(folder.join("arcform.yaml")).expect("the manifest"),
+        manifest,
+        "b's Save changed a's manifest"
+    );
+    assert_eq!(
+        std::fs::read(folder.join("models").join("load.sql")).expect("the load"),
+        load,
+        "b's Save changed a's load"
+    );
 }

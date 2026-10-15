@@ -44,7 +44,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::one_step::data_file_of_load;
+use crate::one_step::{data_file_of_load, table_name, MODEL_PATH};
 
 /// The line arc opens a generated model with.
 const HEADER: &str = "-- generated:";
@@ -314,8 +314,14 @@ fn has_header(model: &str) -> bool {
 ///
 /// `Ok(None)` is a folder that is not that shape, so the caller goes on as it
 /// did before: a manifest that is not a Protocol, fewer than two steps, no
-/// generated header in any step after the first, or a first step that is not a
-/// data-file load.
+/// generated header in any step after the first, or a first step that is not
+/// **brightfield's own load** of a data file in `dir` — a `sql:` step whose
+/// model is [`MODEL_PATH`] and makes the table the data file opens as. A load
+/// spelled any other way is a hand-written Protocol, and so is a load of a
+/// file in another folder: brightfield keeps a data file's Protocol in that
+/// file's own folder ([`crate::one_step`]). Both are decided before any step is
+/// read against the template, so neither is refused for a step it does not
+/// own.
 ///
 /// # Errors
 ///
@@ -324,6 +330,30 @@ fn has_header(model: &str) -> bool {
 pub fn generated_protocol_in(
     manifest_text: &str,
     dir: &Path,
+) -> Result<Option<GeneratedProtocol>, String> {
+    read_generated(manifest_text, dir, None)
+}
+
+/// [`generated_protocol_in`], for the data file `source` opened as: `Ok(None)`
+/// too when the folder's load is another data file's, decided before any step
+/// is read against the template, so a file is not refused for steps that are
+/// not its own.
+///
+/// # Errors
+///
+/// As [`generated_protocol_in`], for a folder whose load is `source`'s.
+pub fn generated_protocol_for(
+    manifest_text: &str,
+    dir: &Path,
+    source: &crate::one_step::OneStepProtocol,
+) -> Result<Option<GeneratedProtocol>, String> {
+    read_generated(manifest_text, dir, Some(source))
+}
+
+fn read_generated(
+    manifest_text: &str,
+    dir: &Path,
+    source: Option<&crate::one_step::OneStepProtocol>,
 ) -> Result<Option<GeneratedProtocol>, String> {
     if !brightfield_protocol::is_protocol_manifest(manifest_text) {
         return Ok(None);
@@ -348,15 +378,33 @@ pub fn generated_protocol_in(
     if !models.iter().flatten().any(|m| has_header(m)) {
         return Ok(None);
     }
-    let Some(data) = data_file_of_load(load, dir) else {
+    let Some(data) = data_file_of_load(load, dir).filter(|d| in_folder(d, dir)) else {
         return Ok(None);
     };
-    let root_table = load
+    if load
         .sql
-        .as_ref()
-        .and_then(|p| std::fs::read_to_string(dir.join(p)).ok())
+        .as_deref()
+        .is_none_or(|p| Path::new(p) != Path::new(MODEL_PATH))
+    {
+        return Ok(None);
+    }
+    if let Some(source) = source {
+        let same_file = match (data.canonicalize(), source.data.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        if !same_file {
+            return Ok(None);
+        }
+    }
+    let own = table_name(&data);
+    let Some(root_table) = std::fs::read_to_string(dir.join(MODEL_PATH))
+        .ok()
         .and_then(|m| load_table(&m))
-        .ok_or_else(|| format!("step {:?} makes no table brightfield can name", load.name))?;
+        .filter(|t| t.eq_ignore_ascii_case(&own))
+    else {
+        return Ok(None);
+    };
     let mut made: BTreeSet<String> = BTreeSet::from([root_table.clone()]);
     let mut steps = Vec::new();
     for (step, model) in rest.iter().zip(models) {
@@ -382,6 +430,26 @@ pub fn generated_protocol_in(
         root_table,
         steps,
     }))
+}
+
+/// Whether the data file `data` sits in `dir`, the folder of the manifest that
+/// names it. A Protocol opened through its data file is kept in the data
+/// file's own folder ([`crate::one_step`]), so a manifest elsewhere naming it
+/// is not that Protocol's, and is left to the route any other manifest takes.
+fn in_folder(data: &Path, dir: &Path) -> bool {
+    let folder = data
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    match (folder.canonicalize(), dir.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// `text` as a slug: a character outside `[A-Za-z0-9_]` becomes `_`, a run of

@@ -155,6 +155,11 @@ pub struct ProtocolInputs {
     /// folder holds any: what a generated step's grid previews from. `None`
     /// otherwise.
     pub generated: Option<crate::generated::GeneratedProtocol>,
+    /// Why the steps the folder's manifest holds after this data file's load
+    /// were not laid out, when they were not: a generated model that departs
+    /// from arc's template, in words naming the step. The document then holds
+    /// the load alone, and the window says why in a banner. `None` otherwise.
+    pub folder_refused: Option<String>,
 }
 
 impl ProtocolInputs {
@@ -190,6 +195,7 @@ impl ProtocolInputs {
             table: None,
             source: None,
             generated: None,
+            folder_refused: None,
         }
     }
 
@@ -533,6 +539,7 @@ pub fn load_contract_str(bytes: &[u8]) -> Result<ProtocolInputs, String> {
         table: None,
         source: None,
         generated: None,
+        folder_refused: None,
     })
 }
 
@@ -622,6 +629,7 @@ fn inputs_from(
         table: None,
         source: None,
         generated: None,
+        folder_refused: None,
     }
 }
 
@@ -988,6 +996,8 @@ pub struct ProtocolModel {
     /// The steps arc generated after the load, when the folder holds any. See
     /// [`ProtocolInputs::generated`].
     generated: Option<crate::generated::GeneratedProtocol>,
+    /// See [`ProtocolInputs::folder_refused`].
+    folder_refused: Option<String>,
     /// Which column the chart document has selected — a tile's, or a column
     /// of the table the dashboard draws no tile for — mirrored in from it each
     /// frame so the rail's highlight and the inspector's heading cannot name
@@ -1080,6 +1090,7 @@ impl ProtocolModel {
             table: inputs.table,
             source: inputs.source,
             generated: inputs.generated,
+            folder_refused: inputs.folder_refused,
             selected_column: None,
             column_pick: None,
             on_column_row: false,
@@ -1888,6 +1899,13 @@ impl ProtocolModel {
     #[must_use]
     pub const fn generated(&self) -> Option<&crate::generated::GeneratedProtocol> {
         self.generated.as_ref()
+    }
+
+    /// Why the folder's steps after the load were not laid out, when they
+    /// were not. See [`ProtocolInputs::folder_refused`].
+    #[must_use]
+    pub fn folder_refused(&self) -> Option<&str> {
+        self.folder_refused.as_deref()
     }
 
     /// The node of the table the step `name` makes, found by its label in the

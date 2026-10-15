@@ -22,8 +22,9 @@
 //! **Once the folder holds steps arc appended, Save stops writing the
 //! manifest.** A Save that records a grid view adds a generated step through
 //! `arc operation record`, and the manifest is then arc's to extend: Save and
-//! Run write the load's model and leave the manifest, and the steps and models
-//! arc appended, as they are (see [`OneStepProtocol::save_to`]).
+//! Run leave the manifest, the load's model, and the steps and models arc
+//! appended, as they are, and refuse a folder whose manifest of several steps
+//! loads another file (see [`OneStepProtocol::save_to`]).
 //!
 //! A run is `arc`'s, started by [`crate::run`] over the spec [`OneStepProtocol::save_to`]
 //! wrote, and it leaves its record under this Protocol's directory where
@@ -281,16 +282,28 @@ impl OneStepProtocol {
     }
 
     /// The declaration the folder holds now: [`Self::inputs`], or, when the
-    /// folder's manifest holds steps arc generated after the load, that
-    /// manifest read with its models, carrying this Protocol's columns and
-    /// source as [`Self::inputs`] does.
+    /// folder's manifest holds steps arc generated after **this file's own
+    /// load**, that manifest read with its models, carrying this Protocol's
+    /// columns and source as [`Self::inputs`] does.
+    ///
+    /// A manifest whose load is another data file's (two files share a
+    /// folder, and the other was Saved with steps) is not this Protocol's, and
+    /// this file opens as its one step. A manifest of this file whose
+    /// generated steps will not read opens as the one step too, with
+    /// [`ProtocolInputs::folder_refused`] saying which step and why.
     fn folder_inputs(&self) -> Result<ProtocolInputs, String> {
         let manifest = Self::manifest_path_in(&self.dir);
         let Ok(text) = std::fs::read_to_string(&manifest) else {
             return self.inputs();
         };
-        let Some(generated) = crate::generated::generated_protocol_in(&text, &self.dir)? else {
-            return self.inputs();
+        let generated = match crate::generated::generated_protocol_for(&text, &self.dir, self) {
+            Ok(Some(generated)) => generated,
+            Ok(None) => return self.inputs(),
+            Err(e) => {
+                let mut inputs = self.inputs()?;
+                inputs.folder_refused = Some(e);
+                return Ok(inputs);
+            }
         };
         let mut inputs = crate::protocol::load_protocol_offline(&manifest.to_string_lossy())?;
         inputs.hold_table(self.table_id());
@@ -331,20 +344,23 @@ impl OneStepProtocol {
     /// refused here rather than written. Either refusal leaves the directory
     /// untouched.
     ///
-    /// **The manifest is written only while it is this module's**: when the
-    /// folder has none, or its manifest still holds one step. A manifest of
-    /// more steps holds steps arc appended (a Save's recorded views among
-    /// them), which this one-step text does not carry, so it is left as it is
-    /// and only the load's model is written. A manifest that is there and will
-    /// not load is refused before anything is written, rather than written
-    /// over or passed by.
+    /// **The two files are written only while they are this module's**: when
+    /// the folder has no manifest, or its manifest still holds one step. A
+    /// manifest of more steps is left as it is, and so is its load's model:
+    /// when its load is this file's own, the steps after it are arc's
+    /// (a Save's recorded views among them) and the model on disk is the one
+    /// this module wrote, so there is nothing to write; when its load is not
+    /// (another data file in the same folder, or a hand-written Protocol), the
+    /// folder is another Protocol's and the Save is refused, naming the
+    /// manifest. A manifest that is there and will not load is refused before
+    /// anything is written, rather than written over or passed by.
     ///
     /// # Errors
     ///
     /// If the loader refuses the manifest, if the model does not parse into a
-    /// clean graph, if the folder's own manifest is there and will not load,
-    /// or if the directory or either file cannot be written. Each carries the
-    /// reason.
+    /// clean graph, if the folder's own manifest is there and will not load or
+    /// is another Protocol's, or if the directory or either file cannot be
+    /// written. Each carries the reason.
     pub fn save_to(&self, dir: &Path) -> Result<PathBuf, String> {
         brightfield_protocol::parse_manifest_str(&self.manifest)
             .map_err(|e| format!("the spec brightfield wrote will not load: {e}"))?;
@@ -356,7 +372,9 @@ impl OneStepProtocol {
             ));
         }
         let manifest = Self::manifest_path_in(dir);
-        let write_manifest = manifest_is_ours(&manifest)?;
+        if !self.manifest_is_ours(&manifest, dir)? {
+            return Ok(manifest);
+        }
         let model = dir.join(MODEL_PATH);
         let models_dir = model
             .parent()
@@ -364,36 +382,54 @@ impl OneStepProtocol {
         std::fs::create_dir_all(models_dir)
             .map_err(|e| format!("{}: {e}", models_dir.display()))?;
         std::fs::write(&model, &self.model).map_err(|e| format!("{}: {e}", model.display()))?;
-        if write_manifest {
-            std::fs::write(&manifest, &self.manifest)
-                .map_err(|e| format!("{}: {e}", manifest.display()))?;
-        }
+        std::fs::write(&manifest, &self.manifest)
+            .map_err(|e| format!("{}: {e}", manifest.display()))?;
         Ok(manifest)
     }
 }
 
-/// Whether [`OneStepProtocol::save_to`] may write the manifest at `path`:
-/// `true` when the folder has no manifest yet or the one there holds at most
-/// one step, `false` when it holds more, which are steps arc appended.
-///
-/// # Errors
-///
-/// A manifest that is there but cannot be read or will not load: writing over
-/// it would erase what it holds, and leaving it would answer a Save over a
-/// folder `arc run` refuses.
-fn manifest_is_ours(path: &Path) -> Result<bool, String> {
-    if !path.exists() {
-        return Ok(true);
+impl OneStepProtocol {
+    /// Whether [`Self::save_to`] may write the manifest at `path` and the
+    /// load's model beside it: `true` when the folder `dir` has no manifest
+    /// yet or the one there holds at most one step, `false` when it holds
+    /// more after this file's own load, which are steps arc appended.
+    ///
+    /// # Errors
+    ///
+    /// A manifest that is there but cannot be read or will not load: writing over
+    /// it would erase what it holds, and leaving it would answer a Save over a
+    /// folder `arc run` refuses. A manifest of more steps whose load is not this
+    /// file's: it is another Protocol, and writing the load's model under it
+    /// would change what that Protocol loads. A manifest of this file whose
+    /// generated steps will not read, in the words naming the step.
+    fn manifest_is_ours(&self, path: &Path, dir: &Path) -> Result<bool, String> {
+        if !path.exists() {
+            return Ok(true);
+        }
+        let refuse = |e: &dyn std::fmt::Display| {
+            format!(
+                "the manifest at {} will not load: {e}; not overwriting it",
+                path.display()
+            )
+        };
+        let text = std::fs::read_to_string(path).map_err(|e| refuse(&e))?;
+        let manifest = brightfield_protocol::parse_manifest_str(&text).map_err(|e| refuse(&e))?;
+        if manifest.steps.len() <= 1 {
+            return Ok(true);
+        }
+        match crate::generated::generated_protocol_for(&text, dir, self) {
+            Ok(Some(_)) => Ok(false),
+            Ok(None) => Err(format!(
+                "the manifest at {} is another Protocol's, not {}'s; not overwriting it",
+                path.display(),
+                self.spelled
+            )),
+            Err(e) => Err(format!(
+                "the manifest at {} will not read: {e}; not overwriting it",
+                path.display()
+            )),
+        }
     }
-    let refuse = |e: &dyn std::fmt::Display| {
-        format!(
-            "the manifest at {} will not load: {e}; not overwriting it",
-            path.display()
-        )
-    };
-    let text = std::fs::read_to_string(path).map_err(|e| refuse(&e))?;
-    let manifest = brightfield_protocol::parse_manifest_str(&text).map_err(|e| refuse(&e))?;
-    Ok(manifest.steps.len() <= 1)
 }
 
 /// The data file a **one-step Protocol** reads, resolved against `dir` — or
@@ -465,7 +501,7 @@ fn reader_for(path: &Path) -> &'static str {
 /// REPLACE TABLE` target, into `produces:`, and read back out of the SQL by
 /// [`brightfield_protocol::graph`] — so it crosses a parser twice, and a name
 /// that survives both without quoting is a name neither can spell differently.
-fn table_name(path: &Path) -> String {
+pub(crate) fn table_name(path: &Path) -> String {
     let stem = path
         .file_stem()
         .map_or_else(String::new, |s| s.to_string_lossy().into_owned());

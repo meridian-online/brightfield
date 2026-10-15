@@ -1497,10 +1497,10 @@ impl Boot {
         // run: each generated step reads as not run until a run's record says
         // otherwise, and its grid shows a preview labelled as one. A folder of
         // that shape whose generated model was edited away from arc's template
-        // is refused here, naming the step, rather than opened or rendered.
-        if let Some(generated) = crate::generated::generated_protocol_in(&text, &dir)?
-            .filter(|g| beside_its_manifest(&g.data, &dir))
-        {
+        // is refused here, naming the step, rather than opened or rendered. A
+        // load that is not brightfield's own, or that reads a file in another
+        // folder, is not that shape, and falls through to the manifest route.
+        if let Some(generated) = crate::generated::generated_protocol_in(&text, &dir)? {
             if sample.is_some() {
                 return Err(format!(
                     "{spec}: a sample rate is pushed into a plot's own query, and the dashboard \
@@ -2795,6 +2795,7 @@ impl MeridianApp {
         // window was built over — the same derivation `documents_changed`
         // runs on a later document swap.
         app.apply_rail_defaults();
+        app.say_folder_refused();
         // The restored spot is put through the move rather than left as the
         // field the struct literal wrote: the rail defaults above close the
         // ledger for a one-step Protocol, and a grid whose spot is the ledger
@@ -3105,6 +3106,32 @@ impl MeridianApp {
         // Protocol's open rail standing over an empty document it has no
         // step to summarise.
         self.apply_rail_defaults();
+        self.say_folder_refused();
+    }
+
+    /// Raise the banner saying why the steps the folder's manifest holds after
+    /// the load were not laid out, or take it down when they were — see
+    /// [`ProtocolInputs::folder_refused`]. Called wherever a Protocol document
+    /// is taken on.
+    fn say_folder_refused(&mut self) {
+        let banner = NotificationId::new("folder-steps");
+        match self.protocol.doc.model.folder_refused() {
+            Some(why) => {
+                let why = why.to_string();
+                eprintln!("the folder's steps were not laid out: {why}");
+                self.notifications.raise(
+                    Notification::new(
+                        banner,
+                        Severity::Error,
+                        "The steps saved beside this file could not be read",
+                    )
+                    .body(format!("{why}. Only the file's load is shown.")),
+                );
+            }
+            None => {
+                self.notifications.dismiss(banner);
+            }
+        }
     }
 
     /// The pane the window's chrome is reading from, if any.
@@ -8079,6 +8106,7 @@ impl MeridianApp {
                     self.protocol.doc.model.select_step_table(&newest);
                 }
                 self.apply_rail_defaults();
+                self.say_folder_refused();
                 wire_columns(
                     &mut self.charts.doc,
                     &self.protocol.doc.model,
@@ -8266,6 +8294,7 @@ impl MeridianApp {
         match source.inputs_with_last_run() {
             Ok(inputs) => {
                 self.protocol.doc.open(inputs);
+                self.say_folder_refused();
                 wire_columns(
                     &mut self.charts.doc,
                     &self.protocol.doc.model,
@@ -9058,26 +9087,6 @@ fn grid_foot_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
         },
         hide: HideAffordance::WithRail,
     })
-}
-
-/// Whether the data file `data` sits in `dir`, the folder of the manifest that
-/// names it. A Protocol opened through its data file is kept in the data
-/// file's own folder ([`crate::one_step`]), so a manifest elsewhere naming it
-/// is not that Protocol's, and is left to the route any other manifest takes.
-fn beside_its_manifest(data: &std::path::Path, dir: &std::path::Path) -> bool {
-    let folder = data
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| std::path::Path::new("."));
-    let dir = if dir.as_os_str().is_empty() {
-        std::path::Path::new(".")
-    } else {
-        dir
-    };
-    match (folder.canonicalize(), dir.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
 }
 
 /// The stable id `grid_foot_status_entry` writes — the handle a test reads the
