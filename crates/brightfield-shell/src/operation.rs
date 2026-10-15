@@ -227,7 +227,8 @@ pub struct Descriptions {
 }
 
 impl Descriptions {
-    /// The description of `long_name`, asking arc the first time only.
+    /// The description of `long_name`, asking arc on the first call
+    /// (`descriptions_keep_a_failed_describe_without_asking_again`).
     ///
     /// # Errors
     ///
