@@ -11,11 +11,12 @@
 //!   lands in the session.
 //! - **Shut before any step runs.** The data file is loaded into a table
 //!   first; then `enable_external_access` is switched off and the
-//!   configuration locked, and only then do the steps' conditions and orders
-//!   run. A condition that reads another file or the network fails, and cannot
-//!   switch the setting back.
+//!   configuration locked, and after that the steps' conditions and orders
+//!   run. A condition that reads another file fails
+//!   (`a_condition_that_reads_another_file_fails` in `tests/preview_read.rs`),
+//!   and cannot switch the setting back.
 //! - **Bounded.** The file's size on disk is checked against
-//!   [`PREVIEW_FILE_LIMIT_BYTES`] before anything reads it, and the connection
+//!   [`PREVIEW_FILE_LIMIT_BYTES`] before the file is opened, and the connection
 //!   runs under a memory limit with spilling to disk shut off, because a
 //!   compressed Parquet can take several times its size once loaded (the
 //!   measurement is on `Session::materialise_source`). Running out of memory is
@@ -114,9 +115,9 @@ impl std::fmt::Display for PreviewRefusal {
 /// # Errors
 ///
 /// [`PreviewRefusal::TooLarge`] for a file over the limit or a read that ran
-/// out of memory; [`PreviewRefusal::Engine`] with DuckDB's words for anything
-/// else, which for a condition that reaches outside the database says that
-/// external access is off.
+/// out of memory; otherwise [`PreviewRefusal::Engine`] with DuckDB's words,
+/// which for a condition that reaches outside the database say that external
+/// access is off.
 pub fn preview_first_page(
     data: &Path,
     reader: FileReader,

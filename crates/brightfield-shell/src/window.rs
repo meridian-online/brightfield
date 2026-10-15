@@ -7993,8 +7993,8 @@ impl MeridianApp {
 
     /// **The preview the grid should show this frame**: the canvas holds the
     /// grid of a node that is the table a generated step makes, so the grid
-    /// previews that step through its chain from the data file. `None` for
-    /// every other grid.
+    /// previews that step through its chain from the data file. `None`
+    /// otherwise.
     fn preview_request(&self) -> Option<crate::data_grid::PreviewRequest> {
         use crate::generated::KnownOperation;
         use brightfield_engine::PreviewOp;

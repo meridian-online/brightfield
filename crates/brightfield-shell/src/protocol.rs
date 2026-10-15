@@ -153,7 +153,7 @@ pub struct ProtocolInputs {
     pub source: Option<OneStepProtocol>,
     /// The steps arc generated after the load, as their models say, when the
     /// folder holds any: what a generated step's grid previews from. `None`
-    /// for every other Protocol.
+    /// otherwise.
     pub generated: Option<crate::generated::GeneratedProtocol>,
 }
 
@@ -339,12 +339,13 @@ pub fn offline_optin() -> bool {
 /// **A folder holding that load and then steps arc generated after it does
 /// not reach this refusal either**, and for the same reason: it opens through
 /// the data file, and the rails draw the graph of the load and of steps whose
-/// every model [`crate::generated::generated_protocol_in`] has matched to
-/// arc's template for an operation brightfield knows, each reading a table an
+/// models [`crate::generated::generated_protocol_in`] has matched to arc's
+/// template for an operation brightfield knows, each reading a table an
 /// earlier step makes. A model under the generated header that departs from
 /// the template is refused, naming the step, so nothing reaches the canvas
 /// whose effect brightfield cannot state. This is honest without a run
-/// because brightfield draws only steps it can recompute from the file:
+/// because the steps brightfield draws are steps it can recompute from the
+/// file:
 /// each generated step reads *not run* until a run's record says otherwise,
 /// and its grid's rows are a first page brightfield computes from the data
 /// file on a locked-down connection of its own, labelled as a preview and
@@ -1897,7 +1898,7 @@ impl ProtocolModel {
     }
 
     /// Whether the run record says the step `name` ran: its row on the Steps
-    /// sheet reads anything but not run.
+    /// sheet has a status other than not run.
     #[must_use]
     pub fn step_ran(&self, name: &str) -> bool {
         self.sheet
