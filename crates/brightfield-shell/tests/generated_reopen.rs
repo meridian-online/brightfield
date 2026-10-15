@@ -698,3 +698,141 @@ fn a_read_lost_while_nobody_waits_for_it_is_not_reported_on_the_next_visit() {
     assert!(win.drew(PREVIEW_LABEL), "the next visit did not read again");
     assert_eq!(win.app.chart_doc().preview_reads_started(), 2);
 }
+
+#[test]
+fn a_document_opened_over_a_read_still_under_way_waits_for_it() {
+    let root = TempDir::new("replaced");
+    let first = saved_folder(&root, Some("house_age > 28"), None);
+    let other = TempDir::new("replacing");
+    let second = saved_folder(&other, Some("house_age > 28"), None);
+    let mut win = reopen(&first);
+    let held = win.app.chart_doc().preview_hold();
+    held.store(true, std::sync::atomic::Ordering::SeqCst);
+    win.click_grid_only(FILTER_STEP);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while win.app.chart_doc().preview_workers_live() == 0 {
+        assert!(Instant::now() < deadline, "the first read never began");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // The document is replaced while its worker is still reading, and the
+    // new one asks for a read of its own.
+    let ctx = win.ctx.clone();
+    win.app.open_protocol_path(&ctx, &manifest(&second));
+    win.settle();
+    win.click_grid_only(FILTER_STEP);
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(5));
+        win.run(Vec::new());
+        assert!(
+            win.app.chart_doc().preview_workers_live() <= 1,
+            "two preview reads ran at once"
+        );
+    }
+    assert!(
+        win.app
+            .chart_doc()
+            .grid_preview()
+            .is_some_and(|p| p.is_reading()),
+        "the new document's read did not wait for the replaced one's"
+    );
+    assert!(
+        win.drew(PREVIEW_READING),
+        "the waiting read drew no reading state"
+    );
+
+    held.store(false, std::sync::atomic::Ordering::SeqCst);
+    win.wait_for_preview();
+
+    assert!(
+        win.drew(PREVIEW_LABEL),
+        "the new document's preview did not land"
+    );
+    assert_eq!(win.app.chart_doc().preview_workers_most_live(), 1);
+}
+
+#[test]
+fn w_on_a_step_whose_run_failed_offers_run() {
+    let root = TempDir::new("failed");
+    let folder = saved_folder(&root, Some("house_age > 28"), None);
+    let mut win = reopen(&folder);
+    // Once the folder is open, the step's model is pointed at a column the
+    // load's table does not have, so the run makes the load's table and then
+    // fails on the step. Opening refuses an edited model, so the edit comes
+    // after it.
+    let model = std::fs::read_dir(folder.join("models"))
+        .expect("the models folder")
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| std::fs::read_to_string(p).is_ok_and(|t| t.starts_with("-- generated:")))
+        .expect("a generated model");
+    let text = std::fs::read_to_string(&model).expect("the model reads");
+    assert!(text.contains("house_age > 28"), "{text}");
+    std::fs::write(
+        &model,
+        text.replace("house_age > 28", "no_such_column > 28"),
+    )
+    .expect("the model is edited");
+
+    assert!(win.app.run_protocol(&win.ctx), "the run did not start");
+    let deadline = Instant::now() + PATIENCE;
+    while win.app.run_outstanding() {
+        assert!(Instant::now() < deadline, "the run did not land");
+        win.run(Vec::new());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    win.settle();
+    assert_eq!(win.status_of(FILTER_STEP), "failed");
+
+    // The model is put back and the folder reopened, so the step previews
+    // again while its last run's record still says it failed.
+    std::fs::write(&model, text).expect("the model is put back");
+    let mut win = reopen(&folder);
+    assert_eq!(win.status_of(FILTER_STEP), "failed");
+    win.click_grid_under(FILTER_STEP);
+    assert!(win.drew(PREVIEW_LABEL), "the preview label was not drawn");
+    win.press_cell(0, 1);
+    win.key(egui::Key::W, "w");
+
+    assert_eq!(win.app.chart_doc().foot_asking(), None);
+    let said = win.foot_status().expect("the status band says why");
+    assert!(said.contains("Run"), "{said}");
+    assert!(said.contains("not been run"), "{said}");
+}
+
+#[test]
+fn a_column_with_capitals_previews_and_is_selected_after_save() {
+    let root = TempDir::new("column-capitals");
+    let folder = root.0.join("data");
+    std::fs::create_dir_all(&folder).expect("the data file's folder");
+    let data = folder.join("people.csv");
+    std::fs::write(&data, "name,Age\nann,31\nbo,24\ncy,45\ndee,29\n").expect("the file writes");
+    let boot = Boot::data_file(&data.to_string_lossy()).expect("the file opens");
+    let mut win = Window::over(boot);
+    win.app.chart_doc_mut().apply_grid_view(RowsView {
+        condition: Some("Age > 28".to_owned()),
+        order: None,
+    });
+    win.settle();
+    win.app
+        .save_protocol(&win.ctx)
+        .expect("the window has a Protocol to save")
+        .expect("the Save records");
+    win.settle();
+    // arc spells the step's name in lower case; the column keeps its capital.
+    let step = "people_filtered_by_age";
+    assert!(
+        win.app
+            .protocol_model()
+            .selected()
+            .is_some_and(|id| id.contains(step)),
+        "the new step is not selected: {:?}",
+        win.app.protocol_model().selected()
+    );
+
+    let mut win = reopen(&folder);
+    win.click_grid_under(step);
+    assert!(win.drew(PREVIEW_LABEL), "the preview label was not drawn");
+    let ages = win.preview_cells("Age");
+    assert_eq!(ages, vec!["31", "45", "29"]);
+}

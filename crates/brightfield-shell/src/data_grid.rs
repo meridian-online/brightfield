@@ -1551,6 +1551,11 @@ type PreviewAnswer = Result<GridPage, brightfield_engine::PreviewRefusal>;
 /// step is still on screen, so going back to it reads nothing. The worker asks
 /// for a repaint when it is done, so the page lands on the next frame.
 ///
+/// That bound is **process-wide**, not per document: each worker reads inside
+/// [`PREVIEW_GATE`], so a document opened while the one it replaced still has
+/// a worker reading waits for that worker before its own read begins, and
+/// shows its reading state meanwhile.
+///
 /// A worker that ended without an answer (it panicked) is not kept: the visit
 /// that asked shows why, and the next visit reads again.
 #[derive(Default)]
@@ -1565,14 +1570,24 @@ pub(crate) struct PreviewReads {
     hooks: PreviewHooks,
 }
 
-/// Test-only controls over the preview worker: holding it before it reads,
-/// making the next one panic, and counting how many run at once.
+/// The one preview read the process runs at a time. A worker holds it from
+/// before it reads until it has its answer, whichever document started it, so
+/// a worker left reading by a document since replaced still counts.
+static PREVIEW_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// How many preview workers are inside [`PREVIEW_GATE`] now, and the most
+/// there have ever been at once, across every document.
+static PREVIEW_WORKERS_LIVE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+static PREVIEW_WORKERS_MOST_LIVE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Test-only controls over the preview worker: holding it before it reads and
+/// making the next one panic.
 #[derive(Clone, Default)]
 pub(crate) struct PreviewHooks {
     held: std::sync::Arc<std::sync::atomic::AtomicBool>,
     panic_next: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    live: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    most_live: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl PreviewReads {
@@ -1622,8 +1637,13 @@ impl PreviewReads {
         let hooks = self.hooks.clone();
         std::thread::spawn(move || {
             use std::sync::atomic::Ordering;
-            let live = hooks.live.fetch_add(1, Ordering::SeqCst) + 1;
-            hooks.most_live.fetch_max(live, Ordering::SeqCst);
+            // A worker that panicked inside the gate poisons it; the gate
+            // guards no data, so the next worker goes in anyway.
+            let gate = PREVIEW_GATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let live = PREVIEW_WORKERS_LIVE.fetch_add(1, Ordering::SeqCst) + 1;
+            PREVIEW_WORKERS_MOST_LIVE.fetch_max(live, Ordering::SeqCst);
             while hooks.held.load(Ordering::SeqCst) {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
@@ -1632,7 +1652,8 @@ impl PreviewReads {
             } else {
                 Some(read_preview(&asked, limit))
             };
-            hooks.live.fetch_sub(1, Ordering::SeqCst);
+            PREVIEW_WORKERS_LIVE.fetch_sub(1, Ordering::SeqCst);
+            drop(gate);
             // A worker told to fail drops its sender unsent, which is what a
             // panic leaves the receiver with.
             if let Some(read) = read {
@@ -1895,14 +1916,27 @@ impl ChartDoc {
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// The most preview workers that have run at once.
+    /// The switch [`Self::hold_preview_reads`] sets, so a test can release a
+    /// worker this document started after the document has been replaced.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn preview_hold(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.preview_reads.hooks.held.clone()
+    }
+
+    /// How many preview workers are reading now, across every document.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn preview_workers_live(&self) -> usize {
+        PREVIEW_WORKERS_LIVE.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The most preview workers that have read at once, across every document
+    /// this process has opened.
     #[doc(hidden)]
     #[must_use]
     pub fn preview_workers_most_live(&self) -> usize {
-        self.preview_reads
-            .hooks
-            .most_live
-            .load(std::sync::atomic::Ordering::SeqCst)
+        PREVIEW_WORKERS_MOST_LIVE.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Preview only files of at most `bytes` on disk, in place of
