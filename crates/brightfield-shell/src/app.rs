@@ -898,7 +898,10 @@ pub struct ChartDoc {
     /// means the whole table. It is not in any file until a Save records it,
     /// so a non-empty view marks the document unsaved
     /// ([`Self::grid_view_unrecorded`]); cleared when the document is
-    /// replaced, since it named rows of the replaced document's table.
+    /// replaced, since it named rows of the replaced document's table. After
+    /// a Save that recorded the condition and was refused the order, it keeps
+    /// both: the condition is held as recorded ([`Self::grid_condition_held`])
+    /// and the order waits for the next Save.
     grid_view: brightfield_engine::RowsView,
     /// **The step the view's condition was recorded as, while the order is
     /// not**: a Save recorded the condition and arc refused the order. The
@@ -1601,13 +1604,6 @@ impl ChartDoc {
     #[must_use]
     pub fn grid_condition_held(&self) -> Option<&str> {
         self.grid_condition_held.as_deref()
-    }
-
-    /// The applied view has been recorded whole, so the row holds no part of
-    /// it that is not in a file. Clears the applied view: the recorded part
-    /// leaves the row, and the whole table shows again.
-    pub fn mark_grid_view_recorded(&mut self) {
-        self.settle_grid_view();
     }
 
     /// The applied condition has been recorded as the step `step`. With no

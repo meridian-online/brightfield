@@ -12,12 +12,16 @@ use std::time::{Duration, Instant};
 
 use brightfield_engine::RowsView;
 use brightfield_shell::design::Mode;
+#[cfg(unix)]
 use brightfield_shell::grid_foot::FootField;
+#[cfg(unix)]
 use brightfield_shell::overlays::CloseAnswer;
 use brightfield_shell::run::{self, Runner};
 use brightfield_shell::starts;
 use brightfield_shell::startup::default_layout;
-use brightfield_shell::window::{Boot, MeridianApp, GRID_FOOT_STATUS_ID};
+#[cfg(unix)]
+use brightfield_shell::window::GRID_FOOT_STATUS_ID;
+use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_workbench::arrangement::LEDGER_RAIL;
 
 /// The table the housing file's load makes.
@@ -100,6 +104,9 @@ struct Window {
     ctx: egui::Context,
     screen: egui::Rect,
     folder: PathBuf,
+    /// Whether a frame sent the operating system `Close`; read by the close
+    /// test, which needs a Unix runner script.
+    #[cfg_attr(not(unix), allow(dead_code))]
     sent_close: bool,
     _root: TempDir,
 }
@@ -156,6 +163,7 @@ impl Window {
         }
     }
 
+    #[cfg(unix)]
     fn key(&mut self, key: egui::Key) {
         self.run(vec![egui::Event::Key {
             key,
@@ -211,7 +219,16 @@ impl Window {
             .expect("the model reads")
     }
 
+    /// Whether a banner the window is showing carries `body`.
+    fn banners_any(&self, body: &str) -> bool {
+        self.app
+            .notifications()
+            .iter()
+            .any(|n| n.body.as_deref() == Some(body))
+    }
+
     /// The headline and body of every banner the window is showing.
+    #[cfg(unix)]
     fn banners(&self) -> Vec<(String, String)> {
         self.app
             .notifications()
@@ -221,6 +238,7 @@ impl Window {
     }
 
     /// The status band's line for the band, as the frame drew it.
+    #[cfg(unix)]
     fn foot_status(&self) -> Option<String> {
         if !self.app.rail().drawn.contains(&GRID_FOOT_STATUS_ID) {
             return None;
@@ -548,4 +566,24 @@ fn closing_after_a_refused_recording_keeps_the_window() {
         win.sent_close,
         "the window stayed open after the view was recorded"
     );
+}
+
+#[test]
+fn a_save_over_a_manifest_that_will_not_load_says_so_and_writes_nothing() {
+    let mut win = Window::open("malformed");
+    let manifest = win.folder.join("arcform.yaml");
+    std::fs::write(&manifest, "steps: [this is: not a manifest\n").expect("the manifest writes");
+    let before = snapshot(&win.folder);
+    let toasts = win.app.toasts().len();
+
+    let err = win.save().expect_err("the Save is refused");
+
+    assert!(err.contains("will not load"), "{err}");
+    assert!(err.contains("not overwriting it"), "{err}");
+    assert_eq!(win.app.toasts().len(), toasts, "a success toast was sent");
+    assert!(
+        win.banners_any(&err),
+        "no banner carries the refusal {err:?}"
+    );
+    assert_eq!(snapshot(&win.folder), before, "the folder was written");
 }

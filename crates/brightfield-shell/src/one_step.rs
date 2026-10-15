@@ -301,13 +301,16 @@ impl OneStepProtocol {
     /// folder has none, or its manifest still holds one step. A manifest of
     /// more steps holds steps arc appended (a Save's recorded views among
     /// them), which this one-step text does not carry, so it is left as it is
-    /// and only the load's model is written.
+    /// and only the load's model is written. A manifest that is there and will
+    /// not load is refused before anything is written, rather than written
+    /// over or passed by.
     ///
     /// # Errors
     ///
     /// If the loader refuses the manifest, if the model does not parse into a
-    /// clean graph, or if the directory or either file cannot be written. Each
-    /// carries the reason.
+    /// clean graph, if the folder's own manifest is there and will not load,
+    /// or if the directory or either file cannot be written. Each carries the
+    /// reason.
     pub fn save_to(&self, dir: &Path) -> Result<PathBuf, String> {
         brightfield_protocol::parse_manifest_str(&self.manifest)
             .map_err(|e| format!("the spec brightfield wrote will not load: {e}"))?;
@@ -319,6 +322,7 @@ impl OneStepProtocol {
             ));
         }
         let manifest = Self::manifest_path_in(dir);
+        let write_manifest = manifest_is_ours(&manifest)?;
         let model = dir.join(MODEL_PATH);
         let models_dir = model
             .parent()
@@ -326,7 +330,7 @@ impl OneStepProtocol {
         std::fs::create_dir_all(models_dir)
             .map_err(|e| format!("{}: {e}", models_dir.display()))?;
         std::fs::write(&model, &self.model).map_err(|e| format!("{}: {e}", model.display()))?;
-        if manifest_is_ours(&manifest) {
+        if write_manifest {
             std::fs::write(&manifest, &self.manifest)
                 .map_err(|e| format!("{}: {e}", manifest.display()))?;
         }
@@ -334,13 +338,28 @@ impl OneStepProtocol {
     }
 }
 
-/// Whether [`OneStepProtocol::save_to`] may write the manifest at `path`: the
-/// folder has no manifest yet, or the one there holds no more than one step.
-fn manifest_is_ours(path: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return !path.exists();
+/// Whether [`OneStepProtocol::save_to`] may write the manifest at `path`:
+/// `true` when the folder has no manifest yet or the one there holds at most
+/// one step, `false` when it holds more, which are steps arc appended.
+///
+/// # Errors
+///
+/// A manifest that is there but cannot be read or will not load: writing over
+/// it would erase what it holds, and leaving it would answer a Save over a
+/// folder `arc run` refuses.
+fn manifest_is_ours(path: &Path) -> Result<bool, String> {
+    if !path.exists() {
+        return Ok(true);
+    }
+    let refuse = |e: &dyn std::fmt::Display| {
+        format!(
+            "the manifest at {} will not load: {e}; not overwriting it",
+            path.display()
+        )
     };
-    brightfield_protocol::parse_manifest_str(&text).is_ok_and(|m| m.steps.len() <= 1)
+    let text = std::fs::read_to_string(path).map_err(|e| refuse(&e))?;
+    let manifest = brightfield_protocol::parse_manifest_str(&text).map_err(|e| refuse(&e))?;
+    Ok(manifest.steps.len() <= 1)
 }
 
 /// The data file a **one-step Protocol** reads, resolved against `dir` — or

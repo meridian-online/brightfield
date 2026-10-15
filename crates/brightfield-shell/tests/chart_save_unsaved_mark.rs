@@ -528,7 +528,9 @@ fn an_applied_view_raises_the_unsaved_mark() {
         });
     live.settle();
     assert!(live.app.carries_unsaved_mark());
-    live.app.chart_doc_mut().mark_grid_view_recorded();
+    live.app
+        .chart_doc_mut()
+        .mark_grid_condition_recorded("california_housing_filtered_by_house_age".to_string());
     assert!(!live.app.carries_unsaved_mark());
 }
 

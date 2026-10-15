@@ -7767,7 +7767,9 @@ impl MeridianApp {
     /// ([`Self::record_applied_views`]), as steps appended to that manifest,
     /// which a later Save leaves as it is. A recording arc refused raises a
     /// banner in arc's words, leaves the view applied and the mark on, and is
-    /// this Save's failure, so a close that saved first stays open. Once
+    /// this Save's failure, so a close that saved first stays open; the
+    /// Protocol file was written all the same, so the chart is still written
+    /// and the path still remembered. Once
     /// nothing is left unrecorded the window takes on the Protocol the folder
     /// now holds.
     ///
