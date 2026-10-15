@@ -384,11 +384,16 @@ impl ChartDoc {
     }
 
     /// The line the status band draws for the band: for the field being
-    /// edited, [`FootState::said`]; otherwise, while a recorded condition is
-    /// held ([`ChartDoc::grid_condition_held`]), that it is recorded and how to
+    /// edited, [`FootState::said`]; over a generated step's preview, once a key
+    /// asked the band, why it cannot ([`crate::data_grid::GridPreview::offer`]);
+    /// otherwise, while a recorded condition is held
+    /// ([`ChartDoc::grid_condition_held`]), that it is recorded and how to
     /// change it.
     #[must_use]
     pub fn foot_said(&self) -> Option<String> {
+        if self.grid_preview().is_some() {
+            return self.preview_said();
+        }
         self.grid_foot.said().or_else(|| {
             self.grid_condition_held().map(|step| {
                 format!(
@@ -410,8 +415,12 @@ impl ChartDoc {
     ///
     /// `where` does not open while a recorded condition is held: the grid
     /// shows what the folder makes plus the pending order, and an edited
-    /// condition would show rows no step makes.
+    /// condition would show rows no step makes. Nor does either field open over
+    /// a generated step's preview, whose band is read-only.
     pub fn foot_offer(&mut self, field: FootField, text: String) {
+        if self.preview_refuses_ask() {
+            return;
+        }
         if field == FootField::Where && self.grid_condition_held().is_some() {
             return;
         }
@@ -425,9 +434,11 @@ impl ChartDoc {
     ///
     /// Whether it opened: with no cursor, no live session, or a cell the step
     /// no longer has, nothing opens. Nor does it open while a recorded
-    /// condition is held, for the reason [`Self::foot_offer`] gives.
+    /// condition is held, or over a generated step's preview, for the reasons
+    /// [`Self::foot_offer`] gives; over a preview the status band then says
+    /// why.
     pub fn ask_where_at_cursor(&mut self) -> bool {
-        if self.grid_condition_held().is_some() {
+        if self.preview_refuses_ask() || self.grid_condition_held().is_some() {
             return false;
         }
         let Some((cell, literal)) = self.cursor_cell() else {
@@ -444,6 +455,9 @@ impl ChartDoc {
     /// **Open `order by` with the cursor's column in it.** Whether it opened,
     /// on the terms [`Self::ask_where_at_cursor`] gives.
     pub fn ask_order_at_cursor(&mut self) -> bool {
+        if self.preview_refuses_ask() {
+            return false;
+        }
         let Some((cell, _)) = self.cursor_cell() else {
             return false;
         };
@@ -617,12 +631,18 @@ fn select_value(ctx: &egui::Context, asking: &Asking) {
 /// edited opens it with its applied text. The field losing the keyboard to
 /// anything but Enter or Esc, which the window takes first, puts it back as
 /// Esc does.
+///
+/// With `fixed`, the band is read-only: it is the band of a generated step's
+/// preview, so each field shows the text given, neither takes the keyboard nor
+/// carries a dot, and the trailing end says the rows are a preview
+/// ([`crate::data_grid::PREVIEW_COUNT`]) rather than counting them.
 pub fn foot_band(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     doc: &mut ChartDoc,
     state: &mut FootState,
     counts: (u64, usize),
+    fixed: Option<&[String; 2]>,
     mode: Mode,
 ) -> FootOutcome {
     use brightfield_model::profile_model::thousands;
@@ -641,11 +661,15 @@ pub fn foot_band(
 
     // The count, at the trailing end.
     let (rows, columns) = counts;
-    let count = format!(
-        "{} rows \u{b7} {} columns",
-        thousands(rows),
-        thousands(columns as u64)
-    );
+    let count = if fixed.is_some() {
+        crate::data_grid::PREVIEW_COUNT.to_owned()
+    } else {
+        format!(
+            "{} rows \u{b7} {} columns",
+            thousands(rows),
+            thousands(columns as u64)
+        )
+    };
     let pad = spacing::SPACE_2;
     let count_galley = painter.layout_no_wrap(count.clone(), font.clone(), muted);
     let count_at = egui::pos2(
@@ -660,8 +684,8 @@ pub fn foot_band(
     let split = left + room * WHERE_SHARE;
     let applied = doc.grid_view().clone();
     let unrecorded = [
-        doc.grid_condition_unrecorded().is_some(),
-        applied.order.is_some(),
+        fixed.is_none() && doc.grid_condition_unrecorded().is_some(),
+        fixed.is_none() && applied.order.is_some(),
     ];
     let condition_held = doc.grid_condition_held().is_some();
     let mut texts = [String::new(), String::new()];
@@ -694,18 +718,25 @@ pub fn foot_band(
             egui::pos2(x.min(to), rect.top() + 1.0),
             egui::pos2(to, rect.bottom()),
         );
-        let editing = state.asking.as_ref().is_some_and(|a| a.field == field);
+        let editing = fixed.is_none() && state.asking.as_ref().is_some_and(|a| a.field == field);
         // The order field takes typing only once a key has opened it; a press
-        // opens the condition field, unless a recorded condition is held.
-        let interactive =
-            editing || (field == FootField::Where && state.asking.is_none() && !condition_held);
+        // opens the condition field, unless a recorded condition is held or
+        // the band is read-only.
+        let interactive = editing
+            || (fixed.is_none()
+                && field == FootField::Where
+                && state.asking.is_none()
+                && !condition_held);
 
         let mut child = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(field_rect)
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
-        let mut idle_text = field.of(&applied).unwrap_or_default().to_owned();
+        let mut idle_text = match fixed {
+            Some(texts) => texts[slot].clone(),
+            None => field.of(&applied).unwrap_or_default().to_owned(),
+        };
         if let Some(asking) = state.asking.as_mut().filter(|_| editing) {
             if asking.focus {
                 child.memory_mut(|m| m.request_focus(field.id()));

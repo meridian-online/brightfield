@@ -1491,6 +1491,26 @@ impl Boot {
                 ..boot
             });
         }
+        // A folder holding a data-file load and then steps arc generated opens
+        // the same way, through the data file, and its steps are laid out from
+        // the manifest by `OneStepProtocol::inputs_with_last_run`. Nothing is
+        // run: each generated step reads as not run until a run's record says
+        // otherwise, and its grid shows a preview labelled as one. A folder of
+        // that shape whose generated model was edited away from arc's template
+        // is refused here, naming the step, rather than opened or rendered.
+        if let Some(generated) = crate::generated::generated_protocol_in(&text, &dir)? {
+            if sample.is_some() {
+                return Err(format!(
+                    "{spec}: a sample rate is pushed into a plot's own query, and the dashboard \
+                     generated for a data file has no authored plot to push it into. Open it \
+                     without the flag."
+                ));
+            }
+            return Self::saved_protocol(&generated.data.to_string_lossy()).map(|boot| Self {
+                opened_id: Some(remembered_id(spec)),
+                ..boot
+            });
+        }
         if brightfield_protocol::is_protocol_manifest(&text) {
             if !crate::protocol::offline_optin() {
                 return Err(crate::protocol::run_less_manifest_refusal(spec));
@@ -4623,20 +4643,31 @@ impl MeridianApp {
             // that file loaded into, which is the name the spine's own row
             // carries. Read here, before the borrows below take the documents
             // apart, for the reason `canvas_name` is.
-            let grid_title = self.protocol.doc.model.table_label().map_or_else(
-                || "Grid".to_string(),
-                |table| format!("Grid \u{b7} {table}"),
-            );
+            //
+            // **A generated step's grid shows its preview**, read on a
+            // connection of its own from the data file, so it is named after
+            // the step rather than the table the session holds.
+            let preview = self.preview_request();
+            let grid_title = match &preview {
+                Some(request) => format!("Grid \u{b7} {}", request.step),
+                None => self.protocol.doc.model.table_label().map_or_else(
+                    || "Grid".to_string(),
+                    |table| format!("Grid \u{b7} {table}"),
+                ),
+            };
+            let previewed = preview.is_some();
+            self.charts.doc.show_preview(preview);
             // **A grid of a node the engine does not hold**: the label of the
             // node whose grid the canvas holds, when that node is not the table
             // the session read. The one grid lists the session's rows, so drawn
             // here it would put the table's rows under another node's name;
             // what the canvas draws instead is an empty state naming the node.
+            // A generated step's grid is not one: its preview is drawn instead.
             let grid_unheld: Option<String> = match self.canvas_holds() {
                 CanvasHolds::View {
                     node,
                     view: NodeView::Grid,
-                } if self.protocol.doc.model.table() != Some(node) => Some(
+                } if !previewed && self.protocol.doc.model.table() != Some(node) => Some(
                     self.protocol
                         .doc
                         .model
@@ -7960,25 +7991,83 @@ impl MeridianApp {
         .unwrap_or_default()
     }
 
+    /// **The preview the grid should show this frame**: the canvas holds the
+    /// grid of a node that is the table a generated step makes, so the grid
+    /// previews that step through its chain from the data file. `None` for
+    /// every other grid.
+    fn preview_request(&self) -> Option<crate::data_grid::PreviewRequest> {
+        use crate::generated::KnownOperation;
+        use brightfield_engine::PreviewOp;
+        let CanvasHolds::View {
+            node,
+            view: NodeView::Grid,
+        } = self.canvas_holds()
+        else {
+            return None;
+        };
+        let model = &self.protocol.doc.model;
+        let generated = model.generated()?;
+        let label = model.label_of(node)?;
+        let step = generated.steps.iter().find(|s| s.name == label)?;
+        let op = |s: &crate::generated::GeneratedStep| match s.operation {
+            KnownOperation::FilterRows => PreviewOp::Where(s.argument.clone()),
+            KnownOperation::SortRows => PreviewOp::OrderBy(s.argument.clone()),
+        };
+        // Back from the step to the load, through the table each step reads;
+        // each reads one an earlier step makes, so the walk ends within the
+        // number of steps.
+        let mut chain = vec![(step.name.clone(), op(step))];
+        let mut on = step.on.as_str();
+        while let Some(before) = generated.steps.iter().find(|s| s.name == on) {
+            if chain.len() > generated.steps.len() {
+                return None;
+            }
+            chain.push((before.name.clone(), op(before)));
+            on = before.on.as_str();
+        }
+        chain.reverse();
+        let fields = match step.operation {
+            KnownOperation::FilterRows => [step.argument.clone(), String::new()],
+            KnownOperation::SortRows => [String::new(), step.argument.clone()],
+        };
+        Some(crate::data_grid::PreviewRequest {
+            step: step.name.clone(),
+            data: generated.data.clone(),
+            root_table: generated.root_table.clone(),
+            chain,
+            fields,
+            ran: model.step_ran(&step.name),
+            run_key: self.run_binding.map(str::to_owned),
+        })
+    }
+
     /// **Take on the Protocol the folder holds now**, after a Save or a Run
     /// recorded the applied views and nothing is left unrecorded.
     ///
     /// The manifest is read back as written, so the Steps sheet lists the
     /// steps arc appended. The document keeps the data file it came from as
     /// its source, so Save and Run go on writing the load and running the
-    /// folder, and the charts stay on the load's table.
+    /// folder, and the charts stay on the load's table. The ledger rail takes
+    /// the default a Protocol of several steps opens with, and the newest step
+    /// arc generated is selected.
     fn adopt_saved_protocol(&mut self) {
         let Some(source) = self.protocol.doc.model.source().cloned() else {
             return;
         };
-        let manifest = crate::one_step::OneStepProtocol::manifest_path_in(&source.dir);
-        match crate::protocol::load_protocol_offline(&manifest.to_string_lossy()) {
-            Ok(mut inputs) => {
-                inputs.hold_table(source.table_id());
-                inputs.columns.clone_from(&source.columns);
-                inputs.tiles.clone_from(&source.tiles);
-                inputs.source = Some(source);
+        // Through the call opening the folder makes, so what the window shows
+        // after a Save is what reopening the folder would show.
+        match source.inputs_with_last_run() {
+            Ok(inputs) => {
+                let newest = inputs
+                    .generated
+                    .as_ref()
+                    .and_then(|g| g.steps.last())
+                    .map(|step| step.name.clone());
                 self.protocol.doc.open(inputs);
+                if let Some(newest) = newest {
+                    self.protocol.doc.model.select_step_table(&newest);
+                }
+                self.apply_rail_defaults();
                 wire_columns(
                     &mut self.charts.doc,
                     &self.protocol.doc.model,

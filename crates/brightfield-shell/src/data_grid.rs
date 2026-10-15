@@ -1431,6 +1431,269 @@ impl RowSource for EngineRows<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// The preview — the first page of a generated step nobody has run.
+// ---------------------------------------------------------------------------
+
+/// How many rows a preview reads: the first page, the window the grid fetches
+/// first for a table it holds.
+pub const PREVIEW_ROWS: u64 = PAGE_PAD;
+
+/// The line a preview's rows stand under, saying what they are and what they
+/// are not.
+pub const PREVIEW_LABEL: &str =
+    "Preview \u{b7} the first page, computed by brightfield from the data file \u{b7} not a run";
+
+/// What the band's trailing end says over a preview, where a table's grid
+/// counts its rows: a preview claims no count.
+pub const PREVIEW_COUNT: &str = "first page \u{b7} preview";
+
+/// **What the window asks the grid to preview**: a generated step, and the
+/// chain from the data file that makes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewRequest {
+    /// The step's name, which is also its table's.
+    pub step: String,
+    /// The data file the load reads.
+    pub data: std::path::PathBuf,
+    /// The table the load makes.
+    pub root_table: String,
+    /// Each generated step from the load to this one, in order, with what it
+    /// does.
+    pub chain: Vec<(String, brightfield_engine::PreviewOp)>,
+    /// What the band's `where` and `order by` fields show: the step's own
+    /// argument in the field of its operation.
+    pub fields: [String; 2],
+    /// Whether the run record says the step ran.
+    pub ran: bool,
+    /// The key that runs the Protocol, when one is bound.
+    pub run_key: Option<String>,
+}
+
+impl PreviewRequest {
+    /// Whether `other` previews the same rows, so a page read for this one
+    /// serves it.
+    fn same_rows(&self, other: &Self) -> bool {
+        self.step == other.step
+            && self.data == other.data
+            && self.root_table == other.root_table
+            && self.chain == other.chain
+    }
+
+    /// How the Run verb is named in a sentence: with its key, when it has one.
+    fn run_named(&self) -> String {
+        match &self.run_key {
+            Some(key) => format!("Run ({key})"),
+            None => "Run".to_string(),
+        }
+    }
+}
+
+/// **A generated step's grid, while it shows a preview**: what was asked, and
+/// the page read for it or why there is none.
+#[derive(Clone, Debug)]
+pub struct GridPreview {
+    request: PreviewRequest,
+    shown: Result<GridPage, brightfield_engine::PreviewRefusal>,
+    /// Whether a key asked the band to filter or sort this step, so the status
+    /// band says why it cannot.
+    said: bool,
+}
+
+impl GridPreview {
+    /// The previewed step's name.
+    #[must_use]
+    pub fn step(&self) -> &str {
+        &self.request.step
+    }
+
+    /// The page read, or `None` when the step could not be previewed.
+    #[must_use]
+    pub fn page(&self) -> Option<&GridPage> {
+        self.shown.as_ref().ok()
+    }
+
+    /// Why the step could not be previewed, when it could not.
+    #[must_use]
+    pub fn refusal(&self) -> Option<&brightfield_engine::PreviewRefusal> {
+        self.shown.as_ref().err()
+    }
+
+    /// Whether the run record says the step ran.
+    #[must_use]
+    pub const fn ran(&self) -> bool {
+        self.request.ran
+    }
+
+    /// What the band's two fields show.
+    pub(crate) const fn fields(&self) -> &[String; 2] {
+        &self.request.fields
+    }
+
+    /// What the status band says to a key that asks the band to filter or
+    /// sort this step: a step that has not run offers Run, because filtering
+    /// starts from the step's table and never from a preview.
+    #[must_use]
+    pub fn offer(&self) -> String {
+        if self.request.ran {
+            format!(
+                "{} has been run; filtering a saved step comes in a later version",
+                self.request.step
+            )
+        } else {
+            format!(
+                "{} has not been run; {} the Protocol to filter or sort its rows",
+                self.request.step,
+                self.request.run_named()
+            )
+        }
+    }
+
+    /// The empty state a step that could not be previewed draws: why, and Run
+    /// as the way on.
+    fn refused_state(&self, refusal: &brightfield_engine::PreviewRefusal) -> EmptyState {
+        use brightfield_model::profile_model::thousands;
+        let run = self.request.run_named();
+        match refusal {
+            brightfield_engine::PreviewRefusal::TooLarge { bytes } => EmptyState::new(
+                ICON_DATA,
+                "The data file is too large to preview",
+                format!(
+                    "It is {} bytes on disk, more than brightfield previews. {run} the \
+                     Protocol to make this step's table.",
+                    thousands(*bytes)
+                ),
+            ),
+            brightfield_engine::PreviewRefusal::Engine(msg) => EmptyState::new(
+                ICON_DATA,
+                "This step cannot be previewed",
+                format!("{msg}. It has not been run; {run} the Protocol to make its table."),
+            ),
+        }
+    }
+}
+
+/// Read the preview `request` asks for, under a file-size limit of `limit`.
+fn read_preview(
+    request: &PreviewRequest,
+    limit: u64,
+) -> Result<GridPage, brightfield_engine::PreviewRefusal> {
+    let reader = brightfield_engine::FileReader::for_path(&request.data).ok_or_else(|| {
+        brightfield_engine::PreviewRefusal::Engine(format!(
+            "{} is not a file brightfield previews",
+            request.data.display()
+        ))
+    })?;
+    let batches = brightfield_engine::preview_first_page_with_limit(
+        &request.data,
+        reader,
+        &request.root_table,
+        &request.chain,
+        PREVIEW_ROWS,
+        limit,
+    )?;
+    let (columns, rows) = tabulate(&batches);
+    Ok(GridPage {
+        window: 0..rows.len() as u64,
+        columns,
+        rows,
+    })
+}
+
+impl ChartDoc {
+    /// The preview the grid shows, while it shows one.
+    #[must_use]
+    pub fn grid_preview(&self) -> Option<&GridPreview> {
+        self.grid_preview.as_ref()
+    }
+
+    /// **Show `request`'s preview in the grid**, or the session's rows again
+    /// with `None`. A page already read for the same rows is kept, so a frame
+    /// that asks again reads nothing; a different step's page is read here, on
+    /// a connection of its own (see [`brightfield_engine::preview_first_page`]).
+    ///
+    /// The cursor and any field being edited named cells of other rows, so
+    /// either change of what the grid shows lets go of them.
+    pub fn show_preview(&mut self, request: Option<PreviewRequest>) {
+        let Some(request) = request else {
+            if self.grid_preview.take().is_some() {
+                self.grid_cursor = None;
+            }
+            return;
+        };
+        if let Some(held) = self.grid_preview.as_mut() {
+            if held.request.same_rows(&request) {
+                held.request = request;
+                return;
+            }
+        }
+        self.grid_foot.cancel();
+        self.grid_cursor = None;
+        let shown = read_preview(&request, self.preview_file_limit);
+        self.grid_preview = Some(GridPreview {
+            request,
+            shown,
+            said: false,
+        });
+    }
+
+    /// Preview only files of at most `bytes` on disk, in place of
+    /// [`brightfield_engine::PREVIEW_FILE_LIMIT_BYTES`], so a test reaches the
+    /// refusal without a file that large. A preview already read is read
+    /// again under the new limit.
+    #[doc(hidden)]
+    pub fn set_preview_file_limit(&mut self, bytes: u64) {
+        self.preview_file_limit = bytes;
+        self.grid_preview = None;
+    }
+
+    /// When the grid shows a preview, note that a key asked the band of it,
+    /// and say so: the band of a preview is read-only.
+    pub(crate) fn preview_refuses_ask(&mut self) -> bool {
+        match self.grid_preview.as_mut() {
+            Some(preview) => {
+                preview.said = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// What the status band says for the preview's band, once a key asked it.
+    pub(crate) fn preview_said(&self) -> Option<String> {
+        self.grid_preview
+            .as_ref()
+            .filter(|p| p.said)
+            .map(GridPreview::offer)
+    }
+}
+
+/// A preview page as a [`RowSource`]: the page is the whole of it, so the
+/// table has no row past it to scroll to.
+struct PreviewRows<'a> {
+    page: &'a GridPage,
+}
+
+impl RowSource for PreviewRows<'_> {
+    fn prepare(&mut self, _visible: Range<u64>) {}
+
+    fn total_rows(&self) -> u64 {
+        self.page.rows.len() as u64
+    }
+
+    fn columns(&self) -> &[GridColumn] {
+        &self.page.columns
+    }
+
+    fn cell_text(&self, row: u64, col: usize) -> Option<CellText> {
+        self.page
+            .rows
+            .get(usize::try_from(row).ok()?)?
+            .get(col)
+            .cloned()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The Steps-sheet source — the same chrome over the in-memory sheet.
 // ---------------------------------------------------------------------------
 
@@ -1664,6 +1927,105 @@ impl DataGridItem {
     }
 }
 
+impl DataGridItem {
+    /// **The grid of a generated step nobody has run**: the preview's page
+    /// under the label that says what it is, with the plain header (the
+    /// column band's figures are the whole table's, not this step's) and the
+    /// band read-only beneath. A step that could not be previewed draws why,
+    /// with Run as the way on, in place of the rows.
+    fn preview_ui(
+        &mut self,
+        doc: &mut ChartDoc,
+        preview: &GridPreview,
+        ui: &mut egui::Ui,
+        cx: &mut ItemCtx<'_>,
+    ) {
+        let mode = cx.mode;
+        let sem = semantic(mode.is_dark());
+        if preview.page().is_some() {
+            ui.label(
+                egui::RichText::new(PREVIEW_LABEL)
+                    .font(cell_font())
+                    .color(chrome::colour(sem.text.muted)),
+            );
+        }
+        let room = ui.available_rect_before_wrap();
+        let foot_rect = egui::Rect::from_min_max(
+            egui::pos2(
+                room.left(),
+                room.bottom() - FOOT_BAND_HEIGHT.min(room.height()),
+            ),
+            room.max,
+        );
+        let table_rect =
+            egui::Rect::from_min_max(room.min, egui::pos2(room.right(), foot_rect.top()));
+        let mut drawn = None;
+        match (preview.page(), preview.refusal()) {
+            (Some(page), _) => {
+                let cursor = TableCursor {
+                    at: doc.grid_cursor,
+                    reveal: std::mem::take(&mut doc.grid_cursor_reveal),
+                };
+                let mut source = PreviewRows { page };
+                let set = &self.set_widths;
+                drawn = Some(
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .id(grid_state_id())
+                            .max_rect(table_rect),
+                        |ui| {
+                            show_table_sized(
+                                ui,
+                                DATA.as_str(),
+                                mode,
+                                &mut source,
+                                ColumnWidths::Natural,
+                                HeaderStyle::Plain,
+                                set,
+                                Some(cursor),
+                            )
+                        },
+                    )
+                    .inner,
+                );
+            }
+            (None, Some(refusal)) => {
+                let mut inside = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(table_rect)
+                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                );
+                chrome::empty_state(&mut inside, &preview.refused_state(refusal), mode);
+            }
+            (None, None) => {}
+        }
+        let counts = drawn.as_ref().map_or((0, 0), |d| (d.rows, d.columns));
+        let mut foot = std::mem::take(&mut doc.grid_foot);
+        let outcome = foot_band(
+            ui,
+            foot_rect,
+            doc,
+            &mut foot,
+            counts,
+            Some(preview.fields()),
+            mode,
+        );
+        doc.grid_foot = foot;
+        if outcome.repaint {
+            cx.request_repaint();
+        }
+        if let Some(drawn) = &drawn {
+            doc.controls.extend(drawn.controls.iter().cloned());
+            if let Some(cell) = drawn.pressed {
+                doc.grid_cursor = Some(cell);
+                cx.take_focus();
+                cx.request_repaint();
+            }
+        }
+        doc.file_table_drawn(drawn);
+    }
+}
+
 impl Default for DataGridItem {
     fn default() -> Self {
         Self::new()
@@ -1759,6 +2121,14 @@ impl Item<ChartDoc> for DataGridItem {
     fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
         let mode = cx.mode;
         let sem = semantic(mode.is_dark());
+
+        // A generated step's preview is not the session's rows, so it is drawn
+        // apart from them and before anything asks the session.
+        if let Some(preview) = doc.grid_preview.take() {
+            self.preview_ui(doc, &preview, ui, cx);
+            doc.grid_preview = Some(preview);
+            return;
+        }
 
         // The honesty gate, before any row is fetched: when the preview
         // carries a recorded run-state, render it — and when that state says
@@ -1904,7 +2274,7 @@ impl Item<ChartDoc> for DataGridItem {
         if !names.is_empty() {
             foot.columns.clone_from(&names);
         }
-        let outcome = foot_band(ui, foot_rect, doc, &mut foot, counts, mode);
+        let outcome = foot_band(ui, foot_rect, doc, &mut foot, counts, None, mode);
         doc.grid_foot = foot;
         if outcome.repaint {
             cx.request_repaint();

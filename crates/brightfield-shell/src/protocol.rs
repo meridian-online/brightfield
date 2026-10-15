@@ -151,6 +151,10 @@ pub struct ProtocolInputs {
     /// came from one — what Save writes, and what says the Protocol is not
     /// saved yet. `None` for a Protocol that was read off disk.
     pub source: Option<OneStepProtocol>,
+    /// The steps arc generated after the load, as their models say, when the
+    /// folder holds any: what a generated step's grid previews from. `None`
+    /// for every other Protocol.
+    pub generated: Option<crate::generated::GeneratedProtocol>,
 }
 
 impl ProtocolInputs {
@@ -185,6 +189,7 @@ impl ProtocolInputs {
             tiles: Vec::new(),
             table: None,
             source: None,
+            generated: None,
         }
     }
 
@@ -331,7 +336,22 @@ pub fn offline_optin() -> bool {
 /// is about the artifact class, and a one-step read of a CSV is a class this
 /// build can render honestly without a run.
 ///
-/// The other exemption is the older one:
+/// **A folder holding that load and then steps arc generated after it does
+/// not reach this refusal either**, and for the same reason: it opens through
+/// the data file, and the rails draw the graph of the load and of steps whose
+/// every model [`crate::generated::generated_protocol_in`] has matched to
+/// arc's template for an operation brightfield knows, each reading a table an
+/// earlier step makes. A model under the generated header that departs from
+/// the template is refused, naming the step, so nothing reaches the canvas
+/// whose effect brightfield cannot state. This is honest without a run
+/// because brightfield draws only steps it can recompute from the file:
+/// each generated step reads *not run* until a run's record says otherwise,
+/// and its grid's rows are a first page brightfield computes from the data
+/// file on a locked-down connection of its own, labelled as a preview and
+/// claiming no count ([`crate::data_grid::PREVIEW_LABEL`]). No run record is
+/// written and arc's working database is not touched.
+///
+/// The last exemption is the older one:
 ///
 /// A [`crate::starts::Start`] that sets
 /// [`run_less`](crate::starts::Start::run_less) is exempt, because its label
@@ -511,6 +531,7 @@ pub fn load_contract_str(bytes: &[u8]) -> Result<ProtocolInputs, String> {
         tiles: Vec::new(),
         table: None,
         source: None,
+        generated: None,
     })
 }
 
@@ -599,6 +620,7 @@ fn inputs_from(
         tiles: Vec::new(),
         table: None,
         source: None,
+        generated: None,
     }
 }
 
@@ -962,6 +984,9 @@ pub struct ProtocolModel {
     /// The spec brightfield wrote when a data file was opened, and where it
     /// would be written. `None` for a Protocol read off disk.
     source: Option<OneStepProtocol>,
+    /// The steps arc generated after the load, when the folder holds any. See
+    /// [`ProtocolInputs::generated`].
+    generated: Option<crate::generated::GeneratedProtocol>,
     /// Which column the chart document has selected — a tile's, or a column
     /// of the table the dashboard draws no tile for — mirrored in from it each
     /// frame so the rail's highlight and the inspector's heading cannot name
@@ -1053,6 +1078,7 @@ impl ProtocolModel {
             tiles: inputs.tiles,
             table: inputs.table,
             source: inputs.source,
+            generated: inputs.generated,
             selected_column: None,
             column_pick: None,
             on_column_row: false,
@@ -1855,6 +1881,36 @@ impl ProtocolModel {
     #[must_use]
     pub const fn source(&self) -> Option<&OneStepProtocol> {
         self.source.as_ref()
+    }
+
+    /// The steps arc generated after the load, when this Protocol has any.
+    #[must_use]
+    pub const fn generated(&self) -> Option<&crate::generated::GeneratedProtocol> {
+        self.generated.as_ref()
+    }
+
+    /// The node of the table the step `name` makes, found by its label in the
+    /// graph the canvas draws.
+    #[must_use]
+    pub fn node_of_step_table(&self, name: &str) -> Option<&AssetId> {
+        viewable_nodes(&self.graph_collapsed).find(|id| self.label_of(id) == Some(name))
+    }
+
+    /// Whether the run record says the step `name` ran: its row on the Steps
+    /// sheet reads anything but not run.
+    #[must_use]
+    pub fn step_ran(&self, name: &str) -> bool {
+        self.sheet
+            .rows()
+            .iter()
+            .any(|row| row.name == name && row.status != NOT_RUN)
+    }
+
+    /// Select the table the step `name` makes, as a click on its row would.
+    pub fn select_step_table(&mut self, name: &str) {
+        if let Some(id) = self.node_of_step_table(name).cloned() {
+            self.select_id(id);
+        }
     }
 
     /// Mirror in which column the chart document has selected, so the

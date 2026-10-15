@@ -422,7 +422,6 @@ fn a_refusal_is_shown_in_arcs_words_and_keeps_the_mark() {
 }
 
 #[test]
-#[ignore = "the window adopts the saved Protocol through the open path for a folder of generated steps, which is not built yet"]
 fn after_save_the_window_shows_the_protocols_steps() {
     let mut win = Window::open("adopt");
     win.apply(Some("house_age > 28"), None);

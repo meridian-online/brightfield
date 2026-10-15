@@ -12,6 +12,7 @@ pub mod error;
 pub mod facts;
 pub mod nearest;
 pub mod preagg;
+pub mod preview;
 pub mod profile;
 pub mod semantic;
 
@@ -24,6 +25,10 @@ pub use brightfield_sql::ir::Predicate as SqlPredicate;
 pub use duckdb::arrow::datatypes::SchemaRef;
 pub use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
+pub use preview::{
+    preview_first_page, preview_first_page_with_limit, FileReader, PreviewOp, PreviewRefusal,
+    PREVIEW_FILE_LIMIT_BYTES,
+};
 pub use profile::{
     Bars, ColumnMoments, ColumnProfile, Distribution, ProfileOutcome, ScanTally, SourceProfile,
     StatementScans,
@@ -1985,14 +1990,7 @@ impl Session {
             .map_err(|e| {
                 self.classify_query_failure(index, &self.mark_kind_at(index), described.clone(), e)
             })?;
-        let ties = (1..=width)
-            .map(|n| n.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        Ok(format!(
-            "SELECT * FROM ({rows_sql}) AS bf_step_rows \
-             ORDER BY \n{order}\n, {ties} LIMIT {limit} OFFSET {offset}"
-        ))
+        Ok(ordered_window_sql(&rows_sql, order, width, offset, limit))
     }
 
     /// The distinct columns `condition` names, in order of first appearance,
@@ -4173,6 +4171,21 @@ fn unordered_window_sql(rows_sql: &str, offset: u64, limit: u64) -> String {
     format!(
         "SELECT * FROM ({rows_sql}) AS bf_step_rows \
          ORDER BY ALL LIMIT {limit} OFFSET {offset}"
+    )
+}
+
+/// The window SQL over `rows_sql` ordered by `order`, then by each of its
+/// `width` columns by position, so ties between equal keys still fall in one
+/// fixed order. The order sits on lines of its own, so a trailing `--` comment
+/// in it ends before the tie-break and the `LIMIT` that follow.
+fn ordered_window_sql(rows_sql: &str, order: &str, width: i64, offset: u64, limit: u64) -> String {
+    let ties = (1..=width)
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "SELECT * FROM ({rows_sql}) AS bf_step_rows \
+         ORDER BY \n{order}\n, {ties} LIMIT {limit} OFFSET {offset}"
     )
 }
 

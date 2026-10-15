@@ -253,17 +253,45 @@ impl OneStepProtocol {
     /// and the same steps — and the newest such record wins; a directory without
     /// one leaves the declaration as [`Self::inputs`] built it.
     ///
+    /// **A folder holding steps arc generated after the load is taken whole**:
+    /// the manifest on disk is read with its models, so the Steps sheet lists
+    /// every step and a record of the run of all of them is accepted, where
+    /// this one-step declaration would refuse it as a run of other steps. See
+    /// [`crate::generated::generated_protocol_in`] for the shape.
+    ///
     /// # Errors
     ///
-    /// As [`Self::inputs`]. A record that will not read is not an error: it is
-    /// reported and passed over.
+    /// As [`Self::inputs`], and a folder of generated steps one of which does
+    /// not match arc's template, named in the message. A record that will not
+    /// read is not an error: it is reported and passed over.
     pub fn inputs_with_last_run(&self) -> Result<ProtocolInputs, String> {
-        let mut inputs = self.inputs()?;
+        let mut inputs = self.folder_inputs()?;
         for view in crate::run::records_newest_first(&self.dir, &self.name) {
             if inputs.adopt_run(&view) {
                 break;
             }
         }
+        Ok(inputs)
+    }
+
+    /// The declaration the folder holds now: [`Self::inputs`], or, when the
+    /// folder's manifest holds steps arc generated after the load, that
+    /// manifest read with its models, carrying this Protocol's columns and
+    /// source as [`Self::inputs`] does.
+    fn folder_inputs(&self) -> Result<ProtocolInputs, String> {
+        let manifest = Self::manifest_path_in(&self.dir);
+        let Ok(text) = std::fs::read_to_string(&manifest) else {
+            return self.inputs();
+        };
+        let Some(generated) = crate::generated::generated_protocol_in(&text, &self.dir)? else {
+            return self.inputs();
+        };
+        let mut inputs = crate::protocol::load_protocol_offline(&manifest.to_string_lossy())?;
+        inputs.hold_table(self.table_id());
+        inputs.columns.clone_from(&self.columns);
+        inputs.tiles.clone_from(&self.tiles);
+        inputs.source = Some(self.clone());
+        inputs.generated = Some(generated);
         Ok(inputs)
     }
 

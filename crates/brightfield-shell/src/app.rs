@@ -917,6 +917,13 @@ pub struct ChartDoc {
     /// the grid reads while it is, and what the band drew. Cleared when the
     /// document is replaced, with the view it edits.
     pub(crate) grid_foot: crate::grid_foot::FootState,
+    /// **The first page of a generated step nobody has run**, while the grid
+    /// shows that step: the window sets it from what the canvas holds, and
+    /// the grid draws it in place of the session's rows. See
+    /// [`crate::data_grid::GridPreview`].
+    pub(crate) grid_preview: Option<crate::data_grid::GridPreview>,
+    /// The largest data file a preview reads, in bytes on disk.
+    pub(crate) preview_file_limit: u64,
     /// **What the operation panel reads**: the table the node in view makes,
     /// and the description of the operation in hand as the window last handed
     /// it over. See [`crate::operation_panel`].
@@ -1270,6 +1277,8 @@ impl ChartDoc {
             grid_condition_held: None,
             grid_view_settled: false,
             grid_foot: crate::grid_foot::FootState::default(),
+            grid_preview: None,
+            preview_file_limit: brightfield_engine::PREVIEW_FILE_LIMIT_BYTES,
             operation: crate::operation_panel::OperationState::default(),
             grid_layout_switch: None,
             grid_spot_switch: None,
@@ -1336,6 +1345,8 @@ impl ChartDoc {
             grid_condition_held: None,
             grid_view_settled: false,
             grid_foot: crate::grid_foot::FootState::default(),
+            grid_preview: None,
+            preview_file_limit: brightfield_engine::PREVIEW_FILE_LIMIT_BYTES,
             operation: crate::operation_panel::OperationState::default(),
             grid_layout_switch: None,
             grid_spot_switch: None,
@@ -1461,6 +1472,7 @@ impl ChartDoc {
         self.grid_condition_held = None;
         self.grid_view_settled = false;
         self.grid_foot = crate::grid_foot::FootState::default();
+        self.grid_preview = None;
         self.grid_layout_switch = None;
         self.grid_spot_switch = None;
         self.transposed_rows = Vec::new();
