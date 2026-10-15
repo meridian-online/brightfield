@@ -238,7 +238,7 @@ enum Entry {
 /// a frame and a runner that hangs must not freeze the window. The wake
 /// given to [`Descriptions::with_wake`] is called when an answer arrives, so a
 /// window can ask egui for a repaint; with none, callers poll.
-/// A child that hangs stays [`DescriptionState::Pending`] and blocks nothing.
+/// A child that hangs stays [`DescriptionState::Pending`] while the window goes on drawing.
 #[derive(Default)]
 pub struct Descriptions {
     by_name: BTreeMap<String, Entry>,
