@@ -1536,67 +1536,140 @@ impl PreviewKey {
     }
 }
 
+/// The answer a preview worker sends back.
+type PreviewAnswer = Result<GridPage, brightfield_engine::PreviewRefusal>;
+
 /// **The document's preview reads**: the pages read so far, the newest last,
-/// and the one read under way on a worker.
+/// the one read under way on a worker, and the one request waiting behind it.
 ///
 /// A read runs off the UI thread because it loads the whole data file, and a
-/// file near the size limit would hold a frame for as long as that takes. The
-/// worker asks for a repaint when it is done, so the page lands on the next
-/// frame.
+/// file near the size limit would hold a frame for as long as that takes. It
+/// also loads that file under a memory limit of its own, so **one worker runs
+/// at a time**: a request for another step while a read is under way waits
+/// behind it, replacing any request already waiting, and a key that is kept or
+/// being read is never read again. A finished read is kept whether or not its
+/// step is still on screen, so going back to it reads nothing. The worker asks
+/// for a repaint when it is done, so the page lands on the next frame.
+///
+/// A worker that ended without an answer (it panicked) is not kept: the visit
+/// that asked shows why, and the next visit reads again.
 #[derive(Default)]
 pub(crate) struct PreviewReads {
     kept: Vec<(PreviewKey, PreviewRead)>,
-    pending: Option<(
-        PreviewKey,
-        std::sync::mpsc::Receiver<Result<GridPage, brightfield_engine::PreviewRefusal>>,
-    )>,
+    in_flight: Option<(PreviewKey, std::sync::mpsc::Receiver<PreviewAnswer>)>,
+    queued: Option<(PreviewKey, PreviewRequest)>,
+    /// A read the worker under way ended without an answer for, handed to the
+    /// visit that asked for it once and then forgotten.
+    lost: Option<PreviewKey>,
     started: usize,
+    hooks: PreviewHooks,
+}
+
+/// Test-only controls over the preview worker: holding it before it reads,
+/// making the next one panic, and counting how many run at once.
+#[derive(Clone, Default)]
+pub(crate) struct PreviewHooks {
+    held: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    panic_next: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    live: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    most_live: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl PreviewReads {
-    /// Where the read of `request` under `key` stands, starting it on a worker
-    /// when it is neither kept nor under way.
+    /// Take a finished read off the worker, if one has finished: keep its
+    /// page, or forget a worker that ended without an answer; then start the
+    /// request waiting behind it.
+    fn poll(&mut self, ctx: &egui::Context) {
+        if let Some((key, answer)) = &self.in_flight {
+            match answer.try_recv() {
+                Ok(read) => {
+                    let key = key.clone();
+                    self.in_flight = None;
+                    self.keep(key, std::sync::Arc::new(read));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.lost = Some(key.clone());
+                    self.in_flight = None;
+                }
+            }
+        }
+        if let Some((key, request)) = self.queued.take() {
+            if !self.is_kept(&key) {
+                self.start(key, &request, ctx);
+            }
+        }
+    }
+
+    fn is_kept(&self, key: &PreviewKey) -> bool {
+        self.kept.iter().any(|(k, _)| k == key)
+    }
+
+    fn keep(&mut self, key: PreviewKey, read: PreviewRead) {
+        if self.kept.len() >= PREVIEW_PAGES_KEPT {
+            self.kept.remove(0);
+        }
+        self.kept.push((key, read));
+    }
+
+    /// Start reading `request` under `key` on a worker.
+    fn start(&mut self, key: PreviewKey, request: &PreviewRequest, ctx: &egui::Context) {
+        let (send, answer) = std::sync::mpsc::channel();
+        let asked = request.clone();
+        let limit = key.limit;
+        let wake = ctx.clone();
+        let hooks = self.hooks.clone();
+        std::thread::spawn(move || {
+            use std::sync::atomic::Ordering;
+            let live = hooks.live.fetch_add(1, Ordering::SeqCst) + 1;
+            hooks.most_live.fetch_max(live, Ordering::SeqCst);
+            while hooks.held.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let read = if hooks.panic_next.swap(false, Ordering::SeqCst) {
+                None
+            } else {
+                Some(read_preview(&asked, limit))
+            };
+            hooks.live.fetch_sub(1, Ordering::SeqCst);
+            // A worker told to fail drops its sender unsent, which is what a
+            // panic leaves the receiver with.
+            if let Some(read) = read {
+                let _ = send.send(read);
+            }
+            wake.request_repaint();
+        });
+        self.in_flight = Some((key, answer));
+        self.started += 1;
+    }
+
+    /// Where the read of `request` under `key` stands: kept, being read, or
+    /// waiting behind the read under way. Only when no read is under way is
+    /// one started for it.
     fn shown(
         &mut self,
         key: &PreviewKey,
         request: &PreviewRequest,
         ctx: &egui::Context,
     ) -> PreviewShown {
+        self.poll(ctx);
+        // A lost read is told only to a visit to its own step that is waiting
+        // for it; any other visit forgets it, and its step is read afresh.
+        if self.lost.take().as_ref() == Some(key) {
+            return PreviewShown::Read(std::sync::Arc::new(Err(
+                brightfield_engine::PreviewRefusal::Engine(
+                    "the preview's read stopped without an answer".to_string(),
+                ),
+            )));
+        }
         if let Some((_, read)) = self.kept.iter().find(|(k, _)| k == key) {
             return PreviewShown::Read(read.clone());
         }
-        if let Some((pending, answer)) = &self.pending {
-            if pending == key {
-                let read = match answer.try_recv() {
-                    Ok(read) => read,
-                    Err(std::sync::mpsc::TryRecvError::Empty) => return PreviewShown::Reading,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        Err(brightfield_engine::PreviewRefusal::Engine(
-                            "the preview's read stopped without an answer".to_string(),
-                        ))
-                    }
-                };
-                self.pending = None;
-                let read = std::sync::Arc::new(read);
-                if self.kept.len() >= PREVIEW_PAGES_KEPT {
-                    self.kept.remove(0);
-                }
-                self.kept.push((key.clone(), read.clone()));
-                return PreviewShown::Read(read);
-            }
+        match &self.in_flight {
+            Some((reading, _)) if reading == key => {}
+            Some(_) => self.queued = Some((key.clone(), request.clone())),
+            None => self.start(key.clone(), request, ctx),
         }
-        let (send, answer) = std::sync::mpsc::channel();
-        let asked = request.clone();
-        let limit = key.limit;
-        let wake = ctx.clone();
-        std::thread::spawn(move || {
-            // A receiver dropped for another step's read is not an error: the
-            // page is simply not wanted any more.
-            let _ = send.send(read_preview(&asked, limit));
-            wake.request_repaint();
-        });
-        self.pending = Some((key.clone(), answer));
-        self.started += 1;
         PreviewShown::Reading
     }
 }
@@ -1746,6 +1819,8 @@ impl ChartDoc {
     /// either change of what the grid shows lets go of them.
     pub fn show_preview(&mut self, request: Option<PreviewRequest>, ctx: &egui::Context) {
         let Some(request) = request else {
+            // A read under way still lands, and the one waiting still starts.
+            self.preview_reads.poll(ctx);
             if self.grid_preview.take().is_some() {
                 self.grid_cursor = None;
             }
@@ -1759,8 +1834,25 @@ impl ChartDoc {
                 false
             }
         };
-        let key = PreviewKey::of(&request, self.preview_file_limit);
-        let shown = self.preview_reads.shown(&key, &request, ctx);
+        // A visit that already has its answer keeps it, so an answer that is
+        // not kept (a read that ended without one) is shown for this visit
+        // and read again on the next.
+        let answered = match &self.grid_preview {
+            Some(held) if held.request.same_rows(&request) && !held.is_reading() => {
+                Some(held.shown.clone())
+            }
+            _ => None,
+        };
+        let shown = match answered {
+            Some(shown) => {
+                self.preview_reads.poll(ctx);
+                shown
+            }
+            None => {
+                let key = PreviewKey::of(&request, self.preview_file_limit);
+                self.preview_reads.shown(&key, &request, ctx)
+            }
+        };
         self.grid_preview = Some(GridPreview {
             request,
             shown,
@@ -1774,6 +1866,35 @@ impl ChartDoc {
     #[must_use]
     pub const fn preview_reads_started(&self) -> usize {
         self.preview_reads.started
+    }
+
+    /// Hold every preview worker before it reads while `held`, so a test can
+    /// ask for other steps while a read is under way.
+    #[doc(hidden)]
+    pub fn hold_preview_reads(&self, held: bool) {
+        self.preview_reads
+            .hooks
+            .held
+            .store(held, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Make the next preview worker end without an answer, as a panic would.
+    #[doc(hidden)]
+    pub fn fail_next_preview_read(&self) {
+        self.preview_reads
+            .hooks
+            .panic_next
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The most preview workers that have run at once.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn preview_workers_most_live(&self) -> usize {
+        self.preview_reads
+            .hooks
+            .most_live
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Preview only files of at most `bytes` on disk, in place of

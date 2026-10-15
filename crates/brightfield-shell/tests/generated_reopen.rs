@@ -141,7 +141,7 @@ impl Window {
     }
 
     /// Click the `grid` row listed under the asset row labelled `node`.
-    fn click_grid_under(&mut self, node: &str) {
+    fn click_grid_only(&mut self, node: &str) {
         let rows = self.app.spine_rows().to_vec();
         let at = rows
             .iter()
@@ -159,6 +159,11 @@ impl Window {
         self.run(vec![egui::Event::PointerMoved(centre)]);
         self.run(vec![button(centre, true), button(centre, false)]);
         self.settle();
+    }
+
+    /// [`Self::click_grid_only`], then wait for the preview it shows.
+    fn click_grid_under(&mut self, node: &str) {
+        self.click_grid_only(node);
         self.wait_for_preview();
     }
 
@@ -577,4 +582,52 @@ fn a_step_over_the_limit_says_why_and_offers_run() {
     );
     assert!(!win.drew(PREVIEW_LABEL));
     assert_eq!(win.status_of(FILTER_STEP), "not run");
+}
+
+#[test]
+fn one_preview_worker_runs_at_a_time_and_a_step_is_read_once() {
+    let root = TempDir::new("one-worker");
+    let folder = saved_folder(&root, Some("house_age > 28"), Some("median_income DESC"));
+    let mut win = reopen(&folder);
+    win.app.chart_doc().hold_preview_reads(true);
+
+    win.click_grid_only(FILTER_STEP);
+    win.click_grid_only(SORT_STEP);
+    win.click_grid_only(FILTER_STEP);
+    assert_eq!(
+        win.app.chart_doc().preview_reads_started(),
+        1,
+        "a read started while another was under way"
+    );
+
+    win.app.chart_doc().hold_preview_reads(false);
+    win.wait_for_preview();
+    assert!(win.drew(PREVIEW_LABEL), "the filter's preview did not land");
+    win.click_grid_under(SORT_STEP);
+    win.click_grid_under(FILTER_STEP);
+
+    let doc = win.app.chart_doc();
+    assert_eq!(
+        doc.preview_reads_started(),
+        2,
+        "a step was read more than once"
+    );
+    assert_eq!(doc.preview_workers_most_live(), 1);
+}
+
+#[test]
+fn a_read_that_ends_without_an_answer_is_read_again_on_the_next_visit() {
+    let root = TempDir::new("lost");
+    let folder = saved_folder(&root, Some("house_age > 28"), None);
+    let mut win = reopen(&folder);
+    win.app.chart_doc().fail_next_preview_read();
+
+    win.click_grid_under(FILTER_STEP);
+    assert!(win.drew("stopped without an answer"), "{:?}", win.texts);
+
+    win.click_grid_under("california_housing");
+    win.click_grid_under(FILTER_STEP);
+
+    assert!(win.drew(PREVIEW_LABEL), "the next visit did not read again");
+    assert_eq!(win.app.chart_doc().preview_reads_started(), 2);
 }
