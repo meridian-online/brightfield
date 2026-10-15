@@ -423,9 +423,9 @@ impl ChartDoc {
     /// NULL cell, which no `=` matches. The literal is read from the stored
     /// value through the view the grid shows, never from the text drawn.
     ///
-    /// Whether it opened: with no cursor, no live session, a cell the step
-    /// no longer has, or a recorded condition held (see [`Self::foot_offer`]),
-    /// nothing opens.
+    /// Whether it opened: with no cursor, no live session, or a cell the step
+    /// no longer has, nothing opens. Nor does it open while a recorded
+    /// condition is held, for the reason [`Self::foot_offer`] gives.
     pub fn ask_where_at_cursor(&mut self) -> bool {
         if self.grid_condition_held().is_some() {
             return false;

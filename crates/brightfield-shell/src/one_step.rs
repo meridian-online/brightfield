@@ -334,8 +334,8 @@ impl OneStepProtocol {
     }
 }
 
-/// Whether [`OneStepProtocol::save_to`] may write the manifest at `path`: there
-/// is none, or the one there holds no more than one step.
+/// Whether [`OneStepProtocol::save_to`] may write the manifest at `path`: the
+/// folder has no manifest yet, or the one there holds no more than one step.
 fn manifest_is_ours(path: &Path) -> bool {
     let Ok(text) = std::fs::read_to_string(path) else {
         return !path.exists();
