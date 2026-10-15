@@ -1943,7 +1943,7 @@ impl Session {
                  ORDER BY ALL LIMIT {limit} OFFSET {offset}"
             ));
         };
-        // DuckDB rejects `ALL` after an order list (it is the whole ORDER BY or nothing), so
+        // DuckDB rejects `ALL` after an order list, so
         // the tie-break names every column by position instead: the same total
         // order `ORDER BY ALL` gives. The order sits on lines of its own so a
         // trailing `--` comment ends before what follows it, and has no
