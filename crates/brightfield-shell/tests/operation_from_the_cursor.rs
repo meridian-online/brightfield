@@ -579,6 +579,7 @@ fn filter_from_the_cursor_end_to_end() {
     //    first page of rows the condition keeps, with no count. The key there
     //    offers Run.
     let mut win = Window::reopen(&root, &folder);
+    assert_eq!(win.chart_sources(), charts, "the reopened chart moved");
     assert_eq!(
         win.sheet_steps(),
         vec!["load".to_string(), FILTER_STEP.to_string()]
@@ -622,6 +623,7 @@ fn filter_from_the_cursor_end_to_end() {
     assert_eq!(win.status_of(FILTER_STEP), "ok");
 
     // 8. Charts drew from the load throughout.
+    assert_eq!(win.chart_sources(), charts, "the run moved the chart");
     assert_eq!(
         manifest_steps(&folder),
         vec!["load".to_string(), FILTER_STEP.to_string()]

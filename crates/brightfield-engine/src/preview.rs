@@ -23,8 +23,8 @@
 //!   [`PreviewRefusal::TooLarge`], the same answer as a file over the limit,
 //!   and not an engine error.
 //!
-//! A chain is previewed through its chain: a sort on a filter reads the
-//! filter, then the sort. A sort's page is read in its own order, then every
+//! A step is previewed through the steps before it: a sort on a filter reads
+//! the filter, then the sort. A sort's page is read in its own order, then every
 //! column by position, so ties fall the same way on every read. The page is
 //! the first one and no more, and nothing here counts the step's rows: the page
 //! is there to prompt the next question, and must not pass for the step's

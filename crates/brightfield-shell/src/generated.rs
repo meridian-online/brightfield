@@ -20,9 +20,11 @@
 //! table an earlier step makes. It opens as a Protocol with its steps laid out
 //! and starts no run; each generated step reads *not run* until a run's record
 //! says otherwise, and its grid shows a labelled first-page preview (see
-//! [`crate::data_grid::PREVIEW_LABEL`]). A folder with any other step after the
-//! load is a hand-written Protocol, and is refused on open as it was before
-//! generated steps opened, unless the offline variable is set.
+//! [`crate::data_grid::PREVIEW_LABEL`]). A folder with no generated step after
+//! the load is a hand-written Protocol, and is refused on open as it was before
+//! generated steps opened, unless the offline variable is set. A folder that
+//! mixes generated steps with other steps after the load is refused with a
+//! message naming the step that does not match.
 //!
 //! **Parsing a model yields the operation, the table it is on, and its
 //! argument.** The open check reads all three, and the grid reads a
@@ -31,10 +33,11 @@
 //!
 //! **New steps are named by their effect** ([`step_name_for`]):
 //! `<table>_filtered_by_<column>` or `<table>_sorted_by_<column>`, where the
-//! table is the one the data came from and the column is the one the condition
-//! names, found by DuckDB's parse rather than by the cell the cursor started
-//! on. A condition naming no column or several falls back to
-//! `<table>_filtered`. Both parts are slugged, so the name passes arc's
+//! table is the one the data came from. A filter is named by the column its
+//! condition names, found by DuckDB's parse rather than by the cell the cursor
+//! started on, when it names exactly one; a sort is named by the first column
+//! of its order. Otherwise the name is `<table>_filtered` or `<table>_sorted`.
+//! Both parts are slugged, so the name passes arc's
 //! step-name check, and a name already taken gets `_2`, `_3` and so on before
 //! arc is asked, so a recording is not refused on its name.
 
