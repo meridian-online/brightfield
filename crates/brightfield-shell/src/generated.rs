@@ -274,8 +274,9 @@ pub fn generated_protocol_in(
     }))
 }
 
-/// `text` with every character outside `[A-Za-z0-9_]` turned to `_`, runs of
-/// `_` collapsed, and leading and trailing `_` trimmed.
+/// `text` as a slug: a character outside `[A-Za-z0-9_]` becomes `_`, a run of
+/// `_` collapses to one, and a leading or trailing `_` is trimmed.
+/// `a_column_arc_would_refuse_in_a_name_is_slugged` holds the cases.
 fn slug(text: &str) -> String {
     let mut out = String::new();
     for c in text.chars() {
