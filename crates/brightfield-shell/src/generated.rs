@@ -292,7 +292,7 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
 }
 
 /// The table a load model makes: the target of its `CREATE OR REPLACE TABLE`.
-fn load_table(model: &str) -> Option<String> {
+pub(crate) fn load_table(model: &str) -> Option<String> {
     let rest = model
         .trim_start()
         .strip_prefix("CREATE OR REPLACE TABLE ")?;
@@ -331,7 +331,7 @@ pub fn generated_protocol_in(
     manifest_text: &str,
     dir: &Path,
 ) -> Result<Option<GeneratedProtocol>, String> {
-    read_generated(manifest_text, dir, None)
+    read_generated(manifest_text, dir, None, None)
 }
 
 /// [`generated_protocol_in`], for the data file `source` opened as: `Ok(None)`
@@ -347,13 +347,31 @@ pub fn generated_protocol_for(
     dir: &Path,
     source: &crate::one_step::OneStepProtocol,
 ) -> Result<Option<GeneratedProtocol>, String> {
-    read_generated(manifest_text, dir, Some(source))
+    read_generated(manifest_text, dir, Some(source), None)
+}
+
+/// [`generated_protocol_for`], reading the load's model as `load_model`
+/// rather than from [`MODEL_PATH`] on disk: what the folder would be with
+/// that model written, so a Save can tell a missing model it may write back
+/// from a folder it must not touch, before it writes anything.
+///
+/// # Errors
+///
+/// As [`generated_protocol_for`].
+pub(crate) fn generated_protocol_with_load(
+    manifest_text: &str,
+    dir: &Path,
+    source: &crate::one_step::OneStepProtocol,
+    load_model: &str,
+) -> Result<Option<GeneratedProtocol>, String> {
+    read_generated(manifest_text, dir, Some(source), Some(load_model))
 }
 
 fn read_generated(
     manifest_text: &str,
     dir: &Path,
     source: Option<&crate::one_step::OneStepProtocol>,
+    load_model: Option<&str>,
 ) -> Result<Option<GeneratedProtocol>, String> {
     if !brightfield_protocol::is_protocol_manifest(manifest_text) {
         return Ok(None);
@@ -398,8 +416,10 @@ fn read_generated(
         }
     }
     let own = table_name(&data);
-    let Some(root_table) = std::fs::read_to_string(dir.join(MODEL_PATH))
-        .ok()
+    let on_disk = || std::fs::read_to_string(dir.join(MODEL_PATH)).ok();
+    let Some(root_table) = load_model
+        .map(str::to_owned)
+        .or_else(on_disk)
         .and_then(|m| load_table(&m))
         .filter(|t| t.eq_ignore_ascii_case(&own))
     else {

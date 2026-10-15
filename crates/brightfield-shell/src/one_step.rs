@@ -23,8 +23,9 @@
 //! manifest.** A Save that records a grid view adds a generated step through
 //! `arc operation record`, and the manifest is then arc's to extend: Save and
 //! Run leave the manifest, the load's model, and the steps and models arc
-//! appended, as they are, and refuse a folder whose manifest of several steps
-//! loads another file (see [`OneStepProtocol::save_to`]).
+//! appended, as they are (writing the load's model back only when it is
+//! missing), and refuse a folder whose manifest of several steps is not this
+//! file's, saying why (see [`OneStepProtocol::save_to`]).
 //!
 //! A run is `arc`'s, started by [`crate::run`] over the spec [`OneStepProtocol::save_to`]
 //! wrote, and it leaves its record under this Protocol's directory where
@@ -346,14 +347,14 @@ impl OneStepProtocol {
     ///
     /// **The two files are written only while they are this module's**: when
     /// the folder has no manifest, or its manifest still holds one step. A
-    /// manifest of more steps is left as it is, and so is its load's model:
-    /// when its load is this file's own, the steps after it are arc's
-    /// (a Save's recorded views among them) and the model on disk is the one
-    /// this module wrote, so there is nothing to write; when its load is not
-    /// (another data file in the same folder, or a hand-written Protocol), the
-    /// folder is another Protocol's and the Save is refused, naming the
-    /// manifest. A manifest that is there and will not load is refused before
-    /// anything is written, rather than written over or passed by.
+    /// manifest of more steps whose load is this file's own and whose later
+    /// steps arc generated is left as it is, and so is its load's model, which
+    /// is written back only when it is missing. Any other manifest of more
+    /// steps is refused in words naming why: another data file's Protocol, a
+    /// load through a model brightfield did not write, or steps it did not
+    /// generate (see the private `writes_beside`). A manifest that is there
+    /// and will not load is refused before anything is written, rather than
+    /// written over or passed by.
     ///
     /// # Errors
     ///
@@ -372,7 +373,8 @@ impl OneStepProtocol {
             ));
         }
         let manifest = Self::manifest_path_in(dir);
-        if !self.manifest_is_ours(&manifest, dir)? {
+        let writes = self.writes_beside(&manifest, dir)?;
+        if writes == SaveWrites::Nothing {
             return Ok(manifest);
         }
         let model = dir.join(MODEL_PATH);
@@ -382,51 +384,118 @@ impl OneStepProtocol {
         std::fs::create_dir_all(models_dir)
             .map_err(|e| format!("{}: {e}", models_dir.display()))?;
         std::fs::write(&model, &self.model).map_err(|e| format!("{}: {e}", model.display()))?;
-        std::fs::write(&manifest, &self.manifest)
-            .map_err(|e| format!("{}: {e}", manifest.display()))?;
+        if writes == SaveWrites::Both {
+            std::fs::write(&manifest, &self.manifest)
+                .map_err(|e| format!("{}: {e}", manifest.display()))?;
+        }
         Ok(manifest)
     }
 }
 
+/// What [`OneStepProtocol::save_to`] writes into a folder that holds a
+/// manifest it may write beside.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SaveWrites {
+    /// The manifest and the load's model: the folder has no manifest, or one
+    /// of at most one step.
+    Both,
+    /// Nothing: the manifest holds steps arc generated after this file's own
+    /// load, and the load's model on disk is the one brightfield writes.
+    Nothing,
+    /// The load's model alone: as [`Self::Nothing`], with the model missing
+    /// from the folder, so it is written back for the manifest to load.
+    LoadModel,
+}
+
 impl OneStepProtocol {
-    /// Whether [`Self::save_to`] may write the manifest at `path` and the
-    /// load's model beside it: `true` when the folder `dir` has no manifest
-    /// yet or the one there holds at most one step, `false` when it holds
-    /// more after this file's own load, which are steps arc appended.
+    /// What [`Self::save_to`] may write for the manifest at `path` in `dir`.
+    ///
+    /// A manifest of several steps is this file's only when its first step is
+    /// brightfield's load of this file — the file named by its one
+    /// `depends_on:` entry, its model at [`MODEL_PATH`] and that model making
+    /// this file's table — and the steps after it are ones arc generated.
+    /// **A load model missing from the folder is written back** when the
+    /// manifest names this file at [`MODEL_PATH`] and the steps read as
+    /// generated over the model brightfield would write: the manifest still
+    /// says what the model was, and writing it is what makes the folder run
+    /// again. That is decided before anything is written, so a folder refused
+    /// for any other reason is left untouched.
     ///
     /// # Errors
     ///
-    /// A manifest that is there but cannot be read or will not load: writing over
-    /// it would erase what it holds, and leaving it would answer a Save over a
-    /// folder `arc run` refuses. A manifest of more steps whose load is not this
-    /// file's: it is another Protocol, and writing the load's model under it
-    /// would change what that Protocol loads. A manifest of this file whose
-    /// generated steps will not read, in the words naming the step.
-    fn manifest_is_ours(&self, path: &Path, dir: &Path) -> Result<bool, String> {
+    /// Each worded by its cause, naming the manifest: it cannot be read or
+    /// will not load (writing over it would erase what it holds, and leaving it
+    /// would answer a Save over a folder `arc run` refuses); its first step
+    /// loads another data file, so it is another Protocol; its load is this
+    /// file's through a model brightfield did not write, at another path or
+    /// changed so it no longer makes this file's table; the steps after the
+    /// load are not ones arc generated; or a generated step will not read, in
+    /// the words naming the step.
+    fn writes_beside(&self, path: &Path, dir: &Path) -> Result<SaveWrites, String> {
         if !path.exists() {
-            return Ok(true);
+            return Ok(SaveWrites::Both);
         }
+        let at = path.display();
         let refuse = |e: &dyn std::fmt::Display| {
-            format!(
-                "the manifest at {} will not load: {e}; not overwriting it",
-                path.display()
-            )
+            format!("the manifest at {at} will not load: {e}; not overwriting it")
         };
         let text = std::fs::read_to_string(path).map_err(|e| refuse(&e))?;
         let manifest = brightfield_protocol::parse_manifest_str(&text).map_err(|e| refuse(&e))?;
-        if manifest.steps.len() <= 1 {
-            return Ok(true);
-        }
-        match crate::generated::generated_protocol_for(&text, dir, self) {
-            Ok(Some(_)) => Ok(false),
-            Ok(None) => Err(format!(
-                "the manifest at {} is another Protocol's, not {}'s; not overwriting it",
-                path.display(),
+        let Some(load) = manifest.steps.first().filter(|_| manifest.steps.len() > 1) else {
+            return Ok(SaveWrites::Both);
+        };
+        let same_file = |d: &Path| match (d.canonicalize(), self.data.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        if !data_file_of_load(load, dir).is_some_and(|d| same_file(&d)) {
+            return Err(format!(
+                "the manifest at {at} is another data file's Protocol: its first step does \
+                 not load {}; not overwriting it",
                 self.spelled
+            ));
+        }
+        match load.sql.as_deref().map(Path::new) {
+            Some(model) if model == Path::new(MODEL_PATH) => {}
+            other => {
+                return Err(format!(
+                    "the manifest at {at} loads {} through {}, a model brightfield did not \
+                     write (it writes {MODEL_PATH}); not overwriting it",
+                    self.spelled,
+                    other.map_or_else(|| "no model".to_string(), |m| m.display().to_string())
+                ));
+            }
+        }
+        let model = dir.join(MODEL_PATH);
+        let missing = !model.exists();
+        if !missing {
+            let makes_ours = std::fs::read_to_string(&model)
+                .ok()
+                .and_then(|m| crate::generated::load_table(&m))
+                .is_some_and(|t| t.eq_ignore_ascii_case(&self.name));
+            if !makes_ours {
+                return Err(format!(
+                    "the load model {} has been changed and no longer makes the table {}, so \
+                     it is not the one brightfield writes; not overwriting it",
+                    model.display(),
+                    self.name
+                ));
+            }
+        }
+        let read = if missing {
+            crate::generated::generated_protocol_with_load(&text, dir, self, &self.model)
+        } else {
+            crate::generated::generated_protocol_for(&text, dir, self)
+        };
+        match read {
+            Ok(Some(_)) if missing => Ok(SaveWrites::LoadModel),
+            Ok(Some(_)) => Ok(SaveWrites::Nothing),
+            Ok(None) => Err(format!(
+                "the manifest at {at} holds steps after the load that brightfield did not \
+                 generate; not overwriting it"
             )),
             Err(e) => Err(format!(
-                "the manifest at {} will not read: {e}; not overwriting it",
-                path.display()
+                "the manifest at {at} will not read: {e}; not overwriting it"
             )),
         }
     }

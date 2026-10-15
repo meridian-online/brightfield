@@ -627,7 +627,7 @@ fn a_file_beside_another_files_saved_steps_opens_alone_and_does_not_save_over_th
         .save()
         .expect_err("b's Save over a's steps was not refused");
 
-    assert!(err.contains("another Protocol's"), "{err}");
+    assert!(err.contains("another data file's Protocol"), "{err}");
     assert!(second.banners_any(&err), "no banner carries {err:?}");
     assert_eq!(
         std::fs::read(folder.join("arcform.yaml")).expect("the manifest"),
@@ -639,4 +639,106 @@ fn a_file_beside_another_files_saved_steps_opens_alone_and_does_not_save_over_th
         load,
         "b's Save changed a's load"
     );
+}
+
+/// A window over the housing file whose Save recorded `house_age > 28`.
+fn saved_with_a_filter(name: &str) -> Window {
+    let mut win = Window::open(name);
+    win.apply(Some("house_age > 28"), None);
+    win.save().expect("the Save records");
+    win
+}
+
+/// Rewrite `file` with `from` replaced by `to`, which must occur in it.
+fn rewrite(file: &Path, from: &str, to: &str) {
+    let text = std::fs::read_to_string(file).expect("the file reads");
+    assert!(text.contains(from), "{from:?} is not in {text}");
+    std::fs::write(file, text.replace(from, to)).expect("the file writes");
+}
+
+#[test]
+fn a_missing_load_model_is_written_back_by_save() {
+    let mut win = saved_with_a_filter("missing-load");
+    let load = win.folder.join("models").join("load.sql");
+    let written = std::fs::read(&load).expect("the load model");
+    let manifest = win.manifest();
+    std::fs::remove_file(&load).expect("the load model is removed");
+
+    win.save()
+        .expect("a Save over a missing load model is refused");
+
+    assert_eq!(
+        std::fs::read(&load).expect("the load model is back"),
+        written
+    );
+    assert_eq!(win.manifest(), manifest, "the manifest was rewritten");
+}
+
+/// A folder's name, the change made to it after its Save, and the words the
+/// next Save's refusal gives as its cause.
+type RefusalCase = (&'static str, fn(&Path), &'static str);
+
+#[test]
+fn a_folder_save_will_not_write_is_refused_for_its_own_cause() {
+    let cases: [RefusalCase; 3] = [
+        (
+            "changed-load",
+            |folder| {
+                rewrite(
+                    &folder.join("models").join("load.sql"),
+                    "TABLE california_housing AS",
+                    "TABLE housing AS",
+                );
+            },
+            "no longer makes the table california_housing",
+        ),
+        (
+            "moved-load",
+            |folder| {
+                std::fs::rename(
+                    folder.join("models").join("load.sql"),
+                    folder.join("models").join("00_load.sql"),
+                )
+                .expect("the load model moves");
+                rewrite(
+                    &folder.join("arcform.yaml"),
+                    "sql: models/load.sql",
+                    "sql: models/00_load.sql",
+                );
+            },
+            "a model brightfield did not write",
+        ),
+        (
+            "hand-step",
+            |folder| {
+                let model = std::fs::read_dir(folder.join("models"))
+                    .expect("the models folder")
+                    .flatten()
+                    .map(|e| e.path())
+                    .find(|p| {
+                        std::fs::read_to_string(p).is_ok_and(|t| t.starts_with("-- generated:"))
+                    })
+                    .expect("a generated model");
+                let text = std::fs::read_to_string(&model).expect("the step's model");
+                let body: String = text.lines().skip(1).map(|l| format!("{l}\n")).collect();
+                std::fs::write(&model, body).expect("the header is removed");
+            },
+            "brightfield did not generate",
+        ),
+    ];
+    for (name, change, cause) in cases {
+        let mut win = saved_with_a_filter(name);
+        change(&win.folder);
+        let before = snapshot(&win.folder);
+
+        let err = win.save().expect_err("the Save was not refused");
+
+        assert!(err.contains(cause), "{name}: {err}");
+        assert!(!err.contains("another data file"), "{name}: {err}");
+        assert_eq!(
+            snapshot(&win.folder),
+            before,
+            "{name}: the folder was written"
+        );
+    }
 }
