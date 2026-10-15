@@ -234,8 +234,8 @@ enum Entry {
 /// `arc` does not change what it says of an operation while the pin is fixed,
 /// so each is asked once. A failed describe is kept too, with its message.
 ///
-/// The ask runs on a worker thread, because [`Descriptions::get`] is called on
-/// every frame and a runner that hangs must not freeze the window. The wake
+/// The ask runs on a worker thread, because [`Descriptions::get`] is called once
+/// a frame and a runner that hangs must not freeze the window. The wake
 /// given to [`Descriptions::with_wake`] is called when an answer arrives, so a
 /// window can ask egui for a repaint; with none, callers poll.
 #[derive(Default)]
