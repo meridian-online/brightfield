@@ -124,8 +124,8 @@ pub struct TypedAnswer {
     /// The rows of the root table the condition keeps, counted on their own,
     /// when arc reads the statement as a filter of the root table.
     pub filter_rows: Option<u64>,
-    /// The first page of those rows under [`TypedSource::order`], when there
-    /// is a pending order; with none, it is [`Self::page`].
+    /// The first page of those rows under [`TypedSource::order`], when an
+    /// order is pending; otherwise the grid previews [`Self::page`].
     pub filter_page: Option<GridPage>,
 }
 
