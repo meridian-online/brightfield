@@ -20,11 +20,14 @@
 //! rest on the table it must go on.
 //!
 //! **Save also records the statements kept from the palette**, each through
-//! [`record_sql`] (`arc sql record <sql> --name <name>`) under the name it was
-//! kept with, in the order the views and statements were made. arc writes a
-//! statement it reads as an operation as that operation's generated step, and
-//! any other as `models/NN_<name>.sql`: `CREATE OR REPLACE TABLE "<name>" AS`
-//! on its first line and the statement as typed after it.
+//! [`record_sql`] (`arc sql record --name <name> -- <sql>`) under the name it
+//! was kept with, in the order the views and statements were made. The
+//! statement comes after `--`, which ends arc's options, so arc takes it as the
+//! statement whatever text it opens with. arc writes a statement it reads as
+//! an operation as that operation's generated step, and any other as
+//! `models/NN_<name>.sql`: `CREATE OR REPLACE TABLE "<name>" AS` on its first
+//! line, the statement as typed after it, and a final newline when it had
+//! none.
 //!
 //! **A typed statement is asked of arc too.** [`recognise`] runs
 //! `arc sql recognise <sql>` and reports whether arc reads the statement as a

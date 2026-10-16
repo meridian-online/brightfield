@@ -1,11 +1,93 @@
-//! Typed SQL in the chart palette: text on the query line that reads as a
-//! statement is previewed and, when kept, becomes a step. This module holds the
-//! parts of that which need no window.
+//! **Typed SQL in the chart palette.** Text on the query line that reads as a
+//! statement is previewed in the grid and, when kept, becomes a step of the
+//! Protocol that Save records through arc. This module holds the parts of that
+//! which need no window; the window drives them.
 //!
-//! [`TypedReads`] holds the text being typed, the read of it under way, and
-//! the last answer whose rows read. A read loads the whole data file and runs
-//! the statement, and arc is asked about it in a process of its own, so it runs
-//! on a worker and a frame only starts, stops and collects reads.
+//! **Detection.** Text is a statement when its first word, after leading
+//! whitespace, is `select`, `with` or `from` in any case, followed by the end
+//! of the text or a character that cannot continue an identifier
+//! ([`crate::overlays::is_statement`]): `selection` is a search, and `select*`
+//! is a statement. No key is added for it. The palette turns into the
+//! statement form, a card with no scrim that stands over the map pane and
+//! clear of the grid, where Enter adds a line, Cmd+Enter keeps and Esc closes
+//! and keeps nothing. This is the chart palette of a window whose Protocol
+//! came from a data file; anywhere else the text stays a search.
+//!
+//! **The pause and the stop.** [`TypedReads`] holds the text being typed, the
+//! read of it under way, and the last answer whose rows read. A read starts
+//! once the text has rested for [`TYPED_PAUSE`], 300 ms. It loads the data
+//! file and runs the steps the statement may read and then the statement, on
+//! the isolated connection with external access off and under the preview's
+//! file limit and deadline, and asks arc what it makes of the statement in a
+//! process of its own. So it runs on a worker, and a frame starts, stops and
+//! collects reads without waiting on one. An edit while a read is under way
+//! stops that read, and so does closing the form. A statement that is not
+//! exactly one query that reads rows is refused before it runs, and the row
+//! under the query line gives DuckDB's reason.
+//!
+//! **Cmd+Enter has two outcomes.** It keeps the statement once a read has
+//! answered the text as it stands; until then it starts that read without
+//! waiting out the pause, and the form stays open.
+//!
+//! - A statement arc reads as a `filter-rows` of the loaded table lands in the
+//!   grid's `where` field, as the filter key leaves it: applied and
+//!   unrecorded, with no step of its own, and recorded at Save as the step the
+//!   filter key records (see [`crate::grid_foot`]). While it is on the form,
+//!   the row under the query line says `filter-rows on <table> · <n> rows` and
+//!   the grid previews the condition with that count.
+//! - Any other statement is kept as a SQL step. While it is on the form the
+//!   row says `a SQL step` and the grid previews its first page under the
+//!   preview label; kept, it is laid out at the foot of the Protocol, its
+//!   table is brought to the front in the grid with the cursor on its first
+//!   cell, and its rows are counted on a worker. A palette opened over a kept
+//!   statement's grid holds that statement, selected: kept again, it corrects
+//!   the step in place under its name, unless it reads that step's own table,
+//!   which makes it the step after it.
+//!
+//! **The name rule** ([`typed_step_name`]): `<table it reads>_sql_by_<column>`
+//! when the statement turns on one column, which is the single column of its
+//! `GROUP BY`, else of a window's `PARTITION BY`, else the single column its
+//! `WHERE` names; otherwise `<table it reads>_sql`. A name a step of the
+//! Protocol already has, in any case, takes `_2`, `_3` and so on. The step's
+//! table has the same name. A name is fixed when its statement is kept, and
+//! Save does not change it.
+//!
+//! **Unsaved steps are in the Protocol graph.** A kept statement is a
+//! [`TypedStep`]. The window lays the Protocol out again from its folder with
+//! the kept steps after the folder's own
+//! ([`crate::one_step::OneStepProtocol::inputs_with_typed`]), so the graph
+//! draws each one's node and table, a later statement can read its table, and
+//! a grid over it previews through the steps it reads. The graph is handed
+//! [`lineage_model`] for each in place of the statement, so the node does not
+//! depend on the graph's parser reading DuckDB's own syntax. In the spine the
+//! step and its table carry the not-recorded mark, the foot row's filled dot,
+//! and the table's row gives its count once the count is in. The unsaved mark
+//! stays on while a step is kept, and the close question names it. A run's
+//! record is matched against the steps less the kept ones, so a statement kept
+//! after a run leaves that run's statuses on the steps it ran, and the Steps
+//! sheet lists the kept step after them
+//! (`a_run_record_leaves_the_typed_step_in_the_sheet` in
+//! `tests/typed_sql_nodes.rs`).
+//!
+//! **Save records the work in the order it was made**
+//! ([`crate::window::MeridianApp::record_pending`]): an applied grid view as
+//! `filter-rows` and then `sort-rows`, and a kept statement through
+//! `arc sql record` under the name it was kept with
+//! ([`crate::operation::record_sql`]). arc writes a statement it reads as an
+//! operation as that operation's generated step, and any other as
+//! `models/NN_<name>.sql`, holding `CREATE OR REPLACE TABLE "<name>" AS`, a
+//! newline, the statement as typed, and a final newline when it had none. A
+//! refusal raises a banner in arc's words: what was recorded before it stays
+//! recorded, and what it refused and what follows stay kept, under the unsaved
+//! mark, for the next Save. A Run records the pending work first, as Save
+//! does.
+//!
+//! **Reopening.** A folder holding SQL steps in the shape `arc sql record`
+//! writes opens with them laid out after the load
+//! ([`crate::generated::parse_sql_step`]). Each reads *not run* until a run's
+//! record says otherwise, its grid previews its first page, and the palette
+//! over it takes more statements, which read its table as they read a kept
+//! step's.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;

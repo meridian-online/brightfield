@@ -206,6 +206,81 @@ pub fn capture_png_staged(
     prepare: impl FnOnce(&mut MeridianApp),
     after: impl FnOnce(&mut MeridianApp),
 ) -> Result<(u32, u32), String> {
+    capture_window(
+        boot,
+        layout,
+        mode,
+        scale,
+        size,
+        out,
+        script,
+        prepare,
+        after,
+        |_| true,
+    )
+}
+
+/// [`capture_png_prepared`] that waits, after each frame, until `ready` holds
+/// of the window before it draws the next frame of the script or settles.
+///
+/// For a capture whose picture is reached through work the window does on a
+/// worker: the read of a statement typed on the chart palette answers some
+/// frames after the text was typed, and Cmd+Enter keeps the statement only
+/// once it has, so a script that presses it on the frame after typing keeps
+/// nothing. While `ready` is false the window is drawn with no input, a few
+/// milliseconds apart, so what the worker sends back lands, and the capture
+/// fails after [`READY_PATIENCE`] rather than photograph a window that never
+/// got there. `ready` is asked after the last frame too, so it can note what
+/// that frame drew.
+///
+/// # Errors
+/// As [`capture_png`].
+#[allow(clippy::too_many_arguments)]
+pub fn capture_png_awaiting(
+    boot: Boot,
+    layout: brightfield_workbench::SavedLayout,
+    mode: Mode,
+    scale: f32,
+    size: (f32, f32),
+    out: &Path,
+    script: Vec<Vec<egui::Event>>,
+    prepare: impl FnOnce(&mut MeridianApp),
+    ready: impl FnMut(&MeridianApp) -> bool,
+) -> Result<(u32, u32), String> {
+    capture_window(
+        boot,
+        layout,
+        mode,
+        scale,
+        size,
+        out,
+        script,
+        prepare,
+        |_| {},
+        ready,
+    )
+}
+
+/// How long [`capture_png_awaiting`] waits on one frame's `ready`.
+pub const READY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The window's capture behind [`capture_png_staged`] and
+/// [`capture_png_awaiting`]. `after` is counted in frames, so it is only
+/// handed the window at the end of the script when `ready` never holds a
+/// frame back, which is how the first of them calls this.
+#[allow(clippy::too_many_arguments)]
+fn capture_window(
+    boot: Boot,
+    layout: brightfield_workbench::SavedLayout,
+    mode: Mode,
+    scale: f32,
+    size: (f32, f32),
+    out: &Path,
+    script: Vec<Vec<egui::Event>>,
+    prepare: impl FnOnce(&mut MeridianApp),
+    after: impl FnOnce(&mut MeridianApp),
+    mut ready: impl FnMut(&MeridianApp) -> bool,
+) -> Result<(u32, u32), String> {
     let (device, queue) = headless_device()?;
     let target_format = wgpu::TextureFormat::Rgba8Unorm;
     let egui_renderer = new_egui_renderer(&device, target_format);
@@ -229,6 +304,7 @@ pub fn capture_png_staged(
     let scripted = script.len() + 1;
     let mut drawn = 0usize;
     let mut after = Some(after);
+    let held = std::cell::Cell::new(false);
     let full = run_ui_frames(
         &ctx,
         &egui_renderer,
@@ -237,6 +313,7 @@ pub fn capture_png_staged(
         screen,
         scale,
         script,
+        &held,
         |ui| {
             if drawn == scripted {
                 if let Some(after) = after.take() {
@@ -245,6 +322,7 @@ pub fn capture_png_staged(
             }
             drawn += 1;
             app.draw(ui);
+            held.set(!ready(&app));
         },
     );
     finish_capture(
@@ -342,6 +420,10 @@ fn wants_another_frame(out: &egui::FullOutput) -> bool {
 /// current each frame. The last frame run is the one captured. Returns its
 /// [`egui::FullOutput`].
 ///
+/// After any frame that leaves `held` set, the window is drawn again with no
+/// input, a few milliseconds apart, until `draw` clears it: the wait
+/// [`capture_png_awaiting`] asks for.
+///
 /// # Why settling is a loop and not one frame
 ///
 /// It used to be one frame, and that is what made the committed modal
@@ -380,6 +462,7 @@ fn run_ui_frames(
     screen: egui::Vec2,
     scale: f32,
     script: Vec<Vec<egui::Event>>,
+    held: &std::cell::Cell<bool>,
     mut draw: impl FnMut(&mut egui::Ui),
 ) -> egui::FullOutput {
     let mut one = |events: Vec<egui::Event>| {
@@ -399,15 +482,33 @@ fn run_ui_frames(
     let mut frames: Vec<Vec<egui::Event>> = Vec::with_capacity(script.len() + 1);
     frames.push(Vec::new());
     frames.extend(script);
+    // While `held` says the window is waiting on a worker, it is drawn again
+    // with no input until it is not; those frames count toward neither the
+    // script nor the settle frames.
+    let wait_out = |mut out: egui::FullOutput,
+                    one: &mut dyn FnMut(Vec<egui::Event>) -> egui::FullOutput| {
+        let deadline = std::time::Instant::now() + READY_PATIENCE;
+        while held.get() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the window was not ready after {READY_PATIENCE:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            out = one(Vec::new());
+        }
+        out
+    };
     for events in frames {
         // The warm-up and the script are driven for their effect on the
         // window, never captured: the frame that gets photographed is always a
         // settle frame below, so nothing here is read back.
-        drop(one(events));
+        let out = one(events);
+        drop(wait_out(out, &mut one));
     }
 
     for settled in 0..MAX_SETTLE_FRAMES {
         let out = one(Vec::new());
+        let out = wait_out(out, &mut one);
         if !wants_another_frame(&out) {
             return out;
         }
@@ -711,6 +812,7 @@ pub fn capture_component(
         screen,
         scale,
         Vec::new(),
+        &std::cell::Cell::new(false),
         |ui| {
             crate::gallery::solo(ui, mode, component.as_mut());
         },
