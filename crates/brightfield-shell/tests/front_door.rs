@@ -2724,12 +2724,12 @@ fn front_door_return_dark_surface() {
 /// change to a starter spec or to the renderer, and re-commit the PNGs —
 /// they are pre-rendered on purpose; the door never renders them live.
 ///
-/// **Every** start, the [`starts::Start::remote`] one included. Its spec
-/// reads a published table over https, and this suite runs on every push, so
-/// it renders from a committed reduced copy of that table instead (see
-/// [`REMOTE_FIXTURES`]). Until it did, the remote start's thumbnails could
-/// only be redrawn by the nightly network run, every interface change left
-/// them behind, and they drifted until that run went red. Whether the copy
+/// The remote start is included. Its spec reads a published table over
+/// https, and this suite runs on each push, so it renders from a committed
+/// reduced copy of that table instead (see [`REMOTE_FIXTURES`]). Until it did,
+/// the remote start's thumbnails could be redrawn by the nightly network run
+/// alone, interface changes left them behind, and they drifted until that run
+/// went red. Whether the copy
 /// still matches the published table is the nightly's question, asked by
 /// `the_published_crosswalk_is_still_the_table_its_fixture_was_cut_from`.
 #[test]

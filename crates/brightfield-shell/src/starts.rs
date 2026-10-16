@@ -183,8 +183,8 @@
 //! start stops rendering at all, and it covers the whole set on every push.
 //! [`CROSSWALK_CHART`] is drawn there from a committed reduced copy of the
 //! published table rather than over the network, through [`load_with`]: the
-//! chart reads only the tier, the method and the length of the search text,
-//! so a copy keeping those draws the same bins and the same counts at a
+//! chart reads the tier, the method and the length of the search text, so a
+//! copy keeping those three draws the same bins and the same counts at a
 //! fortieth of the size. `scripts/cut-crosswalk-fixture.sh` cuts it and says
 //! why; the nightly network run checks the published table has not moved
 //! since.
@@ -804,7 +804,7 @@ pub fn load(id: &str) -> Result<Opened, String> {
 /// committed reduced copy of the published table (see
 /// `scripts/cut-crosswalk-fixture.sh` for what the copy keeps and why). The
 /// composition is [`compose`], the same function a click and [`load`] end at,
-/// so the only difference from a live open is which bytes were read.
+/// so what differs from a live open is which bytes were read.
 ///
 /// # Errors
 ///
