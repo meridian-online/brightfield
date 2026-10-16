@@ -4173,6 +4173,32 @@ fn probe_statement_count(probe: &str, what: &str) -> Result<usize, String> {
     }
 }
 
+/// Whether `sql` is exactly one query that reads rows, or why it is not.
+///
+/// The gate for SQL the user types. It counts the statements with
+/// [`probe_statement_count`], which parses and runs nothing, then parses the
+/// text with [`serialized_sql`] on a fresh in-memory database, where DuckDB
+/// refuses anything but a `SELECT` (a `WITH` or a leading `FROM` parse as one)
+/// in its own words. Nothing is bound or run on either path, so a refused
+/// `COPY` writes no file and a refused `ATTACH` opens no database, as
+/// `refusing_runs_nothing` holds. A file read inside an accepted query is
+/// stopped by the preview's locked external access, not by this gate.
+///
+/// # Errors
+///
+/// Text starting `it reads as {n} statements, not one` for a count other than
+/// one, else `it is not one query that reads rows: ` and DuckDB's words.
+pub fn read_only_statement(sql: &str) -> Result<(), String> {
+    let count = probe_statement_count(sql, "statement")?;
+    if count != 1 {
+        return Err(format!("it reads as {count} statements, not one"));
+    }
+    let conn = duckdb::Connection::open_in_memory().map_err(|e| e.to_string())?;
+    serialized_sql(&conn, sql)
+        .map(|_| ())
+        .map_err(|e| format!("it is not one query that reads rows: {e}"))
+}
+
 /// The window SQL over `rows_sql` ordered by `ORDER BY ALL`, the one text the
 /// reads with no order of their own run.
 fn unordered_window_sql(rows_sql: &str, offset: u64, limit: u64) -> String {
