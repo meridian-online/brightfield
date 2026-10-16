@@ -1641,18 +1641,51 @@ pub(crate) struct PreviewHooks {
     most_live: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
+/// The preview gate a reader made on this thread reads behind: the thread's
+/// own once [`use_own_preview_gate_on_this_thread`] has been called on it,
+/// otherwise the one the process shares.
+pub(crate) fn preview_gate() -> std::sync::Arc<PreviewGate> {
+    THREADS_PREVIEW_GATE
+        .with(|gate| gate.borrow().clone())
+        .unwrap_or_else(|| SHARED_PREVIEW_GATE.clone())
+}
+
 impl Default for PreviewHooks {
     fn default() -> Self {
-        let gate = THREADS_PREVIEW_GATE
-            .with(|gate| gate.borrow().clone())
-            .unwrap_or_else(|| SHARED_PREVIEW_GATE.clone());
         Self {
-            gate,
+            gate: preview_gate(),
             held: std::sync::Arc::default(),
             panic_next: std::sync::Arc::default(),
             live: std::sync::Arc::default(),
             most_live: std::sync::Arc::default(),
         }
+    }
+}
+
+impl PreviewHooks {
+    /// Run `read` on this worker inside the gate: counted from now until it
+    /// returns, after the gate lets this worker in, and once `held` is off.
+    pub(crate) fn read_inside<T>(&self, read: impl FnOnce() -> T) -> T {
+        use std::sync::atomic::Ordering;
+        let mine = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most_live.fetch_max(mine, Ordering::SeqCst);
+        // A worker that panicked inside the gate poisons it; the gate
+        // guards no data, so the next worker goes in anyway.
+        let gate = self
+            .gate
+            .read
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let live = self.gate.live.fetch_add(1, Ordering::SeqCst) + 1;
+        self.gate.most_live.fetch_max(live, Ordering::SeqCst);
+        while self.held.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let answer = read();
+        self.gate.live.fetch_sub(1, Ordering::SeqCst);
+        drop(gate);
+        self.live.fetch_sub(1, Ordering::SeqCst);
+        answer
     }
 }
 
@@ -1702,29 +1735,16 @@ impl PreviewReads {
         let wake = ctx.clone();
         let hooks = self.hooks.clone();
         std::thread::spawn(move || {
-            use std::sync::atomic::Ordering;
-            let mine = hooks.live.fetch_add(1, Ordering::SeqCst) + 1;
-            hooks.most_live.fetch_max(mine, Ordering::SeqCst);
-            // A worker that panicked inside the gate poisons it; the gate
-            // guards no data, so the next worker goes in anyway.
-            let gate = hooks
-                .gate
-                .read
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let live = hooks.gate.live.fetch_add(1, Ordering::SeqCst) + 1;
-            hooks.gate.most_live.fetch_max(live, Ordering::SeqCst);
-            while hooks.held.load(Ordering::SeqCst) {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            let read = if hooks.panic_next.swap(false, Ordering::SeqCst) {
-                None
-            } else {
-                Some(read_preview(&asked, limit))
-            };
-            hooks.gate.live.fetch_sub(1, Ordering::SeqCst);
-            drop(gate);
-            hooks.live.fetch_sub(1, Ordering::SeqCst);
+            let read = hooks.read_inside(|| {
+                if hooks
+                    .panic_next
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+                {
+                    None
+                } else {
+                    Some(read_preview(&asked, limit))
+                }
+            });
             // A worker told to fail drops its sender unsent, which is what a
             // panic leaves the receiver with.
             if let Some(read) = read {
@@ -1905,12 +1925,18 @@ fn read_preview(
         PREVIEW_ROWS,
         limit,
     )?;
-    let (columns, rows) = tabulate(&batches);
-    Ok(GridPage {
+    Ok(page_of(&batches))
+}
+
+/// The first page of a preview, tabulated from the batches its read returned.
+#[must_use]
+pub fn page_of(batches: &[RecordBatch]) -> GridPage {
+    let (columns, rows) = tabulate(batches);
+    GridPage {
         window: 0..rows.len() as u64,
         columns,
         rows,
-    })
+    }
 }
 
 impl ChartDoc {

@@ -1,0 +1,155 @@
+//! A typed statement is read off the UI thread, once the typing pauses, and a
+//! read the text has moved past is stopped.
+//!
+//! arc is the `brightfield-shell` binary cargo built for this suite, as in
+//! `tests/sql_through_arc.rs`, and the rows are the housing start's own file.
+
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use brightfield_engine::{FileReader, PreviewOp};
+use brightfield_shell::data_grid::{use_own_preview_gate_on_this_thread, PREVIEW_ROWS};
+use brightfield_shell::operation::Recognised;
+use brightfield_shell::run::Runner;
+use brightfield_shell::typed_sql::{
+    spawn_row_count, TypedAnswer, TypedReads, TypedSource, TYPED_PAUSE,
+};
+
+const FILTER: &str = "select * from california_housing where house_age > 28";
+const SLOW: &str = "select sum(range) from range(1000000000000000)";
+
+fn housing_source() -> TypedSource {
+    use_own_preview_gate_on_this_thread();
+    TypedSource {
+        data: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("assets/starts/california_housing.parquet"),
+        reader: FileReader::Parquet,
+        root_table: "california_housing".into(),
+        chain: Vec::new(),
+        runner: Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))),
+    }
+}
+
+fn reads(pause: Duration) -> TypedReads {
+    TypedReads::new(housing_source(), pause, || {})
+}
+
+fn poll_until(r: &mut TypedReads, done: impl Fn(&TypedReads) -> bool, within: Duration) {
+    let until = Instant::now() + within;
+    while !done(r) {
+        assert!(Instant::now() < until, "no answer within {within:?}");
+        r.poll();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Edit to `text`, read it at once, and wait for its answer or its refusal.
+fn answer(r: &mut TypedReads, text: &str) {
+    r.edit(text, Instant::now());
+    r.read_now();
+    poll_until(
+        r,
+        |r| r.current().is_some() || r.refusal().is_some(),
+        Duration::from_secs(60),
+    );
+}
+
+fn answered(text: &str) -> TypedAnswer {
+    let mut r = reads(TYPED_PAUSE);
+    answer(&mut r, text);
+    r.current()
+        .unwrap_or_else(|| panic!("refused: {:?}", r.refusal()))
+        .clone()
+}
+
+#[test]
+fn a_read_starts_only_after_the_pause() {
+    let (mut r, t0) = (reads(TYPED_PAUSE), Instant::now());
+    r.edit(FILTER, t0);
+    r.tick(t0 + Duration::from_millis(299));
+    assert_eq!(r.started(), 0);
+    r.tick(t0 + TYPED_PAUSE);
+    assert_eq!(r.started(), 1);
+    r.stop();
+}
+
+#[test]
+fn an_answer_carries_the_page_the_reading_and_arcs_reading() {
+    let a = answered(FILTER);
+    assert_eq!(a.page.rows.len() as u64, PREVIEW_ROWS);
+    assert_eq!(a.reading.tables, vec!["california_housing".to_string()]);
+    assert_eq!(
+        a.recognised,
+        Recognised::FilterRows {
+            on: "california_housing".into(),
+            condition: "house_age > 28".into()
+        }
+    );
+    assert_eq!(a.filter_rows, Some(8_831));
+}
+
+#[test]
+fn a_refused_text_keeps_the_last_good_rows_and_says_why() {
+    let mut r = reads(TYPED_PAUSE);
+    answer(&mut r, FILTER);
+    answer(&mut r, "select * from nowhere");
+    assert_eq!(r.shown().unwrap().text, FILTER);
+    assert!(r.current().is_none());
+    assert!(r.refusal().unwrap().contains("nowhere"));
+}
+
+#[test]
+fn a_superseded_read_is_stopped() {
+    let mut r = reads(TYPED_PAUSE);
+    r.edit(SLOW, Instant::now());
+    r.read_now();
+    std::thread::sleep(Duration::from_millis(200));
+    r.edit(FILTER, Instant::now());
+    r.read_now();
+    assert_eq!(r.superseded(), 1);
+    poll_until(&mut r, |r| r.current().is_some(), Duration::from_secs(20));
+    assert_eq!(r.shown().unwrap().text, FILTER);
+}
+
+#[test]
+fn the_ui_thread_is_not_held_by_a_slow_statement() {
+    let mut r = reads(TYPED_PAUSE);
+    r.edit(SLOW, Instant::now());
+    r.read_now();
+    let mut longest = Duration::ZERO;
+    for i in 0..20 {
+        let at = Instant::now();
+        r.edit(&format!("{SLOW} -- {i}"), at);
+        r.tick(Instant::now());
+        r.poll();
+        longest = longest.max(at.elapsed());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(r.reading());
+    assert!(longest < Duration::from_millis(50), "{longest:?}");
+    r.stop();
+}
+
+#[test]
+fn stopping_drops_a_late_answer() {
+    let mut r = reads(TYPED_PAUSE);
+    r.edit(FILTER, Instant::now());
+    r.read_now();
+    r.stop();
+    std::thread::sleep(Duration::from_secs(2));
+    r.poll();
+    assert!(r.shown().is_none() && !r.reading());
+}
+
+#[test]
+fn a_kept_steps_rows_are_counted_off_the_thread() {
+    let mut source = housing_source();
+    source.chain.push((
+        "t".into(),
+        PreviewOp::Statement(
+            "select house_age, count(*) from california_housing group by house_age".into(),
+        ),
+    ));
+    let rx = spawn_row_count(source, || {});
+    assert_eq!(rx.recv_timeout(Duration::from_secs(60)).unwrap(), Ok(52));
+}
