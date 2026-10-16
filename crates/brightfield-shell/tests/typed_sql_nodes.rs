@@ -15,7 +15,7 @@ use brightfield_engine::{
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::design::Mode;
 use brightfield_shell::generated::{
-    preview_chain, preview_chain_of_every_step, GeneratedProtocol, GeneratedStep, KnownOperation,
+    preview_chain, preview_chain_reading, GeneratedProtocol, GeneratedStep, KnownOperation,
     StepEffect,
 };
 use brightfield_shell::one_step::OneStepProtocol;
@@ -247,8 +247,9 @@ fn a_statement_over_two_branches_previews_each_from_the_table_it_reads() {
 
 #[test]
 fn a_statement_typed_over_a_folder_reads_each_branch_as_made() {
-    // The statement form reads a statement against every step the folder
-    // holds, so a filter that branches off the load must still read the load.
+    // A filter that branches off the load still reads the load when it is
+    // read after a step that does not: `young` follows `old` in the folder,
+    // and both read the load.
     let g = GeneratedProtocol {
         data: PathBuf::from(starts::HOUSING_FILE),
         dir: PathBuf::from("."),
@@ -258,7 +259,12 @@ fn a_statement_typed_over_a_folder_reads_each_branch_as_made() {
             filter_step("young", "house_age <= 28"),
         ],
     };
-    let mut chain = preview_chain_of_every_step(&g);
+    let both = ["old".to_string(), "young".to_string()];
+    let mut chain = preview_chain_reading(&g.root_table, &g.steps, &both);
+    assert_eq!(
+        chain.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        ["old", "young"]
+    );
     chain.push((
         "typed".to_string(),
         PreviewOp::Statement("select * from young".to_string()),
@@ -266,6 +272,12 @@ fn a_statement_typed_over_a_folder_reads_each_branch_as_made() {
     assert_eq!(
         rows_of(&chain),
         rows_of(&preview_chain(&g, "young").unwrap())
+    );
+    let young = preview_chain_reading(&g.root_table, &g.steps, &["YOUNG".to_string()]);
+    assert_eq!(
+        young.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        ["young"],
+        "a step the statement does not read is left out"
     );
 }
 

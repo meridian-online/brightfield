@@ -18,8 +18,9 @@
 //!
 //! **The pause and the stop.** [`TypedReads`] holds the text being typed, the
 //! read of it under way, and the last answer whose rows read. A read starts
-//! once the text has rested for [`TYPED_PAUSE`], 300 ms. It loads the data
-//! file and runs the steps the statement may read and then the statement, on
+//! once the text has rested for [`TYPED_PAUSE`], 300 ms. It parses the
+//! statement, loads the data file, and runs the steps the statement reads,
+//! and the steps those read, and then the statement, on
 //! the isolated connection with external access off and under the preview's
 //! file limit and deadline, and asks arc what it makes of the statement in a
 //! process of its own. So it runs on a worker, and a frame starts, stops and
@@ -179,7 +180,7 @@ pub(crate) fn lineage_model_of(name: &str, reads: &[String]) -> String {
 pub const TYPED_PAUSE: Duration = Duration::from_millis(300);
 
 /// What a typed statement is read against: the data file, the table it loads
-/// as, and every step the statement may read, in order.
+/// as, and the steps the statement may read, in order.
 #[derive(Clone, Debug)]
 pub struct TypedSource {
     /// The data file the load reads.
@@ -188,8 +189,10 @@ pub struct TypedSource {
     pub reader: FileReader,
     /// The table the load makes.
     pub root_table: String,
-    /// Each step the statement may read, in order, with what it does.
-    pub chain: Vec<(String, PreviewOp)>,
+    /// The steps the statement may read, in order. A read runs those of
+    /// them the statement reads, and the steps those read, and no other
+    /// ([`crate::generated::preview_chain_reading`]).
+    pub steps: Vec<GeneratedStep>,
     /// The order the grid has applied and not recorded, which a filter of the
     /// root table is paged under, as the grid shows its `where` with it.
     pub order: Option<String>,
@@ -450,10 +453,12 @@ impl Drop for TypedReads {
     }
 }
 
-/// Count the rows of the last step of `source.chain` on a worker, behind the
-/// preview gate, calling `wake` once the count is sent.
+/// Count the rows of the last step of `chain`, made from `source`'s data
+/// file, on a worker, behind the preview gate, calling `wake` once the count
+/// is sent.
 pub fn spawn_row_count(
     source: TypedSource,
+    chain: Vec<(String, PreviewOp)>,
     wake: impl Fn() + Send + 'static,
 ) -> Receiver<Result<u64, PreviewRefusal>> {
     let (send, answer) = channel();
@@ -464,7 +469,7 @@ pub fn spawn_row_count(
                 &source.data,
                 source.reader,
                 &source.root_table,
-                &source.chain,
+                &chain,
                 PREVIEW_FILE_LIMIT_BYTES,
                 PREVIEW_DEADLINE,
                 &PreviewStop::default(),
@@ -476,11 +481,26 @@ pub fn spawn_row_count(
     answer
 }
 
-/// One read of `text` against `source`: its page, its reading, arc's reading,
-/// and the filter's count, checking `stop` between them. `None` when it was
-/// stopped.
+/// One read of `text` against `source`: its reading, its page, arc's
+/// reading, and the filter's count, checking `stop` between them. `None` when
+/// it was stopped.
+///
+/// The statement is parsed first, here on the worker, so its page is read
+/// after only the steps it reads and theirs. A statement DuckDB cannot parse
+/// is read after no step, and its preview refuses it in DuckDB's words.
 fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<TypedResult> {
-    let mut chain = source.chain.clone();
+    let parsed = statement_reading(text);
+    if stop.is_stopped() {
+        return None;
+    }
+    let mut chain = match &parsed {
+        Ok(reading) => crate::generated::preview_chain_reading(
+            &source.root_table,
+            &source.steps,
+            &reading.tables,
+        ),
+        Err(_) => Vec::new(),
+    };
     chain.push((
         free_step_name(&source.root_table, &chain),
         PreviewOp::Statement(text.to_string()),
@@ -502,10 +522,7 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
     if stop.is_stopped() {
         return None;
     }
-    let reading = statement_reading(text).unwrap_or_default();
-    if stop.is_stopped() {
-        return None;
-    }
+    let reading = parsed.unwrap_or_default();
     let recognised = source
         .runner
         .as_ref()

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use brightfield_engine::{FileReader, PreviewOp};
 use brightfield_shell::data_grid::{use_own_preview_gate_on_this_thread, PREVIEW_ROWS};
+use brightfield_shell::generated::{GeneratedStep, KnownOperation, StepEffect};
 use brightfield_shell::operation::Recognised;
 use brightfield_shell::run::Runner;
 use brightfield_shell::typed_sql::{
@@ -25,7 +26,7 @@ fn housing_source() -> TypedSource {
             .join("assets/starts/california_housing.parquet"),
         reader: FileReader::Parquet,
         root_table: "california_housing".into(),
-        chain: Vec::new(),
+        steps: Vec::new(),
         order: None,
         runner: Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))),
     }
@@ -229,13 +230,92 @@ fn dropping_the_reader_stops_its_read() {
 
 #[test]
 fn a_kept_steps_rows_are_counted_off_the_thread() {
-    let mut source = housing_source();
-    source.chain.push((
+    let chain = vec![(
         "t".into(),
         PreviewOp::Statement(
             "select house_age, count(*) from california_housing group by house_age".into(),
         ),
-    ));
-    let rx = spawn_row_count(source, || {});
+    )];
+    let rx = spawn_row_count(housing_source(), chain, || {});
     assert_eq!(rx.recv_timeout(Duration::from_secs(60)).unwrap(), Ok(52));
+}
+
+/// A SQL step of the Protocol reading `reads`.
+fn sql_step(name: &str, statement: &str, reads: &[&str]) -> GeneratedStep {
+    GeneratedStep {
+        name: name.into(),
+        effect: StepEffect::Sql,
+        on: reads.first().map(|r| (*r).to_string()).unwrap_or_default(),
+        reads: reads.iter().map(|r| (*r).to_string()).collect(),
+        argument: statement.into(),
+    }
+}
+
+/// A read runs only the steps its statement reads and theirs, so a step it
+/// has no use for, one that fails or one that would run past the deadline,
+/// neither refuses nor holds up its preview.
+#[test]
+fn a_statement_over_the_loaded_table_previews_past_a_failing_step() {
+    let mut source = housing_source();
+    source.steps = vec![
+        sql_step("broken", "select * from no_such_table", &["no_such_table"]),
+        sql_step("slow", SLOW, &[]),
+        GeneratedStep {
+            name: "old".into(),
+            effect: StepEffect::Operation(KnownOperation::FilterRows),
+            on: "california_housing".into(),
+            reads: vec!["california_housing".into()],
+            argument: "house_age > 28".into(),
+        },
+        sql_step(
+            "old_by_age",
+            "select house_age, count(*) as n from old group by house_age",
+            &["old"],
+        ),
+    ];
+    let read = |text: &str| {
+        let mut r = TypedReads::new(source.clone(), TYPED_PAUSE, || {});
+        let at = Instant::now();
+        answer(&mut r, text);
+        assert!(
+            at.elapsed() < Duration::from_secs(20),
+            "{text:?} waited on a step it does not read: {:?}",
+            at.elapsed()
+        );
+        (r.current().cloned(), r.refusal().map(str::to_owned))
+    };
+    let (over_root, refused) = read(FILTER);
+    assert!(over_root.is_some(), "refused: {refused:?}");
+    let (over_steps, refused) = read("select * from old_by_age");
+    let over_steps = over_steps.unwrap_or_else(|| panic!("refused: {refused:?}"));
+    assert_eq!(
+        over_steps.page.rows.len(),
+        24,
+        "the step it reads is made from the step that step reads"
+    );
+    let (_, refused) = read("select * from broken");
+    assert!(
+        refused.is_some_and(|r| r.contains("no_such_table")),
+        "a statement reading the failing step is refused for it"
+    );
+}
+
+/// A statement DuckDB cannot parse is refused in DuckDB's words, with no
+/// step built for it to read.
+#[test]
+fn a_statement_that_does_not_parse_is_refused_without_building_a_step() {
+    let mut source = housing_source();
+    source.steps = vec![sql_step(
+        "broken",
+        "select * from no_such_table",
+        &["no_such_table"],
+    )];
+    let mut r = TypedReads::new(source, TYPED_PAUSE, || {});
+    answer(&mut r, "select * from california_housing where");
+    let refused = r.refusal().expect("refused").to_owned();
+    assert!(
+        refused.contains("syntax error"),
+        "DuckDB's own words: {refused}"
+    );
+    assert!(!refused.contains("no_such_table"), "{refused}");
 }

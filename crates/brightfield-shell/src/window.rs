@@ -6794,17 +6794,18 @@ impl MeridianApp {
     }
 
     /// What a statement on the statement form is read against: the window's
-    /// data file and the table it loads as, with every step the Protocol
-    /// generated after the load as the chain the statement may read. Over
-    /// the kept statement `replacing`, the statements kept after it are left
-    /// out: they may read it, so it cannot read them.
+    /// data file and the table it loads as, with the steps the Protocol
+    /// generated after the load as the steps the statement may read; each
+    /// read runs only those the statement reads and theirs. Over the kept
+    /// statement `replacing`, the statements kept after it are left out: they
+    /// may read it, so it cannot read them.
     fn typed_source(&self, replacing: Option<&str>) -> Option<TypedSource> {
         let model = &self.protocol.doc.model;
         let source = model.source()?;
         let reader = brightfield_engine::FileReader::for_path(&source.data)?;
-        let mut chain = model
+        let mut steps = model
             .generated()
-            .map(crate::generated::preview_chain_of_every_step)
+            .map(|generated| generated.steps.clone())
             .unwrap_or_default();
         if let Some(replacing) = replacing {
             let later: BTreeSet<&str> = self
@@ -6816,13 +6817,13 @@ impl MeridianApp {
                 .skip(1)
                 .map(|step| step.name.as_str())
                 .collect();
-            chain.retain(|(name, _)| !later.contains(name.as_str()));
+            steps.retain(|step| !later.contains(step.name.as_str()));
         }
         Some(TypedSource {
             data: source.data.clone(),
             reader,
             root_table: source.name.clone(),
-            chain,
+            steps,
             order: self.charts.doc.grid_view().order.clone(),
             runner: self.runner.clone(),
         })
@@ -7085,10 +7086,11 @@ impl MeridianApp {
                     data: source.data.clone(),
                     reader,
                     root_table: source.name.clone(),
-                    chain: chain.clone(),
+                    steps: Vec::new(),
                     order: None,
                     runner: None,
                 },
+                chain.clone(),
                 move || wake.request_repaint(),
             );
             self.typed_counts.push(TypedCount {

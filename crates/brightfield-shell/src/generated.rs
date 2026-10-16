@@ -366,41 +366,63 @@ pub fn preview_chain(
     protocol: &GeneratedProtocol,
     step: &str,
 ) -> Option<Vec<(String, brightfield_engine::PreviewOp)>> {
-    let index_of = |name: &str| {
-        let name = name.to_lowercase();
-        protocol
-            .steps
-            .iter()
-            .position(|s| s.name.to_lowercase() == name)
-    };
-    let target = index_of(step)?;
-    let mut needed = BTreeSet::from([target]);
-    let mut todo = vec![target];
+    let target = index_of(&protocol.steps, step)?;
+    let needed = with_what_they_read(&protocol.steps, [target]);
+    Some(chain_of(&protocol.root_table, &protocol.steps, needed))
+}
+
+/// **The steps a statement reading `tables` is read after**: of `steps`,
+/// which follow the load of `root_table`, each that makes a table in
+/// `tables`, and the steps those read, and theirs, in the order of `steps`.
+/// A step the statement does not read, directly or through another, is left
+/// out, so a slow or failing step it has no use for does not hold up or
+/// refuse its preview
+/// (`a_statement_over_the_loaded_table_previews_past_a_failing_step` in
+/// `tests/typed_sql_reads.rs`).
+#[must_use]
+pub fn preview_chain_reading(
+    root_table: &str,
+    steps: &[GeneratedStep],
+    tables: &[String],
+) -> Vec<(String, brightfield_engine::PreviewOp)> {
+    let read = tables.iter().filter_map(|t| index_of(steps, t));
+    chain_of(root_table, steps, with_what_they_read(steps, read))
+}
+
+/// The index of the step of `steps` named `name`, in any case.
+fn index_of(steps: &[GeneratedStep], name: &str) -> Option<usize> {
+    let name = name.to_lowercase();
+    steps.iter().position(|s| s.name.to_lowercase() == name)
+}
+
+/// The indices `from`, and those of each step of `steps` they read, directly
+/// or through another.
+fn with_what_they_read(
+    steps: &[GeneratedStep],
+    from: impl IntoIterator<Item = usize>,
+) -> BTreeSet<usize> {
+    let mut needed = BTreeSet::new();
+    let mut todo = Vec::new();
+    for i in from {
+        if needed.insert(i) {
+            todo.push(i);
+        }
+    }
     while let Some(i) = todo.pop() {
-        for read in &protocol.steps[i].reads {
+        for read in &steps[i].reads {
             // Each read is of a step before the reader, so the walk ends.
-            if let Some(j) = index_of(read).filter(|&j| j < i) {
+            if let Some(j) = index_of(steps, read).filter(|&j| j < i) {
                 if needed.insert(j) {
                     todo.push(j);
                 }
             }
         }
     }
-    Some(chain_of(protocol, needed))
+    needed
 }
 
-/// **Every step after the load, in manifest order**, each with what it does:
-/// the chain a statement typed over the Protocol is read against, so it may
-/// read any step's table.
-#[must_use]
-pub fn preview_chain_of_every_step(
-    protocol: &GeneratedProtocol,
-) -> Vec<(String, brightfield_engine::PreviewOp)> {
-    chain_of(protocol, 0..protocol.steps.len())
-}
-
-/// The steps of `protocol` at `indices`, in the order given, as a chain the
-/// engine previews.
+/// The steps of `steps`, which follow the load of `root_table`, at
+/// `indices`, in the order given, as a chain the engine previews.
 ///
 /// The engine runs an operation on the table made just before it in the
 /// chain. An operation whose own table is another, because it branches off a
@@ -409,14 +431,15 @@ pub fn preview_chain_of_every_step(
 /// (`a_statement_over_two_branches_previews_each_from_the_table_it_reads` in
 /// `tests/typed_sql_nodes.rs`).
 fn chain_of(
-    protocol: &GeneratedProtocol,
+    root_table: &str,
+    steps: &[GeneratedStep],
     indices: impl IntoIterator<Item = usize>,
 ) -> Vec<(String, brightfield_engine::PreviewOp)> {
     use brightfield_engine::PreviewOp;
-    let mut previous = protocol.root_table.as_str();
+    let mut previous = root_table;
     let mut chain = Vec::new();
     for i in indices {
-        let s = &protocol.steps[i];
+        let s = &steps[i];
         let in_line = s.on.to_lowercase() == previous.to_lowercase();
         let op = match s.effect {
             StepEffect::Operation(operation) if !in_line => PreviewOp::Statement(format!(
