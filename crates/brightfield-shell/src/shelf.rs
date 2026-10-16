@@ -18,9 +18,10 @@
 //! # What a cell says
 //!
 //! Its key as a keycap, the channel's name as a word over the column's name,
-//! and a chevron on the word's line. The word *preview* stands beside the word
-//! while the column is a preview, and a channel with no column reads *add a
-//! column*. A column's name longer than the room it has ends in an ellipsis,
+//! and, on a cell that opens a list of columns, a chevron on the word's line (the
+//! mark's cell opens no list yet and has none). The word *preview* stands beside
+//! the word while the column is a preview, and a channel with no column reads
+//! *add a column*. A column's name longer than the room it has ends in an ellipsis,
 //! and the cell keeps its width, which [`channel::cell_widths`] takes from the
 //! band's width alone.
 //!
