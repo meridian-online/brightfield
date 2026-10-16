@@ -6925,9 +6925,15 @@ impl MeridianApp {
                     condition.to_owned(),
                     answer.filter_rows,
                 );
-                if let Some(page) = answer.filter_page.clone() {
-                    self.charts.doc.preview_typed_where(&condition, page, rows);
-                    self.typed_where_in_grid = Some(text);
+                match answer.filter_page.clone() {
+                    Some(page) => {
+                        self.charts.doc.preview_typed_where(&condition, page, rows);
+                        self.typed_where_in_grid = Some(text);
+                    }
+                    None => {
+                        self.charts.doc.clear_typed_where();
+                        self.typed_where_in_grid = None;
+                    }
                 }
             }
             return None;

@@ -217,7 +217,9 @@ pub struct TypedAnswer {
     pub filter_rows: Option<u64>,
     /// The first page of those rows, read as the applied grid reads them:
     /// under [`TypedSource::order`] when an order is pending, else in the
-    /// unordered window's order. `Some` whenever `filter_rows` is a filter.
+    /// unordered window's order. `None` when the statement is not a filter of
+    /// the root table, or when this read was refused (too large, too slow), in
+    /// which case the grid previews no rows for the filter.
     pub filter_page: Option<GridPage>,
 }
 
@@ -571,7 +573,7 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
             ) {
                 Ok(batches) => Some(page_of(&batches)),
                 Err(PreviewRefusal::Superseded) => return None,
-                Err(refusal) => return Some(Err((text.to_string(), refusal.to_string()))),
+                Err(_) => None,
             };
             (rows, page)
         }
