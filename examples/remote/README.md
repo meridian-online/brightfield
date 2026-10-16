@@ -54,3 +54,9 @@ hermetically, by denying the engine the `httpfs` extension rather than by
 unplugging anything, and asserts the error names the network and the URL. The
 network-gated half of that file (`cargo test -- --ignored`) is what checks the
 live source still answers.
+
+## How the gallery's picture of it stays current
+
+The front door's card for the crosswalk chart shows a pre-rendered thumbnail, like every other start's, and the per-push thumbnail test redraws it from a committed reduced copy of the published table (`crates/brightfield-shell/tests/data/edgar_gleif_reduced.parquet`) rather than over the network. The chart reads only `tier`, `method` and the length of `corpus`, so the copy keeps the first two and replaces `corpus` with a run of `x` of the same length: the same bins and the same counts, at about 240 KB against 10 MB, and none of the published text.
+
+`scripts/cut-crosswalk-fixture.sh` cuts the copy and writes `edgar_gleif_reduced.json` beside it, recording the published file's size, sha256 and row count. The nightly network run compares the published file with those numbers. When it goes red, re-cut the copy with the script, re-shoot the thumbnails with `UPDATE_SNAPSHOTS=1`, and commit the three together.

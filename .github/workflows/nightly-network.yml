@@ -1,9 +1,10 @@
 # Scheduled run for the tests the push suites deliberately do not run.
 #
 # WHY THIS EXISTS. One shipped starting point reads a large published Parquet
-# over https. Its load gate and its thumbnail-drift gate cannot sit in `test`:
-# that workflow runs on every push and every pull request, so those two checks
-# would fetch someone else's server on every CI run, and would go red for
+# over https. Its load gate, and the check that its committed reduced copy
+# still matches the published table, cannot sit in `test`: that workflow runs
+# on every push and every pull request, so those checks would fetch someone
+# else's server on every CI run, and would go red for
 # reasons — host down, DNS, a slow object store — that say nothing about the
 # commit under test. So they are `#[ignore]`d, which is the right call for a
 # per-push suite and the wrong end state on its own: the start most able to
@@ -87,9 +88,10 @@ jobs:
     # macos-15, the same single runner `test` and `lint` use, and for the same
     # reason `test.yml` records at length: it is the hosted runner where the
     # winit/wgpu window stack is validated in this repo, and where the
-    # egui_kittest pixel tier has a real adapter to render through. That is
-    # not optional here — one of the tests below IS a pixel-tier snapshot
-    # (a thumbnail diff), so a runner without a GPU adapter could not run it.
+    # egui_kittest pixel tier has a real adapter to render through. None of
+    # the tests below diffs pixels any more (the remote start's thumbnails
+    # moved to the per-push suite), but the same runner keeps the cache
+    # `test` populates and a red here reproducible on the machine it names.
     runs-on: macos-15
 
     # 60, matching `test`. The work is comparable: the same cold-ish build of
@@ -118,20 +120,19 @@ jobs:
       # memory (`grep -rn '#\[ignore' crates/`):
       #
       #   crates/brightfield-shell/tests/front_door.rs
-      #     every_remote_start_still_renders_and_its_thumbnail_is_current
-      #       - the THUMBNAIL-DRIFT gate for the remote start: renders it and
-      #         diffs against the committed assets/starts/*.png, so the
-      #         gallery cannot show a picture of something the click no longer
-      #         opens.
-      #     every_remote_start_still_renders_and_its_dark_thumbnail_is_current
-      #       - the same gate over the dark thumbnail, which is a second,
-      #         independently rendered and committed PNG rather than the light
-      #         one recoloured — so it needs its own render-and-diff pass, and
-      #         its own place in the floor below. Absent from this list until
-      #         the floor here still read 1 with both tests compiling and
-      #         passing: a `front_door` floor of 1 stayed green whether this
-      #         test ran, was deleted, or was renamed, which is exactly the
-      #         silent-omission failure the guard below exists to catch.
+      #     the_published_crosswalk_is_still_the_table_its_fixture_was_cut_from
+      #       - the published crosswalk Parquet still has the size, sha256 and
+      #         row count recorded when its committed reduced copy was cut
+      #         (tests/data/edgar_gleif_reduced.json). The remote start's
+      #         thumbnails used to be rendered and diffed here, over the
+      #         network, which meant only this run could redraw them: every
+      #         interface change re-shot the other starts' thumbnails in the
+      #         per-push suite and left these two behind, and this run stayed
+      #         red on the drift for weeks. They are now drawn from the copy
+      #         in the per-push suite like every other start, so the one
+      #         network question left is whether the copy still matches what
+      #         is published. Red here means re-cut it with
+      #         scripts/cut-crosswalk-fixture.sh and re-shoot the thumbnails.
       #
       #   crates/brightfield-shell/tests/crosswalk_chart.rs
       #     the_published_crosswalk_is_still_past_the_drawn_primitive_ceiling
@@ -188,13 +189,13 @@ jobs:
 
           # label | cargo target selector | how many ignored tests must run
           targets=(
-            "front_door|-p brightfield-shell --test front_door|2"
+            "front_door|-p brightfield-shell --test front_door|1"
             "crosswalk_chart|-p brightfield-shell --test crosswalk_chart|2"
             "engine_httpfs|-p brightfield-engine --lib|2"
           )
           # The sum of the floors above, stated once as a number so a reader
           # and the log both see what this job expects to have executed.
-          expected_total=6
+          expected_total=5
 
           failed=0
           total=0
@@ -347,19 +348,3 @@ jobs:
           fi
 
           echo "${ran} bundle-present band test(s) executed and passed (floor ${floor})"
-
-      # A thumbnail-drift red is undiagnosable from a log alone, so hand back
-      # what the remote start actually rendered and its perceptual diff. Same
-      # device as `test.yml`'s step, pointed at the directory the front-door
-      # thumbnail gate writes to (`assets/starts`, its SnapshotOptions
-      # output_path) rather than the `tests/snapshots` tree.
-      - name: upload thumbnail diffs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: remote-start-thumbnail-output
-          path: |
-            crates/brightfield-shell/assets/starts/**/*.new.png
-            crates/brightfield-shell/assets/starts/**/*.diff.png
-          if-no-files-found: ignore
-          retention-days: 7

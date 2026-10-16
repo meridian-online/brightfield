@@ -2724,26 +2724,18 @@ fn front_door_return_dark_surface() {
 /// change to a starter spec or to the renderer, and re-commit the PNGs —
 /// they are pre-rendered on purpose; the door never renders them live.
 ///
-/// A start that declares [`starts::Start::remote`] is rendered by the
-/// `#[ignore]`d sibling below instead, for the reason
-/// `every_shipped_start_loads_into_a_document_with_something_in_it` gives: its
-/// picture cannot be redrawn without fetching someone else's server, and this
-/// suite renders on every push. Both halves share [`render_thumbnails`], so the
-/// two gates cannot drift into different definitions of "current".
+/// The remote start is included. Its spec reads a published table over
+/// https, and this suite runs on each push, so it renders from a committed
+/// reduced copy of that table instead (see [`REMOTE_FIXTURES`]). Until it did,
+/// the remote start's thumbnails could be redrawn by the nightly network run
+/// alone, interface changes left them behind, and they drifted until that run
+/// went red. Whether the copy
+/// still matches the published table is the nightly's question, asked by
+/// `the_published_crosswalk_is_still_the_table_its_fixture_was_cut_from`.
 #[test]
 fn every_shipped_start_still_renders_and_its_thumbnail_is_current() {
-    let drawn = render_thumbnails(
-        &starts::STARTS
-            .iter()
-            .filter(|s| !s.remote)
-            .collect::<Vec<_>>(),
-        Mode::Light,
-    );
-    assert!(
-        drawn >= 3,
-        "only {drawn} thumbnail(s) were held against their specs — the \
-         `remote` exemption has taken over the gate"
-    );
+    let all: Vec<&'static starts::Start> = starts::STARTS.iter().collect();
+    render_thumbnails(&all, Mode::Light);
 }
 
 /// The same gate, over the dark thumbnails: [`Start::thumbnail_dark`] is a
@@ -2755,67 +2747,165 @@ fn every_shipped_start_still_renders_and_its_thumbnail_is_current() {
 /// [`Start::thumbnail_dark`]: starts::Start::thumbnail_dark
 #[test]
 fn every_shipped_start_still_renders_and_its_dark_thumbnail_is_current() {
-    let drawn = render_thumbnails(
-        &starts::STARTS
-            .iter()
-            .filter(|s| !s.remote)
-            .collect::<Vec<_>>(),
-        Mode::Dark,
-    );
-    assert!(
-        drawn >= 3,
-        "only {drawn} dark thumbnail(s) were held against their specs — the \
-         `remote` exemption has taken over the gate"
-    );
+    let all: Vec<&'static starts::Start> = starts::STARTS.iter().collect();
+    render_thumbnails(&all, Mode::Dark);
 }
 
-/// The same gate for the starts whose picture cannot be redrawn offline.
+/// The committed stand-ins for the tables a [`starts::Start::remote`] start
+/// reads over the network: `(url, file under this crate)`.
 ///
-/// `cargo +1.95.0 test -p brightfield-shell --test front_door -- --ignored`,
-/// and with `UPDATE_SNAPSHOTS=1` to regenerate. Run it after touching
-/// `examples/remote/**` or the renderer, and commit the PNG it writes.
+/// Each is a reduced copy cut by `scripts/cut-crosswalk-fixture.sh`, which
+/// says what it keeps and why, and writes the provenance file beside it that
+/// the two tests below read. A remote start whose source is missing here
+/// fails [`remote_stand_in`] by name rather than reaching the network.
+const REMOTE_FIXTURES: &[(&str, &str)] = &[(
+    "https://openlake.meridian.online/edgar_gleif.parquet",
+    "tests/data/edgar_gleif_reduced.parquet",
+)];
+
+/// The provenance file `scripts/cut-crosswalk-fixture.sh` writes beside the
+/// crosswalk's reduced copy.
+const CROSSWALK_PROVENANCE: &str = "tests/data/edgar_gleif_reduced.json";
+
+/// What `start`'s network sources are replaced with when its thumbnail is
+/// drawn: the committed copies in [`REMOTE_FIXTURES`].
+fn remote_stand_in(start: &starts::Start) -> brightfield_shell::remote::Fetched {
+    let spec = start
+        .spec
+        .unwrap_or_else(|| panic!("{} is remote and has no chart spec", start.id));
+    let urls = brightfield_shell::remote::remote_sources(spec)
+        .unwrap_or_else(|e| panic!("{}: {e}", start.id));
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let pairs: Vec<(String, PathBuf)> = urls
+        .into_iter()
+        .map(|url| {
+            let (_, file) = REMOTE_FIXTURES
+                .iter()
+                .find(|(u, _)| *u == url)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} reads {url} and REMOTE_FIXTURES has no committed copy \
+                         of it, so its thumbnail cannot be drawn offline",
+                        start.id
+                    )
+                });
+            (url, crate_dir.join(file))
+        })
+        .collect();
+    let borrowed: Vec<(&str, &std::path::Path)> = pairs
+        .iter()
+        .map(|(url, path)| (url.as_str(), path.as_path()))
+        .collect();
+    brightfield_shell::remote::Fetched::stand_in(&borrowed)
+        .unwrap_or_else(|e| panic!("{}: {e}", start.id))
+}
+
+/// The provenance file, parsed.
+fn crosswalk_provenance() -> serde_json::Value {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(CROSSWALK_PROVENANCE);
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// How many rows the Parquet at `path` has, read by the engine's own DuckDB.
+fn parquet_rows(path: &std::path::Path) -> u64 {
+    let conn = duckdb::Connection::open_in_memory().expect("open DuckDB");
+    let rows: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM read_parquet(?)",
+            [path.display().to_string()],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|e| panic!("count {}: {e}", path.display()));
+    u64::try_from(rows).expect("a count is not negative")
+}
+
+/// The committed copy is the one its provenance file describes, and it has as
+/// many rows as the published table it was cut from.
+///
+/// Offline, so a copy replaced by hand — or re-cut without the provenance
+/// file that goes with it — fails on the push that does it, rather than
+/// leaving the nightly comparing the published table with numbers that no
+/// longer describe the copy the thumbnails were drawn from.
 #[test]
-#[ignore = "network: renders a start whose spec fetches over https"]
-fn every_remote_start_still_renders_and_its_thumbnail_is_current() {
-    let drawn = render_thumbnails(
-        &starts::STARTS
-            .iter()
-            .filter(|s| s.remote)
-            .collect::<Vec<_>>(),
-        Mode::Light,
+fn the_crosswalk_fixture_is_the_copy_its_provenance_describes() {
+    let provenance = crosswalk_provenance();
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(REMOTE_FIXTURES[0].1);
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    assert_eq!(
+        provenance["source"]["url"].as_str(),
+        Some(REMOTE_FIXTURES[0].0),
+        "the provenance file describes a copy of some other table"
     );
-    assert!(
-        drawn > 0,
-        "no shipped start needs a network any more — delete this test and the \
-         `remote` exemption in its sibling with it"
+    assert_eq!(
+        provenance["fixture"]["sha256"].as_str(),
+        Some(sha256_hex(&bytes).as_str()),
+        "{} is not the copy its provenance file records — re-cut it with \
+         scripts/cut-crosswalk-fixture.sh, which writes both",
+        path.display()
+    );
+    assert_eq!(
+        Some(parquet_rows(&path)),
+        provenance["source"]["rows"].as_u64(),
+        "the copy does not have the published table's row count, so its \
+         thumbnail does not count what the live chart counts"
     );
 }
 
-/// The dark half of the network-gated gate above — same starts, same
-/// [`UPDATE_SNAPSHOTS`] workflow, [`Mode::Dark`] instead.
+/// The published crosswalk is still the table its committed copy was cut
+/// from: the same size, the same sha256 and the same row count as the
+/// provenance file records.
+///
+/// The only network question the crosswalk chart's thumbnails still raise.
+/// They are drawn offline from the copy on every push; what the copy cannot
+/// tell by itself is whether the published table has moved since it was cut.
+/// When it has, this reddens and the fix is to re-cut the copy with
+/// `scripts/cut-crosswalk-fixture.sh` and re-shoot the thumbnails, as that
+/// script's header says. The sha256 is what decides; the size and the row
+/// count are there so a red names what moved.
+///
+/// `cargo +1.95.0 test -p brightfield-shell --test front_door -- --ignored`.
+/// The nightly network workflow runs it.
 #[test]
-#[ignore = "network: renders a start whose spec fetches over https"]
-fn every_remote_start_still_renders_and_its_dark_thumbnail_is_current() {
-    let drawn = render_thumbnails(
-        &starts::STARTS
-            .iter()
-            .filter(|s| s.remote)
-            .collect::<Vec<_>>(),
-        Mode::Dark,
+#[ignore = "network: reads the published crosswalk over https"]
+fn the_published_crosswalk_is_still_the_table_its_fixture_was_cut_from() {
+    let provenance = crosswalk_provenance();
+    let url = REMOTE_FIXTURES[0].0;
+    let fetched = brightfield_shell::remote::Fetch::begin(vec![url.to_string()], || {})
+        .wait()
+        .unwrap_or_else(|e| panic!("{e}"));
+    let path = fetched.local_path(url).expect("the fetch wrote the source");
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let recorded = &provenance["source"];
+    let published = (bytes.len() as u64, sha256_hex(&bytes), parquet_rows(path));
+    let cut_from = (
+        recorded["bytes"].as_u64().expect("source.bytes"),
+        recorded["sha256"]
+            .as_str()
+            .expect("source.sha256")
+            .to_string(),
+        recorded["rows"].as_u64().expect("source.rows"),
     );
-    assert!(
-        drawn > 0,
-        "no shipped start needs a network any more — delete this test and the \
-         `remote` exemption in its sibling with it"
+    assert_eq!(
+        published, cut_from,
+        "{url} has moved since the crosswalk chart's fixture was cut from it \
+         (bytes, sha256, rows). Re-cut it with scripts/cut-crosswalk-fixture.sh \
+         and re-shoot the thumbnails with UPDATE_SNAPSHOTS=1, as that script says"
     );
 }
 
 /// Render each start at the window it asks for, thumbnail it, and diff against
 /// the committed PNG for `mode` — `{id}.png` for [`Mode::Light`], `{id}-dark.png`
 /// for [`Mode::Dark`], so the two halves of the set stay apart by name.
-/// Returns how many were held, so a caller filtering the set can refuse to
-/// pass over an empty one.
-fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
+/// A [`starts::Start::remote`] start is composed over [`remote_stand_in`]
+/// rather than fetched.
+fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) {
     // Hermetic capture: keep `BRIGHTFIELD_DEVTOOLS` from baking the top-bar
     // renderer string into a regenerated thumbnail (see `door_surface`).
     std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
@@ -2830,8 +2920,12 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
     let options = egui_kittest::SnapshotOptions::default().output_path(&assets);
     let mut failures = Vec::new();
     for start in starts {
-        let boot = Boot::start(start.id, Flow::Vertical)
-            .unwrap_or_else(|e| panic!("{} no longer loads: {e}", start.id));
+        let boot = if start.remote {
+            Boot::start_with(start.id, remote_stand_in(start), Flow::Vertical)
+        } else {
+            Boot::start(start.id, Flow::Vertical)
+        }
+        .unwrap_or_else(|e| panic!("{} no longer loads: {e}", start.id));
         // The window the start itself asks for — its content's own natural
         // size, the same answer the live click gives.
         let size = boot.window_size();
@@ -2853,7 +2947,6 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
         "{mode:?} thumbnails have drifted from what their specs render:\n{}",
         failures.join("\n")
     );
-    starts.len()
 }
 
 /// No pixel in the **image area** of any card the door draws is within

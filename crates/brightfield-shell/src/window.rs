@@ -1216,7 +1216,27 @@ impl Boot {
     /// If `id` is not a start this build ships, or the embedded fixture fails
     /// to load.
     pub fn start(id: &str, flow: Flow) -> Result<Self, String> {
-        let boot = match crate::starts::load(id)? {
+        Self::from_start(id, crate::starts::load(id)?, flow)
+    }
+
+    /// [`Boot::start`] over sources already on disk: the chart start `id`,
+    /// composed with `fetched` standing in for what its spec reads over the
+    /// network. See [`crate::starts::load_with`], which is what it opens.
+    ///
+    /// # Errors
+    ///
+    /// As [`crate::starts::load_with`].
+    pub fn start_with(
+        id: &str,
+        fetched: crate::remote::Fetched,
+        flow: Flow,
+    ) -> Result<Self, String> {
+        Self::from_start(id, crate::starts::load_with(id, fetched)?, flow)
+    }
+
+    /// The boot over what a start opened, remembered under `id`.
+    fn from_start(id: &str, opened: crate::starts::Opened, flow: Flow) -> Result<Self, String> {
+        let boot = match opened {
             // The session comes with it, so the pane can re-composite into the
             // box the dock gives it. See [`crate::starts::OpenedChart`].
             crate::starts::Opened::Charts(chart) => Self {

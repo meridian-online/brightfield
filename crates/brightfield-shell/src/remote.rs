@@ -148,6 +148,46 @@ impl Fetched {
     pub fn dir(&self) -> &Path {
         &self.dir
     }
+
+    /// A fetch that never reached the network: each `(url, local file)` pair
+    /// is **copied** into a fresh directory, as if the fetch had written it.
+    ///
+    /// For a caller that already holds the bytes a fetch would have brought
+    /// back. The per-push thumbnail tests render the crosswalk chart start
+    /// from a committed reduced copy of the published table this way, so its
+    /// thumbnails are redrawn on every push like every other start's, and
+    /// the composition still goes through [`crate::starts::compose`] with a
+    /// [`Fetched`] in hand, exactly as a click does.
+    ///
+    /// A copy rather than the caller's own path, because dropping a
+    /// [`Fetched`] deletes its directory: handing it a committed file's
+    /// directory would delete the fixture at the end of the test.
+    ///
+    /// # Errors
+    ///
+    /// If the directory cannot be made or a file cannot be copied, naming
+    /// the path.
+    pub fn stand_in(sources: &[(&str, &Path)]) -> Result<Self, String> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "brightfield-stand-in-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        // Owned from here, so a failed copy below still removes the directory.
+        let mut fetched = Self {
+            dir: dir.clone(),
+            local: Vec::new(),
+        };
+        for (i, (url, from)) in sources.iter().enumerate() {
+            let target = dir.join(format!("{i}-{}", file_name_of(url)));
+            std::fs::copy(from, &target)
+                .map_err(|e| format!("{} -> {}: {e}", from.display(), target.display()))?;
+            fetched.local.push(((*url).to_string(), target));
+        }
+        Ok(fetched)
+    }
 }
 
 impl Drop for Fetched {

@@ -180,10 +180,14 @@
 //! the bundled specs — rendering them live at startup was considered and
 //! rejected (slow, and a render that can fail has no business on a first-run
 //! surface). The regeneration test is also the gate that fails if a bundled
-//! start stops rendering at all — for every start whose spec that test can
-//! compose without a network, which is the whole set bar [`CROSSWALK_CHART`];
-//! that one's render gate is the network-gated test beside it, run on demand
-//! rather than in CI.
+//! start stops rendering at all, and it covers the whole set on every push.
+//! [`CROSSWALK_CHART`] is drawn there from a committed reduced copy of the
+//! published table rather than over the network, through [`load_with`]: the
+//! chart reads the tier, the method and the length of the search text, so a
+//! copy keeping those three draws the same bins and the same counts at a
+//! fortieth of the size. `scripts/cut-crosswalk-fixture.sh` cuts it and says
+//! why; the nightly network run checks the published table has not moved
+//! since.
 
 use brightfield_workbench::ItemId;
 
@@ -306,10 +310,12 @@ pub struct Start {
     /// rather than the disclosure quietly disappearing.
     ///
     /// It is also what the hermetic front-door gates read to decide which
-    /// starts they can load and render without a network. A `remote` start is
+    /// starts they can load without a network. A `remote` start's load is
     /// covered by the `#[ignore]`d network tests beside them instead; the
     /// hermetic pass asserts how many it skipped, so the exemption cannot
-    /// swallow the whole set.
+    /// swallow the whole set. Its thumbnails are not exempt: the regeneration
+    /// test draws them from a committed copy of the data, through
+    /// [`load_with`].
     pub remote: bool,
     /// Whether the front door's Datasets section offers this start.
     ///
@@ -789,6 +795,40 @@ pub fn load(id: &str) -> Result<Opened, String> {
              nor a manifest loader"
         )),
     }
+}
+
+/// Load the chart start with this id over sources already on disk, rather
+/// than fetching them — [`load`]'s chart arm with the fetch handed in.
+///
+/// For the per-push thumbnail tests, which render [`CROSSWALK_CHART`] from a
+/// committed reduced copy of the published table (see
+/// `scripts/cut-crosswalk-fixture.sh` for what the copy keeps and why). The
+/// composition is [`compose`], the same function a click and [`load`] end at,
+/// so what differs from a live open is which bytes were read.
+///
+/// # Errors
+///
+/// If `id` is not a chart start this build ships, its spec does not parse, or
+/// `fetched` does not stand in for every source the spec reads over the
+/// network — composing with one left over would reach the network after all.
+pub fn load_with(id: &str, fetched: crate::remote::Fetched) -> Result<Opened, String> {
+    let Some(start) = find(id) else {
+        return Err(format!("no shipped starting point named {id:?}"));
+    };
+    let Some(spec) = start.spec else {
+        return Err(format!("the shipped starting point {id:?} is not a chart"));
+    };
+    let missing: Vec<String> = crate::remote::remote_sources(spec)?
+        .into_iter()
+        .filter(|url| fetched.local_path(url).is_none())
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "{id:?} reads {} over the network, and nothing stands in for it",
+            missing.join(", ")
+        ));
+    }
+    compose(spec, Some(fetched))
 }
 
 /// One chart start, loaded live and composed once — the shape every entry in
