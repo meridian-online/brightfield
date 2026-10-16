@@ -268,3 +268,75 @@ fn a_statement_typed_over_a_folder_reads_each_branch_as_made() {
         rows_of(&preview_chain(&g, "young").unwrap())
     );
 }
+
+/// **A run's record of the recorded steps leaves a typed step in the Steps
+/// sheet.** The record's own sheet lists only the steps it ran, so a sheet
+/// taken from it whole drops the step typed since: the spine and the graph
+/// still draw it, and the sheet would not.
+#[test]
+fn a_run_record_leaves_the_typed_step_in_the_sheet() {
+    let dir = TempDir::new();
+    let data = dir.path().join(starts::HOUSING_FILE);
+    std::fs::write(&data, starts::HOUSING_PARQUET).expect("the housing file writes");
+    let boot = Boot::data_file(&data.to_string_lossy()).expect("the housing file opens");
+    let source = MeridianApp::headless(boot, Mode::Light)
+        .protocol_model()
+        .source()
+        .cloned()
+        .expect("a data file's Protocol has a source");
+    let runs = brightfield_shell::run::runs_dir(dir.path());
+    std::fs::create_dir_all(&runs).expect("the runs directory");
+    std::fs::write(
+        runs.join("20261016-000000-load.json"),
+        r#"{
+  "contract_version": "b4/1",
+  "run": {
+    "run_id": "20261016-000000-load", "attempt_id": null,
+    "protocol": { "name": "california_housing", "manifest_sha256": null, "dir": null },
+    "engine": null, "params": [], "started_at": null,
+    "finished_at": "2026-10-16T00:00:00Z", "outcome": "success"
+  },
+  "assets": [
+    { "id": "table:california_housing", "kind": "table", "name": "california_housing",
+      "path": null, "bytes": null, "row_count": 16640, "content_hash": null,
+      "produced_by": "load", "consumed_by": [] }
+  ],
+  "steps": [
+    { "name": "load", "kind": "sql", "op_ref": null, "resolved_with": null, "sql": null,
+      "status": { "state": "success", "skip_reason": null },
+      "attempts": 1, "duration_sec": null, "retry": null, "timeout_sec": null,
+      "io": null, "ingress_meta": null, "narrative": null }
+  ]
+}"#,
+    )
+    .expect("the record writes");
+
+    let model = ProtocolModel::new(
+        source
+            .inputs_with_typed(&[typed(
+                "california_housing_sql_by_house_age",
+                BY_AGE,
+                &["california_housing"],
+            )])
+            .unwrap(),
+        Flow::Vertical,
+    );
+    assert!(
+        model.run().is_some(),
+        "the record was not read as this Protocol's run"
+    );
+    let sheet: Vec<(String, String)> = model
+        .sheet()
+        .rows()
+        .iter()
+        .map(|r| (r.name.clone(), r.status.to_string()))
+        .collect();
+    assert_eq!(sheet[0], ("load".to_string(), "ok".to_string()));
+    assert_eq!(
+        sheet
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["load", "california_housing_sql_by_house_age"]
+    );
+}

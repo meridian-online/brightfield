@@ -305,7 +305,16 @@ impl ProtocolInputs {
         self.assets.clone_from(&view.assets);
         self.steps.clone_from(&view.steps);
         self.run = Some(view.run.clone());
+        // The record's sheet lists the steps it ran; a typed step keeps the
+        // declaration's row after them, as the spine keeps it at the foot.
+        let waiting: Vec<_> = self
+            .sheet_rows
+            .iter()
+            .filter(|row| self.typed.contains_key(&row.name))
+            .cloned()
+            .collect();
         self.sheet_rows = StepsSheet::from_view(view).rows().to_vec();
+        self.sheet_rows.extend(waiting);
         true
     }
 }
