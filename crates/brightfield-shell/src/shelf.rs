@@ -18,9 +18,10 @@
 //! # What a cell says
 //!
 //! Its key as a keycap, the channel's name as a word over the column's name,
-//! and a chevron on the word's line. The word *preview* stands beside the word
-//! while the column is a preview, and a channel with no column reads *add a
-//! column*. A column's name longer than the room it has ends in an ellipsis,
+//! and, on a cell that opens a list of columns, a chevron on the word's line (the
+//! mark's cell opens no list yet and has none). The word *preview* stands beside
+//! the word while the column is a preview, and a channel with no column reads
+//! *add a column*. A column's name longer than the room it has ends in an ellipsis,
 //! and the cell keeps its width, which [`channel::cell_widths`] takes from the
 //! band's width alone.
 //!
@@ -561,8 +562,14 @@ struct CellWords {
     scale: Option<String>,
 }
 
+/// Whether a cell opens a list, which its chevron promises: the column cells do,
+/// and the mark's does not until the list of marks is drawn.
+fn opens_list(channel: ShelfChannel) -> bool {
+    channel != ShelfChannel::Mark
+}
+
 /// Paint one cell's contents: the keycap, the channel's word over the column's
-/// name, the chevron on the word's line and, where it fits, *preview*. The word
+/// name, the chevron on the word's line of a cell that opens a list and, where it fits, *preview*. The word
 /// reads `x · log` while the scale is not linear, and a dot follows it while a
 /// value of the channel is set.
 fn paint_words(
@@ -608,13 +615,19 @@ fn paint_words(
     let block_top = cell.center().y - (label_h + LINE_GAP + value_h) / 2.0;
     let label_cy = block_top + label_h / 2.0;
 
-    // The chevron, on the word's line at the cell's trailing edge.
-    let chevron = egui::Rect::from_center_size(
-        egui::pos2(cell.right() - PAD - control::ICON_SM / 2.0, label_cy),
-        egui::vec2(control::ICON_SM, control::ICON_SM),
-    );
-    icons::CHEVRON_DOWN.paint(painter, chevron, muted);
-    let label_right = chevron.left() - spacing::SPACE_2;
+    // The chevron, on the word's line at the cell's trailing edge, for the cells
+    // that open a list of columns. The mark's cell opens no list yet, so it
+    // carries no chevron to promise one.
+    let label_right = if opens_list(channel) {
+        let chevron = egui::Rect::from_center_size(
+            egui::pos2(cell.right() - PAD - control::ICON_SM / 2.0, label_cy),
+            egui::vec2(control::ICON_SM, control::ICON_SM),
+        );
+        icons::CHEVRON_DOWN.paint(painter, chevron, muted);
+        chevron.left() - spacing::SPACE_2
+    } else {
+        cell.right() - PAD
+    };
 
     // The channel's word, in a text ink and not in the channel's hue, and the
     // scale's name after it where the scale is not linear.
