@@ -6681,31 +6681,12 @@ impl MeridianApp {
     /// data file and the table it loads as, with every step the Protocol
     /// generated after the load as the chain the statement may read.
     fn typed_source(&self) -> Option<TypedSource> {
-        use crate::generated::{KnownOperation, StepEffect};
-        use brightfield_engine::PreviewOp;
         let model = &self.protocol.doc.model;
         let source = model.source()?;
         let reader = brightfield_engine::FileReader::for_path(&source.data)?;
         let chain = model
             .generated()
-            .map(|generated| {
-                generated
-                    .steps
-                    .iter()
-                    .map(|step| {
-                        let op = match step.effect {
-                            StepEffect::Operation(KnownOperation::FilterRows) => {
-                                PreviewOp::Where(step.argument.clone())
-                            }
-                            StepEffect::Operation(KnownOperation::SortRows) => {
-                                PreviewOp::OrderBy(step.argument.clone())
-                            }
-                            StepEffect::Sql => PreviewOp::Statement(step.argument.clone()),
-                        };
-                        (step.name.clone(), op)
-                    })
-                    .collect()
-            })
+            .map(crate::generated::preview_chain_of_every_step)
             .unwrap_or_default();
         Some(TypedSource {
             data: source.data.clone(),

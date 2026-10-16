@@ -15,7 +15,8 @@ use brightfield_engine::{
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::design::Mode;
 use brightfield_shell::generated::{
-    preview_chain, GeneratedProtocol, GeneratedStep, KnownOperation, StepEffect,
+    preview_chain, preview_chain_of_every_step, GeneratedProtocol, GeneratedStep, KnownOperation,
+    StepEffect,
 };
 use brightfield_shell::one_step::OneStepProtocol;
 use brightfield_shell::protocol::{ProtocolModel, SpineMarker, SpineRole};
@@ -242,4 +243,28 @@ fn a_statement_over_two_branches_previews_each_from_the_table_it_reads() {
     };
     let chain = preview_chain(&g, "both_sql").unwrap();
     assert_eq!(rows_of(&chain), rows_of(&[]));
+}
+
+#[test]
+fn a_statement_typed_over_a_folder_reads_each_branch_as_made() {
+    // The statement form reads a statement against every step the folder
+    // holds, so a filter that branches off the load must still read the load.
+    let g = GeneratedProtocol {
+        data: PathBuf::from(starts::HOUSING_FILE),
+        dir: PathBuf::from("."),
+        root_table: "california_housing".to_string(),
+        steps: vec![
+            filter_step("old", "house_age > 28"),
+            filter_step("young", "house_age <= 28"),
+        ],
+    };
+    let mut chain = preview_chain_of_every_step(&g);
+    chain.push((
+        "typed".to_string(),
+        PreviewOp::Statement("select * from young".to_string()),
+    ));
+    assert_eq!(
+        rows_of(&chain),
+        rows_of(&preview_chain(&g, "young").unwrap())
+    );
 }

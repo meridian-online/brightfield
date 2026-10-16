@@ -325,7 +325,6 @@ pub fn preview_chain(
     protocol: &GeneratedProtocol,
     step: &str,
 ) -> Option<Vec<(String, brightfield_engine::PreviewOp)>> {
-    use brightfield_engine::PreviewOp;
     let index_of = |name: &str| {
         let name = name.to_lowercase();
         protocol
@@ -338,7 +337,7 @@ pub fn preview_chain(
     let mut todo = vec![target];
     while let Some(i) = todo.pop() {
         for read in &protocol.steps[i].reads {
-            // A step reads only steps before it, so the walk ends.
+            // Each read is of a step before the reader, so the walk ends.
             if let Some(j) = index_of(read).filter(|&j| j < i) {
                 if needed.insert(j) {
                     todo.push(j);
@@ -346,15 +345,36 @@ pub fn preview_chain(
             }
         }
     }
-    // The engine runs an operation on the table made just before it in the
-    // chain. An operation whose own table is another, because a statement
-    // later in the chain reads two branches, is written as the statement over
-    // its own table that arc's template is
-    // (`a_statement_over_two_branches_previews_each_from_the_table_it_reads`
-    // in `tests/typed_sql_nodes.rs`).
+    Some(chain_of(protocol, needed))
+}
+
+/// **Every step after the load, in manifest order**, each with what it does:
+/// the chain a statement typed over the Protocol is read against, so it may
+/// read any step's table.
+#[must_use]
+pub fn preview_chain_of_every_step(
+    protocol: &GeneratedProtocol,
+) -> Vec<(String, brightfield_engine::PreviewOp)> {
+    chain_of(protocol, 0..protocol.steps.len())
+}
+
+/// The steps of `protocol` at `indices`, in the order given, as a chain the
+/// engine previews.
+///
+/// The engine runs an operation on the table made just before it in the
+/// chain. An operation whose own table is another, because it branches off a
+/// table an earlier step of the chain made, is written as the statement over
+/// its own table that arc's template is
+/// (`a_statement_over_two_branches_previews_each_from_the_table_it_reads` in
+/// `tests/typed_sql_nodes.rs`).
+fn chain_of(
+    protocol: &GeneratedProtocol,
+    indices: impl IntoIterator<Item = usize>,
+) -> Vec<(String, brightfield_engine::PreviewOp)> {
+    use brightfield_engine::PreviewOp;
     let mut previous = protocol.root_table.as_str();
-    let mut chain = Vec::with_capacity(needed.len());
-    for i in needed {
+    let mut chain = Vec::new();
+    for i in indices {
         let s = &protocol.steps[i];
         let in_line = s.on.to_lowercase() == previous.to_lowercase();
         let op = match s.effect {
@@ -375,7 +395,7 @@ pub fn preview_chain(
         chain.push((s.name.clone(), op));
         previous = &s.name;
     }
-    Some(chain)
+    chain
 }
 
 /// The table a load model makes: the target of its `CREATE OR REPLACE TABLE`.
