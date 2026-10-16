@@ -130,3 +130,61 @@ fn it_sits_after_counts_over_time_and_moves_no_first_look() {
         at(chart_kinds::COUNTS_OVER_TIME) + 1
     );
 }
+
+// ---------------------------------------------------------------------------
+// The picture: a DATE axis, and a split by category
+// ---------------------------------------------------------------------------
+
+/// Three countries over three dates, on a DuckDB table whose x is a `DATE`, y a
+/// `DOUBLE` and category a `VARCHAR` (or a `BOOLEAN`), with the rows out of date
+/// order.
+fn table(category: &str) -> String {
+    format!(
+        "data:\n  {}:\n    query: \"SELECT * FROM (VALUES \
+         (DATE '2024-03-01', 1.0, {c}0), (DATE '2024-01-01', 5.0, {c}0), (DATE '2024-02-01', 2.0, {c}0), \
+         (DATE '2024-03-01', 4.0, {c}1), (DATE '2024-01-01', 9.0, {c}1), (DATE '2024-02-01', 6.5, {c}1)) \
+         t(day, v, g)\"\n",
+        brightfield_shell::data_file::SOURCE,
+        c = category
+    )
+}
+
+/// The paths drawn for the kind's spec over `table`, after `edit` is applied to
+/// the built text.
+fn paths(table: &str, edit: impl Fn(String) -> String) -> u32 {
+    let spec = built(&[
+        Field::new("day", FieldType::Temporal),
+        Field::new("v", FieldType::Quantitative),
+        Field::new("g", FieldType::Categorical),
+    ]);
+    let source = format!("{table}{}", edit(spec));
+    let c = brightfield_shell::pipeline::LiveDashboard::load_str(&source, None)
+        .unwrap_or_else(|e| panic!("loads: {e}\n{source}"))
+        .present()
+        .unwrap_or_else(|e| panic!("composes: {e}\n{source}"));
+    assert!(c.mark_faults.is_empty(), "{:?}", c.mark_faults);
+    c.scene.encoding().n_paths
+}
+
+#[test]
+fn a_date_axis_draws_one_series_per_category() {
+    let t = table("'k");
+    let table = t.replace("'k0", "'a'").replace("'k1", "'b'");
+    let no_legend = |s: String| s.replace("  - legend: color\n", "");
+    let split = paths(&table, no_legend);
+    let one_series = paths(&table, |s| no_legend(s).replace("    stroke: 'g'\n", ""));
+    // Two series of three points are four segments; one series through all six
+    // rows is five. The lines only exist if the DATE axis drew them.
+    assert_eq!(one_series - split, 1, "split {split}, single {one_series}");
+}
+
+#[test]
+fn a_boolean_category_splits_the_line_too() {
+    let table = table("")
+        .replace(", 0)", ", true)")
+        .replace(", 1)", ", false)");
+    let no_legend = |s: String| s.replace("  - legend: color\n", "");
+    let split = paths(&table, no_legend);
+    let one_series = paths(&table, |s| no_legend(s).replace("    stroke: 'g'\n", ""));
+    assert_eq!(one_series - split, 1, "split {split}, single {one_series}");
+}

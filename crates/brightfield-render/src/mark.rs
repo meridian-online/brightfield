@@ -604,6 +604,14 @@ fn column_as_string(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<St
                 .collect(),
         );
     }
+    if let DataType::Boolean = col.data_type() {
+        let arr = col.as_any().downcast_ref::<arrow::array::BooleanArray>()?;
+        return Some(
+            (0..arr.len())
+                .map(|i| (!arr.is_null(i)).then(|| arr.value(i).to_string()))
+                .collect(),
+        );
+    }
     if !matches!(col.data_type(), DataType::Utf8) {
         return None;
     }
@@ -1539,14 +1547,20 @@ impl MarkRenderer for LineRenderer {
             None => return,
         };
 
-        let x_f64 = column_as_f64(batch, x_col);
-        let y_f64 = column_as_f64(batch, y_col);
-
-        if x_f64.is_none() || y_f64.is_none() {
-            return;
-        }
-        let x_vals = x_f64.unwrap();
-        let y_vals = y_f64.unwrap();
+        // A position is a number on a continuous scale and a category on a
+        // band one — a `DATE` axis is a band of days, read by its ISO spelling.
+        let (x_f64, x_str) = (column_as_f64(batch, x_col), column_as_string(batch, x_col));
+        let (y_f64, y_str) = (column_as_f64(batch, y_col), column_as_string(batch, y_col));
+        let position = |scale: &Scale,
+                        nums: &Option<Vec<Option<f64>>>,
+                        strs: &Option<Vec<Option<String>>>,
+                        i: usize| {
+            resolve_position(
+                scale,
+                nums.as_ref().and_then(|v| v[i]),
+                strs.as_ref().and_then(|v| v[i].as_deref()),
+            )
+        };
 
         // A stroke column splits the rows into one series per value, in the
         // order the values first appear. Each series keeps the first row it
@@ -1559,15 +1573,16 @@ impl MarkRenderer for LineRenderer {
         let mut seen: std::collections::HashMap<Option<String>, usize> =
             std::collections::HashMap::new();
         for i in 0..batch.num_rows() {
-            if let (Some(xv), Some(yv)) = (x_vals[i], y_vals[i]) {
+            if let (Some(px), Some(py)) = (
+                position(x_scale, &x_f64, &x_str, i),
+                position(y_scale, &y_f64, &y_str, i),
+            ) {
                 let key = groups.as_ref().and_then(|g| g[i].clone());
                 let slot = *seen.entry(key).or_insert_with(|| {
                     series.push((i, Vec::new()));
                     series.len() - 1
                 });
-                series[slot]
-                    .1
-                    .push((x_scale.map_f64(xv), y_scale.map_f64(yv)));
+                series[slot].1.push((px, py));
             }
         }
 
@@ -6235,6 +6250,44 @@ mod tests {
         // lineY over the same rows joins in x order, which is a different path.
         let by_x = render_lines(&ordered_batch, &ordered_batch, LineAxis::Y, true);
         assert_ne!(by_x.encoding().path_data, by_y.encoding().path_data);
+    }
+
+    #[test]
+    fn line_y_splits_on_a_boolean_stroke_and_reads_a_date_x() {
+        use arrow::array::{BooleanArray, Date32Array};
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Date32, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new("g", DataType::Boolean, false),
+        ]));
+        // Two series of three points, interleaved and out of date order.
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Date32Array::from(vec![
+                    19060, 19000, 19031, 19000, 19060, 19031,
+                ])),
+                Arc::new(Float64Array::from(vec![1.0, 5.0, 2.0, 9.0, 4.0, 6.5])),
+                Arc::new(BooleanArray::from(vec![
+                    true, true, true, false, false, false,
+                ])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.insert(Channel::Stroke, "g".to_string());
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        assert!(
+            matches!(scales.get(Channel::Stroke), Some(Scale::Colour { categories, .. }) if categories.len() == 2),
+            "a boolean stroke gets a two-category colour scale"
+        );
+
+        let mut scene = Scene::new();
+        LineRenderer { axis: LineAxis::Y }.render(&mut scene, &batch, &cm, &scales, None);
+        // Two series, two segments each; one tangled series would be five.
+        assert_eq!(count_scene_paths(&scene), 4);
     }
 
     // --- mark breadth: areaY ---

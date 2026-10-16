@@ -213,8 +213,9 @@ pub struct PlotHandle {
     /// legend carries over its ramp or its swatches. A fill the transform
     /// produced is the reserved count column (`fill: { count: }`), and a raster
     /// or a heatmap sets a fill channel of neither kind. [`crate::legend::legend_name`]
-    /// names those legends. A mark with no fill column that colours a `stroke`
-    /// column, a line per category, gives the stroke column instead. A plot whose
+    /// names those legends. When no mark of the plot fills by a column but one
+    /// colours a `stroke` column, a line per category, the stroke column is
+    /// given instead. A plot whose
     /// fill is a colour literal or is not set holds `None`.
     pub fill_column: Option<String>,
     /// **The file puts a colour legend on this plot** — its own `legend: color`
@@ -2325,6 +2326,7 @@ fn compose_from_results(
             let mut plot_y_column: Option<String> = None;
             let mut plot_group_column: Option<String> = None;
             let mut plot_fill_column: Option<String> = None;
+            let mut plot_stroke_column: Option<String> = None;
             // The marks this plot DREW, in draw order — the candidates a hover can
             // read. A mark the engine refused is not on screen, so a pointer
             // cannot be resting on it, and offering it here would hand a reader a
@@ -2353,10 +2355,10 @@ fn compose_from_results(
                     plot_group_column = channel_maps[mi].stacked_group().map(str::to_string);
                 }
                 if plot_fill_column.is_none() {
-                    plot_fill_column = channel_maps[mi]
-                        .get(Channel::Fill)
-                        .or_else(|| channel_maps[mi].get(Channel::Stroke))
-                        .map(str::to_string);
+                    plot_fill_column = channel_maps[mi].get(Channel::Fill).map(str::to_string);
+                }
+                if plot_stroke_column.is_none() {
+                    plot_stroke_column = channel_maps[mi].get(Channel::Stroke).map(str::to_string);
                 }
                 // A mark is sampled exactly when the session produced unsampled
                 // facts for it; `drawn` is what actually arrived, `of` is what the
@@ -2461,10 +2463,12 @@ fn compose_from_results(
                                         channel_maps[mi].get(Channel::Y).map(str::to_string);
                                 }
                                 if plot_fill_column.is_none() {
-                                    plot_fill_column = channel_maps[mi]
-                                        .get(Channel::Fill)
-                                        .or_else(|| channel_maps[mi].get(Channel::Stroke))
-                                        .map(str::to_string);
+                                    plot_fill_column =
+                                        channel_maps[mi].get(Channel::Fill).map(str::to_string);
+                                }
+                                if plot_stroke_column.is_none() {
+                                    plot_stroke_column =
+                                        channel_maps[mi].get(Channel::Stroke).map(str::to_string);
                                 }
                                 chart_data.push(ChartData {
                                     batch: &synthetic_batches[k],
@@ -2805,7 +2809,9 @@ fn compose_from_results(
                 x_column: plot_x_column,
                 y_column: plot_y_column,
                 group_column: plot_group_column,
-                fill_column: plot_fill_column,
+                // The legend scale is the plot's fill scale, or its stroke scale
+                // when no mark fills, so the name follows the same order.
+                fill_column: plot_fill_column.or(plot_stroke_column),
                 stack_offset: plot_nodes
                     .iter()
                     .find(|(p, _)| *p == plot.path)

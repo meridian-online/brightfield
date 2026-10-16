@@ -94,6 +94,32 @@ impl MarkLower for SimpleLowerer {
     }
 }
 
+/// Lowerer for the oriented line marks: [`SimpleLowerer`]'s rows, ordered along
+/// the position axis.
+///
+/// The renderer joins a series' points in position order, but a band axis (a
+/// `DATE` column is a band of days) lays its categories out in the order the
+/// rows arrive. Ordering by the position column makes that order the
+/// column's own, so dates run left to right in time. `lineY` is ordered by `x`
+/// and `lineX` by `y`; a position that is not a plain column is left as is.
+pub struct LineLowerer {
+    /// The channel the line runs along: `"x"` for `lineY`, `"y"` for `lineX`.
+    pub along: &'static str,
+}
+
+impl MarkLower for LineLowerer {
+    fn lower(&self, mark: &Mark, ctx: &LowerCtx<'_>) -> Result<QueryPlan, EmitError> {
+        let plan = SimpleLowerer.lower(mark, ctx)?;
+        Ok(match opt_string(&mark.options, self.along) {
+            Some(col) => QueryPlan::Order {
+                input: Box::new(plan),
+                keys: vec![(format!("\"{col}\""), SortDir::Asc)],
+            },
+            None => plan,
+        })
+    }
+}
+
 /// Lowerer for the geo mark — projected GeoJSON basemap / choropleth
 /// (last mark).
 ///
@@ -1565,8 +1591,8 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
     vec![
         (MarkKind::Dot, Box::new(SimpleLowerer)),
         (MarkKind::Line, Box::new(SimpleLowerer)),
-        (MarkKind::LineY, Box::new(SimpleLowerer)),
-        (MarkKind::LineX, Box::new(SimpleLowerer)),
+        (MarkKind::LineY, Box::new(LineLowerer { along: "x" })),
+        (MarkKind::LineX, Box::new(LineLowerer { along: "y" })),
         (MarkKind::AreaY, Box::new(SimpleLowerer)),
         (MarkKind::AreaX, Box::new(SimpleLowerer)),
         (MarkKind::RuleX, Box::new(SimpleLowerer)),
@@ -2000,6 +2026,28 @@ mod tests {
         assert!(kinds.contains(&MarkKind::Hexgrid));
         assert!(kinds.contains(&MarkKind::Geo));
         assert_eq!(kinds.len(), 26);
+    }
+
+    #[test]
+    fn oriented_lines_are_ordered_along_their_position_axis() {
+        let registry = default_lowerers();
+        for (kind, along) in [(MarkKind::LineY, "x"), (MarkKind::LineX, "y")] {
+            let mark = make_mark_with_options(
+                kind,
+                vec![
+                    ("x", SpecValue::String("day".into())),
+                    ("y", SpecValue::String("v".into())),
+                ],
+            );
+            let plan = find_lowerer(kind, &registry)
+                .lower(&mark, &make_ctx())
+                .unwrap();
+            let QueryPlan::Order { keys, .. } = plan else {
+                panic!("{kind:?} should be ordered, got {plan:?}");
+            };
+            let col = if along == "x" { "day" } else { "v" };
+            assert_eq!(keys, vec![(format!("\"{col}\""), SortDir::Asc)]);
+        }
     }
 
     #[test]

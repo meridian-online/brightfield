@@ -2774,6 +2774,26 @@ fn infer_column_scale(
                 })
             }
         }
+        // A boolean colours as two categories, so a line or a mark split by a
+        // true/false column wears one ink per value. On a positional channel it
+        // has no scale, as before.
+        DataType::Boolean if matches!(channel, Channel::Fill | Channel::Stroke) => {
+            let arr = col.as_any().downcast_ref::<arrow::array::BooleanArray>()?;
+            let mut categories: Vec<String> = Vec::new();
+            for i in 0..arr.len() {
+                if !arr.is_null(i) {
+                    let v = arr.value(i).to_string();
+                    if !categories.contains(&v) {
+                        categories.push(v);
+                    }
+                }
+            }
+            order_categories(&mut categories);
+            Some(Scale::Colour {
+                palette: ink.categorical.to_vec(),
+                categories,
+            })
+        }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             let arr = col.as_any().downcast_ref::<TimestampMicrosecondArray>()?;
             let (mut min, mut max) = (i64::MAX, i64::MIN);
