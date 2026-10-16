@@ -74,6 +74,21 @@ fn a_read_starts_only_after_the_pause() {
 }
 
 #[test]
+fn the_time_left_in_the_pause_is_what_a_frame_waits_for() {
+    let (mut r, t0) = (reads(TYPED_PAUSE), Instant::now());
+    assert_eq!(r.pause_left(t0), None, "nothing typed, nothing to wait for");
+    r.edit(FILTER, t0);
+    assert_eq!(
+        r.pause_left(t0 + Duration::from_millis(100)),
+        Some(Duration::from_millis(200))
+    );
+    assert_eq!(r.pause_left(t0 + TYPED_PAUSE * 2), Some(Duration::ZERO));
+    r.tick(t0 + TYPED_PAUSE);
+    assert_eq!(r.pause_left(t0 + TYPED_PAUSE), None, "the read has started");
+    r.stop();
+}
+
+#[test]
 fn an_answer_carries_the_page_the_reading_and_arcs_reading() {
     let a = answered(FILTER);
     assert_eq!(a.page.rows.len() as u64, PREVIEW_ROWS);

@@ -124,8 +124,12 @@ impl StatementCard {
         }
         let id = egui::Id::new(STATEMENT_CARD_ID);
         let field = id.with("statement");
-        // Asked for until the field has it: on the frame the palette turns
-        // into this form, the palette's modal layer still holds the keyboard.
+        // The caret goes to the end of the text, and the field is asked for
+        // the keyboard, until the field first has it: on the frame the palette
+        // turns into this form, the palette's modal layer still holds the
+        // keyboard. After that the field asks again whenever nothing holds the
+        // keyboard, so a click on the grid beside the card, which has no scrim
+        // to catch it, does not leave the keys going nowhere.
         if self.focus {
             let mut state = egui::TextEdit::load_state(ctx, field).unwrap_or_default();
             let end = egui::text::CCursor::new(self.text.chars().count());
@@ -133,6 +137,8 @@ impl StatementCard {
                 .cursor
                 .set_char_range(Some(egui::text::CCursorRange::one(end)));
             egui::TextEdit::store_state(ctx, field, state);
+        }
+        if self.focus || ctx.memory(|m| m.focused().is_none()) {
             ctx.memory_mut(|m| m.request_focus(field));
         }
         let gutter = spacing::SPACE_4;

@@ -188,6 +188,18 @@ impl Window {
         self.settle();
     }
 
+    fn click(&mut self, at: egui::Pos2) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        self.run(vec![egui::Event::PointerMoved(at)]);
+        self.run(vec![button(true), button(false)]);
+        self.settle();
+    }
+
     /// Select everything in the field that holds the keyboard, and erase it.
     fn erase_all(&mut self) {
         self.run(vec![press(egui::Key::A, egui::Modifiers::COMMAND)]);
@@ -290,6 +302,33 @@ fn the_grid_previews_the_statement_after_a_pause() {
     assert_eq!(win.preview_cells("median_income")[0], "15.0001");
     assert_eq!(win.app.typed_said().as_deref(), Some("a SQL step"));
     assert!(win.drew("Grid \u{b7} california_housing_sql"));
+}
+
+#[test]
+fn a_filter_of_the_loaded_table_says_how_many_rows_it_keeps() {
+    let (mut win, _f) = Window::housing(&TempDir::new("filter"));
+    win.key(egui::Key::Space);
+    win.type_text("select * from california_housing where house_age > 28");
+    assert!(win.app.finish_typed_reads(Duration::from_secs(60)));
+    win.settle();
+    assert_eq!(
+        win.app.typed_said().as_deref(),
+        Some("filter-rows on california_housing \u{b7} 8,831 rows")
+    );
+}
+
+#[test]
+fn a_click_on_the_grid_beside_the_card_leaves_the_keys_with_the_statement() {
+    let (mut win, _f) = Window::housing(&TempDir::new("click"));
+    win.key(egui::Key::Space);
+    win.type_text("select *");
+    let grid = win.app.canvas_panes().pane("grid").unwrap().rect;
+    win.click(grid.center());
+    win.type_text(" from california_housing");
+    assert_eq!(
+        win.app.typed_statement(),
+        Some("select * from california_housing")
+    );
 }
 
 #[test]

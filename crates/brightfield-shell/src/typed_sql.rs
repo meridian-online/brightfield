@@ -145,16 +145,37 @@ impl TypedReads {
         }
     }
 
-    /// Start a read of the text without waiting out the pause, when it has no
-    /// answer and is not being read.
-    pub fn read_now(&mut self) {
+    /// How long until the pause since the last edit is over, when the text is
+    /// waiting out that pause for a read `tick` will start: what a frame asks
+    /// to be woken after.
+    #[must_use]
+    pub fn pause_left(&self, now: Instant) -> Option<Duration> {
+        let edited = self.edited?;
+        if !self.wants_read() {
+            return None;
+        }
+        Some(
+            self.pause
+                .saturating_sub(now.saturating_duration_since(edited)),
+        )
+    }
+
+    /// Whether the text as it stands has neither an answer nor a refusal, and
+    /// is not being read.
+    fn wants_read(&self) -> bool {
         let answered = self.shown.as_ref().is_some_and(|a| a.text == self.text)
             || self.refused.as_ref().is_some_and(|(t, _)| *t == self.text);
         let being_read = self
             .in_flight
             .as_ref()
             .is_some_and(|(t, _, _)| *t == self.text);
-        if answered || being_read {
+        !(answered || being_read)
+    }
+
+    /// Start a read of the text without waiting out the pause, when it has no
+    /// answer and is not being read.
+    pub fn read_now(&mut self) {
+        if !self.wants_read() {
             return;
         }
         if let Some((_, stop, _)) = self.in_flight.take() {

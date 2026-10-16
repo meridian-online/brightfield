@@ -6566,13 +6566,16 @@ impl MeridianApp {
                     let now = std::time::Instant::now();
                     if card.text() != before {
                         typed.edit(card.text(), now);
-                        // The pause starts at this edit, so the frame after it
-                        // is the one that starts the read.
-                        ctx.request_repaint_after(self.typed_pause);
                     }
                     typed.tick(now);
                     if typed.poll() {
                         ctx.request_repaint();
+                    }
+                    // Asked again each frame, because a frame drawn for any
+                    // other reason replaces the wake-up an earlier one asked
+                    // for.
+                    if let Some(left) = typed.pause_left(now) {
+                        ctx.request_repaint_after(left);
                     }
                 }
                 close = false;
@@ -6666,8 +6669,11 @@ impl MeridianApp {
         let wake = ctx.clone();
         let mut typed = TypedReads::new(source, self.typed_pause, move || wake.request_repaint())
             .with_hooks(self.charts.doc.preview_hooks().clone());
-        typed.edit(card.text(), std::time::Instant::now());
-        ctx.request_repaint_after(self.typed_pause);
+        let now = std::time::Instant::now();
+        typed.edit(card.text(), now);
+        if let Some(left) = typed.pause_left(now) {
+            ctx.request_repaint_after(left);
+        }
         self.typed = Some(typed);
     }
 
@@ -6707,8 +6713,10 @@ impl MeridianApp {
 
     /// **Where the statement form stands**: over the map pane when the canvas
     /// drew one, otherwise over the trailing share of the one pane it drew,
-    /// otherwise over the trailing share of the window's content. Either way
-    /// it stands clear of the grid.
+    /// otherwise over the trailing share of the window's content. Beside the
+    /// map it stands clear of the grid; over a node's grid view, the one pane
+    /// is the grid, and the card covers its trailing columns while the leading
+    /// ones stay readable.
     fn typed_card_room(&self, ctx: &egui::Context) -> egui::Rect {
         if let Some(map) = self.canvas_panes.pane("map") {
             return map.rect;
@@ -6752,8 +6760,8 @@ impl MeridianApp {
 
     /// **Hand the grid the rows of the statement on the form**, when a read of
     /// it has found some, and name the step it would be kept as. `None` while
-    /// the form is shut or nothing has been read, when the grid shows what it
-    /// would anyway.
+    /// the form is shut or before a read of it has found rows, when the grid
+    /// shows what it would anyway.
     fn typed_grid_step(&mut self) -> Option<String> {
         if !matches!(self.overlay, Some(Overlay::Statement(_))) {
             return None;
@@ -10263,7 +10271,8 @@ pub const EVEN_CANVAS_SPLIT: f32 = brightfield_workbench::persist::EVEN_CANVAS_S
 
 /// **The share of the canvas the statement form stands over** when the canvas
 /// drew no map pane: the trailing 40% of the one pane it drew, or of the
-/// window's content, leaving the leading side, where the grid is, uncovered.
+/// window's content, so the leading 60%, where a grid's first columns are,
+/// stays uncovered.
 pub const TYPED_CARD_SHARE: f32 = 0.4;
 
 /// **The narrowest either canvas pane is dragged to**, in logical points.
