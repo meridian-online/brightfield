@@ -240,7 +240,9 @@ pub struct PlotHandle {
     /// the plot's scales call for one. The plot gave the band up out of its own
     /// box ([`crate::legend::carve_right`]), so [`Self::rect`] is that box less
     /// the band and the gap before it, and the plots beside it keep the boxes
-    /// the layout gave them. `None` for a plot with no legend and for one whose legend is
+    /// the layout gave them. A titled plot's band starts under its title row
+    /// ([`crate::legend::below_title`]), so the legend does not cover a long
+    /// title. `None` for a plot with no legend and for one whose legend is
     /// under it ([`Self::legend_below`]).
     pub legend_right: Option<Rect>,
     /// **Where each part of this plot's axes is drawn** — the title, the tick
@@ -2578,6 +2580,15 @@ fn compose_from_results(
             for d in &mut chart_data {
                 d.layout = layout;
             }
+            // A title is drawn across the top margin with no width limit, so the
+            // band at a titled plot's right starts under that row rather than
+            // beside it, where its legend would cover the end of a long title.
+            let legend_right = match legend_right {
+                Some(band) if titles.plot.is_some() => {
+                    Some(crate::legend::below_title(band, layout.plot_y_start()))
+                }
+                band => band,
+            };
 
             // What this plot's spec asked each positional axis's ticks to target
             // — `xTicks`/`yTicks`. A plot that asks for neither reads back its

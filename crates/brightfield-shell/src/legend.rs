@@ -322,6 +322,22 @@ pub fn carve_right(rect: Rect) -> (Rect, Rect) {
     (plot, legend)
 }
 
+/// The band at a titled plot's right, moved down to start level with the top of
+/// the plot's frame: `top` points below the box's top, the plot's top margin,
+/// which holds the title row.
+///
+/// A plot's title is drawn from the frame's left edge with no width limit, so a
+/// long one runs past the narrowed plot into the columns the band stands in. A
+/// band that started at the box's top would draw its legend over the end of the
+/// title; one that starts below the title's row cannot. A plot with no title
+/// keeps its band level with its box, which is why this is applied only to a
+/// titled plot. The band never moves past its own foot.
+#[must_use]
+pub fn below_title(band: Rect, top: f64) -> Rect {
+    let drop = top.clamp(0.0, band.height);
+    Rect::new(band.x, band.y + drop, band.width, band.height - drop)
+}
+
 /// The paths of the plots whose legend is drawn at their right: the plots the
 /// file puts a legend on, whose scales call for one, and whose legend the file
 /// does not put under them. The composition carves a band out of each of these
@@ -393,12 +409,13 @@ pub fn right_blocks(composed: &Composed) -> Vec<(usize, LegendSpec, Rect)> {
 }
 
 /// Draw every plot's legend that sits at its right, each into the band the plot
-/// gave up for it, level with the plot's top: one legend per chart, beside the
-/// chart it describes.
+/// gave up for it: one legend per chart, beside the chart it describes. The band
+/// is level with the plot's top, or for a titled plot with the top of its frame,
+/// under the title row ([`below_title`]).
 ///
 /// `origin` is the raster rect's top-left in window-space coordinates, so a band
-/// on the page plane lands where the composition put it. The band is as tall as
-/// its plot, so that is the room a block has. A number legend's ramp gives way
+/// on the page plane lands where the composition put it. The band runs from that
+/// top to the plot's foot, so that is the room a block has. A number legend's ramp gives way
 /// to that room, and its value labels do not (`draw_block` says how).
 ///
 /// The ink is the page's ([`Composed::mode`]) rather than the chrome's, because
