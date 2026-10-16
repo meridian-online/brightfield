@@ -19,6 +19,13 @@
 //! a part arc already recorded stays recorded, and the next Save records the
 //! rest on the table it must go on.
 //!
+//! **Save also records the statements kept from the palette**, each through
+//! [`record_sql`] (`arc sql record <sql> --name <name>`) under the name it was
+//! kept with, in the order the views and statements were made. arc writes a
+//! statement it reads as an operation as that operation's generated step, and
+//! any other as `models/NN_<name>.sql`: `CREATE OR REPLACE TABLE "<name>" AS`
+//! on its first line and the statement as typed after it.
+//!
 //! **A typed statement is asked of arc too.** [`recognise`] runs
 //! `arc sql recognise <sql>` and reports whether arc reads the statement as a
 //! `filter-rows` (with its table and condition as typed) or as another
@@ -278,6 +285,24 @@ pub fn record(
     // No `--dir`: the child stands in `dir`, and arc's default is its working
     // directory. Passing `dir` too would resolve a relative one twice.
     let out = arc_with_args(runner, dir, &argv);
+    if out.succeeded {
+        Ok(out.stdout.trim().to_string())
+    } else {
+        Err(refusal(&out.stderr))
+    }
+}
+
+/// Record the statement `sql` as the step `name` at the end of the Protocol in
+/// `dir`, as `arc sql record` writes it. arc runs nothing.
+///
+/// # Errors
+///
+/// arc's stderr without its `error: ` prefix when it refuses, with the folder
+/// untouched, or why the runner could not be started.
+pub fn record_sql(runner: &Runner, dir: &Path, sql: &str, name: &str) -> Result<String, String> {
+    // No `--dir`, for the reason `record` gives. The statement follows `--`,
+    // so text that opens with `-` is not read as a flag.
+    let out = arc_with_args(runner, dir, &["sql", "record", "--name", name, "--", sql]);
     if out.succeeded {
         Ok(out.stdout.trim().to_string())
     } else {

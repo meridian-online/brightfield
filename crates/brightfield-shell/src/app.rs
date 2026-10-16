@@ -771,6 +771,16 @@ impl ShelfUndo {
     }
 }
 
+/// One piece of work a Save records through arc
+/// ([`ChartDoc::pending_in_order`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingWork {
+    /// The applied grid view: its condition, then its order.
+    View,
+    /// The kept statement of this name.
+    Typed(String),
+}
+
 /// The chart view's **document**: the composited dashboard, the canvas it
 /// rasters into, and the chart state the panes read.
 ///
@@ -909,10 +919,10 @@ pub struct ChartDoc {
     /// is recorded on this step's table by the next Save. `None` otherwise,
     /// since a view recorded whole leaves the row.
     grid_condition_held: Option<String>,
-    /// Set when the applied view has just become fully recorded, so the window
-    /// takes on the Protocol the folder now holds; see
-    /// [`Self::take_grid_view_settled`].
-    grid_view_settled: bool,
+    /// Set when the applied view has just become fully recorded, or a kept
+    /// statement has been recorded, so the window takes on the Protocol the
+    /// folder now holds; see [`Self::take_pending_settled`].
+    pending_settled: bool,
     /// **The statements kept from the palette and not yet saved**, in the
     /// order the Protocol lays them out after its recorded steps. No file
     /// holds them until a Save records them, so any marks the document
@@ -1291,7 +1301,7 @@ impl ChartDoc {
             grid_cursor_reveal: false,
             grid_view: brightfield_engine::RowsView::default(),
             grid_condition_held: None,
-            grid_view_settled: false,
+            pending_settled: false,
             typed: Vec::new(),
             typed_stamps: Vec::new(),
             grid_view_stamp: 0,
@@ -1364,7 +1374,7 @@ impl ChartDoc {
             grid_cursor_reveal: false,
             grid_view: brightfield_engine::RowsView::default(),
             grid_condition_held: None,
-            grid_view_settled: false,
+            pending_settled: false,
             typed: Vec::new(),
             typed_stamps: Vec::new(),
             grid_view_stamp: 0,
@@ -1496,7 +1506,7 @@ impl ChartDoc {
         self.grid_cursor_reveal = false;
         self.grid_view = brightfield_engine::RowsView::default();
         self.grid_condition_held = None;
-        self.grid_view_settled = false;
+        self.pending_settled = false;
         self.typed.clear();
         self.typed_stamps.clear();
         self.grid_foot = crate::grid_foot::FootState::default();
@@ -1612,6 +1622,36 @@ impl ChartDoc {
     fn take_stamp(&mut self) -> u64 {
         self.next_stamp += 1;
         self.next_stamp
+    }
+
+    /// **The work a Save records, in the order it was made**: the applied grid
+    /// view, while some part of it is unrecorded, and each kept statement, by
+    /// the order stamps they were made with.
+    #[must_use]
+    pub fn pending_in_order(&self) -> Vec<PendingWork> {
+        let mut stamped: Vec<(u64, PendingWork)> = self
+            .typed
+            .iter()
+            .zip(&self.typed_stamps)
+            .map(|(step, stamp)| (*stamp, PendingWork::Typed(step.name.clone())))
+            .collect();
+        if self.grid_view_unrecorded() {
+            stamped.push((self.grid_view_stamp, PendingWork::View));
+        }
+        stamped.sort_by_key(|(stamp, _)| *stamp);
+        stamped.into_iter().map(|(_, work)| work).collect()
+    }
+
+    /// The kept statement `name` has been recorded as a step of the folder:
+    /// it leaves the kept statements, and the window takes on the Protocol the
+    /// folder holds now ([`Self::take_pending_settled`]).
+    pub(crate) fn mark_typed_recorded(&mut self, name: &str) {
+        let Some(at) = self.typed.iter().position(|s| s.name == name) else {
+            return;
+        };
+        self.typed.remove(at);
+        self.typed_stamps.remove(at);
+        self.pending_settled = true;
     }
 
     /// Keep `step` after the statements already kept.
@@ -1736,14 +1776,14 @@ impl ChartDoc {
     fn settle_grid_view(&mut self) {
         self.grid_view = brightfield_engine::RowsView::default();
         self.grid_condition_held = None;
-        self.grid_view_settled = true;
+        self.pending_settled = true;
     }
 
-    /// Whether the applied view became fully recorded since this was last
-    /// asked: what tells the window to take on the Protocol the folder holds
-    /// now. Asking clears it.
-    pub fn take_grid_view_settled(&mut self) -> bool {
-        std::mem::take(&mut self.grid_view_settled)
+    /// Whether the applied view became fully recorded, or a kept statement
+    /// was recorded, since this was last asked: what tells the window to take
+    /// on the Protocol the folder holds now. Asking clears it.
+    pub fn take_pending_settled(&mut self) -> bool {
+        std::mem::take(&mut self.pending_settled)
     }
 
     /// **Save the chart beside the Protocol: write the edits made since the

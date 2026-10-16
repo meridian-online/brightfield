@@ -322,10 +322,9 @@ impl OneStepProtocol {
     ) -> Result<ProtocolInputs, String> {
         use crate::generated::{GeneratedProtocol, StepEffect};
         let (mut manifest, mut sources, mut generated, folder_refused) = self.declared()?;
-        // The folder's steps are read back as operations today. Once a SQL step
-        // arc recorded is read back too, its node is to stand on what it reads,
-        // as a typed one's does below, whatever DuckDB syntax its statement is
-        // in, and this hands the graph its lineage model for that.
+        // A SQL step arc recorded stands on what it reads, as a typed one's
+        // does below, whatever DuckDB syntax its statement is in: the graph is
+        // handed its lineage model rather than the model on disk.
         for step in generated.iter().flat_map(|g| &g.steps) {
             if step.effect == StepEffect::Sql {
                 sources.insert(

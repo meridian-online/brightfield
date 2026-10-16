@@ -16,15 +16,18 @@
 //! when its text says something else.
 //!
 //! **What opens this way**: a folder whose first step is a data-file load and
-//! whose other steps are each a generated `filter-rows` or `sort-rows` on a
-//! table an earlier step makes. It opens as a Protocol with its steps laid out
-//! and starts no run; each generated step reads *not run* until a run's record
-//! says otherwise, and its grid shows a labelled first-page preview (see
-//! [`crate::data_grid::PREVIEW_LABEL`]). A folder with no generated step after
-//! the load is a hand-written Protocol, and is refused on open as it was before
-//! generated steps opened, unless the offline variable is set. A folder that
-//! mixes generated steps with other steps after the load is refused with a
-//! message naming the step that does not match.
+//! whose other steps are each a generated `filter-rows` or `sort-rows`, or a
+//! SQL step in the shape `arc sql record` writes ([`parse_sql_step`]): a
+//! first line `CREATE OR REPLACE TABLE "<step>" AS` and then one query that
+//! reads rows. Each step reads only tables the load or an earlier step makes.
+//! It opens as a Protocol with its steps laid out and starts no run; each
+//! step after the load reads *not run* until a run's record says otherwise,
+//! and its grid shows a labelled first-page preview (see
+//! [`crate::data_grid::PREVIEW_LABEL`]). A folder with no step of either
+//! shape after the load is a hand-written Protocol, and is refused on open as
+//! it was before generated steps opened, unless the offline variable is set.
+//! A folder that mixes such steps with other steps after the load is refused
+//! with a message naming the step that does not match.
 //!
 //! **Parsing a model yields the operation, the table it is on, and its
 //! argument.** The open check reads all three, and the grid reads a
@@ -311,6 +314,44 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
     })
 }
 
+/// Read the model `arc sql record` wrote for the SQL step `step_name`: its
+/// first line `CREATE OR REPLACE TABLE "<step_name>" AS`, and then the
+/// statement as typed, which must be exactly one query that reads rows
+/// ([`brightfield_engine::read_only_statement`]). The step reads the tables
+/// [`brightfield_engine::statement_reading`] finds, and its argument is the
+/// statement without the final newline arc adds.
+///
+/// # Errors
+///
+/// A message naming the step, when the first line is not that line, or the
+/// statement is not one query that reads rows.
+pub fn parse_sql_step(step_name: &str, model_sql: &str) -> Result<GeneratedStep, String> {
+    let refuse = |what: &str| Err(format!("step {step_name:?} is not a SQL step: {what}"));
+    let model_sql = model_sql.replace("\r\n", "\n");
+    let want_create = format!("CREATE OR REPLACE TABLE {} AS", quoted(step_name));
+    let Some((first, rest)) = model_sql.split_once('\n') else {
+        return refuse(&format!("its model is not `{want_create}` and a statement"));
+    };
+    if first != want_create {
+        return refuse(&format!("its first line is not `{want_create}`"));
+    }
+    let statement = rest.strip_suffix('\n').unwrap_or(rest);
+    if let Err(e) = brightfield_engine::read_only_statement(statement) {
+        return refuse(&e);
+    }
+    let reads = match brightfield_engine::statement_reading(statement) {
+        Ok(reading) => reading.tables,
+        Err(e) => return refuse(&e),
+    };
+    Ok(GeneratedStep {
+        name: step_name.to_string(),
+        effect: StepEffect::Sql,
+        on: reads.first().cloned().unwrap_or_default(),
+        reads,
+        argument: statement.to_string(),
+    })
+}
+
 /// **The steps a preview of `step` makes**: the steps it reads, and theirs,
 /// in manifest order, ending with `step` itself, each with what it does. A
 /// step `step` does not read, directly or through another, is left out, so a
@@ -417,11 +458,12 @@ fn has_header(model: &str) -> bool {
 }
 
 /// The folder at `dir`, whose manifest reads `manifest_text`, as a data-file
-/// load followed by steps arc generated.
+/// load followed by steps arc generated or recorded from SQL.
 ///
 /// `Ok(None)` is a folder that is not that shape, so the caller goes on as it
 /// did before: a manifest that is not a Protocol, fewer than two steps, no
-/// generated header in any step after the first, or a first step that is not
+/// step after the first that has the generated header or reads as a SQL step
+/// ([`parse_sql_step`]), or a first step that is not
 /// **brightfield's own load** of a data file in `dir` — a `sql:` step whose
 /// model is [`MODEL_PATH`] and makes the table the data file opens as. A load
 /// spelled any other way is a hand-written Protocol, and so is a load of a
@@ -432,8 +474,9 @@ fn has_header(model: &str) -> bool {
 ///
 /// # Errors
 ///
-/// A message naming the step, when the folder has a generated header and a step
-/// does not match the template, or reads a table no earlier step makes.
+/// A message naming the step, when a step after the load has one of the two
+/// shapes and a step does not match the template it carries, or reads a
+/// table no earlier step makes.
 pub fn generated_protocol_in(
     manifest_text: &str,
     dir: &Path,
@@ -502,7 +545,14 @@ fn read_generated(
                 .and_then(|p| std::fs::read_to_string(dir.join(p)).ok())
         })
         .collect();
-    if !models.iter().flatten().any(|m| has_header(m)) {
+    // A step of either shape makes the folder one of these; with none, it is
+    // a hand-written Protocol, decided before any step is refused.
+    let of_a_shape = rest.iter().zip(&models).any(|(step, model)| {
+        model
+            .as_deref()
+            .is_some_and(|m| has_header(m) || parse_sql_step(&step.name, m).is_ok())
+    });
+    if !of_a_shape {
         return Ok(None);
     }
     let Some(data) = data_file_of_load(load, dir).filter(|d| in_folder(d, dir)) else {
@@ -534,7 +584,7 @@ fn read_generated(
     else {
         return Ok(None);
     };
-    let mut made: BTreeSet<String> = BTreeSet::from([root_table.clone()]);
+    let mut made: BTreeSet<String> = BTreeSet::from([root_table.to_lowercase()]);
     let mut steps = Vec::new();
     for (step, model) in rest.iter().zip(models) {
         let Some(model) = model else {
@@ -543,14 +593,23 @@ fn read_generated(
                 step.name
             ));
         };
-        let parsed = parse_generated(&step.name, &model)?;
-        if !made.contains(&parsed.on) {
+        let parsed = if has_header(&model) {
+            parse_generated(&step.name, &model)?
+        } else {
+            parse_sql_step(&step.name, &model)?
+        };
+        // DuckDB resolves a table name without regard to case.
+        if let Some(read) = parsed
+            .reads
+            .iter()
+            .find(|read| !made.contains(&read.to_lowercase()))
+        {
             return Err(format!(
-                "step {:?} reads {:?}, which no earlier step makes",
-                step.name, parsed.on
+                "step {:?} reads {read:?}, which no earlier step makes",
+                step.name
             ));
         }
-        made.insert(step.name.clone());
+        made.insert(step.name.to_lowercase());
         steps.push(parsed);
     }
     Ok(Some(GeneratedProtocol {
