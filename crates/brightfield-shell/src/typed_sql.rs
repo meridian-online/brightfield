@@ -121,10 +121,6 @@ impl TypedReads {
     /// This reader with its workers behind `hooks`: the gate they read inside
     /// and the switch that holds them before they read.
     #[must_use]
-    #[expect(
-        dead_code,
-        reason = "the chart document hands its own hooks here once its palette reads statements"
-    )]
     pub(crate) fn with_hooks(mut self, hooks: PreviewHooks) -> Self {
         self.hooks = hooks;
         self

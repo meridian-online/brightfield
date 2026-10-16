@@ -105,6 +105,8 @@ use crate::shelf::{
     BandDrawn, Binding, CardDrawn, ChannelSettings, ListReport, ListTab, RowEdit, ShelfBand,
     ShelfChannels,
 };
+use crate::typed_card::{CardEvent, StatementCard, TypedSaid};
+use crate::typed_sql::{typed_step_name, TypedReads, TypedSource, TYPED_PAUSE};
 
 // ---------------------------------------------------------------------------
 // The window's own chrome budget.
@@ -1741,6 +1743,12 @@ enum Overlay {
     /// words, and why a close without saving could not keep the chart — and it
     /// is drawn from [`crate::overlays::close_question_body`].
     CloseQuestion(CloseQuestion),
+    /// The chart palette once the text on its query line reads as SQL
+    /// ([`crate::overlays::is_statement`]): the statement form, drawn with no
+    /// scrim so the grid beside it can be read while it previews the
+    /// statement. [`MeridianApp::open_overlay`] names it the palette, which is
+    /// what it is to the person typing.
+    Statement(StatementCard),
 }
 
 /// The registry-bound keystrokes that open overlays, resolved once at boot.
@@ -2392,6 +2400,17 @@ pub struct MeridianApp {
     dialogs_allowed: bool,
     /// The one modal slot — see [`Overlay`].
     overlay: Option<Overlay>,
+    /// The reads of the statement on the statement form, while it is open:
+    /// built when the chart palette becomes the form and dropped, which stops
+    /// any read under way, when the form closes or turns back into the
+    /// palette.
+    typed: Option<TypedReads>,
+    /// How long the statement must rest before it is read: [`TYPED_PAUSE`],
+    /// unless a test set it.
+    typed_pause: std::time::Duration,
+    /// The text of the answer whose rows the grid shows, so the grid is handed
+    /// a page only when a new one is read.
+    typed_in_grid: Option<String>,
     /// The keystrokes that open overlays, read off the registry at boot.
     overlay_keys: OverlayKeys,
     /// The `open-home` keystroke token, read off the registry at boot — the
@@ -2757,6 +2776,9 @@ impl MeridianApp {
             door_open_protocol: None,
             dialogs_allowed: false,
             overlay: None,
+            typed: None,
+            typed_pause: TYPED_PAUSE,
+            typed_in_grid: None,
             overlay_keys: OverlayKeys::from_registry(),
             home_binding: brightfield_keys::registry()
                 .iter()
@@ -4691,16 +4713,29 @@ impl MeridianApp {
             // **A generated step's grid shows its preview**, read on a
             // connection of its own from the data file, so it is named after
             // the step rather than the table the session holds.
-            let preview = self.preview_request();
-            let grid_title = match &preview {
-                Some(request) => format!("Grid \u{b7} {}", request.step),
-                None => self.protocol.doc.model.table_label().map_or_else(
+            //
+            // **A statement on the statement form shows its rows instead**,
+            // once a read of it has found some, under the name it would be
+            // kept as.
+            let typed = self.typed_grid_step();
+            let preview = if typed.is_some() {
+                None
+            } else {
+                self.preview_request()
+            };
+            let grid_title = match (&typed, &preview) {
+                (Some(step), _) => format!("Grid \u{b7} {step}"),
+                (None, Some(request)) => format!("Grid \u{b7} {}", request.step),
+                (None, None) => self.protocol.doc.model.table_label().map_or_else(
                     || "Grid".to_string(),
                     |table| format!("Grid \u{b7} {table}"),
                 ),
             };
-            let previewed = preview.is_some();
-            self.charts.doc.show_preview(preview, ui.ctx());
+            let previewed = preview.is_some() || typed.is_some();
+            if typed.is_none() {
+                self.typed_in_grid = None;
+                self.charts.doc.show_preview(preview, ui.ctx());
+            }
             // **A grid of a node the engine does not hold**: the label of the
             // node whose grid the canvas holds, when that node is not the table
             // the session read. The one grid lists the session's rows, so drawn
@@ -6489,8 +6524,9 @@ impl MeridianApp {
         let Some(mut overlay) = self.overlay.take() else {
             return;
         };
-        let close;
+        let mut close;
         let mut answered = None;
+        let mut becomes = None;
         match &mut overlay {
             Overlay::Palette(picker) => {
                 let chrome = ModalChrome::new().title("Commands").enter_hint("run");
@@ -6506,6 +6542,52 @@ impl MeridianApp {
                     }
                     Some(PickerEvent::Dismissed) => close = true,
                     None => close = shown.dismissed,
+                }
+                // **SQL on the chart palette's query line** turns the palette
+                // into the statement form, over a window with a data file to
+                // read the statement against.
+                if !close
+                    && picker.delegate.altitude() == Altitude::View
+                    && self.has_protocol_to_save()
+                    && crate::overlays::is_statement(picker.query())
+                {
+                    becomes = Some(Overlay::Statement(StatementCard::new(
+                        picker.query().to_owned(),
+                        None,
+                    )));
+                }
+            }
+            Overlay::Statement(card) => {
+                let room = self.typed_card_room(ctx);
+                let said = self.typed_said_now();
+                let before = card.text().to_owned();
+                let event = card.show(ctx, room, said.as_ref());
+                if let Some(typed) = self.typed.as_mut() {
+                    let now = std::time::Instant::now();
+                    if card.text() != before {
+                        typed.edit(card.text(), now);
+                        // The pause starts at this edit, so the frame after it
+                        // is the one that starts the read.
+                        ctx.request_repaint_after(self.typed_pause);
+                    }
+                    typed.tick(now);
+                    if typed.poll() {
+                        ctx.request_repaint();
+                    }
+                }
+                close = false;
+                match event {
+                    Some(CardEvent::Close) => close = true,
+                    Some(CardEvent::Searching) => {
+                        let text = card.text().to_owned();
+                        self.open_chart_palette();
+                        if let Some(Overlay::Palette(mut picker)) = self.overlay.take() {
+                            picker.set_query(text);
+                            becomes = Some(Overlay::Palette(picker));
+                        }
+                    }
+                    // Keeping a statement is not wired yet: the form stays.
+                    Some(CardEvent::Keep) | None => {}
                 }
             }
             Overlay::Help(picker) => {
@@ -6550,14 +6632,150 @@ impl MeridianApp {
                 close = false;
             }
         }
+        if let Some(next) = becomes {
+            overlay = next;
+            close = false;
+            ctx.request_repaint();
+        }
         if close {
             ctx.request_repaint();
         } else {
             self.overlay = Some(overlay);
         }
+        self.typed_follows_the_overlay(ctx);
         if let Some(answer) = answered {
             self.answer_close_question(ctx, answer);
         }
+    }
+
+    /// **Build or drop the statement's reads to match the overlay slot**: a
+    /// reader for the statement form when it has just opened, and none once
+    /// the slot holds anything else, which stops any read under way and gives
+    /// the grid back.
+    fn typed_follows_the_overlay(&mut self, ctx: &egui::Context) {
+        let Some(Overlay::Statement(card)) = self.overlay.as_ref() else {
+            self.typed = None;
+            return;
+        };
+        if self.typed.is_some() {
+            return;
+        }
+        let Some(source) = self.typed_source() else {
+            return;
+        };
+        let wake = ctx.clone();
+        let mut typed = TypedReads::new(source, self.typed_pause, move || wake.request_repaint())
+            .with_hooks(self.charts.doc.preview_hooks().clone());
+        typed.edit(card.text(), std::time::Instant::now());
+        ctx.request_repaint_after(self.typed_pause);
+        self.typed = Some(typed);
+    }
+
+    /// What a statement on the statement form is read against: the window's
+    /// data file and the table it loads as, with every step the Protocol
+    /// generated after the load as the chain the statement may read.
+    fn typed_source(&self) -> Option<TypedSource> {
+        use crate::generated::KnownOperation;
+        use brightfield_engine::PreviewOp;
+        let model = &self.protocol.doc.model;
+        let source = model.source()?;
+        let reader = brightfield_engine::FileReader::for_path(&source.data)?;
+        let chain = model
+            .generated()
+            .map(|generated| {
+                generated
+                    .steps
+                    .iter()
+                    .map(|step| {
+                        let op = match step.operation {
+                            KnownOperation::FilterRows => PreviewOp::Where(step.argument.clone()),
+                            KnownOperation::SortRows => PreviewOp::OrderBy(step.argument.clone()),
+                        };
+                        (step.name.clone(), op)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(TypedSource {
+            data: source.data.clone(),
+            reader,
+            root_table: source.name.clone(),
+            chain,
+            runner: self.runner.clone(),
+        })
+    }
+
+    /// **Where the statement form stands**: over the map pane when the canvas
+    /// drew one, otherwise over the trailing share of the one pane it drew,
+    /// otherwise over the trailing share of the window's content. Either way
+    /// it stands clear of the grid.
+    fn typed_card_room(&self, ctx: &egui::Context) -> egui::Rect {
+        if let Some(map) = self.canvas_panes.pane("map") {
+            return map.rect;
+        }
+        let trailing = |rect: egui::Rect| {
+            egui::Rect::from_min_max(
+                egui::pos2(rect.right() - rect.width() * TYPED_CARD_SHARE, rect.top()),
+                rect.max,
+            )
+        };
+        match self.canvas_panes.panes.as_slice() {
+            [one] => trailing(one.rect),
+            _ => trailing(ctx.content_rect()),
+        }
+    }
+
+    /// What the row under the statement says now: DuckDB's reason when the
+    /// text as it stands was refused; otherwise, once it has been read, the
+    /// filter it would be when arc reads it as a filter of the loaded table,
+    /// and a step of its own when not. Nothing while it is being read.
+    fn typed_said_now(&self) -> Option<TypedSaid> {
+        use crate::operation::Recognised;
+        let typed = self.typed.as_ref()?;
+        if let Some(reason) = typed.refusal() {
+            return Some(TypedSaid::Refused(reason.to_owned()));
+        }
+        let answer = typed.current()?;
+        let root = self.protocol.doc.model.source().map(|s| s.name.as_str());
+        Some(match &answer.recognised {
+            Recognised::FilterRows { on, .. }
+                if root.is_some_and(|root| on.eq_ignore_ascii_case(root)) =>
+            {
+                TypedSaid::Filter {
+                    table: on.clone(),
+                    rows: answer.filter_rows,
+                }
+            }
+            _ => TypedSaid::SqlStep,
+        })
+    }
+
+    /// **Hand the grid the rows of the statement on the form**, when a read of
+    /// it has found some, and name the step it would be kept as. `None` while
+    /// the form is shut or nothing has been read, when the grid shows what it
+    /// would anyway.
+    fn typed_grid_step(&mut self) -> Option<String> {
+        if !matches!(self.overlay, Some(Overlay::Statement(_))) {
+            return None;
+        }
+        let answer = self.typed.as_ref()?.shown()?;
+        let taken = self
+            .protocol
+            .doc
+            .model
+            .generated()
+            .map(|g| g.steps.iter().map(|s| s.name.clone()).collect())
+            .unwrap_or_default();
+        let step = typed_step_name(&answer.reading, &taken);
+        if self.typed_in_grid.as_deref() != Some(answer.text.as_str())
+            || self.charts.doc.grid_preview().is_none()
+        {
+            self.typed_in_grid = Some(answer.text.clone());
+            let preview =
+                crate::data_grid::GridPreview::of_typed(step.clone(), answer.page.clone());
+            self.charts.doc.show_typed_preview(preview);
+        }
+        Some(step)
     }
 
     /// **Read a close request and, over a window that carries the unsaved
@@ -6779,6 +6997,66 @@ impl MeridianApp {
         }
     }
 
+    /// The statement on the statement form, while the chart palette is one —
+    /// a test hook.
+    #[must_use]
+    pub fn typed_statement(&self) -> Option<&str> {
+        match self.overlay.as_ref() {
+            Some(Overlay::Statement(card)) => Some(card.text()),
+            _ => None,
+        }
+    }
+
+    /// What the row under the statement says, while the form is open — a test
+    /// hook.
+    #[must_use]
+    pub fn typed_said(&self) -> Option<String> {
+        self.typed_statement()?;
+        self.typed_said_now().map(|said| said.line())
+    }
+
+    /// Where the statement form was drawn on the last frame, while it is open
+    /// — a test hook.
+    #[must_use]
+    pub fn typed_card_rect(&self) -> Option<egui::Rect> {
+        match self.overlay.as_ref() {
+            Some(Overlay::Statement(card)) => card.rect(),
+            _ => None,
+        }
+    }
+
+    /// Read a statement once it has rested for `pause` in place of
+    /// [`TYPED_PAUSE`], from the next statement form opened.
+    #[doc(hidden)]
+    pub fn set_typed_pause(&mut self, pause: std::time::Duration) {
+        self.typed_pause = pause;
+    }
+
+    /// **Read the statement on the form now, and wait up to `patience` for
+    /// its answer**: true once it has rows or a refusal for the text as it
+    /// stands. A test's way past the pause and the worker.
+    #[doc(hidden)]
+    pub fn finish_typed_reads(&mut self, patience: std::time::Duration) -> bool {
+        let Some(typed) = self.typed.as_mut() else {
+            return false;
+        };
+        let answered = |t: &TypedReads| t.current().is_some() || t.refusal().is_some();
+        if !answered(typed) {
+            typed.read_now();
+        }
+        let deadline = std::time::Instant::now() + patience;
+        loop {
+            typed.poll();
+            if answered(typed) {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     /// Which overlay is open, named — a test hook, like
     /// [`MeridianApp::region_rect`].
     #[must_use]
@@ -6788,6 +7066,7 @@ impl MeridianApp {
             Overlay::Help(_) => "help",
             Overlay::Jump(_) => "jump",
             Overlay::CloseQuestion(_) => "close-question",
+            Overlay::Statement(_) => "palette",
         })
     }
 
@@ -9982,6 +10261,11 @@ impl CanvasPanes {
 /// crate cannot see this one. One number, named on both sides of the boundary.
 pub const EVEN_CANVAS_SPLIT: f32 = brightfield_workbench::persist::EVEN_CANVAS_SPLIT;
 
+/// **The share of the canvas the statement form stands over** when the canvas
+/// drew no map pane: the trailing 40% of the one pane it drew, or of the
+/// window's content, leaving the leading side, where the grid is, uncovered.
+pub const TYPED_CARD_SHARE: f32 = 0.4;
+
 /// **The narrowest either canvas pane is dragged to**, in logical points.
 ///
 /// Stated as the pane's own chrome plus a content width rather than as a round
@@ -10277,7 +10561,7 @@ fn draw_canvas_pane_group(
         brightfield_keys::BindingContext::Workspace,
     );
     let grid_subject = Subject::new(
-        GRID_PANE_TITLE.to_string(),
+        grid_pane_title(&charts.doc),
         brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
     );
@@ -10492,7 +10776,7 @@ fn draw_transposed_pane_group(
         brightfield_keys::BindingContext::Workspace,
     );
     let grid_subject = Subject::new(
-        GRID_PANE_TITLE.to_string(),
+        grid_pane_title(&charts.doc),
         brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
     );
@@ -10958,6 +11242,17 @@ pub fn unheld_grid_headline(label: &str) -> String {
 /// [`band_note`]'s, at the other end of the same band.
 const GRID_PANE_TITLE: &str = "Grid";
 
+/// **What the grid pane is titled this frame**: [`GRID_PANE_TITLE`], or, while
+/// it shows the rows of a statement on the statement form, that noun and the
+/// name the statement would be kept as. Those rows are of no table yet, so the
+/// title says whose they are.
+fn grid_pane_title(doc: &ChartDoc) -> String {
+    match doc.grid_preview().filter(|p| p.is_typed()) {
+        Some(typed) => format!("{GRID_PANE_TITLE} \u{b7} {}", typed.step()),
+        None => GRID_PANE_TITLE.to_string(),
+    }
+}
+
 /// A note at the **trailing end of a pane's header band**: muted, in the
 /// chrome's own face, painted rather than laid out.
 ///
@@ -11217,7 +11512,7 @@ fn draw_ledger_grid_pane(
     grid_layout: crate::app::GridLayout,
 ) -> egui::Rect {
     let subject = Subject::new(
-        GRID_PANE_TITLE.to_string(),
+        grid_pane_title(&charts.doc),
         brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
     );

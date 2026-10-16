@@ -1800,13 +1800,56 @@ pub struct GridPreview {
     /// Whether a key asked the band to filter or sort this step, so the status
     /// band says why it cannot.
     said: bool,
+    /// Whether these are a typed statement's rows ([`Self::of_typed`]) rather
+    /// than a generated step's.
+    typed: bool,
 }
 
 impl GridPreview {
+    /// **The grid's view of a statement typed on the palette's query line**:
+    /// `page`, shown as read under the name `step` the statement would be kept
+    /// as, its band read-only and counted with [`PREVIEW_COUNT`] as any
+    /// preview's is. Its rows were read by [`crate::typed_sql::TypedReads`],
+    /// not by the document's own preview reads, so it names no data file.
+    pub(crate) fn of_typed(step: String, page: GridPage) -> Self {
+        let request = PreviewRequest {
+            step,
+            data: std::path::PathBuf::new(),
+            root_table: String::new(),
+            chain: Vec::new(),
+            fields: [String::new(), String::new()],
+            ran: false,
+            run_key: None,
+        };
+        let key = PreviewKey {
+            step: request.step.clone(),
+            data: request.data.clone(),
+            root_table: String::new(),
+            chain: Vec::new(),
+            modified: None,
+            len: None,
+            limit: 0,
+        };
+        Self {
+            request,
+            key,
+            shown: PreviewShown::Read(std::sync::Arc::new(Ok(page))),
+            said: false,
+            typed: true,
+        }
+    }
+
     /// The previewed step's name.
     #[must_use]
     pub fn step(&self) -> &str {
         &self.request.step
+    }
+
+    /// Whether these are the rows of a statement typed on the palette's query
+    /// line, named after the step it would be kept as.
+    #[must_use]
+    pub const fn is_typed(&self) -> bool {
+        self.typed
     }
 
     /// The page read, or `None` when the step could not be previewed.
@@ -1998,7 +2041,25 @@ impl ChartDoc {
             key,
             shown,
             said,
+            typed: false,
         });
+    }
+
+    /// **Show a typed statement's rows in the grid**: `preview`, built by
+    /// [`GridPreview::of_typed`]. The caller hands a page over when it changes,
+    /// and as with [`Self::show_preview`] that change of what the grid shows
+    /// lets go of the cursor and of any field being edited.
+    pub(crate) fn show_typed_preview(&mut self, preview: GridPreview) {
+        self.grid_foot.cancel();
+        self.grid_cursor = None;
+        self.grid_preview = Some(preview);
+    }
+
+    /// The hooks this document's preview workers read behind: its gate and
+    /// the switch [`Self::hold_preview_reads`] sets. A typed statement's reads
+    /// are handed them too, so they take turns with this document's own.
+    pub(crate) fn preview_hooks(&self) -> &PreviewHooks {
+        &self.preview_reads.hooks
     }
 
     /// How many preview reads this document has started — what a test reads to
