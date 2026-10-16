@@ -93,20 +93,34 @@ fn fixture(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-/// Where a capture's intermediate PNG goes. Per-test name, under the target dir
-/// (already git-ignored), so concurrent tests never race on one path.
+/// Where a capture's intermediate PNG goes, under the target dir (already
+/// git-ignored).
+///
+/// **One path per call, not per name.** A name is not unique to a test: the two
+/// modal tests below each open every case in `OVERLAY_CASES` under the same
+/// [`OverlayCase::tag`], so under cargo's default test threads one test read a
+/// PNG the other was halfway through writing and failed with "unexpected end
+/// of file". The process id and a per-process count make every call its own
+/// file, whichever test made it and however many binaries run at once, and
+/// [`read_rgba`] removes it once it is read so the directory does not fill up
+/// across runs.
 fn scratch(name: &str) -> PathBuf {
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     std::fs::create_dir_all(&dir).ok();
-    dir.join(format!("{name}.capture.png"))
+    dir.join(format!("{name}.{}-{call}.capture.png", std::process::id()))
 }
 
-/// Read a capture back as RGBA8. PNG is lossless, so this round-trip is
-/// pixel-exact — the file is only how `capture_*` hands its result over.
+/// Read a capture back as RGBA8, and remove the file. PNG is lossless, so this
+/// round-trip is pixel-exact — the file is only how `capture_*` hands its
+/// result over, and nothing reads it twice.
 fn read_rgba(path: &PathBuf) -> image::RgbaImage {
-    image::open(path)
+    let image = image::open(path)
         .unwrap_or_else(|e| panic!("read capture {}: {e}", path.display()))
-        .to_rgba8()
+        .to_rgba8();
+    let _ = std::fs::remove_file(path);
+    image
 }
 
 /// Capture the window **booted on the charts view**: the merged top bar, and
@@ -837,8 +851,8 @@ const OVERLAY_CASES: &[OverlayCase] = &[
 ];
 
 impl OverlayCase {
-    /// A per-case, per-mode scratch name, so two cases never race on one
-    /// intermediate PNG.
+    /// A per-case, per-mode capture name. Two tests open the same case under
+    /// the same name, so it is [`scratch`] that keeps their PNGs apart.
     fn tag(&self, mode: Mode, state: &str) -> String {
         format!(
             "{}_{}_{}_{state}",

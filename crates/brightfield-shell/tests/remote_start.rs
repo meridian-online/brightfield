@@ -42,7 +42,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use brightfield_protocol::layout::Flow;
@@ -76,12 +76,72 @@ struct Stub {
     addr: SocketAddr,
     hits: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
+    gate: Arc<Gate>,
+}
+
+/// Whether a stub may send its body yet, and whether it has finished sending.
+///
+/// A stub made by [`Stub::held`] sends its headers and then waits here until
+/// the test calls [`Stub::release`], so a fetch stays outstanding for as long
+/// as the test needs it to rather than for as long as the trickle happens to
+/// take. Timing the trickle against the frames was not enough: on a busy
+/// machine one frame could outlast the whole body, and the fetch landed before
+/// the test had counted a second frame or clicked the card it meant to click
+/// while the fetch was still outstanding.
+struct Gate {
+    open: Mutex<bool>,
+    opened: Condvar,
+    sent: AtomicBool,
+}
+
+impl Gate {
+    fn new(open: bool) -> Arc<Self> {
+        Arc::new(Self {
+            open: Mutex::new(open),
+            opened: Condvar::new(),
+            sent: AtomicBool::new(false),
+        })
+    }
+
+    fn open(&self) {
+        *self.open.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        self.opened.notify_all();
+    }
+
+    /// Wait until the gate is open, or until [`PATIENCE`] has gone by. The
+    /// bound is for a regression that fetches inside the click, which would
+    /// otherwise wait here for ever on a release the blocked test never
+    /// reaches: it sends its body late instead, and the test fails on what it
+    /// counted rather than hanging.
+    fn wait(&self) {
+        let open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = self
+            .opened
+            .wait_timeout_while(open, PATIENCE, |open| !*open)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
 }
 
 impl Stub {
     /// Serve `body` in [`CHUNKS`] pieces, declaring its total length.
     fn declaring_length(body: Vec<u8>) -> Self {
-        Self::serve(body, true)
+        Self::serve(body, true, Gate::new(true))
+    }
+
+    /// [`Stub::declaring_length`], holding the body back until
+    /// [`Stub::release`] — see [`Gate`].
+    fn held(body: Vec<u8>) -> Self {
+        Self::serve(body, true, Gate::new(false))
+    }
+
+    /// Let a [`Stub::held`] stub send its body.
+    fn release(&self) {
+        self.gate.open();
+    }
+
+    /// Whether the stub has written the whole of its body.
+    fn sent(&self) -> bool {
+        self.gate.sent.load(Ordering::SeqCst)
     }
 
     /// Serve `body` in [`CHUNKS`] pieces with no `Content-Length` — the case a
@@ -89,7 +149,7 @@ impl Stub {
     /// not a contrivance: a body streamed under `Connection: close` carries no
     /// length by definition.
     fn silent_about_length(body: Vec<u8>) -> Self {
-        Self::serve(body, false)
+        Self::serve(body, false, Gate::new(true))
     }
 
     /// A server that accepts and answers nothing this fetch can use — bound so
@@ -103,13 +163,14 @@ impl Stub {
         addr
     }
 
-    fn serve(body: Vec<u8>, declare_length: bool) -> Self {
+    fn serve(body: Vec<u8>, declare_length: bool, gate: Arc<Gate>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
         let addr = listener.local_addr().expect("the bound address");
         let hits = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&hits);
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
+        let held = Arc::clone(&gate);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
@@ -117,10 +178,15 @@ impl Stub {
                     return;
                 }
                 counter.fetch_add(1, Ordering::SeqCst);
-                answer(stream, &body, declare_length);
+                answer(stream, &body, declare_length, &held);
             }
         });
-        Self { addr, hits, stop }
+        Self {
+            addr,
+            hits,
+            stop,
+            gate,
+        }
     }
 
     /// The URL a spec would name this server's file under. The `.parquet` tail
@@ -148,8 +214,8 @@ impl Stub {
     }
 }
 
-/// Read the request off `stream` and trickle `body` back.
-fn answer(mut stream: TcpStream, body: &[u8], declare_length: bool) {
+/// Read the request off `stream` and trickle `body` back once `gate` is open.
+fn answer(mut stream: TcpStream, body: &[u8], declare_length: bool, gate: &Gate) {
     // The request has to be drained before the response, or the client sees a
     // reset instead of an answer.
     let mut reader = BufReader::new(stream.try_clone().expect("clone the socket"));
@@ -174,9 +240,10 @@ fn answer(mut stream: TcpStream, body: &[u8], declare_length: bool) {
          Connection: close\r\n\r\n"
             .to_string()
     };
-    if stream.write_all(head.as_bytes()).is_err() {
+    if stream.write_all(head.as_bytes()).is_err() || stream.flush().is_err() {
         return;
     }
+    gate.wait();
     let per = body.len().div_ceil(CHUNKS).max(1);
     for chunk in body.chunks(per) {
         if stream.write_all(chunk).is_err() {
@@ -187,6 +254,7 @@ fn answer(mut stream: TcpStream, body: &[u8], declare_length: bool) {
         }
         std::thread::sleep(TRICKLE);
     }
+    gate.sent.store(true, Ordering::SeqCst);
 }
 
 /// The distinct strings in `readouts`, in first-seen order.
@@ -413,12 +481,16 @@ impl Window {
 /// the document already open, so the first frame after it draws a chart and
 /// this loop counts zero.
 ///
+/// The stub holds its body back until two such frames have been counted (see
+/// [`Gate`]), so the count does not depend on how fast this machine draws a
+/// frame against how fast the stub trickles.
+///
 /// Watched redden, one mutation: `MeridianApp::open_start`'s fetch arm replaced
 /// by `crate::starts::load(id)` — the eager path — reports 0 frames drawn while
 /// fetching, against the `> 1` below.
 #[test]
 fn the_window_keeps_drawing_while_a_remote_start_is_fetching() {
-    let stub = Stub::declaring_length(parquet_body(40_000));
+    let stub = Stub::held(parquet_body(40_000));
     let mut win = Window::open();
     win.frame();
     win.take_remote(starts::CROSSWALK_CHART, &spec_reading(&stub.url()));
@@ -440,6 +512,9 @@ fn the_window_keeps_drawing_while_a_remote_start_is_fetching() {
                 "the window drew a frame with the fetch outstanding, but the \
                  door's card was not on it — the frame is not the door"
             );
+            if door_drawn == 2 {
+                stub.release();
+            }
         }
     }
     assert!(
@@ -874,7 +949,10 @@ fn the_fetch_writes_what_it_was_served_and_repoints_only_the_source() {
 /// rather than the defect.
 #[test]
 fn a_fetch_the_reader_gave_up_on_does_not_arrive_and_take_the_window() {
-    let stub = Stub::declaring_length(parquet_body(40_000));
+    // Held until the reader has moved on, so the fetch cannot land before the
+    // card is taken — which on a busy machine it did, and the test then
+    // clicked a door that was no longer there.
+    let stub = Stub::held(parquet_body(40_000));
     let mut win = Window::open();
     win.frame();
     win.take_remote(starts::CROSSWALK_CHART, &spec_reading(&stub.url()));
@@ -905,7 +983,18 @@ fn a_fetch_the_reader_gave_up_on_does_not_arrive_and_take_the_window() {
          is about"
     );
 
-    // Long enough for the abandoned fetch to have finished several times over.
+    // Now let the abandoned fetch finish: drive frames until the stub has sent
+    // all of it, then long enough after that for the worker to have read it
+    // several times over.
+    stub.release();
+    let deadline = std::time::Instant::now() + PATIENCE;
+    while !stub.sent() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the stub did not finish sending inside {PATIENCE:?}"
+        );
+        win.frame();
+    }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
         win.frame();
@@ -989,10 +1078,11 @@ fn the_fetched_file_outlives_the_open_and_a_re_query_still_answers() {
 /// that ships a data file writes that file there and not into the developer's
 /// own `~/Library/Application Support/Brightfield`.
 ///
-/// The twin of `datasets_into_scratch` in `tests/front_door.rs`, which carries
-/// the argument for the fixed path; an integration test target cannot import a
-/// sibling's helper, and a shared fixture crate for four lines is more
-/// machinery than the duplication costs.
+/// A simpler twin of `datasets_into_scratch` in `tests/front_door.rs`: one test
+/// in this file loads such a start, so a fixed path has nothing to race, where
+/// several there do and each takes a directory of its own in turn. An
+/// integration test target cannot import a sibling's helper, and a shared
+/// fixture crate for four lines is more machinery than the duplication costs.
 fn datasets_into_scratch() {
     std::env::set_var(
         brightfield_shell::startup::CONFIG_DIR_VAR,
