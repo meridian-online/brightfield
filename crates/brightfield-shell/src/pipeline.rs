@@ -240,7 +240,9 @@ pub struct PlotHandle {
     /// the plot's scales call for one. The plot gave the band up out of its own
     /// box ([`crate::legend::carve_right`]), so [`Self::rect`] is that box less
     /// the band and the gap before it, and the plots beside it keep the boxes
-    /// the layout gave them. `None` for a plot with no legend and for one whose legend is
+    /// the layout gave them. A titled plot's band starts under its title row
+    /// ([`crate::legend::below_title`]), so the legend does not cover a long
+    /// title. `None` for a plot with no legend and for one whose legend is
     /// under it ([`Self::legend_below`]).
     pub legend_right: Option<Rect>,
     /// **Where each part of this plot's axes is drawn** — the title, the tick

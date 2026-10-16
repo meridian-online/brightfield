@@ -409,12 +409,13 @@ pub fn right_blocks(composed: &Composed) -> Vec<(usize, LegendSpec, Rect)> {
 }
 
 /// Draw every plot's legend that sits at its right, each into the band the plot
-/// gave up for it, level with the plot's top: one legend per chart, beside the
-/// chart it describes.
+/// gave up for it: one legend per chart, beside the chart it describes. The band
+/// is level with the plot's top, or for a titled plot with the top of its frame,
+/// under the title row ([`below_title`]).
 ///
 /// `origin` is the raster rect's top-left in window-space coordinates, so a band
-/// on the page plane lands where the composition put it. The band is as tall as
-/// its plot, so that is the room a block has. A number legend's ramp gives way
+/// on the page plane lands where the composition put it. The band runs from that
+/// top to the plot's foot, so that is the room a block has. A number legend's ramp gives way
 /// to that room, and its value labels do not (`draw_block` says how).
 ///
 /// The ink is the page's ([`Composed::mode`]) rather than the chrome's, because
