@@ -1,0 +1,12 @@
+title: Change in per-capita CO2, 1990 to 2024 (percent)
+plot:
+  - mark: barX
+    data: { from: co2_per_capita_change }
+    x: change_pct
+    y: country
+    fill: grouping
+    sort: { y: -x }
+  - legend: color
+xLabel: change since 1990 (%)
+yLabel: country
+marginLeft: 110

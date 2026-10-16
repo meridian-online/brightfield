@@ -1,0 +1,32 @@
+name: co2-per-capita
+engine: duckdb
+engine_version: '>=1.0'
+params: {}
+dotenv: []
+timeout_sec: null
+defaults: null
+hooks:
+  on_init: null
+  on_success: null
+  on_failure: null
+  on_exit: null
+steps:
+  - name: fetch_owid_co2
+    op: http_fetch
+    with:
+      out: data/owid-co2-data.csv
+      url: https://raw.githubusercontent.com/owid/co2-data/master/owid-co2-data.csv
+    description: Download Our World in Data's CO2 dataset
+  - name: raw_owid_co2
+    sql: models/01_raw_owid_co2.sql
+    description: Load the OWID CO2 file as it arrives
+  - name: clean_co2_per_capita
+    sql: models/02_clean_co2_per_capita.sql
+    description: Keep the seven G7 countries, China and India from 1990 on, with per-capita CO2 in tonnes per person; matched on ISO code so regional aggregates cannot slip in
+  - name: co2_per_capita_change
+    sql: models/03_co2_per_capita_change.sql
+    description: 'One row per country: per-capita CO2 in 1990 and the latest year, the change in tonnes and percent, and the peak year since 1990'
+  - name: china_overtakes_g7
+    sql: models/04_china_overtakes_g7.sql
+    description: For each G7 country, the first year China's per-capita CO2 exceeded it, and whether it has stayed above since 2020
+assets: {}
