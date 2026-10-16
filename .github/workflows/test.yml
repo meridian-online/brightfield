@@ -477,6 +477,8 @@ jobs:
 
       # On failure, hand back what the pixel tier actually rendered plus its
       # perceptual diff, so a red visual gate is diagnosable without a Mac.
+      # `assets/starts` is where the start thumbnail gate in
+      # `tests/front_door.rs` writes its output, not `tests/snapshots`.
       # One artifact per shard, because upload-artifact refuses a name two
       # shards of a run both use.
       - name: upload snapshot diffs
@@ -487,6 +489,8 @@ jobs:
           path: |
             crates/**/tests/snapshots/**/*.new.png
             crates/**/tests/snapshots/**/*.diff.png
+            crates/brightfield-shell/assets/starts/**/*.new.png
+            crates/brightfield-shell/assets/starts/**/*.diff.png
           if-no-files-found: ignore
           retention-days: 7
 

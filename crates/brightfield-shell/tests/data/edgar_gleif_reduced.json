@@ -1,0 +1,14 @@
+{
+  "source": {
+    "url": "https://openlake.meridian.online/edgar_gleif.parquet",
+    "bytes": 10485583,
+    "sha256": "7ca2419d2cf168def3dffed89e394a4219f3232965fddc53f57e4fa18ab2dad0",
+    "rows": 209413
+  },
+  "fixture": {
+    "path": "edgar_gleif_reduced.parquet",
+    "sha256": "85f5f2165478436a98a9ead9f35dcb4c14eb169ca4cbde3ce1c54068b586a693",
+    "columns": ["tier", "method", "corpus"],
+    "corpus": "a run of x as long as the published corpus value"
+  }
+}
