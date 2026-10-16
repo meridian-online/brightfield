@@ -86,7 +86,7 @@ const SCALE: f32 = 1.0;
 /// one distinct value. Addressed from the crate root so the test does not
 /// depend on the shell's working directory.
 fn fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/dashboard_baseline.csv")
+    own_copy("dashboard_baseline.csv")
 }
 
 /// **The table the committed picture is of**: nine numeric columns named and
@@ -104,7 +104,7 @@ fn fixture() -> PathBuf {
 /// earns. This one answers what the first screen looks like, which is a
 /// question about a file with a map in it.
 fn housing() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/california_housing_sample.csv")
+    own_copy("california_housing_sample.csv")
 }
 
 /// **[`housing`] again, as a Parquet whose fractional columns are `DECIMAL`**:
@@ -121,7 +121,7 @@ fn housing() -> PathBuf {
 /// TO 'california_housing_decimal.parquet' (FORMAT parquet, COMPRESSION zstd);
 /// ```
 fn housing_decimal() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/california_housing_decimal.parquet")
+    own_copy("california_housing_decimal.parquet")
 }
 
 /// The columns of [`housing_decimal`] DuckDB types `DECIMAL`, sorted by name.
@@ -217,7 +217,41 @@ fn assert_housing(dash: &Dashboard) {
 /// [`the_time_axis_never_overlaps_or_clips_across_real_window_widths`] reads
 /// is a real dashboard's, not a single-tile one.
 fn site_readings() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/site_readings_sample.csv")
+    own_copy("site_readings_sample.csv")
+}
+
+/// **The calling test's own copy** of the committed file `name` under
+/// `tests/data`, in a directory named after the test, so no two tests open one
+/// file.
+///
+/// Opening a data file writes the spec generated for it to a path keyed by the
+/// file's own path, and the window watches that spec. When every test opened
+/// the committed file, cargo's default test threads had two windows writing
+/// and watching one spec at once: each saw the other's write, and the status
+/// line of the picture read "spec changed on disk" where the baseline has the
+/// row count. A copy at a path of the test's own gives it a spec of its own.
+/// The file keeps its name, which is all the window shows of the path.
+///
+/// The directory is named after the thread, which libtest names after the test
+/// it runs. The bytes are written only when the copy is missing or differs, so
+/// a test that opens the file twice does not touch it under a window still
+/// watching it.
+fn own_copy(name: &str) -> PathBuf {
+    let committed = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data")
+        .join(name);
+    let bytes =
+        std::fs::read(&committed).unwrap_or_else(|e| panic!("read {}: {e}", committed.display()));
+    let thread = std::thread::current();
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("dashboard_baseline")
+        .join(thread.name().unwrap_or("main").replace("::", "-"));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("make {}: {e}", dir.display()));
+    let copy = dir.join(name);
+    if std::fs::read(&copy).ok().as_deref() != Some(bytes.as_slice()) {
+        std::fs::write(&copy, &bytes).unwrap_or_else(|e| panic!("write {}: {e}", copy.display()));
+    }
+    copy
 }
 
 /// The tiles [`site_readings`] earns, in the order the composition places

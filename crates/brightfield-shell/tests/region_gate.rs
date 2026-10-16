@@ -697,8 +697,14 @@ fn every_regions_drawn_extent_is_the_one_it_declares() {
 /// start that ships a data file writes that file there and not into the
 /// developer's own `~/Library/Application Support/Brightfield`.
 ///
-/// The twin of `datasets_into_scratch` in `tests/front_door.rs`, which carries
-/// the argument for the fixed path; an integration test target cannot import a
+/// A simpler twin of `datasets_into_scratch` in `tests/front_door.rs`, which
+/// gives each test a directory of its own in turn. Two tests here share this
+/// fixed path, through [`every_window_this_build_can_open`], and both load the
+/// data start. Once the file holds this build's bytes a load reads it and
+/// writes nothing, so the two can only collide while the file is missing or
+/// holds an older build's bytes, when both may write it at once. CI runs this
+/// target in its one-thread group. If it flakes under cargo's default threads,
+/// take front_door's approach. An integration test target cannot import a
 /// sibling's helper.
 fn datasets_into_scratch() {
     std::env::set_var(

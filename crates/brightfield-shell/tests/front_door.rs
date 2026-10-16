@@ -25,6 +25,7 @@
 //! needs a wgpu adapter, exactly as `surfaces.rs` does.
 
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use brightfield_protocol::layout::Flow;
 use brightfield_protocol::SeamStatus;
@@ -44,32 +45,46 @@ use brightfield_workbench::{Action, PaneKey, Recent, RunState, SavedLayout, Subj
 const CHART_PANE: PaneKey = PaneKey::new(CHART);
 const CANVAS_PANE: PaneKey = PaneKey::new(CANVAS);
 
-/// A window under test: the app, and **one** `egui::Context` for its whole
-/// life.
+/// Point brightfield's config directory at a fresh directory of `test`'s own,
+/// so a start that ships a data file writes that file there and not into the
+/// developer's own `~/Library/Application Support/Brightfield`, and hold it
+/// there until the returned guard drops.
 ///
-/// One context, not one per call, for the reason `one_window.rs` records: egui
-/// resolves a click against a widget id registered on a previous frame, so two
-/// `run` calls through two contexts swallow every pointer interaction and a
-/// test that clicks a control passes or fails for reasons unrelated to it.
-/// Point brightfield's config directory at this target's scratch, so a start
-/// that ships a data file writes that file there and not into the developer's
-/// own `~/Library/Application Support/Brightfield`.
+/// **Its own directory, and one test at a time.** Opening the data start
+/// writes the Parquet into this directory, and one test here removes that file
+/// and overwrites it with bytes that are not a Parquet on purpose. When every
+/// test shared one directory, cargo's default test threads let one test read
+/// the file while another was replacing it: a load failed renaming a staging
+/// file a second writer had already moved, and a thumbnail rendered off a
+/// half-replaced file drifted from its baseline. A directory left by an earlier
+/// run could also be read back by the next one, so it is emptied first.
 ///
-/// **A fixed path rather than a per-test one**, so several tests calling this
-/// concurrently write the same string into the same variable and there is no
-/// race to lose — `std::env::set_var` is process-wide and this file's tests do
-/// not all run on one thread unless `--test-threads=1` says so, which is CI's
-/// argument and not the default.
+/// The directory is reached through [`CONFIG_DIR_VAR`], which is process-wide
+/// and the only override the shell has, so two tests cannot each point it at
+/// their own directory at once. [`CONFIG`] makes them take turns; it is held
+/// for the whole test, because every load reads the variable again.
 ///
 /// It relocates the layout file too, at no cost here: a saved layout is out of
 /// a constructor's reach (see `crate::startup`'s module docs), so the effect
 /// that lands is the one this is for.
-fn datasets_into_scratch() {
-    std::env::set_var(
-        brightfield_shell::startup::CONFIG_DIR_VAR,
-        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("config"),
-    );
+///
+/// [`CONFIG_DIR_VAR`]: brightfield_shell::startup::CONFIG_DIR_VAR
+#[must_use = "the directory is only this test's while the guard is held"]
+fn datasets_into_scratch(test: &str) -> MutexGuard<'static, ()> {
+    let held = CONFIG.lock().unwrap_or_else(PoisonError::into_inner);
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("front_door")
+        .join(test)
+        .join("config");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("make {}: {e}", dir.display()));
+    std::env::set_var(brightfield_shell::startup::CONFIG_DIR_VAR, &dir);
+    held
 }
+
+/// Held by [`datasets_into_scratch`] for the whole of any test that points the
+/// config directory at its own.
+static CONFIG: Mutex<()> = Mutex::new(());
 
 /// The one shipped start that opens a data file, which several tests below
 /// are about — resolved off the declaration rather than written as an id, so
@@ -86,6 +101,13 @@ fn the_data_file_start() -> &'static starts::Start {
     start
 }
 
+/// A window under test: the app, and **one** `egui::Context` for its whole
+/// life.
+///
+/// One context, not one per call, for the reason `one_window.rs` records: egui
+/// resolves a click against a widget id registered on a previous frame, so two
+/// `run` calls through two contexts swallow every pointer interaction and a
+/// test that clicks a control passes or fails for reasons unrelated to it.
 struct Window {
     app: MeridianApp,
     ctx: egui::Context,
@@ -399,7 +421,8 @@ fn every_shipped_start_loads_into_a_document_with_something_in_it() {
         "the crosswalk anchors the set; a gallery without it is a different \
          product decision, not a refactor"
     );
-    datasets_into_scratch();
+    let _config =
+        datasets_into_scratch("every_shipped_start_loads_into_a_document_with_something_in_it");
     let local: Vec<&starts::Start> = starts::STARTS.iter().filter(|s| !s.remote).collect();
     assert!(
         local.len() >= 3,
@@ -761,7 +784,7 @@ fn the_bundled_dataset_is_the_bytes_its_descriptor_declares() {
 /// routes drew different locator lines".
 #[test]
 fn the_card_and_the_picker_land_on_one_window() {
-    datasets_into_scratch();
+    let _config = datasets_into_scratch("the_card_and_the_picker_land_on_one_window");
     let start = the_data_file_start();
     let data = start.data.as_ref().expect("filtered on `data`");
 
@@ -849,7 +872,9 @@ fn the_card_and_the_picker_land_on_one_window() {
 /// the bytes the binary carries".
 #[test]
 fn a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_them() {
-    datasets_into_scratch();
+    let _config = datasets_into_scratch(
+        "a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_them",
+    );
     let start = the_data_file_start();
     let data = start.data.as_ref().expect("filtered on `data`");
     let configured = brightfield_shell::startup::datasets_dir()
@@ -948,7 +973,7 @@ fn a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_t
 /// for the next launch to restore".
 #[test]
 fn the_card_records_what_the_next_launch_restores() {
-    datasets_into_scratch();
+    let _config = datasets_into_scratch("the_card_records_what_the_next_launch_restores");
     let start = the_data_file_start();
 
     let mut first = Window::open(Boot::empty());
@@ -1027,7 +1052,8 @@ fn the_card_records_what_the_next_launch_restores() {
 /// restored launch drew the front door".
 #[test]
 fn a_launch_restoring_the_data_file_start_lands_on_its_own_document() {
-    datasets_into_scratch();
+    let _config =
+        datasets_into_scratch("a_launch_restoring_the_data_file_start_lands_on_its_own_document");
     let start = the_data_file_start();
     let boot = opening_boot(None, Some(start.id), Flow::Vertical, None)
         .expect("a launch restoring the data-file start");
@@ -1978,7 +2004,7 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 /// different surfaces", `Some(protocol-canvas)` against `None`.
 #[test]
 fn either_route_to_the_same_subject_leaves_the_same_window() {
-    datasets_into_scratch();
+    let _config = datasets_into_scratch("either_route_to_the_same_subject_leaves_the_same_window");
     let mut walked = 0;
     for start in starts::on_door() {
         if start.remote {
@@ -2915,7 +2941,12 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) {
     // already draws the file's NAME rather than its path, which is what keeps
     // the picture the same on two machines; this keeps the write out of the
     // way as well.
-    datasets_into_scratch();
+    let set = if starts.iter().any(|s| s.remote) {
+        "remote"
+    } else {
+        "local"
+    };
+    let _config = datasets_into_scratch(&format!("thumbnails_{set}_{mode:?}"));
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/starts");
     let options = egui_kittest::SnapshotOptions::default().output_path(&assets);
     let mut failures = Vec::new();

@@ -1367,10 +1367,11 @@ fn the_spec_a_start_carries_is_the_spec_its_click_opens() {
 /// that ships a data file writes that file there and not into the developer's
 /// own `~/Library/Application Support/Brightfield`.
 ///
-/// The twin of `datasets_into_scratch` in `tests/front_door.rs`, which carries
-/// the argument for the fixed path; an integration test target cannot import a
-/// sibling's helper, and a shared fixture crate for four lines is more
-/// machinery than the duplication costs.
+/// A simpler twin of `datasets_into_scratch` in `tests/front_door.rs`: one test
+/// in this file loads such a start, so a fixed path has nothing to race, where
+/// several there do and each takes a directory of its own in turn. An
+/// integration test target cannot import a sibling's helper, and a shared
+/// fixture crate for four lines is more machinery than the duplication costs.
 fn datasets_into_scratch() {
     std::env::set_var(
         brightfield_shell::startup::CONFIG_DIR_VAR,
