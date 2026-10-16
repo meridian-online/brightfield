@@ -82,3 +82,23 @@ fn refusing_runs_nothing() {
     assert!(read_only_statement(&format!("attach '{}' as x", db.display())).is_err());
     assert!(!csv.exists() && !db.exists());
 }
+
+#[test]
+fn empty_and_comment_only_text_read_as_no_statements() {
+    for sql in ["", "  \n", "-- note", ";"] {
+        let e = read_only_statement(sql).unwrap_err();
+        assert!(
+            e.starts_with("it reads as 0 statements, not one"),
+            "{sql:?}: {e}"
+        );
+    }
+}
+
+#[test]
+fn a_syntax_error_is_refused_in_the_not_a_query_words() {
+    let e = read_only_statement("selec 1").unwrap_err();
+    assert!(
+        e.starts_with("it is not one query that reads rows: "),
+        "{e}"
+    );
+}

@@ -4176,7 +4176,7 @@ fn probe_statement_count(probe: &str, what: &str) -> Result<usize, String> {
 /// Whether `sql` is exactly one query that reads rows, or why it is not.
 ///
 /// The gate for SQL the user types. It counts the statements with
-/// [`probe_statement_count`], which parses and runs nothing, then parses the
+/// [`probe_statement_count`], which only parses them, then parses the
 /// text with [`serialized_sql`] on a fresh in-memory database, where DuckDB
 /// refuses anything but a `SELECT` (a `WITH` or a leading `FROM` parse as one)
 /// in its own words. Nothing is bound or run on either path, so a refused
@@ -4187,16 +4187,26 @@ fn probe_statement_count(probe: &str, what: &str) -> Result<usize, String> {
 /// # Errors
 ///
 /// Text starting `it reads as {n} statements, not one` for a count other than
-/// one, else `it is not one query that reads rows: ` and DuckDB's words.
+/// one (empty and comment-only text read as 0), else `it is not one query that
+/// reads rows: ` and DuckDB's words, which include a syntax error's.
 pub fn read_only_statement(sql: &str) -> Result<(), String> {
-    let count = probe_statement_count(sql, "statement")?;
+    let not_a_query = |e: String| format!("it is not one query that reads rows: {e}");
+    let conn = duckdb::Connection::open_in_memory().map_err(|e| e.to_string())?;
+    // The extraction call reports empty or comment-only text as a failure with
+    // no reason, so the parse tree's own statement count settles that case.
+    let count = match probe_statement_count(sql, "statement") {
+        Ok(count) => count,
+        Err(e) => {
+            let tree = serialized_sql(&conn, sql).map_err(|_| not_a_query(e))?;
+            tree.get("statements")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len)
+        }
+    };
     if count != 1 {
         return Err(format!("it reads as {count} statements, not one"));
     }
-    let conn = duckdb::Connection::open_in_memory().map_err(|e| e.to_string())?;
-    serialized_sql(&conn, sql)
-        .map(|_| ())
-        .map_err(|e| format!("it is not one query that reads rows: {e}"))
+    serialized_sql(&conn, sql).map(|_| ()).map_err(not_a_query)
 }
 
 /// The window SQL over `rows_sql` ordered by `ORDER BY ALL`, the one text the
