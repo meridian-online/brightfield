@@ -142,6 +142,21 @@ fn stopping_drops_a_late_answer() {
 }
 
 #[test]
+fn dropping_the_reader_stops_its_read() {
+    let mut slow = reads(TYPED_PAUSE);
+    slow.edit(SLOW, Instant::now());
+    slow.read_now();
+    std::thread::sleep(Duration::from_millis(200));
+    drop(slow);
+    // The next reader on this thread reads behind the same gate, so its
+    // answer comes only once the dropped reader's read has let go of it.
+    let at = Instant::now();
+    let a = answered(FILTER);
+    assert_eq!(a.text, FILTER);
+    assert!(at.elapsed() < Duration::from_secs(20), "{:?}", at.elapsed());
+}
+
+#[test]
 fn a_kept_steps_rows_are_counted_off_the_thread() {
     let mut source = housing_source();
     source.chain.push((

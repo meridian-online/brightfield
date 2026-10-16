@@ -258,6 +258,15 @@ impl TypedReads {
     }
 }
 
+/// A reader dropped mid-read stops that read, so it lets go of the preview
+/// gate at once rather than at its deadline
+/// (`dropping_the_reader_stops_its_read` in `tests/typed_sql_reads.rs`).
+impl Drop for TypedReads {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 /// Count the rows of the last step of `source.chain` on a worker, behind the
 /// preview gate, calling `wake` once the count is sent.
 pub fn spawn_row_count(
