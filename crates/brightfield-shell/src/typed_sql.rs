@@ -102,6 +102,9 @@ pub struct TypedSource {
     pub root_table: String,
     /// Each step the statement may read, in order, with what it does.
     pub chain: Vec<(String, PreviewOp)>,
+    /// The order the grid has applied and not recorded, which a filter of the
+    /// root table is paged under, as the grid shows its `where` with it.
+    pub order: Option<String>,
     /// The program arc runs as, when there is one to ask.
     pub runner: Option<Runner>,
 }
@@ -121,6 +124,9 @@ pub struct TypedAnswer {
     /// The rows of the root table the condition keeps, counted on their own,
     /// when arc reads the statement as a filter of the root table.
     pub filter_rows: Option<u64>,
+    /// The first page of those rows under [`TypedSource::order`], when there
+    /// is a pending order; with none, it is [`Self::page`].
+    pub filter_page: Option<GridPage>,
 }
 
 /// What a worker sends back: the answer, or the text and why it was refused.
@@ -400,16 +406,17 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
     if stop.is_stopped() {
         return None;
     }
-    let filter_rows = match &recognised {
+    let (filter_rows, filter_page) = match &recognised {
         Recognised::FilterRows { on, condition } if on.eq_ignore_ascii_case(&source.root_table) => {
-            match preview_row_count_stoppable(
+            let mut filter = vec![(
+                free_step_name(&source.root_table, &[]),
+                PreviewOp::Where(condition.clone()),
+            )];
+            let rows = match preview_row_count_stoppable(
                 &source.data,
                 source.reader,
                 &source.root_table,
-                &[(
-                    free_step_name(&source.root_table, &[]),
-                    PreviewOp::Where(condition.clone()),
-                )],
+                &filter,
                 PREVIEW_FILE_LIMIT_BYTES,
                 PREVIEW_DEADLINE,
                 stop,
@@ -417,9 +424,33 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
                 Ok(rows) => Some(rows),
                 Err(PreviewRefusal::Superseded) => return None,
                 Err(_) => None,
-            }
+            };
+            let page = match &source.order {
+                Some(order) => {
+                    filter.push((
+                        free_step_name(&source.root_table, &filter),
+                        PreviewOp::OrderBy(order.clone()),
+                    ));
+                    match preview_first_page_stoppable(
+                        &source.data,
+                        source.reader,
+                        &source.root_table,
+                        &filter,
+                        PREVIEW_ROWS,
+                        PREVIEW_FILE_LIMIT_BYTES,
+                        PREVIEW_DEADLINE,
+                        stop,
+                    ) {
+                        Ok(batches) => Some(page_of(&batches)),
+                        Err(PreviewRefusal::Superseded) => return None,
+                        Err(_) => None,
+                    }
+                }
+                None => None,
+            };
+            (rows, page)
         }
-        _ => None,
+        _ => (None, None),
     };
     Some(Ok(TypedAnswer {
         text: text.to_string(),
@@ -427,6 +458,7 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
         reading,
         recognised,
         filter_rows,
+        filter_page,
     }))
 }
 

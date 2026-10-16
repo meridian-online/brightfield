@@ -26,6 +26,7 @@ fn housing_source() -> TypedSource {
         reader: FileReader::Parquet,
         root_table: "california_housing".into(),
         chain: Vec::new(),
+        order: None,
         runner: Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))),
     }
 }
@@ -100,6 +101,28 @@ fn an_answer_carries_the_page_the_reading_and_arcs_reading() {
             condition: "house_age > 28".into()
         }
     );
+    assert_eq!(a.filter_rows, Some(8_831));
+}
+
+#[test]
+fn a_filter_of_the_root_table_is_paged_under_the_pending_order() {
+    assert!(
+        answered(FILTER).filter_page.is_none(),
+        "no order, no page of its own"
+    );
+    let mut source = housing_source();
+    source.order = Some("house_age desc".into());
+    let mut r = TypedReads::new(source, TYPED_PAUSE, || {});
+    answer(&mut r, FILTER);
+    let a = r.current().expect("the filter was answered");
+    let page = a.filter_page.as_ref().expect("a page under the order");
+    let col = page
+        .columns
+        .iter()
+        .position(|c| c.name == "house_age")
+        .expect("a house_age column");
+    let first: f64 = page.rows[0][col].full().parse().expect("a number");
+    assert_eq!(first, 52.0, "the oldest houses first");
     assert_eq!(a.filter_rows, Some(8_831));
 }
 

@@ -298,8 +298,8 @@ pub(crate) struct TypedWhere {
     pub(crate) view: RowsView,
     /// The first page of the rows the condition keeps.
     pub(crate) page: GridPage,
-    /// How many rows the condition keeps.
-    pub(crate) rows: u64,
+    /// How many rows the condition keeps, unless the count failed.
+    pub(crate) rows: Option<u64>,
 }
 
 /// The band's state: the field being edited, if one is, the typed filter the
@@ -596,10 +596,17 @@ impl ChartDoc {
 
     /// **Preview the typed `condition` in the grid**: the applied view with
     /// `condition` as its `where`, drawn from `page` and counted as `rows`,
-    /// both read off the frame. A field being edited lets go, as it does when
+    /// both read off the frame; with no count, the band says it shows the
+    /// first page. A field being edited and the cursor let go, as they do when
     /// a typed statement's rows are shown.
-    pub(crate) fn preview_typed_where(&mut self, condition: &str, page: GridPage, rows: u64) {
+    pub(crate) fn preview_typed_where(
+        &mut self,
+        condition: &str,
+        page: GridPage,
+        rows: Option<u64>,
+    ) {
         self.grid_foot.cancel();
+        self.grid_cursor = None;
         self.grid_foot.typed = Some(TypedWhere {
             view: FootField::Where.with(self.grid_view(), condition),
             page,
@@ -800,7 +807,8 @@ pub fn foot_band(
 
     // The count, at the trailing end.
     let (rows, columns) = counts;
-    let count = if fixed.is_some() {
+    let uncounted = state.typed.as_ref().is_some_and(|t| t.rows.is_none());
+    let count = if fixed.is_some() || uncounted {
         crate::data_grid::PREVIEW_COUNT.to_owned()
     } else {
         // A typed filter's count was read apart from the session, under no

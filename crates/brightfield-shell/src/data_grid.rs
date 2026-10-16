@@ -2861,13 +2861,16 @@ impl Item<ChartDoc> for DataGridItem {
         let typed = doc.grid_foot.typed.take();
         let mut typed_empty = None;
         if let Some(typed) = &typed {
-            let mut source = PreviewRows {
-                page: &typed.page,
-                total: typed.rows,
+            let mut source = match typed.rows {
+                Some(total) => PreviewRows {
+                    page: &typed.page,
+                    total,
+                },
+                None => PreviewRows::whole(&typed.page),
             };
             drawn = Some(draw(ui, &mut source));
             names = source.columns().iter().map(|c| c.name.clone()).collect();
-            typed_empty = Some(typed.rows == 0);
+            typed_empty = Some(source.total_rows() == 0);
         } else {
             doc.activity.begin(Activity::EngineQuery);
             if let Some(coordinator) = doc.live_coordinator() {

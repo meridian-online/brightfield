@@ -2431,8 +2431,8 @@ pub struct MeridianApp {
     /// a page only when a new one is read.
     typed_in_grid: Option<String>,
     /// The text of the answer whose filter the grid previews on the loaded
-    /// table ([`ChartDoc::preview_typed_where`]), so the preview is handed
-    /// over only when a new answer is read.
+    /// table ([`ChartDoc::preview_typed_where`]), so a frame hands the preview
+    /// over when a new answer is read rather than each time it draws.
     typed_where_in_grid: Option<String>,
     /// The counts of kept statements' rows under way, each landed on the chart
     /// document and the Protocol once it arrives.
@@ -6806,6 +6806,7 @@ impl MeridianApp {
             reader,
             root_table: source.name.clone(),
             chain,
+            order: self.charts.doc.grid_view().order.clone(),
             runner: self.runner.clone(),
         })
     }
@@ -6890,12 +6891,12 @@ impl MeridianApp {
         // table's own grid, with the page and count the read found.
         if let Some(condition) = self.typed_where(answer) {
             if self.typed_where_in_grid.as_deref() != Some(answer.text.as_str()) {
-                let rows = answer.filter_rows.unwrap_or(answer.page.rows.len() as u64);
-                let (text, condition, page) = (
+                let (text, condition, rows) = (
                     answer.text.clone(),
                     condition.to_owned(),
-                    answer.page.clone(),
+                    answer.filter_rows,
                 );
+                let page = answer.filter_page.as_ref().unwrap_or(&answer.page).clone();
                 self.charts.doc.preview_typed_where(&condition, page, rows);
                 self.typed_where_in_grid = Some(text);
             }
@@ -7041,6 +7042,7 @@ impl MeridianApp {
                     reader,
                     root_table: source.name.clone(),
                     chain: chain.clone(),
+                    order: None,
                     runner: None,
                 },
                 move || wake.request_repaint(),

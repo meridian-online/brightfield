@@ -277,3 +277,36 @@ fn typed_where_preview_does_not_block_the_ui_thread() {
     win.settle();
     assert_eq!(win.grid_rows(), 8_831);
 }
+
+#[test]
+fn a_kept_statement_rewritten_as_a_filter_of_the_loaded_table_stays_a_step() {
+    let (mut win, _f) = Window::housing(&TempDir::new("rewrite"));
+    win.keep(BY_AGE);
+    // Over the kept statement's grid, the form holds it selected, so the
+    // filter typed replaces it.
+    win.keep(FILTER);
+    let steps = win.app.chart_doc().typed_steps();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(
+        (steps[0].name.as_str(), steps[0].statement.as_str()),
+        (STEP, FILTER)
+    );
+    assert_eq!(win.app.chart_doc().grid_view().condition, None);
+}
+
+#[test]
+fn a_typed_filter_keeps_the_pending_order() {
+    let (mut win, _f) = Window::housing(&TempDir::new("order"));
+    win.app.chart_doc_mut().apply_grid_view(RowsView {
+        condition: None,
+        order: Some("house_age desc".into()),
+    });
+    win.keep(FILTER);
+    assert_eq!(
+        win.app.chart_doc().grid_view(),
+        &RowsView {
+            condition: Some("house_age > 28".into()),
+            order: Some("house_age desc".into()),
+        }
+    );
+}
