@@ -282,7 +282,7 @@ impl OneStepProtocol {
     ///
     /// Each is a `sql:` step of the manifest the graph is built from, at
     /// `models/typed/<name>.sql`, a path no file is written at: the graph is
-    /// handed [`crate::typed_sql::lineage_model`] for it, as for each recorded
+    /// handed `crate::typed_sql::lineage_model` for it, as for each recorded
     /// SQL step, so its node and its table stand on what it reads. The steps
     /// are added to [`ProtocolInputs::generated`] (made from this Protocol when
     /// the folder has not got one) so a grid over a typed step's table previews it,

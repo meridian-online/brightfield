@@ -58,7 +58,7 @@
 //! ([`crate::one_step::OneStepProtocol::inputs_with_typed`]), so the graph
 //! draws each one's node and table, a later statement can read its table, and
 //! a grid over it previews through the steps it reads. The graph is handed
-//! [`lineage_model`] for each in place of the statement, so the node does not
+//! `lineage_model` for each in place of the statement, so the node does not
 //! depend on the graph's parser reading DuckDB's own syntax. In the spine the
 //! step and its table carry the not-recorded mark, the foot row's filled dot,
 //! and the table's row gives its count once the count is in. The unsaved mark

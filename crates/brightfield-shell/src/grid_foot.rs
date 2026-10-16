@@ -47,14 +47,14 @@
 //!
 //! **Typed SQL lands here too.** A statement on the chart palette's statement
 //! form that arc reads as a filter of the loaded table is offered to `where`
-//! when the field can take it ([`ChartDoc::where_takes`]): the grid is on the
+//! when the field can take it (`ChartDoc::where_takes`): the grid is on the
 //! loaded table and no recorded condition is held. While the form shows it,
-//! the grid previews the condition ([`ChartDoc::preview_typed_where`]) with
+//! the grid previews the condition (`ChartDoc::preview_typed_where`) with
 //! the first page and the count the statement's reads found on a worker, so
 //! the frame does not wait on DuckDB for it
 //! (`typed_where_preview_does_not_block_the_ui_thread` in
 //! `tests/typed_sql_where.rs`), and Cmd+Enter applies it as Enter
-//! applies the field's text ([`ChartDoc::apply_typed_where`]), keeping a
+//! applies the field's text (`ChartDoc::apply_typed_where`), keeping a
 //! pending order. Every other statement is kept as a SQL step.
 //!
 //! **The row works on the loaded table's grid.** On a generated step's grid the
@@ -68,9 +68,6 @@
 //! [`ChartDoc::ask_order_at_cursor`]: crate::app::ChartDoc::ask_order_at_cursor
 //! [`ChartDoc::apply_grid_view`]: crate::app::ChartDoc::apply_grid_view
 //! [`ChartDoc::foot_offer`]: crate::app::ChartDoc::foot_offer
-//! [`ChartDoc::where_takes`]: crate::app::ChartDoc::where_takes
-//! [`ChartDoc::preview_typed_where`]: crate::app::ChartDoc::preview_typed_where
-//! [`ChartDoc::apply_typed_where`]: crate::app::ChartDoc::apply_typed_where
 
 use brightfield_engine::{CellLiteral, RowsAudience, RowsView, Session};
 use brightfield_workbench::chrome;

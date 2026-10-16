@@ -777,7 +777,7 @@ pub enum SpineMarker {
     Hollow,
     /// The thing is in no file yet: a step made from typed SQL and not saved,
     /// and the table it makes. Drawn as the grid foot's own dot for a view no
-    /// file records, [`crate::grid_foot::paint_unrecorded_dot`], so one mark
+    /// file records, `crate::grid_foot::paint_unrecorded_dot`, so one mark
     /// means one thing in both places.
     Unrecorded,
     /// No marker — a caption, a view of a node, a column of a table.

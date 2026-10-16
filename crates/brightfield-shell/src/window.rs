@@ -8528,14 +8528,14 @@ impl MeridianApp {
 
     /// **Record the work no file holds yet through arc, in the order it was
     /// made** ([`ChartDoc::pending_in_order`]): the applied grid view as
-    /// [`Self::record_view`] records it, and each kept statement as the SQL
+    /// `Self::record_view` records it, and each kept statement as the SQL
     /// step `arc sql record` writes ([`crate::operation::record_sql`]) under
     /// the name it was kept with. Answers the names recorded, in order.
     ///
     /// Each piece is marked recorded as arc takes it, so a refusal leaves what
     /// came before it recorded, as it is in the folder, and what it refused
     /// and what follows pending for the next Save. A recorded statement leaves
-    /// the kept statements ([`ChartDoc::mark_typed_recorded`]).
+    /// the kept statements (`ChartDoc::mark_typed_recorded`).
     ///
     /// Each recording runs arc on the calling thread, so a Save or Run waits
     /// on arc for each piece it records, as it already waits on the files it
