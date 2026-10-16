@@ -112,11 +112,15 @@ pub struct LegendEntry {
 impl LegendSpec {
     /// The legend `scales` calls for, or `None` when nothing on the plot maps
     /// colour. Reads the **fill** channel — what a legend over the plot would
-    /// show. Whether the page draws it is the file's to say, and
+    /// show — or the **stroke** channel when nothing is filled, which is how a
+    /// line is coloured. Whether the page draws it is the file's to say, and
     /// [`Self::of_plot`] is the one that answers for it.
     #[must_use]
     pub fn from_scales(scales: &ScaleSet) -> Option<Self> {
-        match scales.get(Channel::Fill)? {
+        match scales
+            .get(Channel::Fill)
+            .or_else(|| scales.get(Channel::Stroke))?
+        {
             Scale::Colour {
                 categories,
                 palette,

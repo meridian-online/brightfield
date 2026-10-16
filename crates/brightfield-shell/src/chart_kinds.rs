@@ -60,6 +60,9 @@ pub const BINNED_HISTOGRAM: ChartKindId = ChartKindId::new("binned-histogram");
 /// A dated column's rows counted per day, in time order: `barY` over a band of
 /// days.
 pub const COUNTS_OVER_TIME: ChartKindId = ChartKindId::new("counts-over-time");
+/// A measure drawn against a date or another measure: `lineY`, one line per
+/// category when one is bound.
+pub const LINE_OVER_TIME: ChartKindId = ChartKindId::new("line-over-time");
 /// Two categories crossed and counted: `cell` over a pair of band axes.
 pub const COUNT_GRID: ChartKindId = ChartKindId::new("count-grid");
 /// Two measures related: `dot` over a pair of quantitative axes.
@@ -183,6 +186,21 @@ const GRID_SLOTS: &[FieldSlot] = &[
 /// this one is absent from.
 const TIME_SLOTS: &[FieldSlot] = &[FieldSlot::required("t", &[FieldType::Temporal])];
 
+/// What a line over time draws: a date or a measure along x, a measure up y,
+/// and a category, when the table has one, to split it into lines.
+///
+/// **Temporal is listed before quantitative on x**, and [`ChartKind::bind`]
+/// prefers the type a slot lists first over the order of the columns. That is
+/// what keeps a table of a date and two measures from drawing one measure
+/// against the other: [`fields_of`] hands the measures over first, so a plain
+/// first fit would put a measure on x and strand the date. A table with no date
+/// puts its first measure on x and its second on y, as the scatter does.
+const LINE_SLOTS: &[FieldSlot] = &[
+    FieldSlot::required("x", &[FieldType::Temporal, FieldType::Quantitative]),
+    FieldSlot::required("y", &[FieldType::Quantitative]),
+    FieldSlot::optional("stroke", &[FieldType::Categorical]),
+];
+
 /// The shell's chart kinds, in preference order.
 ///
 /// Built once per process. A `OnceLock` rather than a `const`: a
@@ -210,6 +228,7 @@ fn kinds() -> Vec<ChartKind<String>> {
         scatter(),
         point_map(),
         counts_over_time(),
+        line_over_time(),
         count_grid(),
         ranked_category_bars(),
     ]
@@ -591,6 +610,43 @@ fn counts_over_time() -> ChartKind<String> {
     }
 }
 
+/// A measure over a date, or over another measure, as lines.
+///
+/// `lineY` over [`SOURCE`], joining each series' points in increasing x. A
+/// category bound to the optional `stroke` slot splits the table into one line
+/// per value, coloured by it and named by a legend; with none the table is one
+/// line in the default ink.
+///
+/// After [`counts_over_time`], so a table nobody has described still opens on
+/// the counts, which need only the date.
+fn line_over_time() -> ChartKind<String> {
+    ChartKind {
+        id: LINE_OVER_TIME,
+        icon: Icon("chart-line"),
+        description: "Draws a measure along a date or another measure, one line per category",
+        slots: LINE_SLOTS,
+        controls: Vec::new,
+        build: |bound, _options| {
+            let x = bound.name("x").unwrap_or_default();
+            let y = bound.name("y").unwrap_or_default();
+            let (xq, yq) = (yaml_quoted(x), yaml_quoted(y));
+            let mut out = String::from("plot:\n");
+            let _ = writeln!(out, "  - mark: lineY");
+            let _ = writeln!(out, "    data: {{ from: {SOURCE} }}");
+            let _ = writeln!(out, "    x: {xq}");
+            let _ = writeln!(out, "    y: {yq}");
+            if let Some(stroke) = bound.name("stroke") {
+                let _ = writeln!(out, "    stroke: {}", yaml_quoted(stroke));
+                let _ = writeln!(out, "  - legend: color");
+            }
+            // Plot attributes are siblings of `plot:`, not of its marks.
+            let _ = writeln!(out, "xLabel: {xq}");
+            let _ = writeln!(out, "yLabel: {yq}");
+            out
+        },
+    }
+}
+
 /// Two categories crossed and counted.
 ///
 /// The answer for a table with no distribution to draw: `cell` over two band
@@ -881,6 +937,7 @@ mod tests {
                 SCATTER,
                 POINT_MAP,
                 COUNTS_OVER_TIME,
+                LINE_OVER_TIME,
                 COUNT_GRID,
                 crate::ranked_bars::KIND_ID
             ],

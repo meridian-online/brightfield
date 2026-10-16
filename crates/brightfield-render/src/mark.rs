@@ -1495,8 +1495,23 @@ impl MarkRenderer for BarRenderer {
 // LineRenderer
 // ---------------------------------------------------------------------------
 
-/// Renders line marks as a connected path in x-order.
-pub struct LineRenderer;
+/// Which axis a line mark is ordered along.
+#[derive(Clone, Copy)]
+pub enum LineAxis {
+    /// `line` and `lineY`: points joined in increasing x.
+    Y,
+    /// `lineX`: points joined in increasing y.
+    X,
+}
+
+/// Renders line marks as a connected path, ordered along the position axis.
+///
+/// A `stroke` bound to a column draws one path per distinct value of it, in the
+/// colour the stroke scale gives that value; any other line is a single path.
+pub struct LineRenderer {
+    /// Orientation — `Y` for line and lineY, `X` for lineX.
+    pub axis: LineAxis,
+}
 
 impl MarkRenderer for LineRenderer {
     fn render(
@@ -1533,32 +1548,56 @@ impl MarkRenderer for LineRenderer {
         let x_vals = x_f64.unwrap();
         let y_vals = y_f64.unwrap();
 
-        // Collect valid (x_data, y_data) pairs, then sort by x.
-        let mut points: Vec<(f64, f64)> = Vec::new();
+        // A stroke column splits the rows into one series per value, in the
+        // order the values first appear. Each series keeps the first row it
+        // saw, which is the row its colour is resolved from.
+        let groups = channel_map
+            .get(Channel::Stroke)
+            .filter(|_| channel_map.colour(Channel::Stroke).is_none())
+            .and_then(|col| column_as_string(batch, col));
+        let mut series: Vec<(usize, Vec<(f64, f64)>)> = Vec::new();
+        let mut seen: std::collections::HashMap<Option<String>, usize> =
+            std::collections::HashMap::new();
         for i in 0..batch.num_rows() {
             if let (Some(xv), Some(yv)) = (x_vals[i], y_vals[i]) {
-                let px = x_scale.map_f64(xv);
-                let py = y_scale.map_f64(yv);
-                points.push((px, py));
+                let key = groups.as_ref().and_then(|g| g[i].clone());
+                let slot = *seen.entry(key).or_insert_with(|| {
+                    series.push((i, Vec::new()));
+                    series.len() - 1
+                });
+                series[slot]
+                    .1
+                    .push((x_scale.map_f64(xv), y_scale.map_f64(yv)));
             }
         }
 
-        // Sort by pixel x (preserves data x-order since the scale is monotonic).
-        points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        if points.len() < 2 {
-            return;
-        }
-
-        // Draw connected line segments.
-        let colour = constant_ink(channel_map, scales.ink());
         let stroke = kurbo::Stroke::new(LINE_STROKE_WIDTH);
-        for window in points.windows(2) {
-            let line = Line::new(
-                kurbo::Point::new(window[0].0, window[0].1),
-                kurbo::Point::new(window[1].0, window[1].1),
-            );
-            scene.stroke(&stroke, Affine::IDENTITY, colour, None, &line);
+        for (first_row, mut points) in series {
+            // Sort along the position axis (pixel order matches data order
+            // since the scale is monotonic): x for line and lineY, y for lineX.
+            match self.axis {
+                LineAxis::Y => points
+                    .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)),
+                LineAxis::X => points
+                    .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
+            }
+            if points.len() < 2 {
+                continue;
+            }
+
+            // Draw connected line segments.
+            let colour = if groups.is_some() {
+                resolve_stroke_colour(scales, channel_map, batch, first_row)
+            } else {
+                constant_ink(channel_map, scales.ink())
+            };
+            for window in points.windows(2) {
+                let line = Line::new(
+                    kurbo::Point::new(window[0].0, window[0].1),
+                    kurbo::Point::new(window[1].0, window[1].1),
+                );
+                scene.stroke(&stroke, Affine::IDENTITY, colour, None, &line);
+            }
         }
     }
 }
@@ -5486,9 +5525,15 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
         (MarkKind::Circle, Box::new(DotRenderer::default())),
         (MarkKind::BarX, Box::new(BarRenderer { axis: BarAxis::X })),
         (MarkKind::BarY, Box::new(BarRenderer { axis: BarAxis::Y })),
-        (MarkKind::Line, Box::new(LineRenderer)),
-        (MarkKind::LineX, Box::new(LineRenderer)),
-        (MarkKind::LineY, Box::new(LineRenderer)),
+        (MarkKind::Line, Box::new(LineRenderer { axis: LineAxis::Y })),
+        (
+            MarkKind::LineX,
+            Box::new(LineRenderer { axis: LineAxis::X }),
+        ),
+        (
+            MarkKind::LineY,
+            Box::new(LineRenderer { axis: LineAxis::Y }),
+        ),
         (
             MarkKind::AreaY,
             Box::new(AreaRenderer { axis: AreaAxis::Y }),
@@ -6069,7 +6114,7 @@ mod tests {
         let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         let mut scene = Scene::new();
-        let renderer = LineRenderer;
+        let renderer = LineRenderer { axis: LineAxis::Y };
         renderer.render(&mut scene, &batch, &cm, &scales, None);
 
         // Line renderer should produce stroke operations for 3 line segments (4 points).
@@ -6078,6 +6123,118 @@ mod tests {
             !encoding.path_tags.is_empty(),
             "scene should have path tags after rendering 4-point line"
         );
+    }
+
+    // --- mark breadth: lineY / lineX ---
+
+    /// A batch of `(g, x, y)` rows for the oriented-line tests.
+    fn grouped_batch(rows: &[(&str, f64, f64)]) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("g", DataType::Utf8, false),
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                )),
+                Arc::new(Float64Array::from(
+                    rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                )),
+                Arc::new(Float64Array::from(
+                    rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// Render `batch` through a `LineRenderer` with `stroke` bound to `g`,
+    /// over scales fixed by `domain_rows` so two batches share a mapping.
+    fn render_lines(
+        batch: &RecordBatch,
+        domain_rows: &RecordBatch,
+        axis: LineAxis,
+        grouped: bool,
+    ) -> Scene {
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        if grouped {
+            cm.insert(Channel::Stroke, "g".to_string());
+        }
+        let scales = infer_scales(domain_rows, &cm, (40.0, 600.0), (450.0, 20.0));
+        let mut scene = Scene::new();
+        LineRenderer { axis }.render(&mut scene, batch, &cm, &scales, None);
+        scene
+    }
+
+    #[test]
+    fn line_y_draws_one_polyline_per_stroke_value_in_x_order() {
+        // Three countries over five years, each series' rows shuffled.
+        let ordered: Vec<(&str, f64, f64)> = [("a", 1), ("b", 2), ("c", 3)]
+            .iter()
+            .flat_map(|&(g, k)| (0..5).map(move |t| (g, t as f64, (t * k + k) as f64)))
+            .collect();
+        let mut shuffled = ordered.clone();
+        shuffled.reverse();
+        shuffled.swap(1, 7);
+
+        let ordered_batch = grouped_batch(&ordered);
+        let shuffled_batch = grouped_batch(&shuffled);
+        let sorted = render_lines(&ordered_batch, &ordered_batch, LineAxis::Y, true);
+        let unsorted = render_lines(&shuffled_batch, &ordered_batch, LineAxis::Y, true);
+
+        // 3 series x 4 segments, not one 14-segment path across all rows.
+        assert_eq!(count_scene_paths(&sorted), 12);
+        assert_eq!(count_scene_paths(&unsorted), 12);
+
+        // The same geometry per series regardless of row order: joining in
+        // increasing x is the renderer's job, not the data's.
+        let lines = |scene: &Scene| {
+            let mut segs = scene.encoding().path_data.clone();
+            segs.sort_unstable();
+            segs
+        };
+        assert_eq!(lines(&sorted), lines(&unsorted));
+
+        // Without a stroke column the same rows are one series.
+        let single = render_lines(&ordered_batch, &ordered_batch, LineAxis::Y, false);
+        assert_eq!(count_scene_paths(&single), 14);
+    }
+
+    #[test]
+    fn line_x_joins_points_in_increasing_y() {
+        // x zig-zags while y rises, so only y order gives a clean polyline.
+        let ordered = [
+            ("a", 5.0, 0.0),
+            ("a", 1.0, 1.0),
+            ("a", 4.0, 2.0),
+            ("a", 2.0, 3.0),
+        ];
+        let shuffled = [
+            ("a", 4.0, 2.0),
+            ("a", 5.0, 0.0),
+            ("a", 2.0, 3.0),
+            ("a", 1.0, 1.0),
+        ];
+        let ordered_batch = grouped_batch(&ordered);
+        let shuffled_batch = grouped_batch(&shuffled);
+
+        let by_y = render_lines(&ordered_batch, &ordered_batch, LineAxis::X, true);
+        let by_y_shuffled = render_lines(&shuffled_batch, &ordered_batch, LineAxis::X, true);
+        assert_eq!(count_scene_paths(&by_y), 3);
+        assert_eq!(
+            by_y.encoding().path_data,
+            by_y_shuffled.encoding().path_data,
+            "lineX order must not depend on row order"
+        );
+
+        // lineY over the same rows joins in x order, which is a different path.
+        let by_x = render_lines(&ordered_batch, &ordered_batch, LineAxis::Y, true);
+        assert_ne!(by_x.encoding().path_data, by_y.encoding().path_data);
     }
 
     // --- mark breadth: areaY ---

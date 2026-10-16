@@ -221,7 +221,9 @@ fn every_margin_legend_is_accurate_to_its_plots_displayed_scale() {
         for (i, plot) in composed.plots.iter().enumerate() {
             match (
                 LegendSpec::from_scales(&plot.scales),
-                plot.scales.get(Channel::Fill),
+                plot.scales
+                    .get(Channel::Fill)
+                    .or_else(|| plot.scales.get(Channel::Stroke)),
             ) {
                 (
                     Some(LegendSpec::Categorical { entries }),

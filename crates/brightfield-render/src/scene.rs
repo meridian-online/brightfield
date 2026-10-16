@@ -289,8 +289,11 @@ pub fn build_chart_scene(data: &ChartData<'_>, ink: ChartInk) -> (Scene, ScaleSe
         crate::axis::render_graticule_labels(&mut scene, &data.layout, &meridians, &parallels, ink);
     }
 
-    // Colour legend.
-    if let Some(fill_scale) = scales.get(Channel::Fill) {
+    // Colour legend (a line coloured by `stroke` has no fill scale).
+    if let Some(fill_scale) = scales
+        .get(Channel::Fill)
+        .or_else(|| scales.get(Channel::Stroke))
+    {
         render_colour_legend(&mut scene, &data.layout, fill_scale, ink);
     }
 
@@ -1403,7 +1406,10 @@ fn draw_multi_mark_scene(
 
     // Colour legend — unless a standalone `legend:` node has relocated it.
     if draw_inline_legend {
-        if let Some(fill_scale) = scales.get(Channel::Fill) {
+        if let Some(fill_scale) = scales
+            .get(Channel::Fill)
+            .or_else(|| scales.get(Channel::Stroke))
+        {
             render_colour_legend(&mut scene, layout, fill_scale, ink);
         }
     }
@@ -2541,7 +2547,9 @@ mod tests {
         cm.insert(Channel::Y, "value".to_string());
 
         let layout = ChartLayout::new(640.0, 480.0);
-        let renderer = LineRenderer;
+        let renderer = LineRenderer {
+            axis: crate::mark::LineAxis::Y,
+        };
 
         let data = ChartData {
             batch: &batch,
@@ -2662,7 +2670,9 @@ mod tests {
 
         let layout = ChartLayout::new(640.0, 480.0);
         let dot_renderer = DotRenderer::default();
-        let line_renderer = LineRenderer;
+        let line_renderer = LineRenderer {
+            axis: crate::mark::LineAxis::Y,
+        };
 
         let data1 = ChartData {
             batch: &batch1,

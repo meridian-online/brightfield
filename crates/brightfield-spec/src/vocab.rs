@@ -124,8 +124,8 @@ vocab_enum! {
         Circle => ("circle", Unimplemented),
         // Lines
         Line => ("line", Implemented),
-        LineX => ("lineX", Unimplemented),
-        LineY => ("lineY", Unimplemented),
+        LineX => ("lineX", Implemented),
+        LineY => ("lineY", Implemented),
         // Rectangles
         // rect/rectX/rectY wired end-to-end (2026-07-03): RectRenderer
         // draws rectangles from explicit x1/x2 × y1/y2 extents (bare `rect`), or a
