@@ -136,8 +136,8 @@ use meridian_design::{control, semantic, spacing};
 use crate::app::ChartDoc;
 use crate::chart_item::run_state_pill;
 use crate::column_header::{
-    band_content_width, column_header_frame, draw_column_band, ColumnBandDrawn, ColumnBandFacts,
-    ColumnHeaderFrame, GridDensity,
+    band_content_width, column_header_frame, draw_column_band, format_value, ColumnBandDrawn,
+    ColumnBandFacts, ColumnHeaderFrame, GridDensity,
 };
 use crate::design::Mode;
 use crate::grid_foot::{foot_band, FOOT_BAND_HEIGHT};
@@ -188,10 +188,14 @@ pub enum CellInk {
 /// One cell's content.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CellText {
-    /// The text.
+    /// The text the cell shows.
     pub text: String,
     /// Its ink.
     pub ink: CellInk,
+    /// The value written out in full, where [`CellText::text`] rounds it: a
+    /// double the grid shows at two places. `None` where the text is already
+    /// the whole value.
+    pub exact: Option<String>,
 }
 
 impl CellText {
@@ -201,6 +205,7 @@ impl CellText {
         Self {
             text: text.into(),
             ink: CellInk::Primary,
+            exact: None,
         }
     }
 
@@ -210,6 +215,7 @@ impl CellText {
         Self {
             text: text.into(),
             ink: CellInk::Secondary,
+            exact: None,
         }
     }
 
@@ -219,7 +225,15 @@ impl CellText {
         Self {
             text: text.into(),
             ink: CellInk::Muted,
+            exact: None,
         }
+    }
+
+    /// The value in full: [`CellText::exact`] where the shown text rounds
+    /// it, and the shown text where it does not.
+    #[must_use]
+    pub fn full(&self) -> &str {
+        self.exact.as_deref().unwrap_or(&self.text)
     }
 }
 
@@ -567,8 +581,10 @@ pub struct CursorDrawn {
     /// The name of the cursor's column, or `None` where the table has no
     /// column at that index.
     pub column: Option<String>,
-    /// The cursor cell's value as the grid writes it, or `None` where the
-    /// cell is outside the rows the source holds.
+    /// The cursor cell's value in full ([`CellText::full`]), not rounded as
+    /// the cell shows it, or `None` where the cell is outside the rows the
+    /// source holds. The status band writes it out, which is where a value
+    /// the cell rounds can still be read whole.
     pub value: Option<String>,
     /// The cursor cell's rect and the stroke its ring was drawn in, or `None`
     /// where the cell was not among the cells drawn this frame.
@@ -777,7 +793,7 @@ pub fn show_table_sized(
         drawn.value = delegate
             .source
             .cell_text(drawn.at.row, drawn.at.col)
-            .map(|c| c.text);
+            .map(|c| c.full().to_owned());
     }
     delegate.drawn
 }
@@ -1222,6 +1238,12 @@ pub fn fetch_page(
 /// anticipated still displays rather than panicking; a NULL is spelled `NULL`
 /// in muted ink, never an empty cell a reader could mistake for an empty
 /// string.
+///
+/// A column of fractional numbers, a float or a decimal, then has its cast
+/// text read back and shown by [`format_value`], the rule the header band's
+/// range uses, so `21.63157894736842` shows as `21.63` and a whole `10.0` as
+/// `10`; the cast text is kept as the cell's [`CellText::exact`]. Integers,
+/// dates and everything else show the cast text as it is.
 fn tabulate(batches: &[RecordBatch]) -> (Vec<GridColumn>, Vec<Vec<CellText>>) {
     let Some(first) = batches.first() else {
         return (Vec::new(), Vec::new());
@@ -1234,6 +1256,11 @@ fn tabulate(batches: &[RecordBatch]) -> (Vec<GridColumn>, Vec<Vec<CellText>>) {
             name: f.name().clone(),
             numeric: f.data_type().is_numeric(),
         })
+        .collect();
+    let fractional: Vec<bool> = schema
+        .fields()
+        .iter()
+        .map(|f| is_fractional(f.data_type()))
         .collect();
 
     let mut rows: Vec<Vec<CellText>> = Vec::new();
@@ -1250,8 +1277,10 @@ fn tabulate(batches: &[RecordBatch]) -> (Vec<GridColumn>, Vec<Vec<CellText>>) {
         for row in 0..batch.num_rows() {
             let cells: Vec<CellText> = as_text
                 .iter()
-                .map(|col| match col {
+                .zip(&fractional)
+                .map(|(col, &fractional)| match col {
                     Some(col) if col.is_null(row) => CellText::muted("NULL"),
+                    Some(col) if fractional => number_cell(col.value(row)),
                     Some(col) => CellText::primary(col.value(row)),
                     // A column whose type would not cast to text — display
                     // its absence honestly rather than guessing at bytes.
@@ -1262,6 +1291,39 @@ fn tabulate(batches: &[RecordBatch]) -> (Vec<GridColumn>, Vec<Vec<CellText>>) {
         }
     }
     (columns, rows)
+}
+
+/// Whether a column of `data_type` holds fractional numbers, the cells
+/// [`format_value`] rounds.
+fn is_fractional(data_type: &DataType) -> bool {
+    data_type.is_floating()
+        || matches!(
+            data_type,
+            DataType::Decimal32(..)
+                | DataType::Decimal64(..)
+                | DataType::Decimal128(..)
+                | DataType::Decimal256(..)
+        )
+}
+
+/// A fractional number's cell from its cast text: shown by [`format_value`],
+/// with the cast text kept as [`CellText::exact`] where the two differ. Text
+/// that does not read back as a finite number, `NaN` or `inf`, is shown as
+/// it is.
+fn number_cell(cast: &str) -> CellText {
+    let Some(shown) = cast
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite())
+        .map(format_value)
+    else {
+        return CellText::primary(cast);
+    };
+    let mut cell = CellText::primary(shown);
+    if cell.text != cast {
+        cell.exact = Some(cast.to_owned());
+    }
+    cell
 }
 
 /// The pane's view-local cache: the fetched window and nothing else. Keyed to
@@ -2884,5 +2946,50 @@ mod tests {
                 RunState::StaleUpstream
             ]
         );
+    }
+
+    /// A double column's cells read at two places, or as digits where the
+    /// value is whole, and keep the stored value in full; a date and an
+    /// integer show their own text, untouched.
+    #[test]
+    fn a_double_rounds_to_two_places_and_a_date_keeps_its_text() {
+        use std::sync::Arc;
+
+        use arrow::array::{ArrayRef, Date32Array, Float64Array, Int64Array};
+        use arrow::datatypes::{Field, Schema};
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("income", DataType::Float64, true),
+            Field::new("day", DataType::Date32, true),
+            Field::new("year", DataType::Int64, true),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(Float64Array::from(vec![
+                Some(21.631_578_947_368_42),
+                Some(10.0),
+                Some(1_160.0),
+                None,
+            ])),
+            // 2026-10-16 is day 20,742 of the epoch.
+            Arc::new(Date32Array::from(vec![Some(20_742), None, None, None])),
+            Arc::new(Int64Array::from(vec![Some(2024), None, None, None])),
+        ];
+        let batch = RecordBatch::try_new(schema, columns).expect("a batch");
+        let (columns, rows) = tabulate(&[batch]);
+
+        assert_eq!(
+            columns.iter().map(|c| c.numeric).collect::<Vec<_>>(),
+            [true, false, true]
+        );
+        let income: Vec<&CellText> = rows.iter().map(|r| &r[0]).collect();
+        assert_eq!(income[0].text, "21.63");
+        assert_eq!(income[0].full(), "21.63157894736842");
+        assert_eq!(income[1].text, "10", "a whole double drops its `.0`");
+        assert_eq!(income[1].exact.as_deref(), Some("10.0"));
+        assert_eq!(income[2].text, "1,160");
+        assert_eq!(income[3], &CellText::muted("NULL"));
+
+        assert_eq!(rows[0][1], CellText::primary("2026-10-16"));
+        assert_eq!(rows[0][2], CellText::primary("2024"), "an integer is exact");
     }
 }

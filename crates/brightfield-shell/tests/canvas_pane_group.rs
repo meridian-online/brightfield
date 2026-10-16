@@ -34,6 +34,7 @@
 //! the page outgrows the pane there by the widest margin.
 
 use brightfield_shell::app::GridLayout;
+use brightfield_shell::column_header::format_value;
 use brightfield_shell::dashboard::MIN_ROW_HEIGHT;
 use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
@@ -2585,9 +2586,14 @@ fn fixture_row_for(
     let matches: Vec<&std::collections::BTreeMap<String, f64>> = rows
         .iter()
         .filter(|row| {
+            // A cell shows an integer as it is and a double rounded to two
+            // places, so a drawn text matches a file value it equals or the
+            // file value written by the grid's own rule.
             drawn.iter().all(|(name, text)| {
-                text.parse::<f64>()
-                    .is_ok_and(|v| row.get(name).is_some_and(|f| (f - v).abs() < 1e-9))
+                row.get(name).is_some_and(|f| {
+                    text.parse::<f64>().is_ok_and(|v| (f - v).abs() < 1e-9)
+                        || *text == format_value(*f)
+                })
             })
         })
         .collect();

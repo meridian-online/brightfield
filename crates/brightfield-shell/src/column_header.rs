@@ -632,6 +632,59 @@ pub fn format_statistic(v: f64) -> String {
     format!("{v:.2}")
 }
 
+/// One value as the band's range and the grid's cells print it.
+///
+/// [`format_statistic`]'s rule, so a column's bounds, its cells and its mean
+/// read at one precision, except that a whole number below a thousand prints
+/// as its digits: `52` where a count of years or rooms is stored as a double,
+/// not `52.00`. Below a thousand, a value that only rounds to a whole number
+/// keeps its two places, so `10.00` still says the stored value is not exactly
+/// ten. From a thousand up to a billion the statistic's rule rounds each value
+/// to a separated whole number, so `1,000` may stand for `1000.4`, and above
+/// that it prints an exponent; the cell keeps the stored text for the status
+/// band to show.
+#[must_use]
+pub fn format_value(v: f64) -> String {
+    if v.is_finite() && v.fract() == 0.0 && v.abs() < 1000.0 {
+        // Adding zero turns a negative zero into a positive one, which would
+        // otherwise print as `-0`.
+        return format!("{:.0}", v + 0.0);
+    }
+    format_statistic(v)
+}
+
+/// Whether a column stored as `storage` holds fractional numbers: the types
+/// [`format_value`] rounds. Integer types are left out on purpose, because
+/// their text is already exact and short, and a year or an identifier printed
+/// with a thousands separator (`2,024`) reads as a quantity it is not.
+#[must_use]
+pub fn is_fractional_storage(storage: &str) -> bool {
+    let upper = storage.trim().to_ascii_uppercase();
+    let base = upper.split('(').next().unwrap_or(&upper).trim();
+    matches!(
+        base,
+        "FLOAT" | "FLOAT4" | "FLOAT8" | "REAL" | "DOUBLE" | "DECIMAL" | "NUMERIC"
+    )
+}
+
+/// A range bound as the band prints it: the engine's text for `storage`
+/// rounded by [`format_value`] when the column holds fractional numbers, and
+/// the engine's text unchanged for a date or an integer column, which
+/// `a_value_reads_at_two_places_and_a_whole_one_as_digits` pins. The
+/// inspector's rail keeps the engine's text whole, so the exact bound stays
+/// one click away.
+#[must_use]
+pub fn format_bound(storage: &str, text: &str) -> String {
+    if is_fractional_storage(storage) {
+        if let Ok(v) = text.trim().parse::<f64>() {
+            if v.is_finite() {
+                return format_value(v);
+            }
+        }
+    }
+    text.to_string()
+}
+
 /// The glyph a column carries: a degree sign for one half of a coordinate
 /// pair, a hash for any other numeric column, and nothing at all for a column
 /// the contract declares no glyph for — a VARCHAR, say, where drawing a hash
@@ -906,6 +959,8 @@ pub fn draw_column_band(
     let range = facts.min.as_ref().zip(facts.max.as_ref());
     let (range_texts, range_rects) = match range {
         Some((min, max)) => {
+            let min = format_bound(&facts.storage, min);
+            let max = format_bound(&facts.storage, max);
             // The upper bound is laid out first and the lower one fitted to
             // what is left. Drawn at fixed anchors this row put
             // `2026-02-02` on top of `2026-02-07` on a date column at the
@@ -918,18 +973,15 @@ pub fn draw_column_band(
                     egui::pos2(inner.right(), y + frame.range_row()),
                 ),
                 &text_ink::TwoEndedRow {
-                    leading: min,
-                    trailing: max,
+                    leading: &min,
+                    trailing: &max,
                     font: detail_font(),
                     gap: RANGE_GAP,
                     leading_ink: frame.range,
                     trailing_ink: frame.range,
                 },
             );
-            (
-                Some((min.clone(), max.clone())),
-                Some((ends.leading, ends.trailing)),
-            )
+            (Some((min, max)), Some((ends.leading, ends.trailing)))
         }
         None => (None, None),
     };
@@ -1390,6 +1442,30 @@ mod tests {
         assert_eq!(format_statistic(0.0), "0.00");
         assert_eq!(format_statistic(f64::NAN), "\u{2014}");
         assert_eq!(thousands(1_234_567), "1,234,567");
+    }
+
+    /// A value in the range or a cell: the statistic's two places, digits
+    /// alone for a whole number, and a bound the engine wrote for a date or
+    /// an integer column passed through as written.
+    #[test]
+    fn a_value_reads_at_two_places_and_a_whole_one_as_digits() {
+        assert_eq!(format_value(34.066_666_666_666_67), "34.07");
+        assert_eq!(format_value(0.375), "0.38");
+        assert_eq!(format_value(10.0), "10");
+        assert_eq!(format_value(-0.0), "0");
+        assert_eq!(
+            format_value(9.999),
+            "10.00",
+            "rounding to whole is not whole"
+        );
+        assert_eq!(format_value(1_160.0), "1,160");
+
+        assert_eq!(format_bound("DOUBLE", "34.06666666666667"), "34.07");
+        assert_eq!(format_bound("DOUBLE", "52.0"), "52");
+        assert_eq!(format_bound("DECIMAL(18,4)", "12.3456"), "12.35");
+        assert_eq!(format_bound("DATE", "2026-02-07"), "2026-02-07");
+        assert_eq!(format_bound("BIGINT", "2024"), "2024");
+        assert_eq!(format_bound("DOUBLE", "nan"), "nan");
     }
 
     /// Two storage types on one table take two tints, and a column of the same
