@@ -33,7 +33,9 @@
 //! the filter, then the sort. A sort's page is read in its own order, then every
 //! column by position, so ties fall the same way on every read. A typed
 //! statement's page is read in the order its rows were made, which is the
-//! statement's own `ORDER BY` when it has one. The page is the first one and
+//! statement's own `ORDER BY` when it has one; without one, or between rows
+//! its order ties, DuckDB may make them in another order on another read,
+//! so that page can differ from read to read. The page is the first one and
 //! no more: it is there to prompt the next question, and must not pass for the
 //! step's rows or their range. Counting the last step's rows is a read of its
 //! own, [`preview_row_count_stoppable`], on the same terms.
@@ -174,8 +176,11 @@ impl std::fmt::Display for PreviewRefusal {
 /// of `chain` then reads the one before it (the first reads `root_table`) and
 /// is made as a table under its own name. The last is read in its own order
 /// when it is a sort, its order followed by each column by position as the
-/// tie-break; in the order its rows were made when it is a statement; and in
-/// `ORDER BY ALL` otherwise, so the page is the same page on every read.
+/// tie-break, and in `ORDER BY ALL` when it is a filter or the chain is empty,
+/// so for those the page is the same on every read. A statement's page is
+/// read in the order its rows were made: its own `ORDER BY` fixes that order
+/// as far as the keys do not tie, and without one the page can differ
+/// between reads.
 ///
 /// # Errors
 ///
