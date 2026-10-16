@@ -20,7 +20,7 @@ use brightfield_engine::{
 };
 
 use crate::data_grid::{page_of, GridPage, PreviewHooks, PREVIEW_ROWS};
-use crate::generated::sql_step_name_for;
+use crate::generated::{sql_step_name_for, GeneratedStep, StepEffect};
 use crate::operation::{recognise, Recognised};
 use crate::run::Runner;
 
@@ -33,6 +33,58 @@ pub fn typed_step_name(reading: &StatementReading, taken: &BTreeSet<String>) -> 
         reading.name_column.as_deref(),
         taken,
     )
+}
+
+/// **A statement kept from the palette and not yet saved**: a step of the
+/// Protocol that no file records, with the tables it reads and, once counted,
+/// the rows its table holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedStep {
+    /// The step's name, which is also the table it makes.
+    pub name: String,
+    /// The statement, as typed.
+    pub statement: String,
+    /// The tables the statement reads, in the order it names them.
+    pub reads: Vec<String>,
+    /// The rows of its table, once a count has come back.
+    pub rows: Option<u64>,
+}
+
+impl TypedStep {
+    /// The step as one of the steps after the load: a SQL step on the first
+    /// table it reads, with the statement as its argument.
+    #[must_use]
+    pub fn as_generated(&self) -> GeneratedStep {
+        GeneratedStep {
+            name: self.name.clone(),
+            effect: StepEffect::Sql,
+            on: self.reads.first().cloned().unwrap_or_default(),
+            reads: self.reads.clone(),
+            argument: self.statement.clone(),
+        }
+    }
+}
+
+/// **The model the lineage graph is handed for a SQL step**: a `CREATE` of the
+/// step's table from each table it reads, `SELECT 1` when it reads none. The
+/// graph's parser reads this rather than the statement, so the step's node
+/// does not depend on that parser reading DuckDB's own syntax, such as a
+/// statement that opens with `FROM`
+/// (`a_from_first_statement_still_makes_a_node` in `tests/typed_sql_nodes.rs`).
+pub(crate) fn lineage_model(step: &TypedStep) -> String {
+    lineage_model_of(&step.name, &step.reads)
+}
+
+/// [`lineage_model`] for the step `name` reading `reads`.
+pub(crate) fn lineage_model_of(name: &str, reads: &[String]) -> String {
+    let quoted = |n: &str| format!("\"{}\"", n.replace('"', "\"\""));
+    let from = if reads.is_empty() {
+        "1".to_string()
+    } else {
+        let tables: Vec<String> = reads.iter().map(|r| quoted(r)).collect();
+        format!("* FROM {}", tables.join(", "))
+    };
+    format!("CREATE OR REPLACE TABLE {} AS SELECT {from}", quoted(name))
 }
 
 /// How long the text must rest after an edit before it is read.

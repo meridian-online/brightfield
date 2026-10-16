@@ -74,8 +74,18 @@ use crate::pipeline::LiveDashboard;
 /// it.
 pub const FOOT_BAND_HEIGHT: f32 = 26.0;
 
-/// The radius of the dot a field carries while its applied text is in no file.
-const DOT_RADIUS: f32 = 3.0;
+/// The radius of the dot a field carries while its applied text is in no file,
+/// and the spine's mark for a step made from typed SQL that is in no file yet.
+pub(crate) const UNRECORDED_DOT_RADIUS: f32 = 3.0;
+
+/// **The dot for a thing that is in no file yet**, centred on `centre`: a
+/// field of this band whose applied text is unrecorded, and a typed step's row
+/// and its table's in the spine. One function draws both, so the mark is one
+/// mark wherever it appears.
+pub(crate) fn paint_unrecorded_dot(painter: &egui::Painter, centre: egui::Pos2, dark: bool) {
+    let ink = chrome::colour(semantic(dark).text.primary);
+    painter.circle_filled(centre, UNRECORDED_DOT_RADIUS, ink);
+}
 
 /// The share of the band's room, after the count, the `where` field takes.
 const WHERE_SHARE: f32 = 0.6;
@@ -767,9 +777,9 @@ pub fn foot_band(
         let mut x = from + word_size.x + spacing::SPACE_2;
         // The dot, while the field's applied text is in no file.
         if unrecorded[slot] {
-            let centre = egui::pos2(x + DOT_RADIUS, rect.center().y);
-            painter.circle_filled(centre, DOT_RADIUS, ink);
-            x += 2.0 * DOT_RADIUS + spacing::SPACE_2;
+            let centre = egui::pos2(x + UNRECORDED_DOT_RADIUS, rect.center().y);
+            paint_unrecorded_dot(&painter, centre, mode.is_dark());
+            x += 2.0 * UNRECORDED_DOT_RADIUS + spacing::SPACE_2;
             dots[slot] = true;
         }
         let field_rect = egui::Rect::from_min_max(

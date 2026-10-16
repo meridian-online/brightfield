@@ -273,7 +273,30 @@ impl OneStepProtocol {
     /// not match arc's template, named in the message. A record that will not
     /// read is not an error: it is reported and passed over.
     pub fn inputs_with_last_run(&self) -> Result<ProtocolInputs, String> {
-        let mut inputs = self.folder_inputs()?;
+        self.inputs_with_typed(&[])
+    }
+
+    /// [`Self::inputs_with_last_run`], with `typed`, the statements kept from
+    /// the palette and not yet saved, laid out as steps after the folder's
+    /// own, in the order given.
+    ///
+    /// Each is a `sql:` step of the manifest the graph is built from, at
+    /// `models/typed/<name>.sql`, a path no file is written at: the graph is
+    /// handed [`crate::typed_sql::lineage_model`] for it, as for each recorded
+    /// SQL step, so its node and its table stand on what it reads. The steps
+    /// are added to [`ProtocolInputs::generated`] (made from this Protocol when
+    /// the folder holds none) so a grid over a typed step's table previews it,
+    /// and named in [`ProtocolInputs::typed`] so the spine marks them not
+    /// recorded and a run's record is compared with the steps less them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::inputs_with_last_run`].
+    pub fn inputs_with_typed(
+        &self,
+        typed: &[crate::typed_sql::TypedStep],
+    ) -> Result<ProtocolInputs, String> {
+        let mut inputs = self.folder_inputs(typed)?;
         for view in crate::run::records_newest_first(&self.dir, &self.name) {
             if inputs.adopt_run(&view) {
                 break;
@@ -282,37 +305,85 @@ impl OneStepProtocol {
         Ok(inputs)
     }
 
-    /// The declaration the folder holds now: [`Self::inputs`], or, when the
-    /// folder's manifest holds steps arc generated after **this file's own
-    /// load**, that manifest read with its models, carrying this Protocol's
-    /// columns and source as [`Self::inputs`] does.
+    /// The declaration the folder holds now, with `typed` after its steps:
+    /// [`Self::inputs`], or, when the folder's manifest holds steps arc
+    /// generated after **this file's own load**, that manifest read with its
+    /// models, carrying this Protocol's columns and source as
+    /// [`Self::inputs`] does.
     ///
     /// A manifest whose load is another data file's (two files share a
     /// folder, and the other was Saved with steps) is not this Protocol's, and
     /// this file opens as its one step. A manifest of this file whose
     /// generated steps will not read opens as the one step too, with
     /// [`ProtocolInputs::folder_refused`] saying which step and why.
-    fn folder_inputs(&self) -> Result<ProtocolInputs, String> {
-        let manifest = Self::manifest_path_in(&self.dir);
-        let Ok(text) = std::fs::read_to_string(&manifest) else {
-            return self.inputs();
-        };
-        let generated = match crate::generated::generated_protocol_for(&text, &self.dir, self) {
-            Ok(Some(generated)) => generated,
-            Ok(None) => return self.inputs(),
-            Err(e) => {
-                let mut inputs = self.inputs()?;
-                inputs.folder_refused = Some(e);
-                return Ok(inputs);
+    fn folder_inputs(
+        &self,
+        typed: &[crate::typed_sql::TypedStep],
+    ) -> Result<ProtocolInputs, String> {
+        use crate::generated::{GeneratedProtocol, StepEffect};
+        let (mut manifest, mut sources, mut generated, folder_refused) = self.declared()?;
+        // A recorded SQL step's node stands on what it reads, as a typed one's
+        // does below, whatever DuckDB syntax its statement is in.
+        for step in generated.iter().flat_map(|g| &g.steps) {
+            if step.effect == StepEffect::Sql {
+                sources.insert(
+                    step.name.clone(),
+                    Ok(crate::typed_sql::lineage_model_of(&step.name, &step.reads)),
+                );
             }
-        };
-        let mut inputs = crate::protocol::load_protocol_offline(&manifest.to_string_lossy())?;
+        }
+        if !typed.is_empty() {
+            let steps = &mut generated
+                .get_or_insert_with(|| GeneratedProtocol {
+                    data: self.data.clone(),
+                    dir: self.dir.clone(),
+                    root_table: self.name.clone(),
+                    steps: Vec::new(),
+                })
+                .steps;
+            for step in typed {
+                manifest.steps.push(typed_manifest_step(&step.name)?);
+                sources.insert(step.name.clone(), Ok(crate::typed_sql::lineage_model(step)));
+                steps.push(step.as_generated());
+            }
+        }
+        let mut inputs = crate::protocol::load_manifest(&manifest, &sources);
         inputs.hold_table(self.table_id());
         inputs.columns.clone_from(&self.columns);
         inputs.tiles.clone_from(&self.tiles);
         inputs.source = Some(self.clone());
-        inputs.generated = Some(generated);
+        inputs.generated = generated;
+        inputs.folder_refused = folder_refused;
+        inputs.typed = typed.iter().map(|t| (t.name.clone(), t.rows)).collect();
         Ok(inputs)
+    }
+
+    /// The manifest the folder declares for this file, its models' text by
+    /// step name, its generated steps, and why the folder's steps were not
+    /// taken, when they were not: the folder's manifest when it holds steps arc
+    /// generated after this file's own load, and this Protocol's one step
+    /// otherwise.
+    fn declared(&self) -> Result<Declared, String> {
+        let one_step = |refused: Option<String>| -> Result<Declared, String> {
+            let manifest = brightfield_protocol::parse_manifest_str(&self.manifest)
+                .map_err(|e| format!("protocol parse error: {e}"))?;
+            let sources =
+                crate::protocol::embedded_sources(&manifest, &[(MODEL_PATH, &self.model)])?;
+            Ok((manifest, sources, None, refused))
+        };
+        let path = Self::manifest_path_in(&self.dir);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return one_step(None);
+        };
+        let generated = match crate::generated::generated_protocol_for(&text, &self.dir, self) {
+            Ok(Some(generated)) => generated,
+            Ok(None) => return one_step(None),
+            Err(e) => return one_step(Some(e)),
+        };
+        let manifest = brightfield_protocol::parse_manifest_str(&text)
+            .map_err(|e| format!("protocol parse error: {e}"))?;
+        let sources = brightfield_protocol::graph::load_model_sources(&manifest, &self.dir);
+        Ok((manifest, sources, Some(generated), None))
     }
 
     /// The asset id of the table this Protocol produces — the outline row the
@@ -391,6 +462,27 @@ impl OneStepProtocol {
         }
         Ok(manifest)
     }
+}
+
+/// A manifest, its `sql:` steps' model text by step name, the steps after the
+/// load, and why the folder's steps were not taken, when they were not.
+type Declared = (
+    brightfield_protocol::Manifest,
+    std::collections::BTreeMap<String, Result<String, String>>,
+    Option<crate::generated::GeneratedProtocol>,
+    Option<String>,
+);
+
+/// The manifest step for a step made from typed SQL: a `sql:` step whose
+/// model is at `models/typed/<name>.sql`, a path no file is written at, since
+/// the graph is handed the model's text. Built through YAML because arc's
+/// `Step` has no other way to be made with its other fields at their defaults.
+fn typed_manifest_step(name: &str) -> Result<brightfield_protocol::Step, String> {
+    let mut step = serde_yaml::Mapping::new();
+    step.insert("name".into(), name.into());
+    step.insert("sql".into(), format!("models/typed/{name}.sql").into());
+    serde_yaml::from_value(serde_yaml::Value::Mapping(step))
+        .map_err(|e| format!("the typed step {name:?} will not make a manifest step: {e}"))
 }
 
 /// What [`OneStepProtocol::save_to`] writes into a folder that holds a

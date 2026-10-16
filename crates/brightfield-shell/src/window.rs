@@ -6681,7 +6681,7 @@ impl MeridianApp {
     /// data file and the table it loads as, with every step the Protocol
     /// generated after the load as the chain the statement may read.
     fn typed_source(&self) -> Option<TypedSource> {
-        use crate::generated::KnownOperation;
+        use crate::generated::{KnownOperation, StepEffect};
         use brightfield_engine::PreviewOp;
         let model = &self.protocol.doc.model;
         let source = model.source()?;
@@ -6693,9 +6693,14 @@ impl MeridianApp {
                     .steps
                     .iter()
                     .map(|step| {
-                        let op = match step.operation {
-                            KnownOperation::FilterRows => PreviewOp::Where(step.argument.clone()),
-                            KnownOperation::SortRows => PreviewOp::OrderBy(step.argument.clone()),
+                        let op = match step.effect {
+                            StepEffect::Operation(KnownOperation::FilterRows) => {
+                                PreviewOp::Where(step.argument.clone())
+                            }
+                            StepEffect::Operation(KnownOperation::SortRows) => {
+                                PreviewOp::OrderBy(step.argument.clone())
+                            }
+                            StepEffect::Sql => PreviewOp::Statement(step.argument.clone()),
                         };
                         (step.name.clone(), op)
                     })
@@ -8337,8 +8342,7 @@ impl MeridianApp {
     /// previews that step through its chain from the data file. `None`
     /// otherwise.
     fn preview_request(&self) -> Option<crate::data_grid::PreviewRequest> {
-        use crate::generated::KnownOperation;
-        use brightfield_engine::PreviewOp;
+        use crate::generated::{KnownOperation, StepEffect};
         let CanvasHolds::View {
             node,
             view: NodeView::Grid,
@@ -8355,30 +8359,17 @@ impl MeridianApp {
             .steps
             .iter()
             .find(|s| s.name.to_lowercase() == label)?;
-        let op = |s: &crate::generated::GeneratedStep| match s.operation {
-            KnownOperation::FilterRows => PreviewOp::Where(s.argument.clone()),
-            KnownOperation::SortRows => PreviewOp::OrderBy(s.argument.clone()),
-        };
-        // Back from the step to the load, through the table each step reads;
-        // each reads one an earlier step makes, so the walk ends within the
-        // number of steps.
-        let mut chain = vec![(step.name.clone(), op(step))];
-        let mut on = step.on.as_str();
-        while let Some(before) = generated
-            .steps
-            .iter()
-            .find(|s| s.name.to_lowercase() == on.to_lowercase())
-        {
-            if chain.len() > generated.steps.len() {
-                return None;
+        // The steps the step reads, and theirs, back to the load, in the
+        // order the manifest makes them.
+        let chain = crate::generated::preview_chain(generated, &step.name)?;
+        let fields = match step.effect {
+            StepEffect::Operation(KnownOperation::FilterRows) => {
+                [step.argument.clone(), String::new()]
             }
-            chain.push((before.name.clone(), op(before)));
-            on = before.on.as_str();
-        }
-        chain.reverse();
-        let fields = match step.operation {
-            KnownOperation::FilterRows => [step.argument.clone(), String::new()],
-            KnownOperation::SortRows => [String::new(), step.argument.clone()],
+            StepEffect::Operation(KnownOperation::SortRows) => {
+                [String::new(), step.argument.clone()]
+            }
+            StepEffect::Sql => [String::new(), String::new()],
         };
         Some(crate::data_grid::PreviewRequest {
             step: step.name.clone(),

@@ -740,6 +740,7 @@ dependencies = [
  "pollster",
  "rfd",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "ureq",
  "vello",

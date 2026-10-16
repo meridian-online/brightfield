@@ -54,6 +54,9 @@ image = "0.25"
 arrow = { workspace = true }
 # --script ndjson parsing for the headless shot's scripted RawInput.
 serde_json = { workspace = true }
+# arc's manifest `Step`, built for a typed SQL step that no file holds yet;
+# the version arc and brightfield-protocol already pull in.
+serde_yaml = { workspace = true }
 # The local time zone's offset at an instant, for the Versions panel's *when*
 # (`today 14:02`). Already in the graph, with `clock` on; named
 # here so the shell reads it directly, and with no default features so it adds

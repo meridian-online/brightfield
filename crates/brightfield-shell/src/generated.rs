@@ -107,15 +107,30 @@ impl KnownOperation {
     }
 }
 
-/// One step arc generated, as its model says.
+/// What a step does to make its table: an operation arc generated, or a SQL
+/// statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepEffect {
+    /// A `filter-rows` or `sort-rows` arc generated, on the one table it reads.
+    Operation(KnownOperation),
+    /// A statement, which reads the tables it names.
+    Sql,
+}
+
+/// One step after the load: one arc generated, as its model says, or one made
+/// from typed SQL.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeneratedStep {
     /// The step's name, which is also the table it makes.
     pub name: String,
-    pub operation: KnownOperation,
-    /// The table the step reads.
+    pub effect: StepEffect,
+    /// The table the step reads: an operation's one table, or the first a
+    /// statement reads (empty when it reads none).
     pub on: String,
-    /// The condition or the ordering, as written.
+    /// Every table the step reads, in the order it names them. An operation
+    /// reads its [`Self::on`] alone.
+    pub reads: Vec<String>,
+    /// An operation's condition or ordering, or a statement, as written.
     pub argument: String,
 }
 
@@ -289,10 +304,66 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
     }
     Ok(GeneratedStep {
         name: step_name.to_string(),
-        operation,
+        effect: StepEffect::Operation(operation),
         on: on.to_string(),
+        reads: vec![on.to_string()],
         argument: argument.to_string(),
     })
+}
+
+/// **The steps a preview of `step` makes**: the steps it reads, and theirs,
+/// in manifest order, ending with `step` itself, each with what it does. A
+/// step `step` does not read, directly or through another, is left out, so a
+/// preview does not run a statement its rows do not come from. `None` when no
+/// step is named `step`, in any case.
+///
+/// A table is matched to the step that makes it without regard to case, as
+/// DuckDB resolves a name; the load's table is made by no step here, and ends
+/// the walk.
+#[must_use]
+pub fn preview_chain(
+    protocol: &GeneratedProtocol,
+    step: &str,
+) -> Option<Vec<(String, brightfield_engine::PreviewOp)>> {
+    use brightfield_engine::PreviewOp;
+    let index_of = |name: &str| {
+        let name = name.to_lowercase();
+        protocol
+            .steps
+            .iter()
+            .position(|s| s.name.to_lowercase() == name)
+    };
+    let target = index_of(step)?;
+    let mut needed = BTreeSet::from([target]);
+    let mut todo = vec![target];
+    while let Some(i) = todo.pop() {
+        for read in &protocol.steps[i].reads {
+            // A step reads only steps before it, so the walk ends.
+            if let Some(j) = index_of(read).filter(|&j| j < i) {
+                if needed.insert(j) {
+                    todo.push(j);
+                }
+            }
+        }
+    }
+    Some(
+        needed
+            .into_iter()
+            .map(|i| {
+                let s = &protocol.steps[i];
+                let op = match s.effect {
+                    StepEffect::Operation(KnownOperation::FilterRows) => {
+                        PreviewOp::Where(s.argument.clone())
+                    }
+                    StepEffect::Operation(KnownOperation::SortRows) => {
+                        PreviewOp::OrderBy(s.argument.clone())
+                    }
+                    StepEffect::Sql => PreviewOp::Statement(s.argument.clone()),
+                };
+                (s.name.clone(), op)
+            })
+            .collect(),
+    )
 }
 
 /// The table a load model makes: the target of its `CREATE OR REPLACE TABLE`.
@@ -567,7 +638,7 @@ mod tests {
     #[test]
     fn parses_arcs_filter_template() {
         let s = parse_generated("x", FILTER).expect("arc's own text parses");
-        assert_eq!(s.operation, KnownOperation::FilterRows);
+        assert_eq!(s.effect, StepEffect::Operation(KnownOperation::FilterRows));
         assert_eq!(s.on, "california_housing");
         assert_eq!(s.argument, "house_age > 28");
         assert_eq!(s.name, "x");
@@ -577,7 +648,7 @@ mod tests {
     fn parses_arcs_sort_template() {
         let text = "-- generated: sort-rows on my table\nCREATE OR REPLACE TABLE \"y\" AS\nSELECT *\nFROM \"my table\"\nORDER BY a DESC,\n  b;\n";
         let s = parse_generated("y", text).expect("the sort template parses");
-        assert_eq!(s.operation, KnownOperation::SortRows);
+        assert_eq!(s.effect, StepEffect::Operation(KnownOperation::SortRows));
         assert_eq!(s.on, "my table");
         assert_eq!(s.argument, "a DESC,\n  b");
     }

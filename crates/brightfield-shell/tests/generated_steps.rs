@@ -3,7 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use brightfield_shell::generated::{generated_protocol_in, parse_generated, KnownOperation};
+use brightfield_shell::generated::{
+    generated_protocol_in, parse_generated, KnownOperation, StepEffect,
+};
 use brightfield_shell::run::Runner;
 use brightfield_shell::{data_file, operation, starts};
 
@@ -97,14 +99,17 @@ fn parses_a_model_arc_actually_wrote() {
     record_filter(dir.path(), "california_housing", "kept");
     let model = std::fs::read_to_string(model_of(dir.path(), "kept")).expect("the model reads");
     let step = parse_generated("kept", &model).expect("arc's own model parses");
-    assert_eq!(step.operation, KnownOperation::FilterRows);
+    assert_eq!(
+        step.effect,
+        StepEffect::Operation(KnownOperation::FilterRows)
+    );
     assert_eq!(step.on, "california_housing");
     assert_eq!(step.argument, "house_age > 28");
 
     record_sort(dir.path(), "kept", "ordered");
     let model = std::fs::read_to_string(model_of(dir.path(), "ordered")).expect("the model reads");
     let step = parse_generated("ordered", &model).expect("arc's sort parses");
-    assert_eq!(step.operation, KnownOperation::SortRows);
+    assert_eq!(step.effect, StepEffect::Operation(KnownOperation::SortRows));
     assert_eq!(step.on, "kept");
     assert_eq!(step.argument, "median_income DESC");
 }

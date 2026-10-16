@@ -160,6 +160,11 @@ pub struct ProtocolInputs {
     /// from arc's template, in words naming the step. The document then holds
     /// the load alone, and the window says why in a banner. `None` otherwise.
     pub folder_refused: Option<String>,
+    /// The steps made from typed SQL that no file records yet, each with the
+    /// rows its table holds once counted. They are steps of the graph like any
+    /// other; the spine marks them not recorded, and a run's record, which
+    /// cannot hold them, is compared with the other steps.
+    pub typed: BTreeMap<StepId, Option<u64>>,
 }
 
 impl ProtocolInputs {
@@ -196,6 +201,7 @@ impl ProtocolInputs {
             source: None,
             generated: None,
             folder_refused: None,
+            typed: BTreeMap::new(),
         }
     }
 
@@ -283,7 +289,14 @@ impl ProtocolInputs {
     /// since been replaced by the file's own — and drawing its states against
     /// steps it did not run would put a run's outcome on the wrong rows.
     pub fn adopt_run(&mut self, view: &ContractView) -> bool {
-        let declared: BTreeSet<&StepId> = self.graph_full.seams.keys().collect();
+        // A step typed and not yet saved is in no manifest a run read, so a
+        // record is compared with the steps less those.
+        let declared: BTreeSet<&StepId> = self
+            .graph_full
+            .seams
+            .keys()
+            .filter(|step| !self.typed.contains_key(*step))
+            .collect();
         let recorded: BTreeSet<&StepId> = view.steps.keys().collect();
         if view.run.protocol != self.protocol || declared != recorded {
             return false;
@@ -450,6 +463,24 @@ pub fn load_protocol_str(text: &str, models: &[(&str, &str)]) -> Result<Protocol
     }
     let manifest = brightfield_protocol::parse_manifest_str(text)
         .map_err(|e| format!("protocol parse error: {e}"))?;
+    Ok(load_manifest(
+        &manifest,
+        &embedded_sources(&manifest, models)?,
+    ))
+}
+
+/// The models of `manifest`'s `sql:` steps, each looked up in `models` by the
+/// path the manifest spells it with: what [`load_manifest`] is handed for a
+/// manifest whose models are text rather than files.
+///
+/// # Errors
+///
+/// A message naming each model the manifest names and `models` does not
+/// carry, for the reason [`load_protocol_str`] gives.
+pub(crate) fn embedded_sources(
+    manifest: &brightfield_protocol::Manifest,
+    models: &[(&str, &str)],
+) -> Result<BTreeMap<StepId, Result<String, String>>, String> {
     let mut missing: Vec<&str> = Vec::new();
     let sources: BTreeMap<StepId, Result<String, String>> = manifest
         .steps
@@ -474,7 +505,19 @@ pub fn load_protocol_str(text: &str, models: &[(&str, &str)]) -> Result<Protocol
             missing.join(", ")
         ));
     }
-    Ok(inputs_from(&manifest, &sources))
+    Ok(sources)
+}
+
+/// Load a manifest already parsed, with each `sql:` step's model text keyed by
+/// the step's name: the load [`load_protocol_str`] and
+/// [`load_protocol_offline`] end in, for a caller that has added steps to the
+/// manifest no text spells.
+#[must_use]
+pub(crate) fn load_manifest(
+    manifest: &brightfield_protocol::Manifest,
+    sources: &BTreeMap<StepId, Result<String, String>>,
+) -> ProtocolInputs {
+    inputs_from(manifest, sources)
 }
 
 /// Load an emitted **Protocol+Run contract** into [`ProtocolInputs`] — a
@@ -540,6 +583,7 @@ pub fn load_contract_str(bytes: &[u8]) -> Result<ProtocolInputs, String> {
         source: None,
         generated: None,
         folder_refused: None,
+        typed: BTreeMap::new(),
     })
 }
 
@@ -551,6 +595,10 @@ pub fn load_contract_str(bytes: &[u8]) -> Result<ProtocolInputs, String> {
 /// and the spine therefore spell the absence of a run the same way without
 /// either quoting the other's literal.
 pub const NOT_RUN: &str = "not run";
+
+/// The word a step's row in the spine carries in place of its run state while
+/// the step is made from typed SQL and in no file yet.
+pub const NOT_RECORDED: &str = "not recorded";
 
 /// What the ledger's strip says a run came to.
 ///
@@ -630,6 +678,7 @@ fn inputs_from(
         source: None,
         generated: None,
         folder_refused: None,
+        typed: BTreeMap::new(),
     }
 }
 
@@ -706,7 +755,8 @@ impl NodeView {
 /// trailing end of its own row (`sql · not run`), so a marker that repeated it
 /// would be a second spelling of one fact. What the marker answers instead is
 /// the question a reader asks of a list like this — *is this thing there yet* —
-/// and its two answers are the two ways a Protocol can be part-built.
+/// and its answers are the ways a Protocol can be part-built: not made yet,
+/// or not in any file yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpineMarker {
     /// The thing exists: an asset the Protocol reads off disk, an asset a run
@@ -716,6 +766,11 @@ pub enum SpineMarker {
     /// The thing does not exist yet: a step that has not run to success, or an
     /// asset nothing has materialised.
     Hollow,
+    /// The thing is in no file yet: a step made from typed SQL and not saved,
+    /// and the table it makes. Drawn as the grid foot's own dot for a view no
+    /// file records, [`crate::grid_foot::paint_unrecorded_dot`], so one mark
+    /// means one thing in both places.
+    Unrecorded,
     /// No marker — a caption, a view of a node, a column of a table.
     None,
 }
@@ -998,6 +1053,8 @@ pub struct ProtocolModel {
     generated: Option<crate::generated::GeneratedProtocol>,
     /// See [`ProtocolInputs::folder_refused`].
     folder_refused: Option<String>,
+    /// See [`ProtocolInputs::typed`].
+    typed: BTreeMap<StepId, Option<u64>>,
     /// Which column the chart document has selected — a tile's, or a column
     /// of the table the dashboard draws no tile for — mirrored in from it each
     /// frame so the rail's highlight and the inspector's heading cannot name
@@ -1091,6 +1148,7 @@ impl ProtocolModel {
             source: inputs.source,
             generated: inputs.generated,
             folder_refused: inputs.folder_refused,
+            typed: inputs.typed,
             selected_column: None,
             column_pick: None,
             on_column_row: false,
@@ -1670,20 +1728,20 @@ impl ProtocolModel {
             let step = node
                 .and_then(|n| n.step.as_ref())
                 .filter(|_| row.kind != AssetKind::Source);
+            let typed = step.and_then(|step| self.typed.get(step));
             if let Some(step) = step {
+                let (state, marker) = match typed {
+                    Some(_) => (NOT_RECORDED, SpineMarker::Unrecorded),
+                    None if row.status == SeamStatus::Ok => {
+                        (status_word(row.status), SpineMarker::Filled)
+                    }
+                    None => (status_word(row.status), SpineMarker::Hollow),
+                };
                 rows.push(SpineRow {
                     label: step.clone(),
-                    kind: format!(
-                        "{} \u{b7} {}",
-                        seam_kind_word(graph, step),
-                        status_word(row.status)
-                    ),
+                    kind: format!("{} \u{b7} {state}", seam_kind_word(graph, step)),
                     depth: 0,
-                    marker: if row.status == SeamStatus::Ok {
-                        SpineMarker::Filled
-                    } else {
-                        SpineMarker::Hollow
-                    },
+                    marker,
                     role: SpineRole::Step,
                     selected: false,
                     id: None,
@@ -1710,15 +1768,24 @@ impl ProtocolModel {
                 }
             };
             let has_views = self.table.is_some() && row.kind.is_tabular();
+            let (kind, marker) = match typed {
+                Some(Some(rows)) => (
+                    format!(
+                        "{} \u{b7} {} rows",
+                        kind_label(row.kind),
+                        crate::column_header::thousands(*rows)
+                    ),
+                    SpineMarker::Unrecorded,
+                ),
+                Some(None) => (kind_label(row.kind).to_string(), SpineMarker::Unrecorded),
+                None if exists => (kind_label(row.kind).to_string(), SpineMarker::Filled),
+                None => (kind_label(row.kind).to_string(), SpineMarker::Hollow),
+            };
             rows.push(SpineRow {
                 label: row.label,
-                kind: kind_label(row.kind).to_string(),
+                kind,
                 depth: 0,
-                marker: if exists {
-                    SpineMarker::Filled
-                } else {
-                    SpineMarker::Hollow
-                },
+                marker,
                 role: SpineRole::Asset,
                 selected: row.selected,
                 id: Some(row.id.clone()),
@@ -1927,6 +1994,20 @@ impl ProtocolModel {
             .rows()
             .iter()
             .any(|row| row.name == name && row.status == "ok")
+    }
+
+    /// Whether `step` is made from typed SQL and recorded in no file yet.
+    #[must_use]
+    pub fn is_typed(&self, step: &str) -> bool {
+        self.typed.contains_key(step)
+    }
+
+    /// Note that the table the typed step `step` makes holds `rows` rows, for
+    /// its row in the spine to say. A step that is not typed is left alone.
+    pub fn set_typed_rows(&mut self, step: &str, rows: u64) {
+        if let Some(count) = self.typed.get_mut(step) {
+            *count = Some(rows);
+        }
     }
 
     /// Select the table the step `name` makes, as a click on its row would.
@@ -3583,7 +3664,8 @@ pub const GRAPH_CHIP_HINT: &str =
 /// state is spelled in words at the trailing end of the step's own row, so the
 /// marker answers the other question — whether the thing exists — and answers
 /// it in shape rather than in colour: filled for a thing that is there, hollow
-/// for one that is not. See [`SpineMarker`].
+/// for one that is not, and the grid foot's own dot, in the primary ink, for
+/// one typed and in no file yet. See [`SpineMarker`].
 fn spine_row(
     ui: &mut egui::Ui,
     row: &SpineRow,
@@ -3637,6 +3719,9 @@ fn spine_row(
                 SPINE_MARKER_RADIUS,
                 egui::Stroke::new(1.0, chrome::colour(sem.text.muted)),
             );
+        }
+        SpineMarker::Unrecorded => {
+            crate::grid_foot::paint_unrecorded_dot(painter, centre, mode.is_dark());
         }
         SpineMarker::None => {}
     }
