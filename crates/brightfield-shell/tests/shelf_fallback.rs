@@ -615,6 +615,50 @@ fn the_marks_cell_hangs_no_card() {
     assert!(win.app.shelf_card_drawn().is_none());
 }
 
+/// Every stroked path `shapes` paint, the nested ones included.
+fn paths(shapes: &[ClippedShape]) -> Vec<egui::epaint::PathShape> {
+    fn walk(shape: &Shape, out: &mut Vec<egui::epaint::PathShape>) {
+        match shape {
+            Shape::Path(path) => out.push(path.clone()),
+            Shape::Vec(inner) => inner.iter().for_each(|s| walk(s, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for clipped in shapes {
+        walk(&clipped.shape, &mut out);
+    }
+    out
+}
+
+/// **Only a cell that opens a list draws the chevron that promises one.** The
+/// column cells open a list of columns and draw a chevron at their trailing
+/// edge; the mark's cell opens nothing yet and draws none.
+#[test]
+fn the_marks_cell_draws_no_chevron_and_the_column_cells_do() {
+    for mode in [Mode::Light, Mode::Dark] {
+        let win = Window::rail_shut(mode);
+        let cells = win.app.shelf_drawn().expect("the band drew").cells;
+        let paths = paths(&win.shapes);
+        for channel in ShelfChannel::ALL {
+            let cell = cells[channel.index()];
+            // The chevron is a stroked path inside the cell's trailing 20 points.
+            let drawn = paths
+                .iter()
+                .filter(|p| {
+                    let bounds = egui::Rect::from_points(&p.points);
+                    cell.contains_rect(bounds) && bounds.left() > cell.right() - 20.0
+                })
+                .count();
+            let want = usize::from(channel != ShelfChannel::Mark);
+            assert_eq!(
+                drawn, want,
+                "{channel:?} in {mode:?} drew {drawn} trailing glyphs, wanted {want}"
+            );
+        }
+    }
+}
+
 /// **A card that is taller than the room under its cell stops at the window.**
 /// A short window leaves the list less room than its rows take, and the rows
 /// scroll inside the card.

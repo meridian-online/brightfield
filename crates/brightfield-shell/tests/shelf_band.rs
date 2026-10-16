@@ -570,7 +570,8 @@ fn the_cell_keys_printed_on_the_band_are_the_registrys() {
 }
 
 #[test]
-fn a_cell_says_the_channels_word_over_the_columns_name_with_a_chevron_on_the_words_line() {
+fn a_cell_says_the_channels_word_over_the_columns_name_with_a_chevron_on_a_column_cells_words_line()
+{
     let stage = Stage::new(Mode::Light, WIDTH);
     let frame = stage.draw(&mut ShelfBand::new(map_channels()));
     let names = [
@@ -594,12 +595,17 @@ fn a_cell_says_the_channels_word_over_the_columns_name_with_a_chevron_on_the_wor
             "{channel:?}: the word and the name do not share a left edge"
         );
 
-        // One chevron in the cell, at its trailing edge, vertically on the
-        // word's line and clear of the word.
+        // A column cell has one chevron, at its trailing edge, vertically on
+        // the word's line and clear of the word. The mark's cell opens no list
+        // yet and has none.
         let here: Vec<&egui::Rect> = chevrons
             .iter()
             .filter(|r| cell.contains(r.center()))
             .collect();
+        if channel == ShelfChannel::Mark {
+            assert!(here.is_empty(), "the mark's cell drew a chevron: {here:?}");
+            continue;
+        }
         assert_eq!(here.len(), 1, "{channel:?}: chevrons in the cell: {here:?}");
         let chevron = here[0];
         assert!(
@@ -611,7 +617,11 @@ fn a_cell_says_the_channels_word_over_the_columns_name_with_a_chevron_on_the_wor
         assert!(chevron.right() <= cell.right() - PAD + 0.01, "{channel:?}");
         assert!(chevron.width() <= control::ICON_SM, "{channel:?}");
     }
-    assert_eq!(chevrons.len(), 4, "four cells, four chevrons: {chevrons:?}");
+    assert_eq!(
+        chevrons.len(),
+        3,
+        "three column cells, three chevrons: {chevrons:?}"
+    );
 }
 
 #[test]
