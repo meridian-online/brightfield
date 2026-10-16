@@ -21,8 +21,8 @@
 //!
 //! **A typed statement is asked of arc too.** [`recognise`] runs
 //! `arc sql recognise <sql>` and reports whether arc reads the statement as a
-//! `filter-rows` (with its table and condition as typed) or as nothing it
-//! holds, so the window never judges SQL itself.
+//! `filter-rows` (with its table and condition as typed) or as another
+//! kind of statement, so the window leaves the judging of SQL to arc.
 //!
 //! **A description is fetched once per operation for the session**, off the
 //! UI thread ([`Descriptions`]), because it cannot change while arc's pin is
