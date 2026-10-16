@@ -4,7 +4,7 @@
 
 **Goal:** Brightfield opens a Protocol an agent wrote with every panel drawn from the Protocol's database, says in a tile why a panel cannot draw, exports the report to PDF and a panel to PNG or data with no window, and records the analyst's saves in the Protocol's version log beside the agent's.
 
-**Architecture:** arc exports the rules Brightfield must not copy (where the database is, the panel check, a run's table hashes, the report's run, the version log), and its command line learns to record under a caller's interface word. Brightfield loads each `panels/*.yaml` as its own composed chart, with each table it reads injected as a `data:` entry over the Protocol's database attached read-only, so one panel's failure is one tile's message. The headless exports reuse the Vello path `brightfield-shot --vello-only` already uses, and a new `brightfield-report` crate turns `report.md` into a PDF with Typst, with the charts placed as images.
+**Architecture:** arc exports the rules Brightfield must not copy (where the database is, the panel check, a run's table hashes, the report's run, the version log), and its command line learns to record under a caller's interface word. Brightfield loads each `panels/*.yaml` as its own composed chart, so one panel's failure is one tile's message. The tables the panels read are copied out of the Protocol's database in one short read-only attach and injected as `data:` entries, so Brightfield never holds the file arc writes. The headless exports reuse the Vello path `brightfield-shot --vello-only` already uses, and a new `brightfield-report` crate turns `report.md` into a PDF with Typst, with the charts placed as images.
 
 **Tech stack:** Rust 1.95.0, egui/eframe 0.35, Vello 0.9 on wgpu, DuckDB (bundled crate, moving to arc's `=1.10506.0`), arc as a git dependency, Typst as a library (`typst`, `typst-pdf`, and `typst-render` for test previews), `pulldown-cmark`.
 
@@ -29,7 +29,7 @@
 
 These are inputs the spec implies but doesn't spell out, most likely to bite first. Each has its test in the task named.
 
-1. **The agent is still running `arc run` when the analyst opens the Protocol**, so the database is locked. Expect a message saying the Protocol is being run and to try again, not a crash or empty tiles. (Task 4: `a_locked_database_says_the_protocol_is_running`)
+1. **The agent is still running `arc run` when the analyst opens the Protocol**, so the database is locked. Expect a message saying the Protocol is being run and to try again, not a crash or empty tiles. The reverse case matters as much: the agent runs while the analyst has the Protocol open, and expects the run to succeed. (Task 4: `a_locked_database_says_the_protocol_is_running`, `arc_can_run_while_the_protocol_is_open`)
 2. **The Protocol folder's path has a space or a quote in it.** Expect it to open and export as any other. (Task 4: `a_folder_with_a_space_and_a_quote_opens`)
 3. **The report's prose holds characters Typst reads as markup**: `#`, `$`, `*`, `_`, `@`, `<`, `[`, `]`, `\`, backticks. Expect them printed literally. (Task 7: `typst_markup_in_prose_is_printed_literally`)
 4. **`panels/` holds a `.yml` file, a hidden file, or a subfolder.** Expect exactly what arc's panel check reads: `*.yaml` files directly in `panels/`, in name order. (Task 4: `only_yaml_files_in_panels_are_tiles`)
@@ -112,6 +112,7 @@ pub const HISTORY_WAY_ENV: &str = "ARCFORM_HISTORY_WAY";
 - Modify: `Cargo.toml:66` (the `arc` rev, set to Task 1's merge commit on arc's main)
 - Modify: `Cargo.toml:71` (`duckdb = { version = "=1.10506.0", features = ["bundled"] }`, matching arc's pin)
 - Modify: `Cargo.lock`
+- Modify: `scripts/fetch-duckdb-cli.sh:52` and the asset hashes beside it (the DuckDB command line moves to v1.5.6 with the crate, as the script's own comment requires; take the hashes from the v1.5.6 release page)
 - Modify: `crates/brightfield-shell/src/run.rs:308` (`arc_command` sets `ARCFORM_HISTORY_WAY=brightfield`)
 - Test: `crates/brightfield-shell/tests/chart_save_reopens_chart.rs` (existing), and a new `crates/brightfield-shell/tests/arc_child_way.rs`
 
@@ -122,7 +123,7 @@ pub const HISTORY_WAY_ENV: &str = "ARCFORM_HISTORY_WAY";
 - [ ] **Step 1: Write the failing test** `arc_child_way.rs::a_recorded_step_is_logged_as_brightfield`. Copy `examples/protocol/edgar_gleif` (or the smallest existing Protocol fixture) to a temp dir, with `ARCFORM_HISTORY_DIR` and `ARCFORM_DB_DIR` set to temp dirs. Call `operation::record_sql(&Runner::this_binary(), dir, "SELECT 1 AS one", "one")`. Assert that the last line of `<dir>/arcform-log.txt` holds `"interface":"brightfield"` and `"step":"one"`.
 - [ ] **Step 2: Run it and see it fail.** Run `cargo test -p brightfield-shell --test arc_child_way`. Expected: FAIL, with no `arcform-log.txt` under the old pin.
 - [ ] **Step 3: Move the pins and set the variable.** Update both pins, then `cargo update -p arc -p duckdb`. Set `ARCFORM_HISTORY_WAY` in `arc_command`. Fix any compile breaks the arc move causes, keeping behaviour the same.
-- [ ] **Step 4: Run the tests.** Run `cargo test -p brightfield-shell --test arc_child_way --test chart_save_reopens_chart --test generated_reopen`, then `cargo test -p brightfield-protocol`. Expected: PASS.
+- [ ] **Step 4: Run the tests.** Run `scripts/fetch-duckdb-cli.sh` and confirm `target/duckdb-cli/duckdb --version` prints v1.5.6. Then run `cargo test -p brightfield-shell --test arc_child_way --test chart_save_reopens_chart --test generated_reopen`, then `cargo test -p brightfield-protocol`. Expected: PASS.
 - [ ] **Step 5: Check licences and advisories.** Run `cargo xtask ci --step deny-licenses` and `--step deny-advisories`. A new advisory not caused by this change is recorded as a ruling and fixed in a separate PR.
 - [ ] **Step 6: Commit.**
 
@@ -162,19 +163,20 @@ pub const HISTORY_WAY_ENV: &str = "ARCFORM_HISTORY_WAY";
 - Produces:
 
 ```rust
-pub struct ProtocolPanels { pub dir: PathBuf, pub name: String, pub db: PathBuf, pub tiles: Vec<PanelTile> }
+pub struct ProtocolPanels { pub dir: PathBuf, pub name: String, pub db: PathBuf, pub run_id: Option<String>, pub tiles: Vec<PanelTile>, tables: tempfile::TempDir /* the Parquet snapshot the tiles read */ }
 pub struct PanelTile { pub file: PathBuf /* "panels/x.yaml" */, pub title: Option<String>, pub source: String /* the file's text as written */, pub outcome: Result<Composed, PanelProblem> }
 pub enum PanelProblem { Unreadable(String), MissingTable { from: String }, MissingColumn { from: String, column: String }, Unsupported(Vec<String>), Failed(String) }
 impl PanelProblem { pub fn message(&self) -> String }  // MissingTable/MissingColumn/Unreadable reuse PanelFinding's Display text
-pub enum OpenProblem { NotAProtocol(PathBuf), NotRun { dir: PathBuf }, NoPanels { dir: PathBuf }, Locked { db: PathBuf }, Arc(String) }
+pub enum OpenProblem { NotAProtocol(PathBuf), NotRun { dir: PathBuf }, NoPanels { dir: PathBuf }, Locked { db: PathBuf }, EngineMismatch { db: PathBuf, detail: String }, Arc(String) }
 impl OpenProblem { pub fn message(&self) -> String }
 pub fn agent_panels_in(dir: &Path) -> bool;  // panels/ holds a *.yaml other than panel_file(dir, name)
 pub fn load(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenProblem>;
-pub fn with_protocol_tables(panel: &str, db: &Path) -> Result<String, String>;
-pub const PROTOCOL_DB_KEY: &str = "__protocol";
+pub fn with_protocol_tables(panel: &str, tables_dir: &Path) -> Result<String, String>;
 ```
 
-- `with_protocol_tables` adds `__protocol: { file: <db> }` to the panel's top-level `data:`, which the existing `duckdb` source attaches `READ_ONLY`. For each `from: T` a mark reads that the panel's own `data:` does not define, it adds `T: { query: 'SELECT * FROM "__protocol"."main"."T"' }`, quoting `T` as an identifier. It never writes the result to disk.
+- **The database is never held open.** DuckDB refuses a writer while any reader holds the file, so a held handle would make `arc run` fail. `load` gathers the tables every panel reads that the panel's own `data:` does not define. It opens the database once: `ATTACH … (READ_ONLY)`, then `CREATE TABLE "T" AS SELECT * FROM "__protocol"."main"."T"` into one in-memory DuckDB for each such table, then `DETACH`. It writes that snapshot to a Parquet file per table in a temp directory owned by `ProtocolPanels`, which drops with it.
+- `with_protocol_tables(panel, tables_dir)` adds `T: { file: <tables_dir>/T.parquet }` to the panel's top-level `data:` for each table it reads from the database, so the existing Parquet source loads it and no panel's session touches the `.duckdb` file. It never writes the result to disk. Its signature is `pub fn with_protocol_tables(panel: &str, tables_dir: &Path) -> Result<String, String>`. `ProtocolPanels.run_id` is the newest run's id, from `arc::spec::run_tables`, so Task 5 can reload when it changes.
+- An attach that fails with DuckDB's lock error is `Locked`. One that fails because the file was written by another storage version is `EngineMismatch`, whose message names both versions where DuckDB's error gives them.
 - A panel whose findings are non-empty gets `MissingTable`/`MissingColumn`/`Unreadable` and is not composed. A panel whose preflight has `Blocking` entries gets `Unsupported(names)`. Any other compose error is `Failed`.
 - **The runner.** `tests/support/agent_protocol.rs` exports `pub struct RanFixture { pub dir: PathBuf, _tmp: TempDir }` and `pub fn ran_fixture(name: &str) -> RanFixture`. It copies `tests/fixtures/agent-protocols/<name>` into a temp dir. It points `ARCFORM_DB_DIR` and `ARCFORM_HISTORY_DIR` at one temp root per test binary, set once through a `OnceLock` before any test reads them. It runs `arc run` through `env!("CARGO_BIN_EXE_brightfield-shell")` with `BRIGHTFIELD_RUN_AS_ARC=1`, and asserts the copied `data/owid-co2-data.csv` is byte-identical after the run, which proves no fetch replaced it. If arc's `http_fetch` downloads although `out` exists, the runner removes the fetch step from the copy's `arcform.yaml` before running (never from the fixture). Record that finding in a comment on the runner.
 
@@ -188,7 +190,9 @@ pub const PROTOCOL_DB_KEY: &str = "__protocol";
   - `a_folder_with_a_space_and_a_quote_opens`: the fixture copied into `tmp/it's a test/` draws both tiles.
   - `only_yaml_files_in_panels_are_tiles`: adding `panels/x.yml`, `panels/.hidden.yaml` and `panels/sub/y.yaml` leaves two tiles, the same set `check_panels` names.
   - `an_explicit_db_is_read`: set `db: local.duckdb` in a copy's `arcform.yaml`, run, and both tiles draw.
-  - `with_protocol_tables_leaves_inline_data_alone`: a panel whose `data:` defines `t` inline keeps its `t` and gains only `__protocol` and the tables it reads from the database.
+  - `with_protocol_tables_leaves_inline_data_alone`: a panel whose `data:` defines `t` inline keeps its `t` and gains only the tables it reads from the database.
+  - `arc_can_run_while_the_protocol_is_open`: with a `ProtocolPanels` from `load` still alive, `arc run` of the same Protocol through the runner succeeds, and so does a read-write `duckdb::Connection::open` of its database.
+  - `a_database_from_another_duckdb_says_so`: a `.duckdb` file that is not a database this DuckDB reads (a file holding garbage bytes, or one written by a newer DuckDB when available) set as the copy's explicit `db:` gives `Err(EngineMismatch { .. })` or a message naming the file, never a panic.
 - [ ] **Step 2: Run them and see them fail.** Run `cargo test -p brightfield-shell --test protocol_panels`. Expected: does not compile, with `protocol_panels` unresolved.
 - [ ] **Step 3: Implement `protocol_panels.rs`** to the interfaces above. Map DuckDB's lock error on attach to `Locked`. Use the window's default chart viewport for `viewport` in tests.
 - [ ] **Step 4: Run the tests.** Run `cargo test -p brightfield-shell --test protocol_panels`. Expected: PASS, with no network.
@@ -200,7 +204,7 @@ pub const PROTOCOL_DB_KEY: &str = "__protocol";
 - Modify: `crates/brightfield-shell/src/window.rs:1477` (`Boot::open_sampled`: a new route ahead of the one-step and generated shapes when `protocol_panels::agent_panels_in(dir)`)
 - Modify: `crates/brightfield-shell/src/window.rs:1065` (`Boot` gains `panels: Option<ProtocolPanels>`)
 - Create: `crates/brightfield-shell/src/panel_tiles.rs` (the tiles item: one tile per panel, its chart or its message, and a not-run state with a Run action through the existing `Run::begin`)
-- Modify: `crates/brightfield-shell/src/app.rs` (selecting a tile opens that panel as the chart document. `save_chart_beside` writes the panel's own file, with the injected `__protocol` entries and injected tables stripped)
+- Modify: `crates/brightfield-shell/src/app.rs` (selecting a tile opens that panel as the chart document. `save_chart_beside` writes the panel's own file, with the injected table entries stripped)
 - Test: `crates/brightfield-shell/tests/protocol_panels_window.rs`
 
 **Interfaces:**
@@ -214,7 +218,8 @@ pub const PROTOCOL_DB_KEY: &str = "__protocol";
   - `a_broken_tile_shows_its_message`: the missing-column copy captures with the tile's message text present in the egui output, found through the test harness's text query as `arrangement.rs` does.
   - `a_one_step_protocol_with_agent_panels_opens_by_the_new_route`: a one-step CSV Protocol with two `panels/*.yaml` opens with two tiles, not a generated dashboard.
   - `a_brightfield_protocol_opens_as_before`: `generated_reopen`'s fixture still opens its generated dashboard.
-  - `saving_a_tile_writes_the_panel_without_injected_tables`: edit a tile's title and save. The panel file holds the new title and no `__protocol` key, and is otherwise byte-identical to the original.
+  - `saving_a_tile_writes_the_panel_without_injected_tables`: edit a tile's title and save. The panel file holds the new title and none of the injected table entries, and is otherwise byte-identical to the original.
+  - `a_new_run_reloads_the_tiles`: with the Protocol open, change `models/03_co2_per_capita_change.sql` and run arc from outside the app (the runner). The next frame sees the newest run id change and reloads, and the bar tile's data reflects the change.
 - [ ] **Step 2: Run them and see them fail.** Run `cargo test -p brightfield-shell --test protocol_panels_window`. Expected: FAIL.
 - [ ] **Step 3: Implement** the route, `panel_tiles.rs`, tile selection and save.
 - [ ] **Step 4: Run the tests.** Run them plus `--test arrangement --test generated_reopen --test chart_save_reopens_chart`. Expected: PASS.
@@ -357,7 +362,7 @@ How the list is built:
   - `chart_history.rs::an_author_is_read_when_present`: a log line with `"author":"hugh"` gives `author: Some("hugh")`.
   - `chart_history.rs::a_store_entry_missing_from_the_log_is_listed`.
 - [ ] **Step 2: Run them and see them fail.** Run `cargo test -p brightfield-protocol --test chart_history` and `cargo test -p brightfield-shell --test versions_log`. Expected: FAIL.
-- [ ] **Step 3: Implement** to the interfaces above, and update the Versions panel's words. "Brightfield", "arc (command line)" and "arc (agent tool)" are the words for the three known interfaces.
+- [ ] **Step 3: Implement** to the interfaces above, and update the Versions panel's words. "Brightfield", "arc (command line)" and "arc (agent tool)" are the words for the three known interfaces. The words describe the route only. An agent driving arc from a terminal shows as "arc (command line)", and only an `author` names a person or an agent, so the words must not claim an agent made a version when only the interface is known.
 - [ ] **Step 4: Run the tests.** Run them plus `--test chart_save_reopens_chart` and the existing versions tests. Expected: PASS.
 - [ ] **Step 5: Commit.**
 
