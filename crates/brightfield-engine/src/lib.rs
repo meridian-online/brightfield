@@ -4367,8 +4367,8 @@ pub fn plain_select(sql: &str) -> Result<PlainSelect, String> {
 /// the one column it turns on, if any.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StatementReading {
-    /// The base tables the statement reads anywhere in its tree, first
-    /// appearance first, without the names its own CTEs bind and without table
+    /// The base tables the statement reads anywhere in its tree, in the order
+    /// they appear in the text, without the names its own CTEs bind and without table
     /// functions.
     pub tables: Vec<String>,
     /// The one column the outermost select turns on: the single column of its
@@ -4384,10 +4384,11 @@ pub struct StatementReading {
 /// A `GROUP BY` or `PARTITION BY` counts when it is exactly one bare column
 /// reference, and all of the statement's windows must agree on that column. A
 /// `GROUP BY` that is present decides the matter, as do windows when there is
-/// no `GROUP BY`; the `WHERE` is asked when neither is present. The `WHERE`
+/// no `GROUP BY`; the `WHERE` is asked when neither is present. A `GROUP BY
+/// ALL` is a `GROUP BY` that names no one column. The `WHERE`
 /// counts the distinct columns named anywhere in its expression, compared
-/// without regard to case, so `a > 1 AND b > 2` names none and
-/// `a > 1 OR a < 0` names `a`. A qualified reference (`t.a`) is the column `a`.
+/// without regard to case, so `a > 1 AND b > 2` names two columns
+/// and `a > 1 OR a < 0` names `a`. A qualified reference (`t.a`) is the column `a`.
 ///
 /// It parses on a fresh in-memory database, for the reason
 /// [`condition_statement_count`] gives.
@@ -4414,24 +4415,37 @@ pub fn statement_reading(sql: &str) -> Result<StatementReading, String> {
     let mut bound = Vec::new();
     let mut tables = Vec::new();
     collect_tables(node, &mut bound, &mut tables);
-    tables.retain(|t| !bound.iter().any(|b: &String| b.eq_ignore_ascii_case(t)));
+    // The tree's keys do not follow the text, so order by where each table sits.
+    tables.sort_by_key(|(at, _)| *at);
+    let mut names: Vec<String> = Vec::new();
+    for (_, name) in tables {
+        if !bound.iter().any(|b| b.eq_ignore_ascii_case(&name)) && !names.contains(&name) {
+            names.push(name);
+        }
+    }
     Ok(StatementReading {
-        tables,
+        tables: names,
         name_column: name_column_of(node),
     })
 }
 
-/// Push each `BASE_TABLE` name under `node` onto `tables`, skipping a name
-/// already there, and each CTE name onto `bound`.
-fn collect_tables(node: &serde_json::Value, bound: &mut Vec<String>, tables: &mut Vec<String>) {
+/// Push each `BASE_TABLE` name under `node` onto `tables` with its position in
+/// the text, and each CTE name onto `bound`.
+fn collect_tables(
+    node: &serde_json::Value,
+    bound: &mut Vec<String>,
+    tables: &mut Vec<(u64, String)>,
+) {
     use serde_json::Value;
     match node {
         Value::Object(map) => {
             if map.get("type").and_then(Value::as_str) == Some("BASE_TABLE") {
                 if let Some(name) = map.get("table_name").and_then(Value::as_str) {
-                    if !tables.iter().any(|t| t == name) {
-                        tables.push(name.to_string());
-                    }
+                    let at = map
+                        .get("query_location")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(u64::MAX);
+                    tables.push((at, name.to_string()));
                 }
             }
             if let Some(entries) = map
@@ -4467,7 +4481,7 @@ fn bare_column(expr: &serde_json::Value) -> Option<&str> {
     expr.get("column_names")?.as_array()?.last()?.as_str()
 }
 
-/// Push every `WINDOW` node under `node` onto `out`.
+/// Push each `WINDOW` node under `node` onto `out`.
 fn collect_windows<'a>(node: &'a serde_json::Value, out: &mut Vec<&'a serde_json::Value>) {
     use serde_json::Value;
     match node {
@@ -4499,6 +4513,10 @@ fn name_column_of(node: &serde_json::Value) -> Option<String> {
         [one] => bare_column(one).map(str::to_string),
         _ => None,
     };
+    if node["aggregate_handling"] != "STANDARD_HANDLING" {
+        // `GROUP BY ALL` leaves its expressions empty and sets this instead.
+        return None;
+    }
     if let Some(groups) = node["group_expressions"]
         .as_array()
         .filter(|g| !g.is_empty())

@@ -54,6 +54,7 @@ fn a_statement_turning_on_no_one_column_is_named_by_its_table() {
         "select avg(median_income) from california_housing",
         "select house_age, latitude, count(*) from california_housing group by house_age, latitude",
         "select * from california_housing where house_age > 28 and median_income > 3",
+        "select house_age, count(*) from california_housing where median_income > 3 group by all",
         "select * from california_housing union all select * from california_housing where house_age > 1",
     ] {
         assert_eq!(named(sql, &[]), "california_housing_sql", "{sql}");
@@ -80,4 +81,16 @@ fn the_tables_read_leave_out_ctes_and_table_functions() {
     )
     .unwrap();
     assert_eq!(r.tables, vec!["t1".to_string(), "t2".to_string()]);
+}
+
+#[test]
+fn the_table_named_is_the_first_in_the_text_even_when_a_subquery_sits_in_the_join() {
+    let r = brightfield_engine::statement_reading(
+        "select * from a join b on a.k = (select max(k) from c)",
+    )
+    .unwrap();
+    assert_eq!(
+        r.tables,
+        vec!["a".to_string(), "b".to_string(), "c".to_string()]
+    );
 }
