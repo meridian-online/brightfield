@@ -150,8 +150,25 @@ fn a_superseded_read_is_stopped() {
 }
 
 #[test]
-fn the_ui_thread_is_not_held_by_a_slow_statement() {
+fn an_edit_stops_the_read_of_the_text_it_left() {
     let mut r = reads(TYPED_PAUSE);
+    answer(&mut r, FILTER);
+    r.edit(SLOW, Instant::now());
+    r.read_now();
+    assert!(r.reading());
+    r.edit(FILTER, Instant::now());
+    assert_eq!(r.superseded(), 1);
+    assert!(!r.reading());
+    r.tick(Instant::now() + TYPED_PAUSE);
+    assert!(!r.reading(), "the answered text is not read again");
+    assert_eq!(r.current().unwrap().text, FILTER);
+}
+
+#[test]
+fn the_ui_thread_is_not_held_by_a_slow_statement() {
+    // No pause, so each frame's tick starts a read of the text its edit
+    // left, and each edit stops the read before it.
+    let mut r = reads(Duration::ZERO);
     r.edit(SLOW, Instant::now());
     r.read_now();
     let mut longest = Duration::ZERO;
@@ -164,6 +181,7 @@ fn the_ui_thread_is_not_held_by_a_slow_statement() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(r.reading());
+    assert_eq!(r.superseded(), 20);
     assert!(longest < Duration::from_millis(50), "{longest:?}");
     r.stop();
 }

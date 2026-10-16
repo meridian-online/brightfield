@@ -266,10 +266,24 @@ impl TypedReads {
         self
     }
 
-    /// Note that the text is now `text`, edited at `now`. Nothing is read.
+    /// Note that the text is now `text`, edited at `now`. Nothing is read,
+    /// and a read under way of other text is stopped, even when the text
+    /// returns to one already answered
+    /// (`an_edit_back_to_answered_text_stops_the_read_in_between` in
+    /// `tests/typed_sql_palette.rs`).
     pub fn edit(&mut self, text: &str, now: Instant) {
         if text != self.text {
             text.clone_into(&mut self.text);
+            if self
+                .in_flight
+                .as_ref()
+                .is_some_and(|(t, _, _)| *t != self.text)
+            {
+                if let Some((_, stop, _)) = self.in_flight.take() {
+                    stop.stop();
+                    self.superseded += 1;
+                }
+            }
         }
         self.edited = Some(now);
     }
@@ -358,7 +372,14 @@ impl TypedReads {
         self.in_flight = None;
         match result {
             Ok(answer) => {
-                self.refused = None;
+                // A refusal stands until its own text reads.
+                if self
+                    .refused
+                    .as_ref()
+                    .is_some_and(|(t, _)| *t == answer.text)
+                {
+                    self.refused = None;
+                }
                 self.shown = Some(answer);
             }
             Err(refused) => self.refused = Some(refused),

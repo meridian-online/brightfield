@@ -7333,6 +7333,14 @@ impl MeridianApp {
         }
     }
 
+    /// How many reads of the statement form's text were stopped because the
+    /// text moved past them, while the form is open — a test hook.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn typed_reads_superseded(&self) -> Option<usize> {
+        self.typed.as_ref().map(TypedReads::superseded)
+    }
+
     /// Read a statement once it has rested for `pause` in place of
     /// [`TYPED_PAUSE`], from the next statement form opened.
     #[doc(hidden)]

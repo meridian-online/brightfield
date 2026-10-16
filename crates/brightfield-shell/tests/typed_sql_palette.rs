@@ -351,6 +351,40 @@ fn a_refused_statement_keeps_the_last_rows_and_shows_duckdbs_reason() {
     );
 }
 
+/// An edit stops the read under way even when it returns to text already
+/// answered, so the held read of the text in between never lands and the grid
+/// keeps previewing the text on the line.
+#[test]
+fn an_edit_back_to_answered_text_stops_the_read_in_between() {
+    let (mut win, _f) = Window::housing(&TempDir::new("back"));
+    win.key(egui::Key::Space);
+    win.type_text("select * from california_housing order by median_income desc");
+    assert!(win.app.finish_typed_reads(Duration::from_secs(60)));
+    win.settle();
+    assert_eq!(win.preview_cells("median_income")[0], "15.0001");
+    win.app.chart_doc().hold_preview_reads(true);
+    for _ in 0.." desc".len() {
+        win.key(egui::Key::Backspace);
+    }
+    assert_eq!(
+        win.app.typed_statement(),
+        Some("select * from california_housing order by median_income")
+    );
+    let before = win.app.typed_reads_superseded().unwrap();
+    win.app.finish_typed_reads(Duration::from_millis(100));
+    win.type_text(" desc");
+    assert_eq!(
+        win.app.typed_reads_superseded(),
+        Some(before + 1),
+        "going back to the answered text stops the read in between"
+    );
+    win.app.chart_doc().hold_preview_reads(false);
+    std::thread::sleep(Duration::from_secs(2));
+    win.settle();
+    assert_eq!(win.preview_cells("median_income")[0], "15.0001");
+    assert_eq!(win.app.typed_said().as_deref(), Some("a SQL step"));
+}
+
 #[test]
 fn esc_while_a_read_is_in_flight_drops_its_answer() {
     let (mut win, _f) = Window::housing(&TempDir::new("esc"));
