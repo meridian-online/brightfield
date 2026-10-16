@@ -277,3 +277,19 @@ fn a_hand_written_step_beside_a_recorded_sql_step_is_refused_by_name() {
         .expect_err("a step of neither shape");
     assert!(err.contains("\"extra\""), "{err}");
 }
+
+#[test]
+fn a_sql_step_naming_a_table_in_another_case_reads_as_duckdb_resolves_it() {
+    let dir = saved_housing("sql-case");
+    operation::record_sql(
+        &runner(),
+        dir.path(),
+        "select * from California_Housing",
+        "cased",
+    )
+    .expect("arc records the statement");
+    let found = generated_protocol_in(&manifest(dir.path()), dir.path())
+        .expect("DuckDB reads the name without regard to case")
+        .expect("the folder is this shape");
+    assert_eq!(found.steps[0].reads, ["California_Housing"]);
+}

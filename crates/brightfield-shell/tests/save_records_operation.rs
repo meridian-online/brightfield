@@ -478,6 +478,14 @@ fn a_partial_save_keeps_the_grid_and_records_the_rest_on_the_filters_table() {
 
     let err = win.save().expect_err("the sort is refused");
     assert_eq!(err, "sorts are refused here");
+    assert!(
+        win.banners().contains(&(
+            "Could not record the grid view".to_string(),
+            "sorts are refused here".to_string()
+        )),
+        "{:?}",
+        win.banners()
+    );
     assert_eq!(
         win.steps(),
         vec!["load".to_string(), FILTER_STEP.to_string()]

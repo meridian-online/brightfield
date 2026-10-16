@@ -4,7 +4,7 @@
 //! with its SQL steps laid out, previews them, and takes more.
 //!
 //! The window is handed the `brightfield-shell` binary cargo built for this
-//! suite as its runner, so every step Save writes is arc's own, and a Run is
+//! suite as its runner, so the steps Save writes are arc's own, and a Run is
 //! arc's own `run`.
 
 use std::path::{Path, PathBuf};
@@ -515,7 +515,8 @@ fn a_refusal_leaves_what_was_recorded_and_lays_out_the_rest_unrecorded() {
         win.app
             .notifications()
             .iter()
-            .any(|n| n.body.as_deref() == Some("this step is refused here")),
+            .any(|n| n.title == "Could not record the SQL step"
+                && n.body.as_deref() == Some("this step is refused here")),
         "the refusal reached no banner"
     );
     assert_eq!(win.sheet_steps(), ["load", STEP, later.as_str()]);
