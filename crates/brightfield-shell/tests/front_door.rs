@@ -2735,8 +2735,7 @@ fn front_door_return_dark_surface() {
 #[test]
 fn every_shipped_start_still_renders_and_its_thumbnail_is_current() {
     let all: Vec<&'static starts::Start> = starts::STARTS.iter().collect();
-    let drawn = render_thumbnails(&all, Mode::Light);
-    assert_eq!(drawn, starts::STARTS.len());
+    render_thumbnails(&all, Mode::Light);
 }
 
 /// The same gate, over the dark thumbnails: [`Start::thumbnail_dark`] is a
@@ -2749,8 +2748,7 @@ fn every_shipped_start_still_renders_and_its_thumbnail_is_current() {
 #[test]
 fn every_shipped_start_still_renders_and_its_dark_thumbnail_is_current() {
     let all: Vec<&'static starts::Start> = starts::STARTS.iter().collect();
-    let drawn = render_thumbnails(&all, Mode::Dark);
-    assert_eq!(drawn, starts::STARTS.len());
+    render_thumbnails(&all, Mode::Dark);
 }
 
 /// The committed stand-ins for the tables a [`starts::Start::remote`] start
@@ -2906,9 +2904,8 @@ fn the_published_crosswalk_is_still_the_table_its_fixture_was_cut_from() {
 /// the committed PNG for `mode` — `{id}.png` for [`Mode::Light`], `{id}-dark.png`
 /// for [`Mode::Dark`], so the two halves of the set stay apart by name.
 /// A [`starts::Start::remote`] start is composed over [`remote_stand_in`]
-/// rather than fetched. Returns how many were held, so a caller can refuse to
-/// pass over fewer than it asked for.
-fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
+/// rather than fetched.
+fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) {
     // Hermetic capture: keep `BRIGHTFIELD_DEVTOOLS` from baking the top-bar
     // renderer string into a regenerated thumbnail (see `door_surface`).
     std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
@@ -2950,7 +2947,6 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
         "{mode:?} thumbnails have drifted from what their specs render:\n{}",
         failures.join("\n")
     );
-    starts.len()
 }
 
 /// No pixel in the **image area** of any card the door draws is within
