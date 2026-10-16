@@ -346,24 +346,36 @@ pub fn preview_chain(
             }
         }
     }
-    Some(
-        needed
-            .into_iter()
-            .map(|i| {
-                let s = &protocol.steps[i];
-                let op = match s.effect {
-                    StepEffect::Operation(KnownOperation::FilterRows) => {
-                        PreviewOp::Where(s.argument.clone())
-                    }
-                    StepEffect::Operation(KnownOperation::SortRows) => {
-                        PreviewOp::OrderBy(s.argument.clone())
-                    }
-                    StepEffect::Sql => PreviewOp::Statement(s.argument.clone()),
-                };
-                (s.name.clone(), op)
-            })
-            .collect(),
-    )
+    // The engine runs an operation on the table made just before it in the
+    // chain. An operation whose own table is another, because a statement
+    // later in the chain reads two branches, is written as the statement over
+    // its own table that arc's template is
+    // (`a_statement_over_two_branches_previews_each_from_the_table_it_reads`
+    // in `tests/typed_sql_nodes.rs`).
+    let mut previous = protocol.root_table.as_str();
+    let mut chain = Vec::with_capacity(needed.len());
+    for i in needed {
+        let s = &protocol.steps[i];
+        let in_line = s.on.to_lowercase() == previous.to_lowercase();
+        let op = match s.effect {
+            StepEffect::Operation(operation) if !in_line => PreviewOp::Statement(format!(
+                "SELECT *\nFROM {}\n{}{}\n",
+                quoted(&s.on),
+                operation.clause(),
+                s.argument
+            )),
+            StepEffect::Operation(KnownOperation::FilterRows) => {
+                PreviewOp::Where(s.argument.clone())
+            }
+            StepEffect::Operation(KnownOperation::SortRows) => {
+                PreviewOp::OrderBy(s.argument.clone())
+            }
+            StepEffect::Sql => PreviewOp::Statement(s.argument.clone()),
+        };
+        chain.push((s.name.clone(), op));
+        previous = &s.name;
+    }
+    Some(chain)
 }
 
 /// The table a load model makes: the target of its `CREATE OR REPLACE TABLE`.

@@ -8,7 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
-use brightfield_engine::PreviewOp;
+use brightfield_engine::{
+    preview_row_count_stoppable, FileReader, PreviewOp, PreviewStop, PREVIEW_DEADLINE,
+    PREVIEW_FILE_LIMIT_BYTES,
+};
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::design::Mode;
 use brightfield_shell::generated::{
@@ -73,6 +76,22 @@ fn typed(name: &str, statement: &str, reads: &[&str]) -> TypedStep {
         reads: reads.iter().map(|r| (*r).to_string()).collect(),
         rows: None,
     }
+}
+
+/// The rows the last step of `chain` makes, previewed from the housing file.
+fn rows_of(chain: &[(String, PreviewOp)]) -> u64 {
+    let data =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/starts/california_housing.parquet");
+    preview_row_count_stoppable(
+        &data,
+        FileReader::Parquet,
+        "california_housing",
+        chain,
+        PREVIEW_FILE_LIMIT_BYTES,
+        PREVIEW_DEADLINE,
+        &PreviewStop::default(),
+    )
+    .expect("the chain previews")
 }
 
 fn filter_step(name: &str, condition: &str) -> GeneratedStep {
@@ -199,4 +218,28 @@ fn a_preview_chain_leaves_out_a_step_its_target_does_not_read() {
             PreviewOp::Statement(BY_AGE.to_string())
         )]
     );
+}
+
+#[test]
+fn a_statement_over_two_branches_previews_each_from_the_table_it_reads() {
+    // Two filters of the load, which part its rows between them, and a
+    // statement that puts them back together: each filter must read the load,
+    // not the step listed before it in the chain.
+    let g = GeneratedProtocol {
+        data: PathBuf::from(starts::HOUSING_FILE),
+        dir: PathBuf::from("."),
+        root_table: "california_housing".to_string(),
+        steps: vec![
+            filter_step("old", "house_age > 28"),
+            filter_step("young", "house_age <= 28"),
+            typed(
+                "both_sql",
+                "select * from old union all select * from young",
+                &["old", "young"],
+            )
+            .as_generated(),
+        ],
+    };
+    let chain = preview_chain(&g, "both_sql").unwrap();
+    assert_eq!(rows_of(&chain), rows_of(&[]));
 }
