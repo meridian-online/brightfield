@@ -314,6 +314,12 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times [`parse_sql_step`] ran on this thread.
+    static SQL_STEP_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Read the model `arc sql record` wrote for the SQL step `step_name`: its
 /// first line `CREATE OR REPLACE TABLE "<step_name>" AS`, and then the
 /// statement as typed, which must be exactly one query that reads rows
@@ -326,6 +332,8 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
 /// A message naming the step, when the first line is not that line, or the
 /// statement is not one query that reads rows.
 pub fn parse_sql_step(step_name: &str, model_sql: &str) -> Result<GeneratedStep, String> {
+    #[cfg(test)]
+    SQL_STEP_PARSES.with(|n| n.set(n.get() + 1));
     let refuse = |what: &str| Err(format!("step {step_name:?} is not a SQL step: {what}"));
     let model_sql = model_sql.replace("\r\n", "\n");
     let want_create = format!("CREATE OR REPLACE TABLE {} AS", quoted(step_name));
@@ -569,12 +577,26 @@ fn read_generated(
         })
         .collect();
     // A step of either shape makes the folder one of these; with none, it is
-    // a hand-written Protocol, decided before any step is refused.
-    let of_a_shape = rest.iter().zip(&models).any(|(step, model)| {
-        model
-            .as_deref()
-            .is_some_and(|m| has_header(m) || parse_sql_step(&step.name, m).is_ok())
-    });
+    // a hand-written Protocol, decided before any step is refused. A SQL
+    // step's parse is kept for the walk below, so no step is parsed twice
+    // (`a_folder_parses_each_sql_step_once`).
+    let mut sql_parsed: Vec<Option<Result<GeneratedStep, String>>> = vec![None; rest.len()];
+    let mut of_a_shape = false;
+    for ((step, model), parsed) in rest.iter().zip(&models).zip(&mut sql_parsed) {
+        let Some(model) = model.as_deref() else {
+            continue;
+        };
+        if has_header(model) {
+            of_a_shape = true;
+            break;
+        }
+        let sql = parse_sql_step(&step.name, model);
+        of_a_shape = sql.is_ok();
+        *parsed = Some(sql);
+        if of_a_shape {
+            break;
+        }
+    }
     if !of_a_shape {
         return Ok(None);
     }
@@ -609,7 +631,7 @@ fn read_generated(
     };
     let mut made: BTreeSet<String> = BTreeSet::from([root_table.to_lowercase()]);
     let mut steps = Vec::new();
-    for (step, model) in rest.iter().zip(models) {
+    for ((step, model), sql) in rest.iter().zip(models).zip(sql_parsed) {
         let Some(model) = model else {
             return Err(format!(
                 "step {:?} has no model file to read beside the generated steps",
@@ -619,7 +641,7 @@ fn read_generated(
         let parsed = if has_header(&model) {
             parse_generated(&step.name, &model)?
         } else {
-            parse_sql_step(&step.name, &model)?
+            sql.unwrap_or_else(|| parse_sql_step(&step.name, &model))?
         };
         // DuckDB resolves a table name without regard to case.
         if let Some(read) = parsed
@@ -746,6 +768,39 @@ pub fn step_name_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder recorded with one SQL step after the load is read with that
+    /// step parsed once: each parse opens an in-memory DuckDB database, and
+    /// the folder is read on the UI thread.
+    #[test]
+    fn a_folder_parses_each_sql_step_once() {
+        let dir =
+            std::env::temp_dir().join(format!("bf-generated-parse-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp directory for the fixture");
+        let data = dir.join(crate::starts::HOUSING_FILE);
+        std::fs::write(&data, crate::starts::HOUSING_PARQUET).expect("the housing file writes");
+        let opened = crate::data_file::open(&data.to_string_lossy()).expect("the file opens");
+        opened.protocol.save_to(&dir).expect("the Protocol saves");
+        let manifest_path = dir.join("arcform.yaml");
+        let mut manifest = std::fs::read_to_string(&manifest_path).expect("the manifest reads");
+        manifest.push_str("  - name: t\n    sql: models/01_t.sql\n");
+        std::fs::write(&manifest_path, &manifest).expect("the manifest writes");
+        std::fs::write(
+            dir.join("models").join("01_t.sql"),
+            "CREATE OR REPLACE TABLE \"t\" AS\nfrom california_housing select house_age\n",
+        )
+        .expect("the model writes");
+        SQL_STEP_PARSES.with(|n| n.set(0));
+        let found = generated_protocol_in(&manifest, &dir);
+        let parses = SQL_STEP_PARSES.with(std::cell::Cell::get);
+        let _ = std::fs::remove_dir_all(&dir);
+        let found = found
+            .expect("the folder reads")
+            .expect("it is of the shape");
+        assert_eq!(found.steps.len(), 1);
+        assert_eq!(parses, 1, "the SQL step was parsed {parses} times");
+    }
 
     const FILTER: &str = "-- generated: filter-rows on california_housing\nCREATE OR REPLACE TABLE \"x\" AS\nSELECT *\nFROM california_housing\nWHERE house_age > 28;\n";
 
