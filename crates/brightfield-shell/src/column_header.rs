@@ -637,8 +637,11 @@ pub fn format_statistic(v: f64) -> String {
 /// [`format_statistic`]'s rule, so a column's bounds, its cells and its mean
 /// read at one precision, except that a whole number below a thousand prints
 /// as its digits: `52` where a count of years or rooms is stored as a double,
-/// not `52.00`. A value that only rounds to a whole number keeps its two
-/// places, so `10.00` still says the stored value is not exactly ten.
+/// not `52.00`. Below a thousand, a value that only rounds to a whole number
+/// keeps its two places, so `10.00` still says the stored value is not exactly
+/// ten. From a thousand up the statistic's rule rounds every value to a
+/// separated whole number, so `1,000` may stand for `1000.4`; the cell keeps
+/// the stored text for the status band to show.
 #[must_use]
 pub fn format_value(v: f64) -> String {
     if v.is_finite() && v.fract() == 0.0 && v.abs() < 1000.0 {
