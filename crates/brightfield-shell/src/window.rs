@@ -6624,7 +6624,12 @@ impl MeridianApp {
                 }
                 // **SQL on the chart palette's query line** turns the palette
                 // into the statement form, over a window with a data file to
-                // read the statement against.
+                // read the statement against. Over a kept statement's grid
+                // the form corrects that statement, as the form the palette
+                // opened as did: retyping it passes through text that is not
+                // a statement, which turned that form into this search
+                // (`retyping_a_held_statement_a_key_at_a_time_corrects_it_in_place`
+                // in `tests/typed_sql_keep.rs`).
                 if !close
                     && picker.delegate.altitude() == Altitude::View
                     && self.has_protocol_to_save()
@@ -6632,7 +6637,7 @@ impl MeridianApp {
                 {
                     becomes = Some(Overlay::Statement(StatementCard::new(
                         picker.query().to_owned(),
-                        None,
+                        self.typed_step_in_front().map(|step| step.name.clone()),
                     )));
                 }
             }

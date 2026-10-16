@@ -168,6 +168,19 @@ impl Window {
         self.settle();
     }
 
+    /// Type `text` a character a frame, as a person types it, so the text
+    /// passes through every state between nothing and the whole of it. Each
+    /// keystroke's frame is followed by the frame the window asks for at
+    /// once when the form and the search trade places, as a person's next
+    /// key comes after it.
+    fn type_by_keystroke(&mut self, text: &str) {
+        for c in text.chars() {
+            self.run(vec![egui::Event::Text(c.to_string())]);
+            self.run(Vec::new());
+        }
+        self.settle();
+    }
+
     /// Cmd+Enter, which keeps the statement on the form.
     fn cmd_enter(&mut self) {
         self.run(vec![press(egui::Key::Enter, egui::Modifiers::COMMAND)]);
@@ -560,4 +573,29 @@ fn a_correction_of_a_step_saved_meanwhile_is_kept_as_a_new_step() {
     assert_eq!(steps.len(), 1, "the correction was kept");
     assert_eq!(steps[0].name, format!("{STEP}_2"));
     assert!(steps[0].statement.ends_with("having count(*) > 100"));
+}
+
+/// Retyping the held statement a character at a time passes through text that
+/// is not a statement, which turns the form back into the palette's search
+/// until the text reads as one again; the form it turns back into still
+/// corrects the step whose grid the canvas holds.
+#[test]
+fn retyping_a_held_statement_a_key_at_a_time_corrects_it_in_place() {
+    let (mut win, _f) = Window::housing(&TempDir::new("retype"));
+    win.keep(BY_AGE);
+    win.click_grid_under(STEP);
+    win.key(egui::Key::Space);
+    assert_eq!(win.app.typed_statement(), Some(BY_AGE));
+    let corrected =
+        "select house_age, count(*) as n from california_housing where house_age > 10 group by house_age";
+    win.type_by_keystroke(corrected);
+    assert_eq!(win.app.typed_statement(), Some(corrected));
+    assert!(win.app.finish_typed_reads(Duration::from_secs(60)));
+    win.settle();
+    assert_eq!(win.app.typed_said(), Some(format!("replaces {STEP}")));
+    win.cmd_enter();
+    let steps = win.app.chart_doc().typed_steps();
+    let names: Vec<&str> = steps.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, [STEP], "the step was corrected in place");
+    assert_eq!(steps[0].statement, corrected);
 }
