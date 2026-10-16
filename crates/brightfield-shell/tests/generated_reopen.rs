@@ -242,7 +242,8 @@ impl Window {
             .to_string()
     }
 
-    /// The text of each cell of `column` on the preview page.
+    /// The value of each cell of `column` on the preview page, in full rather
+    /// than rounded as the cell shows it.
     fn preview_cells(&self, column: &str) -> Vec<String> {
         let page = self
             .app
@@ -255,7 +256,10 @@ impl Window {
             .iter()
             .position(|c| c.name == column)
             .unwrap_or_else(|| panic!("the preview has no column {column}"));
-        page.rows.iter().map(|row| row[at].text.clone()).collect()
+        page.rows
+            .iter()
+            .map(|row| row[at].full().to_owned())
+            .collect()
     }
 }
 

@@ -25,7 +25,7 @@
 //! deviation, `stddev_samp`, over `n - 1`.
 
 use brightfield_engine::semantic::TypeSourceSpec;
-use brightfield_shell::column_header::GridDensity;
+use brightfield_shell::column_header::{format_value, GridDensity};
 use brightfield_shell::data_file::OpenOptions;
 use brightfield_shell::design::Mode;
 use brightfield_shell::protocol::NodeView;
@@ -480,17 +480,17 @@ fn the_bands_values_are_the_values_the_file_holds() {
             .range
             .as_ref()
             .unwrap_or_else(|| panic!("{name} drew no range"));
-        let parsed = |t: &str| {
-            t.parse::<f64>()
-                .unwrap_or_else(|e| panic!("{name}: the range text {t:?}: {e}"))
-        };
-        assert!(
-            (parsed(min) - want.min).abs() < EPSILON,
+        // The band rounds a double's bounds as it rounds its statistics, so
+        // the file's own bounds are written by the same rule to compare.
+        assert_eq!(
+            min,
+            &format_value(want.min),
             "{name}: the band's minimum {min} against the file's {}",
             want.min
         );
-        assert!(
-            (parsed(max) - want.max).abs() < EPSILON,
+        assert_eq!(
+            max,
+            &format_value(want.max),
             "{name}: the band's maximum {max} against the file's {}",
             want.max
         );
