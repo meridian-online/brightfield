@@ -215,8 +215,9 @@ pub struct TypedAnswer {
     /// The rows of the root table the condition keeps, counted on their own,
     /// when arc reads the statement as a filter of the root table.
     pub filter_rows: Option<u64>,
-    /// The first page of those rows under [`TypedSource::order`], when an
-    /// order is pending; otherwise the grid previews [`Self::page`].
+    /// The first page of those rows, read as the applied grid reads them:
+    /// under [`TypedSource::order`] when an order is pending, else in the
+    /// unordered window's order. `Some` whenever `filter_rows` is a filter.
     pub filter_page: Option<GridPage>,
 }
 
@@ -550,28 +551,27 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
                 Err(PreviewRefusal::Superseded) => return None,
                 Err(_) => None,
             };
-            let page = match &source.order {
-                Some(order) => {
-                    filter.push((
-                        free_step_name(&source.root_table, &filter),
-                        PreviewOp::OrderBy(order.clone()),
-                    ));
-                    match preview_first_page_stoppable(
-                        &source.data,
-                        source.reader,
-                        &source.root_table,
-                        &filter,
-                        PREVIEW_ROWS,
-                        PREVIEW_FILE_LIMIT_BYTES,
-                        PREVIEW_DEADLINE,
-                        stop,
-                    ) {
-                        Ok(batches) => Some(page_of(&batches)),
-                        Err(PreviewRefusal::Superseded) => return None,
-                        Err(_) => None,
-                    }
-                }
-                None => None,
+            // The page ends in the window SQL the applied grid reads through:
+            // ordered when an order is pending, `ORDER BY ALL` when not.
+            if let Some(order) = &source.order {
+                filter.push((
+                    free_step_name(&source.root_table, &filter),
+                    PreviewOp::OrderBy(order.clone()),
+                ));
+            }
+            let page = match preview_first_page_stoppable(
+                &source.data,
+                source.reader,
+                &source.root_table,
+                &filter,
+                PREVIEW_ROWS,
+                PREVIEW_FILE_LIMIT_BYTES,
+                PREVIEW_DEADLINE,
+                stop,
+            ) {
+                Ok(batches) => Some(page_of(&batches)),
+                Err(PreviewRefusal::Superseded) => return None,
+                Err(refusal) => return Some(Err((text.to_string(), refusal.to_string()))),
             };
             (rows, page)
         }

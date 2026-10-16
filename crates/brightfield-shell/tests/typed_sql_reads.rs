@@ -108,8 +108,8 @@ fn an_answer_carries_the_page_the_reading_and_arcs_reading() {
 #[test]
 fn a_filter_of_the_root_table_is_paged_under_the_pending_order() {
     assert!(
-        answered(FILTER).filter_page.is_none(),
-        "no order, no page of its own"
+        answered(FILTER).filter_page.is_some(),
+        "no order still reads the filter's own page"
     );
     let mut source = housing_source();
     source.order = Some("house_age desc".into());
@@ -125,6 +125,53 @@ fn a_filter_of_the_root_table_is_paged_under_the_pending_order() {
     let first: f64 = page.rows[0][col].full().parse().expect("a number");
     assert_eq!(first, 52.0, "the oldest houses first");
     assert_eq!(a.filter_rows, Some(8_831));
+}
+
+/// With no order pending, the filter's preview page is the page the applied
+/// view reads: the first rows in `ORDER BY ALL` order, not in file order.
+#[test]
+fn an_unordered_filter_previews_the_page_the_applied_view_reads() {
+    use_own_preview_gate_on_this_thread();
+    let dir = std::env::temp_dir().join(format!("bf_unsorted_filter_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    let data = dir.join("tally.csv");
+    let body: String = (1..=1000).rev().map(|n| format!("{n}\n")).collect();
+    std::fs::write(&data, format!("v\n{body}")).expect("the file");
+    let source = TypedSource {
+        data,
+        reader: FileReader::Csv,
+        root_table: "tally".into(),
+        steps: Vec::new(),
+        order: None,
+        runner: Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))),
+    };
+    let mut r = TypedReads::new(source, TYPED_PAUSE, || {});
+    answer(&mut r, "select * from tally where v > 100");
+    let a = r.current().expect("the filter was answered").clone();
+    let _ = std::fs::remove_dir_all(&dir);
+    let page = a
+        .filter_page
+        .as_ref()
+        .expect("a page of its own for a filter");
+    let col = page
+        .columns
+        .iter()
+        .position(|c| c.name == "v")
+        .expect("a v column");
+    let got: Vec<String> = page
+        .rows
+        .iter()
+        .map(|row| row[col].full().to_string())
+        .collect();
+    let want: Vec<String> = (101..)
+        .take(got.len())
+        .map(|n: u32| n.to_string())
+        .collect();
+    assert!(!got.is_empty());
+    assert_eq!(
+        got, want,
+        "the smallest matching rows first, as the applied view reads them"
+    );
 }
 
 #[test]
