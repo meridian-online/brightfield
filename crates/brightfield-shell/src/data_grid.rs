@@ -2234,17 +2234,34 @@ impl ChartDoc {
     }
 }
 
-/// A preview page as a [`RowSource`]: the page is the whole of it, so the
-/// table has no row past it to scroll to.
+/// A preview page as a [`RowSource`] of `total` rows. A step's preview is the
+/// whole of its page, so the table has no row past it to scroll to; a typed
+/// filter's is its first page of the `total` rows the condition keeps, which
+/// were counted off the frame, and the rows past the page draw blank.
 struct PreviewRows<'a> {
     page: &'a GridPage,
+    total: u64,
+}
+
+impl<'a> PreviewRows<'a> {
+    /// The page as the whole table.
+    fn whole(page: &'a GridPage) -> Self {
+        Self {
+            page,
+            total: page.rows.len() as u64,
+        }
+    }
 }
 
 impl RowSource for PreviewRows<'_> {
     fn prepare(&mut self, _visible: Range<u64>) {}
 
     fn total_rows(&self) -> u64 {
-        self.page.rows.len() as u64
+        self.total
+    }
+
+    fn held_rows(&self) -> Range<u64> {
+        0..self.page.rows.len() as u64
     }
 
     fn columns(&self) -> &[GridColumn] {
@@ -2533,7 +2550,7 @@ impl DataGridItem {
                     at: doc.grid_cursor,
                     reveal: std::mem::take(&mut doc.grid_cursor_reveal),
                 };
-                let mut source = PreviewRows { page };
+                let mut source = PreviewRows::whole(page);
                 let set = &self.set_widths;
                 drawn = Some(
                     ui.scope_builder(
@@ -2812,40 +2829,57 @@ impl Item<ChartDoc> for DataGridItem {
         );
         let table_rect =
             egui::Rect::from_min_max(room.min, egui::pos2(room.right(), foot_rect.top()));
-        doc.activity.begin(Activity::EngineQuery);
         let mut drawn = None;
         let mut names = Vec::new();
-        if let Some(coordinator) = doc.live_coordinator() {
-            let generation = coordinator.generation();
-            let session = coordinator.session();
-            let mut source = EngineRows::new(session, mark, generation, &view, &mut self.cache);
-            // Under the grid's own id rather than the spot's, so the scroll
-            // and the widths are the grid's wherever it is — see
-            // `grid_state_id`.
-            let set = &self.set_widths;
-            drawn = Some(
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .id(grid_state_id())
-                        .max_rect(table_rect),
-                    |ui| {
-                        show_table_sized(
-                            ui,
-                            DATA.as_str(),
-                            mode,
-                            &mut source,
-                            ColumnWidths::Natural,
-                            header,
-                            set,
-                            Some(cursor),
-                        )
-                    },
-                )
-                .inner,
-            );
+        // Under the grid's own id rather than the spot's, so the scroll and
+        // the widths are the grid's wherever it is — see `grid_state_id`.
+        let set = &self.set_widths;
+        let draw = |ui: &mut egui::Ui, source: &mut dyn RowSource| {
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .id(grid_state_id())
+                    .max_rect(table_rect),
+                |ui| {
+                    show_table_sized(
+                        ui,
+                        DATA.as_str(),
+                        mode,
+                        source,
+                        ColumnWidths::Natural,
+                        header,
+                        set,
+                        Some(cursor),
+                    )
+                },
+            )
+            .inner
+        };
+        // **A typed filter's rows** were read and counted on a worker by the
+        // statement's reads, so this draw does not ask the session for them
+        // (`typed_where_preview_does_not_block_the_ui_thread` in
+        // `tests/typed_sql_where.rs`).
+        let typed = doc.grid_foot.typed.take();
+        let mut typed_empty = None;
+        if let Some(typed) = &typed {
+            let mut source = PreviewRows {
+                page: &typed.page,
+                total: typed.rows,
+            };
+            drawn = Some(draw(ui, &mut source));
             names = source.columns().iter().map(|c| c.name.clone()).collect();
+            typed_empty = Some(typed.rows == 0);
+        } else {
+            doc.activity.begin(Activity::EngineQuery);
+            if let Some(coordinator) = doc.live_coordinator() {
+                let generation = coordinator.generation();
+                let session = coordinator.session();
+                let mut source = EngineRows::new(session, mark, generation, &view, &mut self.cache);
+                drawn = Some(draw(ui, &mut source));
+                names = source.columns().iter().map(|c| c.name.clone()).collect();
+            }
+            doc.activity.end(Activity::EngineQuery);
         }
-        doc.activity.end(Activity::EngineQuery);
+        doc.grid_foot.typed = typed;
         // The band reads the counts off the table this frame drew, and the
         // columns a key on the cursor's cell names.
         let counts = drawn.as_ref().map_or((0, 0), |d| (d.rows, d.columns));
@@ -2894,11 +2928,11 @@ impl Item<ChartDoc> for DataGridItem {
         // `ChartDoc::table_drawn`.
         doc.file_table_drawn(drawn);
 
-        if self.cache.error.is_none() && self.cache.total == 0 {
+        if typed_empty.unwrap_or(self.cache.error.is_none() && self.cache.total == 0) {
             // A real answer, not an empty pane: the query ran and selected
             // nothing, under the grid's own condition when it has one and
             // otherwise under the current interaction state.
-            let said = if self.cache.view.condition.is_some() {
+            let said = if typed_empty.is_some() || self.cache.view.condition.is_some() {
                 "0 rows match the grid's condition."
             } else {
                 "0 rows under the current selection."
@@ -2909,7 +2943,7 @@ impl Item<ChartDoc> for DataGridItem {
                     .color(chrome::colour(sem.text.muted)),
             );
         }
-        if let Some(error) = self.cache.error.as_ref() {
+        if let Some(error) = self.cache.error.as_ref().filter(|_| typed_empty.is_none()) {
             ui.add_space(spacing::SPACE_2);
             ui.label(
                 egui::RichText::new(format!("Grid read failed: {error}"))

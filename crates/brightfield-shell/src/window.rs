@@ -2430,6 +2430,10 @@ pub struct MeridianApp {
     /// The text of the answer whose rows the grid shows, so the grid is handed
     /// a page only when a new one is read.
     typed_in_grid: Option<String>,
+    /// The text of the answer whose filter the grid previews on the loaded
+    /// table ([`ChartDoc::preview_typed_where`]), so the preview is handed
+    /// over only when a new answer is read.
+    typed_where_in_grid: Option<String>,
     /// The counts of kept statements' rows under way, each landed on the chart
     /// document and the Protocol once it arrives.
     typed_counts: Vec<TypedCount>,
@@ -2801,6 +2805,7 @@ impl MeridianApp {
             typed: None,
             typed_pause: TYPED_PAUSE,
             typed_in_grid: None,
+            typed_where_in_grid: None,
             typed_counts: Vec::new(),
             overlay_keys: OverlayKeys::from_registry(),
             home_binding: brightfield_keys::registry()
@@ -6588,6 +6593,7 @@ impl MeridianApp {
         let mut answered = None;
         let mut becomes = None;
         let mut kept: Option<(TypedAnswer, Option<String>)> = None;
+        let mut where_kept: Option<String> = None;
         match &mut overlay {
             Overlay::Palette(picker) => {
                 let chrome = ModalChrome::new().title("Commands").enter_hint("run");
@@ -6656,7 +6662,15 @@ impl MeridianApp {
                     Some(CardEvent::Keep) => {
                         match self.typed.as_ref().and_then(TypedReads::current) {
                             Some(answer) => {
-                                kept = Some((answer.clone(), card.replacing().map(str::to_owned)));
+                                match self.typed_where(answer) {
+                                    Some(condition) => where_kept = Some(condition.to_owned()),
+                                    None => {
+                                        kept = Some((
+                                            answer.clone(),
+                                            card.replacing().map(str::to_owned),
+                                        ));
+                                    }
+                                }
                                 close = true;
                             }
                             None => {
@@ -6725,6 +6739,10 @@ impl MeridianApp {
         if let Some((answer, replacing)) = kept {
             self.keep_statement(ctx, &answer, replacing.as_deref());
         }
+        if let Some(condition) = where_kept {
+            self.charts.doc.apply_typed_where(&condition);
+            ctx.request_repaint();
+        }
         if let Some(answer) = answered {
             self.answer_close_question(ctx, answer);
         }
@@ -6737,6 +6755,8 @@ impl MeridianApp {
     fn typed_follows_the_overlay(&mut self, ctx: &egui::Context) {
         let Some(Overlay::Statement(card)) = self.overlay.as_ref() else {
             self.typed = None;
+            self.typed_where_in_grid = None;
+            self.charts.doc.clear_typed_where();
             return;
         };
         if self.typed.is_some() {
@@ -6823,11 +6843,8 @@ impl MeridianApp {
             return Some(TypedSaid::Refused(reason.to_owned()));
         }
         let answer = typed.current()?;
-        let root = self.protocol.doc.model.source().map(|s| s.name.as_str());
         Some(match &answer.recognised {
-            Recognised::FilterRows { on, .. }
-                if root.is_some_and(|root| on.eq_ignore_ascii_case(root)) =>
-            {
+            Recognised::FilterRows { on, .. } if self.typed_where(answer).is_some() => {
                 TypedSaid::Filter {
                     table: on.clone(),
                     rows: answer.filter_rows,
@@ -6837,15 +6854,55 @@ impl MeridianApp {
         })
     }
 
+    /// **The condition a statement lands in `where` as**, when arc read
+    /// `answer` as a filter of the loaded table and the field can take it
+    /// ([`ChartDoc::where_takes`]): the canvas shows the loaded table's rows,
+    /// not a step's grid or another node's.
+    fn typed_where<'a>(&self, answer: &'a TypedAnswer) -> Option<&'a str> {
+        use crate::operation::Recognised;
+        let Recognised::FilterRows { on, condition } = &answer.recognised else {
+            return None;
+        };
+        let model = &self.protocol.doc.model;
+        let on_table = match self.canvas_holds() {
+            CanvasHolds::View {
+                node,
+                view: NodeView::Grid,
+            } => model.table() == Some(node),
+            _ => true,
+        };
+        let root = &model.source()?.name;
+        (on_table && self.charts.doc.where_takes(on, root)).then_some(condition.as_str())
+    }
+
     /// **Hand the grid the rows of the statement on the form**, when a read of
     /// it has found some, and name the step it would be kept as. `None` while
     /// the form is shut or before a read of it has found rows, when the grid
-    /// shows what it would anyway.
+    /// shows what it would anyway, and when the rows are a filter the `where`
+    /// field can take, which the loaded table's grid previews instead
+    /// ([`ChartDoc::preview_typed_where`]).
     fn typed_grid_step(&mut self) -> Option<String> {
         let Some(Overlay::Statement(card)) = &self.overlay else {
             return None;
         };
         let answer = self.typed.as_ref()?.shown()?;
+        // A filter the `where` field can take is previewed on the loaded
+        // table's own grid, with the page and count the read found.
+        if let Some(condition) = self.typed_where(answer) {
+            if self.typed_where_in_grid.as_deref() != Some(answer.text.as_str()) {
+                let rows = answer.filter_rows.unwrap_or(answer.page.rows.len() as u64);
+                let (text, condition, page) = (
+                    answer.text.clone(),
+                    condition.to_owned(),
+                    answer.page.clone(),
+                );
+                self.charts.doc.preview_typed_where(&condition, page, rows);
+                self.typed_where_in_grid = Some(text);
+            }
+            return None;
+        }
+        self.typed_where_in_grid = None;
+        self.charts.doc.clear_typed_where();
         let step = self.kept_name(answer, card.replacing());
         if self.typed_in_grid.as_deref() != Some(answer.text.as_str())
             || self.charts.doc.grid_preview().is_none()
