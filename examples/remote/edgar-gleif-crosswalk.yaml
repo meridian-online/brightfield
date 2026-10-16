@@ -95,15 +95,22 @@ hconcat:
     title: How much text each link had to match on
     width: 460
     height: 340
-  - plot:
-      - mark: cell
-        data: { from: links, filterBy: $band }
-        x: tier
-        y: method
-        fill: { count: }
-      # The shell draws a colour legend only where a plot declares one, so
-      # without this item the grid's colours count nothing a reader can see.
+  # The shell draws a colour legend only where a file declares one, so without
+  # the legend below, the grid's colours would count nothing a reader can see.
+  # It sits UNDER the grid, `for:` it by name, rather than among the grid's
+  # items: an item puts the legend in a band at the plot's right, level with
+  # the plot's top, and this title is wider than what the band leaves the plot,
+  # so the two drew over each other.
+  - vconcat:
+      - plot:
+          - mark: cell
+            data: { from: links, filterBy: $band }
+            x: tier
+            y: method
+            fill: { count: }
+        name: grid
+        title: What that bought, by how the link was made
+        width: 380
+        height: 340
       - legend: color
-    title: What that bought, by how the link was made
-    width: 380
-    height: 340
+        for: grid
