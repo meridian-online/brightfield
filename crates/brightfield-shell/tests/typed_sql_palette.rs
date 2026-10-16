@@ -231,7 +231,10 @@ impl Window {
             .iter()
             .position(|c| c.name == column)
             .unwrap_or_else(|| panic!("the preview has no column {column}"));
-        page.rows.iter().map(|row| row[at].text.clone()).collect()
+        page.rows
+            .iter()
+            .map(|row| row[at].full().to_owned())
+            .collect()
     }
 }
 
@@ -299,7 +302,7 @@ fn the_grid_previews_the_statement_after_a_pause() {
     win.type_text("select * from california_housing order by median_income desc");
     assert!(win.app.finish_typed_reads(Duration::from_secs(60)));
     win.settle();
-    assert_eq!(win.preview_cells("median_income")[0], "15.00");
+    assert_eq!(win.preview_cells("median_income")[0], "15.0001");
     assert_eq!(win.app.typed_said().as_deref(), Some("a SQL step"));
     assert!(win.drew("Grid \u{b7} california_housing_sql"));
 }
@@ -341,7 +344,7 @@ fn a_refused_statement_keeps_the_last_rows_and_shows_duckdbs_reason() {
     win.type_text(" nonsense nonsense");
     win.app.finish_typed_reads(Duration::from_secs(60));
     win.settle();
-    assert_eq!(win.preview_cells("median_income")[0], "15.00");
+    assert_eq!(win.preview_cells("median_income")[0], "15.0001");
     assert!(
         win.app.typed_said().unwrap().contains("rror"),
         "DuckDB's words are shown"
