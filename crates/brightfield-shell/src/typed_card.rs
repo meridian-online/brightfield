@@ -147,7 +147,7 @@ impl StatementCard {
         let field_room = (tallest - self.chrome_height).max(0.0);
         let chrome = ModalChrome::new().title("SQL").without_esc_hint();
         let mut field_height = 0.0;
-        let shown = egui::Area::new(id)
+        let shown = egui::Area::new(egui::Id::new(STATEMENT_CARD_ID))
             .order(egui::Order::Foreground)
             .fixed_pos(room.min + egui::vec2(gutter, gutter))
             .constrain(false)

@@ -72,6 +72,18 @@ const OVERLAY_ALLOW: &[Allow] = &[
          is a different repository and a different lane, and when it lands both \
          entries go.",
     ),
+    (
+        "src/typed_card.rs",
+        r#"egui::Area::new(egui::Id::new(STATEMENT_CARD_ID))"#,
+        "The chart palette's statement form, the Area whose id is \
+         STATEMENT_CARD_ID (bf-overlay-statement). It is drawn without a scrim so \
+         the grid preview beside it stays readable and live while the statement \
+         is typed, and ModalLayer always lays a scrim over the page. Its card \
+         is meridian-egui's own overlay_frame, so the chrome is the one modal \
+         treatment and only the scrim is left out. The entry is anchored to that \
+         id, so a second hand-rolled overlay in this file is still a violation \
+         (a_second_hand_rolled_overlay_beside_the_statement_form_is_still_a_violation).",
+    ),
 ];
 
 /// Call fragments that construct a floating layer by hand. `egui::Modal` has
@@ -233,6 +245,32 @@ fn a_second_hand_rolled_overlay_in_the_shelf_is_still_a_violation() {
     assert!(
         !allowed(OVERLAY_ALLOW, "src/window.rs", sanctioned),
         "the allowlist admits the card's line in another file"
+    );
+}
+
+/// **The statement form is sanctioned by its id, as the shelf's card is.**
+#[test]
+fn a_second_hand_rolled_overlay_beside_the_statement_form_is_still_a_violation() {
+    let sanctioned = r#"        let shown = egui::Area::new(egui::Id::new(STATEMENT_CARD_ID))"#;
+    assert!(
+        allowed(OVERLAY_ALLOW, "src/typed_card.rs", sanctioned),
+        "the statement form's own Area is not matched by the entry that exists for it"
+    );
+    for other in [
+        r#"        egui::Area::new(egui::Id::new("bf-overlay-statement-2"))"#,
+        r#"        egui::Area::new(id)"#,
+        r#"        egui::Window::new(STATEMENT_CARD_ID)"#,
+        r#"        let m = egui::Modal::new(egui::Id::new(STATEMENT_CARD_ID));"#,
+    ] {
+        assert!(
+            !allowed(OVERLAY_ALLOW, "src/typed_card.rs", other),
+            "the allowlist admits `{other}` beside the statement form — the entry \
+             is wider than the one call it was written for"
+        );
+    }
+    assert!(
+        !allowed(OVERLAY_ALLOW, "src/window.rs", sanctioned),
+        "the allowlist admits the form's line in another file"
     );
 }
 
