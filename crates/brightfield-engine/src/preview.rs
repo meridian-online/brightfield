@@ -25,19 +25,23 @@
 //!   also runs against [`PREVIEW_DEADLINE`]: a condition whose subquery counts
 //!   to a quadrillion holds almost no memory, and past the deadline the
 //!   connection is interrupted and the read ends as
-//!   [`PreviewRefusal::TookTooLong`].
+//!   [`PreviewRefusal::TookTooLong`]. A read the caller has moved past can be
+//!   stopped the same way through a [`PreviewStop`], and ends as
+//!   [`PreviewRefusal::Superseded`].
 //!
 //! A step is previewed through the steps before it: a sort on a filter reads
 //! the filter, then the sort. A sort's page is read in its own order, then every
-//! column by position, so ties fall the same way on every read. The page is
-//! the first one and no more, and nothing here counts the step's rows: the page
-//! is there to prompt the next question, and must not pass for the step's
-//! rows or their range.
+//! column by position, so ties fall the same way on every read. A typed
+//! statement's page is read in the order its rows were made, which is the
+//! statement's own `ORDER BY` when it has one. The page is the first one and
+//! no more: it is there to prompt the next question, and must not pass for the
+//! step's rows or their range. Counting the last step's rows is a read of its
+//! own, [`preview_row_count_stoppable`], on the same terms.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use duckdb::Connection;
 
@@ -94,6 +98,34 @@ pub enum PreviewOp {
     Where(String),
     /// Sort the rows by a SQL `ORDER BY` list.
     OrderBy(String),
+    /// Make the step's table from a typed query, which reads the root table
+    /// or an earlier step's table by name. [`crate::read_only_statement`]
+    /// is asked first, and text it refuses does not run
+    /// (`a_statement_that_is_not_one_read_only_query_is_refused_before_anything_runs`
+    /// in `tests/preview_read.rs`).
+    Statement(String),
+}
+
+/// **A switch that stops a stoppable preview read**, shared between the read
+/// and whoever may move past it.
+///
+/// Clones share one switch. Once stopped it stays stopped, so a read started
+/// with it afterwards ends at once.
+#[derive(Clone, Default, Debug)]
+pub struct PreviewStop(Arc<AtomicBool>);
+
+impl PreviewStop {
+    /// Stop each read this switch was given.
+    pub fn stop(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether [`PreviewStop::stop`] has been called on this switch or a
+    /// clone of it.
+    #[must_use]
+    pub fn is_stopped(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
 }
 
 /// Why a preview has no rows to show.
@@ -113,6 +145,9 @@ pub enum PreviewRefusal {
     },
     /// DuckDB refused a statement, in its own words.
     Engine(String),
+    /// The read's [`PreviewStop`] was stopped, because the text it previews
+    /// changed, and its connection was interrupted.
+    Superseded,
 }
 
 impl std::fmt::Display for PreviewRefusal {
@@ -127,6 +162,7 @@ impl std::fmt::Display for PreviewRefusal {
                 deadline.as_secs()
             ),
             Self::Engine(msg) => f.write_str(msg),
+            Self::Superseded => f.write_str("the preview was stopped because the text changed"),
         }
     }
 }
@@ -138,8 +174,8 @@ impl std::fmt::Display for PreviewRefusal {
 /// of `chain` then reads the one before it (the first reads `root_table`) and
 /// is made as a table under its own name. The last is read in its own order
 /// when it is a sort, its order followed by each column by position as the
-/// tie-break, and in `ORDER BY ALL` otherwise, so the page is the same page on
-/// every read.
+/// tie-break; in the order its rows were made when it is a statement; and in
+/// `ORDER BY ALL` otherwise, so the page is the same page on every read.
 ///
 /// # Errors
 ///
@@ -208,6 +244,125 @@ pub fn preview_first_page_within(
     file_limit_bytes: u64,
     deadline: Duration,
 ) -> Result<Vec<RecordBatch>, PreviewRefusal> {
+    preview_first_page_stoppable(
+        data,
+        reader,
+        root_table,
+        chain,
+        limit,
+        file_limit_bytes,
+        deadline,
+        &PreviewStop::default(),
+    )
+}
+
+/// [`preview_first_page_within`] that also ends when `stop` is stopped: the
+/// connection is interrupted within about ten milliseconds of the stop, as it
+/// is at the deadline, and the read ends as [`PreviewRefusal::Superseded`].
+///
+/// # Errors
+///
+/// As [`preview_first_page_within`], and [`PreviewRefusal::Superseded`] for a
+/// read stopped through `stop`.
+#[allow(clippy::too_many_arguments)]
+pub fn preview_first_page_stoppable(
+    data: &Path,
+    reader: FileReader,
+    root_table: &str,
+    chain: &[(String, PreviewOp)],
+    limit: u64,
+    file_limit_bytes: u64,
+    deadline: Duration,
+    stop: &PreviewStop,
+) -> Result<Vec<RecordBatch>, PreviewRefusal> {
+    with_chain(
+        data,
+        reader,
+        root_table,
+        chain,
+        file_limit_bytes,
+        deadline,
+        stop,
+        |conn, last, refused| {
+            let rows_sql = format!("SELECT * FROM {}", quote(last));
+            let sql = match chain.last() {
+                Some((_, PreviewOp::OrderBy(order))) => {
+                    let width: i64 = conn
+                        .query_row(
+                            &format!("SELECT count(*) FROM (DESCRIBE {rows_sql})"),
+                            [],
+                            |r| r.get(0),
+                        )
+                        .map_err(refused)?;
+                    crate::ordered_window_sql(&rows_sql, order, width, 0, limit)
+                }
+                // The table keeps the order the statement made its rows in.
+                Some((_, PreviewOp::Statement(_))) => format!("{rows_sql} LIMIT {limit}"),
+                _ => crate::unordered_window_sql(&rows_sql, 0, limit),
+            };
+            let mut statement = conn.prepare(&sql).map_err(refused)?;
+            Ok(statement
+                .query_arrow(duckdb::params![])
+                .map_err(refused)?
+                .collect())
+        },
+    )
+}
+
+/// **The number of rows in the last step of `chain`**, recomputed from the
+/// data file on a connection of their own, on the same terms as
+/// [`preview_first_page_stoppable`].
+///
+/// # Errors
+///
+/// As [`preview_first_page_stoppable`].
+pub fn preview_row_count_stoppable(
+    data: &Path,
+    reader: FileReader,
+    root_table: &str,
+    chain: &[(String, PreviewOp)],
+    file_limit_bytes: u64,
+    deadline: Duration,
+    stop: &PreviewStop,
+) -> Result<u64, PreviewRefusal> {
+    with_chain(
+        data,
+        reader,
+        root_table,
+        chain,
+        file_limit_bytes,
+        deadline,
+        stop,
+        |conn, last, refused| {
+            let count: i64 = conn
+                .query_row(&format!("SELECT count(*) FROM {}", quote(last)), [], |r| {
+                    r.get(0)
+                })
+                .map_err(refused)?;
+            Ok(u64::try_from(count).unwrap_or(0))
+        },
+    )
+}
+
+/// Loads `data`, shuts and locks the connection, makes each step of `chain`
+/// as a table, and hands `read` the connection, the last table's name and the
+/// map from a DuckDB error to a refusal, all under one watch of `deadline`
+/// and `stop`.
+#[allow(clippy::too_many_arguments)]
+fn with_chain<T>(
+    data: &Path,
+    reader: FileReader,
+    root_table: &str,
+    chain: &[(String, PreviewOp)],
+    file_limit_bytes: u64,
+    deadline: Duration,
+    stop: &PreviewStop,
+    read: impl FnOnce(
+        &Connection,
+        &str,
+        &dyn Fn(duckdb::Error) -> PreviewRefusal,
+    ) -> Result<T, PreviewRefusal>,
+) -> Result<T, PreviewRefusal> {
     let bytes = std::fs::metadata(data)
         .map_err(|e| PreviewRefusal::Engine(format!("{}: {e}", data.display())))?
         .len();
@@ -217,13 +372,11 @@ pub fn preview_first_page_within(
     let conn = Connection::open_in_memory().map_err(|e| refusal(&e.to_string(), bytes))?;
     // Taken before any SQL runs, and dropped (stopping the watch) on every
     // way out of this function.
-    let watch = Watchdog::start(&conn, deadline);
+    let watch = Watchdog::start(&conn, deadline, stop.clone());
     let refused = |e: duckdb::Error| {
-        if watch.fired() {
-            PreviewRefusal::TookTooLong { deadline }
-        } else {
-            refusal(&e.to_string(), bytes)
-        }
+        watch
+            .refusal(deadline)
+            .unwrap_or_else(|| refusal(&e.to_string(), bytes))
     };
     // The limit and the spill before the load, so the load is held to them.
     conn.execute_batch(&format!(
@@ -243,74 +396,95 @@ pub fn preview_first_page_within(
 
     let mut previous = root_table;
     for (name, op) in chain {
-        let body = match op {
+        let create = match op {
             PreviewOp::Where(condition) => {
                 one_statement(crate::condition_statement_count(&format!(
                     "(\n{condition}\n)"
                 )))?;
-                format!("SELECT * FROM {} WHERE (\n{condition}\n)", quote(previous))
+                format!(
+                    "CREATE TABLE {} AS SELECT * FROM {} WHERE (\n{condition}\n);",
+                    quote(name),
+                    quote(previous)
+                )
             }
             PreviewOp::OrderBy(order) => {
                 one_statement(crate::order_statement_count(&format!("{order}\n, 1")))?;
-                format!("SELECT * FROM {} ORDER BY \n{order}\n", quote(previous))
+                format!(
+                    "CREATE TABLE {} AS SELECT * FROM {} ORDER BY \n{order}\n;",
+                    quote(name),
+                    quote(previous)
+                )
+            }
+            PreviewOp::Statement(sql) => {
+                crate::read_only_statement(sql).map_err(PreviewRefusal::Engine)?;
+                // No `;` after the text: it may end in one, or in a `--`
+                // comment that would swallow it.
+                format!("CREATE TABLE {} AS\n{sql}", quote(name))
             }
         };
-        conn.execute_batch(&format!("CREATE TABLE {} AS {body};", quote(name)))
-            .map_err(refused)?;
+        conn.execute_batch(&create).map_err(refused)?;
         previous = name;
     }
 
-    let rows_sql = format!("SELECT * FROM {}", quote(previous));
-    let sql = match chain.last() {
-        Some((_, PreviewOp::OrderBy(order))) => {
-            let width: i64 = conn
-                .query_row(
-                    &format!("SELECT count(*) FROM (DESCRIBE {rows_sql})"),
-                    [],
-                    |r| r.get(0),
-                )
-                .map_err(refused)?;
-            crate::ordered_window_sql(&rows_sql, order, width, 0, limit)
-        }
-        _ => crate::unordered_window_sql(&rows_sql, 0, limit),
-    };
-    let mut statement = conn.prepare(&sql).map_err(refused)?;
-    let batches = statement
-        .query_arrow(duckdb::params![])
-        .map_err(refused)?
-        .collect();
+    let out = read(&conn, previous, &refused)?;
     // An interrupt that landed between statements is not an error from any
-    // of them, and the page it leaves is not to be trusted as complete.
-    if watch.fired() {
-        return Err(PreviewRefusal::TookTooLong { deadline });
+    // of them, and the result it leaves is not to be trusted as complete.
+    if let Some(why) = watch.refusal(deadline) {
+        return Err(why);
     }
-    Ok(batches)
+    Ok(out)
 }
 
-/// **Interrupts a connection that is still working at its deadline.**
+/// The longest the watch waits before looking at its stop again, so a stop is
+/// heard within about this long.
+const STOP_POLL: Duration = Duration::from_millis(10);
+
+/// The watch has not fired.
+const NOT_FIRED: u8 = 0;
+/// The watch fired at the deadline.
+const FIRED_AT_DEADLINE: u8 = 1;
+/// The watch fired because its stop was stopped.
+const FIRED_BY_STOP: u8 = 2;
+
+/// **Interrupts a connection that is still working at its deadline, or once
+/// its stop is stopped.**
 ///
-/// A thread waits out the deadline; if the read has not finished by then it
-/// marks the watch fired and interrupts the connection, and keeps
-/// interrupting it every few milliseconds until the read gives up, because an
-/// interrupt that lands between two statements stops neither. Dropping the
-/// watch tells the thread the read is over and waits for it to go.
+/// A thread waits out the deadline in slices of at most [`STOP_POLL`],
+/// looking at the stop between them; at whichever comes first, if the read
+/// has not finished, it records which one fired and interrupts the
+/// connection, and keeps interrupting it every few milliseconds until the
+/// read gives up, because an interrupt that lands between two statements
+/// stops neither. Dropping the watch tells the thread the read is over and
+/// waits for it to go.
 struct Watchdog {
-    fired: Arc<AtomicBool>,
+    fired: Arc<AtomicU8>,
     done: Option<std::sync::mpsc::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Watchdog {
-    fn start(conn: &Connection, deadline: Duration) -> Self {
+    fn start(conn: &Connection, deadline: Duration, stop: PreviewStop) -> Self {
         let handle = conn.interrupt_handle();
-        let fired = Arc::new(AtomicBool::new(false));
+        let fired = Arc::new(AtomicU8::new(NOT_FIRED));
         let (done, over) = std::sync::mpsc::channel::<()>();
         let flag = fired.clone();
         let thread = std::thread::spawn(move || {
-            if over.recv_timeout(deadline) != Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
-                return;
-            }
-            flag.store(true, Ordering::SeqCst);
+            let started = Instant::now();
+            let why = loop {
+                if stop.is_stopped() {
+                    break FIRED_BY_STOP;
+                }
+                let left = deadline.saturating_sub(started.elapsed());
+                if left.is_zero() {
+                    break FIRED_AT_DEADLINE;
+                }
+                if over.recv_timeout(left.min(STOP_POLL))
+                    != Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                {
+                    return;
+                }
+            };
+            flag.store(why, Ordering::SeqCst);
             loop {
                 handle.interrupt();
                 if over.recv_timeout(Duration::from_millis(5))
@@ -327,8 +501,14 @@ impl Watchdog {
         }
     }
 
-    fn fired(&self) -> bool {
-        self.fired.load(Ordering::SeqCst)
+    /// The refusal the watch's firing stands for, or `None` while it has not
+    /// fired.
+    fn refusal(&self, deadline: Duration) -> Option<PreviewRefusal> {
+        match self.fired.load(Ordering::SeqCst) {
+            FIRED_AT_DEADLINE => Some(PreviewRefusal::TookTooLong { deadline }),
+            FIRED_BY_STOP => Some(PreviewRefusal::Superseded),
+            _ => None,
+        }
     }
 }
 

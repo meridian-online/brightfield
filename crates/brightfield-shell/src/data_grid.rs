@@ -1875,6 +1875,13 @@ impl GridPreview {
                 "This step cannot be previewed",
                 format!("{msg}. {way_on}"),
             ),
+            // The grid reads its previews without a stop, so this arm is for
+            // completeness: the text is the refusal's own.
+            brightfield_engine::PreviewRefusal::Superseded => EmptyState::new(
+                ICON_DATA,
+                "The preview was stopped",
+                format!("{refusal}. {way_on}"),
+            ),
         }
     }
 }

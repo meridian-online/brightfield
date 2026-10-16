@@ -8,10 +8,12 @@
 //! its lock, and the size limit to being checked before anything is read.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use brightfield_engine::{
-    preview_first_page, preview_first_page_with_limit, preview_first_page_within, FileReader,
-    PreviewOp, PreviewRefusal, RecordBatch, PREVIEW_FILE_LIMIT_BYTES,
+    preview_first_page, preview_first_page_stoppable, preview_first_page_with_limit,
+    preview_first_page_within, preview_row_count_stoppable, FileReader, PreviewOp, PreviewRefusal,
+    PreviewStop, RecordBatch, PREVIEW_FILE_LIMIT_BYTES,
 };
 use duckdb::arrow::array::{Array, Float64Array};
 
@@ -56,6 +58,10 @@ fn filter(name: &str, condition: &str) -> (String, PreviewOp) {
 
 fn sort(name: &str, order: &str) -> (String, PreviewOp) {
     (name.to_owned(), PreviewOp::OrderBy(order.to_owned()))
+}
+
+fn statement(name: &str, sql: &str) -> (String, PreviewOp) {
+    (name.to_owned(), PreviewOp::Statement(sql.to_owned()))
 }
 
 /// The largest `median_income` in the file, read on a connection of the
@@ -296,4 +302,144 @@ fn a_csv_is_read_with_the_csv_reader() {
     assert_eq!(rows(&page), 3);
     let schema = page[0].schema();
     assert_eq!(schema.field(0).name(), "name");
+}
+
+#[test]
+fn a_statement_previews_its_first_page() {
+    let sql = "select house_age, count(*) as n from california_housing group by house_age order by house_age";
+    let page = preview_first_page(
+        &housing(),
+        FileReader::Parquet,
+        ROOT,
+        &[statement("t", sql)],
+        5,
+    )
+    .unwrap();
+    assert_eq!(rows(&page), 5);
+    assert_eq!(doubles(&page, "house_age"), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+}
+
+#[test]
+fn a_statement_reads_an_earlier_steps_table_by_its_name() {
+    let chain = [
+        filter("older", "house_age > 28"),
+        statement("t", "select * from older order by house_age"),
+    ];
+    let page = preview_first_page(&housing(), FileReader::Parquet, ROOT, &chain, 10).unwrap();
+    assert!(doubles(&page, "house_age").iter().all(|a| *a > 28.0));
+}
+
+#[test]
+fn a_statement_ending_in_a_semicolon_or_a_comment_previews() {
+    for sql in [
+        "select * from california_housing order by median_income desc;",
+        "select * from california_housing order by median_income desc -- top first",
+    ] {
+        let page = preview_first_page(
+            &housing(),
+            FileReader::Parquet,
+            ROOT,
+            &[statement("t", sql)],
+            1,
+        )
+        .unwrap();
+        assert_eq!(doubles(&page, "median_income"), vec![top_income()], "{sql}");
+    }
+}
+
+#[test]
+fn a_statement_that_is_not_one_read_only_query_is_refused_before_anything_runs() {
+    for sql in [
+        "select 1; select 2",
+        "with t as (select 1) insert into u select * from t",
+    ] {
+        match preview_first_page(
+            &housing(),
+            FileReader::Parquet,
+            ROOT,
+            &[statement("t", sql)],
+            1,
+        ) {
+            Err(PreviewRefusal::Engine(msg)) => assert!(msg.starts_with("it "), "{msg}"),
+            other => panic!("{sql}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_statement_reading_a_file_or_an_unknown_table_fails() {
+    let file = preview_first_page(
+        &housing(),
+        FileReader::Parquet,
+        ROOT,
+        &[statement("t", "select * from read_csv('/etc/hosts')")],
+        1,
+    )
+    .unwrap_err();
+    assert!(file.to_string().contains("external access"), "{file}");
+    let table = preview_first_page(
+        &housing(),
+        FileReader::Parquet,
+        ROOT,
+        &[statement("t", "select * from nowhere")],
+        1,
+    )
+    .unwrap_err();
+    assert!(table.to_string().contains("nowhere"), "{table}");
+}
+
+#[test]
+fn a_stopped_read_ends_as_superseded() {
+    let stop = PreviewStop::default();
+    let worker = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            preview_first_page_stoppable(
+                &housing(),
+                FileReader::Parquet,
+                ROOT,
+                &[statement(
+                    "t",
+                    "select sum(range) from range(1000000000000000)",
+                )],
+                1,
+                PREVIEW_FILE_LIMIT_BYTES,
+                Duration::from_secs(600),
+                &stop,
+            )
+        })
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    let asked = Instant::now();
+    stop.stop();
+    assert_eq!(
+        worker.join().unwrap().unwrap_err(),
+        PreviewRefusal::Superseded
+    );
+    assert!(asked.elapsed() < Duration::from_secs(20));
+}
+
+#[test]
+fn the_rows_of_a_chain_are_counted() {
+    let never = PreviewStop::default();
+    let count = |chain: &[(String, PreviewOp)]| {
+        preview_row_count_stoppable(
+            &housing(),
+            FileReader::Parquet,
+            ROOT,
+            chain,
+            PREVIEW_FILE_LIMIT_BYTES,
+            Duration::from_secs(60),
+            &never,
+        )
+        .unwrap()
+    };
+    assert_eq!(count(&[filter("older", "house_age > 28")]), 8_831);
+    assert_eq!(
+        count(&[statement(
+            "t",
+            "select house_age, count(*) from california_housing group by house_age"
+        )]),
+        52
+    );
 }
