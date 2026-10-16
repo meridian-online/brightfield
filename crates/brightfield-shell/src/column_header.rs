@@ -665,9 +665,10 @@ pub fn is_fractional_storage(storage: &str) -> bool {
 
 /// A range bound as the band prints it: the engine's text for `storage`
 /// rounded by [`format_value`] when the column holds fractional numbers, and
-/// the engine's text unchanged for anything else, a date or an integer among
-/// them. The inspector's rail keeps the engine's text whole, so the exact
-/// bound stays one click away.
+/// the engine's text unchanged for a date or an integer column, which
+/// `a_value_reads_at_two_places_and_a_whole_one_as_digits` pins. The
+/// inspector's rail keeps the engine's text whole, so the exact bound stays
+/// one click away.
 #[must_use]
 pub fn format_bound(storage: &str, text: &str) -> String {
     if is_fractional_storage(storage) {
