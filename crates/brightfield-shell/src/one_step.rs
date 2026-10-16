@@ -285,7 +285,7 @@ impl OneStepProtocol {
     /// handed [`crate::typed_sql::lineage_model`] for it, as for each recorded
     /// SQL step, so its node and its table stand on what it reads. The steps
     /// are added to [`ProtocolInputs::generated`] (made from this Protocol when
-    /// the folder holds none) so a grid over a typed step's table previews it,
+    /// the folder has not got one) so a grid over a typed step's table previews it,
     /// and named in [`ProtocolInputs::typed`] so the spine marks them not
     /// recorded and a run's record is compared with the steps less them.
     ///

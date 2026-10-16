@@ -66,7 +66,7 @@ impl TypedStep {
 }
 
 /// **The model the lineage graph is handed for a SQL step**: a `CREATE` of the
-/// step's table from each table it reads, `SELECT 1` when it reads none. The
+/// step's table from each table it reads, `SELECT 1` when its reads are empty. The
 /// graph's parser reads this rather than the statement, so the step's node
 /// does not depend on that parser reading DuckDB's own syntax, such as a
 /// statement that opens with `FROM`
