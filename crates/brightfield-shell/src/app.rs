@@ -913,6 +913,19 @@ pub struct ChartDoc {
     /// takes on the Protocol the folder now holds; see
     /// [`Self::take_grid_view_settled`].
     grid_view_settled: bool,
+    /// **The statements kept from the palette and not yet saved**, in the
+    /// order the Protocol lays them out after its recorded steps. No file
+    /// holds them until a Save records them, so any marks the document
+    /// unsaved ([`Self::has_unsaved_work`]); cleared when the document is
+    /// replaced.
+    typed: Vec<crate::typed_sql::TypedStep>,
+    /// The order stamp each of [`Self::typed`] was kept with, index for index.
+    typed_stamps: Vec<u64>,
+    /// The order stamp the grid view was last applied with.
+    grid_view_stamp: u64,
+    /// The next order stamp: one counter for kept statements and applied grid
+    /// views, so what was made first can be recorded first.
+    next_stamp: u64,
     /// **The row at the grid's foot**: the field being edited, the preview
     /// the grid reads while it is, and what the band drew. Cleared when the
     /// document is replaced, with the view it edits.
@@ -1279,6 +1292,10 @@ impl ChartDoc {
             grid_view: brightfield_engine::RowsView::default(),
             grid_condition_held: None,
             grid_view_settled: false,
+            typed: Vec::new(),
+            typed_stamps: Vec::new(),
+            grid_view_stamp: 0,
+            next_stamp: 0,
             grid_foot: crate::grid_foot::FootState::default(),
             grid_preview: None,
             preview_file_limit: brightfield_engine::PREVIEW_FILE_LIMIT_BYTES,
@@ -1348,6 +1365,10 @@ impl ChartDoc {
             grid_view: brightfield_engine::RowsView::default(),
             grid_condition_held: None,
             grid_view_settled: false,
+            typed: Vec::new(),
+            typed_stamps: Vec::new(),
+            grid_view_stamp: 0,
+            next_stamp: 0,
             grid_foot: crate::grid_foot::FootState::default(),
             grid_preview: None,
             preview_file_limit: brightfield_engine::PREVIEW_FILE_LIMIT_BYTES,
@@ -1476,6 +1497,8 @@ impl ChartDoc {
         self.grid_view = brightfield_engine::RowsView::default();
         self.grid_condition_held = None;
         self.grid_view_settled = false;
+        self.typed.clear();
+        self.typed_stamps.clear();
         self.grid_foot = crate::grid_foot::FootState::default();
         self.grid_preview = None;
         self.grid_layout_switch = None;
@@ -1555,12 +1578,80 @@ impl ChartDoc {
     }
 
     /// Whether the document holds work no file does: an edit made since the
-    /// last Save ([`Self::has_unsaved_edit`]) or an applied grid view not yet
-    /// recorded ([`Self::grid_view_unrecorded`]). The one definition every
-    /// reader of *unsaved* shares.
+    /// last Save ([`Self::has_unsaved_edit`]), an applied grid view not yet
+    /// recorded ([`Self::grid_view_unrecorded`]), or a statement kept from the
+    /// palette ([`Self::typed_steps`]). The one definition every reader of
+    /// *unsaved* shares.
     #[must_use]
     pub fn has_unsaved_work(&self) -> bool {
-        self.has_unsaved_edit() || self.grid_view_unrecorded()
+        self.has_unsaved_edit() || self.grid_view_unrecorded() || !self.typed.is_empty()
+    }
+
+    /// The statements kept from the palette and not yet saved, in the order
+    /// the Protocol lays them out.
+    #[must_use]
+    pub fn typed_steps(&self) -> &[crate::typed_sql::TypedStep] {
+        &self.typed
+    }
+
+    /// The order stamp the kept statement `name` was made with, against
+    /// [`Self::grid_view_stamp`]: the lower was made first.
+    #[must_use]
+    pub fn typed_stamp(&self, name: &str) -> Option<u64> {
+        let at = self.typed.iter().position(|s| s.name == name)?;
+        self.typed_stamps.get(at).copied()
+    }
+
+    /// The order stamp the grid view was last applied with, against
+    /// [`Self::typed_stamp`].
+    #[must_use]
+    pub const fn grid_view_stamp(&self) -> u64 {
+        self.grid_view_stamp
+    }
+
+    fn take_stamp(&mut self) -> u64 {
+        self.next_stamp += 1;
+        self.next_stamp
+    }
+
+    /// Keep `step` after the statements already kept.
+    pub(crate) fn keep_typed(&mut self, step: crate::typed_sql::TypedStep) {
+        let stamp = self.take_stamp();
+        self.typed.push(step);
+        self.typed_stamps.push(stamp);
+    }
+
+    /// Correct the kept statement `name`: it keeps its name and its place,
+    /// and takes `statement`, reading `reads`. Its count, and the count of
+    /// each statement kept after it, which may read it, are dropped to be
+    /// taken again.
+    pub(crate) fn replace_typed(&mut self, name: &str, statement: String, reads: Vec<String>) {
+        let Some(at) = self.typed.iter().position(|s| s.name == name) else {
+            return;
+        };
+        let step = &mut self.typed[at];
+        step.statement = statement;
+        step.reads = reads;
+        for step in &mut self.typed[at..] {
+            step.rows = None;
+        }
+    }
+
+    /// Note that the table the kept statement `name` makes holds `rows` rows.
+    pub(crate) fn set_typed_rows(&mut self, name: &str, rows: u64) {
+        if let Some(step) = self.typed.iter_mut().find(|s| s.name == name) {
+            step.rows = Some(rows);
+        }
+    }
+
+    /// Each kept statement in words for the close question:
+    /// `SQL step · <name>`.
+    #[must_use]
+    pub fn typed_lines(&self) -> Vec<String> {
+        self.typed
+            .iter()
+            .map(|s| format!("SQL step \u{b7} {}", s.name))
+            .collect()
     }
 
     /// The unrecorded part of the grid view in words for the close question,
@@ -1597,6 +1688,7 @@ impl ChartDoc {
             view.condition.clone_from(&self.grid_view.condition);
         }
         self.grid_view = view;
+        self.grid_view_stamp = self.take_stamp();
     }
 
     /// Whether some part of the applied grid view is in no file: the grid

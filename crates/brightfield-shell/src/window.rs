@@ -106,7 +106,9 @@ use crate::shelf::{
     ShelfChannels,
 };
 use crate::typed_card::{CardEvent, StatementCard, TypedSaid};
-use crate::typed_sql::{typed_step_name, TypedReads, TypedSource, TYPED_PAUSE};
+use crate::typed_sql::{
+    spawn_row_count, typed_step_name, TypedAnswer, TypedReads, TypedSource, TypedStep, TYPED_PAUSE,
+};
 
 // ---------------------------------------------------------------------------
 // The window's own chrome budget.
@@ -438,6 +440,23 @@ pub struct PendingStart {
     /// The worker moving them — `None` on the frame the click landed on, and
     /// `Some` from the next frame until the bytes land.
     fetch: Option<crate::remote::Fetch>,
+}
+
+/// A count of a kept statement's rows under way on a worker: the step it
+/// counts, the chain it counts through, and where the count arrives.
+struct TypedCount {
+    name: String,
+    chain: Vec<(String, brightfield_engine::PreviewOp)>,
+    answer: std::sync::mpsc::Receiver<Result<u64, brightfield_engine::PreviewRefusal>>,
+}
+
+/// Whether the statement `answer` answered reads the table `name`.
+fn reads_table(answer: &TypedAnswer, name: &str) -> bool {
+    answer
+        .reading
+        .tables
+        .iter()
+        .any(|table| table.eq_ignore_ascii_case(name))
 }
 
 /// A run of the open Protocol, started from this window and not yet finished.
@@ -2411,6 +2430,9 @@ pub struct MeridianApp {
     /// The text of the answer whose rows the grid shows, so the grid is handed
     /// a page only when a new one is read.
     typed_in_grid: Option<String>,
+    /// The counts of kept statements' rows under way, each landed on the chart
+    /// document and the Protocol once it arrives.
+    typed_counts: Vec<TypedCount>,
     /// The keystrokes that open overlays, read off the registry at boot.
     overlay_keys: OverlayKeys,
     /// The `open-home` keystroke token, read off the registry at boot — the
@@ -2779,6 +2801,7 @@ impl MeridianApp {
             typed: None,
             typed_pause: TYPED_PAUSE,
             typed_in_grid: None,
+            typed_counts: Vec::new(),
             overlay_keys: OverlayKeys::from_registry(),
             home_binding: brightfield_keys::registry()
                 .iter()
@@ -4238,6 +4261,9 @@ impl MeridianApp {
         // reloads the Protocol document, and a frame should draw the state the
         // run left rather than one frame of the state before it.
         self.poll_run(&ctx);
+        // A count of a kept statement's rows that arrived since the last
+        // frame, for the spine row that says it.
+        self.poll_typed_counts();
         // A view the foot band left with nothing unrecorded since the last
         // frame: the window takes on the Protocol the folder holds now.
         if self.charts.doc.take_grid_view_settled() {
@@ -6460,8 +6486,42 @@ impl MeridianApp {
         )));
     }
 
-    /// Open the command palette at the chart altitude, restricted to what a
-    /// window in **this** state offers — see [`Self::overlay_open_keys`] for
+    /// **Open the chart palette**: over the grid of a statement kept from the
+    /// palette and not yet saved, the statement form holding that statement,
+    /// selected whole, to correct it or read it; otherwise the palette's
+    /// search ([`Self::open_chart_search`]).
+    fn open_chart_palette(&mut self) {
+        if let Some(step) = self.typed_step_in_front() {
+            let (statement, name) = (step.statement.clone(), step.name.clone());
+            self.overlay = Some(Overlay::Statement(StatementCard::held(statement, name)));
+        } else {
+            self.open_chart_search();
+        }
+    }
+
+    /// The kept statement whose table's grid the canvas holds, when it holds
+    /// one.
+    fn typed_step_in_front(&self) -> Option<&TypedStep> {
+        if !self.has_protocol_to_save() {
+            return None;
+        }
+        let CanvasHolds::View {
+            node,
+            view: NodeView::Grid,
+        } = self.canvas_holds()
+        else {
+            return None;
+        };
+        let model = &self.protocol.doc.model;
+        self.charts
+            .doc
+            .typed_steps()
+            .iter()
+            .find(|step| model.node_of_step_table(&step.name) == Some(node))
+    }
+
+    /// Open the command palette's search at the chart altitude, restricted
+    /// to what a window in **this** state offers — see [`Self::overlay_open_keys`] for
     /// why the chart view cannot simply reuse [`Self::open_protocol_palette`] with
     /// [`Altitude::View`].
     ///
@@ -6473,7 +6533,7 @@ impl MeridianApp {
     /// absence off a shipped start's own palette, and
     /// `going_home_takes_the_save_offer_with_the_start` walks one window from
     /// a data file, to the front door, and into a shipped start.
-    fn open_chart_palette(&mut self) {
+    fn open_chart_search(&mut self) {
         let allow = crate::overlays::chart_palette_verbs(self.has_protocol_to_save());
         self.overlay = Some(Overlay::Palette(Picker::new(
             CommandPalette::new_restricted(Altitude::View, self.recency.clone(), &allow),
@@ -6527,6 +6587,7 @@ impl MeridianApp {
         let mut close;
         let mut answered = None;
         let mut becomes = None;
+        let mut kept: Option<(TypedAnswer, Option<String>)> = None;
         match &mut overlay {
             Overlay::Palette(picker) => {
                 let chrome = ModalChrome::new().title("Commands").enter_hint("run");
@@ -6583,14 +6644,29 @@ impl MeridianApp {
                     Some(CardEvent::Close) => close = true,
                     Some(CardEvent::Searching) => {
                         let text = card.text().to_owned();
-                        self.open_chart_palette();
+                        self.open_chart_search();
                         if let Some(Overlay::Palette(mut picker)) = self.overlay.take() {
                             picker.set_query(text);
                             becomes = Some(Overlay::Palette(picker));
                         }
                     }
-                    // Keeping a statement is not wired yet: the form stays.
-                    Some(CardEvent::Keep) | None => {}
+                    // Kept only once a read has answered the text as it
+                    // stands; until then the read is started without waiting
+                    // out the pause, and the form stays.
+                    Some(CardEvent::Keep) => {
+                        match self.typed.as_ref().and_then(TypedReads::current) {
+                            Some(answer) => {
+                                kept = Some((answer.clone(), card.replacing().map(str::to_owned)));
+                                close = true;
+                            }
+                            None => {
+                                if let Some(typed) = self.typed.as_mut() {
+                                    typed.read_now();
+                                }
+                            }
+                        }
+                    }
+                    None => {}
                 }
             }
             Overlay::Help(picker) => {
@@ -6646,6 +6722,9 @@ impl MeridianApp {
             self.overlay = Some(overlay);
         }
         self.typed_follows_the_overlay(ctx);
+        if let Some((answer, replacing)) = kept {
+            self.keep_statement(ctx, &answer, replacing.as_deref());
+        }
         if let Some(answer) = answered {
             self.answer_close_question(ctx, answer);
         }
@@ -6663,7 +6742,7 @@ impl MeridianApp {
         if self.typed.is_some() {
             return;
         }
-        let Some(source) = self.typed_source() else {
+        let Some(source) = self.typed_source(card.replacing()) else {
             return;
         };
         let wake = ctx.clone();
@@ -6679,15 +6758,29 @@ impl MeridianApp {
 
     /// What a statement on the statement form is read against: the window's
     /// data file and the table it loads as, with every step the Protocol
-    /// generated after the load as the chain the statement may read.
-    fn typed_source(&self) -> Option<TypedSource> {
+    /// generated after the load as the chain the statement may read. Over
+    /// the kept statement `replacing`, the statements kept after it are left
+    /// out: they may read it, so it cannot read them.
+    fn typed_source(&self, replacing: Option<&str>) -> Option<TypedSource> {
         let model = &self.protocol.doc.model;
         let source = model.source()?;
         let reader = brightfield_engine::FileReader::for_path(&source.data)?;
-        let chain = model
+        let mut chain = model
             .generated()
             .map(crate::generated::preview_chain_of_every_step)
             .unwrap_or_default();
+        if let Some(replacing) = replacing {
+            let later: BTreeSet<&str> = self
+                .charts
+                .doc
+                .typed_steps()
+                .iter()
+                .skip_while(|step| step.name != replacing)
+                .skip(1)
+                .map(|step| step.name.as_str())
+                .collect();
+            chain.retain(|(name, _)| !later.contains(name.as_str()));
+        }
         Some(TypedSource {
             data: source.data.clone(),
             reader,
@@ -6749,18 +6842,11 @@ impl MeridianApp {
     /// the form is shut or before a read of it has found rows, when the grid
     /// shows what it would anyway.
     fn typed_grid_step(&mut self) -> Option<String> {
-        if !matches!(self.overlay, Some(Overlay::Statement(_))) {
+        let Some(Overlay::Statement(card)) = &self.overlay else {
             return None;
-        }
+        };
         let answer = self.typed.as_ref()?.shown()?;
-        let taken = self
-            .protocol
-            .doc
-            .model
-            .generated()
-            .map(|g| g.steps.iter().map(|s| s.name.clone()).collect())
-            .unwrap_or_default();
-        let step = typed_step_name(&answer.reading, &taken);
+        let step = self.kept_name(answer, card.replacing());
         if self.typed_in_grid.as_deref() != Some(answer.text.as_str())
             || self.charts.doc.grid_preview().is_none()
         {
@@ -6770,6 +6856,174 @@ impl MeridianApp {
             self.charts.doc.show_typed_preview(preview);
         }
         Some(step)
+    }
+
+    /// The name a statement answered by `answer` is kept as: the name of the
+    /// kept statement it takes the place of, `replacing`, unless it reads that
+    /// statement's own table, which makes it a step after it; otherwise a
+    /// name of its own ([`typed_step_name`]) that no step of the Protocol has.
+    fn kept_name(&self, answer: &TypedAnswer, replacing: Option<&str>) -> String {
+        if let Some(name) = replacing.filter(|name| !reads_table(answer, name)) {
+            return name.to_owned();
+        }
+        let model = &self.protocol.doc.model;
+        let mut taken: BTreeSet<String> = model
+            .generated()
+            .map(|g| g.steps.iter().map(|s| s.name.clone()).collect())
+            .unwrap_or_default();
+        taken.extend(model.source().map(|s| s.name.clone()));
+        taken.extend(self.charts.doc.typed_steps().iter().map(|s| s.name.clone()));
+        typed_step_name(&answer.reading, &taken)
+    }
+
+    /// **Keep the statement `answer` answered as a step**: in place of the
+    /// kept statement `replacing` under its name, unless it reads that
+    /// statement's table, and otherwise at the foot of the Protocol. The
+    /// Protocol is laid out again with it, its table is brought to the front
+    /// in the grid with the cursor on its first cell and the keys, and its
+    /// rows are counted on a worker.
+    fn keep_statement(
+        &mut self,
+        ctx: &egui::Context,
+        answer: &TypedAnswer,
+        replacing: Option<&str>,
+    ) {
+        let name = self.kept_name(answer, replacing);
+        let reads = answer.reading.tables.clone();
+        if replacing == Some(name.as_str()) {
+            self.charts
+                .doc
+                .replace_typed(&name, answer.text.clone(), reads);
+        } else {
+            self.charts.doc.keep_typed(TypedStep {
+                name: name.clone(),
+                statement: answer.text.clone(),
+                reads,
+                rows: None,
+            });
+        }
+        self.typed_in_grid = None;
+        self.lay_out_typed_steps();
+        let model = &mut self.protocol.doc.model;
+        model.select_step_table(&name);
+        if let Some(node) = model.node_of_step_table(&name).cloned() {
+            self.canvas_holds = CanvasHolds::View {
+                node,
+                view: NodeView::Grid,
+            };
+        }
+        // The grid is handed the step's preview now, since a change of what
+        // it shows lets go of the cursor, and the cursor is put on it after.
+        let preview = self.preview_request();
+        self.charts.doc.show_preview(preview, ctx);
+        self.charts.doc.grid_cursor = Some(crate::data_grid::GridCursor { row: 0, col: 0 });
+        self.charts.doc.grid_cursor_reveal = true;
+        // The grid takes the keys, so the cursor moves and the band answers.
+        self.ws_mut().set_focus(PaneKey::new(DATA));
+        self.count_typed_rows(ctx);
+        ctx.request_repaint();
+    }
+
+    /// Lay the Protocol out again from the folder with the statements kept
+    /// and not yet saved after its steps. A Protocol that grows out of its
+    /// one step takes the rails a Protocol of several opens with, as a Save
+    /// that adds a step does.
+    fn lay_out_typed_steps(&mut self) {
+        let Some(source) = self.protocol.doc.model.source().cloned() else {
+            return;
+        };
+        let was_one_step = self.ledger_opens_collapsed();
+        match source.inputs_with_typed(self.charts.doc.typed_steps()) {
+            Ok(inputs) => {
+                self.protocol.doc.open(inputs);
+                if was_one_step && !self.ledger_opens_collapsed() {
+                    self.apply_rail_defaults();
+                }
+                self.say_folder_refused();
+                wire_columns(
+                    &mut self.charts.doc,
+                    &self.protocol.doc.model,
+                    &self.charts.inspector_table,
+                );
+            }
+            Err(e) => eprintln!("the Protocol could not be laid out with its typed steps: {e}"),
+        }
+    }
+
+    /// Start a count of the rows of each kept statement not yet counted and
+    /// not being counted through the chain it now reads.
+    fn count_typed_rows(&mut self, ctx: &egui::Context) {
+        let model = &self.protocol.doc.model;
+        let (Some(generated), Some(source)) = (model.generated(), model.source()) else {
+            return;
+        };
+        let Some(reader) = brightfield_engine::FileReader::for_path(&source.data) else {
+            return;
+        };
+        for step in self
+            .charts
+            .doc
+            .typed_steps()
+            .iter()
+            .filter(|s| s.rows.is_none())
+        {
+            let Some(chain) = crate::generated::preview_chain(generated, &step.name) else {
+                continue;
+            };
+            if self
+                .typed_counts
+                .iter()
+                .any(|c| c.name == step.name && c.chain == chain)
+            {
+                continue;
+            }
+            let wake = ctx.clone();
+            let answer = spawn_row_count(
+                TypedSource {
+                    data: source.data.clone(),
+                    reader,
+                    root_table: source.name.clone(),
+                    chain: chain.clone(),
+                    runner: None,
+                },
+                move || wake.request_repaint(),
+            );
+            self.typed_counts.push(TypedCount {
+                name: step.name.clone(),
+                chain,
+                answer,
+            });
+        }
+    }
+
+    /// Land each count of a kept statement's rows that has arrived on the
+    /// chart document and the Protocol, when the statement still reads
+    /// through the chain it was counted through: one corrected since was
+    /// counted again.
+    fn poll_typed_counts(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        let mut landed = Vec::new();
+        self.typed_counts
+            .retain(|count| match count.answer.try_recv() {
+                Ok(Ok(rows)) => {
+                    landed.push((count.name.clone(), count.chain.clone(), rows));
+                    false
+                }
+                Ok(Err(_)) | Err(TryRecvError::Disconnected) => false,
+                Err(TryRecvError::Empty) => true,
+            });
+        for (name, chain, rows) in landed {
+            let current = self
+                .protocol
+                .doc
+                .model
+                .generated()
+                .and_then(|g| crate::generated::preview_chain(g, &name));
+            if current.as_ref() == Some(&chain) {
+                self.charts.doc.set_typed_rows(&name, rows);
+                self.protocol.doc.model.set_typed_rows(&name, rows);
+            }
+        }
     }
 
     /// **Read a close request and, over a window that carries the unsaved
@@ -6854,6 +7108,7 @@ impl MeridianApp {
             .map_or_else(Vec::new, |file| self.charts.doc.unsaved_changes(file));
         let mut edits = crate::versions::change_lines(&changes, &tile_of);
         edits.extend(self.charts.doc.grid_view_line());
+        edits.extend(self.charts.doc.typed_lines());
         CloseQuestion {
             file,
             edits,
@@ -8359,6 +8614,7 @@ impl MeridianApp {
             chain,
             fields,
             ran: model.step_ran(&step.name),
+            recorded: !model.is_typed(&step.name),
             run_key: self.run_binding.map(str::to_owned),
         })
     }
@@ -8575,7 +8831,8 @@ impl MeridianApp {
         let Some(source) = self.protocol.doc.model.source().cloned() else {
             return;
         };
-        match source.inputs_with_last_run() {
+        // The statements kept and not yet saved stay laid out after the run.
+        match source.inputs_with_typed(self.charts.doc.typed_steps()) {
             Ok(inputs) => {
                 self.protocol.doc.open(inputs);
                 self.say_folder_refused();

@@ -67,8 +67,12 @@ pub struct StatementCard {
     text: String,
     replacing: Option<String>,
     /// Whether the next frame gives the field the keyboard, with the caret at
-    /// the end of the text.
+    /// the end of the text, or the whole text selected when it is `held`.
     focus: bool,
+    /// Whether the form opened holding a kept statement, which it opens
+    /// selected, so typing replaces it and an arrow key puts the caret at an
+    /// end of it.
+    held: bool,
     /// The card's height less the field's, as the last frame drew it: what
     /// the field's room is worked out from.
     chrome_height: f32,
@@ -84,8 +88,20 @@ impl StatementCard {
             text,
             replacing,
             focus: true,
+            held: false,
             chrome_height: spacing::SPACE_9 * 2.0,
             rect: None,
+        }
+    }
+
+    /// A form holding the kept statement `statement` of the step `name`, all
+    /// of it selected, to take that step's place when kept, or to make the
+    /// step after it when what is kept reads that step's table.
+    #[must_use]
+    pub fn held(statement: String, name: String) -> Self {
+        Self {
+            held: true,
+            ..Self::new(statement, Some(name))
         }
     }
 
@@ -124,7 +140,8 @@ impl StatementCard {
         }
         let id = egui::Id::new(STATEMENT_CARD_ID);
         let field = id.with("statement");
-        // The caret goes to the end of the text, and the field is asked for
+        // The caret goes to the end of the text (a held statement is
+        // selected whole instead), and the field is asked for
         // the keyboard, until the field first has it: on the frame the palette
         // turns into this form, the palette's modal layer still holds the
         // keyboard. After that the field asks again whenever nothing holds the
@@ -133,9 +150,12 @@ impl StatementCard {
         if self.focus {
             let mut state = egui::TextEdit::load_state(ctx, field).unwrap_or_default();
             let end = egui::text::CCursor::new(self.text.chars().count());
-            state
-                .cursor
-                .set_char_range(Some(egui::text::CCursorRange::one(end)));
+            let range = if self.held {
+                egui::text::CCursorRange::two(egui::text::CCursor::new(0), end)
+            } else {
+                egui::text::CCursorRange::one(end)
+            };
+            state.cursor.set_char_range(Some(range));
             egui::TextEdit::store_state(ctx, field, state);
         }
         if self.focus || ctx.memory(|m| m.focused().is_none()) {

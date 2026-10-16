@@ -1493,6 +1493,9 @@ pub struct PreviewRequest {
     pub fields: [String; 2],
     /// Whether the run record says the step ran.
     pub ran: bool,
+    /// Whether a file records the step: false for a statement kept from the
+    /// palette and not yet saved.
+    pub recorded: bool,
     /// The key that runs the Protocol, when one is bound.
     pub run_key: Option<String>,
 }
@@ -1819,6 +1822,7 @@ impl GridPreview {
             chain: Vec::new(),
             fields: [String::new(), String::new()],
             ran: false,
+            recorded: false,
             run_key: None,
         };
         let key = PreviewKey {
@@ -1889,10 +1893,13 @@ impl GridPreview {
 
     /// What the status band says to a key that asks the band to filter or
     /// sort this step: a step that has not run offers Run, because filtering
-    /// starts from the step's table and never from a preview.
+    /// starts from the step's table and never from a preview. A step no file
+    /// records offers Save, since Run runs what the folder records.
     #[must_use]
     pub fn offer(&self) -> String {
-        if self.request.ran {
+        if !self.request.recorded {
+            "this step is not recorded yet; Save records it".to_string()
+        } else if self.request.ran {
             format!(
                 "{} has been run; filtering a saved step comes in a later version",
                 self.request.step
@@ -1911,7 +1918,9 @@ impl GridPreview {
     fn refused_state(&self, refusal: &brightfield_engine::PreviewRefusal) -> EmptyState {
         use brightfield_model::profile_model::thousands;
         let run = self.request.run_named();
-        let way_on = if self.request.ran {
+        let way_on = if !self.request.recorded {
+            "It is not recorded yet; Save records it.".to_string()
+        } else if self.request.ran {
             format!("Its run's table is not shown here yet; {run} the Protocol to run it again.")
         } else {
             format!("It has not been run; {run} the Protocol to make its table.")
