@@ -7,7 +7,7 @@
 //! Protocol with the not-recorded dot, and its table in the grid.
 //!
 //! The statement is read on a worker, so the capture waits after each frame
-//! until the read has answered, and Cmd+Enter is pressed only once it has
+//! until the read has answered, so Cmd+Enter is pressed after the answer
 //! (`capture::capture_png_awaiting`). The statement ends in an `ORDER BY`, so
 //! its first page is the same on every read.
 //!

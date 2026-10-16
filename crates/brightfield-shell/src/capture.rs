@@ -228,13 +228,18 @@ pub fn capture_png_staged(
 /// frames after the text was typed, and Cmd+Enter keeps the statement only
 /// once it has, so a script that presses it on the frame after typing keeps
 /// nothing. While `ready` is false the window is drawn with no input, a few
-/// milliseconds apart, so what the worker sends back lands, and the capture
-/// fails after [`READY_PATIENCE`] rather than photograph a window that never
-/// got there. `ready` is asked after the last frame too, so it can note what
-/// that frame drew.
+/// milliseconds apart, so what the worker sends back lands. Its clock stands
+/// still over those frames, so a caret's blink in the picture does not depend
+/// on how long the worker took. The capture panics after [`READY_PATIENCE`],
+/// as it does past the settle frames' cap, rather than photograph a window
+/// still waiting. `ready` is asked after the last frame too, so it can note
+/// what that frame drew.
 ///
 /// # Errors
 /// As [`capture_png`].
+///
+/// # Panics
+/// When `ready` does not hold within [`READY_PATIENCE`] of a frame.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_png_awaiting(
     boot: Boot,
@@ -421,8 +426,8 @@ fn wants_another_frame(out: &egui::FullOutput) -> bool {
 /// [`egui::FullOutput`].
 ///
 /// After any frame that leaves `held` set, the window is drawn again with no
-/// input, a few milliseconds apart, until `draw` clears it: the wait
-/// [`capture_png_awaiting`] asks for.
+/// input, a few milliseconds apart and with the clock stopped, until `draw`
+/// clears it: the wait [`capture_png_awaiting`] asks for.
 ///
 /// # Why settling is a loop and not one frame
 ///
@@ -465,8 +470,15 @@ fn run_ui_frames(
     held: &std::cell::Cell<bool>,
     mut draw: impl FnMut(&mut egui::Ui),
 ) -> egui::FullOutput {
-    let mut one = |events: Vec<egui::Event>| {
-        let out = ctx.run_ui(frame_input(screen, scale, events), |ui| draw(ui));
+    // A frame drawn while `held` is set keeps the clock where the frame
+    // before it left it, so how long a worker takes does not move an
+    // animation or a caret's blink in the picture.
+    let mut one = |events: Vec<egui::Event>, frozen: bool| {
+        let mut input = frame_input(screen, scale, events);
+        if frozen {
+            input.time = Some(ctx.input(|i| i.time));
+        }
+        let out = ctx.run_ui(input, |ui| draw(ui));
         {
             let mut r = egui_renderer.write();
             for (id, delta) in &out.textures_delta.set {
@@ -485,29 +497,30 @@ fn run_ui_frames(
     // While `held` says the window is waiting on a worker, it is drawn again
     // with no input until it is not; those frames count toward neither the
     // script nor the settle frames.
-    let wait_out = |mut out: egui::FullOutput,
-                    one: &mut dyn FnMut(Vec<egui::Event>) -> egui::FullOutput| {
-        let deadline = std::time::Instant::now() + READY_PATIENCE;
-        while held.get() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the window was not ready after {READY_PATIENCE:?}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            out = one(Vec::new());
-        }
-        out
-    };
+    let wait_out =
+        |mut out: egui::FullOutput,
+         one: &mut dyn FnMut(Vec<egui::Event>, bool) -> egui::FullOutput| {
+            let deadline = std::time::Instant::now() + READY_PATIENCE;
+            while held.get() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the window was not ready after {READY_PATIENCE:?}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                out = one(Vec::new(), true);
+            }
+            out
+        };
     for events in frames {
         // The warm-up and the script are driven for their effect on the
         // window, never captured: the frame that gets photographed is always a
         // settle frame below, so nothing here is read back.
-        let out = one(events);
+        let out = one(events, false);
         drop(wait_out(out, &mut one));
     }
 
     for settled in 0..MAX_SETTLE_FRAMES {
-        let out = one(Vec::new());
+        let out = one(Vec::new(), false);
         let out = wait_out(out, &mut one);
         if !wants_another_frame(&out) {
             return out;
