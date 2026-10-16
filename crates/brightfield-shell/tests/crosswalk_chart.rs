@@ -63,6 +63,7 @@ use brightfield_render::sample_policy::{renders_complete, sample_exponent, MEASU
 use brightfield_shell::starts;
 use brightfield_spec::analysis::{analyse_spec, ComponentPath, SpecAnalysis};
 use brightfield_spec::ast::Spec;
+use brightfield_spec::edit::{colour_legend_placement, LegendPlacement};
 use brightfield_spec::parse::{parse_spec, Format};
 use brightfield_sql::emit::{collect_marks, emit_query_sampled};
 use brightfield_sql::ir::{Predicate, SampleRate, ScalarValue, SelectionPredicate};
@@ -393,6 +394,41 @@ fn the_grid_groups_by_the_method_that_made_the_link() {
         !sql.contains("key_type"),
         "the grid still reads key_type, which the header of \
          examples/remote/edgar-gleif-crosswalk.yaml says it does not:\n{sql}"
+    );
+}
+
+/// The grid's colour legend is drawn under the grid, and the histogram has
+/// none.
+///
+/// The grid's fill is a count, so without a legend its colours say nothing a
+/// reader can read. The shell draws a colour legend where the file declares
+/// one, and `examples_exercise.rs` holds the flat `examples/` directory to
+/// that, not `examples/remote/`, so this holds the shipped chart to it here.
+/// Below rather than at the right: a legend at a plot's right is drawn level
+/// with the plot's top, and this grid's title is wider than what that band
+/// leaves the plot, so the two drew over each other.
+#[test]
+fn the_grid_draws_its_colour_legend_below_it() {
+    let (spec, _) = shipped();
+    let groups = brightfield_sql::collect_plot_groups(&spec);
+    let histogram = &groups
+        .first()
+        .expect("the shipped chart has plots")
+        .plot_path;
+    let grid = &groups
+        .last()
+        .expect("the shipped chart has plots")
+        .plot_path;
+    assert_ne!(histogram, grid, "the shipped chart has two plots");
+    assert_eq!(
+        colour_legend_placement(&spec, grid),
+        LegendPlacement::Below,
+        "the grid at {grid} does not draw its colour legend below it"
+    );
+    assert_eq!(
+        colour_legend_placement(&spec, histogram),
+        LegendPlacement::None,
+        "the histogram at {histogram} has a colour legend, and it has no colour scale"
     );
 }
 
