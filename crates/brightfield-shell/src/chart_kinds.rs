@@ -618,7 +618,7 @@ fn counts_over_time() -> ChartKind<String> {
 /// line in the default ink.
 ///
 /// After [`counts_over_time`], so a table nobody has described still opens on
-/// the counts, which need only the date.
+/// the counts, which take a date and no measure.
 fn line_over_time() -> ChartKind<String> {
     ChartKind {
         id: LINE_OVER_TIME,
