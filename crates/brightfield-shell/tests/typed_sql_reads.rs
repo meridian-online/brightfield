@@ -136,6 +136,21 @@ fn a_refused_text_keeps_the_last_good_rows_and_says_why() {
     assert!(r.refusal().unwrap().contains("nowhere"));
 }
 
+/// A refusal is not kept once other text has answered, so a refusal that
+/// may pass on a second try, such as the deadline, is read again when the
+/// text comes back to it.
+#[test]
+fn text_refused_before_is_read_again_after_other_text_answers() {
+    let mut r = reads(TYPED_PAUSE);
+    answer(&mut r, "select * from nowhere");
+    assert!(r.refusal().is_some());
+    answer(&mut r, FILTER);
+    let now = Instant::now();
+    r.edit("select * from nowhere", now);
+    assert!(r.refusal().is_none());
+    assert_eq!(r.pause_left(now), Some(TYPED_PAUSE));
+}
+
 #[test]
 fn a_superseded_read_is_stopped() {
     let mut r = reads(TYPED_PAUSE);

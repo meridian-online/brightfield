@@ -372,12 +372,16 @@ impl TypedReads {
         self.in_flight = None;
         match result {
             Ok(answer) => {
-                // A refusal stands until its own text reads.
-                if self
+                // An answer to other text than the line's leaves the line's
+                // refusal standing; any other refusal goes, so text refused
+                // before is read again when the line comes back to it
+                // (`text_refused_before_is_read_again_after_other_text_answers`
+                // in `tests/typed_sql_reads.rs`).
+                let stands = self
                     .refused
                     .as_ref()
-                    .is_some_and(|(t, _)| *t == answer.text)
-                {
+                    .is_some_and(|(t, _)| *t == self.text && answer.text != self.text);
+                if !stands {
                     self.refused = None;
                 }
                 self.shown = Some(answer);
