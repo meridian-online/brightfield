@@ -114,6 +114,8 @@ mod sql_ident;
 pub mod starts;
 pub mod startup;
 pub mod text_ink;
+pub mod typed_card;
+pub mod typed_sql;
 pub mod versions;
 pub mod watch;
 pub mod window;

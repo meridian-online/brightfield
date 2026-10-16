@@ -16,15 +16,18 @@
 //! when its text says something else.
 //!
 //! **What opens this way**: a folder whose first step is a data-file load and
-//! whose other steps are each a generated `filter-rows` or `sort-rows` on a
-//! table an earlier step makes. It opens as a Protocol with its steps laid out
-//! and starts no run; each generated step reads *not run* until a run's record
-//! says otherwise, and its grid shows a labelled first-page preview (see
-//! [`crate::data_grid::PREVIEW_LABEL`]). A folder with no generated step after
-//! the load is a hand-written Protocol, and is refused on open as it was before
-//! generated steps opened, unless the offline variable is set. A folder that
-//! mixes generated steps with other steps after the load is refused with a
-//! message naming the step that does not match.
+//! whose other steps are each a generated `filter-rows` or `sort-rows`, or a
+//! SQL step in the shape `arc sql record` writes ([`parse_sql_step`]): a
+//! first line `CREATE OR REPLACE TABLE "<step>" AS` and then one query that
+//! reads rows. Each step reads only tables the load or an earlier step makes.
+//! It opens as a Protocol with its steps laid out and starts no run; each
+//! step after the load reads *not run* until a run's record says otherwise,
+//! and its grid shows a labelled first-page preview (see
+//! [`crate::data_grid::PREVIEW_LABEL`]). A folder with no step of either
+//! shape after the load is a hand-written Protocol, and is refused on open as
+//! it was before generated steps opened, unless the offline variable is set.
+//! A folder that mixes such steps with other steps after the load is refused
+//! with a message naming the step that does not match.
 //!
 //! **Parsing a model yields the operation, the table it is on, and its
 //! argument.** The open check reads all three, and the grid reads a
@@ -40,6 +43,10 @@
 //! Both parts are slugged, so the name passes arc's
 //! step-name check, and a name already taken gets `_2`, `_3` and so on before
 //! arc is asked, so a recording is not refused on its name.
+//!
+//! A step made from typed SQL is named the same way by [`sql_step_name_for`]:
+//! `<table>_sql_by_<column>` when the statement turns on one column, otherwise
+//! `<table>_sql`, with the same slug and the same suffixing.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -103,15 +110,30 @@ impl KnownOperation {
     }
 }
 
-/// One step arc generated, as its model says.
+/// What a step does to make its table: an operation arc generated, or a SQL
+/// statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepEffect {
+    /// A `filter-rows` or `sort-rows` arc generated, on the one table it reads.
+    Operation(KnownOperation),
+    /// A statement, which reads the tables it names.
+    Sql,
+}
+
+/// One step after the load: one arc generated, as its model says, or one made
+/// from typed SQL.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeneratedStep {
     /// The step's name, which is also the table it makes.
     pub name: String,
-    pub operation: KnownOperation,
-    /// The table the step reads.
+    pub effect: StepEffect,
+    /// The table the step reads: an operation's one table, or the first a
+    /// statement reads (empty when it reads none).
     pub on: String,
-    /// The condition or the ordering, as written.
+    /// Every table the step reads, in the order it names them. An operation
+    /// reads its [`Self::on`] alone.
+    pub reads: Vec<String>,
+    /// An operation's condition or ordering, or a statement, as written.
     pub argument: String,
 }
 
@@ -285,10 +307,167 @@ pub fn parse_generated(step_name: &str, model_sql: &str) -> Result<GeneratedStep
     }
     Ok(GeneratedStep {
         name: step_name.to_string(),
-        operation,
+        effect: StepEffect::Operation(operation),
         on: on.to_string(),
+        reads: vec![on.to_string()],
         argument: argument.to_string(),
     })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times [`parse_sql_step`] ran on this thread.
+    static SQL_STEP_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Read the model `arc sql record` wrote for the SQL step `step_name`: its
+/// first line `CREATE OR REPLACE TABLE "<step_name>" AS`, and then the
+/// statement as typed, which must be exactly one query that reads rows
+/// ([`brightfield_engine::read_only_statement`]). The step reads the tables
+/// [`brightfield_engine::statement_reading`] finds, and its argument is the
+/// statement without the final newline arc adds.
+///
+/// # Errors
+///
+/// A message naming the step, when the first line is not that line, or the
+/// statement is not one query that reads rows.
+pub fn parse_sql_step(step_name: &str, model_sql: &str) -> Result<GeneratedStep, String> {
+    #[cfg(test)]
+    SQL_STEP_PARSES.with(|n| n.set(n.get() + 1));
+    let refuse = |what: &str| Err(format!("step {step_name:?} is not a SQL step: {what}"));
+    let model_sql = model_sql.replace("\r\n", "\n");
+    let want_create = format!("CREATE OR REPLACE TABLE {} AS", quoted(step_name));
+    let Some((first, rest)) = model_sql.split_once('\n') else {
+        return refuse(&format!("its model is not `{want_create}` and a statement"));
+    };
+    if first != want_create {
+        return refuse(&format!("its first line is not `{want_create}`"));
+    }
+    let statement = rest.strip_suffix('\n').unwrap_or(rest);
+    if let Err(e) = brightfield_engine::read_only_statement(statement) {
+        return refuse(&e);
+    }
+    let reads = match brightfield_engine::statement_reading(statement) {
+        Ok(reading) => reading.tables,
+        Err(e) => return refuse(&e),
+    };
+    Ok(GeneratedStep {
+        name: step_name.to_string(),
+        effect: StepEffect::Sql,
+        on: reads.first().cloned().unwrap_or_default(),
+        reads,
+        argument: statement.to_string(),
+    })
+}
+
+/// **The steps a preview of `step` makes**: the steps it reads, and theirs,
+/// in manifest order, ending with `step` itself, each with what it does. A
+/// step `step` does not read, directly or through another, is left out, so a
+/// preview does not run a statement its rows do not come from. `None` when no
+/// step is named `step`, in any case.
+///
+/// A table is matched to the step that makes it without regard to case, as
+/// DuckDB resolves a name; the load's table is made by no step here, and ends
+/// the walk.
+#[must_use]
+pub fn preview_chain(
+    protocol: &GeneratedProtocol,
+    step: &str,
+) -> Option<Vec<(String, brightfield_engine::PreviewOp)>> {
+    let target = index_of(&protocol.steps, step)?;
+    let needed = with_what_they_read(&protocol.steps, [target]);
+    Some(chain_of(&protocol.root_table, &protocol.steps, needed))
+}
+
+/// **The steps a statement reading `tables` is read after**: of `steps`,
+/// which follow the load of `root_table`, each that makes a table in
+/// `tables`, and the steps those read, and theirs, in the order of `steps`.
+/// A step the statement does not read, directly or through another, is left
+/// out, so a slow or failing step it has no use for does not hold up or
+/// refuse its preview
+/// (`a_statement_over_the_loaded_table_previews_past_a_failing_step` in
+/// `tests/typed_sql_reads.rs`).
+#[must_use]
+pub fn preview_chain_reading(
+    root_table: &str,
+    steps: &[GeneratedStep],
+    tables: &[String],
+) -> Vec<(String, brightfield_engine::PreviewOp)> {
+    let read = tables.iter().filter_map(|t| index_of(steps, t));
+    chain_of(root_table, steps, with_what_they_read(steps, read))
+}
+
+/// The index of the step of `steps` named `name`, in any case.
+fn index_of(steps: &[GeneratedStep], name: &str) -> Option<usize> {
+    let name = name.to_lowercase();
+    steps.iter().position(|s| s.name.to_lowercase() == name)
+}
+
+/// The indices `from`, and those of each step of `steps` they read, directly
+/// or through another.
+fn with_what_they_read(
+    steps: &[GeneratedStep],
+    from: impl IntoIterator<Item = usize>,
+) -> BTreeSet<usize> {
+    let mut needed = BTreeSet::new();
+    let mut todo = Vec::new();
+    for i in from {
+        if needed.insert(i) {
+            todo.push(i);
+        }
+    }
+    while let Some(i) = todo.pop() {
+        for read in &steps[i].reads {
+            // Each read is of a step before the reader, so the walk ends.
+            if let Some(j) = index_of(steps, read).filter(|&j| j < i) {
+                if needed.insert(j) {
+                    todo.push(j);
+                }
+            }
+        }
+    }
+    needed
+}
+
+/// The steps of `steps`, which follow the load of `root_table`, at
+/// `indices`, in the order given, as a chain the engine previews.
+///
+/// The engine runs an operation on the table made just before it in the
+/// chain. An operation whose own table is another, because it branches off a
+/// table an earlier step of the chain made, is written as the statement over
+/// its own table that arc's template is
+/// (`a_statement_over_two_branches_previews_each_from_the_table_it_reads` in
+/// `tests/typed_sql_nodes.rs`).
+fn chain_of(
+    root_table: &str,
+    steps: &[GeneratedStep],
+    indices: impl IntoIterator<Item = usize>,
+) -> Vec<(String, brightfield_engine::PreviewOp)> {
+    use brightfield_engine::PreviewOp;
+    let mut previous = root_table;
+    let mut chain = Vec::new();
+    for i in indices {
+        let s = &steps[i];
+        let in_line = s.on.to_lowercase() == previous.to_lowercase();
+        let op = match s.effect {
+            StepEffect::Operation(operation) if !in_line => PreviewOp::Statement(format!(
+                "SELECT *\nFROM {}\n{}{}\n",
+                quoted(&s.on),
+                operation.clause(),
+                s.argument
+            )),
+            StepEffect::Operation(KnownOperation::FilterRows) => {
+                PreviewOp::Where(s.argument.clone())
+            }
+            StepEffect::Operation(KnownOperation::SortRows) => {
+                PreviewOp::OrderBy(s.argument.clone())
+            }
+            StepEffect::Sql => PreviewOp::Statement(s.argument.clone()),
+        };
+        chain.push((s.name.clone(), op));
+        previous = &s.name;
+    }
+    chain
 }
 
 /// The table a load model makes: the target of its `CREATE OR REPLACE TABLE`.
@@ -310,11 +489,12 @@ fn has_header(model: &str) -> bool {
 }
 
 /// The folder at `dir`, whose manifest reads `manifest_text`, as a data-file
-/// load followed by steps arc generated.
+/// load followed by steps arc generated or recorded from SQL.
 ///
 /// `Ok(None)` is a folder that is not that shape, so the caller goes on as it
 /// did before: a manifest that is not a Protocol, fewer than two steps, no
-/// generated header in any step after the first, or a first step that is not
+/// step after the first that has the generated header or reads as a SQL step
+/// ([`parse_sql_step`]), or a first step that is not
 /// **brightfield's own load** of a data file in `dir` — a `sql:` step whose
 /// model is [`MODEL_PATH`] and makes the table the data file opens as. A load
 /// spelled any other way is a hand-written Protocol, and so is a load of a
@@ -325,8 +505,9 @@ fn has_header(model: &str) -> bool {
 ///
 /// # Errors
 ///
-/// A message naming the step, when the folder has a generated header and a step
-/// does not match the template, or reads a table no earlier step makes.
+/// A message naming the step, when a step after the load has one of the two
+/// shapes and a step does not match the template it carries, or reads a
+/// table no earlier step makes.
 pub fn generated_protocol_in(
     manifest_text: &str,
     dir: &Path,
@@ -395,7 +576,28 @@ fn read_generated(
                 .and_then(|p| std::fs::read_to_string(dir.join(p)).ok())
         })
         .collect();
-    if !models.iter().flatten().any(|m| has_header(m)) {
+    // A step of either shape makes the folder one of these; with none, it is
+    // a hand-written Protocol, decided before any step is refused. A SQL
+    // step's parse is kept for the walk below, so no step is parsed twice
+    // (`a_folder_parses_each_sql_step_once`).
+    let mut sql_parsed: Vec<Option<Result<GeneratedStep, String>>> = vec![None; rest.len()];
+    let mut of_a_shape = false;
+    for ((step, model), parsed) in rest.iter().zip(&models).zip(&mut sql_parsed) {
+        let Some(model) = model.as_deref() else {
+            continue;
+        };
+        if has_header(model) {
+            of_a_shape = true;
+            break;
+        }
+        let sql = parse_sql_step(&step.name, model);
+        of_a_shape = sql.is_ok();
+        *parsed = Some(sql);
+        if of_a_shape {
+            break;
+        }
+    }
+    if !of_a_shape {
         return Ok(None);
     }
     let Some(data) = data_file_of_load(load, dir).filter(|d| in_folder(d, dir)) else {
@@ -427,23 +629,32 @@ fn read_generated(
     else {
         return Ok(None);
     };
-    let mut made: BTreeSet<String> = BTreeSet::from([root_table.clone()]);
+    let mut made: BTreeSet<String> = BTreeSet::from([root_table.to_lowercase()]);
     let mut steps = Vec::new();
-    for (step, model) in rest.iter().zip(models) {
+    for ((step, model), sql) in rest.iter().zip(models).zip(sql_parsed) {
         let Some(model) = model else {
             return Err(format!(
                 "step {:?} has no model file to read beside the generated steps",
                 step.name
             ));
         };
-        let parsed = parse_generated(&step.name, &model)?;
-        if !made.contains(&parsed.on) {
+        let parsed = if has_header(&model) {
+            parse_generated(&step.name, &model)?
+        } else {
+            sql.unwrap_or_else(|| parse_sql_step(&step.name, &model))?
+        };
+        // DuckDB resolves a table name without regard to case.
+        if let Some(read) = parsed
+            .reads
+            .iter()
+            .find(|read| !made.contains(&read.to_lowercase()))
+        {
             return Err(format!(
-                "step {:?} reads {:?}, which no earlier step makes",
-                step.name, parsed.on
+                "step {:?} reads {read:?}, which no earlier step makes",
+                step.name
             ));
         }
-        made.insert(step.name.clone());
+        made.insert(step.name.to_lowercase());
         steps.push(parsed);
     }
     Ok(Some(GeneratedProtocol {
@@ -488,6 +699,42 @@ fn slug(text: &str) -> String {
     out.trim_matches('_').to_string()
 }
 
+/// A name for a step made from typed SQL: `<table>_sql_by_<column>` when the
+/// statement turns on one column, `<table>_sql` otherwise, and a numeric suffix
+/// when the name is taken, in any case. A missing or empty table is `table`.
+/// The parts are slugged, so arc's step-name check admits the name.
+#[must_use]
+pub fn sql_step_name_for(
+    read_table: Option<&str>,
+    column: Option<&str>,
+    taken: &BTreeSet<String>,
+) -> String {
+    let table = match slug(read_table.unwrap_or("")) {
+        s if s.is_empty() => "table".to_string(),
+        s => s,
+    };
+    let base = match column.map(slug) {
+        Some(col) if !col.is_empty() => format!("{table}_sql_by_{col}"),
+        _ => format!("{table}_sql"),
+    };
+    free_name(base, taken)
+}
+
+/// `base`, or `base_2`, `base_3` and so on: the first the `taken` names do not
+/// hold. DuckDB's table names are not case-sensitive, so `HOUSE_AGE` is taken
+/// by a step named `house_age`.
+fn free_name(base: String, taken: &BTreeSet<String>) -> String {
+    let taken: BTreeSet<String> = taken.iter().map(|t| t.to_lowercase()).collect();
+    let free = |c: &String| !taken.contains(&c.to_lowercase());
+    if free(&base) {
+        return base;
+    }
+    (2..)
+        .map(|n| format!("{base}_{n}"))
+        .find(free)
+        .unwrap_or(base)
+}
+
 /// A name for a new step by its effect: `<root>_<word>_by_<column>` when a
 /// filter's condition names exactly one column or a sort has any (its first),
 /// `<root>_<word>` otherwise, and a
@@ -515,29 +762,52 @@ pub fn step_name_for(
         Some(col) if !col.is_empty() => format!("{root}_{}_by_{col}", operation.word()),
         _ => format!("{root}_{}", operation.word()),
     };
-    // DuckDB's table names are not case-sensitive, so `HOUSE_AGE` is taken by
-    // a step named `house_age`.
-    let taken: BTreeSet<String> = taken.iter().map(|t| t.to_lowercase()).collect();
-    let free = |c: &String| !taken.contains(&c.to_lowercase());
-    if free(&base) {
-        return base;
-    }
-    (2..)
-        .map(|n| format!("{base}_{n}"))
-        .find(free)
-        .unwrap_or(base)
+    free_name(base, taken)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A folder recorded with one SQL step after the load is read with that
+    /// step parsed once: each parse opens an in-memory DuckDB database, and
+    /// the folder is read on the UI thread.
+    #[test]
+    fn a_folder_parses_each_sql_step_once() {
+        let dir =
+            std::env::temp_dir().join(format!("bf-generated-parse-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp directory for the fixture");
+        let data = dir.join(crate::starts::HOUSING_FILE);
+        std::fs::write(&data, crate::starts::HOUSING_PARQUET).expect("the housing file writes");
+        let opened = crate::data_file::open(&data.to_string_lossy()).expect("the file opens");
+        opened.protocol.save_to(&dir).expect("the Protocol saves");
+        let manifest_path = dir.join("arcform.yaml");
+        let mut manifest = std::fs::read_to_string(&manifest_path).expect("the manifest reads");
+        manifest.push_str("  - name: t\n    sql: models/01_t.sql\n");
+        std::fs::write(&manifest_path, &manifest).expect("the manifest writes");
+        std::fs::write(
+            dir.join("models").join("01_t.sql"),
+            "CREATE OR REPLACE TABLE \"t\" AS\nfrom california_housing select house_age\n",
+        )
+        .expect("the model writes");
+        SQL_STEP_PARSES.with(|n| n.set(0));
+        let found = generated_protocol_in(&manifest, &dir);
+        let parses = SQL_STEP_PARSES.with(std::cell::Cell::get);
+        let _ = std::fs::remove_dir_all(&dir);
+        let found = found
+            .expect("the folder reads")
+            .expect("it is of the shape");
+        assert_eq!(found.steps.len(), 1);
+        assert_eq!(parses, 1, "the SQL step was parsed {parses} times");
+    }
+
     const FILTER: &str = "-- generated: filter-rows on california_housing\nCREATE OR REPLACE TABLE \"x\" AS\nSELECT *\nFROM california_housing\nWHERE house_age > 28;\n";
 
     #[test]
     fn parses_arcs_filter_template() {
         let s = parse_generated("x", FILTER).expect("arc's own text parses");
-        assert_eq!(s.operation, KnownOperation::FilterRows);
+        assert_eq!(s.effect, StepEffect::Operation(KnownOperation::FilterRows));
         assert_eq!(s.on, "california_housing");
         assert_eq!(s.argument, "house_age > 28");
         assert_eq!(s.name, "x");
@@ -547,7 +817,7 @@ mod tests {
     fn parses_arcs_sort_template() {
         let text = "-- generated: sort-rows on my table\nCREATE OR REPLACE TABLE \"y\" AS\nSELECT *\nFROM \"my table\"\nORDER BY a DESC,\n  b;\n";
         let s = parse_generated("y", text).expect("the sort template parses");
-        assert_eq!(s.operation, KnownOperation::SortRows);
+        assert_eq!(s.effect, StepEffect::Operation(KnownOperation::SortRows));
         assert_eq!(s.on, "my table");
         assert_eq!(s.argument, "a DESC,\n  b");
     }

@@ -1555,6 +1555,9 @@ pub struct PreviewRequest {
     pub fields: [String; 2],
     /// Whether the run record says the step ran.
     pub ran: bool,
+    /// Whether a file records the step: false for a statement kept from the
+    /// palette and not yet saved.
+    pub recorded: bool,
     /// The key that runs the Protocol, when one is bound.
     pub run_key: Option<String>,
 }
@@ -1703,18 +1706,51 @@ pub(crate) struct PreviewHooks {
     most_live: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
+/// The preview gate a reader made on this thread reads behind: the thread's
+/// own once [`use_own_preview_gate_on_this_thread`] has been called on it,
+/// otherwise the one the process shares.
+pub(crate) fn preview_gate() -> std::sync::Arc<PreviewGate> {
+    THREADS_PREVIEW_GATE
+        .with(|gate| gate.borrow().clone())
+        .unwrap_or_else(|| SHARED_PREVIEW_GATE.clone())
+}
+
 impl Default for PreviewHooks {
     fn default() -> Self {
-        let gate = THREADS_PREVIEW_GATE
-            .with(|gate| gate.borrow().clone())
-            .unwrap_or_else(|| SHARED_PREVIEW_GATE.clone());
         Self {
-            gate,
+            gate: preview_gate(),
             held: std::sync::Arc::default(),
             panic_next: std::sync::Arc::default(),
             live: std::sync::Arc::default(),
             most_live: std::sync::Arc::default(),
         }
+    }
+}
+
+impl PreviewHooks {
+    /// Run `read` on this worker inside the gate: counted from now until it
+    /// returns, after the gate lets this worker in, and once `held` is off.
+    pub(crate) fn read_inside<T>(&self, read: impl FnOnce() -> T) -> T {
+        use std::sync::atomic::Ordering;
+        let mine = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most_live.fetch_max(mine, Ordering::SeqCst);
+        // A worker that panicked inside the gate poisons it; the gate
+        // guards no data, so the next worker goes in anyway.
+        let gate = self
+            .gate
+            .read
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let live = self.gate.live.fetch_add(1, Ordering::SeqCst) + 1;
+        self.gate.most_live.fetch_max(live, Ordering::SeqCst);
+        while self.held.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let answer = read();
+        self.gate.live.fetch_sub(1, Ordering::SeqCst);
+        drop(gate);
+        self.live.fetch_sub(1, Ordering::SeqCst);
+        answer
     }
 }
 
@@ -1764,29 +1800,16 @@ impl PreviewReads {
         let wake = ctx.clone();
         let hooks = self.hooks.clone();
         std::thread::spawn(move || {
-            use std::sync::atomic::Ordering;
-            let mine = hooks.live.fetch_add(1, Ordering::SeqCst) + 1;
-            hooks.most_live.fetch_max(mine, Ordering::SeqCst);
-            // A worker that panicked inside the gate poisons it; the gate
-            // guards no data, so the next worker goes in anyway.
-            let gate = hooks
-                .gate
-                .read
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let live = hooks.gate.live.fetch_add(1, Ordering::SeqCst) + 1;
-            hooks.gate.most_live.fetch_max(live, Ordering::SeqCst);
-            while hooks.held.load(Ordering::SeqCst) {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            let read = if hooks.panic_next.swap(false, Ordering::SeqCst) {
-                None
-            } else {
-                Some(read_preview(&asked, limit))
-            };
-            hooks.gate.live.fetch_sub(1, Ordering::SeqCst);
-            drop(gate);
-            hooks.live.fetch_sub(1, Ordering::SeqCst);
+            let read = hooks.read_inside(|| {
+                if hooks
+                    .panic_next
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+                {
+                    None
+                } else {
+                    Some(read_preview(&asked, limit))
+                }
+            });
             // A worker told to fail drops its sender unsent, which is what a
             // panic leaves the receiver with.
             if let Some(read) = read {
@@ -1842,13 +1865,57 @@ pub struct GridPreview {
     /// Whether a key asked the band to filter or sort this step, so the status
     /// band says why it cannot.
     said: bool,
+    /// Whether these are a typed statement's rows ([`Self::of_typed`]) rather
+    /// than a generated step's.
+    typed: bool,
 }
 
 impl GridPreview {
+    /// **The grid's view of a statement typed on the palette's query line**:
+    /// `page`, shown as read under the name `step` the statement would be kept
+    /// as, its band read-only and counted with [`PREVIEW_COUNT`] as any
+    /// preview's is. Its rows were read by [`crate::typed_sql::TypedReads`],
+    /// not by the document's own preview reads, so it names no data file.
+    pub(crate) fn of_typed(step: String, page: GridPage) -> Self {
+        let request = PreviewRequest {
+            step,
+            data: std::path::PathBuf::new(),
+            root_table: String::new(),
+            chain: Vec::new(),
+            fields: [String::new(), String::new()],
+            ran: false,
+            recorded: false,
+            run_key: None,
+        };
+        let key = PreviewKey {
+            step: request.step.clone(),
+            data: request.data.clone(),
+            root_table: String::new(),
+            chain: Vec::new(),
+            modified: None,
+            len: None,
+            limit: 0,
+        };
+        Self {
+            request,
+            key,
+            shown: PreviewShown::Read(std::sync::Arc::new(Ok(page))),
+            said: false,
+            typed: true,
+        }
+    }
+
     /// The previewed step's name.
     #[must_use]
     pub fn step(&self) -> &str {
         &self.request.step
+    }
+
+    /// Whether these are the rows of a statement typed on the palette's query
+    /// line, named after the step it would be kept as.
+    #[must_use]
+    pub const fn is_typed(&self) -> bool {
+        self.typed
     }
 
     /// The page read, or `None` when the step could not be previewed.
@@ -1888,10 +1955,13 @@ impl GridPreview {
 
     /// What the status band says to a key that asks the band to filter or
     /// sort this step: a step that has not run offers Run, because filtering
-    /// starts from the step's table and never from a preview.
+    /// starts from the step's table and never from a preview. A step no file
+    /// records offers Save, since Run runs what the folder records.
     #[must_use]
     pub fn offer(&self) -> String {
-        if self.request.ran {
+        if !self.request.recorded {
+            "this step is not recorded yet; Save records it".to_string()
+        } else if self.request.ran {
             format!(
                 "{} has been run; filtering a saved step comes in a later version",
                 self.request.step
@@ -1910,7 +1980,9 @@ impl GridPreview {
     fn refused_state(&self, refusal: &brightfield_engine::PreviewRefusal) -> EmptyState {
         use brightfield_model::profile_model::thousands;
         let run = self.request.run_named();
-        let way_on = if self.request.ran {
+        let way_on = if !self.request.recorded {
+            "It is not recorded yet; Save records it.".to_string()
+        } else if self.request.ran {
             format!("Its run's table is not shown here yet; {run} the Protocol to run it again.")
         } else {
             format!("It has not been run; {run} the Protocol to make its table.")
@@ -1937,6 +2009,13 @@ impl GridPreview {
                 "This step cannot be previewed",
                 format!("{msg}. {way_on}"),
             ),
+            // The grid reads its previews without a stop, so this arm is for
+            // completeness: the text is the refusal's own.
+            brightfield_engine::PreviewRefusal::Superseded => EmptyState::new(
+                ICON_DATA,
+                "The preview was stopped",
+                format!("{refusal}. {way_on}"),
+            ),
         }
     }
 }
@@ -1960,12 +2039,18 @@ fn read_preview(
         PREVIEW_ROWS,
         limit,
     )?;
-    let (columns, rows) = tabulate(&batches);
-    Ok(GridPage {
+    Ok(page_of(&batches))
+}
+
+/// The first page of a preview, tabulated from the batches its read returned.
+#[must_use]
+pub fn page_of(batches: &[RecordBatch]) -> GridPage {
+    let (columns, rows) = tabulate(batches);
+    GridPage {
         window: 0..rows.len() as u64,
         columns,
         rows,
-    })
+    }
 }
 
 impl ChartDoc {
@@ -2027,7 +2112,25 @@ impl ChartDoc {
             key,
             shown,
             said,
+            typed: false,
         });
+    }
+
+    /// **Show a typed statement's rows in the grid**: `preview`, built by
+    /// [`GridPreview::of_typed`]. The caller hands a page over when it changes,
+    /// and as with [`Self::show_preview`] that change of what the grid shows
+    /// lets go of the cursor and of any field being edited.
+    pub(crate) fn show_typed_preview(&mut self, preview: GridPreview) {
+        self.grid_foot.cancel();
+        self.grid_cursor = None;
+        self.grid_preview = Some(preview);
+    }
+
+    /// The hooks this document's preview workers read behind: its gate and
+    /// the switch [`Self::hold_preview_reads`] sets. A typed statement's reads
+    /// are handed them too, so they take turns with this document's own.
+    pub(crate) fn preview_hooks(&self) -> &PreviewHooks {
+        &self.preview_reads.hooks
     }
 
     /// How many preview reads this document has started — what a test reads to
@@ -2131,17 +2234,34 @@ impl ChartDoc {
     }
 }
 
-/// A preview page as a [`RowSource`]: the page is the whole of it, so the
-/// table has no row past it to scroll to.
+/// A preview page as a [`RowSource`] of `total` rows. A step's preview is the
+/// whole of its page, so the table has no row past it to scroll to; a typed
+/// filter's is its first page of the `total` rows the condition keeps, which
+/// were counted off the frame, and the rows past the page draw blank.
 struct PreviewRows<'a> {
     page: &'a GridPage,
+    total: u64,
+}
+
+impl<'a> PreviewRows<'a> {
+    /// The page as the whole table.
+    fn whole(page: &'a GridPage) -> Self {
+        Self {
+            page,
+            total: page.rows.len() as u64,
+        }
+    }
 }
 
 impl RowSource for PreviewRows<'_> {
     fn prepare(&mut self, _visible: Range<u64>) {}
 
     fn total_rows(&self) -> u64 {
-        self.page.rows.len() as u64
+        self.total
+    }
+
+    fn held_rows(&self) -> Range<u64> {
+        0..self.page.rows.len() as u64
     }
 
     fn columns(&self) -> &[GridColumn] {
@@ -2430,7 +2550,7 @@ impl DataGridItem {
                     at: doc.grid_cursor,
                     reveal: std::mem::take(&mut doc.grid_cursor_reveal),
                 };
-                let mut source = PreviewRows { page };
+                let mut source = PreviewRows::whole(page);
                 let set = &self.set_widths;
                 drawn = Some(
                     ui.scope_builder(
@@ -2709,40 +2829,60 @@ impl Item<ChartDoc> for DataGridItem {
         );
         let table_rect =
             egui::Rect::from_min_max(room.min, egui::pos2(room.right(), foot_rect.top()));
-        doc.activity.begin(Activity::EngineQuery);
         let mut drawn = None;
         let mut names = Vec::new();
-        if let Some(coordinator) = doc.live_coordinator() {
-            let generation = coordinator.generation();
-            let session = coordinator.session();
-            let mut source = EngineRows::new(session, mark, generation, &view, &mut self.cache);
-            // Under the grid's own id rather than the spot's, so the scroll
-            // and the widths are the grid's wherever it is — see
-            // `grid_state_id`.
-            let set = &self.set_widths;
-            drawn = Some(
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .id(grid_state_id())
-                        .max_rect(table_rect),
-                    |ui| {
-                        show_table_sized(
-                            ui,
-                            DATA.as_str(),
-                            mode,
-                            &mut source,
-                            ColumnWidths::Natural,
-                            header,
-                            set,
-                            Some(cursor),
-                        )
-                    },
-                )
-                .inner,
-            );
+        // Under the grid's own id rather than the spot's, so the scroll and
+        // the widths are the grid's wherever it is — see `grid_state_id`.
+        let set = &self.set_widths;
+        let draw = |ui: &mut egui::Ui, source: &mut dyn RowSource| {
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .id(grid_state_id())
+                    .max_rect(table_rect),
+                |ui| {
+                    show_table_sized(
+                        ui,
+                        DATA.as_str(),
+                        mode,
+                        source,
+                        ColumnWidths::Natural,
+                        header,
+                        set,
+                        Some(cursor),
+                    )
+                },
+            )
+            .inner
+        };
+        // **A typed filter's rows** were read and counted on a worker by the
+        // statement's reads, so this draw does not ask the session for them
+        // (`typed_where_preview_does_not_block_the_ui_thread` in
+        // `tests/typed_sql_where.rs`).
+        let typed = doc.grid_foot.typed.take();
+        let mut typed_empty = None;
+        if let Some(typed) = &typed {
+            let mut source = match typed.rows {
+                Some(total) => PreviewRows {
+                    page: &typed.page,
+                    total,
+                },
+                None => PreviewRows::whole(&typed.page),
+            };
+            drawn = Some(draw(ui, &mut source));
             names = source.columns().iter().map(|c| c.name.clone()).collect();
+            typed_empty = Some(source.total_rows() == 0);
+        } else {
+            doc.activity.begin(Activity::EngineQuery);
+            if let Some(coordinator) = doc.live_coordinator() {
+                let generation = coordinator.generation();
+                let session = coordinator.session();
+                let mut source = EngineRows::new(session, mark, generation, &view, &mut self.cache);
+                drawn = Some(draw(ui, &mut source));
+                names = source.columns().iter().map(|c| c.name.clone()).collect();
+            }
+            doc.activity.end(Activity::EngineQuery);
         }
-        doc.activity.end(Activity::EngineQuery);
+        doc.grid_foot.typed = typed;
         // The band reads the counts off the table this frame drew, and the
         // columns a key on the cursor's cell names.
         let counts = drawn.as_ref().map_or((0, 0), |d| (d.rows, d.columns));
@@ -2791,11 +2931,11 @@ impl Item<ChartDoc> for DataGridItem {
         // `ChartDoc::table_drawn`.
         doc.file_table_drawn(drawn);
 
-        if self.cache.error.is_none() && self.cache.total == 0 {
+        if typed_empty.unwrap_or(self.cache.error.is_none() && self.cache.total == 0) {
             // A real answer, not an empty pane: the query ran and selected
             // nothing, under the grid's own condition when it has one and
             // otherwise under the current interaction state.
-            let said = if self.cache.view.condition.is_some() {
+            let said = if typed_empty.is_some() || self.cache.view.condition.is_some() {
                 "0 rows match the grid's condition."
             } else {
                 "0 rows under the current selection."
@@ -2806,7 +2946,7 @@ impl Item<ChartDoc> for DataGridItem {
                     .color(chrome::colour(sem.text.muted)),
             );
         }
-        if let Some(error) = self.cache.error.as_ref() {
+        if let Some(error) = self.cache.error.as_ref().filter(|_| typed_empty.is_none()) {
             ui.add_space(spacing::SPACE_2);
             ui.label(
                 egui::RichText::new(format!("Grid read failed: {error}"))

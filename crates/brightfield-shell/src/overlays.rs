@@ -128,6 +128,24 @@ pub fn chart_offers(verb: &str, saveable: bool) -> bool {
     CHART_PALETTE_VERBS.contains(&verb) || (saveable && SAVEABLE_CHART_VERBS.contains(&verb))
 }
 
+/// **Whether `text` on the chart palette's query line is a statement** rather
+/// than a search: its first word, after leading whitespace, is `select`,
+/// `with` or `from` in any case, and the text ends there or goes on with a
+/// character that cannot continue an identifier. So `selection` is a search,
+/// and `select*` and `from(` are statements.
+#[must_use]
+pub fn is_statement(text: &str) -> bool {
+    let text = text.trim_start();
+    ["select", "with", "from"].iter().any(|word| {
+        text.get(..word.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(word))
+            && text[word.len()..]
+                .chars()
+                .next()
+                .is_none_or(|next| !(next.is_alphanumeric() || next == '_' || next == '$'))
+    })
+}
+
 /// Every verb a chart window in this state offers, in declaration order —
 /// what the restricted palette is built from.
 #[must_use]
@@ -212,6 +230,12 @@ impl CommandPalette {
     /// and records it into its recency counter.
     pub fn take_picked(&mut self) -> Option<&'static str> {
         self.picked.take()
+    }
+
+    /// The altitude the palette lists the verbs of.
+    #[must_use]
+    pub const fn altitude(&self) -> Altitude {
+        self.altitude
     }
 
     /// The current candidate at `index`, for a test that wants the corpus
@@ -937,6 +961,35 @@ pub fn close_question_body(ui: &mut egui::Ui, question: &mut CloseQuestion) -> O
 mod tests {
     use super::*;
     use brightfield_spec::analysis::ComponentPath;
+
+    // -- is_statement -------------------------------------------------------
+
+    #[test]
+    fn a_statement_starts_with_select_with_or_from_as_a_whole_word() {
+        for text in [
+            "select",
+            "  SELECT",
+            "select *",
+            "select*",
+            "With t as (select 1) select * from t",
+            "\nfrom(",
+            "FROM california_housing",
+        ] {
+            assert!(is_statement(text), "{text:?} is a statement");
+        }
+        for text in [
+            "",
+            "   ",
+            "selection",
+            "select_rows",
+            "fromage",
+            "within",
+            "clear-selection",
+            "sel",
+        ] {
+            assert!(!is_statement(text), "{text:?} is a search");
+        }
+    }
 
     // -- CommandPalette -----------------------------------------------------
 

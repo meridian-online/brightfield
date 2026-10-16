@@ -26,8 +26,9 @@ pub use duckdb::arrow::datatypes::SchemaRef;
 pub use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
 pub use preview::{
-    preview_first_page, preview_first_page_with_limit, preview_first_page_within, FileReader,
-    PreviewOp, PreviewRefusal, PREVIEW_DEADLINE, PREVIEW_FILE_LIMIT_BYTES,
+    preview_first_page, preview_first_page_stoppable, preview_first_page_with_limit,
+    preview_first_page_within, preview_row_count_stoppable, FileReader, PreviewOp, PreviewRefusal,
+    PreviewStop, PREVIEW_DEADLINE, PREVIEW_FILE_LIMIT_BYTES,
 };
 pub use profile::{
     Bars, ColumnMoments, ColumnProfile, Distribution, ProfileOutcome, ScanTally, SourceProfile,
@@ -4173,6 +4174,42 @@ fn probe_statement_count(probe: &str, what: &str) -> Result<usize, String> {
     }
 }
 
+/// Whether `sql` is exactly one query that reads rows, or why it is not.
+///
+/// The gate for SQL the user types. It counts the statements with
+/// `probe_statement_count`, which parses the text without executing it.
+/// Then it parses the text with `serialized_sql` on a fresh in-memory
+/// database, where DuckDB refuses a statement of any kind other than a
+/// `SELECT` (a `WITH` or a leading `FROM` parse as one) in its own words. Nothing is bound or run on either path, so a refused
+/// `COPY` writes no file and a refused `ATTACH` opens no database, as
+/// `refusing_runs_nothing` holds. A file read inside an accepted query is
+/// stopped by the preview's locked external access, not by this gate.
+///
+/// # Errors
+///
+/// Text starting `it reads as {n} statements, not one` for a count other than
+/// one (empty and comment-only text read as 0), else `it is not one query that
+/// reads rows: ` and DuckDB's words, which include a syntax error's.
+pub fn read_only_statement(sql: &str) -> Result<(), String> {
+    let not_a_query = |e: String| format!("it is not one query that reads rows: {e}");
+    let conn = duckdb::Connection::open_in_memory().map_err(|e| e.to_string())?;
+    // The extraction call reports empty or comment-only text as a failure with
+    // no reason, so the parse tree's own statement count settles that case.
+    let count = match probe_statement_count(sql, "statement") {
+        Ok(count) => count,
+        Err(e) => {
+            let tree = serialized_sql(&conn, sql).map_err(|_| not_a_query(e))?;
+            tree.get("statements")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len)
+        }
+    };
+    if count != 1 {
+        return Err(format!("it reads as {count} statements, not one"));
+    }
+    serialized_sql(&conn, sql).map(|_| ()).map_err(not_a_query)
+}
+
 /// The window SQL over `rows_sql` ordered by `ORDER BY ALL`, the one text the
 /// reads with no order of their own run.
 fn unordered_window_sql(rows_sql: &str, offset: u64, limit: u64) -> String {
@@ -4324,6 +4361,198 @@ pub fn plain_select(sql: &str) -> Result<PlainSelect, String> {
             .map(|m| m["type"].as_str().unwrap_or("").to_string())
             .collect(),
     })
+}
+
+/// What [`statement_reading`] finds in a statement: the tables it reads and
+/// the one column it turns on, if any.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StatementReading {
+    /// The base tables the statement reads anywhere in its tree, in the order
+    /// they appear in the text, without the names its own CTEs bind and without table
+    /// functions.
+    pub tables: Vec<String>,
+    /// The one column the outermost select turns on: the single column of its
+    /// `GROUP BY`, else of its windows' `PARTITION BY`, else the single column
+    /// its `WHERE` names. `None` for a set operation, or when no one column
+    /// qualifies.
+    pub name_column: Option<String>,
+}
+
+/// Read which tables `sql` reads and which single column it turns on, with
+/// DuckDB's parser. Nothing is bound or run.
+///
+/// A `GROUP BY` or `PARTITION BY` counts when it is exactly one bare column
+/// reference, and all of the statement's windows must agree on that column. A
+/// `GROUP BY` that is present decides the matter, as do windows when there is
+/// no `GROUP BY`; the `WHERE` is asked when neither is present. A `GROUP BY
+/// ALL` is a `GROUP BY` that names no one column. The `WHERE`
+/// counts the distinct columns named anywhere in its expression, compared
+/// without regard to case, so `a > 1 AND b > 2` names two columns
+/// and `a > 1 OR a < 0` names `a`. A qualified reference (`t.a`) is the column `a`.
+///
+/// It parses on a fresh in-memory database, for the reason
+/// [`condition_statement_count`] gives.
+///
+/// # Errors
+///
+/// DuckDB's message when it cannot parse `sql`, or a note that it is not one
+/// statement.
+pub fn statement_reading(sql: &str) -> Result<StatementReading, String> {
+    use serde_json::Value;
+    let conn = duckdb::Connection::open_in_memory().map_err(|e| e.to_string())?;
+    let tree = serialized_sql(&conn, sql)?;
+    let statements = tree
+        .get("statements")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    let [statement] = statements else {
+        return Err(format!(
+            "it reads as {} statements, not one",
+            statements.len()
+        ));
+    };
+    let node = &statement["node"];
+    let mut bound = Vec::new();
+    let mut tables = Vec::new();
+    collect_tables(node, &mut bound, &mut tables);
+    // The tree's keys do not follow the text, so order by where each table sits.
+    tables.sort_by_key(|(at, _)| *at);
+    let mut names: Vec<String> = Vec::new();
+    for (_, name) in tables {
+        if !bound.iter().any(|b| b.eq_ignore_ascii_case(&name)) && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    Ok(StatementReading {
+        tables: names,
+        name_column: name_column_of(node),
+    })
+}
+
+/// Push each `BASE_TABLE` name under `node` onto `tables` with its position in
+/// the text, and each CTE name onto `bound`.
+fn collect_tables(
+    node: &serde_json::Value,
+    bound: &mut Vec<String>,
+    tables: &mut Vec<(u64, String)>,
+) {
+    use serde_json::Value;
+    match node {
+        Value::Object(map) => {
+            if map.get("type").and_then(Value::as_str) == Some("BASE_TABLE") {
+                if let Some(name) = map.get("table_name").and_then(Value::as_str) {
+                    let at = map
+                        .get("query_location")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(u64::MAX);
+                    tables.push((at, name.to_string()));
+                }
+            }
+            if let Some(entries) = map
+                .get("cte_map")
+                .and_then(|m| m.get("map"))
+                .and_then(Value::as_array)
+            {
+                for entry in entries {
+                    if let Some(key) = entry.get("key").and_then(Value::as_str) {
+                        bound.push(key.to_string());
+                    }
+                }
+            }
+            for value in map.values() {
+                collect_tables(value, bound, tables);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_tables(item, bound, tables);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The column of a bare `COLUMN_REF`: its last name part.
+fn bare_column(expr: &serde_json::Value) -> Option<&str> {
+    use serde_json::Value;
+    if expr.get("class").and_then(Value::as_str) != Some("COLUMN_REF") {
+        return None;
+    }
+    expr.get("column_names")?.as_array()?.last()?.as_str()
+}
+
+/// Push each `WINDOW` node under `node` onto `out`.
+fn collect_windows<'a>(node: &'a serde_json::Value, out: &mut Vec<&'a serde_json::Value>) {
+    use serde_json::Value;
+    match node {
+        Value::Object(map) => {
+            if map.get("class").and_then(Value::as_str) == Some("WINDOW") {
+                out.push(node);
+            }
+            for value in map.values() {
+                collect_windows(value, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_windows(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The rule of [`statement_reading`] for the one column, read off the
+/// outermost select.
+fn name_column_of(node: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    if node["type"] != "SELECT_NODE" {
+        return None;
+    }
+    let single = |exprs: &[Value]| match exprs {
+        [one] => bare_column(one).map(str::to_string),
+        _ => None,
+    };
+    if node["aggregate_handling"] != "STANDARD_HANDLING" {
+        // `GROUP BY ALL` leaves its expressions empty and sets this instead.
+        return None;
+    }
+    if let Some(groups) = node["group_expressions"]
+        .as_array()
+        .filter(|g| !g.is_empty())
+    {
+        return single(groups);
+    }
+    let mut windows = Vec::new();
+    collect_windows(&node["select_list"], &mut windows);
+    collect_windows(&node["qualify"], &mut windows);
+    if !windows.is_empty() {
+        let mut agreed: Option<String> = None;
+        for window in windows {
+            let partitions = window["partitions"]
+                .as_array()
+                .map_or(&[][..], Vec::as_slice);
+            let column = single(partitions)?;
+            match &agreed {
+                Some(seen) if !seen.eq_ignore_ascii_case(&column) => return None,
+                Some(_) => {}
+                None => agreed = Some(column),
+            }
+        }
+        return agreed;
+    }
+    let mut refs = Vec::new();
+    collect_column_refs(&node["where_clause"], &mut refs);
+    let mut distinct: Vec<String> = Vec::new();
+    for name in refs {
+        if !distinct.iter().any(|d| d.eq_ignore_ascii_case(&name)) {
+            distinct.push(name);
+        }
+    }
+    match distinct.as_slice() {
+        [one] => Some(one.clone()),
+        _ => None,
+    }
 }
 
 /// The rule a condition is held to, as the error a read returns.

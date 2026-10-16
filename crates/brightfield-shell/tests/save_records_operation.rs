@@ -478,6 +478,14 @@ fn a_partial_save_keeps_the_grid_and_records_the_rest_on_the_filters_table() {
 
     let err = win.save().expect_err("the sort is refused");
     assert_eq!(err, "sorts are refused here");
+    assert!(
+        win.banners().contains(&(
+            "Could not record the grid view".to_string(),
+            "sorts are refused here".to_string()
+        )),
+        "{:?}",
+        win.banners()
+    );
     assert_eq!(
         win.steps(),
         vec!["load".to_string(), FILTER_STEP.to_string()]
@@ -730,9 +738,11 @@ fn a_folder_save_will_not_write_is_refused_for_its_own_cause() {
                         std::fs::read_to_string(p).is_ok_and(|t| t.starts_with("-- generated:"))
                     })
                     .expect("a generated model");
-                let text = std::fs::read_to_string(&model).expect("the step's model");
-                let body: String = text.lines().skip(1).map(|l| format!("{l}\n")).collect();
-                std::fs::write(&model, body).expect("the header is removed");
+                // Without the header the rest is the shape `arc sql record`
+                // writes, which opens as a SQL step; a hand's own statement
+                // is neither shape.
+                std::fs::write(&model, "CREATE TABLE kept AS SELECT 1;\n")
+                    .expect("the model is written by hand");
             },
             "brightfield did not generate",
         ),

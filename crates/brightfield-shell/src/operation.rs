@@ -19,6 +19,21 @@
 //! a part arc already recorded stays recorded, and the next Save records the
 //! rest on the table it must go on.
 //!
+//! **Save also records the statements kept from the palette**, each through
+//! [`record_sql`] (`arc sql record --name <name> -- <sql>`) under the name it
+//! was kept with, in the order the views and statements were made. The
+//! statement comes after `--`, which ends arc's options, so arc takes it as the
+//! statement whatever text it opens with. arc writes a statement it reads as
+//! an operation as that operation's generated step, and any other as
+//! `models/NN_<name>.sql`: `CREATE OR REPLACE TABLE "<name>" AS` on its first
+//! line, the statement as typed after it, and a final newline when it had
+//! none.
+//!
+//! **A typed statement is asked of arc too.** [`recognise`] runs
+//! `arc sql recognise <sql>` and reports whether arc reads the statement as a
+//! `filter-rows` (with its table and condition as typed) or as another
+//! kind of statement, so the window leaves the judging of SQL to arc.
+//!
 //! **A description is fetched once per operation for the session**, off the
 //! UI thread ([`Descriptions`]), because it cannot change while arc's pin is
 //! fixed. With no runner, or a describe that fails, the foot row still asks
@@ -197,6 +212,58 @@ pub fn describe(runner: &Runner, long_name: &str) -> Result<OperationDescription
     })
 }
 
+/// What arc makes of a typed SQL statement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Recognised {
+    /// A filter of one table: the table it reads and the condition as typed.
+    FilterRows {
+        /// The table the statement reads.
+        on: String,
+        /// The `WHERE` condition, as arc echoes it.
+        condition: String,
+    },
+    /// An operation brightfield does not hand to the foot row, or none.
+    Other,
+}
+
+/// Ask arc whether `sql` is an operation it holds.
+///
+/// Run with the system temp directory as its working directory, since the call
+/// reads no Protocol.
+///
+/// # Errors
+///
+/// arc's refusal without its `error: ` prefix (text DuckDB cannot parse), why
+/// the runner could not be started or its answer read, or that a `filter-rows`
+/// answer lacked its table or condition.
+pub fn recognise(runner: &Runner, sql: &str) -> Result<Recognised, String> {
+    let out = arc_with_args(runner, &neutral_dir(), &["sql", "recognise", sql]);
+    if !out.succeeded {
+        return Err(refusal(&out.stderr));
+    }
+    let value: serde_json::Value = serde_json::from_str(&out.stdout)
+        .map_err(|e| format!("arc's reading of the statement did not read as JSON: {e}"))?;
+    match value.get("operation").and_then(serde_json::Value::as_str) {
+        Some("filter-rows") => {
+            let on = value.get("on").and_then(serde_json::Value::as_str);
+            let condition = value
+                .pointer("/arguments/where")
+                .and_then(serde_json::Value::as_str);
+            match (on, condition) {
+                (Some(on), Some(condition)) => Ok(Recognised::FilterRows {
+                    on: on.to_string(),
+                    condition: condition.to_string(),
+                }),
+                _ => Err(
+                    "arc read the statement as filter-rows without its table or condition"
+                        .to_string(),
+                ),
+            }
+        }
+        _ => Ok(Recognised::Other),
+    }
+}
+
 /// Record `operation` as a step named `name` on the table `on`, in the
 /// Protocol in `dir`, with `args` as `--arg key=value`. arc runs nothing.
 ///
@@ -221,6 +288,24 @@ pub fn record(
     // No `--dir`: the child stands in `dir`, and arc's default is its working
     // directory. Passing `dir` too would resolve a relative one twice.
     let out = arc_with_args(runner, dir, &argv);
+    if out.succeeded {
+        Ok(out.stdout.trim().to_string())
+    } else {
+        Err(refusal(&out.stderr))
+    }
+}
+
+/// Record the statement `sql` as the step `name` at the end of the Protocol in
+/// `dir`, as `arc sql record` writes it. arc runs nothing.
+///
+/// # Errors
+///
+/// arc's stderr without its `error: ` prefix when it refuses, with the folder
+/// untouched, or why the runner could not be started.
+pub fn record_sql(runner: &Runner, dir: &Path, sql: &str, name: &str) -> Result<String, String> {
+    // No `--dir`, for the reason `record` gives. The statement follows `--`,
+    // so text that opens with `-` is not read as a flag.
+    let out = arc_with_args(runner, dir, &["sql", "record", "--name", name, "--", sql]);
     if out.succeeded {
         Ok(out.stdout.trim().to_string())
     } else {

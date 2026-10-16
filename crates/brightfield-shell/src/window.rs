@@ -105,6 +105,10 @@ use crate::shelf::{
     BandDrawn, Binding, CardDrawn, ChannelSettings, ListReport, ListTab, RowEdit, ShelfBand,
     ShelfChannels,
 };
+use crate::typed_card::{CardEvent, StatementCard, TypedSaid};
+use crate::typed_sql::{
+    spawn_row_count, typed_step_name, TypedAnswer, TypedReads, TypedSource, TypedStep, TYPED_PAUSE,
+};
 
 // ---------------------------------------------------------------------------
 // The window's own chrome budget.
@@ -436,6 +440,23 @@ pub struct PendingStart {
     /// The worker moving them — `None` on the frame the click landed on, and
     /// `Some` from the next frame until the bytes land.
     fetch: Option<crate::remote::Fetch>,
+}
+
+/// A count of a kept statement's rows under way on a worker: the step it
+/// counts, the chain it counts through, and where the count arrives.
+struct TypedCount {
+    name: String,
+    chain: Vec<(String, brightfield_engine::PreviewOp)>,
+    answer: std::sync::mpsc::Receiver<Result<u64, brightfield_engine::PreviewRefusal>>,
+}
+
+/// Whether the statement `answer` answered reads the table `name`.
+fn reads_table(answer: &TypedAnswer, name: &str) -> bool {
+    answer
+        .reading
+        .tables
+        .iter()
+        .any(|table| table.eq_ignore_ascii_case(name))
 }
 
 /// A run of the open Protocol, started from this window and not yet finished.
@@ -1741,6 +1762,12 @@ enum Overlay {
     /// words, and why a close without saving could not keep the chart — and it
     /// is drawn from [`crate::overlays::close_question_body`].
     CloseQuestion(CloseQuestion),
+    /// The chart palette once the text on its query line reads as SQL
+    /// ([`crate::overlays::is_statement`]): the statement form, drawn with no
+    /// scrim so the grid beside it can be read while it previews the
+    /// statement. [`MeridianApp::open_overlay`] names it the palette, which is
+    /// what it is to the person typing.
+    Statement(StatementCard),
 }
 
 /// The registry-bound keystrokes that open overlays, resolved once at boot.
@@ -2392,6 +2419,24 @@ pub struct MeridianApp {
     dialogs_allowed: bool,
     /// The one modal slot — see [`Overlay`].
     overlay: Option<Overlay>,
+    /// The reads of the statement on the statement form, while it is open:
+    /// built when the chart palette becomes the form and dropped, which stops
+    /// any read under way, when the form closes or turns back into the
+    /// palette.
+    typed: Option<TypedReads>,
+    /// How long the statement must rest before it is read: [`TYPED_PAUSE`],
+    /// unless a test set it.
+    typed_pause: std::time::Duration,
+    /// The text of the answer whose rows the grid shows, so the grid is handed
+    /// a page only when a new one is read.
+    typed_in_grid: Option<String>,
+    /// The text of the answer whose filter the grid previews on the loaded
+    /// table ([`ChartDoc::preview_typed_where`]), so a frame hands the preview
+    /// over when a new answer is read rather than each time it draws.
+    typed_where_in_grid: Option<String>,
+    /// The counts of kept statements' rows under way, each landed on the chart
+    /// document and the Protocol once it arrives.
+    typed_counts: Vec<TypedCount>,
     /// The keystrokes that open overlays, read off the registry at boot.
     overlay_keys: OverlayKeys,
     /// The `open-home` keystroke token, read off the registry at boot — the
@@ -2757,6 +2802,11 @@ impl MeridianApp {
             door_open_protocol: None,
             dialogs_allowed: false,
             overlay: None,
+            typed: None,
+            typed_pause: TYPED_PAUSE,
+            typed_in_grid: None,
+            typed_where_in_grid: None,
+            typed_counts: Vec::new(),
             overlay_keys: OverlayKeys::from_registry(),
             home_binding: brightfield_keys::registry()
                 .iter()
@@ -3096,6 +3146,18 @@ impl MeridianApp {
         // assigns it immediately before this call, and the engine is reading
         // those files for the life of the document that just arrived.
         self.fetching = None;
+        // The statement form has no scrim, so an opener can be clicked while
+        // it stands, and what was typed was read against the old file. The
+        // form closes and its reads and counts go with it
+        // (`opening_another_document_closes_the_form_and_drops_what_was_typed`
+        // in `tests/typed_sql_keep.rs`).
+        if matches!(self.overlay, Some(Overlay::Statement(_))) {
+            self.overlay = None;
+        }
+        self.typed = None;
+        self.typed_in_grid = None;
+        self.typed_where_in_grid = None;
+        self.typed_counts.clear();
         self.reconcile_canvas_holds();
         // The ledger and inspector rails' collapsed default, and which
         // inspector pane the caret opens on — re-derived here so a document
@@ -4216,9 +4278,12 @@ impl MeridianApp {
         // reloads the Protocol document, and a frame should draw the state the
         // run left rather than one frame of the state before it.
         self.poll_run(&ctx);
+        // A count of a kept statement's rows that arrived since the last
+        // frame, for the spine row that says it.
+        self.poll_typed_counts();
         // A view the foot band left with nothing unrecorded since the last
         // frame: the window takes on the Protocol the folder holds now.
-        if self.charts.doc.take_grid_view_settled() {
+        if self.charts.doc.take_pending_settled() {
             self.adopt_saved_protocol();
         }
         // A close request that arrived with this frame, read ahead of the
@@ -4691,16 +4756,29 @@ impl MeridianApp {
             // **A generated step's grid shows its preview**, read on a
             // connection of its own from the data file, so it is named after
             // the step rather than the table the session holds.
-            let preview = self.preview_request();
-            let grid_title = match &preview {
-                Some(request) => format!("Grid \u{b7} {}", request.step),
-                None => self.protocol.doc.model.table_label().map_or_else(
+            //
+            // **A statement on the statement form shows its rows instead**,
+            // once a read of it has found some, under the name it would be
+            // kept as.
+            let typed = self.typed_grid_step();
+            let preview = if typed.is_some() {
+                None
+            } else {
+                self.preview_request()
+            };
+            let grid_title = match (&typed, &preview) {
+                (Some(step), _) => format!("Grid \u{b7} {step}"),
+                (None, Some(request)) => format!("Grid \u{b7} {}", request.step),
+                (None, None) => self.protocol.doc.model.table_label().map_or_else(
                     || "Grid".to_string(),
                     |table| format!("Grid \u{b7} {table}"),
                 ),
             };
-            let previewed = preview.is_some();
-            self.charts.doc.show_preview(preview, ui.ctx());
+            let previewed = preview.is_some() || typed.is_some();
+            if typed.is_none() {
+                self.typed_in_grid = None;
+                self.charts.doc.show_preview(preview, ui.ctx());
+            }
             // **A grid of a node the engine does not hold**: the label of the
             // node whose grid the canvas holds, when that node is not the table
             // the session read. The one grid lists the session's rows, so drawn
@@ -6425,8 +6503,42 @@ impl MeridianApp {
         )));
     }
 
-    /// Open the command palette at the chart altitude, restricted to what a
-    /// window in **this** state offers — see [`Self::overlay_open_keys`] for
+    /// **Open the chart palette**: over the grid of a statement kept from the
+    /// palette and not yet saved, the statement form holding that statement,
+    /// selected whole, to correct it or read it; otherwise the palette's
+    /// search ([`Self::open_chart_search`]).
+    fn open_chart_palette(&mut self) {
+        if let Some(step) = self.typed_step_in_front() {
+            let (statement, name) = (step.statement.clone(), step.name.clone());
+            self.overlay = Some(Overlay::Statement(StatementCard::held(statement, name)));
+        } else {
+            self.open_chart_search();
+        }
+    }
+
+    /// The kept statement whose table's grid the canvas holds, when it holds
+    /// one.
+    fn typed_step_in_front(&self) -> Option<&TypedStep> {
+        if !self.has_protocol_to_save() {
+            return None;
+        }
+        let CanvasHolds::View {
+            node,
+            view: NodeView::Grid,
+        } = self.canvas_holds()
+        else {
+            return None;
+        };
+        let model = &self.protocol.doc.model;
+        self.charts
+            .doc
+            .typed_steps()
+            .iter()
+            .find(|step| model.node_of_step_table(&step.name) == Some(node))
+    }
+
+    /// Open the command palette's search at the chart altitude, restricted
+    /// to what a window in **this** state offers — see [`Self::overlay_open_keys`] for
     /// why the chart view cannot simply reuse [`Self::open_protocol_palette`] with
     /// [`Altitude::View`].
     ///
@@ -6438,7 +6550,7 @@ impl MeridianApp {
     /// absence off a shipped start's own palette, and
     /// `going_home_takes_the_save_offer_with_the_start` walks one window from
     /// a data file, to the front door, and into a shipped start.
-    fn open_chart_palette(&mut self) {
+    fn open_chart_search(&mut self) {
         let allow = crate::overlays::chart_palette_verbs(self.has_protocol_to_save());
         self.overlay = Some(Overlay::Palette(Picker::new(
             CommandPalette::new_restricted(Altitude::View, self.recency.clone(), &allow),
@@ -6489,8 +6601,11 @@ impl MeridianApp {
         let Some(mut overlay) = self.overlay.take() else {
             return;
         };
-        let close;
+        let mut close;
         let mut answered = None;
+        let mut becomes = None;
+        let mut kept: Option<(TypedAnswer, Option<String>)> = None;
+        let mut where_kept: Option<String> = None;
         match &mut overlay {
             Overlay::Palette(picker) => {
                 let chrome = ModalChrome::new().title("Commands").enter_hint("run");
@@ -6506,6 +6621,83 @@ impl MeridianApp {
                     }
                     Some(PickerEvent::Dismissed) => close = true,
                     None => close = shown.dismissed,
+                }
+                // **SQL on the chart palette's query line** turns the palette
+                // into the statement form, over a window with a data file to
+                // read the statement against. Over a kept statement's grid
+                // the form corrects that statement, as the form the palette
+                // opened as did: retyping it passes through text that is not
+                // a statement, which turned that form into this search
+                // (`retyping_a_held_statement_a_key_at_a_time_corrects_it_in_place`
+                // in `tests/typed_sql_keep.rs`).
+                if !close
+                    && picker.delegate.altitude() == Altitude::View
+                    && self.has_protocol_to_save()
+                    && crate::overlays::is_statement(picker.query())
+                {
+                    becomes = Some(Overlay::Statement(StatementCard::new(
+                        picker.query().to_owned(),
+                        self.typed_step_in_front().map(|step| step.name.clone()),
+                    )));
+                }
+            }
+            Overlay::Statement(card) => {
+                let room = self.typed_card_room(ctx);
+                let said = self.typed_said_now(card.replacing());
+                let before = card.text().to_owned();
+                let event = card.show(ctx, room, said.as_ref());
+                if let Some(typed) = self.typed.as_mut() {
+                    let now = std::time::Instant::now();
+                    if card.text() != before {
+                        typed.edit(card.text(), now);
+                    }
+                    typed.tick(now);
+                    if typed.poll() {
+                        ctx.request_repaint();
+                    }
+                    // Asked again each frame, because a frame drawn for any
+                    // other reason replaces the wake-up an earlier one asked
+                    // for.
+                    if let Some(left) = typed.pause_left(now) {
+                        ctx.request_repaint_after(left);
+                    }
+                }
+                close = false;
+                match event {
+                    Some(CardEvent::Close) => close = true,
+                    Some(CardEvent::Searching) => {
+                        let text = card.text().to_owned();
+                        self.open_chart_search();
+                        if let Some(Overlay::Palette(mut picker)) = self.overlay.take() {
+                            picker.set_query(text);
+                            becomes = Some(Overlay::Palette(picker));
+                        }
+                    }
+                    // Kept only once a read has answered the text as it
+                    // stands; until then the read is started without waiting
+                    // out the pause, and the form stays.
+                    Some(CardEvent::Keep) => {
+                        match self.typed.as_ref().and_then(TypedReads::current) {
+                            Some(answer) => {
+                                match self.typed_where(answer) {
+                                    Some(condition) => where_kept = Some(condition.to_owned()),
+                                    None => {
+                                        kept = Some((
+                                            answer.clone(),
+                                            card.replacing().map(str::to_owned),
+                                        ));
+                                    }
+                                }
+                                close = true;
+                            }
+                            None => {
+                                if let Some(typed) = self.typed.as_mut() {
+                                    typed.read_now();
+                                }
+                            }
+                        }
+                    }
+                    None => {}
                 }
             }
             Overlay::Help(picker) => {
@@ -6550,13 +6742,399 @@ impl MeridianApp {
                 close = false;
             }
         }
+        if let Some(next) = becomes {
+            overlay = next;
+            close = false;
+            ctx.request_repaint();
+        }
         if close {
             ctx.request_repaint();
         } else {
             self.overlay = Some(overlay);
         }
+        self.typed_follows_the_overlay(ctx);
+        if let Some((answer, replacing)) = kept {
+            self.keep_statement(ctx, &answer, replacing.as_deref());
+        }
+        if let Some(condition) = where_kept {
+            self.charts.doc.apply_typed_where(&condition);
+            ctx.request_repaint();
+        }
         if let Some(answer) = answered {
             self.answer_close_question(ctx, answer);
+        }
+    }
+
+    /// **Build or drop the statement's reads to match the overlay slot**: a
+    /// reader for the statement form when it has just opened, and none once
+    /// the slot holds anything else, which stops any read under way and gives
+    /// the grid back.
+    fn typed_follows_the_overlay(&mut self, ctx: &egui::Context) {
+        let Some(Overlay::Statement(card)) = self.overlay.as_ref() else {
+            self.typed = None;
+            self.typed_where_in_grid = None;
+            self.charts.doc.clear_typed_where();
+            return;
+        };
+        if self.typed.is_some() {
+            return;
+        }
+        let Some(source) = self.typed_source(card.replacing()) else {
+            return;
+        };
+        let wake = ctx.clone();
+        let mut typed = TypedReads::new(source, self.typed_pause, move || wake.request_repaint())
+            .with_hooks(self.charts.doc.preview_hooks().clone());
+        let now = std::time::Instant::now();
+        typed.edit(card.text(), now);
+        if let Some(left) = typed.pause_left(now) {
+            ctx.request_repaint_after(left);
+        }
+        self.typed = Some(typed);
+    }
+
+    /// What a statement on the statement form is read against: the window's
+    /// data file and the table it loads as, with the steps the Protocol
+    /// generated after the load as the steps the statement may read; each
+    /// read runs only those the statement reads and theirs. Over the kept
+    /// statement `replacing`, the statements kept after it are left out: they
+    /// may read it, so it cannot read them.
+    fn typed_source(&self, replacing: Option<&str>) -> Option<TypedSource> {
+        let model = &self.protocol.doc.model;
+        let source = model.source()?;
+        let reader = brightfield_engine::FileReader::for_path(&source.data)?;
+        let mut steps = model
+            .generated()
+            .map(|generated| generated.steps.clone())
+            .unwrap_or_default();
+        if let Some(replacing) = replacing {
+            let later: BTreeSet<&str> = self
+                .charts
+                .doc
+                .typed_steps()
+                .iter()
+                .skip_while(|step| step.name != replacing)
+                .skip(1)
+                .map(|step| step.name.as_str())
+                .collect();
+            steps.retain(|step| !later.contains(step.name.as_str()));
+        }
+        Some(TypedSource {
+            data: source.data.clone(),
+            reader,
+            root_table: source.name.clone(),
+            steps,
+            order: self.charts.doc.grid_view().order.clone(),
+            runner: self.runner.clone(),
+        })
+    }
+
+    /// **Where the statement form stands**: over the map pane when the canvas
+    /// drew one, otherwise over the trailing share of the one pane it drew,
+    /// otherwise over the trailing share of the window's content. Beside the
+    /// map it stands clear of the grid; over a node's grid view, the one pane
+    /// is the grid, and the card covers its trailing columns while the leading
+    /// ones stay readable.
+    fn typed_card_room(&self, ctx: &egui::Context) -> egui::Rect {
+        if let Some(map) = self.canvas_panes.pane("map") {
+            return map.rect;
+        }
+        let trailing = |rect: egui::Rect| {
+            egui::Rect::from_min_max(
+                egui::pos2(rect.right() - rect.width() * TYPED_CARD_SHARE, rect.top()),
+                rect.max,
+            )
+        };
+        match self.canvas_panes.panes.as_slice() {
+            [one] => trailing(one.rect),
+            _ => trailing(ctx.content_rect()),
+        }
+    }
+
+    /// What the row under the statement says now: DuckDB's reason when the
+    /// text as it stands was refused; otherwise, once it has been read, the
+    /// filter it would be when arc reads it as a filter of the loaded table,
+    /// the held step it would take the place of, and a step of its own when
+    /// neither. Nothing while it is being read.
+    /// `replacing` is the held step the form opened over, when there is one;
+    /// the form is out of the overlay slot while it is drawn, so it is handed
+    /// in.
+    fn typed_said_now(&self, replacing: Option<&str>) -> Option<TypedSaid> {
+        use crate::operation::Recognised;
+        let typed = self.typed.as_ref()?;
+        if let Some(reason) = typed.refusal() {
+            return Some(TypedSaid::Refused(reason.to_owned()));
+        }
+        let answer = typed.current()?;
+        Some(match &answer.recognised {
+            Recognised::FilterRows { .. } if self.typed_where(answer).is_some() => {
+                TypedSaid::Filter {
+                    table: self.protocol.doc.model.source()?.name.clone(),
+                    rows: answer.filter_rows,
+                }
+            }
+            _ => {
+                let name = self.kept_name(answer, replacing);
+                if replacing == Some(name.as_str()) {
+                    TypedSaid::Replaces(name)
+                } else {
+                    TypedSaid::SqlStep
+                }
+            }
+        })
+    }
+
+    /// **The condition a statement lands in `where` as**, when arc read
+    /// `answer` as a filter of the loaded table and the field can take it
+    /// ([`ChartDoc::where_takes`]): the canvas shows the loaded table's rows,
+    /// not a step's grid or another node's.
+    fn typed_where<'a>(&self, answer: &'a TypedAnswer) -> Option<&'a str> {
+        use crate::operation::Recognised;
+        let Recognised::FilterRows { on, condition } = &answer.recognised else {
+            return None;
+        };
+        let model = &self.protocol.doc.model;
+        let on_table = match self.canvas_holds() {
+            CanvasHolds::View {
+                node,
+                view: NodeView::Grid,
+            } => model.table() == Some(node),
+            _ => true,
+        };
+        let root = &model.source()?.name;
+        (on_table && self.charts.doc.where_takes(on, root)).then_some(condition.as_str())
+    }
+
+    /// **Hand the grid the rows of the statement on the form**, when a read of
+    /// it has found some, and name the step it would be kept as. `None` while
+    /// the form is shut or before a read of it has found rows, when the grid
+    /// shows what it would anyway, and when the rows are a filter the `where`
+    /// field can take, which the loaded table's grid previews instead
+    /// ([`ChartDoc::preview_typed_where`]).
+    fn typed_grid_step(&mut self) -> Option<String> {
+        let Some(Overlay::Statement(card)) = &self.overlay else {
+            return None;
+        };
+        let answer = self.typed.as_ref()?.shown()?;
+        // A filter the `where` field can take is previewed on the loaded
+        // table's own grid, with the page and count the read found.
+        if let Some(condition) = self.typed_where(answer) {
+            if self.typed_where_in_grid.as_deref() != Some(answer.text.as_str()) {
+                let (text, condition, rows) = (
+                    answer.text.clone(),
+                    condition.to_owned(),
+                    answer.filter_rows,
+                );
+                match answer.filter_page.clone() {
+                    Some(page) => {
+                        self.charts.doc.preview_typed_where(&condition, page, rows);
+                        self.typed_where_in_grid = Some(text);
+                    }
+                    None => {
+                        self.charts.doc.clear_typed_where();
+                        self.typed_where_in_grid = None;
+                    }
+                }
+            }
+            return None;
+        }
+        self.typed_where_in_grid = None;
+        self.charts.doc.clear_typed_where();
+        let step = self.kept_name(answer, card.replacing());
+        if self.typed_in_grid.as_deref() != Some(answer.text.as_str())
+            || self.charts.doc.grid_preview().is_none()
+        {
+            self.typed_in_grid = Some(answer.text.clone());
+            let preview =
+                crate::data_grid::GridPreview::of_typed(step.clone(), answer.page.clone());
+            self.charts.doc.show_typed_preview(preview);
+        }
+        Some(step)
+    }
+
+    /// The name a statement answered by `answer` is kept as: the name of the
+    /// kept statement it takes the place of, `replacing`, while that is still
+    /// kept and unless it reads that statement's own table, which makes it a
+    /// step after it; otherwise a
+    /// name of its own ([`typed_step_name`]) that no step of the Protocol has.
+    fn kept_name(&self, answer: &TypedAnswer, replacing: Option<&str>) -> String {
+        // A held step Save or Run recorded while the form stood is no longer
+        // kept, and recorded SQL is not edited, so the correction takes a
+        // name of its own
+        // (`a_correction_of_a_step_saved_meanwhile_is_kept_as_a_new_step` in
+        // `tests/typed_sql_keep.rs`).
+        let still_kept = |name: &&str| {
+            self.charts
+                .doc
+                .typed_steps()
+                .iter()
+                .any(|step| step.name == *name)
+        };
+        if let Some(name) = replacing
+            .filter(still_kept)
+            .filter(|name| !reads_table(answer, name))
+        {
+            return name.to_owned();
+        }
+        let model = &self.protocol.doc.model;
+        let mut taken: BTreeSet<String> = model
+            .generated()
+            .map(|g| g.steps.iter().map(|s| s.name.clone()).collect())
+            .unwrap_or_default();
+        taken.extend(model.source().map(|s| s.name.clone()));
+        taken.extend(self.charts.doc.typed_steps().iter().map(|s| s.name.clone()));
+        typed_step_name(&answer.reading, &taken)
+    }
+
+    /// **Keep the statement `answer` answered as a step**: in place of the
+    /// kept statement `replacing` under its name, unless it reads that
+    /// statement's table, and otherwise at the foot of the Protocol. The
+    /// Protocol is laid out again with it, its table is brought to the front
+    /// in the grid with the cursor on its first cell and the keys, and its
+    /// rows are counted on a worker.
+    fn keep_statement(
+        &mut self,
+        ctx: &egui::Context,
+        answer: &TypedAnswer,
+        replacing: Option<&str>,
+    ) {
+        let name = self.kept_name(answer, replacing);
+        let reads = answer.reading.tables.clone();
+        if replacing == Some(name.as_str()) {
+            self.charts
+                .doc
+                .replace_typed(&name, answer.text.clone(), reads);
+        } else {
+            self.charts.doc.keep_typed(TypedStep {
+                name: name.clone(),
+                statement: answer.text.clone(),
+                reads,
+                rows: None,
+            });
+        }
+        self.typed_in_grid = None;
+        self.lay_out_typed_steps();
+        let model = &mut self.protocol.doc.model;
+        model.select_step_table(&name);
+        if let Some(node) = model.node_of_step_table(&name).cloned() {
+            self.canvas_holds = CanvasHolds::View {
+                node,
+                view: NodeView::Grid,
+            };
+        }
+        // The grid is handed the step's preview now, since a change of what
+        // it shows lets go of the cursor, and the cursor is put on it after.
+        let preview = self.preview_request();
+        self.charts.doc.show_preview(preview, ctx);
+        self.charts.doc.grid_cursor = Some(crate::data_grid::GridCursor { row: 0, col: 0 });
+        self.charts.doc.grid_cursor_reveal = true;
+        // The grid takes the keys, so the cursor moves and the band answers.
+        self.ws_mut().set_focus(PaneKey::new(DATA));
+        self.count_typed_rows(ctx);
+        ctx.request_repaint();
+    }
+
+    /// Lay the Protocol out again from the folder with the statements kept
+    /// and not yet saved after its steps. A Protocol that grows out of its
+    /// one step takes the rails a Protocol of several opens with, as a Save
+    /// that adds a step does.
+    fn lay_out_typed_steps(&mut self) {
+        let Some(source) = self.protocol.doc.model.source().cloned() else {
+            return;
+        };
+        let was_one_step = self.ledger_opens_collapsed();
+        match source.inputs_with_typed(self.charts.doc.typed_steps()) {
+            Ok(inputs) => {
+                self.protocol.doc.open(inputs);
+                if was_one_step && !self.ledger_opens_collapsed() {
+                    self.apply_rail_defaults();
+                }
+                self.say_folder_refused();
+                wire_columns(
+                    &mut self.charts.doc,
+                    &self.protocol.doc.model,
+                    &self.charts.inspector_table,
+                );
+            }
+            Err(e) => eprintln!("the Protocol could not be laid out with its typed steps: {e}"),
+        }
+    }
+
+    /// Start a count of the rows of each kept statement not yet counted and
+    /// not being counted through the chain it now reads.
+    fn count_typed_rows(&mut self, ctx: &egui::Context) {
+        let model = &self.protocol.doc.model;
+        let (Some(generated), Some(source)) = (model.generated(), model.source()) else {
+            return;
+        };
+        let Some(reader) = brightfield_engine::FileReader::for_path(&source.data) else {
+            return;
+        };
+        for step in self
+            .charts
+            .doc
+            .typed_steps()
+            .iter()
+            .filter(|s| s.rows.is_none())
+        {
+            let Some(chain) = crate::generated::preview_chain(generated, &step.name) else {
+                continue;
+            };
+            if self
+                .typed_counts
+                .iter()
+                .any(|c| c.name == step.name && c.chain == chain)
+            {
+                continue;
+            }
+            let wake = ctx.clone();
+            let answer = spawn_row_count(
+                TypedSource {
+                    data: source.data.clone(),
+                    reader,
+                    root_table: source.name.clone(),
+                    steps: Vec::new(),
+                    order: None,
+                    runner: None,
+                },
+                chain.clone(),
+                move || wake.request_repaint(),
+            );
+            self.typed_counts.push(TypedCount {
+                name: step.name.clone(),
+                chain,
+                answer,
+            });
+        }
+    }
+
+    /// Land each count of a kept statement's rows that has arrived on the
+    /// chart document and the Protocol, when the statement still reads
+    /// through the chain it was counted through: one corrected since was
+    /// counted again.
+    fn poll_typed_counts(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        let mut landed = Vec::new();
+        self.typed_counts
+            .retain(|count| match count.answer.try_recv() {
+                Ok(Ok(rows)) => {
+                    landed.push((count.name.clone(), count.chain.clone(), rows));
+                    false
+                }
+                Ok(Err(_)) | Err(TryRecvError::Disconnected) => false,
+                Err(TryRecvError::Empty) => true,
+            });
+        for (name, chain, rows) in landed {
+            let current = self
+                .protocol
+                .doc
+                .model
+                .generated()
+                .and_then(|g| crate::generated::preview_chain(g, &name));
+            if current.as_ref() == Some(&chain) {
+                self.charts.doc.set_typed_rows(&name, rows);
+                self.protocol.doc.model.set_typed_rows(&name, rows);
+            }
         }
     }
 
@@ -6642,6 +7220,7 @@ impl MeridianApp {
             .map_or_else(Vec::new, |file| self.charts.doc.unsaved_changes(file));
         let mut edits = crate::versions::change_lines(&changes, &tile_of);
         edits.extend(self.charts.doc.grid_view_line());
+        edits.extend(self.charts.doc.typed_lines());
         CloseQuestion {
             file,
             edits,
@@ -6779,6 +7358,84 @@ impl MeridianApp {
         }
     }
 
+    /// The statement on the statement form, while the chart palette is one —
+    /// a test hook.
+    #[must_use]
+    pub fn typed_statement(&self) -> Option<&str> {
+        match self.overlay.as_ref() {
+            Some(Overlay::Statement(card)) => Some(card.text()),
+            _ => None,
+        }
+    }
+
+    /// What the row under the statement says, while the form is open — a test
+    /// hook.
+    #[must_use]
+    pub fn typed_said(&self) -> Option<String> {
+        let Some(Overlay::Statement(card)) = self.overlay.as_ref() else {
+            return None;
+        };
+        self.typed_said_now(card.replacing())
+            .map(|said| said.line())
+    }
+
+    /// Where the statement form was drawn on the last frame, while it is open
+    /// — a test hook.
+    #[must_use]
+    pub fn typed_card_rect(&self) -> Option<egui::Rect> {
+        match self.overlay.as_ref() {
+            Some(Overlay::Statement(card)) => card.rect(),
+            _ => None,
+        }
+    }
+
+    /// How many reads of the statement form's text were stopped because the
+    /// text moved past them, while the form is open — a test hook.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn typed_reads_superseded(&self) -> Option<usize> {
+        self.typed.as_ref().map(TypedReads::superseded)
+    }
+
+    /// How many counts of kept statements' rows are under way — a test hook.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn typed_counts_pending(&self) -> usize {
+        self.typed_counts.len()
+    }
+
+    /// Read a statement once it has rested for `pause` in place of
+    /// [`TYPED_PAUSE`], from the next statement form opened.
+    #[doc(hidden)]
+    pub fn set_typed_pause(&mut self, pause: std::time::Duration) {
+        self.typed_pause = pause;
+    }
+
+    /// **Read the statement on the form now, and wait up to `patience` for
+    /// its answer**: true once it has rows or a refusal for the text as it
+    /// stands. A test's way past the pause and the worker.
+    #[doc(hidden)]
+    pub fn finish_typed_reads(&mut self, patience: std::time::Duration) -> bool {
+        let Some(typed) = self.typed.as_mut() else {
+            return false;
+        };
+        let answered = |t: &TypedReads| t.current().is_some() || t.refusal().is_some();
+        if !answered(typed) {
+            typed.read_now();
+        }
+        let deadline = std::time::Instant::now() + patience;
+        loop {
+            typed.poll();
+            if answered(typed) {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     /// Which overlay is open, named — a test hook, like
     /// [`MeridianApp::region_rect`].
     #[must_use]
@@ -6788,6 +7445,7 @@ impl MeridianApp {
             Overlay::Help(_) => "help",
             Overlay::Jump(_) => "jump",
             Overlay::CloseQuestion(_) => "close-question",
+            Overlay::Statement(_) => "palette",
         })
     }
 
@@ -7844,15 +8502,16 @@ impl MeridianApp {
     /// Write this window's Protocol to disk: `arcform.yaml` and its one model,
     /// in the data file's own directory, and the chart beside them.
     ///
-    /// **Then each applied grid view is recorded through arc**
-    /// ([`Self::record_applied_views`]), as steps appended to that manifest,
-    /// which a later Save leaves as it is. A recording arc refused raises a
-    /// banner in arc's words, leaves the view applied and the mark on, and is
-    /// this Save's failure, so a close that saved first stays open; the
-    /// Protocol file was written all the same, so the chart is still written
-    /// and the path still remembered. Once
-    /// nothing is left unrecorded the window takes on the Protocol the folder
-    /// now holds.
+    /// **Then the applied grid view and the kept statements are recorded
+    /// through arc** in the order they were made ([`Self::record_pending`]),
+    /// as steps appended to that manifest, which a later Save leaves as it is.
+    /// A recording arc refused raises a banner in arc's words, leaves what it
+    /// refused and what follows applied or kept and the mark on, and is this
+    /// Save's failure, so a close that saved first stays open; the Protocol
+    /// file was written all the same, so the chart is still written and the
+    /// path still remembered. Once a view is wholly recorded or a statement
+    /// recorded, the window takes on the Protocol the folder now holds, with
+    /// the statements still kept laid out after it.
     ///
     /// **The chart is written after the Protocol and is its own success.** The
     /// edits made to it since the last Save go into `panels/<name>.yaml` under
@@ -7885,7 +8544,7 @@ impl MeridianApp {
             .save_to(&source.dir)
             .map_err(Refused::Writing)
             .and_then(|path| {
-                let recorded = self.record_applied_views();
+                let recorded = self.record_pending();
                 // The Protocol was written whether or not a view was recorded:
                 // remember it, and write the chart, which is its own success.
                 let name = self.protocol.doc.model.protocol.clone();
@@ -7904,21 +8563,29 @@ impl MeridianApp {
                 self.save_chart_beside_protocol(&source);
                 recorded.map(|_| path).map_err(Refused::Recording)
             });
+        // What a refusal left unrecorded leads the pending work, since what
+        // was made before it was recorded and left it.
+        let refused_view =
+            self.charts.doc.pending_in_order().first() == Some(&crate::app::PendingWork::View);
+        // A part recorded before a refusal is in the folder all the same.
+        if self.charts.doc.take_pending_settled() {
+            self.adopt_saved_protocol();
+        }
         let written = match written {
             Ok(path) => {
                 self.notifications.dismiss(banner);
                 let name = self.protocol.doc.model.protocol.clone();
                 self.toasts
                     .push(Toast::new(Severity::Success, format!("Saved {name}")));
-                if self.charts.doc.take_grid_view_settled() {
-                    self.adopt_saved_protocol();
-                }
                 Ok(path)
             }
             Err(refused) => {
                 let (title, why) = match refused {
                     Refused::Writing(why) => ("Could not save this Protocol", why),
-                    Refused::Recording(why) => ("Could not record the grid view", why),
+                    Refused::Recording(why) if refused_view => {
+                        ("Could not record the grid view", why)
+                    }
+                    Refused::Recording(why) => ("Could not record the SQL step", why),
                 };
                 eprintln!("could not save the Protocol: {why}");
                 self.notifications
@@ -7930,11 +8597,72 @@ impl MeridianApp {
         Some(written)
     }
 
-    /// **Record each applied grid view through arc as a generated step**: the
+    /// **Record the work no file holds yet through arc, in the order it was
+    /// made** ([`ChartDoc::pending_in_order`]): the applied grid view as
+    /// `Self::record_view` records it, and each kept statement as the SQL
+    /// step `arc sql record` writes ([`crate::operation::record_sql`]) under
+    /// the name it was kept with. Answers the names recorded, in order.
+    ///
+    /// Each piece is marked recorded as arc takes it, so a refusal leaves what
+    /// came before it recorded, as it is in the folder, and what it refused
+    /// and what follows pending for the next Save. A recorded statement leaves
+    /// the kept statements (`ChartDoc::mark_typed_recorded`).
+    ///
+    /// Each recording runs arc on the calling thread, so a Save or Run waits
+    /// on arc for each piece it records, as it already waits on the files it
+    /// writes.
+    ///
+    /// # Errors
+    ///
+    /// arc's words for the first recording it refused, or why there was no
+    /// runner to ask. The pieces after it are not tried.
+    pub fn record_pending(&mut self) -> Result<Vec<String>, String> {
+        use crate::app::PendingWork;
+        let pending = self.charts.doc.pending_in_order();
+        if pending.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(source) = self.protocol.doc.model.source().cloned() else {
+            return Ok(Vec::new());
+        };
+        let runner = self
+            .runner
+            .clone()
+            .ok_or("this window was started without a runner to record with")?;
+        let mut recorded = Vec::new();
+        for work in pending {
+            match work {
+                PendingWork::View => recorded.extend(self.record_view(&runner, &source)?),
+                PendingWork::Typed(name) => {
+                    let Some(step) = self
+                        .charts
+                        .doc
+                        .typed_steps()
+                        .iter()
+                        .find(|s| s.name == name)
+                        .cloned()
+                    else {
+                        continue;
+                    };
+                    crate::operation::record_sql(
+                        &runner,
+                        &source.dir,
+                        &step.statement,
+                        &step.name,
+                    )?;
+                    self.charts.doc.mark_typed_recorded(&name);
+                    recorded.push(name);
+                }
+            }
+        }
+        Ok(recorded)
+    }
+
+    /// **Record the applied grid view through arc as generated steps**: the
     /// condition as `filter-rows`, then the order as `sort-rows` on the
     /// condition's table, each named by its effect
     /// ([`crate::generated::step_name_for`]) with a name no step of the folder
-    /// holds. Answers the names recorded, in order.
+    /// and no kept statement holds. Answers the names recorded, in order.
     ///
     /// `--on` is the table the node in view makes, which for a data file is
     /// the load's table, never the step's own name. A part already recorded is
@@ -7945,33 +8673,29 @@ impl MeridianApp {
     /// leaves the first recorded, as it is in the folder. A view recorded whole
     /// leaves the grid's row ([`ChartDoc::mark_grid_order_recorded`]).
     ///
-    /// Each recording runs `arc operation record` on the calling thread, so a
-    /// Save or Run waits on arc for each part it records, as it already waits
-    /// on the files it writes.
-    ///
     /// # Errors
     ///
-    /// arc's words for the first recording it refused, or why there was no
-    /// runner to ask. The parts after it are not tried.
-    pub fn record_applied_views(&mut self) -> Result<Vec<String>, String> {
+    /// arc's words for the first part it refused. The part after it is not
+    /// tried.
+    fn record_view(
+        &mut self,
+        runner: &crate::run::Runner,
+        source: &crate::one_step::OneStepProtocol,
+    ) -> Result<Vec<String>, String> {
         use crate::generated::{generated_protocol_in, step_name_for, KnownOperation};
-        if !self.charts.doc.grid_view_unrecorded() {
-            return Ok(Vec::new());
-        }
-        let Some(source) = self.protocol.doc.model.source().cloned() else {
-            return Ok(Vec::new());
-        };
-        let runner = self
-            .runner
-            .clone()
-            .ok_or("this window was started without a runner to record the grid view with")?;
         let manifest_path = crate::one_step::OneStepProtocol::manifest_path_in(&source.dir);
         let manifest_text = std::fs::read_to_string(&manifest_path)
             .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
         let manifest = brightfield_protocol::parse_manifest_str(&manifest_text)
             .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
-        let mut taken: std::collections::BTreeSet<String> =
-            manifest.steps.iter().map(|s| s.name.clone()).collect();
+        // A kept statement's name was fixed when it was kept, and it may be
+        // recorded after this view, so the view's steps do not take it.
+        let mut taken: std::collections::BTreeSet<String> = manifest
+            .steps
+            .iter()
+            .map(|s| s.name.clone())
+            .chain(self.charts.doc.typed_steps().iter().map(|s| s.name.clone()))
+            .collect();
         let root = generated_protocol_in(&manifest_text, &source.dir)
             .ok()
             .flatten()
@@ -7992,7 +8716,7 @@ impl MeridianApp {
             let columns = self.view_columns(KnownOperation::FilterRows, &condition);
             let name = step_name_for(KnownOperation::FilterRows, &root, &columns, &taken);
             record_one(
-                &runner,
+                runner,
                 &source.dir,
                 KnownOperation::FilterRows,
                 &in_view,
@@ -8012,7 +8736,7 @@ impl MeridianApp {
             let columns = self.view_columns(KnownOperation::SortRows, &order);
             let name = step_name_for(KnownOperation::SortRows, &root, &columns, &taken);
             record_one(
-                &runner,
+                runner,
                 &source.dir,
                 KnownOperation::SortRows,
                 &on,
@@ -8050,8 +8774,7 @@ impl MeridianApp {
     /// previews that step through its chain from the data file. `None`
     /// otherwise.
     fn preview_request(&self) -> Option<crate::data_grid::PreviewRequest> {
-        use crate::generated::KnownOperation;
-        use brightfield_engine::PreviewOp;
+        use crate::generated::{KnownOperation, StepEffect};
         let CanvasHolds::View {
             node,
             view: NodeView::Grid,
@@ -8068,30 +8791,17 @@ impl MeridianApp {
             .steps
             .iter()
             .find(|s| s.name.to_lowercase() == label)?;
-        let op = |s: &crate::generated::GeneratedStep| match s.operation {
-            KnownOperation::FilterRows => PreviewOp::Where(s.argument.clone()),
-            KnownOperation::SortRows => PreviewOp::OrderBy(s.argument.clone()),
-        };
-        // Back from the step to the load, through the table each step reads;
-        // each reads one an earlier step makes, so the walk ends within the
-        // number of steps.
-        let mut chain = vec![(step.name.clone(), op(step))];
-        let mut on = step.on.as_str();
-        while let Some(before) = generated
-            .steps
-            .iter()
-            .find(|s| s.name.to_lowercase() == on.to_lowercase())
-        {
-            if chain.len() > generated.steps.len() {
-                return None;
+        // The steps the step reads, and theirs, back to the load, in the
+        // order the manifest makes them.
+        let chain = crate::generated::preview_chain(generated, &step.name)?;
+        let fields = match step.effect {
+            StepEffect::Operation(KnownOperation::FilterRows) => {
+                [step.argument.clone(), String::new()]
             }
-            chain.push((before.name.clone(), op(before)));
-            on = before.on.as_str();
-        }
-        chain.reverse();
-        let fields = match step.operation {
-            KnownOperation::FilterRows => [step.argument.clone(), String::new()],
-            KnownOperation::SortRows => [String::new(), step.argument.clone()],
+            StepEffect::Operation(KnownOperation::SortRows) => {
+                [String::new(), step.argument.clone()]
+            }
+            StepEffect::Sql => [String::new(), String::new()],
         };
         Some(crate::data_grid::PreviewRequest {
             step: step.name.clone(),
@@ -8100,31 +8810,42 @@ impl MeridianApp {
             chain,
             fields,
             ran: model.step_ran(&step.name),
+            recorded: !model.is_typed(&step.name),
             run_key: self.run_binding.map(str::to_owned),
         })
     }
 
     /// **Take on the Protocol the folder holds now**, after a Save or a Run
-    /// recorded the applied views and nothing is left unrecorded.
+    /// recorded the applied view whole or a kept statement.
     ///
     /// The manifest is read back as written, so the Steps sheet lists the
-    /// steps arc appended. The document keeps the data file it came from as
-    /// its source, so Save and Run go on writing the load and running the
-    /// folder, and the charts stay on the load's table. The ledger rail takes
-    /// the default a Protocol of several steps opens with, and the newest step
-    /// arc generated is selected.
+    /// steps arc appended, and the statements still kept (a refusal stopped
+    /// the Save before them) are laid out after them, not recorded. The
+    /// document keeps the data file it came from as its source, so Save and
+    /// Run go on writing the load and running the folder, and the charts stay
+    /// on the load's table. The ledger rail takes the default a Protocol of
+    /// several steps opens with, and the newest step arc recorded is selected.
     fn adopt_saved_protocol(&mut self) {
         let Some(source) = self.protocol.doc.model.source().cloned() else {
             return;
         };
         // Through the call opening the folder makes, so what the window shows
-        // after a Save is what reopening the folder would show.
-        match source.inputs_with_last_run() {
+        // after a Save is what reopening the folder would show, with what is
+        // still kept after it
+        // (`a_refusal_leaves_what_was_recorded_and_lays_out_the_rest_unrecorded`
+        // in `tests/typed_sql_save.rs`).
+        let typed = self.charts.doc.typed_steps();
+        match source.inputs_with_typed(typed) {
             Ok(inputs) => {
                 let newest = inputs
                     .generated
                     .as_ref()
-                    .and_then(|g| g.steps.last())
+                    .and_then(|g| {
+                        g.steps
+                            .iter()
+                            .rev()
+                            .find(|step| !typed.iter().any(|t| t.name == step.name))
+                    })
                     .map(|step| step.name.clone());
                 self.protocol.doc.open(inputs);
                 if let Some(newest) = newest {
@@ -8199,8 +8920,9 @@ impl MeridianApp {
     ///
     /// What it does before it returns is cheap and its failures are the
     /// reader's to see at once: the spec is written where Save writes it,
-    /// because `arc run` reads `arcform.yaml` off disk, the applied grid views
-    /// are recorded as Save records them (a refusal is a banner and no run),
+    /// because `arc run` reads `arcform.yaml` off disk, the applied grid view
+    /// and the kept statements are recorded as Save records them (a refusal
+    /// is a banner and no run),
     /// and a run is started on
     /// a worker ([`crate::run::Run::begin`]). What it does not do is wait. The
     /// private `poll_run`, at the head of [`Self::draw`], lands the run on the
@@ -8234,11 +8956,13 @@ impl MeridianApp {
         if let Err(e) = source.save_to(&source.dir) {
             return refused(self, e);
         }
-        if let Err(e) = self.record_applied_views() {
-            return refused(self, e);
-        }
-        if self.charts.doc.take_grid_view_settled() {
+        let recorded = self.record_pending();
+        // A part recorded before a refusal is in the folder all the same.
+        if self.charts.doc.take_pending_settled() {
             self.adopt_saved_protocol();
+        }
+        if let Err(e) = recorded {
+            return refused(self, e);
         }
         let Some(runner) = self.runner.as_ref() else {
             return refused(
@@ -8316,7 +9040,8 @@ impl MeridianApp {
         let Some(source) = self.protocol.doc.model.source().cloned() else {
             return;
         };
-        match source.inputs_with_last_run() {
+        // The statements kept and not yet saved stay laid out after the run.
+        match source.inputs_with_typed(self.charts.doc.typed_steps()) {
             Ok(inputs) => {
                 self.protocol.doc.open(inputs);
                 self.say_folder_refused();
@@ -9982,6 +10707,12 @@ impl CanvasPanes {
 /// crate cannot see this one. One number, named on both sides of the boundary.
 pub const EVEN_CANVAS_SPLIT: f32 = brightfield_workbench::persist::EVEN_CANVAS_SPLIT;
 
+/// **The share of the canvas the statement form stands over** when the canvas
+/// drew no map pane: the trailing 40% of the one pane it drew, or of the
+/// window's content, so the leading 60%, where a grid's first columns are,
+/// stays uncovered.
+pub const TYPED_CARD_SHARE: f32 = 0.4;
+
 /// **The narrowest either canvas pane is dragged to**, in logical points.
 ///
 /// Stated as the pane's own chrome plus a content width rather than as a round
@@ -10277,7 +11008,7 @@ fn draw_canvas_pane_group(
         brightfield_keys::BindingContext::Workspace,
     );
     let grid_subject = Subject::new(
-        GRID_PANE_TITLE.to_string(),
+        grid_pane_title(&charts.doc),
         brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
     );
@@ -10492,7 +11223,7 @@ fn draw_transposed_pane_group(
         brightfield_keys::BindingContext::Workspace,
     );
     let grid_subject = Subject::new(
-        GRID_PANE_TITLE.to_string(),
+        grid_pane_title(&charts.doc),
         brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
     );
@@ -10958,6 +11689,17 @@ pub fn unheld_grid_headline(label: &str) -> String {
 /// [`band_note`]'s, at the other end of the same band.
 const GRID_PANE_TITLE: &str = "Grid";
 
+/// **What the grid pane is titled this frame**: [`GRID_PANE_TITLE`], or, while
+/// it shows the rows of a statement on the statement form, that noun and the
+/// name the statement would be kept as. Those rows are of no table yet, so the
+/// title says whose they are.
+fn grid_pane_title(doc: &ChartDoc) -> String {
+    match doc.grid_preview().filter(|p| p.is_typed()) {
+        Some(typed) => format!("{GRID_PANE_TITLE} \u{b7} {}", typed.step()),
+        None => GRID_PANE_TITLE.to_string(),
+    }
+}
+
 /// A note at the **trailing end of a pane's header band**: muted, in the
 /// chrome's own face, painted rather than laid out.
 ///
@@ -11217,7 +11959,7 @@ fn draw_ledger_grid_pane(
     grid_layout: crate::app::GridLayout,
 ) -> egui::Rect {
     let subject = Subject::new(
-        GRID_PANE_TITLE.to_string(),
+        grid_pane_title(&charts.doc),
         brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
     );

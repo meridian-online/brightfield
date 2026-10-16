@@ -45,6 +45,18 @@
 //! not narrow them, and the count says nothing of it. The step Save records
 //! keeps the rows the condition keeps, whatever was selected when it was saved.
 //!
+//! **Typed SQL lands here too.** A statement on the chart palette's statement
+//! form that arc reads as a filter of the loaded table is offered to `where`
+//! when the field can take it (`ChartDoc::where_takes`): the grid is on the
+//! loaded table and no recorded condition is held. While the form shows it,
+//! the grid previews the condition (`ChartDoc::preview_typed_where`) with
+//! the first page and the count the statement's reads found on a worker, so
+//! the frame does not wait on DuckDB for it
+//! (`typed_where_preview_does_not_block_the_ui_thread` in
+//! `tests/typed_sql_where.rs`), and Cmd+Enter applies it as Enter
+//! applies the field's text (`ChartDoc::apply_typed_where`), keeping a
+//! pending order. Every other statement is kept as a SQL step.
+//!
 //! **The row works on the loaded table's grid.** On a generated step's grid the
 //! band shows the step's own argument read-only, and the key puts the reason on
 //! the status band: a step without a run offers Run, and one that has run says
@@ -62,7 +74,7 @@ use brightfield_workbench::chrome;
 use meridian_design::{semantic, spacing};
 
 use crate::app::ChartDoc;
-use crate::data_grid::{cell_font, grid_state_id};
+use crate::data_grid::{cell_font, grid_state_id, GridPage};
 use crate::design::Mode;
 use crate::pipeline::LiveDashboard;
 
@@ -74,8 +86,18 @@ use crate::pipeline::LiveDashboard;
 /// it.
 pub const FOOT_BAND_HEIGHT: f32 = 26.0;
 
-/// The radius of the dot a field carries while its applied text is in no file.
-const DOT_RADIUS: f32 = 3.0;
+/// The radius of the dot a field carries while its applied text is in no file,
+/// and the spine's mark for a step made from typed SQL that is in no file yet.
+pub(crate) const UNRECORDED_DOT_RADIUS: f32 = 3.0;
+
+/// **The dot for a thing that is in no file yet**, centred on `centre`: a
+/// field of this band whose applied text is unrecorded, and a typed step's row
+/// and its table's in the spine. One function draws both, so the mark is one
+/// mark wherever it appears.
+pub(crate) fn paint_unrecorded_dot(painter: &egui::Painter, centre: egui::Pos2, dark: bool) {
+    let ink = chrome::colour(semantic(dark).text.primary);
+    painter.circle_filled(centre, UNRECORDED_DOT_RADIUS, ink);
+}
 
 /// The share of the band's room, after the count, the `where` field takes.
 const WHERE_SHARE: f32 = 0.6;
@@ -264,11 +286,26 @@ pub struct FootDrawn {
     pub order_dot: bool,
 }
 
-/// The band's state: the field being edited, if one is, and what the band
-/// drew. Held on the document beside the view it previews.
+/// **A typed filter the grid previews**: the view it would apply, and the
+/// first page and count of the rows it keeps, as a read off the frame found
+/// them.
+#[derive(Clone, Debug)]
+pub(crate) struct TypedWhere {
+    /// The applied view with the typed condition in place of its own.
+    pub(crate) view: RowsView,
+    /// The first page of the rows the condition keeps.
+    pub(crate) page: GridPage,
+    /// How many rows the condition keeps, unless the count failed.
+    pub(crate) rows: Option<u64>,
+}
+
+/// The band's state: the field being edited, if one is, the typed filter the
+/// grid previews, if one is, and what the band drew. Held on the document
+/// beside the view it previews.
 #[derive(Clone, Debug, Default)]
 pub struct FootState {
     asking: Option<Asking>,
+    pub(crate) typed: Option<TypedWhere>,
     /// The names of the columns the grid drew, by index — what a key on the
     /// cursor's cell reads its column from.
     pub(crate) columns: Vec<String>,
@@ -292,6 +329,8 @@ impl FootState {
             .as_ref()
             .is_some_and(|cell| cell.value_range(&text).is_some());
         let column = from_cell.as_ref().map(|cell| cell.name.clone());
+        // The field's own preview takes over from a typed filter's.
+        self.typed = None;
         self.asking = Some(Asking {
             field,
             text,
@@ -348,12 +387,14 @@ impl FootState {
     }
 
     /// The view the grid reads: the preview while a field is edited and some
-    /// text of it has parsed, and otherwise `applied`.
+    /// text of it has parsed, then a typed filter's while the grid previews
+    /// one, and otherwise `applied`.
     #[must_use]
     pub fn read_view<'a>(&'a self, applied: &'a RowsView) -> &'a RowsView {
         self.asking
             .as_ref()
             .and_then(|a| a.preview.as_ref())
+            .or(self.typed.as_ref().map(|t| &t.view))
             .unwrap_or(applied)
     }
 
@@ -539,6 +580,51 @@ impl ChartDoc {
         true
     }
 
+    /// **Whether a typed filter of `on` can land in `where`**: the grid shows
+    /// no step's preview, so it is on the loaded table, `on` is
+    /// `root_table` in any case, and no recorded condition is held, which the
+    /// field would not open over ([`Self::foot_offer`]).
+    pub(crate) fn where_takes(&self, on: &str, root_table: &str) -> bool {
+        self.grid_preview()
+            .is_none_or(crate::data_grid::GridPreview::is_typed)
+            && on.eq_ignore_ascii_case(root_table)
+            && self.grid_condition_held().is_none()
+    }
+
+    /// **Preview the typed `condition` in the grid**: the applied view with
+    /// `condition` as its `where`, drawn from `page` and counted as `rows`,
+    /// both read off the frame; with no count, the band says it shows the
+    /// first page. A field being edited and the cursor let go, as they do when
+    /// a typed statement's rows are shown.
+    pub(crate) fn preview_typed_where(
+        &mut self,
+        condition: &str,
+        page: GridPage,
+        rows: Option<u64>,
+    ) {
+        self.grid_foot.cancel();
+        self.grid_cursor = None;
+        self.grid_foot.typed = Some(TypedWhere {
+            view: FootField::Where.with(self.grid_view(), condition),
+            page,
+            rows,
+        });
+    }
+
+    /// Stop previewing a typed filter; the grid reads the applied view again.
+    pub(crate) fn clear_typed_where(&mut self) {
+        self.grid_foot.typed = None;
+    }
+
+    /// **Apply the typed `condition` as the grid's `where`**, as Enter applies
+    /// the field's text: the applied view with `condition` in place of its
+    /// own, so a pending order is kept, unrecorded until Save.
+    pub(crate) fn apply_typed_where(&mut self, condition: &str) {
+        self.clear_typed_where();
+        let view = FootField::Where.with(self.grid_view(), condition);
+        self.apply_foot_view(view);
+    }
+
     /// Apply `view` as the grid's view from the band, and put the cursor on the
     /// first row shown, in its column.
     fn apply_foot_view(&mut self, view: RowsView) {
@@ -718,14 +804,19 @@ pub fn foot_band(
 
     // The count, at the trailing end.
     let (rows, columns) = counts;
-    let count = if fixed.is_some() {
+    let uncounted = state.typed.as_ref().is_some_and(|t| t.rows.is_none());
+    let count = if fixed.is_some() || uncounted {
         crate::data_grid::PREVIEW_COUNT.to_owned()
     } else {
+        // A typed filter's count was read apart from the session, under no
+        // selection.
         count_text(
             rows,
             columns,
-            doc.live_dashboard()
-                .is_some_and(LiveDashboard::rows_narrowed),
+            state.typed.is_none()
+                && doc
+                    .live_dashboard()
+                    .is_some_and(LiveDashboard::rows_narrowed),
         )
     };
     let pad = spacing::SPACE_2;
@@ -767,9 +858,9 @@ pub fn foot_band(
         let mut x = from + word_size.x + spacing::SPACE_2;
         // The dot, while the field's applied text is in no file.
         if unrecorded[slot] {
-            let centre = egui::pos2(x + DOT_RADIUS, rect.center().y);
-            painter.circle_filled(centre, DOT_RADIUS, ink);
-            x += 2.0 * DOT_RADIUS + spacing::SPACE_2;
+            let centre = egui::pos2(x + UNRECORDED_DOT_RADIUS, rect.center().y);
+            paint_unrecorded_dot(&painter, centre, mode.is_dark());
+            x += 2.0 * UNRECORDED_DOT_RADIUS + spacing::SPACE_2;
             dots[slot] = true;
         }
         let field_rect = egui::Rect::from_min_max(
@@ -793,7 +884,10 @@ pub fn foot_band(
         );
         let mut idle_text = match fixed {
             Some(texts) => texts[slot].clone(),
-            None => field.of(&applied).unwrap_or_default().to_owned(),
+            None => field
+                .of(state.typed.as_ref().map_or(&applied, |t| &t.view))
+                .unwrap_or_default()
+                .to_owned(),
         };
         if let Some(asking) = state.asking.as_mut().filter(|_| editing) {
             if asking.focus {
