@@ -3146,6 +3146,18 @@ impl MeridianApp {
         // assigns it immediately before this call, and the engine is reading
         // those files for the life of the document that just arrived.
         self.fetching = None;
+        // The statement form has no scrim, so an opener can be clicked while
+        // it stands, and what was typed was read against the old file. The
+        // form closes and its reads and counts go with it
+        // (`opening_another_document_closes_the_form_and_drops_what_was_typed`
+        // in `tests/typed_sql_keep.rs`).
+        if matches!(self.overlay, Some(Overlay::Statement(_))) {
+            self.overlay = None;
+        }
+        self.typed = None;
+        self.typed_in_grid = None;
+        self.typed_where_in_grid = None;
+        self.typed_counts.clear();
         self.reconcile_canvas_holds();
         // The ledger and inspector rails' collapsed default, and which
         // inspector pane the caret opens on — re-derived here so a document

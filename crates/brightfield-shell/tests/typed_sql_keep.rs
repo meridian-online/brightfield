@@ -464,3 +464,35 @@ fn a_key_on_a_kept_statements_grid_says_save_records_it() {
         Some("this step is not recorded yet; Save records it")
     );
 }
+
+/// The statement form has no scrim, so another document can open under it;
+/// the form closes then, and nothing typed against the old file is kept into
+/// the new one.
+#[test]
+fn opening_another_document_closes_the_form_and_drops_what_was_typed() {
+    let root = TempDir::new("swap");
+    let (mut win, _f) = Window::housing(&root);
+    win.keep(BY_AGE);
+    win.key(egui::Key::Space);
+    win.type_text("select * from california_housing order by house_age");
+    assert!(win.app.finish_typed_reads(Duration::from_secs(60)));
+    win.settle();
+    let other = root.0.join("other");
+    std::fs::create_dir_all(&other).expect("the other file's folder");
+    let data = other.join(starts::HOUSING_FILE);
+    std::fs::write(&data, starts::HOUSING_PARQUET).expect("the other file writes");
+    let ctx = win.ctx.clone();
+    win.app.open_data_file(&ctx, &data.to_string_lossy());
+    win.settle();
+    assert_eq!(win.app.open_overlay(), None);
+    assert_eq!(win.app.typed_statement(), None);
+    assert!(win.app.chart_doc().typed_steps().is_empty());
+    assert!(!win.app.carries_unsaved_mark());
+    std::thread::sleep(Duration::from_secs(2));
+    win.settle();
+    assert!(win.app.chart_doc().typed_steps().is_empty());
+    assert!(
+        !win.app.carries_unsaved_mark(),
+        "a late count lands nothing"
+    );
+}
