@@ -2578,6 +2578,15 @@ fn compose_from_results(
             for d in &mut chart_data {
                 d.layout = layout;
             }
+            // A title is drawn across the top margin with no width limit, so the
+            // band at a titled plot's right starts under that row rather than
+            // beside it, where its legend would cover the end of a long title.
+            let legend_right = match legend_right {
+                Some(band) if titles.plot.is_some() => {
+                    Some(crate::legend::below_title(band, layout.plot_y_start()))
+                }
+                band => band,
+            };
 
             // What this plot's spec asked each positional axis's ticks to target
             // — `xTicks`/`yTicks`. A plot that asks for neither reads back its

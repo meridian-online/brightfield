@@ -322,6 +322,22 @@ pub fn carve_right(rect: Rect) -> (Rect, Rect) {
     (plot, legend)
 }
 
+/// The band at a titled plot's right, moved down to start level with the top of
+/// the plot's frame: `top` points below the box's top, the plot's top margin,
+/// which holds the title row.
+///
+/// A plot's title is drawn from the frame's left edge with no width limit, so a
+/// long one runs past the narrowed plot into the columns the band stands in. A
+/// band that started at the box's top would draw its legend over the end of the
+/// title; one that starts below the title's row cannot. A plot with no title
+/// keeps its band level with its box, which is why this is applied only to a
+/// titled plot. The band never moves past its own foot.
+#[must_use]
+pub fn below_title(band: Rect, top: f64) -> Rect {
+    let drop = top.clamp(0.0, band.height);
+    Rect::new(band.x, band.y + drop, band.width, band.height - drop)
+}
+
 /// The paths of the plots whose legend is drawn at their right: the plots the
 /// file puts a legend on, whose scales call for one, and whose legend the file
 /// does not put under them. The composition carves a band out of each of these
