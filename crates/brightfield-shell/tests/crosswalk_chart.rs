@@ -411,8 +411,14 @@ fn the_grid_groups_by_the_method_that_made_the_link() {
 fn the_grid_draws_its_colour_legend_below_it() {
     let (spec, _) = shipped();
     let groups = brightfield_sql::collect_plot_groups(&spec);
-    let histogram = &groups.first().expect("the shipped chart has plots").plot_path;
-    let grid = &groups.last().expect("the shipped chart has plots").plot_path;
+    let histogram = &groups
+        .first()
+        .expect("the shipped chart has plots")
+        .plot_path;
+    let grid = &groups
+        .last()
+        .expect("the shipped chart has plots")
+        .plot_path;
     assert_ne!(histogram, grid, "the shipped chart has two plots");
     assert_eq!(
         colour_legend_placement(&spec, grid),
