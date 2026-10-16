@@ -4363,6 +4363,180 @@ pub fn plain_select(sql: &str) -> Result<PlainSelect, String> {
     })
 }
 
+/// What [`statement_reading`] finds in a statement: the tables it reads and
+/// the one column it turns on, if any.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StatementReading {
+    /// The base tables the statement reads anywhere in its tree, first
+    /// appearance first, without the names its own CTEs bind and without table
+    /// functions.
+    pub tables: Vec<String>,
+    /// The one column the outermost select turns on: the single column of its
+    /// `GROUP BY`, else of its windows' `PARTITION BY`, else the single column
+    /// its `WHERE` names. `None` for a set operation, or when no one column
+    /// qualifies.
+    pub name_column: Option<String>,
+}
+
+/// Read which tables `sql` reads and which single column it turns on, with
+/// DuckDB's parser. Nothing is bound or run.
+///
+/// A `GROUP BY` or `PARTITION BY` counts when it is exactly one bare column
+/// reference, and all of the statement's windows must agree on that column. A
+/// `GROUP BY` that is present decides the matter, as do windows when there is
+/// no `GROUP BY`; the `WHERE` is asked when neither is present. The `WHERE`
+/// counts the distinct columns named anywhere in its expression, compared
+/// without regard to case, so `a > 1 AND b > 2` names none and
+/// `a > 1 OR a < 0` names `a`. A qualified reference (`t.a`) is the column `a`.
+///
+/// It parses on a fresh in-memory database, for the reason
+/// [`condition_statement_count`] gives.
+///
+/// # Errors
+///
+/// DuckDB's message when it cannot parse `sql`, or a note that it is not one
+/// statement.
+pub fn statement_reading(sql: &str) -> Result<StatementReading, String> {
+    use serde_json::Value;
+    let conn = duckdb::Connection::open_in_memory().map_err(|e| e.to_string())?;
+    let tree = serialized_sql(&conn, sql)?;
+    let statements = tree
+        .get("statements")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    let [statement] = statements else {
+        return Err(format!(
+            "it reads as {} statements, not one",
+            statements.len()
+        ));
+    };
+    let node = &statement["node"];
+    let mut bound = Vec::new();
+    let mut tables = Vec::new();
+    collect_tables(node, &mut bound, &mut tables);
+    tables.retain(|t| !bound.iter().any(|b: &String| b.eq_ignore_ascii_case(t)));
+    Ok(StatementReading {
+        tables,
+        name_column: name_column_of(node),
+    })
+}
+
+/// Push each `BASE_TABLE` name under `node` onto `tables`, skipping a name
+/// already there, and each CTE name onto `bound`.
+fn collect_tables(node: &serde_json::Value, bound: &mut Vec<String>, tables: &mut Vec<String>) {
+    use serde_json::Value;
+    match node {
+        Value::Object(map) => {
+            if map.get("type").and_then(Value::as_str) == Some("BASE_TABLE") {
+                if let Some(name) = map.get("table_name").and_then(Value::as_str) {
+                    if !tables.iter().any(|t| t == name) {
+                        tables.push(name.to_string());
+                    }
+                }
+            }
+            if let Some(entries) = map
+                .get("cte_map")
+                .and_then(|m| m.get("map"))
+                .and_then(Value::as_array)
+            {
+                for entry in entries {
+                    if let Some(key) = entry.get("key").and_then(Value::as_str) {
+                        bound.push(key.to_string());
+                    }
+                }
+            }
+            for value in map.values() {
+                collect_tables(value, bound, tables);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_tables(item, bound, tables);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The column of a bare `COLUMN_REF`: its last name part.
+fn bare_column(expr: &serde_json::Value) -> Option<&str> {
+    use serde_json::Value;
+    if expr.get("class").and_then(Value::as_str) != Some("COLUMN_REF") {
+        return None;
+    }
+    expr.get("column_names")?.as_array()?.last()?.as_str()
+}
+
+/// Push every `WINDOW` node under `node` onto `out`.
+fn collect_windows<'a>(node: &'a serde_json::Value, out: &mut Vec<&'a serde_json::Value>) {
+    use serde_json::Value;
+    match node {
+        Value::Object(map) => {
+            if map.get("class").and_then(Value::as_str) == Some("WINDOW") {
+                out.push(node);
+            }
+            for value in map.values() {
+                collect_windows(value, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_windows(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The rule of [`statement_reading`] for the one column, read off the
+/// outermost select.
+fn name_column_of(node: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    if node["type"] != "SELECT_NODE" {
+        return None;
+    }
+    let single = |exprs: &[Value]| match exprs {
+        [one] => bare_column(one).map(str::to_string),
+        _ => None,
+    };
+    if let Some(groups) = node["group_expressions"]
+        .as_array()
+        .filter(|g| !g.is_empty())
+    {
+        return single(groups);
+    }
+    let mut windows = Vec::new();
+    collect_windows(&node["select_list"], &mut windows);
+    collect_windows(&node["qualify"], &mut windows);
+    if !windows.is_empty() {
+        let mut agreed: Option<String> = None;
+        for window in windows {
+            let partitions = window["partitions"]
+                .as_array()
+                .map_or(&[][..], Vec::as_slice);
+            let column = single(partitions)?;
+            match &agreed {
+                Some(seen) if !seen.eq_ignore_ascii_case(&column) => return None,
+                Some(_) => {}
+                None => agreed = Some(column),
+            }
+        }
+        return agreed;
+    }
+    let mut refs = Vec::new();
+    collect_column_refs(&node["where_clause"], &mut refs);
+    let mut distinct: Vec<String> = Vec::new();
+    for name in refs {
+        if !distinct.iter().any(|d| d.eq_ignore_ascii_case(&name)) {
+            distinct.push(name);
+        }
+    }
+    match distinct.as_slice() {
+        [one] => Some(one.clone()),
+        _ => None,
+    }
+}
+
 /// The rule a condition is held to, as the error a read returns.
 fn gate_condition(condition: &str) -> Result<(), EngineError> {
     let refused = |refusal| EngineError::ConditionRefused {

@@ -40,6 +40,10 @@
 //! Both parts are slugged, so the name passes arc's
 //! step-name check, and a name already taken gets `_2`, `_3` and so on before
 //! arc is asked, so a recording is not refused on its name.
+//!
+//! A step made from typed SQL is named the same way by [`sql_step_name_for`]:
+//! `<table>_sql_by_<column>` when the statement turns on one column, otherwise
+//! `<table>_sql`, with the same slug and the same suffixing.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -488,6 +492,42 @@ fn slug(text: &str) -> String {
     out.trim_matches('_').to_string()
 }
 
+/// A name for a step made from typed SQL: `<table>_sql_by_<column>` when the
+/// statement turns on one column, `<table>_sql` otherwise, and a numeric suffix
+/// when the name is taken, in any case. A missing or empty table is `table`.
+/// The parts are slugged, so arc's step-name check admits the name.
+#[must_use]
+pub fn sql_step_name_for(
+    read_table: Option<&str>,
+    column: Option<&str>,
+    taken: &BTreeSet<String>,
+) -> String {
+    let table = match slug(read_table.unwrap_or("")) {
+        s if s.is_empty() => "table".to_string(),
+        s => s,
+    };
+    let base = match column.map(slug) {
+        Some(col) if !col.is_empty() => format!("{table}_sql_by_{col}"),
+        _ => format!("{table}_sql"),
+    };
+    free_name(base, taken)
+}
+
+/// `base`, or `base_2`, `base_3` and so on: the first the `taken` names do not
+/// hold. DuckDB's table names are not case-sensitive, so `HOUSE_AGE` is taken
+/// by a step named `house_age`.
+fn free_name(base: String, taken: &BTreeSet<String>) -> String {
+    let taken: BTreeSet<String> = taken.iter().map(|t| t.to_lowercase()).collect();
+    let free = |c: &String| !taken.contains(&c.to_lowercase());
+    if free(&base) {
+        return base;
+    }
+    (2..)
+        .map(|n| format!("{base}_{n}"))
+        .find(free)
+        .unwrap_or(base)
+}
+
 /// A name for a new step by its effect: `<root>_<word>_by_<column>` when a
 /// filter's condition names exactly one column or a sort has any (its first),
 /// `<root>_<word>` otherwise, and a
@@ -515,17 +555,7 @@ pub fn step_name_for(
         Some(col) if !col.is_empty() => format!("{root}_{}_by_{col}", operation.word()),
         _ => format!("{root}_{}", operation.word()),
     };
-    // DuckDB's table names are not case-sensitive, so `HOUSE_AGE` is taken by
-    // a step named `house_age`.
-    let taken: BTreeSet<String> = taken.iter().map(|t| t.to_lowercase()).collect();
-    let free = |c: &String| !taken.contains(&c.to_lowercase());
-    if free(&base) {
-        return base;
-    }
-    (2..)
-        .map(|n| format!("{base}_{n}"))
-        .find(free)
-        .unwrap_or(base)
+    free_name(base, taken)
 }
 
 #[cfg(test)]
