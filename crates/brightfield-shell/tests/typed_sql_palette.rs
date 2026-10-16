@@ -321,6 +321,19 @@ fn a_filter_of_the_loaded_table_says_how_many_rows_it_keeps() {
 }
 
 #[test]
+fn the_filter_row_names_the_loaded_table_as_it_loaded() {
+    let (mut win, _f) = Window::housing(&TempDir::new("spelling"));
+    win.key(egui::Key::Space);
+    win.type_text("select * from California_Housing where house_age > 28");
+    assert!(win.app.finish_typed_reads(Duration::from_secs(60)));
+    win.settle();
+    assert_eq!(
+        win.app.typed_said().as_deref(),
+        Some("filter-rows on california_housing \u{b7} 8,831 rows")
+    );
+}
+
+#[test]
 fn a_click_on_the_grid_beside_the_card_leaves_the_keys_with_the_statement() {
     let (mut win, _f) = Window::housing(&TempDir::new("click"));
     win.key(egui::Key::Space);

@@ -9,8 +9,11 @@
 //! ([`crate::overlays::is_statement`]): `selection` is a search, and `select*`
 //! is a statement. No key is added for it. The palette turns into the
 //! statement form, a card with no scrim that stands over the map pane and
-//! clear of the grid, where Enter adds a line, Cmd+Enter keeps and Esc closes
-//! and keeps nothing. This is the chart palette of a window whose Protocol
+//! clear of the grid; where the canvas drew one pane, as over a node's grid,
+//! it falls back to the trailing 40% of that pane, which covers the grid's
+//! trailing columns. Enter adds a line, Cmd+Enter keeps and Esc closes and
+//! keeps nothing. Opening another document closes it and drops what was
+//! typed. This is the chart palette of a window whose Protocol
 //! came from a data file; anywhere else the text stays a search.
 //!
 //! **The pause and the stop.** [`TypedReads`] holds the text being typed, the
@@ -36,13 +39,16 @@
 //!   the row under the query line says `filter-rows on <table> · <n> rows` and
 //!   the grid previews the condition with that count.
 //! - Any other statement is kept as a SQL step. While it is on the form the
-//!   row says `a SQL step` and the grid previews its first page under the
-//!   preview label; kept, it is laid out at the foot of the Protocol, its
+//!   row says `a SQL step`, or `replaces <name>` when it would correct the
+//!   held step, and the grid previews its first page under the preview
+//!   label; kept, it is laid out at the foot of the Protocol, its
 //!   table is brought to the front in the grid with the cursor on its first
 //!   cell, and its rows are counted on a worker. A palette opened over a kept
 //!   statement's grid holds that statement, selected: kept again, it corrects
 //!   the step in place under its name, unless it reads that step's own table,
-//!   which makes it the step after it.
+//!   which makes it the step after it. When Save or Run recorded the held
+//!   step while the form stood, the correction is kept as a step of its own
+//!   under a fresh name, since recorded SQL is not edited.
 //!
 //! **The name rule** ([`typed_step_name`]): `<table it reads>_sql_by_<column>`
 //! when the statement turns on one column, which is the single column of its
@@ -372,18 +378,13 @@ impl TypedReads {
         self.in_flight = None;
         match result {
             Ok(answer) => {
-                // An answer to other text than the line's leaves the line's
-                // refusal standing; any other refusal goes, so text refused
-                // before is read again when the line comes back to it
+                // `edit` stops the read of any text it leaves, so an answer is
+                // to the line's text, and a refusal of earlier text goes: that
+                // text is read again when the line comes back to it
                 // (`text_refused_before_is_read_again_after_other_text_answers`
                 // in `tests/typed_sql_reads.rs`).
-                let stands = self
-                    .refused
-                    .as_ref()
-                    .is_some_and(|(t, _)| *t == self.text && answer.text != self.text);
-                if !stands {
-                    self.refused = None;
-                }
+                debug_assert_eq!(answer.text, self.text);
+                self.refused = None;
                 self.shown = Some(answer);
             }
             Err(refused) => self.refused = Some(refused),

@@ -220,8 +220,9 @@ pub fn capture_png_staged(
     )
 }
 
-/// [`capture_png_prepared`] that waits, after each frame, until `ready` holds
-/// of the window before it draws the next frame of the script or settles.
+/// [`capture_png_staged`] with `ready` in place of `after`: it waits, after
+/// each frame, until `ready` holds of the window before it draws the next
+/// frame of the script or settles.
 ///
 /// For a capture whose picture is reached through work the window does on a
 /// worker: the read of a statement typed on the chart palette answers some

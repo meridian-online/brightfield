@@ -174,6 +174,13 @@ impl Window {
         self.settle();
     }
 
+    /// Select everything in the field that holds the keyboard, and erase it.
+    fn erase_all(&mut self) {
+        self.run(vec![press(egui::Key::A, egui::Modifiers::COMMAND)]);
+        self.run(vec![press(egui::Key::Backspace, egui::Modifiers::NONE)]);
+        self.settle();
+    }
+
     /// Keep `text` as a step: the palette on `space`, the text typed (over
     /// a held statement, which opens selected, it replaces it), its read
     /// finished, and Cmd+Enter.
@@ -488,11 +495,69 @@ fn opening_another_document_closes_the_form_and_drops_what_was_typed() {
     assert_eq!(win.app.typed_statement(), None);
     assert!(win.app.chart_doc().typed_steps().is_empty());
     assert!(!win.app.carries_unsaved_mark());
-    std::thread::sleep(Duration::from_secs(2));
-    win.settle();
-    assert!(win.app.chart_doc().typed_steps().is_empty());
-    assert!(
-        !win.app.carries_unsaved_mark(),
-        "a late count lands nothing"
+    assert_eq!(
+        win.app.typed_counts_pending(),
+        0,
+        "no count of the old file's steps is left to land"
     );
+}
+
+#[test]
+fn the_row_says_a_correction_replaces_the_held_step() {
+    let (mut win, _f) = Window::housing(&TempDir::new("replaces"));
+    win.keep(BY_AGE);
+    win.click_grid_under(STEP);
+    win.key(egui::Key::Space);
+    win.key(egui::Key::ArrowRight);
+    win.key(egui::Key::Enter);
+    win.type_text("having count(*) > 100");
+    assert!(win.app.finish_typed_reads(Duration::from_secs(60)));
+    win.settle();
+    assert_eq!(
+        win.app.typed_said(),
+        Some(format!("replaces {STEP}")),
+        "a correction names the step it takes the place of"
+    );
+    assert!(
+        win.drew(&format!("replaces {STEP}")),
+        "the card draws the row"
+    );
+    win.erase_all();
+    win.type_text(&format!("from {STEP} select house_age"));
+    assert!(win.app.finish_typed_reads(Duration::from_secs(60)));
+    win.settle();
+    assert_eq!(
+        win.app.typed_said().as_deref(),
+        Some("a SQL step"),
+        "a statement that reads the held step's table makes a step after it"
+    );
+}
+
+/// Recorded SQL is not edited, so a correction of a step Save recorded while
+/// its form stood is kept as a step of its own under a fresh name.
+#[test]
+fn a_correction_of_a_step_saved_meanwhile_is_kept_as_a_new_step() {
+    let (mut win, _f) = Window::housing(&TempDir::new("saved"));
+    win.keep(BY_AGE);
+    win.click_grid_under(STEP);
+    win.key(egui::Key::Space);
+    win.key(egui::Key::ArrowRight);
+    win.key(egui::Key::Enter);
+    win.type_text("having count(*) > 100");
+    assert!(win.app.finish_typed_reads(Duration::from_secs(60)));
+    let ctx = win.ctx.clone();
+    assert!(matches!(win.app.save_protocol(&ctx), Some(Ok(_))));
+    win.settle();
+    assert!(
+        win.app.chart_doc().typed_steps().is_empty(),
+        "Save recorded it"
+    );
+    assert!(win.app.finish_typed_reads(Duration::from_secs(60)));
+    win.settle();
+    assert_eq!(win.app.typed_said().as_deref(), Some("a SQL step"));
+    win.cmd_enter();
+    let steps = win.app.chart_doc().typed_steps();
+    assert_eq!(steps.len(), 1, "the correction was kept");
+    assert_eq!(steps[0].name, format!("{STEP}_2"));
+    assert!(steps[0].statement.ends_with("having count(*) > 100"));
 }

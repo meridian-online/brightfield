@@ -283,6 +283,11 @@ impl ProtocolInputs {
     /// The ids the record's measurements are keyed on are the ones the
     /// declaration's graph uses — both spell a table `asset.<protocol>.<name>`.
     ///
+    /// **A typed step keeps its declaration row.** A statement kept from the
+    /// palette and not yet saved is in no manifest a run read, so the record
+    /// is matched against the steps less the typed ones, and the Steps sheet
+    /// lists each typed step's declaration row after the record's rows.
+    ///
     /// **A record of different steps is refused**, and the document is left as
     /// it was. A record under a Protocol's directory can predate an edit to the
     /// spec — a step renamed, or a hand-written manifest of more steps that has

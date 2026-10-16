@@ -29,6 +29,9 @@ pub enum TypedSaid {
     },
     /// Keeping the statement would make a step of its own.
     SqlStep,
+    /// Keeping the statement would take the place of the held step, under
+    /// this, its name.
+    Replaces(String),
     /// The statement as it stands was refused, for this reason.
     Refused(String),
 }
@@ -45,6 +48,7 @@ impl TypedSaid {
             } => format!("filter-rows on {table} \u{b7} {} rows", thousands(*rows)),
             Self::Filter { table, rows: None } => format!("filter-rows on {table}"),
             Self::SqlStep => "a SQL step".to_string(),
+            Self::Replaces(name) => format!("replaces {name}"),
             Self::Refused(reason) => reason.clone(),
         }
     }
@@ -248,6 +252,10 @@ mod tests {
         );
         assert_eq!(filter(None).line(), "filter-rows on california_housing");
         assert_eq!(TypedSaid::SqlStep.line(), "a SQL step");
+        assert_eq!(
+            TypedSaid::Replaces("california_housing_sql".to_string()).line(),
+            "replaces california_housing_sql"
+        );
         assert_eq!(
             TypedSaid::Refused("Parser Error: syntax error".to_string()).line(),
             "Parser Error: syntax error"

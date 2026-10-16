@@ -465,7 +465,7 @@ fn a_typed_filter_records_the_same_step_as_the_filter_key() {
     assert_eq!(
         win.grid_rows(),
         8_831,
-        "the grid's count changes before Cmd+Enter"
+        "the grid does not preview the filter's count before Cmd+Enter"
     );
     win.cmd_enter();
     assert_eq!(win.app.open_overlay(), None, "the filter was not kept");

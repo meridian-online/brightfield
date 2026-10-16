@@ -6638,7 +6638,7 @@ impl MeridianApp {
             }
             Overlay::Statement(card) => {
                 let room = self.typed_card_room(ctx);
-                let said = self.typed_said_now();
+                let said = self.typed_said_now(card.replacing());
                 let before = card.text().to_owned();
                 let event = card.show(ctx, room, said.as_ref());
                 if let Some(typed) = self.typed.as_mut() {
@@ -6848,8 +6848,12 @@ impl MeridianApp {
     /// What the row under the statement says now: DuckDB's reason when the
     /// text as it stands was refused; otherwise, once it has been read, the
     /// filter it would be when arc reads it as a filter of the loaded table,
-    /// and a step of its own when not. Nothing while it is being read.
-    fn typed_said_now(&self) -> Option<TypedSaid> {
+    /// the held step it would take the place of, and a step of its own when
+    /// neither. Nothing while it is being read.
+    /// `replacing` is the held step the form opened over, when there is one;
+    /// the form is out of the overlay slot while it is drawn, so it is handed
+    /// in.
+    fn typed_said_now(&self, replacing: Option<&str>) -> Option<TypedSaid> {
         use crate::operation::Recognised;
         let typed = self.typed.as_ref()?;
         if let Some(reason) = typed.refusal() {
@@ -6857,13 +6861,20 @@ impl MeridianApp {
         }
         let answer = typed.current()?;
         Some(match &answer.recognised {
-            Recognised::FilterRows { on, .. } if self.typed_where(answer).is_some() => {
+            Recognised::FilterRows { .. } if self.typed_where(answer).is_some() => {
                 TypedSaid::Filter {
-                    table: on.clone(),
+                    table: self.protocol.doc.model.source()?.name.clone(),
                     rows: answer.filter_rows,
                 }
             }
-            _ => TypedSaid::SqlStep,
+            _ => {
+                let name = self.kept_name(answer, replacing);
+                if replacing == Some(name.as_str()) {
+                    TypedSaid::Replaces(name)
+                } else {
+                    TypedSaid::SqlStep
+                }
+            }
         })
     }
 
@@ -6929,11 +6940,27 @@ impl MeridianApp {
     }
 
     /// The name a statement answered by `answer` is kept as: the name of the
-    /// kept statement it takes the place of, `replacing`, unless it reads that
-    /// statement's own table, which makes it a step after it; otherwise a
+    /// kept statement it takes the place of, `replacing`, while that is still
+    /// kept and unless it reads that statement's own table, which makes it a
+    /// step after it; otherwise a
     /// name of its own ([`typed_step_name`]) that no step of the Protocol has.
     fn kept_name(&self, answer: &TypedAnswer, replacing: Option<&str>) -> String {
-        if let Some(name) = replacing.filter(|name| !reads_table(answer, name)) {
+        // A held step Save or Run recorded while the form stood is no longer
+        // kept, and recorded SQL is not edited, so the correction takes a
+        // name of its own
+        // (`a_correction_of_a_step_saved_meanwhile_is_kept_as_a_new_step` in
+        // `tests/typed_sql_keep.rs`).
+        let still_kept = |name: &&str| {
+            self.charts
+                .doc
+                .typed_steps()
+                .iter()
+                .any(|step| step.name == *name)
+        };
+        if let Some(name) = replacing
+            .filter(still_kept)
+            .filter(|name| !reads_table(answer, name))
+        {
             return name.to_owned();
         }
         let model = &self.protocol.doc.model;
@@ -7331,8 +7358,11 @@ impl MeridianApp {
     /// hook.
     #[must_use]
     pub fn typed_said(&self) -> Option<String> {
-        self.typed_statement()?;
-        self.typed_said_now().map(|said| said.line())
+        let Some(Overlay::Statement(card)) = self.overlay.as_ref() else {
+            return None;
+        };
+        self.typed_said_now(card.replacing())
+            .map(|said| said.line())
     }
 
     /// Where the statement form was drawn on the last frame, while it is open
@@ -7351,6 +7381,13 @@ impl MeridianApp {
     #[must_use]
     pub fn typed_reads_superseded(&self) -> Option<usize> {
         self.typed.as_ref().map(TypedReads::superseded)
+    }
+
+    /// How many counts of kept statements' rows are under way — a test hook.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn typed_counts_pending(&self) -> usize {
+        self.typed_counts.len()
     }
 
     /// Read a statement once it has rested for `pause` in place of
