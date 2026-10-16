@@ -101,6 +101,9 @@ hconcat:
         x: tier
         y: method
         fill: { count: }
+      # The shell draws a colour legend only where a plot declares one, so
+      # without this item the grid's colours count nothing a reader can see.
+      - legend: color
     title: What that bought, by how the link was made
     width: 380
     height: 340
