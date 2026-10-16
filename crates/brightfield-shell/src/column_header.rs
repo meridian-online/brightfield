@@ -639,9 +639,10 @@ pub fn format_statistic(v: f64) -> String {
 /// as its digits: `52` where a count of years or rooms is stored as a double,
 /// not `52.00`. Below a thousand, a value that only rounds to a whole number
 /// keeps its two places, so `10.00` still says the stored value is not exactly
-/// ten. From a thousand up the statistic's rule rounds every value to a
-/// separated whole number, so `1,000` may stand for `1000.4`; the cell keeps
-/// the stored text for the status band to show.
+/// ten. From a thousand up to a billion the statistic's rule rounds each value
+/// to a separated whole number, so `1,000` may stand for `1000.4`, and above
+/// that it prints an exponent; the cell keeps the stored text for the status
+/// band to show.
 #[must_use]
 pub fn format_value(v: f64) -> String {
     if v.is_finite() && v.fract() == 0.0 && v.abs() < 1000.0 {
