@@ -346,8 +346,8 @@ pub fn preview_row_count_stoppable(
 
 /// Loads `data`, shuts and locks the connection, makes each step of `chain`
 /// as a table, and hands `read` the connection, the last table's name and the
-/// map from a DuckDB error to a refusal, all under one watch of `deadline`
-/// and `stop`.
+/// map from a DuckDB error to a refusal. One watch of `deadline` and `stop`
+/// covers the load, the steps and `read`.
 #[allow(clippy::too_many_arguments)]
 fn with_chain<T>(
     data: &Path,
