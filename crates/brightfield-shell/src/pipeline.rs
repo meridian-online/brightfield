@@ -2747,6 +2747,7 @@ fn compose_from_results(
                     // the parser could not, having no value to judge.
                     let mut found = param_held_axis_warnings(node, &spec.params);
                     found.extend(param_held_colour_warnings(node, &spec.params));
+                    found.extend(repeated_colours(&scales, &colour_override));
                     found.extend(crossed_tick_formats(node, spec, &tick_formats, &scales));
                     found.extend(inert_axis_instructions(
                         &plot_label(&plot.path, node),
@@ -2925,6 +2926,31 @@ fn compose_from_results(
         // already fetched, and has no session to query.
         rows: None,
     })
+}
+
+/// The note a plot owes when its categorical colour scale has more categories
+/// than the palette has colours: the scale starts the palette again, so two
+/// categories wear one colour. A plot that writes its own `colorRange` chose its
+/// colours and is owed none. Fill and stroke are judged alike, and a plot that
+/// colours both over the same categories gets the one note, as the caller keeps
+/// a warning once.
+fn repeated_colours(scales: &ScaleSet, written: &ColourOverride) -> Vec<ParseWarning> {
+    if written.range.is_some() {
+        return Vec::new();
+    }
+    [Channel::Fill, Channel::Stroke]
+        .into_iter()
+        .filter_map(|channel| match scales.get(channel)? {
+            Scale::Colour {
+                categories,
+                palette,
+            } if categories.len() > palette.len() => Some(ParseWarning::ColoursRepeat {
+                categories: categories.len(),
+                palette: palette.len(),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The warnings for a plot's tick formats that sit on an axis of the other kind:

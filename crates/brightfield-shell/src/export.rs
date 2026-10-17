@@ -269,6 +269,14 @@ fn lines(file: &Path, problems: &[PanelProblem]) -> Vec<String> {
         .collect()
 }
 
+/// Say on stderr, as a problem is said, that the panel's colours repeat. A
+/// warning, not a failure: the export still draws and exits 0.
+fn warn_colours_repeat(file: &Path, composed: &crate::pipeline::Composed) {
+    if let Some(note) = composed.diagnostics.colours_repeat() {
+        eprintln!("{}: {note}", file.display());
+    }
+}
+
 fn panel_stem(file: &Path) -> String {
     file.file_stem()
         .map_or_else(String::new, |s| s.to_string_lossy().into_owned())
@@ -308,6 +316,7 @@ fn export_png(
         },
         Path::to_path_buf,
     );
+    warn_colours_repeat(&file, &composed);
     let image = render_composed(composed, scale).map_err(|e| vec![e])?;
     make_parent(&path)?;
     image.save(&path).map_err(|e| write_problem(&path, &e))?;

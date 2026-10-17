@@ -269,6 +269,48 @@ fn the_co2_protocol_opens_as_two_tiles() {
 }
 
 #[test]
+fn the_line_tile_says_its_colours_repeat_and_the_bar_tile_does_not() {
+    let ran = ran_fixture(CO2);
+    let win = Window::over(open(&ran.dir));
+    let note = "9 series share 8 colours, so colours repeat";
+    assert!(win.drew(note), "no note in {:?}", win.texts);
+    assert_eq!(
+        win.texts
+            .iter()
+            .filter(|t| t.contains("colours repeat"))
+            .count(),
+        1,
+        "the bar tile draws no note: {:?}",
+        win.texts
+    );
+    let drawn = win.app.panel_tiles().expect("tiles").drawn();
+    let line = drawn
+        .iter()
+        .find(|t| t.file != Path::new(CHANGE))
+        .expect("the line tile");
+    let at = win.text_at(
+        win.texts
+            .iter()
+            .find(|t| t.contains("colours repeat"))
+            .expect("the note"),
+    );
+    assert!(
+        at.top() >= line.body.top() - 1.0 && at.bottom() <= line.body.top() + 40.0,
+        "the note stands at the top of the tile's body: {at:?} in {:?}",
+        line.body
+    );
+    // Beneath the note, not over the chart: the composed chart leaves its band.
+    let composed = win.panels().tiles[win.tile_index(&line.file.to_string_lossy())]
+        .outcome
+        .as_ref()
+        .expect("the line tile draws");
+    assert!(
+        line.body.top() + composed.height as f32 + 30.0 <= line.body.bottom() + 1.0,
+        "the chart fits under the note"
+    );
+}
+
+#[test]
 fn a_broken_tile_shows_its_message() {
     let ran = ran_fixture(CO2);
     edit(&ran.dir.join(CHANGE), "x: change_pct", "x: change_percent");

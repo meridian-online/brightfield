@@ -880,6 +880,20 @@ pub enum ParseWarning {
         /// The data source that has a column by that name.
         source: String,
     },
+
+    /// A plot's categorical colour scale has more categories than the palette
+    /// has colours, so the scale starts the palette again and two categories
+    /// wear one colour; only the legend tells them apart.
+    ///
+    /// Raised by composition, which is where the categories the data holds are
+    /// known. Not raised when the plot writes its own `colorRange`: those colours
+    /// are the author's choice.
+    ColoursRepeat {
+        /// How many categories the colour scale has.
+        categories: usize,
+        /// How many colours the palette has.
+        palette: usize,
+    },
 }
 
 impl fmt::Display for ParseWarning {
@@ -1131,6 +1145,14 @@ impl fmt::Display for ParseWarning {
                  read as a colour constant, the same as Mosaic, so each bin counts every row in \
                  it rather than splitting by `{name}`. Brightfield cannot group a binned rect \
                  yet, so that split is not available from this spec"
+            ),
+            Self::ColoursRepeat {
+                categories,
+                palette,
+            } => write!(
+                f,
+                "{categories} series share {palette} colours, so colours repeat; highlight the \
+                 series that matter, fold the rest into \"Other\", or split the chart"
             ),
         }
     }

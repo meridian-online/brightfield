@@ -67,6 +67,32 @@ fn png_of_a_panel() {
 }
 
 #[test]
+fn png_of_a_panel_whose_colours_repeat_warns_and_still_succeeds() {
+    let ran = ran_fixture("co2-per-capita");
+    let out = export(&["export-png", path_arg(&ran.dir), LINE]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(&format!(
+            "panels/{LINE}.yaml: 9 series share 8 colours, so colours repeat; "
+        )),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn png_of_a_panel_that_fits_the_palette_says_nothing() {
+    let ran = ran_fixture("co2-per-capita");
+    let out = export(&[
+        "export-png",
+        path_arg(&ran.dir),
+        "co2_per_capita_change_pct",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stderr(&out), "");
+}
+
+#[test]
 fn png_takes_a_scale_and_an_out_path() {
     let ran = ran_fixture("co2-per-capita");
     let to = ran.dir.join("elsewhere").join("one.png");

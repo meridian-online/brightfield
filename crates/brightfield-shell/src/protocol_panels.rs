@@ -458,7 +458,13 @@ pub fn strip_protocol_tables(text: &str, injected: &[String]) -> String {
     serde_yaml::to_string(&doc).unwrap_or_else(|_| text.to_string())
 }
 
-/// Compose one panel that arc's check found nothing wrong with.
+/// The height a tile gives the note that its colours repeat, above the chart:
+/// two lines of the interface text in a tile at its narrowest.
+pub const REPEAT_NOTE_HEIGHT: f64 = 36.0;
+
+/// Compose one panel that arc's check found nothing wrong with. A panel whose
+/// colours repeat is composed again into what is left under the note the tile
+/// draws, so the note covers none of the chart.
 fn compose_tile(
     source: &str,
     dir: &Path,
@@ -479,7 +485,17 @@ fn compose_tile(
     if !blocking.is_empty() {
         return Err(PanelProblem::Unsupported(blocking));
     }
-    compose_spec_str_in(&text, Some(dir), viewport, mode).map_err(PanelProblem::Failed)
+    let composed =
+        compose_spec_str_in(&text, Some(dir), viewport, mode).map_err(PanelProblem::Failed)?;
+    if composed.diagnostics.colours_repeat().is_some() && viewport.height > REPEAT_NOTE_HEIGHT {
+        let below_note = Rect {
+            height: viewport.height - REPEAT_NOTE_HEIGHT,
+            ..viewport
+        };
+        return compose_spec_str_in(&text, Some(dir), below_note, mode)
+            .map_err(PanelProblem::Failed);
+    }
+    Ok(composed)
 }
 
 /// Every `panels/*.yaml` file of the Protocol in `dir`, sorted: the files arc's
