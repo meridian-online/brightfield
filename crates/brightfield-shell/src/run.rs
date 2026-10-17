@@ -303,8 +303,8 @@ impl Run {
 }
 
 /// The child that is `arc` run with `args` in `dir`: this binary under
-/// [`RUNNER_ENV`], colour off, no stdin, and the staged engine when one sits
-/// beside `program`.
+/// [`RUNNER_ENV`], colour off, no stdin, its history recorded under the way
+/// `brightfield`, and the staged engine when one sits beside `program`.
 fn arc_command(program: &Path, dir: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(program);
     command
@@ -312,6 +312,7 @@ fn arc_command(program: &Path, dir: &Path, args: &[&str]) -> Command {
         .current_dir(dir)
         .env(RUNNER_ENV, "1")
         .env("NO_COLOR", "1")
+        .env(arc::spec::HISTORY_WAY_ENV, "brightfield")
         .stdin(Stdio::null());
     if let Some(engine) = staged_engine_beside(program) {
         command.env(ENGINE_ENV, engine);

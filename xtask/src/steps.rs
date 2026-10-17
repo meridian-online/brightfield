@@ -662,7 +662,7 @@ fn sibling_manifests(ctx: &Ctx) -> Result<(), String> {
     );
     let mut failures = Vec::new();
     if !status.success() {
-        let message = format!("cargo test exited {status}: the failure above names the manifest and quotes arc's own diagnostic. Bump the pin: README section \"The arcform dependency\" (the arc rev, the root [patch.crates-io] sqlparser rev, and Cargo.lock, in one commit)");
+        let message = format!("cargo test exited {status}: the failure above names the manifest and quotes arc's own diagnostic. Bump the pin: README section \"The arcform dependency\" (the arc rev and Cargo.lock, in one commit)");
         report_error("the pinned arc cannot load a shipped Protocol", &message);
         failures.push("the pinned arc cannot load a shipped Protocol".to_owned());
     }

@@ -246,23 +246,17 @@ the caller's argv, so it is switched off). `brightfield-protocol` and `brightfie
 both inherit that one entry; the shell adds the `cli` feature to run a Protocol as a child
 process. Treat every bump as potentially breaking and move deliberately.
 
-**The sqlparser patch mirror — do not skip this.** arc parses SQL with a **vendored fork of
-sqlparser 0.55** (`vendor/sqlparser-0.55.0` in the arcform repo), wired up there via
-`[patch.crates-io]`. Cargo patch tables **do not propagate through dependencies**, so this
-workspace's root `Cargo.toml` carries the same patch itself — in **git form**, pointing at
-the same repo and rev as the arc pin, so a bare CI checkout (no sibling `../arcform`)
-resolves it. A path-form patch into a sibling checkout works locally and breaks CI. The
-patch's package version is 0.55.0, so it applies only to arc's requirement; the workspace's
-own newer `sqlparser` keeps coming from crates.io.
+**The sqlparser fork.** arc parses SQL with its own fork of sqlparser 0.55, which arcform publishes as `arcform-sqlparser`, so arc resolves it from crates.io and this workspace carries no `[patch.crates-io]` for it. The workspace's own newer `sqlparser` keeps coming from crates.io too. The upstream package is named `arcform`; the root entry says `package = "arcform"` so the crate stays `arc` in this workspace's source.
 
-**To bump the pin**, move three things in lockstep, in one commit:
+**To bump the pin**, move two things in lockstep, in one commit:
 
 1. the `rev` on `arc` in the root `[workspace.dependencies]`;
-2. the `rev` on `sqlparser` in the root `[patch.crates-io]` (same sha);
-3. `Cargo.lock` — run a build, and if the resolver pulls a transitive dep above the CI
+2. `Cargo.lock` — run a build, and if the resolver pulls a transitive dep above the CI
    toolchain pin (`tree-sitter-iter` has done this: arc pins `yamlpath = "=1.27.0"`, but a
    fresh resolve can still float its deps), pin it back with
    `cargo update <crate>@<ver> --precise <ok-ver>`.
+
+arc pins `duckdb` exactly, so a bump that moves arc's DuckDB moves the workspace `duckdb` pin and the CLI pin in `scripts/fetch-duckdb-cli.sh` with it.
 
 **What tells you the pin has gone stale.** Not a person. The pin drifted three weeks behind
 arcform's operator catalog once, and the first signal was somebody opening a shipped Protocol
