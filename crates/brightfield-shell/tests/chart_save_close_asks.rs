@@ -96,6 +96,42 @@ impl Drop for Restore {
 }
 
 /// Every file under `dir`, path relative to it, with its bytes.
+/// The log arc keeps beside the Protocol, which records every version it
+/// stores: the one file a close without saving adds to.
+const LOG: &str = "arcform-log.txt";
+
+/// What a close without saving leaves in `folder`: every file but the log as
+/// it was in `before`, and the log one line longer than `logged`, that line an
+/// `unsaved` version of the chart file `chart` (relative to the folder).
+fn assert_only_an_unsaved_version_was_logged(
+    folder: &Path,
+    before: &BTreeMap<String, Vec<u8>>,
+    after: &BTreeMap<String, Vec<u8>>,
+    logged: &[arc::spec::LogLine],
+    chart: &str,
+) {
+    let without_log = |files: &BTreeMap<String, Vec<u8>>| {
+        let mut files = files.clone();
+        files.remove(LOG);
+        files
+    };
+    assert_eq!(
+        without_log(after),
+        without_log(before),
+        "closing without saving changed a file other than the log"
+    );
+    let now = arc::spec::read_log(folder).expect("the log reads");
+    assert_eq!(now.len(), logged.len() + 1, "not one more line in the log");
+    assert_eq!(
+        &now[..logged.len()],
+        logged,
+        "a line already in the log changed"
+    );
+    let line = now.last().expect("a newest line");
+    assert_eq!(line.kind, "unsaved", "{line:?}");
+    assert_eq!(line.file, chart, "{line:?}");
+}
+
 fn snapshot(dir: &Path) -> BTreeMap<String, Vec<u8>> {
     fn walk(dir: &Path, base: &Path, into: &mut BTreeMap<String, Vec<u8>>) {
         for entry in std::fs::read_dir(dir).expect("a readable folder").flatten() {
@@ -500,9 +536,10 @@ fn save_writes_the_chart_as_the_save_verb_does_and_closes() {
 // AC3 — close without saving
 // ---------------------------------------------------------------------------
 
-/// **AC3.** Close without saving closes the window and writes nothing in the data folder: the chart
-/// file and `arcform.yaml`, both there from an earlier Save, are byte-identical,
-/// and no file was added. The close it sends is not asked about again, though
+/// **AC3.** Close without saving closes the window and writes nothing of its
+/// own in the data folder: the chart file and `arcform.yaml`, both there from
+/// an earlier Save, are byte-identical, and no file was added. arc's log gains
+/// the one line it writes for the unsaved version the close keeps. The close it sends is not asked about again, though
 /// the edit is still pending when it comes back.
 #[test]
 fn close_without_saving_closes_and_leaves_the_files_byte_identical() {
@@ -512,6 +549,7 @@ fn close_without_saving_closes_and_leaves_the_files_byte_identical() {
     // A second edit, unsaved: the window carries the mark again.
     session.throw("median_income", ScaleType::Log);
     let before = snapshot(&session.folder);
+    let logged = arc::spec::read_log(&session.folder).expect("the log reads");
     session.take_sent();
 
     session.request_close();
@@ -522,10 +560,13 @@ fn close_without_saving_closes_and_leaves_the_files_byte_identical() {
         session.sent.close,
         "closing without saving did not close the window"
     );
-    assert_eq!(
-        snapshot(&session.folder),
-        before,
-        "closing without saving changed what is on disk"
+    let after = snapshot(&session.folder);
+    assert_only_an_unsaved_version_was_logged(
+        &session.folder,
+        &before,
+        &after,
+        &logged,
+        &format!("panels/{CHART_FILE}"),
     );
     assert!(
         session.carries_mark(),
@@ -536,7 +577,7 @@ fn close_without_saving_closes_and_leaves_the_files_byte_identical() {
         !back.cancel_close && session.app.open_overlay().is_none(),
         "the close it asked for was asked about again: {back:?}"
     );
-    assert_eq!(snapshot(&session.folder), before);
+    assert_eq!(snapshot(&session.folder), after, "the close fed back wrote");
 }
 
 /// **AC3, before any Save.** With no chart file and no `arcform.yaml` yet,

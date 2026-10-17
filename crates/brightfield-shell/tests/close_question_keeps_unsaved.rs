@@ -109,6 +109,42 @@ enum Store {
 }
 
 /// Every file under `dir`, path relative to it, with its bytes.
+/// The log arc keeps beside the Protocol, which records every version it
+/// stores: the one file a close without saving adds to.
+const LOG: &str = "arcform-log.txt";
+
+/// What a close without saving leaves in `folder`: every file but the log as
+/// it was in `before`, and the log one line longer than `logged`, that line an
+/// `unsaved` version of the chart file `chart` (relative to the folder).
+fn assert_only_an_unsaved_version_was_logged(
+    folder: &Path,
+    before: &BTreeMap<String, Vec<u8>>,
+    after: &BTreeMap<String, Vec<u8>>,
+    logged: &[arc::spec::LogLine],
+    chart: &str,
+) {
+    let without_log = |files: &BTreeMap<String, Vec<u8>>| {
+        let mut files = files.clone();
+        files.remove(LOG);
+        files
+    };
+    assert_eq!(
+        without_log(after),
+        without_log(before),
+        "closing without saving changed a file other than the log"
+    );
+    let now = arc::spec::read_log(folder).expect("the log reads");
+    assert_eq!(now.len(), logged.len() + 1, "not one more line in the log");
+    assert_eq!(
+        &now[..logged.len()],
+        logged,
+        "a line already in the log changed"
+    );
+    let line = now.last().expect("a newest line");
+    assert_eq!(line.kind, "unsaved", "{line:?}");
+    assert_eq!(line.file, chart, "{line:?}");
+}
+
 fn files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
     fn walk(dir: &Path, base: &Path, into: &mut BTreeMap<String, Vec<u8>>) {
         for entry in std::fs::read_dir(dir).expect("a readable folder").flatten() {
@@ -644,7 +680,8 @@ fn d_closes_without_saving_and_esc_keeps_editing() {
 // ---------------------------------------------------------------------------
 
 /// **AC3.** *Close without saving* closes the window and leaves the chart file
-/// and `arcform.yaml` byte-identical; the chart file's versions list one more,
+/// and `arcform.yaml` byte-identical, with one `unsaved` line added to arc's
+/// log; the chart file's versions list one more,
 /// the newest, of the unsaved kind, and its text is what Save would have
 /// written from the same window.
 #[test]
@@ -656,16 +693,19 @@ fn close_without_saving_leaves_the_files_and_records_what_save_would_write() {
     assert!(on_disk.contains_key(&format!("panels/{CHART_FILE}")));
     assert!(on_disk.contains_key("arcform.yaml"));
     let before = s.entries();
+    let logged = arc::spec::read_log(&s.folder).expect("the log reads");
     s.request_close();
     s.forget_sent();
 
     s.answer("Close without saving");
 
     assert!(s.closed, "the window did not close");
-    assert_eq!(
-        files(&s.folder),
-        on_disk,
-        "a file in the data folder was written"
+    assert_only_an_unsaved_version_was_logged(
+        &s.folder,
+        &on_disk,
+        &files(&s.folder),
+        &logged,
+        CHART_NAMED,
     );
     let after = s.entries();
     assert_eq!(after.len(), before.len() + 1, "not one more version");
