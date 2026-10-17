@@ -55,6 +55,9 @@
 //! - [`one_step`] — the Protocol a data file opens as: one SQL step reading
 //!   the file, the table it produces, and the columns the rails list under it.
 //!   The spec brightfield writes, and never a run record.
+//! - [`protocol_panels`] — an arc Protocol's `panels/*.yaml`, each composed
+//!   against a Parquet snapshot of the tables it reads, one outcome per tile,
+//!   without holding the Protocol's database open.
 //! - [`run`] — the ledger strip's Run control underneath: `arc` running that
 //!   Protocol in a child process of this binary, on a worker, and the run
 //!   records it leaves beside the spec, read back newest first.
@@ -104,6 +107,7 @@ pub mod operation_panel;
 pub mod overlays;
 pub mod pipeline;
 pub mod protocol;
+pub mod protocol_panels;
 pub mod ranked_bars;
 pub mod remote;
 pub mod resample;

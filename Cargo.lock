@@ -711,6 +711,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "tempfile",
  "ureq 2.12.1",
  "vello",
 ]
