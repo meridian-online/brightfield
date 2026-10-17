@@ -43,6 +43,10 @@
 //! Usage: `brightfield-shell [FILE] [--theme light|dark] [--shot-out PATH]
 //!         [--shot-after N] [--force-sample N] [--flow vertical|horizontal]
 //!         [--help] [--version]`
+//!
+//! Exports, with no window: `brightfield-shell export-pdf <PROTOCOL> [--out PATH]`,
+//! `brightfield-shell export-png <PROTOCOL> <PANEL> [--out PATH] [--scale N]` and
+//! `brightfield-shell export-data <PROTOCOL> <PANEL> [--format csv|parquet] [--out PATH]`.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -152,8 +156,9 @@ Options:
 Exports (no window; <PROTOCOL> is a Protocol folder or its arcform.yaml, and
 <PANEL> is x, x.yaml or panels/x.yaml; each written path is printed, and the
 Protocol must have run):
-  export-pdf                      Every panel, one page each, to a PDF
-                                  (default: <PROTOCOL>/exports/<name>.pdf).
+  export-pdf                      The Protocol's report.md as a PDF, with each
+                                  panel its Charts section lists drawn in its
+                                  place (default: <PROTOCOL>/report.pdf).
   export-png                      One panel as a PNG (default:
                                   <PROTOCOL>/exports/<panel>.png, at --scale 2).
   export-data                     The rows a panel reads from the database, one

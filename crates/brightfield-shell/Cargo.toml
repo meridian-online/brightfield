@@ -137,8 +137,14 @@ ureq = "2"
 # `tempfile` 3 is already in Cargo.lock through egui_kittest.
 duckdb = { workspace = true, features = ["parquet"] }
 tempfile = "3"
+# Sets a Protocol's report.md as the PDF `export-pdf` writes, with the charts
+# this crate draws handed to it as pictures.
+brightfield-report = { path = "../brightfield-report" }
 
 [dev-dependencies]
+# Reads the PDF `export-pdf` writes back as text, as `brightfield-report`'s own
+# tests do; the same pinned release.
+pdf-extract = "=0.12.1"
 # Tier-1 real-UI snapshot loop: egui_kittest renders the real app headlessly on
 # wgpu and perceptually diffs against committed baselines (dify under the hood).
 egui_kittest = { version = "0.35", features = ["wgpu", "snapshot"] }
