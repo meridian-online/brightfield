@@ -1993,11 +1993,24 @@ impl ChartDoc {
         name: &str,
         history: Option<&HistoryStore>,
     ) -> Result<(), String> {
+        self.keep_unsaved_at(&panel_file(dir, name), history)
+    }
+
+    /// [`Self::keep_unsaved_beside`] for the panel file `panel`, wherever it
+    /// is: the close without saving of a Protocol's own panel opened from its
+    /// tile, kept as a version of that panel's file, which is the file
+    /// [`Self::save_chart_at`] records its versions against.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::keep_unsaved_beside`].
+    pub fn keep_unsaved_at(
+        &self,
+        panel: &std::path::Path,
+        history: Option<&HistoryStore>,
+    ) -> Result<(), String> {
         let store = history.ok_or_else(|| NO_STORE.to_string())?;
-        let Some(save) = self
-            .save_text(&panel_file(dir, name))
-            .map_err(|e| e.to_string())?
-        else {
+        let Some(save) = self.save_text(panel).map_err(|e| e.to_string())? else {
             return Ok(());
         };
         brightfield_protocol::record_unsaved(store, &save.target, &save.text)

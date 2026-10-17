@@ -66,14 +66,22 @@ impl ProtocolPanels {
         self.tables.path()
     }
 
-    /// Compose each tile that drew again, into `viewport` and in `mode`'s ink,
-    /// from the same snapshot: what a tile does when the box it is drawn in
-    /// changes, or the window's mode does. A tile holding problems keeps them,
-    /// and a tile that no longer composes holds why.
+    /// Compose each tile again, into `viewport` and in `mode`'s ink, from the
+    /// same snapshot: what a tile does when the box it is drawn in changes, or
+    /// the window's mode does. A tile whose problems came from Brightfield's
+    /// own composition is composed again too, so one that failed at one size
+    /// can draw at another. A tile holding arc's findings keeps them: those
+    /// are about the panel against the database, which a size cannot change.
     pub fn compose_tiles_at(&mut self, viewport: Rect, mode: Mode) {
         let tables = self.tables.path().to_path_buf();
         for tile in &mut self.tiles {
-            if tile.outcome.is_ok() {
+            let ours = match &tile.outcome {
+                Ok(_) => true,
+                Err(problems) => problems
+                    .iter()
+                    .all(|p| matches!(p, PanelProblem::Failed(_) | PanelProblem::Unsupported(_))),
+            };
+            if ours {
                 tile.outcome = compose_tile(&tile.source, &self.dir, &tables, viewport, mode)
                     .map_err(|p| vec![p]);
             }

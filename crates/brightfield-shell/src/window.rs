@@ -7556,6 +7556,16 @@ impl MeridianApp {
     /// Why it could not be kept: a window with no Protocol to keep the
     /// chart's versions beside, and [`ChartDoc::keep_unsaved_beside`]'s.
     fn keep_unsaved(&mut self) -> Result<(), String> {
+        // A Protocol's panel open from its tile is kept as a version of its
+        // own file, the file its Save records versions against.
+        if let Some(file) = self.open_tile_path() {
+            let kept = self
+                .charts
+                .doc
+                .keep_unsaved_at(&file, self.history.as_ref());
+            self.charts.doc.versions_mut().invalidate();
+            return kept;
+        }
         let Some(source) = self.protocol.doc.model.source() else {
             return Err(NO_PROTOCOL_TO_KEEP_BESIDE.to_string());
         };
@@ -9189,11 +9199,7 @@ impl MeridianApp {
     /// the snapshot's table entries the tile was drawn with; a version is
     /// recorded as for Brightfield's own chart file.
     fn save_panel_tile(&mut self, ctx: &egui::Context) -> Option<Result<PathBuf, String>> {
-        let file = {
-            let tiles = self.tiles.as_ref()?;
-            let panels = tiles.panels()?;
-            panels.dir.join(&panels.tiles.get(tiles.selected()?)?.file)
-        };
+        let file = self.open_tile_path()?;
         let saved = self.charts.doc.save_chart_at(&file, self.history.as_ref());
         let said = self.say_chart_saved(saved).map(|()| {
             let name = file.file_name().map_or_else(
@@ -9206,6 +9212,13 @@ impl MeridianApp {
         });
         ctx.request_repaint();
         Some(said)
+    }
+
+    /// The panel file of the tile open as the chart document, when one is.
+    fn open_tile_path(&self) -> Option<PathBuf> {
+        let tiles = self.tiles.as_ref()?;
+        let panels = tiles.panels()?;
+        Some(panels.dir.join(&panels.tiles.get(tiles.selected()?)?.file))
     }
 
     /// The window's hold on an arc Protocol's own panels, when it opened one —
@@ -9294,11 +9307,12 @@ impl MeridianApp {
     /// cadence. Not while a tile is open as the chart: its session reads the
     /// snapshot a reload would replace, so the reload waits for the way back.
     fn poll_panel_tiles(&mut self, ctx: &egui::Context) {
-        let Some(tiles) = self.tiles.as_mut() else {
+        // While a tile is open nothing is checked, so nothing is scheduled.
+        let Some(tiles) = self.tiles.as_mut().filter(|t| t.selected().is_none()) else {
             return;
         };
         ctx.request_repaint_after(crate::panel_tiles::RUN_CHECK_EVERY);
-        if tiles.selected().is_none() && tiles.reload_due() {
+        if tiles.reload_due() {
             tiles.reload();
             ctx.request_repaint();
         }

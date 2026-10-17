@@ -49,6 +49,11 @@ pub const TILE_GAP: f32 = spacing::SPACE_3;
 /// How often the Protocol's run records are looked at for a newer run.
 pub const RUN_CHECK_EVERY: Duration = Duration::from_millis(500);
 
+/// How often a Protocol whose database a run held is opened again while its
+/// run records stay as they were: the run's record lands as the run ends, and
+/// a new record is looked for at each [`RUN_CHECK_EVERY`] regardless.
+pub const LOCKED_RETRY_EVERY: Duration = Duration::from_secs(5);
+
 /// How long a changed cell size has to hold before the tiles are composed at
 /// it, so a window being dragged wider composes once, when the drag rests.
 const RESIZE_SETTLE: Duration = Duration::from_millis(150);
@@ -110,6 +115,8 @@ pub struct PanelTiles {
     drawn: Vec<TileDrawn>,
     run_mark: RunMark,
     last_check: Option<Instant>,
+    /// When the Protocol was last opened for its panels.
+    last_load: Instant,
 }
 
 impl PanelTiles {
@@ -150,6 +157,7 @@ impl PanelTiles {
             drawn: Vec::new(),
             run_mark,
             last_check: Some(Instant::now()),
+            last_load: Instant::now(),
         }
     }
 
@@ -197,18 +205,24 @@ impl PanelTiles {
 
     /// The raster slots the tiles hold, for the window's sweep to keep.
     pub fn raster_keys(&self) -> impl Iterator<Item = PaneKey> + '_ {
+        let drew = |i: usize| {
+            self.panels()
+                .and_then(|p| p.tiles.get(i))
+                .is_some_and(|t| t.outcome.is_ok())
+        };
         self.rasters
             .iter()
             .enumerate()
-            .filter(|(_, r)| r.is_some())
+            .filter(move |(i, r)| r.is_some() && drew(*i))
             .map(|(i, _)| tile_key(i))
     }
 
     /// Whether the Protocol's newest run is not the one the tiles were drawn
     /// from, looked at no more often than [`RUN_CHECK_EVERY`].
     ///
-    /// A Protocol the run held locked is tried again at each look, since its
-    /// record is written as the run ends and the listing may already hold it.
+    /// A Protocol the run held locked is tried again when the listing changes,
+    /// and otherwise once per [`LOCKED_RETRY_EVERY`]: the listing may already
+    /// have held the run's record when the run still held the database.
     pub fn reload_due(&mut self) -> bool {
         if self
             .last_check
@@ -217,11 +231,12 @@ impl PanelTiles {
             return false;
         }
         self.last_check = Some(Instant::now());
-        if matches!(self.state, Err(OpenProblem::Locked { .. })) {
-            return true;
-        }
         let mark = run_mark(&self.dir);
-        if mark == self.run_mark {
+        let changed = mark != self.run_mark;
+        if matches!(self.state, Err(OpenProblem::Locked { .. })) {
+            return changed || self.last_load.elapsed() >= LOCKED_RETRY_EVERY;
+        }
+        if !changed {
             return false;
         }
         self.run_mark = mark;
@@ -239,6 +254,9 @@ impl PanelTiles {
             .composed_at
             .unwrap_or((egui::vec2(MIN_TILE_WIDTH, MIN_TILE_HEIGHT), Mode::Light));
         self.state = load(&self.dir, viewport(body));
+        self.last_load = Instant::now();
+        // The rasters were of the tiles that were; the sweep frees their slots.
+        self.rasters.clear();
         if let Ok(panels) = &mut self.state {
             self.name = panels.name.clone();
             if mode != Mode::Light {
@@ -436,6 +454,11 @@ impl PanelTiles {
             }
             Err(problems) => {
                 problems_ui(&mut body_ui, tile.title.as_deref(), problems, mode);
+                // A tile that drew before and holds problems now gives its
+                // raster slot back.
+                if let Some(slot) = self.rasters.get_mut(index) {
+                    *slot = None;
+                }
                 None
             }
         }

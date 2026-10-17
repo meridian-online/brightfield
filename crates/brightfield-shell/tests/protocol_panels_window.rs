@@ -12,7 +12,7 @@ mod agent_protocol;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use agent_protocol::{copied_fixture_in, ran_fixture, run_protocol};
+use agent_protocol::{copied_fixture, copied_fixture_in, ran_fixture, run_protocol};
 use brightfield_protocol::layout::Flow;
 use brightfield_render::channel::Channel;
 use brightfield_render::Scale;
@@ -422,4 +422,101 @@ fn a_new_run_reloads_the_tiles() {
             );
         }
     }
+}
+
+/// A Protocol that has not run opens saying so, and its Run, taken through the
+/// window's own run path, lands as the tiles of the run it made.
+#[test]
+fn an_unrun_protocols_run_reloads_the_tiles() {
+    let copy = copied_fixture(CO2);
+    let boot = open(&copy.dir);
+    assert!(
+        boot.panels.is_none(),
+        "an unrun Protocol has no panels to load"
+    );
+    let mut win = Window::over(boot);
+    let tiles = win
+        .app
+        .panel_tiles()
+        .expect("the agent-panels route took it");
+    assert!(
+        matches!(
+            tiles.problem(),
+            Some(brightfield_shell::protocol_panels::OpenProblem::NotRun { .. })
+        ),
+        "{:?}",
+        tiles.problem()
+    );
+    assert!(win.drew("has not run"), "{:?}", win.texts);
+
+    assert!(win.app.run_protocol(&win.ctx), "the run started");
+    let deadline = Instant::now() + Duration::from_secs(180);
+    while win.app.panel_tiles().and_then(|t| t.panels()).is_none() {
+        assert!(Instant::now() < deadline, "the run never landed as tiles");
+        std::thread::sleep(Duration::from_millis(50));
+        win.run(Vec::new());
+    }
+    win.settle();
+    assert_eq!(win.panels().tiles.len(), 2);
+    assert!(win.panels().tiles.iter().all(|t| t.outcome.is_ok()));
+    assert_eq!(win.app.panel_tiles().unwrap().drawn().len(), 2);
+}
+
+/// Going back to every tile would drop an edit no file holds, so the window
+/// stays on the open tile and says why.
+#[test]
+fn going_back_is_refused_while_the_open_tile_has_unsaved_edits() {
+    let ran = ran_fixture(CO2);
+    let mut win = Window::over(open(&ran.dir));
+    let at = win.tile_index(CHANGE);
+    assert!(win.app.open_panel_tile(at));
+    win.settle();
+    let title = RowEdit {
+        channel: ShelfChannel::X,
+        row: TITLE_ROW,
+        value: SettingValue::Text("an unsaved title".to_owned()),
+    };
+    assert!(win.app.chart_doc_mut().set_axis_row(0, &title));
+    win.settle();
+
+    assert!(!win.app.back_to_panel_tiles(), "it went back over the edit");
+    win.settle();
+    assert_eq!(win.app.panel_tiles().unwrap().selected(), Some(at));
+    assert!(win.app.chart_doc().has_unsaved_work());
+    assert!(win.drew("All panels"), "the way back is still drawn");
+}
+
+/// A run that lands while a tile is open waits: the open tile's session reads
+/// the snapshot a reload would replace. Going back draws the newer run.
+#[test]
+fn a_reload_waits_for_the_way_back_from_an_open_tile() {
+    let ran = copied_fixture_in(CO2, CO2);
+    run_protocol(&ran.dir);
+    let mut win = Window::over(open(&ran.dir));
+    let first_run = win.panels().run_id.clone();
+    let at = win.tile_index(CHANGE);
+    assert!(win.app.open_panel_tile(at));
+    win.settle();
+
+    let model = ran.dir.join("models/03_co2_per_capita_change.sql");
+    let text = std::fs::read_to_string(&model).unwrap();
+    std::fs::write(&model, format!("{} LIMIT 3\n", text.trim_end())).unwrap();
+    run_protocol(&ran.dir);
+    // Past several checks' worth of frames.
+    let until = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+        win.run(Vec::new());
+    }
+    assert_eq!(
+        win.panels().run_id,
+        first_run,
+        "it reloaded under the open tile"
+    );
+    assert_eq!(win.app.panel_tiles().unwrap().selected(), Some(at));
+
+    assert!(win.app.back_to_panel_tiles());
+    win.settle();
+    assert_ne!(win.panels().run_id, first_run);
+    assert_eq!(bar_categories(win.panels()).len(), 3);
 }
