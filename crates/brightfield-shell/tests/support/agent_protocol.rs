@@ -14,8 +14,9 @@
 //! and writes the whole remote file over `out`. The fixture has neither, so a
 //! run with the step in place would download 13.7 MB and replace the cut file.
 //! [`copied_fixture`] therefore drops the `http_fetch` steps from the COPY's
-//! `arcform.yaml` (never the fixture's), and [`run_protocol`] asserts the data
-//! file is byte-identical after the run, which a fetch could not leave it.
+//! `arcform.yaml`, leaving the fixture's as committed, and [`run_protocol`]
+//! asserts the data file is byte-identical after the run, which a fetch could
+//! not leave it.
 //!
 //! **One store per test binary.** arc keys a Protocol's database by a hash of
 //! its folder, under `ARCFORM_DB_DIR`, and keeps history under
