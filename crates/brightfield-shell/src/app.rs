@@ -60,7 +60,7 @@ use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::nearest::{NearestProbe, NearestRead};
 use brightfield_engine::{AxisExtent, ColumnProfile, NavigationExtent};
 use brightfield_keys::BindingContext;
-use brightfield_model::panel_capture::{panel_file, write_panel_text};
+use brightfield_model::panel_capture::panel_file;
 use brightfield_protocol::{write_chart_edit, ChartVersions, HistoryStore, NotRecorded};
 use brightfield_render::canvas_host::{ChartSurface, Color, PixelSize};
 use brightfield_spec::analysis::ComponentPath;
@@ -685,6 +685,18 @@ struct SaveText {
     text: String,
 }
 
+/// Write `text` as the panel file `path`, creating its folder when it is not
+/// there, through [`save_spec_atomic`](brightfield_model::spec_save::save_spec_atomic):
+/// the bytes are `text`'s, and a file already holding them is left untouched.
+/// Answers the path written.
+fn write_chart_text(path: &std::path::Path, text: &str) -> std::io::Result<std::path::PathBuf> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    brightfield_model::spec_save::save_spec_atomic(text, path)?;
+    Ok(path.to_path_buf())
+}
+
 /// Why a close without saving keeps nothing in a window given no store to keep
 /// versions in, as the close question says it.
 pub const NO_STORE: &str = "this window keeps no versions of its chart";
@@ -1088,6 +1100,12 @@ pub struct ChartDoc {
     /// `None` for the shipped starts and the in-memory composes of the test
     /// and capture tiers, whose dashboards have no file behind them.
     pub spec_path: Option<std::path::PathBuf>,
+    /// The tables an arc Protocol's panel reads from the Protocol's database,
+    /// when this document is such a panel opened against a snapshot of them:
+    /// the `data:` entries [`with_protocol_tables`](crate::protocol_panels::with_protocol_tables)
+    /// added, which [`Self::save_chart_at`] takes out of what it writes. Empty
+    /// for every other document; cleared by [`ChartDoc::open`].
+    pub protocol_tables: Vec<String>,
     /// The work this document has in flight — engine queries mark themselves
     /// here, and the shell's one activity indicator reports from it. See
     /// `brightfield_workbench::activity` for why a synchronous query never
@@ -1334,6 +1352,7 @@ impl ChartDoc {
             ),
             authored: None,
             spec_path: None,
+            protocol_tables: Vec::new(),
             activity: ActivityLog::new(),
             watch: FileWatcher::new(),
             live: None,
@@ -1407,6 +1426,7 @@ impl ChartDoc {
             ),
             authored: None,
             spec_path: None,
+            protocol_tables: Vec::new(),
             activity: ActivityLog::new(),
             watch: FileWatcher::new(),
             live: None,
@@ -1484,6 +1504,7 @@ impl ChartDoc {
         self.nav_plot = 0;
         self.authored = None;
         self.spec_path = None;
+        self.protocol_tables.clear();
         // …and the columns described the replaced document's table.
         self.tile_columns = Vec::new();
         self.column_facts = std::rc::Rc::default();
@@ -1839,11 +1860,31 @@ impl ChartDoc {
         name: &str,
         history: Option<&HistoryStore>,
     ) -> Result<Option<NotRecorded>, ChartSaveError> {
+        self.save_chart_at(&panel_file(dir, name), history)
+    }
+
+    /// [`Self::save_chart_beside`] to the panel file `panel`, wherever it is:
+    /// the Save of an arc Protocol's own panel opened from its tile, which
+    /// writes that panel's file rather than Brightfield's one chart file.
+    ///
+    /// What is written is read and placed as [`Self::save_chart_beside`] says,
+    /// and then has the table entries [`Self::protocol_tables`] names taken out
+    /// ([`strip_protocol_tables`](crate::protocol_panels::strip_protocol_tables)),
+    /// so the snapshot a tile was drawn from never reaches the panel's file.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::save_chart_beside`].
+    pub fn save_chart_at(
+        &mut self,
+        panel: &std::path::Path,
+        history: Option<&HistoryStore>,
+    ) -> Result<Option<NotRecorded>, ChartSaveError> {
         let Some(SaveText {
             target,
             replaced,
             text: placed,
-        }) = self.save_text(dir, name)?
+        }) = self.save_text(panel)?
         else {
             return Ok(None);
         };
@@ -1853,8 +1894,8 @@ impl ChartDoc {
         let versions =
             history.map(|store| ChartVersions::begin(store, &target, replaced.as_deref()));
         let written =
-            write_panel_text(dir, name, &placed).map_err(|error| ChartSaveError::Write {
-                path: target,
+            write_chart_text(&target, &placed).map_err(|error| ChartSaveError::Write {
+                path: target.clone(),
                 error,
             })?;
         let not_recorded = versions.and_then(|versions| versions.finish(&placed).err());
@@ -1873,17 +1914,14 @@ impl ChartDoc {
         Ok(not_recorded)
     }
 
-    /// **What a Save of this document beside the Protocol in `dir` would
+    /// **What a Save of this document to the panel file `target` would
     /// write**, and the text on disk it would replace, read and placed as
-    /// [`Self::save_chart_beside`] reads and places them; this writes no file.
+    /// [`Self::save_chart_beside`] reads and places them, with
+    /// [`Self::protocol_tables`] taken out; this writes no file.
     /// `None` when a Save would write no file: no chart file, no text to place
     /// into, and no edit.
-    fn save_text(
-        &self,
-        dir: &std::path::Path,
-        name: &str,
-    ) -> Result<Option<SaveText>, ChartSaveError> {
-        let target = panel_file(dir, name);
+    fn save_text(&self, target: &std::path::Path) -> Result<Option<SaveText>, ChartSaveError> {
+        let target = target.to_path_buf();
         let (text, on_disk) = match std::fs::read_to_string(&target) {
             Ok(text) => (text, true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1923,6 +1961,9 @@ impl ChartDoc {
                     refusal,
                 })?;
         }
+        if !self.protocol_tables.is_empty() {
+            placed = crate::protocol_panels::strip_protocol_tables(&placed, &self.protocol_tables);
+        }
         Ok(Some(SaveText {
             target,
             replaced: on_disk.then_some(text),
@@ -1952,7 +1993,10 @@ impl ChartDoc {
         history: Option<&HistoryStore>,
     ) -> Result<(), String> {
         let store = history.ok_or_else(|| NO_STORE.to_string())?;
-        let Some(save) = self.save_text(dir, name).map_err(|e| e.to_string())? else {
+        let Some(save) = self
+            .save_text(&panel_file(dir, name))
+            .map_err(|e| e.to_string())?
+        else {
             return Ok(());
         };
         brightfield_protocol::record_unsaved(store, &save.target, &save.text)
@@ -3990,6 +4034,13 @@ impl ChartDoc {
     #[must_use]
     pub(crate) fn canvas_texture(&self) -> Option<egui::TextureId> {
         self.canvas.texture()
+    }
+
+    /// The device this document rasters on, when there is one: what a
+    /// Protocol's panel tiles raster into, each in a slot of its own, while
+    /// the canvas shows them rather than this document.
+    pub(crate) fn canvas_host(&mut self) -> Option<&mut EguiCanvasHost> {
+        self.canvas.host_mut()
     }
 
     /// Whether there is a dashboard to draw.

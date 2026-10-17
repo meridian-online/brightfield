@@ -970,8 +970,24 @@ pub fn compose_spec_str_at(
     base_dir: Option<&Path>,
     viewport: Rect,
 ) -> Result<Composed, String> {
+    compose_spec_str_in(source, base_dir, viewport, Mode::Light)
+}
+
+/// [`compose_spec_str_at`] with the ink resolved for `mode`, for a one-shot
+/// picture drawn in a window of either mode: the reason
+/// [`compose_spec_in_mode`] gives, over spec text.
+///
+/// # Errors
+///
+/// As [`compose_spec`].
+pub fn compose_spec_str_in(
+    source: &str,
+    base_dir: Option<&Path>,
+    viewport: Rect,
+    mode: Mode,
+) -> Result<Composed, String> {
     let parsed = parse_spec(source, Format::Yaml).map_err(|e| format!("parse error: {e}"))?;
-    compose(parsed, None, base_dir, None, viewport, Mode::Light)
+    compose(parsed, None, base_dir, None, viewport, mode)
 }
 
 /// The name a diagnostic cites for a spec loaded from a path: its file name,

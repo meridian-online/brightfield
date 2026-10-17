@@ -26,7 +26,8 @@ use brightfield_model::panel_capture::panel_file;
 use brightfield_spec::layout::Rect;
 use serde_yaml::{Mapping, Value};
 
-use crate::pipeline::{compose_spec_str_at, Composed};
+use crate::design::Mode;
+use crate::pipeline::{compose_spec_str_in, Composed, LiveDashboard};
 use crate::sql_ident::quote;
 
 /// The panels folder of a Protocol, relative to it.
@@ -63,6 +64,44 @@ impl ProtocolPanels {
     #[must_use]
     pub fn tables_dir(&self) -> &Path {
         self.tables.path()
+    }
+
+    /// Compose each tile that drew again, into `viewport` and in `mode`'s ink,
+    /// from the same snapshot: what a tile does when the box it is drawn in
+    /// changes, or the window's mode does. A tile holding problems keeps them,
+    /// and a tile that no longer composes holds why.
+    pub fn compose_tiles_at(&mut self, viewport: Rect, mode: Mode) {
+        let tables = self.tables.path().to_path_buf();
+        for tile in &mut self.tiles {
+            if tile.outcome.is_ok() {
+                tile.outcome = compose_tile(&tile.source, &self.dir, &tables, viewport, mode)
+                    .map_err(|p| vec![p]);
+            }
+        }
+    }
+
+    /// The tile at `index` as a live dashboard over the snapshot, with its
+    /// first picture: what opening a tile as the chart document draws, so a
+    /// brush, a click or an axis edit re-queries as on any chart.
+    ///
+    /// # Errors
+    ///
+    /// No tile at `index`, or the panel does not parse or load.
+    pub fn live_tile(&self, index: usize) -> Result<(LiveDashboard, Composed), String> {
+        let tile = self
+            .tiles
+            .get(index)
+            .ok_or_else(|| format!("the Protocol has no panel {index}"))?;
+        let text = with_protocol_tables(&tile.source, self.tables.path())?;
+        let parsed = brightfield_spec::parse_spec(&text, brightfield_spec::Format::Yaml)
+            .map_err(|e| format!("parse error: {e}"))?;
+        let name = tile
+            .file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned());
+        let mut live = LiveDashboard::load_parsed(parsed, name, Some(&self.dir))?;
+        let composed = live.present()?;
+        Ok((live, composed))
     }
 }
 
@@ -221,6 +260,12 @@ pub fn agent_panels_in(dir: &Path) -> bool {
         .any(|path| Some(&path) != own.as_ref())
 }
 
+/// How many panels the Protocol in `dir` holds: the tiles [`load`] makes for it.
+#[must_use]
+pub fn panel_count(dir: &Path) -> usize {
+    panel_paths(dir).len()
+}
+
 /// Open the Protocol in `dir` and compose each of its panels into `viewport`.
 ///
 /// A panel that cannot draw is a tile holding its problem; the others draw.
@@ -284,7 +329,8 @@ pub fn load(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenProblem> {
                 .ok()
                 .and_then(|panel| panel.get("title")?.as_str().map(str::to_string));
             let outcome = if findings.is_empty() {
-                compose_tile(&source, dir, tables.path(), viewport).map_err(|p| vec![p])
+                compose_tile(&source, dir, tables.path(), viewport, Mode::Light)
+                    .map_err(|p| vec![p])
             } else {
                 Err(findings.iter().map(PanelProblem::from_finding).collect())
             };
@@ -348,12 +394,69 @@ pub fn with_protocol_tables(panel: &str, tables_dir: &Path) -> Result<String, St
     serde_yaml::to_string(&doc).map_err(|e| format!("the panel could not be written back: {e}"))
 }
 
+/// The tables [`with_protocol_tables`] adds an entry for in `panel`: those its
+/// marks read that its own top-level `data:` does not define, as written.
+/// None when the panel is not YAML.
+#[must_use]
+pub fn protocol_tables(panel: &str) -> Vec<String> {
+    serde_yaml::from_str::<Value>(panel)
+        .map(|doc| database_tables(&doc).into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// `text` with the `data:` entries [`with_protocol_tables`] added for the
+/// tables named in `injected` taken out again, so a panel opened against the
+/// snapshot is saved as the panel it was.
+///
+/// An entry is taken out only when it is one [`with_protocol_tables`] writes:
+/// a table named in `injected` whose source is a mapping holding a `file:`
+/// naming a `.parquet` file and nothing else. A `data:` left empty by that is
+/// taken out too, since the panel read those tables from the database and
+/// declared no `data:` of its own. A text holding no such entry is handed back
+/// byte for byte; one that does is written back through YAML, as
+/// [`with_protocol_tables`] wrote it.
+#[must_use]
+pub fn strip_protocol_tables(text: &str, injected: &[String]) -> String {
+    let Ok(mut doc) = serde_yaml::from_str::<Value>(text) else {
+        return text.to_string();
+    };
+    let Some(top) = doc.as_mapping_mut() else {
+        return text.to_string();
+    };
+    let Some(data) = top.get_mut("data").and_then(Value::as_mapping_mut) else {
+        return text.to_string();
+    };
+    let ours = |source: &Value| {
+        source.as_mapping().is_some_and(|m| {
+            m.len() == 1
+                && m.get("file")
+                    .and_then(Value::as_str)
+                    .is_some_and(|f| f.ends_with(".parquet"))
+        })
+    };
+    let before = data.len();
+    data.retain(|name, source| {
+        !(name
+            .as_str()
+            .is_some_and(|n| injected.iter().any(|i| i == n))
+            && ours(source))
+    });
+    if data.len() == before {
+        return text.to_string();
+    }
+    if data.is_empty() {
+        top.remove("data");
+    }
+    serde_yaml::to_string(&doc).unwrap_or_else(|_| text.to_string())
+}
+
 /// Compose one panel that arc's check found nothing wrong with.
 fn compose_tile(
     source: &str,
     dir: &Path,
     tables_dir: &Path,
     viewport: Rect,
+    mode: Mode,
 ) -> Result<Composed, PanelProblem> {
     let text = with_protocol_tables(source, tables_dir).map_err(PanelProblem::Failed)?;
     let parsed = brightfield_spec::parse_spec(&text, brightfield_spec::Format::Yaml)
@@ -368,7 +471,7 @@ fn compose_tile(
     if !blocking.is_empty() {
         return Err(PanelProblem::Unsupported(blocking));
     }
-    compose_spec_str_at(&text, Some(dir), viewport).map_err(PanelProblem::Failed)
+    compose_spec_str_in(&text, Some(dir), viewport, mode).map_err(PanelProblem::Failed)
 }
 
 /// Every `panels/*.yaml` file of the Protocol in `dir`, sorted: the files arc's

@@ -1,0 +1,425 @@
+//! An agent-written Protocol opens in the window as tiles, one per panel: each
+//! tile draws its chart or says, in its own words, why it cannot.
+//!
+//! The Protocols are real runs, as in `tests/protocol_panels.rs`: the CO2
+//! fixture copied into a directory of the test's own and run by `arc` through
+//! the `brightfield-shell` binary cargo built (`support/agent_protocol.rs` says
+//! how the fetch step is kept off the network).
+
+#[path = "support/agent_protocol.rs"]
+mod agent_protocol;
+
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use agent_protocol::{copied_fixture_in, ran_fixture, run_protocol};
+use brightfield_protocol::layout::Flow;
+use brightfield_render::channel::Channel;
+use brightfield_render::Scale;
+use brightfield_shell::capture::capture_png_awaiting;
+use brightfield_shell::design::Mode;
+use brightfield_shell::protocol_panels::{
+    strip_protocol_tables, with_protocol_tables, PanelProblem, ProtocolPanels,
+};
+use brightfield_shell::run::Runner;
+use brightfield_shell::shelf::{RowEdit, SettingValue, TITLE_ROW};
+use brightfield_shell::starts;
+use brightfield_shell::startup::default_layout;
+use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_workbench::channel::ShelfChannel;
+
+const CO2: &str = "co2-per-capita";
+const CHANGE: &str = "panels/co2_per_capita_change_pct.yaml";
+
+/// The window the live binary opens when nothing was saved: the size these
+/// tiles have to be readable at.
+const DEFAULT_WINDOW: (f32, f32) = (1280.0, 820.0);
+
+fn manifest(dir: &Path) -> String {
+    dir.join("arcform.yaml").to_string_lossy().into_owned()
+}
+
+fn open(dir: &Path) -> Boot {
+    Boot::open(&manifest(dir), Flow::Vertical, None)
+        .unwrap_or_else(|e| panic!("{} did not open: {e}", dir.display()))
+}
+
+fn panels(boot: &Boot) -> &ProtocolPanels {
+    boot.panels
+        .as_ref()
+        .expect("the Protocol opened by the agent-panels route")
+}
+
+fn edit(path: &Path, from: &str, to: &str) {
+    let text = std::fs::read_to_string(path).expect("the file reads");
+    assert!(text.contains(from), "{} has no {from:?}", path.display());
+    std::fs::write(path, text.replace(from, to)).expect("the file writes");
+}
+
+fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
+    match shape {
+        egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+        egui::Shape::Vec(shapes) => {
+            for shape in shapes {
+                collect_text(shape, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A device-free window that keeps its context across frames, with the text
+/// each frame painted.
+struct Window {
+    app: MeridianApp,
+    ctx: egui::Context,
+    screen: egui::Rect,
+    texts: Vec<String>,
+}
+
+impl Window {
+    fn over(boot: Boot) -> Self {
+        let mut win = Self {
+            app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light)
+                .running_with(Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell")))),
+            ctx: egui::Context::default(),
+            screen: egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(DEFAULT_WINDOW.0, DEFAULT_WINDOW.1),
+            ),
+            texts: Vec::new(),
+        };
+        win.settle();
+        win
+    }
+
+    fn run(&mut self, events: Vec<egui::Event>) {
+        let raw = egui::RawInput {
+            screen_rect: Some(self.screen),
+            events,
+            ..Default::default()
+        };
+        let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+        let mut texts = Vec::new();
+        for clipped in &out.shapes {
+            collect_text(&clipped.shape, &mut texts);
+        }
+        self.texts = texts;
+    }
+
+    fn settle(&mut self) {
+        for _ in 0..3 {
+            self.run(Vec::new());
+        }
+    }
+
+    fn drew(&self, text: &str) -> bool {
+        self.texts.iter().any(|t| t.contains(text))
+    }
+
+    fn panels(&self) -> &ProtocolPanels {
+        self.app
+            .panel_tiles()
+            .and_then(|tiles| tiles.panels())
+            .expect("the window holds the Protocol's panels")
+    }
+
+    fn tile_index(&self, file: &str) -> usize {
+        self.panels()
+            .tiles
+            .iter()
+            .position(|t| t.file == Path::new(file))
+            .unwrap_or_else(|| panic!("no tile for {file}"))
+    }
+}
+
+/// The y categories of the bar tile's plot: one per bar.
+fn bar_categories(panels: &ProtocolPanels) -> Vec<String> {
+    let tile = panels
+        .tiles
+        .iter()
+        .find(|t| t.file == Path::new(CHANGE))
+        .expect("the bar tile");
+    let Ok(composed) = &tile.outcome else {
+        panic!("the bar tile did not draw");
+    };
+    match composed.plots[0].scales.get(Channel::Y) {
+        Some(Scale::Band { categories, .. }) => categories.clone(),
+        other => panic!("the bar tile's y scale is not a band: {other:?}"),
+    }
+}
+
+#[test]
+fn the_co2_protocol_opens_as_two_tiles() {
+    let ran = ran_fixture(CO2);
+    let boot = open(&ran.dir);
+    {
+        let panels = panels(&boot);
+        assert_eq!(panels.tiles.len(), 2);
+        for tile in &panels.tiles {
+            assert!(tile.outcome.is_ok(), "{} did not draw", tile.file.display());
+        }
+    }
+    assert!(
+        !boot.has_chart(),
+        "no generated dashboard stands in for the tiles"
+    );
+
+    let out = std::env::temp_dir().join(format!(
+        "bf-protocol-panels-window-{}.png",
+        std::process::id()
+    ));
+    let mut bodies: Vec<egui::Rect> = Vec::new();
+    let (w, h) = capture_png_awaiting(
+        boot,
+        default_layout(),
+        Mode::Light,
+        1.0,
+        DEFAULT_WINDOW,
+        &out,
+        Vec::new(),
+        |_| {},
+        |app| {
+            bodies = app
+                .panel_tiles()
+                .map(|tiles| tiles.drawn().iter().map(|t| t.body).collect())
+                .unwrap_or_default();
+            true
+        },
+    )
+    .expect("the window captures");
+    let image = image::open(&out).expect("the capture reads").to_rgba8();
+    let _ = std::fs::remove_file(&out);
+    assert_eq!((image.width(), image.height()), (w, h));
+    assert_eq!(bodies.len(), 2, "two tiles were drawn");
+    assert!(
+        !bodies[0].intersects(bodies[1]),
+        "the tiles overlap: {bodies:?}"
+    );
+    for body in &bodies {
+        assert!(body.width() >= 300.0 && body.height() >= 200.0, "{body:?}");
+        // A tile with a chart in it holds many colours; a blank one, its
+        // surface and little else.
+        let mut colours = std::collections::BTreeSet::new();
+        for y in (body.top() as u32..body.bottom() as u32).step_by(2) {
+            for x in (body.left() as u32..body.right() as u32).step_by(2) {
+                if x < image.width() && y < image.height() {
+                    colours.insert(image.get_pixel(x, y).0);
+                }
+            }
+        }
+        assert!(
+            colours.len() > 20,
+            "the tile at {body:?} is blank: {} colours",
+            colours.len()
+        );
+    }
+}
+
+#[test]
+fn a_broken_tile_shows_its_message() {
+    let ran = ran_fixture(CO2);
+    edit(&ran.dir.join(CHANGE), "x: change_pct", "x: change_percent");
+    let boot = open(&ran.dir);
+    let message = {
+        let tile = panels(&boot)
+            .tiles
+            .iter()
+            .find(|t| t.file == Path::new(CHANGE))
+            .expect("the broken tile");
+        let Err(problems) = &tile.outcome else {
+            panic!("the broken panel drew");
+        };
+        problems[0].message()
+    };
+    let win = Window::over(boot);
+
+    assert!(win.drew(&message), "no {message:?} in {:?}", win.texts);
+    assert!(
+        win.drew("co2_per_capita_change_pct.yaml"),
+        "the tile names its panel file: {:?}",
+        win.texts
+    );
+    let tiles = win.app.panel_tiles().expect("tiles");
+    assert_eq!(tiles.drawn().len(), 2);
+    assert!(tiles.drawn().iter().any(|t| t.drew), "the other tile draws");
+}
+
+#[test]
+fn a_one_step_protocol_with_agent_panels_opens_by_the_new_route() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("tiny");
+    std::fs::create_dir_all(dir.join("models")).unwrap();
+    std::fs::create_dir_all(dir.join("panels")).unwrap();
+    std::fs::write(dir.join("tiny.csv"), "country,value\nA,1\nB,3\nC,2\n").unwrap();
+    std::fs::write(
+        dir.join("arcform.yaml"),
+        "name: tiny\nengine: duckdb\nsteps:\n  - name: load\n    sql: models/load.sql\n    \
+         depends_on:\n      - tiny.csv\n    produces:\n      - tiny\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("models/load.sql"),
+        "CREATE OR REPLACE TABLE tiny AS SELECT * FROM read_csv('tiny.csv');\n",
+    )
+    .unwrap();
+    for (file, mark) in [("bars.yaml", "barX"), ("dots.yaml", "dot")] {
+        std::fs::write(
+            dir.join("panels").join(file),
+            format!("plot:\n  - mark: {mark}\n    data: {{ from: tiny }}\n    x: value\n    y: country\n"),
+        )
+        .unwrap();
+    }
+    run_protocol(&dir);
+
+    let boot = open(&dir);
+    let panels = panels(&boot);
+    assert_eq!(panels.tiles.len(), 2);
+    for tile in &panels.tiles {
+        assert!(tile.outcome.is_ok(), "{} did not draw", tile.file.display());
+    }
+    assert!(
+        !boot.has_chart(),
+        "a generated dashboard was opened instead"
+    );
+}
+
+/// A folder made the way an analyst makes one: a window over the housing file
+/// applies a view and Saves, which records it through arc and writes the chart
+/// file beside it. Its `panels/` holds Brightfield's own file and nothing else.
+#[test]
+fn a_brightfield_protocol_opens_as_before() {
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path().join("data");
+    std::fs::create_dir_all(&folder).unwrap();
+    let data = folder.join(starts::HOUSING_FILE);
+    std::fs::write(&data, starts::HOUSING_PARQUET).unwrap();
+    {
+        let boot = Boot::data_file(&data.to_string_lossy()).expect("the housing file opens");
+        let mut win = Window::over(boot);
+        win.app
+            .chart_doc_mut()
+            .apply_grid_view(brightfield_engine::RowsView {
+                condition: Some("house_age > 28".to_owned()),
+                order: None,
+            });
+        win.settle();
+        win.app
+            .save_protocol(&win.ctx)
+            .expect("the window has a Protocol to save")
+            .expect("the Save records");
+    }
+    let panels_dir: Vec<PathBuf> = std::fs::read_dir(folder.join("panels"))
+        .map(|entries| entries.map(|e| e.unwrap().path()).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        panels_dir.len(),
+        1,
+        "Save wrote its own chart file: {panels_dir:?}"
+    );
+
+    let boot = open(&folder);
+    assert!(boot.panels.is_none(), "the agent-panels route took it");
+    assert!(boot.has_chart(), "the generated dashboard did not open");
+    let win = Window::over(boot);
+    assert!(win.app.panel_tiles().is_none());
+    let steps: Vec<String> = win
+        .app
+        .protocol_model()
+        .sheet()
+        .rows()
+        .iter()
+        .map(|r| r.name.clone())
+        .collect();
+    assert_eq!(steps.len(), 2, "{steps:?}");
+}
+
+#[test]
+fn saving_a_tile_writes_the_panel_without_injected_tables() {
+    let ran = ran_fixture(CO2);
+    let path = ran.dir.join(CHANGE);
+    let before = std::fs::read_to_string(&path).unwrap();
+    let mut win = Window::over(open(&ran.dir));
+    let tables = win.panels().tables_dir().to_path_buf();
+    let at = win.tile_index(CHANGE);
+
+    assert!(win.app.open_panel_tile(at), "the tile opens as the chart");
+    win.settle();
+    let title = RowEdit {
+        channel: ShelfChannel::X,
+        row: TITLE_ROW,
+        value: SettingValue::Text("percent change since 1990".to_owned()),
+    };
+    assert!(win.app.chart_doc_mut().set_axis_row(0, &title));
+    win.settle();
+    win.app
+        .save_protocol(&win.ctx)
+        .expect("a tile's Save writes its panel")
+        .expect("the Save writes");
+
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert!(after.contains("percent change since 1990"), "{after}");
+    assert!(
+        !after.contains(&*tables.to_string_lossy()) && !after.contains(".parquet"),
+        "an injected table reached the file:\n{after}"
+    );
+    let changed: Vec<(&str, &str)> = before
+        .lines()
+        .zip(after.lines())
+        .filter(|(a, b)| a != b)
+        .collect();
+    assert_eq!(before.lines().count(), after.lines().count(), "{after}");
+    assert_eq!(changed.len(), 1, "{changed:?}");
+    assert!(changed[0].0.starts_with("xLabel:"), "{changed:?}");
+    assert_eq!(
+        before.ends_with('\n'),
+        after.ends_with('\n'),
+        "the file's last line ending changed"
+    );
+}
+
+#[test]
+fn strip_protocol_tables_is_the_inverse_of_with_protocol_tables() {
+    let panel = "title: t\nplot:\n  - mark: dot\n    data: { from: tiny }\n    x: a\n    y: b\n";
+    let dir = Path::new("/tmp/bf-tables");
+    let injected = with_protocol_tables(panel, dir).unwrap();
+    assert!(injected.contains("tiny.parquet"));
+    let stripped = strip_protocol_tables(&injected, &["tiny".to_owned()]);
+    assert!(!stripped.contains(".parquet"), "{stripped}");
+    let a: serde_yaml::Value = serde_yaml::from_str(panel).unwrap();
+    let b: serde_yaml::Value = serde_yaml::from_str(&stripped).unwrap();
+    assert_eq!(a, b);
+    // A text with no injected entry is handed back as it is.
+    assert_eq!(strip_protocol_tables(panel, &["tiny".to_owned()]), panel);
+}
+
+#[test]
+fn a_new_run_reloads_the_tiles() {
+    let ran = copied_fixture_in(CO2, CO2);
+    run_protocol(&ran.dir);
+    let mut win = Window::over(open(&ran.dir));
+    let first_run = win.panels().run_id.clone();
+    assert_eq!(bar_categories(win.panels()).len(), 9);
+
+    let model = ran.dir.join("models/03_co2_per_capita_change.sql");
+    let text = std::fs::read_to_string(&model).unwrap();
+    std::fs::write(&model, format!("{} LIMIT 3\n", text.trim_end())).unwrap();
+    run_protocol(&ran.dir);
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while win.panels().run_id == first_run {
+        assert!(Instant::now() < deadline, "the tiles never reloaded");
+        std::thread::sleep(Duration::from_millis(50));
+        win.run(Vec::new());
+    }
+    assert_eq!(bar_categories(win.panels()).len(), 3);
+    for tile in &win.panels().tiles {
+        if let Err(problems) = &tile.outcome {
+            let said: Vec<String> = problems.iter().map(PanelProblem::message).collect();
+            panic!(
+                "{} stopped drawing after the reload: {said:?}",
+                tile.file.display()
+            );
+        }
+    }
+}
