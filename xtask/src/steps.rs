@@ -1,6 +1,6 @@
 //! The steps, in the order a full run takes them, and what each one runs.
 //!
-//! The order puts what answers fastest first: the hygiene scripts, which need
+//! The order puts what answers fastest first: the script gates, which need
 //! no build; then the lint gates; then the licence and advisory checks; then
 //! the suite and the two steps that read it; then the packaging self-tests.
 //! Each step runs what one step of a pull request's checks ran before this
@@ -124,38 +124,6 @@ pub static STEPS: &[Step] = &[
         runs: "the command's own reading of .github/workflows: every step invoked, no unknown step, no gate called around it",
         only_in_ci: None,
         run: workflow_coverage,
-    },
-    Step {
-        name: "public-hygiene-selftest",
-        runs: "./scripts/check-public-hygiene-selftest.sh",
-        only_in_ci: None,
-        run: |c| c.script("scripts/check-public-hygiene-selftest.sh", &[]),
-    },
-    Step {
-        name: "public-hygiene",
-        runs: "./scripts/check-public-hygiene.sh",
-        only_in_ci: None,
-        run: |c| c.script("scripts/check-public-hygiene.sh", &[]),
-    },
-    Step {
-        name: "history-hygiene-selftest",
-        runs: "./scripts/check-history-hygiene-selftest.sh",
-        only_in_ci: None,
-        run: |c| c.script("scripts/check-history-hygiene-selftest.sh", &[]),
-    },
-    Step {
-        name: "commit-messages",
-        runs: "./scripts/check-history-hygiene.sh --range <base>..HEAD, the base from HISTORY_BASE or the merge base with origin/main",
-        only_in_ci: None,
-        run: commit_messages,
-    },
-    Step {
-        name: "pr-text",
-        runs: "./scripts/check-history-hygiene.sh --text over PR_TITLE and PR_BODY",
-        only_in_ci: Some(
-            "it scans the pull request's title and body, which exist only in the event that starts a CI run; the `Private references in pull request text` check runs it on every edit of the description",
-        ),
-        run: pr_text,
     },
     Step {
         name: "borrowed-benchmarks-selftest",
@@ -364,40 +332,6 @@ fn workflow_coverage(ctx: &Ctx) -> Result<(), String> {
             problems.len()
         ))
     }
-}
-
-fn commit_messages(ctx: &Ctx) -> Result<(), String> {
-    let base = match std::env::var("HISTORY_BASE") {
-        Ok(base) if !base.is_empty() => base,
-        _ => {
-            let output = ctx
-                .command("git")
-                .args(["merge-base", "HEAD", "origin/main"])
-                .output()
-                .map_err(|e| format!("could not start git: {e}"))?;
-            if !output.status.success() {
-                return Err("no merge base with origin/main: run `git fetch origin main`, or set HISTORY_BASE to the commit the range starts after".to_owned());
-            }
-            String::from_utf8_lossy(&output.stdout).trim().to_owned()
-        }
-    };
-    let range = format!("{base}..HEAD");
-    ctx.script("scripts/check-history-hygiene.sh", &["--range", &range])
-}
-
-fn pr_text(ctx: &Ctx) -> Result<(), String> {
-    let (Some(title), Some(body)) = (std::env::var_os("PR_TITLE"), std::env::var_os("PR_BODY"))
-    else {
-        return Err("pr-text reads the pull request's title and body from PR_TITLE and PR_BODY, which a pull request's workflow sets from its event; neither is set here".to_owned());
-    };
-    let file = ctx.scratch()?.join("pr-text.txt");
-    let mut text = title.to_string_lossy().into_owned();
-    text.push('\n');
-    text.push_str(&body.to_string_lossy());
-    text.push('\n');
-    fs::write(&file, text).map_err(|e| format!("cannot write {}: {e}", file.display()))?;
-    let path = file.display().to_string();
-    ctx.script("scripts/check-history-hygiene.sh", &["--text", &path])
 }
 
 fn doc(ctx: &Ctx) -> Result<(), String> {

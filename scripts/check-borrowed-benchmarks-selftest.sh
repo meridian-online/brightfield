@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Regression test for check-borrowed-benchmarks.sh: the gate has to keep
 # matching the inherited figures AND keep ignoring honest prose, and both
-# failure modes are silent — so this runs first in CI, exactly like the
-# public-hygiene gate's self-test.
+# failure modes are silent — so this runs in CI before the gate itself.
 #
 # The gate reads tracked files via `git grep`, so the fixtures live in a
 # throwaway git repository under mktemp, with a copy of the gate script.
