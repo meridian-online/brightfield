@@ -13,9 +13,6 @@
 //! invoking a step that does not exist, and for a workflow a pull request
 //! triggers calling a gate around the command.
 //!
-//! One step has no local form: `pr-text`, which scans the pull request's title
-//! and body, runs only in CI, and a full run's summary says so and why.
-//!
 //! What a full run needs on the machine, each refused by name at its step when
 //! absent: the pinned toolchain, `cargo-deny`, `python3`, the sibling
 //! `open-analytics` checkout and the pinned DuckDB CLI.

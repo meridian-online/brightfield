@@ -274,8 +274,8 @@ jobs:
         with:
           # Deliberately NOT generate_release_notes. With no previous tag to
           # diff against, GitHub generates notes back to the first commit —
-          # every merged PR title, including the planning vocabulary that
-          # scripts/check-public-hygiene.sh rejects in tracked files. From the
+          # every merged PR title, and a title can carry the private planning
+          # vocabulary this repository keeps out of its tracked files. From the
           # second tag on, the diff base is the previous tag and auto-notes are
           # safe to switch back on if hand-writing them stops earning its keep.
           #
