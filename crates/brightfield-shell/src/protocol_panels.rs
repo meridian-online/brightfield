@@ -88,6 +88,29 @@ impl ProtocolPanels {
         }
     }
 
+    /// Compose `source` in place of the panel at `index`, into `viewport` and in
+    /// `mode`'s ink, from the same snapshot, without touching any other tile or
+    /// the tile itself: what an export does to draw one panel a little
+    /// differently from the file, such as without its title.
+    ///
+    /// # Errors
+    ///
+    /// No tile at `index`, or the problem that kept `source` from drawing.
+    pub fn compose_source_at(
+        &self,
+        index: usize,
+        source: &str,
+        viewport: Rect,
+        mode: Mode,
+    ) -> Result<Composed, PanelProblem> {
+        if index >= self.tiles.len() {
+            return Err(PanelProblem::Failed(format!(
+                "the Protocol has no panel {index}"
+            )));
+        }
+        compose_tile(source, &self.dir, self.tables.path(), viewport, mode)
+    }
+
     /// The tile at `index` as a live dashboard over the snapshot, with its
     /// first picture: what opening a tile as the chart document draws, so a
     /// brush, a click or an axis edit re-queries as on any chart.

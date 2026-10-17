@@ -11,9 +11,11 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use agent_protocol::{copied_fixture, ran_fixture};
-use brightfield_shell::capture::render_composed;
+use brightfield_shell::capture::render_export;
+use brightfield_shell::legend::{right_blocks, LegendSpec};
 use brightfield_shell::protocol_panels::load;
 use brightfield_spec::layout::Rect;
+use meridian_design::control::ICON_XS;
 
 const LINE: &str = "co2_per_capita_since_1990";
 const CHANGE: &str = "co2_per_capita_change_pct";
@@ -58,12 +60,87 @@ fn png_of_a_panel() {
     let composed = panels.tiles.remove(index).outcome.expect("it draws");
     let (w, h) = (composed.width, composed.height);
     assert_eq!((w, h), (760, 440), "the panel declares its size");
-    let want = render_composed(composed, 2.0).expect("renders");
+    let want = render_export(composed, 2.0).expect("renders");
 
     let got = image::open(&png).expect("a PNG").to_rgba8();
     assert_eq!(got.dimensions(), (w * 2, h * 2));
     assert_eq!(got.dimensions(), want.dimensions());
     assert!(got.as_raw() == want.as_raw(), "the pixels differ");
+}
+
+/// The rows of swatches down the legend at the right of the panel `name`'s
+/// export, as the colour of each run of rows that wear one of its entries'
+/// colours, in order from the top, with whether something is drawn beside it.
+fn legend_swatches(dir: &Path, name: &str, png: &Path, scale: f32) -> (Vec<[u8; 3]>, Vec<[u8; 3]>) {
+    let mut panels = load(dir, Rect::zero()).expect("the Protocol opens");
+    let index = panels
+        .tiles
+        .iter()
+        .position(|t| t.file == Path::new(&format!("panels/{name}.yaml")))
+        .expect("the panel");
+    let composed = panels.tiles.remove(index).outcome.expect("it draws");
+    let blocks = right_blocks(&composed);
+    assert_eq!(blocks.len(), 1, "one legend at the plot's right");
+    let (_, legend, band) = &blocks[0];
+    let LegendSpec::Categorical { entries } = legend else {
+        panic!("a categorical legend: {legend:?}");
+    };
+    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let wanted: Vec<[u8; 3]> = entries
+        .iter()
+        .map(|e| [q(e.colour[0]), q(e.colour[1]), q(e.colour[2])])
+        .collect();
+
+    let image = image::open(png).expect("a PNG").to_rgba8();
+    let x = ((band.x as f32 + ICON_XS / 2.0) * scale).round() as u32;
+    let label_x = ((band.x as f32 + ICON_XS + 8.0) * scale).round() as u32;
+    let top = (band.y as f32 * scale).round() as u32;
+    let bottom = (((band.y + band.height) as f32) * scale).round() as u32;
+    let near =
+        |p: &image::Rgba<u8>, c: [u8; 3]| p[3] > 250 && (0..3).all(|k| p[k].abs_diff(c[k]) <= 3);
+    let mut runs: Vec<[u8; 3]> = Vec::new();
+    let mut previous: Option<[u8; 3]> = None;
+    for y in top..bottom.min(image.height()) {
+        let p = image.get_pixel(x, y);
+        let hit = wanted.iter().copied().find(|c| near(p, *c));
+        if let Some(c) = hit {
+            if previous != Some(c) {
+                runs.push(c);
+                // Each swatch has its label beside it: some pixel there that
+                // is not the background the band stands on.
+                let background = *image.get_pixel(label_x + 60, y.saturating_sub(4));
+                let labelled = (y..(y + (ICON_XS * scale) as u32).min(image.height())).any(|ly| {
+                    (label_x..(label_x + (40.0 * scale) as u32).min(image.width())).any(|lx| {
+                        image
+                            .get_pixel(lx, ly)
+                            .0
+                            .iter()
+                            .zip(background.0.iter())
+                            .any(|(a, b)| a.abs_diff(*b) > 40)
+                    })
+                });
+                assert!(labelled, "the swatch at row {y} has no label beside it");
+            }
+        }
+        previous = hit;
+    }
+    (runs, wanted)
+}
+
+#[test]
+fn png_of_a_panel_draws_its_legend_where_the_window_does() {
+    let ran = ran_fixture("co2-per-capita");
+    for (name, count) in [(LINE, 9), (CHANGE, 3)] {
+        let out = export(&["export-png", path_arg(&ran.dir), name]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        let png = ran.dir.join("exports").join(format!("{name}.png"));
+        let (runs, wanted) = legend_swatches(&ran.dir, name, &png, 2.0);
+        assert_eq!(wanted.len(), count, "{name}: the legend's entries");
+        assert_eq!(
+            runs, wanted,
+            "{name}: one swatch per entry, in its colour, in order"
+        );
+    }
 }
 
 #[test]

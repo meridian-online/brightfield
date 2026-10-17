@@ -4,12 +4,17 @@
 //! writes can call a Typst function, import a package or read a file: what the
 //! Typst source does is only what this module writes around that text.
 
+use std::collections::BTreeMap;
+
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
-use crate::{ChartImage, ListedChart};
+use crate::{ChartImage, ListedChart, ReportedRun};
 
 /// The heading of the section arc writes each chart's list item into.
 const CHARTS_HEADING: &str = "Charts";
+
+/// The heading of the section arc writes the run's id, time and hashes into.
+const RUN_HEADING: &str = "Run";
 
 /// Where a chart list item's panel file lives, relative to the Protocol.
 const PANELS_PREFIX: &str = "panels/";
@@ -20,18 +25,13 @@ const CHECK_PREFIX: &str = "Check:";
 /// A table with this many columns or more is set at 8pt rather than 9pt.
 const SMALL_TABLE_COLUMNS: usize = 7;
 
-/// A table with this many columns or more is set on a landscape page of its own.
+/// A table with this many columns or more is set on a landscape page of its
+/// own, when it stands at the top level of the report.
 const LANDSCAPE_TABLE_COLUMNS: usize = 10;
 
-/// The text width of a portrait page, in millimetres: A4's 210 less the two
-/// 20mm side margins the preamble sets.
-const TEXT_WIDTH_MM: f64 = 170.0;
-
-/// The tallest a chart is drawn, in millimetres: A4's 297 less the 20mm top and
-/// 22mm bottom margins, less room for the chart's caption. A chart that would be
-/// taller at the full text width is drawn this tall and narrower, so its
-/// non-breakable block still fits on one page.
-const MAX_CHART_HEIGHT_MM: f64 = 225.0;
+/// The fewest hexadecimal digits a word in the Run section has to hold to be
+/// set as a content hash: arc writes SHA-256 hashes, 64 digits long.
+const HASH_DIGITS: usize = 32;
 
 fn events(markdown: &str) -> Vec<Event<'_>> {
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
@@ -71,7 +71,7 @@ fn plain_text(events: &[Event]) -> String {
     text
 }
 
-/// The heading text when `events[i]` starts a level-2 heading.
+/// The level and text of the heading `events[i]` starts, when it starts one.
 fn heading_at(events: &[Event], i: usize) -> Option<(HeadingLevel, String)> {
     if let Event::Start(Tag::Heading { level, .. }) = &events[i] {
         let end = matching_end(events, i);
@@ -152,6 +152,13 @@ fn chart_item(item: &[Event]) -> Option<ListedChart> {
 }
 
 /// The charts the `## Charts` section of `markdown` lists, in order.
+///
+/// This reads what arc's `charts` function in its `report.rs` writes, at the
+/// arcform rev the workspace pins: under `## Charts`, one item per panel as
+/// `` - `panels/<file>`: <title> ``, the title left off when the panel has
+/// none, and under it one `  - Check: <finding>` line per finding.
+/// `arc_writes_what_the_parsers_read` in the shell's `tests/export_pdf.rs`
+/// holds this against a report arc writes.
 pub(crate) fn listed_charts(markdown: &str) -> Vec<ListedChart> {
     let events = events(markdown);
     let mut charts = Vec::new();
@@ -181,10 +188,52 @@ pub(crate) fn listed_charts(markdown: &str) -> Vec<ListedChart> {
     charts
 }
 
+/// The run the `## Run` section of `markdown` describes.
+///
+/// This reads what arc's `run_section` function in its `report.rs` writes, at
+/// the arcform rev the workspace pins: `## Run` last, then `` - Run: `<id>` ``,
+/// `- Finished: <time>`, and under `- Assets, by content hash:` one
+/// `` - `<kind>:<name>`: <hash> `` line per asset, `not measured` standing in
+/// for a hash arc could not take. Only `table:` assets are kept.
+/// `arc_writes_what_the_parsers_read` in the shell's `tests/export_pdf.rs`
+/// holds this against a report arc writes.
+pub(crate) fn reported_run(markdown: &str) -> ReportedRun {
+    // The Run section is arc's and comes last, so the last such heading is its
+    // own even when the prose quotes one.
+    let section = markdown
+        .rfind("\n## Run\n")
+        .map(|at| &markdown[at..])
+        .or_else(|| markdown.starts_with("## Run\n").then_some(markdown))
+        .unwrap_or("");
+    let mut run = ReportedRun {
+        run_id: None,
+        finished: None,
+        tables: BTreeMap::new(),
+    };
+    for line in section.lines() {
+        let line = line.trim();
+        if let Some(id) = line.strip_prefix("- Run: `") {
+            run.run_id = id.strip_suffix('`').map(str::to_string);
+        } else if let Some(at) = line.strip_prefix("- Finished: ") {
+            run.finished = Some(at.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("- `table:") {
+            if let Some((name, hash)) = rest.split_once("`:") {
+                let hash = hash.trim();
+                let hash = (!hash.is_empty() && hash.chars().all(|c| c.is_ascii_hexdigit()))
+                    .then(|| hash.to_string());
+                run.tables.insert(name.to_string(), hash);
+            }
+        }
+    }
+    run
+}
+
 /// `text` escaped for Typst markup, so each character prints as itself.
-pub(crate) fn escape_markup(text: &str) -> String {
+/// `previous` is the character the markup written so far ends with, so a
+/// digit and a full stop split across two pieces of text are still caught.
+pub(crate) fn escape_markup(text: &str, previous: Option<char>) -> String {
     let mut out = String::with_capacity(text.len() + text.len() / 8);
-    let mut previous = ' ';
+    let mut previous = previous.unwrap_or(' ');
     for c in text.chars() {
         match c {
             '\\' | '#' | '$' | '*' | '_' | '@' | '<' | '>' | '[' | ']' | '`' | '~' | '/' | '='
@@ -231,10 +280,23 @@ fn is_numeric(cell: &str) -> bool {
     digits.chars().any(|c| c.is_ascii_digit()) && digits.parse::<f64>().is_ok()
 }
 
+/// A word that is a content hash: hexadecimal digits, at least [`HASH_DIGITS`].
+fn is_hash(word: &str) -> bool {
+    word.len() >= HASH_DIGITS && word.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// One table cell: its markup and its plain text.
 struct Cell {
     markup: String,
     text: String,
+}
+
+/// The section of the report a writer is in, by its level-2 heading.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Other,
+    Charts,
+    Run,
 }
 
 /// The writer: walks the events and appends Typst markup.
@@ -242,18 +304,41 @@ struct Writer<'c> {
     out: String,
     charts: &'c [ChartImage],
     notice: Option<String>,
+    section: Section,
+    /// Whether this writer's markup goes inside a container of another's: a
+    /// table cell or a list item. A page cannot be configured there.
+    contained: bool,
+    /// The lists, items and quotes open in this writer.
+    depth: usize,
+    /// For each link open, whether a `#link` was written for it.
+    links: Vec<bool>,
 }
 
 impl Writer<'_> {
-    /// The markup for `events`, written by a writer with the same charts.
+    /// The markup for `events`, written by a contained writer in this one's
+    /// section.
     fn nested(&self, events: &[Event]) -> String {
         let mut inner = Writer {
             out: String::new(),
             charts: self.charts,
             notice: None,
+            section: self.section,
+            contained: true,
+            depth: 0,
+            links: Vec::new(),
         };
         inner.write(events, false);
         inner.out.trim().to_string()
+    }
+
+    /// Whether a page can be configured where the writer is now.
+    fn at_top_level(&self) -> bool {
+        !self.contained && self.depth == 0
+    }
+
+    fn push_text(&mut self, text: &str) {
+        let escaped = escape_markup(text, self.out.chars().last());
+        self.out.push_str(&escaped);
     }
 
     fn write(&mut self, events: &[Event], top_level: bool) {
@@ -261,21 +346,24 @@ impl Writer<'_> {
         if top_level && !has_charts_heading(events) {
             self.write_notice();
         }
-        let mut in_charts = false;
         let mut i = 0;
         while i < events.len() {
             if top_level {
                 if let Some((level, text)) = heading_at(events, i) {
                     if level <= HeadingLevel::H2 {
-                        in_charts = level == HeadingLevel::H2 && text == CHARTS_HEADING;
-                        if in_charts {
+                        self.section = match (level, text.as_str()) {
+                            (HeadingLevel::H2, CHARTS_HEADING) => Section::Charts,
+                            (HeadingLevel::H2, RUN_HEADING) => Section::Run,
+                            _ => Section::Other,
+                        };
+                        if self.section == Section::Charts {
                             self.write_notice();
                         }
                     }
                 }
             }
             match &events[i] {
-                Event::Start(Tag::List(first)) if in_charts => {
+                Event::Start(Tag::List(first)) if self.section == Section::Charts => {
                     let end = matching_end(events, i);
                     self.write_chart_list(&events[i..=end], *first);
                     i = end + 1;
@@ -309,8 +397,7 @@ impl Writer<'_> {
                     // A picture the report links to is not fetched: its alt
                     // text stands in for it.
                     let end = matching_end(events, i);
-                    self.out
-                        .push_str(&escape_markup(&plain_text(&events[i + 1..end])));
+                    self.push_text(&plain_text(&events[i + 1..end]));
                     i = end + 1;
                     continue;
                 }
@@ -332,53 +419,98 @@ impl Writer<'_> {
         self.out.push_str("];\n\n");
     }
 
+    /// Code: in the Run section an id, set small; elsewhere inline code.
+    fn write_code(&mut self, code: &str) {
+        let call = if self.section == Section::Run {
+            "bf-id"
+        } else {
+            "raw"
+        };
+        self.out
+            .push_str(&format!("#{call}({});", string_literal(code)));
+    }
+
+    /// Text in the Run section: a content hash at its end is set as an id.
+    fn write_run_text(&mut self, text: &str) {
+        let trimmed = text.trim_end();
+        let start = trimmed
+            .rfind(|c: char| !c.is_ascii_hexdigit())
+            .map_or(0, |at| at + 1);
+        if is_hash(&trimmed[start..]) {
+            self.push_text(&trimmed[..start]);
+            self.write_code(&trimmed[start..]);
+            self.push_text(&text[trimmed.len()..]);
+        } else {
+            self.push_text(text);
+        }
+    }
+
     fn write_event(&mut self, event: &Event) {
-        let out = &mut self.out;
         match event {
-            Event::Start(tag) => match tag {
-                Tag::Heading { level, .. } => {
-                    out.push_str(&format!("#heading(level: {})[", *level as usize));
+            Event::Start(tag) => {
+                if matches!(tag, Tag::List(_) | Tag::Item | Tag::BlockQuote(_)) {
+                    self.depth += 1;
                 }
-                Tag::BlockQuote(_) => out.push_str("#quote(block: true)["),
-                Tag::List(None) => out.push_str("#list(\n"),
-                Tag::List(Some(start)) => out.push_str(&format!("#enum(start: {start},\n")),
-                Tag::Item => out.push('['),
-                Tag::Emphasis => out.push_str("#text(weight: \"medium\")["),
-                Tag::Strong => out.push_str("#text(weight: \"bold\")["),
-                Tag::Strikethrough => out.push_str("#strike["),
-                Tag::Link { dest_url, .. } => {
-                    out.push_str(&format!("#link({})[", string_literal(dest_url)));
-                }
-                _ => {}
-            },
-            Event::End(tag) => match tag {
-                TagEnd::Paragraph => out.push_str("\n\n"),
-                TagEnd::Heading(_) | TagEnd::BlockQuote(_) => out.push_str("];\n\n"),
-                TagEnd::List(_) => out.push_str(");\n\n"),
-                TagEnd::Item => {
-                    while out.ends_with(['\n', ' ']) {
-                        out.pop();
+                let out = &mut self.out;
+                match tag {
+                    Tag::Heading { level, .. } => {
+                        out.push_str(&format!("#heading(level: {})[", *level as usize));
                     }
-                    out.push_str("],\n");
+                    Tag::BlockQuote(_) => out.push_str("#quote(block: true)["),
+                    Tag::List(None) => out.push_str("#list(\n"),
+                    Tag::List(Some(start)) => out.push_str(&format!("#enum(start: {start},\n")),
+                    Tag::Item => out.push('['),
+                    Tag::Emphasis => out.push_str("#text(weight: \"medium\")["),
+                    Tag::Strong => out.push_str("#text(weight: \"bold\")["),
+                    Tag::Strikethrough => out.push_str("#strike["),
+                    Tag::Link { dest_url, .. } => {
+                        // Typst refuses an empty URL, and a link to nowhere is
+                        // its text.
+                        let linked = !dest_url.trim().is_empty();
+                        if linked {
+                            out.push_str(&format!("#link({})[", string_literal(dest_url)));
+                        }
+                        self.links.push(linked);
+                    }
+                    _ => {}
                 }
-                TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
-                    out.push_str("];");
+            }
+            Event::End(tag) => {
+                if matches!(tag, TagEnd::List(_) | TagEnd::Item | TagEnd::BlockQuote(_)) {
+                    self.depth = self.depth.saturating_sub(1);
                 }
-                _ => {}
-            },
-            Event::Text(t) | Event::InlineHtml(t) | Event::Html(t) => {
-                out.push_str(&escape_markup(t));
+                let out = &mut self.out;
+                match tag {
+                    TagEnd::Paragraph => out.push_str("\n\n"),
+                    TagEnd::Heading(_) | TagEnd::BlockQuote(_) => out.push_str("];\n\n"),
+                    TagEnd::List(_) => out.push_str(");\n\n"),
+                    TagEnd::Item => {
+                        while out.ends_with(['\n', ' ']) {
+                            out.pop();
+                        }
+                        out.push_str("],\n");
+                    }
+                    TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
+                        out.push_str("];");
+                    }
+                    TagEnd::Link if self.links.pop().unwrap_or(false) => {
+                        out.push_str("];");
+                    }
+                    _ => {}
+                }
             }
-            Event::Code(code) => {
-                out.push_str(&format!("#raw({});", string_literal(code)));
-            }
-            Event::SoftBreak => out.push(' '),
-            Event::HardBreak => out.push_str("#linebreak();"),
+            Event::Text(t) if self.section == Section::Run => self.write_run_text(t),
+            Event::Text(t) | Event::InlineHtml(t) | Event::Html(t) => self.push_text(t),
+            Event::Code(code) => self.write_code(code),
+            Event::SoftBreak => self.out.push(' '),
+            Event::HardBreak => self.out.push_str("#linebreak();"),
             Event::Rule => {
-                out.push_str("#line(length: 100%, stroke: 0.5pt + rgb(\"#c8ccd0\"));\n\n");
+                self.out
+                    .push_str("#line(length: 100%, stroke: 0.5pt + rgb(\"#c8ccd0\"));\n\n");
             }
             Event::TaskListMarker(done) => {
-                out.push_str(if *done { "\\[x\\] " } else { "\\[ \\] " })
+                self.out
+                    .push_str(if *done { "\\[x\\] " } else { "\\[ \\] " });
             }
             _ => {}
         }
@@ -416,20 +548,19 @@ impl Writer<'_> {
         self.out.push_str(");\n\n");
     }
 
-    /// The chart at `index` with its title above it as a caption, in a block
-    /// that does not break, on one line of the source.
+    /// The chart at `index`, through the preamble's `bf-chart`: its title as a
+    /// caption, any note under it, and the picture, in a block that does not
+    /// break.
     fn write_chart(&mut self, index: usize) {
         let chart = &self.charts[index];
-        let height_at_width =
-            TEXT_WIDTH_MM * f64::from(chart.height_px) / f64::from(chart.width_px.max(1));
-        let size = if height_at_width > MAX_CHART_HEIGHT_MM {
-            format!("height: {MAX_CHART_HEIGHT_MM}mm")
-        } else {
-            "width: 100%".to_string()
-        };
+        let ratio = f64::from(chart.height_px) / f64::from(chart.width_px.max(1));
+        let note = chart.note.as_deref().map_or_else(
+            || "none".to_string(),
+            |note| format!("[{}]", escape_markup(note, None)),
+        );
         self.out.push_str(&format!(
-            "#block(breakable: false, width: 100%, above: 1.6em, below: 1.6em)[#text(weight: \"semibold\", size: 10.5pt)[{}] #v(0.5em, weak: true) #align(center, image({}, {size}))];\n\n",
-            escape_markup(&chart.title),
+            "#v(1.4em, weak: true)\n#bf-chart([{}], {note}, {}, {ratio:.6});\n\n",
+            escape_markup(&chart.title, None),
             string_literal(&crate::chart_file(index)),
         ));
     }
@@ -490,14 +621,18 @@ impl Writer<'_> {
         } else {
             "9pt"
         };
-        let landscape = columns >= LANDSCAPE_TABLE_COLUMNS;
+        // Typst refuses to configure a page inside a container, so a wide
+        // table in a list item or a quote stays on the portrait page.
+        let landscape = columns >= LANDSCAPE_TABLE_COLUMNS && self.at_top_level();
 
         let mut t = String::new();
         if landscape {
             t.push_str("#page(flipped: true)[\n");
         }
+        // The table breaks across pages, and `table.header` repeats its header
+        // on each.
         t.push_str(&format!(
-            "#block(breakable: false, above: 1.2em, below: 1.4em)[#set text(size: {size})\n#table(\n  columns: {columns},\n  align: ({}),\n  stroke: (x, y) => (bottom: if y == 0 {{ 0.7pt + rgb(\"#5f6870\") }} else {{ 0.4pt + rgb(\"#dde0e3\") }}),\n  inset: (x: 5pt, y: 3.5pt),\n",
+            "#block(above: 1.2em, below: 1.4em)[#set text(size: {size})\n#table(\n  columns: {columns},\n  align: ({}),\n  stroke: (x, y) => (bottom: if y == 0 {{ 0.7pt + rgb(\"#5f6870\") }} else {{ 0.4pt + rgb(\"#dde0e3\") }}),\n  inset: (x: 5pt, y: 3.5pt),\n",
             align.join(", ")
         ));
         for (r, row) in rows.iter().enumerate() {
@@ -506,16 +641,20 @@ impl Writer<'_> {
                     let Some(cell) = row.get(c) else {
                         return "[]".to_string();
                     };
-                    let markup = if r == 0 {
-                        format!("#text(weight: \"semibold\")[{}]", cell.markup)
+                    if r == 0 {
+                        return format!("[#text(weight: \"semibold\")[{}]]", cell.markup);
+                    }
+                    // A number is boxed so it never wraps; a number in a column
+                    // of words is right-aligned on its own.
+                    if is_numeric(&cell.text) {
+                        let boxed = format!("#box[{}]", cell.markup);
+                        if align[c] == "left" {
+                            format!("table.cell(align: right)[{boxed}]")
+                        } else {
+                            format!("[{boxed}]")
+                        }
                     } else {
-                        cell.markup.clone()
-                    };
-                    // A number in a column of words is right-aligned on its own.
-                    if r > 0 && align[c] == "left" && is_numeric(&cell.text) {
-                        format!("table.cell(align: right)[{markup}]")
-                    } else {
-                        format!("[{markup}]")
+                        format!("[{}]", cell.markup)
                     }
                 })
                 .collect();
@@ -542,9 +681,18 @@ pub(crate) fn body(markdown: &str, charts: &[ChartImage], notice: Option<&str>) 
         out: String::new(),
         charts,
         notice: notice.map(str::to_string),
+        section: Section::Other,
+        contained: false,
+        depth: 0,
+        links: Vec::new(),
     };
     writer.write(&events(markdown), true);
     writer.out
+}
+
+/// `text` escaped for markup with nothing before it.
+pub(crate) fn escape(text: &str) -> String {
+    escape_markup(text, None)
 }
 
 #[cfg(test)]
@@ -576,5 +724,35 @@ mod tests {
             listed[1].checks,
             vec!["a mark reads the column z".to_string()]
         );
+    }
+
+    #[test]
+    fn the_run_section_is_read() {
+        let report = "Prose naming - `table:fake`: 00\n\n## Run\n\n- Run: `r1`\n- Finished: 2026-10-16T21:15:10Z\n- Assets, by content hash:\n  - `table:a`: 4922e56a\n  - `file:data/x.csv`: 7f78\n  - `table:b`: not measured\n";
+        let run = reported_run(report);
+        assert_eq!(run.run_id.as_deref(), Some("r1"));
+        assert_eq!(run.finished.as_deref(), Some("2026-10-16T21:15:10Z"));
+        assert_eq!(run.tables.len(), 2, "{:?}", run.tables);
+        assert_eq!(run.tables["a"].as_deref(), Some("4922e56a"));
+        assert_eq!(run.tables["b"], None);
+    }
+
+    #[test]
+    fn a_digit_and_a_stop_split_across_text_are_escaped() {
+        // `1` then `.`: two text events, as a Markdown escape splits them.
+        let out = body("1\\. not a list\n", &[], None);
+        assert!(out.starts_with("1\\."), "{out}");
+    }
+
+    #[test]
+    fn an_empty_link_is_its_text() {
+        let out = body(
+            "[see the table]() and [a site](https://example.org)\n",
+            &[],
+            None,
+        );
+        assert!(!out.contains("#link(\"\")"), "{out}");
+        assert!(out.contains("see the table"), "{out}");
+        assert!(out.contains("#link(\"https://example.org\")"), "{out}");
     }
 }

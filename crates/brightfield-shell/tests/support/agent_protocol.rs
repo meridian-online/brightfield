@@ -181,3 +181,42 @@ fn copy_tree(from: &Path, to: &Path) {
         }
     }
 }
+
+/// Run `arc report write` over the Protocol in `dir` through the
+/// `brightfield-shell` binary, with `prose` on its standard input, and assert
+/// it wrote the report: arc's own `report.md`, with its Charts and Run
+/// sections, for the run `run` names or the newest.
+pub fn write_report(dir: &Path, prose: &str, run: Option<&str>) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    arc_stores();
+    let mut args = vec!["report", "write"];
+    if let Some(run) = run {
+        args.extend(["--run", run]);
+    }
+    let mut child = Command::new(env!("CARGO_BIN_EXE_brightfield-shell"))
+        .args(&args)
+        .current_dir(dir)
+        .env(run::RUNNER_ENV, "1")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the runner starts");
+    child
+        .stdin
+        .take()
+        .expect("a stdin")
+        .write_all(prose.as_bytes())
+        .expect("the prose is written");
+    let out = child.wait_with_output().expect("the runner ends");
+    assert!(
+        out.status.success(),
+        "arc report write failed in {}:\n{}\n{}",
+        dir.display(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

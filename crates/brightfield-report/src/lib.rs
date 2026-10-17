@@ -16,8 +16,13 @@
 //! numbered at the foot. Markdown emphasis is set in Inter Medium, because no
 //! italic Inter is bundled, strong emphasis in Inter Bold, and code in
 //! JetBrains Mono. A table is set at 9pt, or 8pt from 7 columns, with numbers
-//! right-aligned, in a block that does not break; a table of 10 columns or
-//! more goes on a landscape page of its own.
+//! right-aligned and kept whole; it breaks across pages with its header
+//! repeated, and one of 10 columns or more at the top level of the report goes
+//! on a landscape page of its own.
+//!
+//! A chart is never split across pages. One that does not fit the room left
+//! on a page is drawn smaller to fit, down to 70% of its full size, and moves
+//! to the next page only when even that does not fit.
 
 mod markdown;
 mod world;
@@ -43,6 +48,9 @@ pub struct ChartImage {
     pub width_px: u32,
     /// The picture's height in pixels.
     pub height_px: u32,
+    /// A note set small under the caption, such as the chart's own warning
+    /// that its colours repeat.
+    pub note: Option<String>,
 }
 
 /// What a report is made from.
@@ -55,6 +63,29 @@ pub struct ReportInput<'a> {
     pub charts: &'a [ChartImage],
     /// A note set in a shaded block above the Charts heading, as Markdown.
     pub notice: Option<&'a str>,
+    /// The heading the report opens with, and the PDF's title.
+    pub title: Option<&'a str>,
+    /// A line set small under the opening heading.
+    pub subtitle: Option<&'a str>,
+}
+
+/// What the `## Run` section of a report says about the run it describes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReportedRun {
+    /// The run's id.
+    pub run_id: Option<String>,
+    /// When the run finished, as arc wrote it.
+    pub finished: Option<String>,
+    /// Each table the run made, with its content hash; `None` where arc wrote
+    /// that it was not measured.
+    pub tables: std::collections::BTreeMap<String, Option<String>>,
+}
+
+/// What the `## Run` section of `markdown` says: the run's id, when it
+/// finished, and the content hash of each table it made.
+#[must_use]
+pub fn reported_run(markdown: &str) -> ReportedRun {
+    markdown::reported_run(markdown)
 }
 
 /// A chart the report's Charts section lists.
@@ -83,8 +114,7 @@ fn chart_file(index: usize) -> String {
 
 /// The settings every report starts with: the page, the type and the styles
 /// of headings, code and quotes.
-const PREAMBLE: &str = r##"#set document(title: none)
-#set page(
+const PREAMBLE: &str = r##"#set page(
   paper: "a4",
   margin: (x: 20mm, top: 20mm, bottom: 22mm),
   footer: context align(center, text(size: 8.5pt, fill: rgb("#6b737b"), counter(page).display())),
@@ -97,10 +127,24 @@ const PREAMBLE: &str = r##"#set document(title: none)
 #show heading.where(level: 2): set text(size: 13.5pt)
 #show heading.where(level: 3): set text(size: 11.5pt)
 #show raw: set text(font: "JetBrains Mono")
+#show raw.where(block: false): set text(size: 1.125em)
 #show raw.where(block: true): set block(fill: rgb("#f4f5f6"), inset: 8pt, radius: 3pt, width: 100%)
 #show quote.where(block: true): set block(inset: (left: 10pt), stroke: (left: 2pt + rgb("#c8ccd0")))
 #set list(indent: 0.4em, body-indent: 0.6em)
 #set enum(indent: 0.4em, body-indent: 0.6em)
+#let bf-id(id) = text(size: 7.5pt, fill: rgb("#4a5259"), raw(id))
+#let bf-chart(caption, note, path, ratio) = context {
+  let full = 170mm
+  let head = block(width: 100%, {
+    text(weight: "semibold", size: 10.5pt, caption)
+    if note != none { linebreak(); text(size: 8.5pt, fill: rgb("#6b737b"), note) }
+  })
+  let head-h = measure(head, width: full).height + 6pt
+  let height = calc.min(full * ratio, 225mm)
+  let room = 297mm - 22mm - here().position().y
+  let width = if head-h + height <= room { height / ratio } else if head-h + 0.7 * height <= room { (room - head-h) / ratio } else { height / ratio }
+  block(breakable: false, width: 100%, below: 1.6em, { head; v(6pt); align(center, image(path, width: width)) })
+}
 
 "##;
 
@@ -111,6 +155,20 @@ const PREAMBLE: &str = r##"#set document(title: none)
 #[must_use]
 pub fn to_typst(input: &ReportInput) -> String {
     let mut source = String::from(PREAMBLE);
+    if let Some(title) = input.title {
+        source.push_str(&format!(
+            "#set document(title: {})\n#block(below: 0.6em)[#text(size: 20pt, weight: \"semibold\")[{}]];\n",
+            markdown::string_literal(title),
+            markdown::escape(title)
+        ));
+        if let Some(subtitle) = input.subtitle {
+            source.push_str(&format!(
+                "#block(above: 0pt)[#text(size: 10pt, fill: rgb(\"#6b737b\"))[{}]];\n",
+                markdown::escape(subtitle)
+            ));
+        }
+        source.push_str("#v(1em)\n\n");
+    }
     source.push_str(&markdown::body(input.markdown, input.charts, input.notice));
     source
 }

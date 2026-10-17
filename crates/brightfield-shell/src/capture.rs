@@ -887,6 +887,135 @@ pub fn render_composed(composed: Composed, scale: f32) -> Result<image::RgbaImag
         .ok_or_else(|| "vello pixel buffer size mismatch".to_string())
 }
 
+/// Render a composed chart for a headless export: the Vello scene, as
+/// [`render_composed`] draws it, with each plot's legend drawn over it where
+/// the window draws it, `scale` device pixels to a logical pixel.
+///
+/// A legend is not part of the scene. The window draws it with egui into the
+/// band beside or under its plot ([`crate::legend::draw_right`] and
+/// [`crate::legend::draw_below`]), so this runs those same two functions in an
+/// egui pass over the picture rather than drawing a second legend: the
+/// placement, the entries, the names and the colours are the window's. The
+/// picture is as tall as the composition plus the band a legend under the
+/// lowest plot hangs below it ([`crate::legend::below_overhang`]), so the
+/// export holds what the window shows.
+///
+/// [`render_composed`] stays the scene alone: it is the Vello baseline the
+/// parity tests compare the window against.
+///
+/// # Errors
+/// Returns a message on GPU failure.
+pub fn render_export(composed: Composed, scale: f32) -> Result<image::RgbaImage, String> {
+    if crate::legend::right_blocks(&composed).is_empty()
+        && crate::legend::below_blocks(&composed).is_empty()
+    {
+        return render_composed(composed, scale);
+    }
+    let win_w = composed.width as f32;
+    let win_h = composed.height as f32 + crate::legend::below_overhang(&composed).max(0.0);
+    let (device, queue) = headless_device()?;
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let egui_renderer = new_egui_renderer(&device, format);
+    let ctx = egui::Context::default();
+    crate::apply_theme_without_unaligned_marker(&ctx, composed.mode);
+    let full = run_ui_frames(
+        &ctx,
+        &egui_renderer,
+        &device,
+        &queue,
+        egui::vec2(win_w, win_h),
+        scale,
+        Vec::new(),
+        &std::cell::Cell::new(false),
+        |ui| {
+            crate::legend::draw_right(ui, egui::Pos2::ZERO, &composed);
+            crate::legend::draw_below(ui, egui::Pos2::ZERO, &composed, composed.mode);
+        },
+    );
+    let scene = render_composed(composed, scale)?;
+
+    let size_px = [
+        ((win_w * scale).round() as u32).max(1),
+        ((win_h * scale).round() as u32).max(1),
+    ];
+    // The scene's pixels at the top of a canvas tall enough for the bands
+    // under it, which stay transparent as the scene's own background does.
+    let mut canvas = image::RgbaImage::new(size_px[0], size_px[1]);
+    image::imageops::replace(&mut canvas, &scene, 0, 0);
+
+    let extent = wgpu::Extent3d {
+        width: size_px[0],
+        height: size_px[1],
+        depth_or_array_layers: 1,
+    };
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("brightfield-export-target"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        target.as_image_copy(),
+        canvas.as_raw(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * size_px[0]),
+            rows_per_image: Some(size_px[1]),
+        },
+        extent,
+    );
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let clipped = ctx.tessellate(full.shapes, scale);
+    let screen_desc = egui_wgpu::ScreenDescriptor {
+        size_in_pixels: size_px,
+        pixels_per_point: scale,
+    };
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("brightfield-export-encoder"),
+    });
+    let user_cmds = {
+        let mut r = egui_renderer.write();
+        r.update_buffers(&device, &queue, &mut encoder, &clipped, &screen_desc)
+    };
+    {
+        let mut pass = encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("brightfield-export-legends"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        // Over the scene, not in place of it.
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            })
+            .forget_lifetime();
+        let r = egui_renderer.read();
+        r.render(&mut pass, &clipped, &screen_desc);
+    }
+    queue.submit(
+        user_cmds
+            .into_iter()
+            .chain(std::iter::once(encoder.finish())),
+    );
+    let pixels = read_texture(&device, &queue, &target, size_px[0], size_px[1]);
+    image::RgbaImage::from_raw(size_px[0], size_px[1], pixels)
+        .ok_or_else(|| "readback pixel buffer size mismatch".to_string())
+}
+
 /// Fit-and-pad (letterbox) a capture into exactly `w`×`h` — the shape a
 /// shipped start's gallery thumbnail takes.
 ///

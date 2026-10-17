@@ -11,10 +11,11 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use arc::spec::MANIFEST_FILENAME;
-use brightfield_report::{compile_pdf, listed_charts, ChartImage, ReportInput};
+use brightfield_report::{compile_pdf, listed_charts, reported_run, ChartImage, ReportInput};
 use brightfield_spec::layout::Rect;
 
-use crate::capture::{headless_device, render_composed, DEFAULT_SCALE};
+use crate::capture::{headless_device, render_export, DEFAULT_SCALE};
+use crate::design::Mode;
 use crate::protocol_panels::{
     load, panel_paths, parquet_name, protocol_tables, sql_string, PanelProblem, ProtocolPanels,
 };
@@ -323,7 +324,7 @@ fn export_png(
         Path::to_path_buf,
     );
     warn_colours_repeat(&file, &composed);
-    let image = render_composed(composed, scale).map_err(|e| vec![e])?;
+    let image = render_export(composed, scale).map_err(|e| vec![e])?;
     make_parent(&path)?;
     image.save(&path).map_err(|e| write_problem(&path, &e))?;
     Ok(vec![path])
@@ -399,12 +400,15 @@ fn export_data(
 /// The name of the report arc writes in a Protocol's folder.
 const REPORT_FILE: &str = "report.md";
 
+/// The name of the read-me a Protocol's folder may hold.
+const README_FILE: &str = "README.md";
+
 /// Device pixels to a logical pixel for a chart in the PDF: a 760-pixel-wide
 /// panel set to the text width is then drawn at about 340 dots to the inch.
 const PDF_CHART_SCALE: f32 = 3.0;
 
-/// A report ready to set: its Markdown, each chart it lists drawn, and the
-/// notice when tables changed since the run it describes.
+/// A report ready to set: its Markdown, each chart it lists drawn, the notice
+/// when tables changed since the run it describes, and its heading.
 pub struct PreparedReport {
     /// The text of `report.md`.
     pub markdown: String,
@@ -412,6 +416,10 @@ pub struct PreparedReport {
     pub charts: Vec<ChartImage>,
     /// The stale-table notice, as Markdown, when there is one.
     pub notice: Option<String>,
+    /// The heading the report opens with: the Protocol's name.
+    pub title: String,
+    /// The line under it: when the run the report describes finished.
+    pub subtitle: Option<String>,
 }
 
 impl PreparedReport {
@@ -422,12 +430,75 @@ impl PreparedReport {
             markdown: &self.markdown,
             charts: &self.charts,
             notice: self.notice.as_deref(),
+            title: Some(&self.title),
+            subtitle: self.subtitle.as_deref(),
         }
     }
 }
 
+/// The name the report opens with: the first heading of the Protocol's
+/// `README.md` when it has one, else the name its manifest gives it.
+fn protocol_title(dir: &Path, name: &str) -> String {
+    let readme = std::fs::read_to_string(dir.join(README_FILE)).unwrap_or_default();
+    let mut fenced = false;
+    for line in readme.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+        if (1..=6).contains(&hashes) && trimmed[hashes..].starts_with(' ') {
+            let heading = trimmed[hashes..].trim().trim_end_matches('#').trim();
+            if !heading.is_empty() {
+                return heading.to_string();
+            }
+        }
+    }
+    name.to_string()
+}
+
+/// `2026-10-16T21:15:10Z` as `16 October 2026`; the text as it is when it does
+/// not start with a date.
+fn run_date(finished: &str) -> String {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let date = finished.get(..10).unwrap_or(finished);
+    let parts: Vec<&str> = date.split('-').collect();
+    match parts.as_slice() {
+        [year, month, day] if year.len() == 4 => {
+            let month = month
+                .parse::<usize>()
+                .ok()
+                .and_then(|m| MONTHS.get(m.checked_sub(1)?));
+            let day = day.parse::<u32>().ok();
+            match (month, day) {
+                (Some(month), Some(day)) => format!("{day} {month} {year}"),
+                _ => finished.to_string(),
+            }
+        }
+        _ => finished.to_string(),
+    }
+}
+
 /// Read the report of the Protocol at `dir` and draw each chart it lists.
-/// A panel whose colours repeat is said on stderr and still drawn.
+/// A panel whose colours repeat is said on stderr, still drawn, and its note
+/// set under its caption.
 ///
 /// # Errors
 ///
@@ -442,7 +513,7 @@ pub fn prepare_report(dir: &Path) -> Result<PreparedReport, Vec<String>> {
             dir.display()
         )]
     })?;
-    let mut panels = load(&dir, Rect::zero()).map_err(|p| vec![p.message()])?;
+    let panels = load(&dir, Rect::zero()).map_err(|p| vec![p.message()])?;
 
     let listed = listed_charts(&markdown);
     let mut problems = Vec::new();
@@ -472,33 +543,36 @@ pub fn prepare_report(dir: &Path) -> Result<PreparedReport, Vec<String>> {
     if !drawn.is_empty() {
         require_gpu()?;
     }
-    // The report sets each chart's title as a caption above its picture, as
-    // text a reader can search and copy, so the picture is drawn without the
-    // heading the panel's `title:` would put in it: the title once, not twice.
-    for (index, _) in &drawn {
-        let tile = &mut panels.tiles[*index];
-        tile.source = without_title(&tile.source);
-    }
-    panels.compose_tiles_at(Rect::zero(), crate::design::Mode::Light);
 
-    let mut charts = Vec::new();
+    let mut charts: Vec<ChartImage> = Vec::new();
     for (index, chart) in drawn {
         // A panel the report lists twice is drawn once; both items find it.
-        if charts.iter().any(|c: &ChartImage| c.path == chart.path) {
+        if charts.iter().any(|c| c.path == chart.path) {
             continue;
         }
-        let tile = &mut panels.tiles[index];
-        let title = if chart.title.is_empty() {
-            tile.title.clone().unwrap_or_default()
-        } else {
-            chart.title.clone()
-        };
-        // The tile is taken out of the outcome it was composed into; its slot
-        // keeps a problem that nothing reads again.
-        let outcome = std::mem::replace(&mut tile.outcome, Err(Vec::new()));
-        let composed = outcome.map_err(|found| lines(&tile.file, &found))?;
+        let tile = &panels.tiles[index];
+        // The chart is drawn from the panel as it is now, so its caption is
+        // the panel's title now, not the one the report copied when it was
+        // written; a panel with no title keeps the report's.
+        let title = tile
+            .title
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| chart.title.clone());
+        // The caption is text a reader can search and copy, so the picture is
+        // drawn without the heading the panel's `title:` would put in it: the
+        // title once, not twice. Only the listed panels are composed again.
+        let composed = panels
+            .compose_source_at(
+                index,
+                &without_title(&tile.source),
+                Rect::zero(),
+                Mode::Light,
+            )
+            .map_err(|p| lines(&tile.file, &[p]))?;
         warn_colours_repeat(&tile.file, &composed);
-        let image = render_composed(composed, PDF_CHART_SCALE)
+        let note = composed.diagnostics.colours_repeat().map(|n| n.to_string());
+        let image = render_export(composed, PDF_CHART_SCALE)
             .map_err(|e| vec![format!("{}: {e}", tile.file.display())])?;
         let mut png = Vec::new();
         image
@@ -515,20 +589,19 @@ pub fn prepare_report(dir: &Path) -> Result<PreparedReport, Vec<String>> {
             png,
             width_px: image.width(),
             height_px: image.height(),
+            note,
         });
     }
 
+    let run = reported_run(&markdown);
     let notice = match stale_tables(&dir) {
         Ok(stale) if stale.is_empty() => None,
         Ok(stale) => {
-            let run = arc::spec::report_run(&dir)
-                .ok()
-                .flatten()
-                .unwrap_or_default();
             let names: Vec<String> = stale.iter().map(|t| format!("`{t}`")).collect();
             Some(format!(
-                "These charts read the Protocol's tables as they are now. {} changed since the run this report describes (`{run}`).",
-                names.join(", ")
+                "These charts read the Protocol's tables as they are now. {} changed since the run this report describes (`{}`).",
+                names.join(", "),
+                run.run_id.as_deref().unwrap_or_default()
             ))
         }
         Err(e) => {
@@ -540,6 +613,11 @@ pub fn prepare_report(dir: &Path) -> Result<PreparedReport, Vec<String>> {
         markdown,
         charts,
         notice,
+        title: protocol_title(&dir, &panels.name),
+        subtitle: run
+            .finished
+            .as_deref()
+            .map(|at| format!("Run finished {}", run_date(at))),
     })
 }
 
@@ -559,35 +637,46 @@ fn without_title(source: &str) -> String {
     }
 }
 
+/// Whether `error` is arc's refusal of a run id its history does not hold:
+/// the wording `load_contract` in arc's `contract.rs` gives, at the arcform rev
+/// the workspace pins, as an `InvalidInput` I/O error.
+/// `a_report_from_another_machine_falls_back_on_its_own_hashes` in
+/// `tests/export_pdf.rs` holds the match against arc.
+fn is_no_such_run(error: &arc::spec::Error) -> bool {
+    matches!(error, arc::spec::Error::Io(e)
+        if e.kind() == std::io::ErrorKind::InvalidInput
+            && e.to_string().starts_with("there is no run "))
+}
+
 /// The tables the Protocol's panels read whose content hash in the newest run
 /// differs from the hash the run its report describes recorded, by the names
 /// the run gives them. Run ids differ after any run; only a changed hash
 /// counts.
 ///
-/// The report's run's hashes are arc's record of that run when it still has
-/// one, else the hashes the report's own Run section lists, which is what a
-/// Protocol copied from another machine carries. A table either side did not
-/// measure is not counted.
+/// The report's run's hashes are arc's record of that run. When arc's history
+/// holds no such run, which is what a Protocol copied from another machine
+/// carries, they are the hashes the report's own Run section lists. A table
+/// either side did not measure is not counted.
 ///
 /// # Errors
 ///
-/// The Protocol has not run, or its report names no run whose hashes can be
-/// found.
+/// The Protocol has not run, its report names no run, or arc could not read
+/// the run it names for any reason but its not being there.
 pub fn stale_tables(dir: &Path) -> Result<Vec<String>, String> {
     let dir = protocol_dir(dir);
     let newest = arc::spec::run_tables(&dir, None).map_err(|e| e.to_string())?;
-    let Some(run) = arc::spec::report_run(&dir).map_err(|e| e.to_string())? else {
+    let report = std::fs::read_to_string(dir.join(REPORT_FILE)).map_err(|e| e.to_string())?;
+    let reported = reported_run(&report);
+    let Some(run) = reported.run_id else {
         return Err(
             "it names no run, so whether the tables changed since it was written is not known"
                 .to_string(),
         );
     };
-    let reported = match arc::spec::run_tables(&dir, Some(&run)) {
+    let then = match arc::spec::run_tables(&dir, Some(&run)) {
         Ok(tables) => tables.tables,
-        Err(_) => {
-            let text = std::fs::read_to_string(dir.join(REPORT_FILE)).map_err(|e| e.to_string())?;
-            reported_hashes(&text)
-        }
+        Err(e) if is_no_such_run(&e) => reported.tables,
+        Err(e) => return Err(e.to_string()),
     };
     let mut read = BTreeSet::new();
     for path in panel_paths(&dir) {
@@ -600,32 +689,15 @@ pub fn stale_tables(dir: &Path) -> Result<Vec<String>, String> {
             .filter_map(|(name, hash)| Some((name.to_lowercase(), (name.clone(), hash.clone()?))))
             .collect::<std::collections::BTreeMap<_, _>>()
     };
-    let (newest, reported) = (lower(&newest.tables), lower(&reported));
+    let (newest, then) = (lower(&newest.tables), lower(&then));
     Ok(read
         .iter()
         .filter_map(|table| {
             let (name, now) = newest.get(table)?;
-            let (_, then) = reported.get(table)?;
-            (now != then).then(|| name.clone())
+            let (_, before) = then.get(table)?;
+            (now != before).then(|| name.clone())
         })
         .collect())
-}
-
-/// The table hashes the Run section of a report lists, as
-/// `` - `table:<name>`: <hash> `` lines under "Assets, by content hash".
-fn reported_hashes(report: &str) -> std::collections::BTreeMap<String, Option<String>> {
-    let run_section = report.rfind("\n## Run").map_or("", |at| &report[at..]);
-    run_section
-        .lines()
-        .filter_map(|line| {
-            let rest = line.trim().strip_prefix("- `table:")?;
-            let (name, hash) = rest.split_once("`:")?;
-            let hash = hash.trim();
-            let hash = (!hash.is_empty() && hash.chars().all(|c| c.is_ascii_hexdigit()))
-                .then(|| hash.to_string());
-            Some((name.to_string(), hash))
-        })
-        .collect()
 }
 
 fn export_pdf(dir: &Path, out: Option<&Path>) -> Result<Vec<PathBuf>, Vec<String>> {
@@ -656,11 +728,20 @@ mod tests {
     }
 
     #[test]
-    fn the_run_section_hashes_are_read() {
-        let report = "Prose naming - `table:fake`: 00\n\n## Run\n\n- Run: `r`\n- Assets, by content hash:\n  - `table:a`: 4922e56a\n  - `file:data/x.csv`: 7f78\n  - `table:b`: not measured\n";
-        let hashes = reported_hashes(report);
-        assert_eq!(hashes.len(), 2, "{hashes:?}");
-        assert_eq!(hashes["a"].as_deref(), Some("4922e56a"));
-        assert_eq!(hashes["b"], None);
+    fn the_run_date_reads_as_words() {
+        assert_eq!(run_date("2026-10-16T21:15:10Z"), "16 October 2026");
+        assert_eq!(run_date("not recorded"), "not recorded");
+    }
+
+    #[test]
+    fn the_title_is_the_readme_heading_or_the_name() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        assert_eq!(protocol_title(dir.path(), "co2"), "co2");
+        std::fs::write(
+            dir.path().join(README_FILE),
+            "```\n# not this\n```\n\n## CO2 per capita ##\n\nText.\n",
+        )
+        .expect("writes");
+        assert_eq!(protocol_title(dir.path(), "co2"), "CO2 per capita");
     }
 }
