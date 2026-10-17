@@ -28,11 +28,12 @@
 //!
 //! **A version not on this machine.** The list is read from the Protocol's
 //! version log as well as the store, and the log travels with the folder while
-//! the store's snapshots do not. A version only the log names is listed, its
-//! row dimmed and its *what changed* reading [`NOT_ON_THIS_MACHINE`]; the
-//! cursor can rest on it, but it is not drawn or stepped back to, and the
-//! chart fault and the disabled Step back control say why
-//! ([`NOT_ON_THIS_MACHINE_REASON`]).
+//! the store's snapshots do not. A version the log names and the store lacks
+//! is listed, its row dimmed and its *what changed* reading
+//! [`NOT_ON_THIS_MACHINE`]; the cursor can rest on it, but it is not drawn or
+//! stepped back to, and the chart fault and the disabled Step back control say
+//! why ([`NOT_ON_THIS_MACHINE_REASON`];
+//! `the_panel_marks_a_version_not_on_this_machine_and_will_not_read_it`).
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};

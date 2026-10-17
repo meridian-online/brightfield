@@ -470,11 +470,13 @@ impl HistoryStore {
     /// **The store joined with the log.** A version is listed when the store
     /// holds it or the log names it. One the store holds is on this machine,
     /// and its [`Who`] is the log line's interface word, or the way the store
-    /// recorded when the log does not name it (everything an arc from before
-    /// the log recorded). One only the log names is not on this machine: its
+    /// recorded when the log does not name it, as for an entry an arc from
+    /// before the log recorded (`a_store_entry_missing_from_the_log_is_listed`).
+    /// A version the log names and the store lacks is not on this machine: its
     /// size is 0, and it and the version after it have nothing to compare
-    /// with, so each is [`VersionChange::NoPredecessor`]. A log line whose kind
-    /// or time does not read is passed over.
+    /// with, so each is [`VersionChange::NoPredecessor`]
+    /// (`a_version_only_the_log_names_is_listed_as_not_on_this_machine`). A
+    /// log line whose kind or time does not read is passed over.
     ///
     /// **What a change is.** Two versions are parsed as charts. A plot is the
     /// same plot in both when its path is the same, and a mark is the same mark
