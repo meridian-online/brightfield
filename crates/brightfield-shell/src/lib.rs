@@ -97,6 +97,7 @@ pub mod data_file;
 pub mod data_grid;
 pub mod devtools;
 pub mod editor;
+pub mod export;
 pub mod gallery;
 pub mod generated;
 pub mod grid_foot;

@@ -103,6 +103,12 @@ enum Invocation {
     /// `--check-type-source`: bring up the bundled semantic type source and
     /// type one column with it, then exit. No window.
     CheckTypeSource,
+    /// `export-pdf`, `export-png` or `export-data`: write a Protocol panel's
+    /// picture or rows and exit. No window.
+    Export(brightfield_shell::export::Export),
+    /// An export subcommand the command line got wrong: print the message to
+    /// stderr and exit 2. No window.
+    ExportUsage(String),
 }
 
 /// The `--help` body. Mirrors the module-doc usage line and the flag grammar in
@@ -111,6 +117,9 @@ const HELP: &str = "\
 brightfield — the Meridian live chart and Protocol window.
 
 Usage: brightfield [FILE] [OPTIONS]
+       brightfield export-pdf <PROTOCOL> [--out PATH]
+       brightfield export-png <PROTOCOL> <PANEL> [--out PATH] [--scale N]
+       brightfield export-data <PROTOCOL> <PANEL> [--format csv|parquet] [--out PATH]
 
 Arguments:
   [FILE]                          A chart spec, a Protocol manifest, or a data
@@ -140,6 +149,20 @@ Options:
   -h, --help                      Print this help and exit.
   -V, --version                   Print the version and exit.
 
+Exports (no window; <PROTOCOL> is a Protocol folder or its arcform.yaml, and
+<PANEL> is x, x.yaml or panels/x.yaml; each written path is printed, and the
+Protocol must have run):
+  export-pdf                      Every panel, one page each, to a PDF
+                                  (default: <PROTOCOL>/exports/<name>.pdf).
+  export-png                      One panel as a PNG (default:
+                                  <PROTOCOL>/exports/<panel>.png, at --scale 2).
+  export-data                     The rows a panel reads from the database, one
+                                  file per table (default:
+                                  <PROTOCOL>/exports/<table>.csv). --out is a
+                                  directory when the panel reads several tables.
+  Exit 0 wrote the files, 1 an export failed (each problem on stderr), 2 the
+  command line is wrong.
+
 Press F12 in the window to capture a screenshot to --shot-out.";
 
 fn parse_args() -> Result<Invocation, String> {
@@ -157,7 +180,21 @@ fn parse_args() -> Result<Invocation, String> {
 /// parse is an error, because the flag only exists for scripts, and a script
 /// whose countdown was silently dropped gets a window that never exits instead
 /// of a failed check.
-fn parse_args_from(mut it: impl Iterator<Item = String>) -> Result<Invocation, String> {
+fn parse_args_from(it: impl Iterator<Item = String>) -> Result<Invocation, String> {
+    let mut it = it.peekable();
+    if let Some(name) = it.next_if(|a| brightfield_shell::export::is_export_command(a)) {
+        // `--help` still wins over the rest of an export line.
+        let rest: Vec<String> = it.collect();
+        if rest.iter().any(|a| a == "--help" || a == "-h") {
+            return Ok(Invocation::Help);
+        }
+        return Ok(
+            match brightfield_shell::export::parse_export(&name, rest.into_iter()) {
+                Ok(export) => Invocation::Export(export),
+                Err(message) => Invocation::ExportUsage(message),
+            },
+        );
+    }
     let mut spec: Option<String> = None;
     let mut mode = Mode::Light;
     let mut shot_out = PathBuf::from("render-proof/live-screenshot.png");
@@ -979,6 +1016,13 @@ fn main() -> Result<(), String> {
             return Ok(());
         }
         Invocation::CheckTypeSource => std::process::exit(check_type_source()),
+        Invocation::Export(export) => {
+            std::process::exit(brightfield_shell::export::run_cli(&export))
+        }
+        Invocation::ExportUsage(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
         Invocation::Run(args) => args,
     };
 
@@ -1187,6 +1231,9 @@ mod tests {
             Ok(Invocation::Version) => panic!("expected Run, got Version"),
             Ok(Invocation::Help) => panic!("expected Run, got Help"),
             Ok(Invocation::CheckTypeSource) => panic!("expected Run, got CheckTypeSource"),
+            Ok(Invocation::Export(_) | Invocation::ExportUsage(_)) => {
+                panic!("expected Run, got an export")
+            }
             Err(e) => panic!("expected Run, got Err: {e}"),
         }
     }

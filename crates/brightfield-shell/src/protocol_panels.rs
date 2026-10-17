@@ -538,7 +538,7 @@ fn collect_marks<'a>(node: &'a Value, into: &mut Vec<&'a Value>) {
 /// outside the snapshot folder. Callers pass the name in lower case, so two
 /// names differing only in case, which are one table to DuckDB, are one file,
 /// and a case-insensitive file system cannot fold two copies together.
-fn parquet_name(table: &str) -> String {
+pub(crate) fn parquet_name(table: &str) -> String {
     let mut name = String::with_capacity(table.len() + 8);
     for byte in table.bytes() {
         if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' {
@@ -552,7 +552,7 @@ fn parquet_name(table: &str) -> String {
 }
 
 /// `text` as a SQL string literal.
-fn sql_string(text: &str) -> String {
+pub(crate) fn sql_string(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
 }
 

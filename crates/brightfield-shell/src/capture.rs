@@ -858,6 +858,19 @@ pub fn capture_vello_only(
     scale: f32,
     out: &Path,
 ) -> Result<(u32, u32), String> {
+    let img = render_composed(composed, scale)?;
+    img.save(out)
+        .map_err(|e| format!("write {}: {e}", out.display()))?;
+    Ok(img.dimensions())
+}
+
+/// Render a composed dashboard to an RGBA raster on a dedicated device, `scale`
+/// device pixels to a logical pixel: the picture [`capture_vello_only`] saves,
+/// and what a headless PNG export writes.
+///
+/// # Errors
+/// Returns a message on GPU failure.
+pub fn render_composed(composed: Composed, scale: f32) -> Result<image::RgbaImage, String> {
     let dev_w = ((composed.width as f32) * scale).round().max(1.0) as u32;
     let dev_h = ((composed.height as f32) * scale).round().max(1.0) as u32;
     let mut scaled = vello::Scene::new();
@@ -870,11 +883,8 @@ pub fn capture_vello_only(
         .lock()
         .expect("renderer poisoned")
         .render_to_pixels(&scaled, dev_w, dev_h);
-    let img = image::RgbaImage::from_raw(dev_w, dev_h, pixels)
-        .ok_or_else(|| "vello pixel buffer size mismatch".to_string())?;
-    img.save(out)
-        .map_err(|e| format!("write {}: {e}", out.display()))?;
-    Ok((dev_w, dev_h))
+    image::RgbaImage::from_raw(dev_w, dev_h, pixels)
+        .ok_or_else(|| "vello pixel buffer size mismatch".to_string())
 }
 
 /// Fit-and-pad (letterbox) a capture into exactly `w`×`h` — the shape a
