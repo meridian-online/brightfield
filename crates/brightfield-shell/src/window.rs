@@ -9473,9 +9473,10 @@ impl MeridianApp {
         ctx.request_repaint_after(crate::panel_tiles::RUN_CHECK_EVERY);
         if tiles.reload_due() {
             // The rails are read again when `PanelTiles::reload` says what
-            // they read may have moved, and not on every reload: reading them
-            // resets the rail's cursor and what it expanded
-            // (`panels_added_to_a_protocol_without_any_open_as_tiles`).
+            // they read may have moved
+            // (`panels_added_to_a_protocol_without_any_open_as_tiles`), and
+            // not on every reload, since reading them resets the rail's
+            // cursor and what it expanded.
             if tiles.reload() {
                 self.refresh_agent_protocol();
             }

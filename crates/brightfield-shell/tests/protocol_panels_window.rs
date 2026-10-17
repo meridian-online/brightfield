@@ -530,21 +530,11 @@ fn panels_added_to_a_protocol_without_any_open_as_tiles() {
     let problem = |win: &Window| win.app.panel_tiles().and_then(|t| t.problem()).cloned();
     assert!(matches!(problem(&win), Some(OpenProblem::NotRun { .. })));
 
-    // Until the change lands, frames are drawn on the tiles' own check cadence.
-    let until = |win: &mut Window, what: &str, done: &dyn Fn(&Window) -> bool| {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !done(win) {
-            assert!(Instant::now() < deadline, "{what}");
-            std::thread::sleep(Duration::from_millis(50));
-            win.run(Vec::new());
-        }
-    };
-
     // The agent takes every panel away: the tiles say there are none.
     let panels_dir = copy.dir.join("panels");
     let aside = copy.dir.join("panels-aside");
     std::fs::rename(&panels_dir, &aside).unwrap();
-    until(
+    frames_until(
         &mut win,
         "the tiles never said there were no panels",
         &|w| matches!(problem(w), Some(OpenProblem::NoPanels { .. })),
@@ -554,24 +544,85 @@ fn panels_added_to_a_protocol_without_any_open_as_tiles() {
     // A run made outside the window: the tiles still have no panels, and the
     // rail reads the run.
     run_protocol(&copy.dir);
-    until(&mut win, "the rail never read the run", &|w| {
+    frames_until(&mut win, "the rail never read the run", &|w| {
         w.app.protocol_model().last_run_word() != "not run"
     });
     assert!(matches!(problem(&win), Some(OpenProblem::NoPanels { .. })));
 
-    // The agent writes its panels: the tiles open from the run.
+    // The agent writes its panels one at a time: the first opens the tiles
+    // from the run, and the second joins them.
     std::fs::create_dir(&panels_dir).unwrap();
-    for entry in std::fs::read_dir(&aside).unwrap() {
-        let from = entry.unwrap().path();
-        std::fs::copy(&from, panels_dir.join(from.file_name().unwrap())).unwrap();
-    }
-    until(&mut win, "the panels never opened as tiles", &|w| {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&aside)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    files.sort();
+    let place = |from: &Path| {
+        std::fs::copy(from, panels_dir.join(from.file_name().unwrap())).unwrap();
+    };
+    place(&files[0]);
+    frames_until(&mut win, "the first panel never opened as a tile", &|w| {
         w.app.panel_tiles().and_then(|t| t.panels()).is_some()
     });
+    assert_eq!(win.panels().tiles.len(), 1);
+    place(&files[1]);
+    frames_until(&mut win, "the second panel never joined the tiles", &|w| {
+        w.panels().tiles.len() == 2
+    });
     win.settle();
-    assert_eq!(win.panels().tiles.len(), 2);
     assert!(win.panels().tiles.iter().all(|t| t.outcome.is_ok()));
     assert_eq!(win.app.panel_tiles().unwrap().drawn().len(), 2);
+}
+
+/// Open tiles see a chart the agent adds, and one it rewrites, without a run.
+#[test]
+fn a_panel_added_or_rewritten_reloads_the_open_tiles() {
+    let ran = ran_fixture(CO2);
+    let mut win = Window::over(open(&ran.dir));
+    assert_eq!(win.panels().tiles.len(), 2);
+    let run = win.panels().run_id.clone();
+
+    let added = "panels/co2_per_capita_change_pct_copy.yaml";
+    std::fs::copy(ran.dir.join(CHANGE), ran.dir.join(added)).unwrap();
+    frames_until(&mut win, "the added panel never showed", &|w| {
+        w.panels().tiles.len() == 3
+    });
+    assert!(win
+        .panels()
+        .tiles
+        .iter()
+        .any(|t| t.file == Path::new(added)));
+
+    let title = "Per-capita CO2, rewritten";
+    edit(
+        &ran.dir.join(CHANGE),
+        "title: Change in per-capita CO2, 1990 to 2024 (percent)",
+        &format!("title: {title}"),
+    );
+    frames_until(&mut win, "the rewritten title never showed", &|w| {
+        w.panels()
+            .tiles
+            .iter()
+            .any(|t| t.file == Path::new(CHANGE) && t.title.as_deref() == Some(title))
+    });
+    win.settle();
+    assert_eq!(
+        win.panels().run_id,
+        run,
+        "the tiles still draw the same run"
+    );
+    assert!(win.panels().tiles.iter().all(|t| t.outcome.is_ok()));
+    assert_eq!(win.app.panel_tiles().unwrap().drawn().len(), 3);
+}
+
+/// Draw frames, on the tiles' own check cadence, until `done` holds.
+fn frames_until(win: &mut Window, what: &str, done: &dyn Fn(&Window) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !done(win) {
+        assert!(Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(50));
+        win.run(Vec::new());
+    }
 }
 
 /// Going back to every tile would drop an edit no file holds, so the window
