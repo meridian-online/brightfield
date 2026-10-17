@@ -736,3 +736,57 @@ fn the_rail_reads_the_protocols_newest_run() {
     );
     assert!(!win.drew("not run"), "{:?}", win.texts);
 }
+
+/// Esc that takes a text field's keyboard away is the field's: the open panel
+/// stays. The next Esc, with no field holding the keyboard, goes back.
+#[test]
+fn escape_leaves_a_text_field_before_it_leaves_the_panel() {
+    let ran = ran_fixture(CO2);
+    let mut win = Window::over(open(&ran.dir));
+    let at = win.open_bar_tile();
+    // The spec editor, in the ledger, holds the panel's text: click into it.
+    let tab = win.text_at("Editor");
+    win.click(tab.center());
+    let line = win
+        .text_rects
+        .iter()
+        .find(|(t, _)| t.contains("xLabel"))
+        .map(|(_, r)| *r)
+        .unwrap_or_else(|| panic!("the editor drew no panel text: {:?}", win.texts));
+    win.click(line.center());
+    assert!(
+        win.ctx.memory(|m| m.focused().is_some()),
+        "the editor did not take the keyboard"
+    );
+
+    win.key(egui::Key::Escape);
+    assert!(
+        win.ctx.memory(|m| m.focused().is_none()),
+        "Esc left the field focused"
+    );
+    assert_eq!(
+        win.selected(),
+        Some(at),
+        "Esc left the panel with the field"
+    );
+
+    win.key(egui::Key::Escape);
+    assert_eq!(win.selected(), None, "the second Esc did not go back");
+}
+
+/// With a panel open the window is titled by the locator's crumbs, and the
+/// locator's right edge names the panel as its tile does.
+#[test]
+fn an_open_panel_titles_the_window_and_the_locator_by_its_name() {
+    let ran = ran_fixture(CO2);
+    let mut win = Window::over(open(&ran.dir));
+    win.open_bar_tile();
+    let crumbs = "Protocol \u{b7} co2-per-capita \u{203a} co2_per_capita_change_pct";
+    assert_eq!(win.app.title(), crumbs);
+    assert!(win.texts.iter().any(|t| t == crumbs), "{:?}", win.texts);
+    assert!(
+        !win.texts.iter().any(|t| t.ends_with(".yaml")),
+        "the window spells a panel's extension: {:?}",
+        win.texts
+    );
+}

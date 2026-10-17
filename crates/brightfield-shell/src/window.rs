@@ -2702,6 +2702,12 @@ pub struct MeridianApp {
     /// Where the locator band drew the Protocol's crumb as the way back to
     /// every panel tile, on the last frame that drew one.
     crumb_link_rect: Option<egui::Rect>,
+    /// Whether a widget held the keyboard at the end of the last frame drawn:
+    /// what tells an Esc that leaves a field from one that leaves a panel.
+    keyboard_held: bool,
+    /// The panel tile open when the OS window was last titled, so a tile
+    /// opened or closed re-titles it.
+    titled_tile: Option<usize>,
 }
 
 impl MeridianApp {
@@ -2759,18 +2765,15 @@ impl MeridianApp {
         }
         doc.set_stacked_tiles(boot.stacked_tiles);
         let model = ProtocolModel::new(boot.protocol, boot.flow);
-        let mut app = Self::assemble(
+        Self::assemble(
             boot.focus,
             opened_id,
             layout,
             doc,
             ProtocolDoc::new(model, protocol_host),
+            tiles,
             mode,
-        );
-        app.tiles = tiles;
-        app.reconcile_canvas_holds();
-        app.apply_rail_defaults();
-        app
+        )
     }
 
     /// The same window over documents with no device behind them.
@@ -2809,30 +2812,29 @@ impl MeridianApp {
         }
         doc.set_stacked_tiles(boot.stacked_tiles);
         let model = ProtocolModel::new(boot.protocol, boot.flow);
-        let mut app = Self::assemble(
+        Self::assemble(
             boot.focus,
             opened_id,
             layout,
             doc,
             ProtocolDoc::headless(model),
+            tiles,
             mode,
-        );
-        app.tiles = tiles;
-        app.reconcile_canvas_holds();
-        app.apply_rail_defaults();
-        app
+        )
     }
 
     /// Assemble a window from its parts. `opened_id` is
     /// [`Boot::opened_id`] — the id, if the route that built the boot knew
     /// one, `layout` is consulted under to seed the grid pane's opening
     /// state; see that field's own docs for who sets it and why.
+    #[allow(clippy::too_many_arguments)]
     fn assemble(
         focus: Option<String>,
         opened_id: Option<String>,
         mut layout: SavedLayout,
         mut chart_doc: ChartDoc,
         mut protocol_doc: ProtocolDoc,
+        tiles: Option<PanelTiles>,
         mode: Mode,
     ) -> Self {
         // Both registries' vocabularies, published before any layout file
@@ -3043,9 +3045,14 @@ impl MeridianApp {
             diagnostic_banners: Vec::new(),
             toasts: ToastLayer::new(),
             rail: chrome::StatusDrawn::default(),
-            tiles: None,
+            // In place before the reconcile and the rail defaults below, so
+            // the one pass of each sees them and the grid's spot, put through
+            // its move after the defaults, has the last word on the ledger.
+            tiles,
             rails_shut_for_tiles: false,
             crumb_link_rect: None,
+            keyboard_held: false,
+            titled_tile: None,
         };
         // What the canvas holds, before the first frame and from the same two
         // documents the arrangement above was derived from.
@@ -3710,6 +3717,11 @@ impl MeridianApp {
     /// photographs this band would be a baseline of one developer's home
     /// directory. The file name is the part the reader wrote.
     fn document_source(&self) -> Option<String> {
+        // A Protocol's panel is named as its tile names it, without `.yaml`;
+        // its path is the tooltip ([`Self::document_source_about`]).
+        if let Some(file) = self.open_tile_file() {
+            return Some(crate::panel_tiles::panel_name(&file));
+        }
         self.charts
             .doc
             .spec_path
@@ -4569,6 +4581,13 @@ impl MeridianApp {
             self.title_marked = marked;
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         }
+        // …and when a Protocol's panel opened from its tile, or the tiles came
+        // back, since the last frame: the title is the crumbs, which moved.
+        let open_tile = self.tiles.as_ref().and_then(PanelTiles::selected);
+        if open_tile != self.titled_tile {
+            self.titled_tile = open_tile;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        }
 
         // **The grid's density is a fact about this frame's layout, so it is
         // cleared at the head of each frame.** The canvas branches below each
@@ -4906,6 +4925,7 @@ impl MeridianApp {
             let crumbs = self.crumb_line();
             let counts = self.locator_counts();
             let source = self.document_source();
+            let source_about = self.document_source_about();
             // With a Protocol's panel open from its tile, the Protocol's crumb
             // is the way back to every tile.
             let crumb_link = self
@@ -4923,6 +4943,7 @@ impl MeridianApp {
                         &crumbs,
                         counts.as_deref(),
                         source.as_deref(),
+                        source_about.as_deref(),
                         crumb_link,
                         mode,
                     )
@@ -5825,6 +5846,7 @@ impl MeridianApp {
         self.notifications.show(&ctx);
         self.toasts.show(&ctx);
 
+        self.keyboard_held = ctx.memory(|m| m.focused().is_some());
         self.sweep();
     }
 
@@ -9307,7 +9329,12 @@ impl MeridianApp {
             .tiles
             .as_ref()
             .is_some_and(|tiles| tiles.selected().is_some());
+        // A widget that held the keyboard at the end of the last frame takes
+        // this Esc as its way out: egui lets go of the focused widget on a
+        // bare Esc as the frame begins, so the focus asked about below has
+        // already gone by the time this runs.
         if !open
+            || self.keyboard_held
             || self.overlay.is_some()
             || ctx.egui_wants_keyboard_input()
             || self.shelf_holds_keys()
@@ -9319,6 +9346,20 @@ impl MeridianApp {
             self.back_to_panel_tiles();
             ctx.request_repaint();
         }
+    }
+
+    /// The open tile's panel file, relative to its Protocol, when one is open.
+    fn open_tile_file(&self) -> Option<PathBuf> {
+        let tiles = self.tiles.as_ref()?;
+        let panels = tiles.panels()?;
+        Some(panels.tiles.get(tiles.selected()?)?.file.clone())
+    }
+
+    /// What the locator band's source says when it is hovered: the open
+    /// panel's path and kind, the tooltip its tile carries.
+    fn document_source_about(&self) -> Option<String> {
+        self.open_tile_file()
+            .map(|file| crate::panel_tiles::panel_about(&file))
     }
 
     /// The panel file of the tile open as the chart document, when one is.
@@ -9402,10 +9443,10 @@ impl MeridianApp {
         // The open panel's session reads the snapshot; it goes before the
         // snapshot is made again.
         self.open_chart(Composed::empty());
-        if let Some(tiles) = self.tiles.as_mut() {
-            tiles.reload();
+        let moved = self.tiles.as_mut().is_some_and(PanelTiles::reload);
+        if moved {
+            self.refresh_agent_protocol();
         }
-        self.refresh_agent_protocol();
         self.documents_changed();
         true
     }
@@ -9421,8 +9462,11 @@ impl MeridianApp {
         };
         ctx.request_repaint_after(crate::panel_tiles::RUN_CHECK_EVERY);
         if tiles.reload_due() {
-            tiles.reload();
-            self.refresh_agent_protocol();
+            // The rails are read again only when the run they read moved:
+            // reading them resets the rail's cursor and what it expanded.
+            if tiles.reload() {
+                self.refresh_agent_protocol();
+            }
             ctx.request_repaint();
         }
     }
@@ -9606,6 +9650,7 @@ impl MeridianApp {
             if tiles.selected().is_none() {
                 tiles.reload();
             }
+            // A run landed, so the run records the rails read have moved.
             self.refresh_agent_protocol();
             let banner = NotificationId::new("run-protocol");
             if finished.succeeded && finished.record.is_some() {
@@ -12727,6 +12772,7 @@ fn locator_band_ui(
     crumbs: &[String],
     counts: Option<&str>,
     source: Option<&str>,
+    source_about: Option<&str>,
     link_first: bool,
     mode: Mode,
 ) -> Option<(egui::Rect, bool)> {
@@ -12734,13 +12780,18 @@ fn locator_band_ui(
     let sem = semantic(mode.is_dark());
     let rect = ui.max_rect();
     if let Some(source) = source {
-        ui.painter().text(
+        let drawn = ui.painter().text(
             egui::pos2(rect.right() - spacing::SPACE_4, rect.center().y),
             egui::Align2::RIGHT_CENTER,
             source,
             egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0),
             chrome::colour(sem.text.muted),
         );
+        if let Some(about) = source_about {
+            let _ = ui
+                .interact(drawn, ui.id().with("locator-source"), egui::Sense::hover())
+                .on_hover_text(about);
+        }
     }
     let mut x = rect.left() + spacing::SPACE_4;
     for (i, crumb) in crumbs.iter().enumerate() {

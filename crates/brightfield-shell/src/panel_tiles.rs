@@ -248,8 +248,13 @@ impl PanelTiles {
     }
 
     /// Open the Protocol again, from its newest run, composing the tiles at the
-    /// size and mode they were last composed at.
-    pub fn reload(&mut self) {
+    /// size and mode they were last composed at. Answers whether the run the
+    /// tiles are drawn from, or whether they opened at all, changed.
+    pub fn reload(&mut self) -> bool {
+        let before = (
+            self.state.is_ok(),
+            self.panels().and_then(|p| p.run_id.clone()),
+        );
         let (body, mode) = self
             .composed_at
             .unwrap_or((egui::vec2(MIN_TILE_WIDTH, MIN_TILE_HEIGHT), Mode::Light));
@@ -267,6 +272,11 @@ impl PanelTiles {
         self.run_mark = run_mark(&self.dir);
         self.generation += 1;
         self.selected = None;
+        before
+            != (
+                self.state.is_ok(),
+                self.panels().and_then(|p| p.run_id.clone()),
+            )
     }
 
     /// Draw the tiles across `area`, or the Protocol's problem when it did not
