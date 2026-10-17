@@ -6290,6 +6290,54 @@ mod tests {
         assert_eq!(count_scene_paths(&scene), 4);
     }
 
+    #[test]
+    fn line_and_line_y_lay_out_out_of_order_dates_in_time_order() {
+        use arrow::array::Date32Array;
+        let make = |days: Vec<i32>, ys: Vec<f64>| {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("x", DataType::Date32, false),
+                Field::new("y", DataType::Float64, false),
+            ]));
+            RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(Date32Array::from(days)),
+                    Arc::new(Float64Array::from(ys)),
+                ],
+            )
+            .unwrap()
+        };
+        let ordered = make(vec![19000, 19031, 19060], vec![1.0, 5.0, 2.0]);
+        let shuffled = make(vec![19060, 19000, 19031], vec![2.0, 1.0, 5.0]);
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+
+        // The band's categories, so the axis, run in ascending date order.
+        let scales = infer_scales(&shuffled, &cm, (40.0, 600.0), (450.0, 20.0));
+        let Some(Scale::Band { categories, .. }) = scales.get(Channel::X) else {
+            panic!("a DATE axis is a band");
+        };
+        let mut ascending = categories.clone();
+        ascending.sort();
+        assert_eq!(categories, &ascending);
+        assert_eq!(categories.first().map(String::as_str), Some("2022-01-08"));
+
+        // And both line kinds draw the shuffled rows exactly as the ordered ones.
+        let registry = default_renderers();
+        for kind in [MarkKind::Line, MarkKind::LineY] {
+            let renderer = find_renderer(&registry, kind).expect("registered");
+            let draw = |batch: &RecordBatch| {
+                let mut scene = Scene::new();
+                renderer.render(&mut scene, batch, &cm, &scales, None);
+                scene.encoding().path_data.clone()
+            };
+            let (a, b) = (draw(&ordered), draw(&shuffled));
+            assert!(!a.is_empty(), "{kind:?} draws on a date axis");
+            assert_eq!(a, b, "{kind:?} must not depend on row order");
+        }
+    }
+
     // --- mark breadth: areaY ---
 
     #[test]

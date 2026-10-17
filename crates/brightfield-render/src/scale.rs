@@ -2720,9 +2720,7 @@ fn infer_column_scale(
         }
         // A day is a discrete thing to count rows in, so a `DATE` column takes
         // a band and NOT the `Scale::Time` a timestamp takes. Each day is one
-        // category, named by its ISO spelling, in first-seen row order — the
-        // same rule the `Utf8` arm below follows, so a query ordered by the
-        // date column draws its days left to right in time order.
+        // category, named by its ISO spelling and laid out in time order.
         //
         // A value with no calendar date behind it is skipped rather than
         // failing the whole scale: one unrepresentable row would otherwise
@@ -2741,6 +2739,9 @@ fn infer_column_scale(
                     }
                 }
             }
+            // ISO spellings sort in time order, so the days run left to right
+            // whatever order the rows arrive in.
+            categories.sort();
             Some(Scale::Band {
                 categories,
                 range_start,
