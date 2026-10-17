@@ -3251,7 +3251,7 @@ fn current_setting(conn: &Connection, name: &str) -> Option<String> {
 ///
 /// 8 MiB, and the reason is that a budget can be small enough to take the
 /// connection down with it. Measured on this build's DuckDB (`SELECT
-/// version()` reports `v1.5.2`), `SET memory_limit='1B'` leaves the session
+/// version()` reports `v1.5.6`), `SET memory_limit='1B'` leaves the session
 /// answering `Out of Memory Error` to `RESET memory_limit` itself — so the
 /// budget could not be lifted afterwards and the next ordinary query failed
 /// too. 8 MiB is the smallest value measured to refuse an over-budget copy

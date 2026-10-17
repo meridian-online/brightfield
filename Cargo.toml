@@ -24,8 +24,9 @@ repository = "https://github.com/meridian-online/brightfield"
 # dependency in `[workspace.dependencies]`, used by `brightfield-protocol` and
 # `brightfield-shell` (README §"The arcform dependency" has the bump procedure).
 # arc parses SQL with its own sqlparser fork, which it publishes as
-# `arcform-sqlparser`, so arc resolves it from crates.io and this workspace carries
-# no `[patch.crates-io]` for it; the workspace's own sqlparser 0.61 is untouched.
+# `arcform-sqlparser`; arcform declares it as a path dependency inside its own repo,
+# so Cargo.lock resolves it from the arc git rev and this workspace carries no
+# `[patch.crates-io]` for it. The workspace's own sqlparser 0.61 is untouched.
 
 # Every dependency two or more members share is declared here once; a member names
 # it with `workspace = true` and adds only the features that member alone needs.

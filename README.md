@@ -106,7 +106,7 @@ The system comprises four layers:
 One native binary, no runtime dependencies beyond the OS graphics stack — no
 server, no webview, no language runtime, and no network required to start,
 render, or open a local protocol. A release artifact carries one more
-executable: the official DuckDB v1.5.2 command-line shell (`engine/duckdb` in
+executable: the official DuckDB v1.5.6 command-line shell (`engine/duckdb` in
 the tarball, `Contents/Helpers/duckdb` in the app), which the Run control hands
 a Protocol's SQL steps to so a run needs nothing installed.
 `scripts/fetch-duckdb-cli.sh` pins it by sha256; `scripts/package.sh` stages it
@@ -246,7 +246,7 @@ the caller's argv, so it is switched off). `brightfield-protocol` and `brightfie
 both inherit that one entry; the shell adds the `cli` feature to run a Protocol as a child
 process. Treat every bump as potentially breaking and move deliberately.
 
-**The sqlparser fork.** arc parses SQL with its own fork of sqlparser 0.55, which arcform publishes as `arcform-sqlparser`, so arc resolves it from crates.io and this workspace carries no `[patch.crates-io]` for it. The workspace's own newer `sqlparser` keeps coming from crates.io too. The upstream package is named `arcform`; the root entry says `package = "arcform"` so the crate stays `arc` in this workspace's source.
+**The sqlparser fork.** arc parses SQL with its own fork of sqlparser 0.55, which arcform publishes as `arcform-sqlparser`. arcform declares it as a path dependency inside its own repo, so Cargo.lock resolves it from the arc git rev and this workspace carries no `[patch.crates-io]` for it. The workspace's own newer `sqlparser` keeps coming from crates.io too. The upstream package is named `arcform`; the root entry says `package = "arcform"` so the crate stays `arc` in this workspace's source.
 
 **To bump the pin**, move two things in lockstep, in one commit:
 
@@ -256,7 +256,7 @@ process. Treat every bump as potentially breaking and move deliberately.
    fresh resolve can still float its deps), pin it back with
    `cargo update <crate>@<ver> --precise <ok-ver>`.
 
-arc pins `duckdb` exactly, so a bump that moves arc's DuckDB moves the workspace `duckdb` pin and the CLI pin in `scripts/fetch-duckdb-cli.sh` with it.
+arc pins `duckdb` exactly, so a bump that moves arc's DuckDB moves the workspace `duckdb` pin and the CLI pin in `scripts/fetch-duckdb-cli.sh` with it, and the version named in the Distribution section above. The packaging scripts read the CLI version from that pin.
 
 **What tells you the pin has gone stale.** Not a person. The pin drifted three weeks behind
 arcform's operator catalog once, and the first signal was somebody opening a shipped Protocol
