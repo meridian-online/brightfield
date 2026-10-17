@@ -408,7 +408,7 @@ pub fn protocol_tables(panel: &str) -> Vec<String> {
 /// tables named in `injected` taken out again, so a panel opened against the
 /// snapshot is saved as the panel it was.
 ///
-/// An entry is taken out only when it is one [`with_protocol_tables`] writes:
+/// An entry is taken out when it is one [`with_protocol_tables`] writes:
 /// a table named in `injected` whose source is a mapping holding a `file:`
 /// naming a `.parquet` file and nothing else. A `data:` left empty by that is
 /// taken out too, since the panel read those tables from the database and

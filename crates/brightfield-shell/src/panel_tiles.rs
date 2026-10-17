@@ -12,11 +12,11 @@
 //!
 //! A tile that drew opens as the chart document when it is clicked
 //! ([`TilesAction::Open`]); the window draws [`back_band`] above it, the way
-//! back to every tile. A Protocol that has not run has no tables to draw, and
+//! back to the tiles. A Protocol that has not run has no tables to draw, and
 //! says so across the canvas with a Run ([`TilesAction::Run`]).
 //!
 //! **A new run reloads the tiles.** [`PanelTiles::reload_due`] looks at the
-//! Protocol's run records at most every [`RUN_CHECK_EVERY`]: a listing of one
+//! Protocol's run records at most once per [`RUN_CHECK_EVERY`]: a listing of one
 //! folder, and arc's own read of the newest record only when that listing
 //! changed, so a frame does no more than a directory read.
 

@@ -1870,7 +1870,8 @@ impl ChartDoc {
     /// What is written is read and placed as [`Self::save_chart_beside`] says,
     /// and then has the table entries [`Self::protocol_tables`] names taken out
     /// ([`strip_protocol_tables`](crate::protocol_panels::strip_protocol_tables)),
-    /// so the snapshot a tile was drawn from never reaches the panel's file.
+    /// so the snapshot a tile was drawn from stays out of the panel's file
+    /// (`saving_a_tile_writes_the_panel_without_injected_tables`).
     ///
     /// # Errors
     ///
