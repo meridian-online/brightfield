@@ -106,25 +106,70 @@ pub(crate) fn plot_title_baseline() -> f64 {
 /// Called only when the plot declares a title (so the top margin has grown
 /// to make room).
 ///
-/// A title wider than the chart is set smaller until it fits, down to the axis
-/// title's size ([`heading_size_for`]), so a long title is read whole rather
-/// than cut at the chart's edge.
+/// A title wider than the chart wraps onto a second line at the same size
+/// ([`heading_lines`]), so headings side by side are the one size; only one
+/// that two lines cannot hold is set smaller.
 pub fn render_plot_title(scene: &mut Scene, layout: &ChartLayout, title: &str, ink: ChartInk) {
-    let size = heading_size_for(title, layout.width);
-    draw_heading(scene, title, 0.0, plot_title_baseline(), size, ink.title);
+    let heading = heading_lines(title, layout.width);
+    let mut baseline = plot_title_baseline();
+    for line in &heading.lines {
+        draw_heading(scene, line, 0.0, baseline, heading.size, ink.title);
+        baseline += HEADING_LINE_HEIGHT;
+    }
 }
 
-/// The size a plot title `title` is set at in a chart `width` wide: the
-/// heading's, or as much smaller as fits the width, never below the axis
-/// title's size.
+/// The distance between the baselines of a heading's two lines.
+pub const HEADING_LINE_HEIGHT: f64 = HEADING_SIZE as f64 * 1.25;
+
+/// A plot title as it is set: its lines, one or two, and their size.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeadingLines {
+    /// The lines, first first.
+    pub lines: Vec<String>,
+    /// The size every line is set at.
+    pub size: f32,
+}
+
+/// How the plot title `title` is set in a chart `width` wide: on one line at
+/// the heading size when it fits; else broken between words onto a second
+/// line at the same size; else, when two lines cannot hold it either, at the
+/// largest size at which two lines do, never below the axis title's size.
 #[must_use]
-pub fn heading_size_for(title: &str, width: f64) -> f32 {
-    let natural = measure_heading_width(title, HEADING_SIZE);
-    if natural <= width || natural <= 0.0 {
-        return HEADING_SIZE;
+pub fn heading_lines(title: &str, width: f64) -> HeadingLines {
+    if measure_heading_width(title, HEADING_SIZE) <= width {
+        return HeadingLines {
+            lines: vec![title.to_string()],
+            size: HEADING_SIZE,
+        };
     }
-    let fitted = (f64::from(HEADING_SIZE) * width / natural) as f32;
-    fitted.clamp(TITLE_SIZE, HEADING_SIZE)
+    let mut size = HEADING_SIZE;
+    loop {
+        let lines = wrap_in_two(title, width, size);
+        let fits = lines
+            .iter()
+            .all(|line| measure_heading_width(line, size) <= width);
+        if fits || size <= TITLE_SIZE {
+            return HeadingLines { lines, size };
+        }
+        size = (size - 0.5).max(TITLE_SIZE);
+    }
+}
+
+/// `title` broken between words into at most two lines at `size`: as many
+/// words on the first line as fit `width` (at least one), the rest on the
+/// second.
+fn wrap_in_two(title: &str, width: f64, size: f32) -> Vec<String> {
+    let words: Vec<&str> = title.split_whitespace().collect();
+    let mut first = 1;
+    while first < words.len() && measure_heading_width(&words[..=first].join(" "), size) <= width {
+        first += 1;
+    }
+    let (head, rest) = words.split_at(first.min(words.len()));
+    let mut lines = vec![head.join(" ")];
+    if !rest.is_empty() {
+        lines.push(rest.join(" "));
+    }
+    lines
 }
 
 /// Compute ticks for a scale.
@@ -1154,14 +1199,28 @@ mod tests {
     /// A title that fits is set at the heading size; a wider one is set as
     /// much smaller as fits, and never below an axis title.
     #[test]
-    fn a_long_heading_is_set_smaller_to_fit_its_chart() {
+    fn a_long_heading_wraps_to_two_lines_at_the_heading_size() {
         let title = "Per-capita CO2 since 1990, G7 countries vs China and India";
-        assert_eq!(heading_size_for("Fruit", 400.0), HEADING_SIZE);
+        let short = heading_lines("Fruit", 400.0);
+        assert_eq!(short.lines, ["Fruit"]);
+        assert_eq!(short.size, HEADING_SIZE);
+
         let wide = measure_heading_width(title, HEADING_SIZE);
-        let size = heading_size_for(title, wide * 0.8);
-        assert!((TITLE_SIZE..HEADING_SIZE).contains(&size), "{size}");
-        assert!(measure_heading_width(title, size) <= wide * 0.8 + 0.5);
-        assert_eq!(heading_size_for(title, 10.0), TITLE_SIZE);
+        let wrapped = heading_lines(title, wide * 0.7);
+        assert_eq!(wrapped.size, HEADING_SIZE, "{wrapped:?}");
+        assert_eq!(wrapped.lines.len(), 2, "{wrapped:?}");
+        assert_eq!(wrapped.lines.join(" "), title);
+        for line in &wrapped.lines {
+            assert!(
+                measure_heading_width(line, HEADING_SIZE) <= wide * 0.7,
+                "{line}"
+            );
+        }
+
+        // Too narrow for two lines at the heading size: set smaller.
+        let squeezed = heading_lines(title, wide * 0.3);
+        assert!(squeezed.size < HEADING_SIZE, "{squeezed:?}");
+        assert!(squeezed.size >= TITLE_SIZE);
     }
     use crate::layout::{ChartLayout, Insets, Margins};
     use crate::scale::Scale;

@@ -141,6 +141,19 @@ const _: () = assert!(TITLE_BAND == TITLE_SIZE as f64 + 8.0);
 pub const PLOT_TITLE_BAND: f64 = brightfield_spec::layout::PLOT_TITLE_BAND;
 const _: () = assert!(PLOT_TITLE_BAND == HEADING_SIZE as f64 + 14.0);
 
+/// [`grow_margins`] for a chart `width` wide: a plot title that wraps onto a
+/// second line there ([`crate::axis::heading_lines`]) grows the top by that
+/// line's height too.
+#[must_use]
+pub fn grow_margins_at(base: Margins, titles: &ResolvedTitles, width: f64) -> Margins {
+    let mut grown = grow_margins(base, titles);
+    if let Some(title) = titles.plot.as_deref() {
+        let lines = crate::axis::heading_lines(title, width).lines.len();
+        grown.top += crate::axis::HEADING_LINE_HEIGHT * (lines.saturating_sub(1) as f64);
+    }
+    grown
+}
+
 /// Grow the base margins to reserve a fixed band for each present title: a
 /// [`TITLE_BAND`] left for a y-title and bottom for an x-title, and a
 /// [`PLOT_TITLE_BAND`] top for a plot title.

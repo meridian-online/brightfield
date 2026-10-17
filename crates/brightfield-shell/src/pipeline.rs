@@ -65,7 +65,7 @@ use brightfield_render::scene::{
 use brightfield_render::selection::{
     committed_selection_rect, render_committed_selection, CommittedSelection, Selected,
 };
-use brightfield_render::{grow_margins, resolve_titles};
+use brightfield_render::{grow_margins_at, resolve_titles};
 use brightfield_spec::analysis::{
     analyse_spec, build_brushable_bindings, BrushKind, ComponentPath,
 };
@@ -2595,7 +2595,11 @@ fn compose_from_results(
             let plot_sample = chart_data.iter().find_map(|d| d.sample);
             let margins = rows_past_band_margins(
                 sample_band_margins(
-                    grow_margins(Margins::default().with_declared(declared_margins), &titles),
+                    grow_margins_at(
+                        Margins::default().with_declared(declared_margins),
+                        &titles,
+                        rect.width,
+                    ),
                     plot_sample.is_some(),
                 ),
                 &titles,
@@ -2606,9 +2610,11 @@ fn compose_from_results(
             for d in &mut chart_data {
                 d.layout = layout;
             }
-            // A title is drawn across the top margin with no width limit, so the
-            // band at a titled plot's right starts under that row rather than
-            // beside it, where its legend would cover the end of a long title.
+            // A title is the plot's heading, set across the plot's whole width,
+            // the band at its right included, and wrapped onto a second line
+            // when it is wider than that; so the band at a titled plot's right
+            // starts under the heading's lines rather than beside them, where
+            // its legend would cover the end of a long title.
             let legend_right = match legend_right {
                 Some(band) if titles.plot.is_some() => {
                     Some(crate::legend::below_title(band, layout.plot_y_start()))
