@@ -1452,6 +1452,9 @@ pub struct ColourOverride {
     /// ramp. A `colorRange` of two or more colours gives the steps their colours
     /// and their count, whatever this says.
     pub steps: Option<usize>,
+    /// Apply to a categorical colour scale only, leaving any ramp as it is: how
+    /// a plot with no dot reads the keys.
+    pub categorical_only: bool,
 }
 
 impl ColourOverride {
@@ -1482,6 +1485,17 @@ impl ColourOverride {
             domain,
             range,
             steps,
+            categorical_only: false,
+        }
+    }
+
+    /// This override as a plot with no dot reads it: its categories and colours
+    /// for a categorical scale, and nothing for a ramp.
+    #[must_use]
+    pub fn categorical_only(self) -> Self {
+        Self {
+            categorical_only: true,
+            ..self
         }
     }
 
@@ -1528,6 +1542,7 @@ pub fn apply_colour_override(set: &mut ScaleSet, ov: &ColourOverride) {
                     palette,
                 }
             }
+            Scale::Sequential { .. } | Scale::Diverging { .. } if ov.categorical_only => continue,
             Scale::Sequential {
                 domain_min,
                 domain_max,
@@ -3629,6 +3644,7 @@ mod tests {
             domain: None,
             range: Some(vec![[c1[0], c1[1], c1[2], 1.0], [c2[0], c2[1], c2[2], 1.0]]),
             steps: None,
+            categorical_only: false,
         };
         apply_colour_override(&mut set, &ov);
         let scale = set.get(Channel::Fill).expect("fill scale kept");
@@ -3656,6 +3672,7 @@ mod tests {
             domain: Some((0.0, 100.0)),
             range: Some(vec![lo, hi]),
             steps: None,
+            categorical_only: false,
         };
         apply_colour_override(&mut set, &ov);
         let scale = set.get(Channel::Fill).expect("fill scale kept");

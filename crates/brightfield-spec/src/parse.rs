@@ -896,6 +896,10 @@ pub enum ParseWarning {
     },
 }
 
+/// The words between the two numbers and the advice in the colours-repeat note,
+/// which a reader of diagnostics finds the note by.
+pub const COLOURS_REPEAT_MARK: &str = " colours, so colours repeat; ";
+
 impl fmt::Display for ParseWarning {
     /// One honest line per warning — what was seen and what it cost.
     ///
@@ -1151,8 +1155,8 @@ impl fmt::Display for ParseWarning {
                 palette,
             } => write!(
                 f,
-                "{categories} series share {palette} colours, so colours repeat; highlight the \
-                 series that matter, fold the rest into \"Other\", or split the chart"
+                "{categories} series share {palette}{COLOURS_REPEAT_MARK}highlight the series \
+                 that matter, fold the rest into \"Other\", or split the chart"
             ),
         }
     }

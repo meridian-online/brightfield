@@ -480,12 +480,16 @@ impl PanelTiles {
                 };
                 let page = egui::Rect::from_min_size(body.min + egui::vec2(0.0, top), size);
                 if let Some(note) = note {
-                    let galley = body_ui.painter().layout(
+                    // At most two lines, cut with an ellipsis, so the note stays
+                    // inside the band the chart was composed to leave however
+                    // narrow the tile is.
+                    let mut job = egui::text::LayoutJob::single_section(
                         note.to_string(),
-                        ui_font(),
-                        chrome::colour(sem.text.secondary),
-                        body.width(),
+                        egui::TextFormat::simple(ui_font(), chrome::colour(sem.text.secondary)),
                     );
+                    job.wrap.max_width = body.width();
+                    job.wrap.max_rows = 2;
+                    let galley = body_ui.painter().layout_job(job);
                     body_ui
                         .painter()
                         .galley(body.min, galley, chrome::colour(sem.text.secondary));

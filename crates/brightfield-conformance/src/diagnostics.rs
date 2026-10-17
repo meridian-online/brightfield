@@ -18,6 +18,7 @@
 
 use std::fmt;
 
+use brightfield_spec::parse::COLOURS_REPEAT_MARK;
 use brightfield_spec::{ImplStatus, ParseWarning, Spec};
 
 use crate::support::{preflight, SupportReport};
@@ -253,9 +254,6 @@ impl LoadDiagnostics {
         self.diagnostics.iter().map(ToString::to_string).collect()
     }
 }
-
-/// The words of the colours-repeat note that no other diagnostic carries.
-const COLOURS_REPEAT_MARK: &str = " colours, so colours repeat; ";
 
 /// The wire name a warning is about, or empty when it is about no one name.
 fn warning_wire_name(warning: &ParseWarning) -> String {

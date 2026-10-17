@@ -310,6 +310,34 @@ fn the_line_tile_says_its_colours_repeat_and_the_bar_tile_does_not() {
     );
 }
 
+/// In the narrowest window the note stays within its band, whatever it has to
+/// give up to do so, and the chart starts below it.
+#[test]
+fn the_note_stays_in_its_band_in_a_narrow_window() {
+    let ran = ran_fixture(CO2);
+    let mut win = Window::over(open(&ran.dir));
+    win.screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(560.0, 820.0));
+    win.settle();
+    let line = win
+        .app
+        .panel_tiles()
+        .expect("tiles")
+        .drawn()
+        .iter()
+        .find(|t| t.file != Path::new(CHANGE))
+        .expect("the line tile")
+        .body;
+    let (_, at) = win
+        .text_rects
+        .iter()
+        .find(|(t, _)| t.contains("colours repeat") || t.contains("series share"))
+        .unwrap_or_else(|| panic!("no note drawn: {:?}", win.texts));
+    assert!(
+        at.bottom() <= line.top() + brightfield_shell::protocol_panels::REPEAT_NOTE_HEIGHT as f32,
+        "the note overruns its band: {at:?} in {line:?}"
+    );
+}
+
 #[test]
 fn a_broken_tile_shows_its_message() {
     let ran = ran_fixture(CO2);

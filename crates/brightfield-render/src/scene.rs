@@ -695,6 +695,36 @@ pub fn colour_override_applies(marks: &[MarkKind]) -> bool {
     colour_reverse_applies(marks)
 }
 
+/// Whether a plot's `colorDomain` and `colorRange` set its **categorical** colour
+/// scale: when the plot drew a line, an area, a bar, a rectangle, a cell or text.
+///
+/// These marks take their categories from a `stroke` or `fill` column, and an
+/// author who writes the colours (one for the series that matters, grey for the
+/// rest) means them. They take no ramp from the keys: a cell's number fill keeps
+/// the ramp it draws, as [`colour_override_applies`] says, so the composition
+/// reads only the categorical half for them
+/// (`a_cell_a_heatmap_and_a_raster_keep_their_ramp`).
+#[must_use]
+pub fn colour_categories_apply(marks: &[MarkKind]) -> bool {
+    marks.iter().any(|kind| {
+        matches!(
+            kind,
+            MarkKind::AreaY
+                | MarkKind::AreaX
+                | MarkKind::BarY
+                | MarkKind::BarX
+                | MarkKind::Cell
+                | MarkKind::Line
+                | MarkKind::LineX
+                | MarkKind::LineY
+                | MarkKind::Rect
+                | MarkKind::RectX
+                | MarkKind::RectY
+                | MarkKind::Text
+        )
+    })
+}
+
 /// Whether a plot's `colorReverse` runs its colour the other way: when a dot is
 /// among the marks the plot drew.
 ///

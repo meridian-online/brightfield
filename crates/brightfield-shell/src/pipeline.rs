@@ -58,9 +58,9 @@ use brightfield_render::scale::{
     SequentialScheme, ViewExtent,
 };
 use brightfield_render::scene::{
-    axis_ends_apply, axis_keys_apply, build_multi_mark_scene_pinned, colour_override_applies,
-    colour_reverse_applies, compose_dashboard, plot_axis_targets, unrestorable_under_sampling,
-    written_ends_held, ChartData, UnsampledDomains,
+    axis_ends_apply, axis_keys_apply, build_multi_mark_scene_pinned, colour_categories_apply,
+    colour_override_applies, colour_reverse_applies, compose_dashboard, plot_axis_targets,
+    unrestorable_under_sampling, written_ends_held, ChartData, UnsampledDomains,
 };
 use brightfield_render::selection::{
     committed_selection_rect, render_committed_selection, CommittedSelection, Selected,
@@ -2687,12 +2687,22 @@ fn compose_from_results(
             // `colorDomain` and `colorRange` — and the steps it cuts the ramp into,
             // `colorScale: quantize` with `colorN`, read from the spec this
             // composition draws so a param that holds any of them is read as it
-            // stands now. The dots are the marks that take them, as they are
-            // `colorReverse`'s: a plot with no dot among its marks keeps the ramp it
-            // draws today (`a_cell_a_heatmap_and_a_raster_keep_their_ramp`).
+            // stands now. The dots take all of them, as they do `colorReverse`: a
+            // plot with no dot among its marks keeps the ramp it draws today
+            // (`a_cell_a_heatmap_and_a_raster_keep_their_ramp`). A line, an area, a
+            // bar, a rectangle, a cell or text takes the categories and colours the
+            // plot writes for a categorical colour scale and leaves a ramp alone
+            // (`a_line_with_a_written_colour_range_draws_it`).
             let colour_override = plot_node
-                .filter(|_| colour_override_applies(&plot_marks))
-                .map(|node| ColourOverride::of_plot(node, &spec.params))
+                .and_then(|node| {
+                    if colour_override_applies(&plot_marks) {
+                        Some(ColourOverride::of_plot(node, &spec.params))
+                    } else if colour_categories_apply(&plot_marks) {
+                        Some(ColourOverride::of_plot(node, &spec.params).categorical_only())
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or_default();
 
             let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
