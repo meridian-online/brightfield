@@ -157,7 +157,7 @@ fn a_tile_holds_every_problem_in_its_panel() {
 
 /// DuckDB and arc's check both match table names without regard to case, so
 /// `CO2_Per_Capita_Change` and `co2_per_capita_change` are one table: copied
-/// once, to one Parquet file, which every spelling reads.
+/// once, to one Parquet file, which both spellings read.
 #[test]
 fn two_spellings_of_one_table_both_draw() {
     let fixture = ran_fixture(CO2);
