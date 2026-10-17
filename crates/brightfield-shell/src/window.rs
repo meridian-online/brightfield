@@ -665,6 +665,28 @@ fn boot_tile_body(count: usize) -> egui::Vec2 {
     crate::panel_tiles::body_for_canvas(egui::vec2(w - across, h - down), count)
 }
 
+/// The Protocol in `dir` as its rails read it: its steps and the tables they
+/// make, from the manifest and its models, through the graph the manifest
+/// route draws ([`load_protocol_offline`]) since arc exports no graph of its
+/// own and an agent's Protocol declares no `assets:`; with its newest run
+/// record adopted, as a saved Protocol's are, so its steps read as run.
+fn agent_protocol_inputs(dir: &std::path::Path) -> ProtocolInputs {
+    let spec = dir.join(arc::spec::MANIFEST_FILENAME);
+    let spec = spec.to_string_lossy();
+    let mut inputs = load_protocol_offline(&spec).unwrap_or_else(|e| {
+        eprintln!("{spec}: the Protocol's steps could not be laid out: {e}");
+        ProtocolInputs::empty()
+    });
+    if let Ok(manifest) = arc::spec::Manifest::load(dir) {
+        for view in crate::run::records_newest_first(dir, &manifest.name) {
+            if inputs.adopt_run(&view) {
+                break;
+            }
+        }
+    }
+    inputs
+}
+
 /// The window's hold on the panels a boot opened, when it opened any.
 fn panel_tiles_of(
     panels: Option<ProtocolPanels>,
@@ -1332,7 +1354,9 @@ impl Boot {
     /// nothing left to default.
     #[must_use]
     pub fn graph_on_canvas(&self) -> bool {
-        graph_takes_the_canvas(!self.protocol.graph_full.nodes.is_empty(), self.has_chart())
+        // A Protocol's panel tiles hold the canvas, whatever its graph holds.
+        !self.opens_agent_panels()
+            && graph_takes_the_canvas(!self.protocol.graph_full.nodes.is_empty(), self.has_chart())
     }
 
     /// Whether the chart document this boot loaded has a picture in it.
@@ -1602,6 +1626,7 @@ impl Boot {
                 ));
             }
             let body = boot_tile_body(crate::protocol_panels::panel_count(&dir));
+            let inputs = agent_protocol_inputs(&dir);
             let boot = match crate::protocol_panels::load(&dir, crate::panel_tiles::viewport(body))
             {
                 Ok(panels) => {
@@ -1612,12 +1637,16 @@ impl Boot {
                             }
                         }
                     }
-                    Self::agent_protocol(panels, flow)
+                    Self {
+                        protocol: inputs,
+                        ..Self::agent_protocol(panels, flow)
+                    }
                 }
                 Err(problem) => {
                     eprintln!("{spec}: {}", problem.message());
                     Self {
                         panels_problem: Some((dir, problem)),
+                        protocol: inputs,
                         flow,
                         ..Self::empty()
                     }
@@ -2670,6 +2699,9 @@ pub struct MeridianApp {
     /// Whether [`Self::apply_rail_defaults`] shut the navigator for panel
     /// tiles, so the next document opens it again.
     rails_shut_for_tiles: bool,
+    /// Where the locator band drew the Protocol's crumb as the way back to
+    /// every panel tile, on the last frame that drew one.
+    crumb_link_rect: Option<egui::Rect>,
 }
 
 impl MeridianApp {
@@ -2736,6 +2768,7 @@ impl MeridianApp {
             mode,
         );
         app.tiles = tiles;
+        app.reconcile_canvas_holds();
         app.apply_rail_defaults();
         app
     }
@@ -2785,6 +2818,7 @@ impl MeridianApp {
             mode,
         );
         app.tiles = tiles;
+        app.reconcile_canvas_holds();
         app.apply_rail_defaults();
         app
     }
@@ -3011,6 +3045,7 @@ impl MeridianApp {
             rail: chrome::StatusDrawn::default(),
             tiles: None,
             rails_shut_for_tiles: false,
+            crumb_link_rect: None,
         };
         // What the canvas holds, before the first frame and from the same two
         // documents the arrangement above was derived from.
@@ -3248,6 +3283,12 @@ impl MeridianApp {
     /// itself. Opening a second file therefore comes back to the new table's
     /// dashboard from the graph exactly as it does from a grid.
     fn reconcile_canvas_holds(&mut self) {
+        // A Protocol's panel tiles, or the panel opened from one, hold the
+        // canvas: the graph lists in the rail and is nobody's canvas here.
+        if self.tiles.is_some() {
+            self.canvas_holds = CanvasHolds::Chart;
+            return;
+        }
         if graph_takes_the_canvas(
             self.protocol.doc.model.has_assets(),
             !self.charts.doc.is_empty(),
@@ -3432,8 +3473,10 @@ impl MeridianApp {
         if self.front_door_is_live() {
             return "Brightfield".to_string();
         }
-        if let Some(tiles) = self.tiles.as_ref().filter(|t| t.selected().is_none()) {
-            return format!("Protocol · {}", tiles.name());
+        if self.tiles.is_some() {
+            // The Protocol, and the panel open from its tile when one is: the
+            // crumbs the locator band draws, joined.
+            return self.crumb_line().join(" \u{203a} ");
         }
         if self.graph_on_canvas() {
             format!("Protocol · {}", self.protocol.doc.model.protocol)
@@ -3631,18 +3674,21 @@ impl MeridianApp {
             self.protocol.doc.model.has_assets(),
             !self.charts.doc.is_empty(),
         ));
-        // **A Protocol's panel tiles take the window's width.** Both documents
-        // are empty beside them, so every rail would draw an empty state; the
-        // rails stay shut while the tiles hold the canvas, and the navigator,
-        // which has nothing to list even with a tile open, while the tiles
-        // are the window's. It opens again with the next document.
+        // **A Protocol's panel tiles take the window's width.** The ledger
+        // and the inspector have nothing to say about the tiles, so they stay
+        // shut while the tiles hold the canvas. The navigator lists the
+        // Protocol's steps and tables; it opens shut, so two tiles stand side
+        // by side at the default window size, and stays as the reader leaves
+        // it after that. It opens again with the next document.
         match &self.tiles {
             Some(tiles) => {
                 if tiles.selected().is_none() {
                     self.collapsed.insert(arrangement::LEDGER_RAIL);
                     self.collapsed.insert(arrangement::INSPECTOR_RAIL);
                 }
-                self.collapsed.insert(arrangement::NAVIGATOR_RAIL);
+                if !self.rails_shut_for_tiles {
+                    self.collapsed.insert(arrangement::NAVIGATOR_RAIL);
+                }
                 self.rails_shut_for_tiles = true;
             }
             None if self.rails_shut_for_tiles => {
@@ -3685,6 +3731,18 @@ impl MeridianApp {
     /// which is also the fallback for a view whose node the graph no longer
     /// knows.
     fn crumb_line(&self) -> Vec<String> {
+        // A Protocol's panel open from its tile: the Protocol, then the panel.
+        if let Some(tiles) = &self.tiles {
+            let protocol = format!("Protocol \u{b7} {}", tiles.name());
+            let open = tiles.panels().and_then(|panels| {
+                let tile = panels.tiles.get(tiles.selected()?)?;
+                Some(crate::panel_tiles::panel_name(&tile.file))
+            });
+            return match open {
+                Some(panel) => vec![protocol, panel],
+                None => vec![protocol],
+            };
+        }
         match self.canvas_holds() {
             CanvasHolds::Graph => vec!["Protocol".to_string()],
             CanvasHolds::View { node, view } => self
@@ -4624,6 +4682,8 @@ impl MeridianApp {
         // The Versions panel's keys, on the same terms: with the panel focused
         // its keys are the cursor's, the step back's and the way back to now.
         self.versions_keys(&ctx, graph_on_canvas);
+        // Esc back to every panel tile, from a panel opened from one.
+        self.tile_back_key(&ctx);
         // The frame verbs, on the same gate and only where the chart holds the
         // canvas: they are bare keys, so an overlay or a text field must own
         // the keyboard first.
@@ -4846,14 +4906,32 @@ impl MeridianApp {
             let crumbs = self.crumb_line();
             let counts = self.locator_counts();
             let source = self.document_source();
+            // With a Protocol's panel open from its tile, the Protocol's crumb
+            // is the way back to every tile.
+            let crumb_link = self
+                .tiles
+                .as_ref()
+                .is_some_and(|tiles| tiles.selected().is_some());
+            let mut crumb_back = false;
             let drawn = Panel::top(panel_id(locator, false))
                 .resizable(false)
                 .exact_size(band_extent(locator))
                 .frame(chrome::region_frame(locator.frame, ui, mode))
                 .show(ui, |ui| {
-                    locator_band_ui(ui, &crumbs, counts.as_deref(), source.as_deref(), mode)
+                    locator_band_ui(
+                        ui,
+                        &crumbs,
+                        counts.as_deref(),
+                        source.as_deref(),
+                        crumb_link,
+                        mode,
+                    )
                 });
             self.regions.push((locator.id, drawn.response.rect));
+            self.crumb_link_rect = drawn.inner.map(|(rect, _)| rect);
+            if drawn.inner.is_some_and(|(_, clicked)| clicked) {
+                crumb_back = true;
+            }
 
             // The key-hint band belongs to a key grammar, so it is drawn where
             // there is one. The chart projections have no bare-key grammar, and
@@ -5684,7 +5762,7 @@ impl MeridianApp {
                 }
                 None => {}
             }
-            if tile_back {
+            if tile_back || crumb_back {
                 self.back_to_panel_tiles();
             }
             for id in picks.collapse {
@@ -9214,6 +9292,35 @@ impl MeridianApp {
         Some(said)
     }
 
+    /// Where the locator band drew the Protocol's crumb as a link back to
+    /// every panel tile, on the last frame that drew one — a test hook.
+    #[must_use]
+    pub fn crumb_link_rect(&self) -> Option<egui::Rect> {
+        self.crumb_link_rect
+    }
+
+    /// **Esc goes back from a panel open from its tile to every tile**, as the
+    /// next rung of the Esc ladder: an overlay, a field holding the keyboard,
+    /// the shelf and a selection each take the key first.
+    fn tile_back_key(&mut self, ctx: &egui::Context) {
+        let open = self
+            .tiles
+            .as_ref()
+            .is_some_and(|tiles| tiles.selected().is_some());
+        if !open
+            || self.overlay.is_some()
+            || ctx.egui_wants_keyboard_input()
+            || self.shelf_holds_keys()
+            || self.charts.doc.selection_active()
+        {
+            return;
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.back_to_panel_tiles();
+            ctx.request_repaint();
+        }
+    }
+
     /// The panel file of the tile open as the chart document, when one is.
     fn open_tile_path(&self) -> Option<PathBuf> {
         let tiles = self.tiles.as_ref()?;
@@ -9298,6 +9405,7 @@ impl MeridianApp {
         if let Some(tiles) = self.tiles.as_mut() {
             tiles.reload();
         }
+        self.refresh_agent_protocol();
         self.documents_changed();
         true
     }
@@ -9314,8 +9422,19 @@ impl MeridianApp {
         ctx.request_repaint_after(crate::panel_tiles::RUN_CHECK_EVERY);
         if tiles.reload_due() {
             tiles.reload();
+            self.refresh_agent_protocol();
             ctx.request_repaint();
         }
+    }
+
+    /// Read the panel tiles' Protocol into the rails again, after a reload or
+    /// a run: its steps and their newest run, as [`agent_protocol_inputs`]
+    /// reads them on the way in.
+    fn refresh_agent_protocol(&mut self) {
+        let Some(dir) = self.tiles.as_ref().map(|t| t.dir().to_path_buf()) else {
+            return;
+        };
+        self.protocol.doc.open(agent_protocol_inputs(&dir));
     }
 
     /// [`Self::run_protocol`] over a Protocol whose panels the window holds
@@ -9487,6 +9606,7 @@ impl MeridianApp {
             if tiles.selected().is_none() {
                 tiles.reload();
             }
+            self.refresh_agent_protocol();
             let banner = NotificationId::new("run-protocol");
             if finished.succeeded && finished.record.is_some() {
                 self.notifications.dismiss(banner);
@@ -12607,8 +12727,10 @@ fn locator_band_ui(
     crumbs: &[String],
     counts: Option<&str>,
     source: Option<&str>,
+    link_first: bool,
     mode: Mode,
-) {
+) -> Option<(egui::Rect, bool)> {
+    let mut link = None;
     let sem = semantic(mode.is_dark());
     let rect = ui.max_rect();
     if let Some(source) = source {
@@ -12636,7 +12758,10 @@ fn locator_band_ui(
             );
             x += width + spacing::SPACE_3;
         }
-        let ink = if i + 1 == crumbs.len() {
+        let linked = link_first && i == 0;
+        let ink = if linked {
+            sem.borders.focus
+        } else if i + 1 == crumbs.len() {
             sem.text.primary
         } else {
             sem.text.secondary
@@ -12645,11 +12770,28 @@ fn locator_band_ui(
             .painter()
             .layout_no_wrap(crumb.clone(), ui_font(), chrome::colour(ink));
         let width = galley.size().x;
-        ui.painter().galley(
-            egui::pos2(x, rect.center().y - galley.size().y / 2.0),
-            galley,
-            chrome::colour(ink),
-        );
+        let at = egui::pos2(x, rect.center().y - galley.size().y / 2.0);
+        if linked {
+            // The crumb a reader goes back to: a link, underlined while the
+            // pointer is over it.
+            let hit = egui::Rect::from_min_size(at, galley.size());
+            let response = ui
+                .interact(
+                    hit,
+                    ui.id().with("locator-crumb-link"),
+                    egui::Sense::click(),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Back to every panel");
+            if response.hovered() {
+                ui.painter().line_segment(
+                    [hit.left_bottom(), hit.right_bottom()],
+                    egui::Stroke::new(1.0, chrome::colour(ink)),
+                );
+            }
+            link = Some((hit, response.clicked()));
+        }
+        ui.painter().galley(at, galley, chrome::colour(ink));
         x += width + spacing::SPACE_3;
     }
     if let Some(counts) = counts {
@@ -12664,6 +12806,7 @@ fn locator_band_ui(
             chrome::colour(sem.text.muted),
         );
     }
+    link
 }
 
 /// How wide the top bar's right-hand group would be if it drew: the renderer

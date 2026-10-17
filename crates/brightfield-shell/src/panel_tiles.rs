@@ -376,11 +376,12 @@ impl PanelTiles {
         let generation = self.generation;
         let panels = self.state.as_ref().ok()?;
         let tile = panels.tiles.get(index)?;
-        let file_name = tile.file.file_name().map_or_else(
-            || tile.file.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
+        let subject = Subject::new(
+            panel_name(&tile.file),
+            Icon("chart-bar"),
+            BindingContext::Workspace,
         );
-        let subject = Subject::new(file_name, Icon("chart-bar"), BindingContext::Workspace);
+        let about = panel_about(&tile.file);
         let mut frame = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(rect)
@@ -449,11 +450,18 @@ impl PanelTiles {
                         egui::Sense::click(),
                     )
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text("Open this panel as the chart");
+                    .on_hover_text(format!("{about}\nClick to open this panel as the chart"));
                 response.clicked().then_some(TilesAction::Open(index))
             }
             Err(problems) => {
                 problems_ui(&mut body_ui, tile.title.as_deref(), problems, mode);
+                let _ = ui
+                    .interact(
+                        rect.intersect(ui.clip_rect()),
+                        ui.id().with(("panel-tile", index)),
+                        egui::Sense::hover(),
+                    )
+                    .on_hover_text(about);
                 // A tile that drew before and holds problems now gives its
                 // raster slot back.
                 if let Some(slot) = self.rasters.get_mut(index) {
@@ -489,28 +497,53 @@ impl PanelTiles {
     }
 }
 
-/// The band the window draws above a tile open as the chart document: the way
-/// back to every tile, and which panel file is open. Answers whether the way
-/// back was taken.
+/// A panel's name as the window shows it: its file name without `.yaml`.
+#[must_use]
+pub fn panel_name(file: &Path) -> String {
+    file.file_stem().map_or_else(
+        || file.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
+}
+
+/// What a panel is, for its tooltip: its path in the Protocol and its kind.
+#[must_use]
+pub fn panel_about(file: &Path) -> String {
+    format!("{} \u{b7} Mosaic spec", file.display())
+}
+
+/// The header the window draws above a tile open as the chart document: the
+/// way back to every tile, as an "All panels" control at its left, and the
+/// panel's name. Answers whether the way back was taken.
 pub fn back_band(ui: &mut egui::Ui, band: egui::Rect, file: &Path, mode: Mode) -> bool {
     let sem = semantic(mode.is_dark());
+    ui.painter()
+        .rect_filled(band, 0.0, chrome::colour(sem.surfaces.header));
+    ui.painter().line_segment(
+        [band.left_bottom(), band.right_bottom()],
+        egui::Stroke::new(1.0, chrome::colour(sem.borders.subtle)),
+    );
     let mut child = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(band)
+            .max_rect(band.shrink2(egui::vec2(spacing::SPACE_3, 0.0)))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     child.shrink_clip_rect(band);
-    let back = child.button(
-        egui::RichText::new("\u{2190} All panels")
-            .font(ui_font())
-            .color(chrome::colour(sem.text.primary)),
-    );
-    child.add_space(spacing::SPACE_3);
-    child.label(
-        egui::RichText::new(file.display().to_string())
-            .font(ui_font())
-            .color(chrome::colour(sem.text.muted)),
-    );
+    let back = child
+        .button(
+            egui::RichText::new("\u{2190} All panels")
+                .font(ui_font())
+                .color(chrome::colour(sem.text.primary)),
+        )
+        .on_hover_text("Back to every panel (Esc)");
+    child.add_space(spacing::SPACE_4);
+    child
+        .label(
+            egui::RichText::new(panel_name(file))
+                .font(ui_font())
+                .color(chrome::colour(sem.text.primary)),
+        )
+        .on_hover_text(panel_about(file));
     back.clicked()
 }
 

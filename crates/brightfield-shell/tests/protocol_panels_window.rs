@@ -56,9 +56,12 @@ fn edit(path: &Path, from: &str, to: &str) {
     std::fs::write(path, text.replace(from, to)).expect("the file writes");
 }
 
-fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
+fn collect_text(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
     match shape {
-        egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+        egui::Shape::Text(text) => out.push((
+            text.galley.text().to_owned(),
+            text.galley.rect.translate(text.pos.to_vec2()),
+        )),
         egui::Shape::Vec(shapes) => {
             for shape in shapes {
                 collect_text(shape, out);
@@ -75,6 +78,7 @@ struct Window {
     ctx: egui::Context,
     screen: egui::Rect,
     texts: Vec<String>,
+    text_rects: Vec<(String, egui::Rect)>,
 }
 
 impl Window {
@@ -88,6 +92,7 @@ impl Window {
                 egui::vec2(DEFAULT_WINDOW.0, DEFAULT_WINDOW.1),
             ),
             texts: Vec::new(),
+            text_rects: Vec::new(),
         };
         win.settle();
         win
@@ -104,7 +109,54 @@ impl Window {
         for clipped in &out.shapes {
             collect_text(&clipped.shape, &mut texts);
         }
-        self.texts = texts;
+        self.texts = texts.iter().map(|(t, _)| t.clone()).collect();
+        self.text_rects = texts;
+    }
+
+    /// Press and release the primary button at `at`, and settle.
+    fn click(&mut self, at: egui::Pos2) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        self.run(vec![egui::Event::PointerMoved(at)]);
+        self.run(vec![button(true), button(false)]);
+        self.settle();
+    }
+
+    fn key(&mut self, key: egui::Key) {
+        self.run(vec![egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        self.settle();
+    }
+
+    /// Where the last frame painted `text`.
+    fn text_at(&self, text: &str) -> egui::Rect {
+        self.text_rects
+            .iter()
+            .find(|(t, _)| t == text)
+            .map(|(_, r)| *r)
+            .unwrap_or_else(|| panic!("no {text:?} drawn: {:?}", self.texts))
+    }
+
+    fn selected(&self) -> Option<usize> {
+        self.app.panel_tiles().and_then(|t| t.selected())
+    }
+
+    /// The CO2 bar tile, open as the chart.
+    fn open_bar_tile(&mut self) -> usize {
+        let at = self.tile_index(CHANGE);
+        assert!(self.app.open_panel_tile(at));
+        self.settle();
+        assert_eq!(self.selected(), Some(at));
+        at
     }
 
     fn settle(&mut self) {
@@ -236,8 +288,13 @@ fn a_broken_tile_shows_its_message() {
 
     assert!(win.drew(&message), "no {message:?} in {:?}", win.texts);
     assert!(
-        win.drew("co2_per_capita_change_pct.yaml"),
-        "the tile names its panel file: {:?}",
+        win.texts.iter().any(|t| t == "co2_per_capita_change_pct"),
+        "the tile names its panel: {:?}",
+        win.texts
+    );
+    assert!(
+        !win.texts.iter().any(|t| t.ends_with(".yaml")),
+        "a tile's header spells its file's extension: {:?}",
         win.texts
     );
     let tiles = win.app.panel_tiles().expect("tiles");
@@ -519,4 +576,163 @@ fn a_reload_waits_for_the_way_back_from_an_open_tile() {
     win.settle();
     assert_ne!(win.panels().run_id, first_run);
     assert_eq!(bar_categories(win.panels()).len(), 3);
+}
+
+/// A tile's header names its panel without `.yaml`; its tooltip says where the
+/// file is and what it is.
+#[test]
+fn a_panels_name_drops_its_extension_and_its_tooltip_names_the_file() {
+    use brightfield_shell::panel_tiles::{panel_about, panel_name};
+    let file = Path::new(CHANGE);
+    assert_eq!(panel_name(file), "co2_per_capita_change_pct");
+    assert_eq!(
+        panel_about(file),
+        "panels/co2_per_capita_change_pct.yaml \u{b7} Mosaic spec"
+    );
+}
+
+/// The Protocol rail lists the agent's steps and the tables they make, read
+/// from the steps: the Protocol declares no `assets:`.
+#[test]
+fn the_protocol_rail_lists_the_steps_and_the_tables_they_make() {
+    let ran = ran_fixture(CO2);
+    // The committed manifest, fetch step and all: the run's copy dropped it
+    // only to keep the run off the network.
+    std::fs::copy(
+        agent_protocol::fixture_dir(CO2).join("arcform.yaml"),
+        ran.dir.join("arcform.yaml"),
+    )
+    .unwrap();
+    let mut win = Window::over(open(&ran.dir));
+    let steps: Vec<String> = win
+        .app
+        .protocol_model()
+        .sheet()
+        .rows()
+        .iter()
+        .map(|r| r.name.clone())
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            "fetch_owid_co2",
+            "raw_owid_co2",
+            "clean_co2_per_capita",
+            "co2_per_capita_change",
+            "china_overtakes_g7"
+        ]
+    );
+    // Open the rail, which the tiles open shut, and read what it drew.
+    let rail = brightfield_workbench::arrangement::NAVIGATOR_RAIL;
+    assert!(win.app.rail_is_collapsed(rail));
+    let toggle = win.app.rail_collapse_rect(rail).expect("the rail's toggle");
+    win.click(toggle.center());
+    assert!(!win.app.rail_is_collapsed(rail), "the rail did not open");
+    assert!(!win.drew("No assets yet"), "{:?}", win.texts);
+    let rows: Vec<String> = win
+        .app
+        .spine_rows()
+        .iter()
+        .map(|r| r.label.clone())
+        .collect();
+    for table in [
+        "raw_owid_co2",
+        "clean_co2_per_capita",
+        "co2_per_capita_change",
+        "china_overtakes_g7",
+    ] {
+        assert!(rows.iter().any(|r| r == table), "no {table} in {rows:?}");
+    }
+    // The tiles still hold the canvas.
+    assert_eq!(win.app.panel_tiles().unwrap().drawn().len(), 2);
+}
+
+#[test]
+fn the_all_panels_control_goes_back_to_the_tiles() {
+    let ran = ran_fixture(CO2);
+    let mut win = Window::over(open(&ran.dir));
+    win.open_bar_tile();
+    let control = win.text_at("\u{2190} All panels");
+    win.click(control.center());
+    assert_eq!(win.selected(), None);
+    assert_eq!(win.app.panel_tiles().unwrap().drawn().len(), 2);
+}
+
+#[test]
+fn the_protocols_crumb_goes_back_to_the_tiles() {
+    let ran = ran_fixture(CO2);
+    let mut win = Window::over(open(&ran.dir));
+    win.open_bar_tile();
+    assert_eq!(
+        win.app.locator_crumbs(),
+        [
+            "Protocol \u{b7} co2-per-capita",
+            "co2_per_capita_change_pct"
+        ]
+    );
+    let crumb = win
+        .app
+        .crumb_link_rect()
+        .expect("the Protocol's crumb is a link");
+    win.click(crumb.center());
+    assert_eq!(win.selected(), None);
+    assert_eq!(win.app.locator_crumbs(), ["Protocol \u{b7} co2-per-capita"]);
+}
+
+#[test]
+fn escape_goes_back_to_the_tiles() {
+    let ran = ran_fixture(CO2);
+    let mut win = Window::over(open(&ran.dir));
+    win.open_bar_tile();
+    win.key(egui::Key::Escape);
+    assert_eq!(win.selected(), None);
+}
+
+/// Each way back stands down while the open panel holds an edit no file does.
+#[test]
+fn every_way_back_is_refused_over_an_unsaved_edit() {
+    let ran = ran_fixture(CO2);
+    let mut win = Window::over(open(&ran.dir));
+    let at = win.open_bar_tile();
+    let title = RowEdit {
+        channel: ShelfChannel::X,
+        row: TITLE_ROW,
+        value: SettingValue::Text("an unsaved title".to_owned()),
+    };
+    assert!(win.app.chart_doc_mut().set_axis_row(0, &title));
+    win.settle();
+
+    win.key(egui::Key::Escape);
+    assert_eq!(win.selected(), Some(at), "Esc went back over the edit");
+    let crumb = win.app.crumb_link_rect().expect("the crumb");
+    win.click(crumb.center());
+    assert_eq!(
+        win.selected(),
+        Some(at),
+        "the crumb went back over the edit"
+    );
+    let control = win.text_at("\u{2190} All panels");
+    win.click(control.center());
+    assert_eq!(
+        win.selected(),
+        Some(at),
+        "the control went back over the edit"
+    );
+    assert!(win.app.chart_doc().has_unsaved_work());
+}
+
+/// The rail reads the steps' outcomes from the Protocol's newest run, as a
+/// saved Protocol's rail does: a Protocol that ran does not say "not run".
+/// (The run's own manifest, without the fetch step the runner drops to stay
+/// off the network, so the run's steps are the manifest's.)
+#[test]
+fn the_rail_reads_the_protocols_newest_run() {
+    let ran = ran_fixture(CO2);
+    let win = Window::over(open(&ran.dir));
+    assert_ne!(
+        win.app.protocol_model().last_run_word(),
+        "not run",
+        "the rail does not read the Protocol's run"
+    );
+    assert!(!win.drew("not run"), "{:?}", win.texts);
 }
