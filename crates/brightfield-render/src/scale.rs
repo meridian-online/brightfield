@@ -58,8 +58,8 @@ pub fn order_categories(categories: &mut [String]) {
 /// The ISO spellings of a set of day numbers, in time order.
 ///
 /// The order a `DATE` band lays its days out in: by day number, so it holds for
-/// every year a `DATE` can carry, whatever order the rows arrive in. A day with
-/// no calendar date behind it is skipped.
+/// negative years too (`a_date_band_sorts_by_day_not_by_spelling`), whatever
+/// order the rows arrive in. A day with no calendar date behind it is skipped.
 fn sorted_day_categories(days: std::collections::BTreeSet<i32>) -> Vec<String> {
     let days = arrow::array::Date32Array::from(days.into_iter().collect::<Vec<_>>());
     (0..days.len())
