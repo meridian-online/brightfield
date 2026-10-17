@@ -2931,7 +2931,7 @@ fn compose_from_results(
 /// The note a plot owes when its categorical colour scale has more categories
 /// than the palette has colours: the scale starts the palette again, so two
 /// categories wear one colour. A plot that writes its own `colorRange` chose its
-/// colours and is owed none. Fill and stroke are judged alike, and a plot that
+/// colours and is told nothing. Fill and stroke are judged alike, and a plot that
 /// colours both over the same categories gets the one note, as the caller keeps
 /// a warning once.
 fn repeated_colours(scales: &ScaleSet, written: &ColourOverride) -> Vec<ParseWarning> {

@@ -15,8 +15,8 @@ fn spec(series: usize, attrs: &str) -> String {
     with_mark(series, "line", "stroke", attrs)
 }
 
-/// The same over `mark`, coloured through `channel`. Only a dot reads a
-/// `colorRange` the plot writes.
+/// The same over `mark`, coloured through `channel`. A dot reads a
+/// `colorRange` the plot writes, a line does not.
 fn with_mark(series: usize, mark: &str, channel: &str, attrs: &str) -> String {
     let rows: String = (0..series)
         .flat_map(|s| (0..3).map(move |x| format!("    - {{ x: {x}, y: {}, s: s{s} }}\n", x + s)))
