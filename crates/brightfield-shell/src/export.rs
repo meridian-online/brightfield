@@ -2,9 +2,9 @@
 //! parsed here) run the shipped binary with no window over a Protocol that has
 //! run, and write what its panels draw or read.
 //!
-//! Both read the Parquet snapshot [`crate::protocol_panels::load`] makes, never
-//! the Protocol's database, so that "Brightfield never holds the database" has
-//! one place it is kept.
+//! Both read the Parquet snapshot [`crate::protocol_panels::load`] makes and
+//! leave the Protocol's database to it, so the attach that holds the file is in
+//! one place.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
