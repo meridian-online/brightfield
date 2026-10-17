@@ -16,8 +16,9 @@ use std::process::{Command, Stdio};
 use agent_protocol::{
     copied_fixture, copied_fixture_in, engine_cli, force_run_protocol, ran_fixture, run_protocol,
 };
+use brightfield_model::panel_capture::panel_file;
 use brightfield_shell::protocol_panels::{
-    load, with_protocol_tables, OpenProblem, PanelProblem, ProtocolPanels,
+    agent_panels_in, load, with_protocol_tables, OpenProblem, PanelProblem, ProtocolPanels,
 };
 use brightfield_spec::layout::Rect;
 
@@ -51,15 +52,17 @@ fn tile<'a>(
 }
 
 fn assert_draws(panels: &ProtocolPanels, file: &str) {
-    if let Err(problem) = &tile(panels, file).outcome {
-        panic!("{file} did not draw: {}", problem.message());
+    if let Err(problems) = &tile(panels, file).outcome {
+        let messages: Vec<String> = problems.iter().map(PanelProblem::message).collect();
+        panic!("{file} did not draw: {}", messages.join("; "));
     }
 }
 
-fn problem<'a>(panels: &'a ProtocolPanels, file: &str) -> &'a PanelProblem {
+/// Every problem the tile for `file` holds.
+fn problems<'a>(panels: &'a ProtocolPanels, file: &str) -> &'a [PanelProblem] {
     match &tile(panels, file).outcome {
         Ok(_) => panic!("{file} drew, but a problem was expected"),
-        Err(problem) => problem,
+        Err(problems) => problems,
     }
 }
 
@@ -116,16 +119,79 @@ fn a_missing_column_is_its_tiles_message() {
     let panels = loaded(&fixture.dir);
 
     assert_eq!(
-        problem(&panels, CHANGE),
-        &PanelProblem::MissingColumn {
+        problems(&panels, CHANGE),
+        [PanelProblem::MissingColumn {
             from: "co2_per_capita_change".into(),
             column: "change_percent".into(),
-        }
+        }]
     );
-    assert!(problem(&panels, CHANGE)
+    assert!(problems(&panels, CHANGE)[0]
         .message()
         .contains("change_percent"));
     assert_draws(&panels, SINCE);
+}
+
+#[test]
+fn a_tile_holds_every_problem_in_its_panel() {
+    let fixture = ran_fixture(CO2);
+    let change = fixture.dir.join(CHANGE);
+    edit(&change, "x: change_pct", "x: change_percent");
+    edit(&change, "y: country", "y: nation");
+    let panels = loaded(&fixture.dir);
+
+    assert_eq!(
+        problems(&panels, CHANGE),
+        [
+            PanelProblem::MissingColumn {
+                from: "co2_per_capita_change".into(),
+                column: "change_percent".into(),
+            },
+            PanelProblem::MissingColumn {
+                from: "co2_per_capita_change".into(),
+                column: "nation".into(),
+            },
+        ]
+    );
+    assert_draws(&panels, SINCE);
+}
+
+/// DuckDB and arc's check both match table names without regard to case, so
+/// `CO2_Per_Capita_Change` and `co2_per_capita_change` are one table: copied
+/// once, to one Parquet file, which every spelling reads.
+#[test]
+fn two_spellings_of_one_table_both_draw() {
+    let fixture = ran_fixture(CO2);
+    edit(
+        &fixture.dir.join(CHANGE),
+        "from: co2_per_capita_change",
+        "from: CO2_Per_Capita_Change",
+    );
+    std::fs::write(
+        fixture.dir.join("panels/mixed_case.yaml"),
+        "\
+plot:
+  - mark: barX
+    data: { from: co2_per_capita_change }
+    x: change_pct
+    y: country
+  - mark: dot
+    data: { from: CO2_PER_CAPITA_CHANGE }
+    x: change_pct
+    y: country
+",
+    )
+    .unwrap();
+    let panels = loaded(&fixture.dir);
+
+    assert_draws(&panels, CHANGE);
+    assert_draws(&panels, "panels/mixed_case.yaml");
+    assert_draws(&panels, SINCE);
+    let snapshot: Vec<String> = std::fs::read_dir(panels.tables_dir())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("co2_per_capita_change"))
+        .collect();
+    assert_eq!(snapshot, ["co2_per_capita_change.parquet"]);
 }
 
 #[test]
@@ -135,10 +201,10 @@ fn an_unsupported_mark_is_its_tiles_message() {
     let panels = loaded(&fixture.dir);
 
     assert_eq!(
-        problem(&panels, CHANGE),
-        &PanelProblem::Unsupported(vec!["waffleY".into()])
+        problems(&panels, CHANGE),
+        [PanelProblem::Unsupported(vec!["waffleY".into()])]
     );
-    assert!(problem(&panels, CHANGE).message().contains("waffleY"));
+    assert!(problems(&panels, CHANGE)[0].message().contains("waffleY"));
     assert_draws(&panels, SINCE);
 }
 
@@ -154,11 +220,29 @@ fn a_panel_that_is_not_yaml_is_its_tiles_message() {
 
     assert_eq!(panels.tiles.len(), 3);
     assert!(matches!(
-        problem(&panels, "panels/broken.yaml"),
-        PanelProblem::Unreadable(_)
+        problems(&panels, "panels/broken.yaml"),
+        [PanelProblem::Unreadable(_)]
     ));
     assert_draws(&panels, CHANGE);
     assert_draws(&panels, SINCE);
+}
+
+/// Panels other than the one chart file Brightfield writes are an agent's.
+#[test]
+fn agent_panels_are_panels_brightfield_did_not_write() {
+    let fixture = copied_fixture(CO2);
+    let dir = &fixture.dir;
+    let panels_dir = dir.join("panels");
+    std::fs::remove_dir_all(&panels_dir).unwrap();
+    assert!(!agent_panels_in(dir), "no panels/ folder");
+
+    std::fs::create_dir_all(&panels_dir).unwrap();
+    let own = panel_file(dir, "co2-per-capita");
+    std::fs::write(&own, "plot:\n  - mark: dot\n").unwrap();
+    assert!(!agent_panels_in(dir), "only {} is there", own.display());
+
+    std::fs::write(panels_dir.join("other.yaml"), "plot:\n  - mark: dot\n").unwrap();
+    assert!(agent_panels_in(dir), "another panel is there");
 }
 
 #[test]

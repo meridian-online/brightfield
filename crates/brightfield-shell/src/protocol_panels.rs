@@ -74,8 +74,10 @@ pub struct PanelTile {
     pub title: Option<String>,
     /// The file's text as written.
     pub source: String,
-    /// The composed chart, or the one problem that kept it from drawing.
-    pub outcome: Result<Composed, PanelProblem>,
+    /// The composed chart, or every problem that kept it from drawing: all of
+    /// arc's findings for the panel, else what Brightfield refused. Never an
+    /// empty list.
+    pub outcome: Result<Composed, Vec<PanelProblem>>,
 }
 
 /// Why one panel did not draw.
@@ -262,7 +264,7 @@ pub fn load(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenProblem> {
     // snapshot would hide a snapshot that failed to let go
     // (`arc_can_run_while_the_protocol_is_open`).
     let (_, checked) =
-        arc::spec::check_panels(dir).map_err(|e| database_problem(&db, &e.to_string()))?;
+        arc::spec::check_panels(dir).map_err(|e| check_problem(dir, &db, &e.to_string()))?;
     let tables = tempfile::Builder::new()
         .prefix("brightfield-protocol-tables-")
         .tempdir()
@@ -281,9 +283,10 @@ pub fn load(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenProblem> {
             let title = serde_yaml::from_str::<Value>(&source)
                 .ok()
                 .and_then(|panel| panel.get("title")?.as_str().map(str::to_string));
-            let outcome = match findings.first() {
-                Some(finding) => Err(PanelProblem::from_finding(finding)),
-                None => compose_tile(&source, dir, tables.path(), viewport),
+            let outcome = if findings.is_empty() {
+                compose_tile(&source, dir, tables.path(), viewport).map_err(|p| vec![p])
+            } else {
+                Err(findings.iter().map(PanelProblem::from_finding).collect())
             };
             PanelTile {
                 file,
@@ -304,10 +307,13 @@ pub fn load(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenProblem> {
     })
 }
 
-/// `panel` with a `T: { file: <tables_dir>/T.parquet }` entry added to its
+/// `panel` with a `T: { file: <tables_dir>/t.parquet }` entry added to its
 /// top-level `data:` for each table `T` it reads from the database, so the
-/// existing Parquet source loads the snapshot [`load`] wrote. Entries the panel
-/// defines itself are left as they are. Nothing is written to disk.
+/// existing Parquet source loads the snapshot [`load`] wrote. The file is
+/// named for the table's name in lower case, the one copy [`load`] makes
+/// however many spellings the panels use: DuckDB matches names without regard
+/// to case, as arc's check does. Entries the panel defines itself are left as
+/// they are. Nothing is written to disk.
 ///
 /// # Errors
 ///
@@ -323,12 +329,14 @@ pub fn with_protocol_tables(panel: &str, tables_dir: &Path) -> Result<String, St
         let data = top
             .entry(Value::from("data"))
             .or_insert_with(|| Value::Mapping(Mapping::new()));
+        // A `data:` that is not a mapping defines no table (arc's check reads
+        // it the same way), so it is replaced rather than added to.
         if !data.is_mapping() {
             *data = Value::Mapping(Mapping::new());
         }
         let data = data.as_mapping_mut().expect("made a mapping above");
         for table in reads {
-            let file = tables_dir.join(parquet_name(&table));
+            let file = tables_dir.join(parquet_name(&table.to_lowercase()));
             let mut source = Mapping::new();
             source.insert(
                 Value::from("file"),
@@ -416,7 +424,9 @@ fn collect_marks<'a>(node: &'a Value, into: &mut Vec<&'a Value>) {
 
 /// The Parquet file name the table `table` is written to: the name itself when
 /// it is a plain identifier, and every other byte as `%XX`, so no name reaches
-/// outside the snapshot folder and two names cannot share a file.
+/// outside the snapshot folder. Callers pass the name in lower case, so two
+/// names differing only in case, which are one table to DuckDB, are one file,
+/// and a case-insensitive file system cannot fold two copies together.
 fn parquet_name(table: &str) -> String {
     let mut name = String::with_capacity(table.len() + 8);
     for byte in table.bytes() {
@@ -474,10 +484,12 @@ fn snapshot_tables(db: &Path, wanted: &BTreeSet<String>, out: &Path) -> Result<(
 }
 
 /// Copy each wanted table the attached database holds into the in-memory one,
-/// under the name the panels use, and answer the names copied.
+/// once per name in lower case, and answer the lower-cased names copied.
 ///
 /// A name resolves as arc's check resolves it, ignoring case: `schema.table`
 /// exactly, and a bare name as `main.name`, else the first schema holding it.
+/// `CO2` and `co2` are one table to DuckDB, so a second spelling is not copied
+/// again: a second `CREATE TABLE` of it would fail as already existing.
 fn copy_attached(
     conn: &duckdb::Connection,
     wanted: &BTreeSet<String>,
@@ -489,9 +501,12 @@ fn copy_attached(
     let present: Vec<(String, String)> = stmt
         .query_map([ATTACHED], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<Result<_, _>>()?;
-    let mut copied = Vec::new();
+    let mut copied: Vec<String> = Vec::new();
     for name in wanted {
         let lowered = name.to_lowercase();
+        if copied.contains(&lowered) {
+            continue;
+        }
         let found = match lowered.split_once('.') {
             Some((schema, table)) => present
                 .iter()
@@ -506,14 +521,31 @@ fn copy_attached(
         };
         conn.execute_batch(&format!(
             "CREATE TABLE {} AS SELECT * FROM {}.{}.{}",
-            quote(name),
+            quote(&lowered),
             quote(ATTACHED),
             quote(schema),
             quote(table)
         ))?;
-        copied.push(name.clone());
+        copied.push(lowered);
     }
     Ok(copied)
+}
+
+/// The problem arc's panel check of the Protocol in `dir` failing with `error`
+/// is: a database problem when the error came from opening `db`, which arc
+/// words as a lock refusal or prefixes with `database:`, else arc's own.
+fn check_problem(dir: &Path, db: &Path, error: &str) -> OpenProblem {
+    let from_database = error.starts_with("database:")
+        || error.contains(ARC_LOCK_WORDING)
+        || LOCK_WORDING.iter().any(|w| error.contains(w));
+    if from_database {
+        database_problem(db, error)
+    } else {
+        OpenProblem::Arc(format!(
+            "arc could not check the panels of the Protocol at {}: {error}",
+            dir.display()
+        ))
+    }
 }
 
 /// The problem an open of `db` that failed with `error` is, whether the error
