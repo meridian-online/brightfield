@@ -225,7 +225,7 @@ pub fn agent_panels_in(dir: &Path) -> bool {
 ///
 /// # Errors
 ///
-/// An [`OpenProblem`] when the folder cannot be opened for its panels at all.
+/// An [`OpenProblem`] when the folder does not open for its panels.
 pub fn load(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenProblem> {
     if !dir.join(MANIFEST_FILENAME).is_file() {
         return Err(OpenProblem::NotAProtocol(dir.to_path_buf()));

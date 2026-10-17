@@ -13,7 +13,7 @@
 //! a `<out>.arcmeta` sidecar gives it a validator to ask with, it GETs the URL
 //! and writes the whole remote file over `out`. The fixture has neither, so a
 //! run with the step in place would download 13.7 MB and replace the cut file.
-//! [`copied_fixture`] therefore drops every `http_fetch` step from the COPY's
+//! [`copied_fixture`] therefore drops the `http_fetch` steps from the COPY's
 //! `arcform.yaml` (never the fixture's), and [`run_protocol`] asserts the data
 //! file is byte-identical after the run, which a fetch could not leave it.
 //!
@@ -118,8 +118,8 @@ pub fn run_protocol(dir: &Path) -> run::ArcOutput {
     run_protocol_with(dir, &["run"])
 }
 
-/// [`run_protocol`] with `--force`, so every step runs and writes the database
-/// even when arc finds them all fresh, which a second run otherwise would.
+/// [`run_protocol`] with `--force`, so the steps run again and write the
+/// database: a second plain run finds them fresh and skips them.
 pub fn force_run_protocol(dir: &Path) -> run::ArcOutput {
     run_protocol_with(dir, &["run", "--force"])
 }
@@ -147,7 +147,7 @@ fn run_protocol_with(dir: &Path, args: &[&str]) -> run::ArcOutput {
     out
 }
 
-/// Remove every `http_fetch` step from the `arcform.yaml` in `dir`.
+/// Remove the `http_fetch` steps from the `arcform.yaml` in `dir`.
 fn drop_fetch_steps(dir: &Path) {
     let path = dir.join("arcform.yaml");
     let text = std::fs::read_to_string(&path).expect("the copy has an arcform.yaml");
