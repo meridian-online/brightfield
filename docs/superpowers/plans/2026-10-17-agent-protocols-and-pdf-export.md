@@ -14,7 +14,7 @@
 
 - **No planning identifiers.** Nothing tracked in this public repository, no commit message and no PR text names a private planning identifier (decision refs, task ids, card or issue ids).
 - **One build at a time.** On Hugh's Mac (16 GB), run one cargo build at a time and never two implementers in parallel.
-- **Pre-commit checks.** Before each commit, after `git add`, run `cargo xtask ci --step fmt`, `--step clippy` and `--step public-hygiene`, plus the tests the change touches. After each commit, run `--step comment-citations` and `--step commit-messages`. Run the full `cargo xtask ci` only to reproduce a CI failure.
+- **Pre-commit checks.** Before each commit, after `git add`, run `cargo xtask ci --step fmt` and `--step clippy`, plus the tests the change touches. After each commit, run `--step comment-citations`. Run the full `cargo xtask ci` only to reproduce a CI failure.
 - **No `cargo fmt --all`.** Format through `cargo xtask ci --step fmt`.
 - **Offline.** The exports and the tests need no network. A test that would fetch is a failing test.
 - **One renderer.** A chart in a PNG or PDF is drawn by the same Vello path the window uses. No second renderer.
