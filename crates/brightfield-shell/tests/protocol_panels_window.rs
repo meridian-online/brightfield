@@ -519,6 +519,61 @@ fn an_unrun_protocols_run_reloads_the_tiles() {
     assert_eq!(win.app.panel_tiles().unwrap().drawn().len(), 2);
 }
 
+/// Tiles that cannot open for a reason that outlasts a reload are opened
+/// again when the folder changes under them: a run made outside the window
+/// reaches the rail, and the agent's first panel file opens the tiles.
+#[test]
+fn panels_added_to_a_protocol_without_any_open_as_tiles() {
+    use brightfield_shell::protocol_panels::OpenProblem;
+    let copy = copied_fixture(CO2);
+    let mut win = Window::over(open(&copy.dir));
+    let problem = |win: &Window| win.app.panel_tiles().and_then(|t| t.problem()).cloned();
+    assert!(matches!(problem(&win), Some(OpenProblem::NotRun { .. })));
+
+    // Until the change lands, frames are drawn on the tiles' own check cadence.
+    let until = |win: &mut Window, what: &str, done: &dyn Fn(&Window) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done(win) {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(50));
+            win.run(Vec::new());
+        }
+    };
+
+    // The agent takes every panel away: the tiles say there are none.
+    let panels_dir = copy.dir.join("panels");
+    let aside = copy.dir.join("panels-aside");
+    std::fs::rename(&panels_dir, &aside).unwrap();
+    until(
+        &mut win,
+        "the tiles never said there were no panels",
+        &|w| matches!(problem(w), Some(OpenProblem::NoPanels { .. })),
+    );
+    assert_eq!(win.app.protocol_model().last_run_word(), "not run");
+
+    // A run made outside the window: the tiles still have no panels, and the
+    // rail reads the run.
+    run_protocol(&copy.dir);
+    until(&mut win, "the rail never read the run", &|w| {
+        w.app.protocol_model().last_run_word() != "not run"
+    });
+    assert!(matches!(problem(&win), Some(OpenProblem::NoPanels { .. })));
+
+    // The agent writes its panels: the tiles open from the run.
+    std::fs::create_dir(&panels_dir).unwrap();
+    for entry in std::fs::read_dir(&aside).unwrap() {
+        let from = entry.unwrap().path();
+        std::fs::copy(&from, panels_dir.join(from.file_name().unwrap())).unwrap();
+    }
+    until(&mut win, "the panels never opened as tiles", &|w| {
+        w.app.panel_tiles().and_then(|t| t.panels()).is_some()
+    });
+    win.settle();
+    assert_eq!(win.panels().tiles.len(), 2);
+    assert!(win.panels().tiles.iter().all(|t| t.outcome.is_ok()));
+    assert_eq!(win.app.panel_tiles().unwrap().drawn().len(), 2);
+}
+
 /// Going back to every tile would drop an edit no file holds, so the window
 /// stays on the open tile and says why.
 #[test]

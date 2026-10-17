@@ -484,7 +484,7 @@ fn compose_tile(
 
 /// Every `panels/*.yaml` file of the Protocol in `dir`, sorted: the files arc's
 /// panel check reads, with the same test.
-fn panel_paths(dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn panel_paths(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir.join(PANELS_DIR)) else {
         return Vec::new();
     };

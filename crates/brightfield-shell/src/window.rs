@@ -3669,6 +3669,16 @@ impl MeridianApp {
     /// the caret on the Operator pane over a chart document that has since
     /// taken the canvas. The inspector rail's own default is the ledger's,
     /// copied rather than re-derived from a rule of its own.
+    ///
+    /// These are defaults, and a saved layout's grid spot comes after them:
+    /// [`Self::assemble`] applies them and then puts the restored grid spot
+    /// through [`Self::set_grid_spot`], which opens the ledger when the spot
+    /// is the ledger. So a saved layout that puts the grid in the ledger opens
+    /// the ledger at boot even beside a Protocol's panel tiles, which would
+    /// otherwise keep it shut: where the reader put the grid is the reader's
+    /// own choice, and it wins over the tiles' default. A later call, on a
+    /// document swap or on the way back from an open tile, applies the
+    /// defaults alone.
     fn apply_rail_defaults(&mut self) {
         if self.ledger_opens_collapsed() {
             self.collapsed.insert(arrangement::LEDGER_RAIL);
@@ -9462,8 +9472,9 @@ impl MeridianApp {
         };
         ctx.request_repaint_after(crate::panel_tiles::RUN_CHECK_EVERY);
         if tiles.reload_due() {
-            // The rails are read again only when the run they read moved:
-            // reading them resets the rail's cursor and what it expanded.
+            // The rails are read again only when what they read may have
+            // moved (`PanelTiles::reload` says when): reading them resets the
+            // rail's cursor and what it expanded.
             if tiles.reload() {
                 self.refresh_agent_protocol();
             }

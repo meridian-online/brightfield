@@ -19,6 +19,9 @@
 //! Protocol's run records at most once per [`RUN_CHECK_EVERY`]: a listing of one
 //! folder, and arc's own read of the newest record when that listing has
 //! changed (`a_new_run_reloads_the_tiles`), so a quiet frame reads a directory.
+//! Tiles that did not open are opened again when the run records, the
+//! manifest or the `panels/*.yaml` files change, since any of the three can
+//! be what kept them shut (`panels_added_to_a_protocol_without_any_open_as_tiles`).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -34,7 +37,7 @@ use meridian_design::{semantic, spacing};
 use crate::canvas::EguiCanvasHost;
 use crate::design::Mode;
 use crate::protocol::ui_font;
-use crate::protocol_panels::{load, OpenProblem, PanelProblem, ProtocolPanels};
+use crate::protocol_panels::{load, panel_paths, OpenProblem, PanelProblem, ProtocolPanels};
 
 /// The narrowest a tile is laid out: room for a bar chart's category labels,
 /// its bars and a legend at its right.
@@ -97,6 +100,32 @@ struct Raster {
 /// entries, and the newest modification time among them.
 type RunMark = Option<(usize, Option<SystemTime>)>;
 
+/// What the Protocol's folder held when it was last looked at: its run
+/// records, as [`RunMark`] has them, and its manifest and each of its
+/// `panels/*.yaml` with their modification times.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FolderMark {
+    runs: RunMark,
+    sources: Vec<(PathBuf, Option<SystemTime>)>,
+}
+
+impl FolderMark {
+    fn of(dir: &Path) -> Self {
+        let modified = |path: PathBuf| {
+            let at = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            (path, at)
+        };
+        let manifest = dir.join(arc::spec::MANIFEST_FILENAME);
+        Self {
+            runs: run_mark(dir),
+            sources: std::iter::once(manifest)
+                .chain(panel_paths(dir))
+                .map(modified)
+                .collect(),
+        }
+    }
+}
+
 /// The Protocol's panels as the window holds them.
 pub struct PanelTiles {
     dir: PathBuf,
@@ -113,7 +142,7 @@ pub struct PanelTiles {
     rasters: Vec<Option<Raster>>,
     selected: Option<usize>,
     drawn: Vec<TileDrawn>,
-    run_mark: RunMark,
+    mark: FolderMark,
     last_check: Option<Instant>,
     /// When the Protocol was last opened for its panels.
     last_load: Instant,
@@ -144,7 +173,7 @@ impl PanelTiles {
         state: Result<ProtocolPanels, OpenProblem>,
         composed_at: Option<(egui::Vec2, Mode)>,
     ) -> Self {
-        let run_mark = run_mark(&dir);
+        let mark = FolderMark::of(&dir);
         Self {
             dir,
             name,
@@ -155,7 +184,7 @@ impl PanelTiles {
             rasters: Vec::new(),
             selected: None,
             drawn: Vec::new(),
-            run_mark,
+            mark,
             last_check: Some(Instant::now()),
             last_load: Instant::now(),
         }
@@ -220,9 +249,12 @@ impl PanelTiles {
     /// Whether the Protocol's newest run is not the one the tiles were drawn
     /// from, looked at no more often than [`RUN_CHECK_EVERY`].
     ///
-    /// A Protocol the run held locked is tried again when the listing changes,
+    /// A Protocol the run held locked is tried again when the folder changes,
     /// and otherwise once per [`LOCKED_RETRY_EVERY`]: the listing may already
-    /// have held the run's record when the run still held the database.
+    /// have held the run's record when the run still held the database. One
+    /// that did not open for another reason is tried again whenever its run
+    /// records, its manifest or its panel files change: an agent adding the
+    /// first panel, or a run made outside the window, is what opens it.
     pub fn reload_due(&mut self) -> bool {
         if self
             .last_check
@@ -231,15 +263,22 @@ impl PanelTiles {
             return false;
         }
         self.last_check = Some(Instant::now());
-        let mark = run_mark(&self.dir);
-        let changed = mark != self.run_mark;
+        let mark = FolderMark::of(&self.dir);
+        let changed = mark != self.mark;
         if matches!(self.state, Err(OpenProblem::Locked { .. })) {
             return changed || self.last_load.elapsed() >= LOCKED_RETRY_EVERY;
         }
         if !changed {
             return false;
         }
-        self.run_mark = mark;
+        let runs_moved = mark.runs != self.mark.runs;
+        self.mark = mark;
+        if self.state.is_err() {
+            return true;
+        }
+        if !runs_moved {
+            return false;
+        }
         let newest = arc::spec::run_tables(&self.dir, None)
             .ok()
             .map(|run| run.run_id);
@@ -248,8 +287,12 @@ impl PanelTiles {
     }
 
     /// Open the Protocol again, from its newest run, composing the tiles at the
-    /// size and mode they were last composed at. Answers whether the run the
-    /// tiles are drawn from, or whether they opened at all, changed.
+    /// size and mode they were last composed at. Answers whether the rails
+    /// should read the Protocol again: the run the tiles are drawn from, or
+    /// whether they opened at all, changed; or they still did not open, for a
+    /// reason other than a run holding the database, and [`Self::reload_due`]
+    /// opened them again because the folder changed, whose run records or
+    /// manifest the rails read.
     pub fn reload(&mut self) -> bool {
         let before = (
             self.state.is_ok(),
@@ -269,14 +312,16 @@ impl PanelTiles {
             }
             self.composed_at = Some((body, mode));
         }
-        self.run_mark = run_mark(&self.dir);
+        self.mark = FolderMark::of(&self.dir);
         self.generation += 1;
         self.selected = None;
-        before
-            != (
-                self.state.is_ok(),
-                self.panels().and_then(|p| p.run_id.clone()),
-            )
+        let still_shut = matches!(&self.state, Err(p) if !matches!(p, OpenProblem::Locked { .. }));
+        still_shut
+            || before
+                != (
+                    self.state.is_ok(),
+                    self.panels().and_then(|p| p.run_id.clone()),
+                )
     }
 
     /// Draw the tiles across `area`, or the Protocol's problem when it did not
