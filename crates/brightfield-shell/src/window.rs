@@ -9306,7 +9306,8 @@ impl MeridianApp {
 
     /// [`Self::run_protocol`] over a Protocol whose panels the window holds
     /// as tiles: `arc run` on its folder as written, since the agent wrote
-    /// the folder and the window writes nothing into it first. The tiles reload when the run lands.
+    /// the folder and the window does not write its spec first, as it does
+    /// for one of its own. The tiles reload when the run lands.
     fn run_panel_protocol(&mut self, ctx: &egui::Context) -> bool {
         let Some((dir, name)) = self
             .tiles

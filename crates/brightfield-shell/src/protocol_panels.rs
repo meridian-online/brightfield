@@ -410,7 +410,7 @@ pub fn protocol_tables(panel: &str) -> Vec<String> {
 ///
 /// An entry is taken out when it is one [`with_protocol_tables`] writes:
 /// a table named in `injected` whose source is a mapping holding a `file:`
-/// naming a `.parquet` file and nothing else. A `data:` left empty by that is
+/// naming a `.parquet` file as its one key. A `data:` left empty by that is
 /// taken out too, since the panel read those tables from the database and
 /// declared no `data:` of its own. A text holding no such entry is handed back
 /// byte for byte; one that does is written back through YAML, as

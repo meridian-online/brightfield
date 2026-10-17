@@ -17,8 +17,8 @@
 //!
 //! **A new run reloads the tiles.** [`PanelTiles::reload_due`] looks at the
 //! Protocol's run records at most once per [`RUN_CHECK_EVERY`]: a listing of one
-//! folder, and arc's own read of the newest record only when that listing
-//! changed, so a frame does no more than a directory read.
+//! folder, and arc's own read of the newest record when that listing has
+//! changed (`a_new_run_reloads_the_tiles`), so a quiet frame reads a directory.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
