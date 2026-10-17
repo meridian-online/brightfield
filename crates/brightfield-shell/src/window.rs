@@ -4408,8 +4408,25 @@ impl MeridianApp {
 
     /// Bring the Versions panel's listing up to date for a frame in which it is,
     /// or is not, the panel the ledger rail shows.
+    ///
+    /// The file listed is the panel open from its tile when one is, since that
+    /// is the file a Save writes ([`Self::save_panel_tile`]), and otherwise
+    /// Brightfield's own chart file beside the Protocol.
     fn sync_versions(&mut self, shown: bool) {
+        let tile = self.open_tile_path().zip(
+            self.tiles
+                .as_ref()
+                .and_then(PanelTiles::panels)
+                .map(|panels| panels.dir.clone()),
+        );
         let source = self.history.as_ref().and_then(|store| {
+            if let Some((file, dir)) = tile {
+                return Some(crate::versions::Source {
+                    store: store.clone(),
+                    file,
+                    dir,
+                });
+            }
             let protocol = self.protocol.doc.model.source()?;
             Some(crate::versions::Source {
                 store: store.clone(),

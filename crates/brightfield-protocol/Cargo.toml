@@ -31,6 +31,9 @@ brightfield-sql = { workspace = true }
 # written into a chart file's text through arc's splice, and the parser is what
 # finds the plot the edit names and checks the text it gives back.
 brightfield-spec = { workspace = true }
+# Reads the time on a line of a Protocol's version log, which arc writes as
+# RFC 3339, into the `SystemTime` a version is listed at.
+chrono = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 # The emitted Protocol+Run JSON contract + live `.jsonl` stream (the default input).

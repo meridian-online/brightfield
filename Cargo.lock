@@ -744,6 +744,7 @@ dependencies = [
  "arcform",
  "brightfield-spec",
  "brightfield-sql",
+ "chrono",
  "duckdb",
  "meridian-design",
  "serde",
