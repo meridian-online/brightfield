@@ -8,7 +8,7 @@
 //!   fail on with an unknown step;
 //! * a workflow that a pull request triggers calling a gate script or cargo
 //!   directly rather than through the command, which CI would run and a local
-//!   run would not. The two calls that are not gates are named in
+//!   run would not. The one call that is not a gate is named in
 //!   `DIRECT_CALLS_ALLOWED`, and the one such workflow that stays outside the
 //!   command is named in `WORKFLOWS_OUTSIDE_THE_COMMAND`, each with its reason.
 //!
@@ -28,18 +28,11 @@ pub struct Workflow {
 
 /// The direct calls a pull-request workflow may make, by file name and the text
 /// the call contains, with the reason each is not a gate the command must run.
-pub const DIRECT_CALLS_ALLOWED: &[(&str, &str, &str)] = &[
-    (
-        "test.yml",
-        "scripts/fetch-duckdb-cli.sh",
-        "it fetches the pinned DuckDB CLI the test steps hand to arc, and checks nothing in the tree; locally the test steps say where to put it",
-    ),
-    (
-        "pr-text-hygiene.yml",
-        "scripts/check-history-hygiene.sh --text",
-        "it is the pull-request-text check, re-run on every edit of a description, and the event's text has no local form",
-    ),
-];
+pub const DIRECT_CALLS_ALLOWED: &[(&str, &str, &str)] = &[(
+    "test.yml",
+    "scripts/fetch-duckdb-cli.sh",
+    "it fetches the pinned DuckDB CLI the test steps hand to arc, and checks nothing in the tree; locally the test steps say where to put it",
+)];
 
 /// Workflows a pull request can trigger that call scripts directly and stay
 /// outside the command, by file name, with the reason.
