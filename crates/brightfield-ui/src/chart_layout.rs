@@ -333,7 +333,14 @@ mod tests {
             y: Some("y".into()),    // grows the left margin
             plot: Some("t".into()), // grows the top margin
         };
-        let grown = grow_margins(Margins::default(), &titles);
+        // A base top a step off the default: with the default's top and
+        // bottom, the plot title's taller band lands top and bottom on one
+        // number, and the sides would no longer be told apart.
+        let base = Margins {
+            top: 12.0,
+            ..Margins::default()
+        };
+        let grown = grow_margins(base, &titles);
         // Per-side distinct: left/bottom/top all differ (right never grows).
         assert!(grown.left != grown.bottom && grown.bottom != grown.top);
         let insets = Insets {

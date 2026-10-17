@@ -13,7 +13,8 @@ use crate::ink::ChartInk;
 use crate::layout::ChartLayout;
 use crate::scale::Scale;
 use crate::text::{
-    draw_text, draw_text_rotated, measure_width, TextAnchor, LABEL_SIZE, TITLE_SIZE,
+    draw_heading, draw_text, draw_text_rotated, measure_heading_width, measure_width, TextAnchor,
+    HEADING_SIZE, LABEL_SIZE, TITLE_SIZE,
 };
 
 /// A computed tick mark with its position and label.
@@ -91,25 +92,39 @@ pub(crate) fn x_title_baseline(layout: &ChartLayout) -> f64 {
     layout.plot_y_end() + TICK_LENGTH + f64::from(LABEL_SIZE) + f64::from(TITLE_SIZE) + TITLE_GAP
 }
 
-/// Baseline y for the plot title — above the frame, inside the (grown) top
-/// margin, never above the window top edge.
-pub(crate) fn plot_title_baseline(layout: &ChartLayout) -> f64 {
-    (layout.plot_y_start() - TITLE_GAP).max(f64::from(TITLE_SIZE))
+/// Baseline y for the plot title: the heading's own size down from the
+/// chart's top edge, so it heads the chart in the band its top margin grew by
+/// ([`crate::title::PLOT_TITLE_BAND`]), with the rest of that band and the
+/// base top margin beneath it before the plot.
+pub(crate) fn plot_title_baseline() -> f64 {
+    f64::from(HEADING_SIZE) + 2.0
 }
 
-/// Render a per-plot title above the frame, left-aligned at the frame's left
-/// edge (Observable Plot parity). Called only when the plot declares a title
-/// (so the top margin has grown to make room).
+/// Render a per-plot title as the chart's heading: the heading size, in the
+/// semibold face, left-aligned with the chart's outer left edge, which the
+/// y-axis title and tick labels stand in from, rather than with the frame.
+/// Called only when the plot declares a title (so the top margin has grown
+/// to make room).
+///
+/// A title wider than the chart is set smaller until it fits, down to the axis
+/// title's size ([`heading_size_for`]), so a long title is read whole rather
+/// than cut at the chart's edge.
 pub fn render_plot_title(scene: &mut Scene, layout: &ChartLayout, title: &str, ink: ChartInk) {
-    draw_text(
-        scene,
-        title,
-        layout.plot_x_start(),
-        plot_title_baseline(layout),
-        TITLE_SIZE,
-        ink.title,
-        TextAnchor::Start,
-    );
+    let size = heading_size_for(title, layout.width);
+    draw_heading(scene, title, 0.0, plot_title_baseline(), size, ink.title);
+}
+
+/// The size a plot title `title` is set at in a chart `width` wide: the
+/// heading's, or as much smaller as fits the width, never below the axis
+/// title's size.
+#[must_use]
+pub fn heading_size_for(title: &str, width: f64) -> f32 {
+    let natural = measure_heading_width(title, HEADING_SIZE);
+    if natural <= width || natural <= 0.0 {
+        return HEADING_SIZE;
+    }
+    let fitted = (f64::from(HEADING_SIZE) * width / natural) as f32;
+    fitted.clamp(TITLE_SIZE, HEADING_SIZE)
 }
 
 /// Compute ticks for a scale.
@@ -1135,6 +1150,19 @@ pub(crate) fn render_graticule_labels(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A title that fits is set at the heading size; a wider one is set as
+    /// much smaller as fits, and never below an axis title.
+    #[test]
+    fn a_long_heading_is_set_smaller_to_fit_its_chart() {
+        let title = "Per-capita CO2 since 1990, G7 countries vs China and India";
+        assert_eq!(heading_size_for("Fruit", 400.0), HEADING_SIZE);
+        let wide = measure_heading_width(title, HEADING_SIZE);
+        let size = heading_size_for(title, wide * 0.8);
+        assert!((TITLE_SIZE..HEADING_SIZE).contains(&size), "{size}");
+        assert!(measure_heading_width(title, size) <= wide * 0.8 + 0.5);
+        assert_eq!(heading_size_for(title, 10.0), TITLE_SIZE);
+    }
     use crate::layout::{ChartLayout, Insets, Margins};
     use crate::scale::Scale;
 

@@ -2866,7 +2866,7 @@ mod tests {
     #[test]
     fn the_titled_plot_holds_labels_and_titles_outside_its_data_area() {
         use brightfield_render::layout::Margins;
-        use brightfield_render::title::TITLE_BAND;
+        use brightfield_render::title::{PLOT_TITLE_BAND, TITLE_BAND};
         let plot = titled_plot(BrushKind::IntervalX);
         let (rect, area) = (plot.rect, plot.data_area());
         let d = Margins::default();
@@ -2875,7 +2875,7 @@ mod tests {
             "left: {rect:?} vs {area:?}"
         );
         assert!(
-            area.y - rect.y >= d.top + TITLE_BAND,
+            area.y - rect.y >= d.top + PLOT_TITLE_BAND,
             "top: {rect:?} vs {area:?}"
         );
         assert!(
