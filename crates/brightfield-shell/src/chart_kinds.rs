@@ -1084,7 +1084,7 @@ mod tests {
     #[test]
     fn no_kinds_block_asks_for_something_the_load_says_had_no_effect() {
         for kind in registry().kinds() {
-            let source = document_of(kind, INLINE_ROWS);
+            let source = document_of(kind, &inline_rows(kind));
             let composed = crate::pipeline::compose_spec_str(&source, None)
                 .unwrap_or_else(|e| panic!("{}: {e}\n{source}", kind.id));
             let found: Vec<String> = composed
@@ -1102,17 +1102,36 @@ mod tests {
         }
     }
 
-    /// Rows carrying the columns [`document_of`] binds, under the name every
-    /// kind reads. `c0` is numeric so it fills a quantitative slot; both
-    /// columns serve as band axes.
-    const INLINE_ROWS: &str = "\
-data:
-  opened:
-    - { c0: 1, c1: north }
-    - { c0: 4, c1: north }
-    - { c0: 9, c1: south }
-    - { c0: 16, c1: east }
-";
+    /// Four rows carrying the columns [`document_of`] binds, under the name
+    /// every kind reads, each holding what its slot accepts first: a number for
+    /// a quantitative slot, a name for a categorical one, true or false for a
+    /// boolean one. A temporal slot gets numbers, as inline rows have no date
+    /// type to spell. Rows that do not fit the slots would be a picture the
+    /// registry never offers: a point map handed a column of names for its
+    /// latitude has nothing to project, and its load rightly says its dots drew
+    /// nothing.
+    fn inline_rows(kind: &ChartKind<String>) -> String {
+        let columns: Vec<[&str; 4]> = kind
+            .slots
+            .iter()
+            .filter(|s| s.required)
+            .map(|s| match s.accepts[0] {
+                FieldType::Quantitative | FieldType::Temporal => ["1", "4", "9", "16"],
+                FieldType::Categorical => ["north", "north", "south", "east"],
+                FieldType::Boolean => ["true", "true", "false", "true"],
+            })
+            .collect();
+        let mut out = String::from("data:\n  opened:\n");
+        for row in 0..4 {
+            let cells: Vec<String> = columns
+                .iter()
+                .enumerate()
+                .map(|(i, values)| format!("c{i}: {}", values[row]))
+                .collect();
+            out.push_str(&format!("    - {{ {} }}\n", cells.join(", ")));
+        }
+        out
+    }
 
     /// A file-backed `data:` header — enough to parse against, and it opens no
     /// file because parsing does not read one.
