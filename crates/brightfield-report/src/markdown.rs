@@ -188,33 +188,38 @@ pub(crate) fn listed_charts(markdown: &str) -> Vec<ListedChart> {
     charts
 }
 
-/// The run the `## Run` section of `markdown` describes.
+/// When the run finished and the tables it made, from the `## Run` section of
+/// `markdown`.
 ///
 /// This reads what arc's `run_section` function in its `report.rs` writes, at
 /// the arcform rev the workspace pins: `## Run` last, then `` - Run: `<id>` ``,
 /// `- Finished: <time>`, and under `- Assets, by content hash:` one
 /// `` - `<kind>:<name>`: <hash> `` line per asset, `not measured` standing in
-/// for a hash arc could not take. Only `table:` assets are kept.
+/// for a hash arc could not take. Only `table:` assets are kept. The run id is
+/// not read here: arc exports it as `arc::spec::report_run`, and the caller
+/// asks arc. Lines are split as arc splits them, so CRLF endings read the same.
 /// `arc_writes_what_the_parsers_read` in the shell's `tests/export_pdf.rs`
 /// holds this against a report arc writes.
 pub(crate) fn reported_run(markdown: &str) -> ReportedRun {
     // The Run section is arc's and comes last, so the last such heading is its
     // own even when the prose quotes one.
-    let section = markdown
-        .rfind("\n## Run\n")
-        .map(|at| &markdown[at..])
-        .or_else(|| markdown.starts_with("## Run\n").then_some(markdown))
-        .unwrap_or("");
+    let mut section: Vec<&str> = markdown
+        .lines()
+        .rev()
+        .take_while(|line| *line != "## Run")
+        .collect();
+    let found = section.len() < markdown.lines().count();
+    section.reverse();
+    if !found {
+        section.clear();
+    }
     let mut run = ReportedRun {
-        run_id: None,
         finished: None,
         tables: BTreeMap::new(),
     };
-    for line in section.lines() {
+    for line in section {
         let line = line.trim();
-        if let Some(id) = line.strip_prefix("- Run: `") {
-            run.run_id = id.strip_suffix('`').map(str::to_string);
-        } else if let Some(at) = line.strip_prefix("- Finished: ") {
+        if let Some(at) = line.strip_prefix("- Finished: ") {
             run.finished = Some(at.trim().to_string());
         } else if let Some(rest) = line.strip_prefix("- `table:") {
             if let Some((name, hash)) = rest.split_once("`:") {
@@ -730,11 +735,18 @@ mod tests {
     fn the_run_section_is_read() {
         let report = "Prose naming - `table:fake`: 00\n\n## Run\n\n- Run: `r1`\n- Finished: 2026-10-16T21:15:10Z\n- Assets, by content hash:\n  - `table:a`: 4922e56a\n  - `file:data/x.csv`: 7f78\n  - `table:b`: not measured\n";
         let run = reported_run(report);
-        assert_eq!(run.run_id.as_deref(), Some("r1"));
         assert_eq!(run.finished.as_deref(), Some("2026-10-16T21:15:10Z"));
         assert_eq!(run.tables.len(), 2, "{:?}", run.tables);
         assert_eq!(run.tables["a"].as_deref(), Some("4922e56a"));
         assert_eq!(run.tables["b"], None);
+    }
+
+    #[test]
+    fn the_run_section_reads_the_same_with_crlf_endings() {
+        let report = "## Charts\r\n\r\n## Run\r\n\r\n- Run: `r1`\r\n- Finished: 2026-10-16T21:15:10Z\r\n- Assets, by content hash:\r\n  - `table:a`: 4922e56a\r\n";
+        let run = reported_run(report);
+        assert_eq!(run.finished.as_deref(), Some("2026-10-16T21:15:10Z"));
+        assert_eq!(run.tables["a"].as_deref(), Some("4922e56a"));
     }
 
     #[test]

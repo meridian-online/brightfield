@@ -154,9 +154,8 @@ const PROSE: &str = "Every G7 country emits less CO2 per person than it did in 1
 fn a_change_after_arc_writes_the_report_raises_the_notice() {
     let ran = ran_fixture("co2-per-capita");
     write_report(&ran.dir, PROSE, None);
-    let report = std::fs::read_to_string(ran.dir.join("report.md")).expect("the report");
-    let run = reported_run(&report)
-        .run_id
+    let run = arc::spec::report_run(&ran.dir)
+        .expect("arc reads the report")
         .expect("the report names its run");
     change_the_change_table(&ran.dir);
     run_protocol(&ran.dir);
@@ -175,13 +174,37 @@ fn a_change_after_arc_writes_the_report_raises_the_notice() {
 }
 
 #[test]
+fn a_report_with_crlf_line_endings_raises_the_same_notice() {
+    let ran = ran_fixture("co2-per-capita");
+    write_report(&ran.dir, PROSE, None);
+    let file = ran.dir.join("report.md");
+    let lf = std::fs::read_to_string(&file).expect("the report");
+    std::fs::write(&file, lf.replace('\n', "\r\n")).expect("rewrites the report");
+    let run = arc::spec::report_run(&ran.dir)
+        .expect("arc reads the report")
+        .expect("the report names its run");
+    change_the_change_table(&ran.dir);
+    run_protocol(&ran.dir);
+
+    assert_eq!(
+        stale_tables(&ran.dir).expect("the hashes compare"),
+        vec!["co2_per_capita_change".to_string()]
+    );
+    let out = export(&["export-pdf", path_arg(&ran.dir)]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = pdf_text(&std::fs::read(ran.dir.join("report.pdf")).expect("the PDF"));
+    assert!(text.contains("changed since the run"), "{text}");
+    assert!(text.contains(&run), "{text}");
+    assert!(text.contains("Run finished"), "{text}");
+}
+
+#[test]
 fn an_unchanged_rerun_after_arc_writes_the_report_raises_none() {
     let ran = ran_fixture("co2-per-capita");
     write_report(&ran.dir, PROSE, None);
     force_run_protocol(&ran.dir);
-    let report = std::fs::read_to_string(ran.dir.join("report.md")).expect("the report");
-    let run = reported_run(&report)
-        .run_id
+    let run = arc::spec::report_run(&ran.dir)
+        .expect("arc reads the report")
         .expect("the report names its run");
     let newest = arc::spec::run_tables(&ran.dir, None).expect("the newest run");
     assert_ne!(newest.run_id, run, "the forced run is a new run");
@@ -197,9 +220,8 @@ fn a_report_from_another_machine_falls_back_on_its_own_hashes() {
     // The fixture's report names the run the agent made on its own machine,
     // which this test's history does not hold.
     let ran = ran_fixture("co2-per-capita");
-    let report = std::fs::read_to_string(ran.dir.join("report.md")).expect("the report");
-    let run = reported_run(&report)
-        .run_id
+    let run = arc::spec::report_run(&ran.dir)
+        .expect("arc reads the report")
         .expect("the report names its run");
     let refused = arc::spec::run_tables(&ran.dir, Some(&run)).expect_err("no such run here");
     assert!(
@@ -239,7 +261,10 @@ fn arc_writes_what_the_parsers_read() {
 
     let run = reported_run(&report);
     let newest = arc::spec::run_tables(&ran.dir, None).expect("the newest run");
-    assert_eq!(run.run_id.as_deref(), Some(newest.run_id.as_str()));
+    assert_eq!(
+        arc::spec::report_run(&ran.dir).expect("arc reads the report"),
+        Some(newest.run_id.clone())
+    );
     assert!(run.finished.is_some(), "{report}");
     assert_eq!(run.tables, newest.tables, "{report}");
 }

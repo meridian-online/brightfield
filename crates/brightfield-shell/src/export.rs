@@ -594,6 +594,7 @@ pub fn prepare_report(dir: &Path) -> Result<PreparedReport, Vec<String>> {
     }
 
     let run = reported_run(&markdown);
+    let run_id = arc::spec::report_run(&dir).ok().flatten();
     let notice = match stale_tables(&dir) {
         Ok(stale) if stale.is_empty() => None,
         Ok(stale) => {
@@ -601,7 +602,7 @@ pub fn prepare_report(dir: &Path) -> Result<PreparedReport, Vec<String>> {
             Some(format!(
                 "These charts read the Protocol's tables as they are now. {} changed since the run this report describes (`{}`).",
                 names.join(", "),
-                run.run_id.as_deref().unwrap_or_default()
+                run_id.as_deref().unwrap_or_default()
             ))
         }
         Err(e) => {
@@ -667,7 +668,8 @@ pub fn stale_tables(dir: &Path) -> Result<Vec<String>, String> {
     let newest = arc::spec::run_tables(&dir, None).map_err(|e| e.to_string())?;
     let report = std::fs::read_to_string(dir.join(REPORT_FILE)).map_err(|e| e.to_string())?;
     let reported = reported_run(&report);
-    let Some(run) = reported.run_id else {
+    let run_id = arc::spec::report_run(&dir).map_err(|e| e.to_string())?;
+    let Some(run) = run_id else {
         return Err(
             "it names no run, so whether the tables changed since it was written is not known"
                 .to_string(),

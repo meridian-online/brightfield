@@ -69,11 +69,10 @@ pub struct ReportInput<'a> {
     pub subtitle: Option<&'a str>,
 }
 
-/// What the `## Run` section of a report says about the run it describes.
+/// What the `## Run` section of a report says about the run it describes,
+/// less the run's id, which arc reads (`arc::spec::report_run`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReportedRun {
-    /// The run's id.
-    pub run_id: Option<String>,
     /// When the run finished, as arc wrote it.
     pub finished: Option<String>,
     /// Each table the run made, with its content hash; `None` where arc wrote
@@ -81,8 +80,8 @@ pub struct ReportedRun {
     pub tables: std::collections::BTreeMap<String, Option<String>>,
 }
 
-/// What the `## Run` section of `markdown` says: the run's id, when it
-/// finished, and the content hash of each table it made.
+/// What the `## Run` section of `markdown` says: when the run finished, and
+/// the content hash of each table it made.
 #[must_use]
 pub fn reported_run(markdown: &str) -> ReportedRun {
     markdown::reported_run(markdown)
