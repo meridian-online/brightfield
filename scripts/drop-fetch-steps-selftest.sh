@@ -140,6 +140,33 @@ assets: {}
 Y
 )" "delete 1 delete 0"
 
+expect_drop "a with: flow mapping written across lines" "$(protocol multiline <<'Y'
+name: p
+steps:
+  - name: fetch
+    op: http_fetch
+    with: {
+      out: data/a.csv,
+      url: https://example.invalid/a.csv
+    }
+  - name: load
+    sql: models/load.sql
+Y
+)" "delete 0"
+
+expect_drop "the last entry of a multi-line with: mapping" "$(protocol multiline_last <<'Y'
+name: p
+steps:
+  - name: fetch
+    op: http_fetch
+    with: {
+      url: https://example.invalid/a.csv,
+      out: "data/a.csv" }
+  - name: load
+    sql: models/load.sql
+Y
+)" "delete 0"
+
 echo "== nothing to drop"
 dir=$(protocol none <<'Y'
 name: p
@@ -149,6 +176,37 @@ steps:
 Y
 )
 if "$DROP" "$dir" "$ARC" > "$TMP/out" 2>&1 && [ ! -s "$DELETES" ]; then ok "no fetch step"; else fail "no fetch step"; fi
+
+# expect_untouched NAME DIR: exits 0, deletes nothing, leaves the manifest as
+# it was.
+expect_untouched() {
+  local name="$1" dir="$2"
+  cp "$dir/arcform.yaml" "$TMP/before"
+  local status=0
+  "$DROP" "$dir" "$ARC" > "$TMP/out" 2>&1 || status=$?
+  [ "$status" -eq 0 ] || { fail "$name: expected exit 0, got $status"; return; }
+  [ ! -s "$DELETES" ] || { fail "$name: it deleted a step"; return; }
+  cmp -s "$TMP/before" "$dir/arcform.yaml" || { fail "$name: the manifest changed"; return; }
+  ok "$name"
+}
+
+expect_untouched "a commented-out fetch step" "$(protocol commented <<'Y'
+name: p
+steps:
+  # - name: fetch
+  #   op: http_fetch
+  #   with: { out: data/never.csv }
+  - name: load
+    sql: models/load.sql
+Y
+)"
+
+expect_untouched "a flow-style step that only mentions http_fetch" "$(protocol mention <<'Y'
+name: p
+steps:
+  - {name: load_http_fetch_output, sql: models/http_fetch.sql}
+Y
+)"
 
 echo "== what it refuses"
 expect_refusal "flow-style item" "$(protocol flow <<'Y'

@@ -62,7 +62,7 @@ fetch_steps() {
           if ($0 ~ /^[ ]*-[ ]+\{/) flow = 1
         }
       }
-      if (flow) { if ($0 ~ /http_fetch/) fetch = 1; next }
+      if (flow) { if ($0 !~ /^[ ]*#/ && $0 ~ /op:[ ]*["\047]?http_fetch/) fetch = 1; next }
       line = $0
       sub(/^[ ]*(- )?/, "", line)
       if (line ~ /^op:[ ]*["\047]?http_fetch(@[0-9]+)?["\047]?[ ]*(#.*)?$/) fetch = 1
@@ -77,6 +77,9 @@ fetch_steps() {
         v = line
         sub(/^out:[ ]*/, "", v)
         sub(/[ ]+#.*$/, "", v)
+        # An entry of a flow mapping written across lines ends in a comma or
+        # the closing brace.
+        sub(/[ ]*[,}][ ,}]*$/, "", v)
         gsub(/^["\047]|["\047][ ]*$/, "", v)
         out = v
       }
@@ -109,8 +112,9 @@ fi
 
 # The block reading above is of the text, not arc's parse of it, so check the
 # result whether or not it dropped anything: an http_fetch op still in the file,
-# in any spelling or style, means the reading missed a step.
-if grep -Eq "op:[[:space:]]*[\"']?http_fetch" "$MANIFEST"; then
+# in any spelling or style, means the reading missed a step. A commented-out
+# line is not a step.
+if grep -Ev '^[[:space:]]*#' "$MANIFEST" | grep -Eq "op:[[:space:]]*[\"']?http_fetch"; then
   echo "an http_fetch step is still in $MANIFEST, in a form this script does not read" >&2
   exit 1
 fi
