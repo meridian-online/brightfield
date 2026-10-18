@@ -1538,6 +1538,7 @@ fn draw_multi_mark_scene(
 ///   `xScale` on a bar's band axis, say);
 /// - a channel it binds names a column its rows do not have;
 /// - a positional channel it binds has no scale;
+/// - an area has a band axis (a date or names), which it does not draw on;
 /// - a line or an area placed rows but had no series of two points to join;
 /// - otherwise, no row held values it could place.
 #[must_use]
@@ -1578,6 +1579,25 @@ pub fn why_drew_nothing(entry: &ChartData<'_>, scales: &ScaleSet, kind: MarkKind
     for channel in [Channel::X, Channel::Y] {
         if cm.has(channel) && scales.get(channel).is_none() {
             return format!("{} has no scale to be placed on", channel.wire_name());
+        }
+    }
+    // An area reads its positions as numbers, so it has no place on a band
+    // axis: a `DATE` column, or names. Its rows count as placed through the
+    // band all the same, which would send the reason below astray.
+    if matches!(kind, MarkKind::AreaX | MarkKind::AreaY) {
+        for channel in [Channel::X, Channel::Y] {
+            if cm.has(channel) && matches!(scales.get(channel), Some(Scale::Band { .. })) {
+                let what = cm
+                    .get(channel)
+                    .and_then(|col| entry.batch.schema().index_of(col).ok())
+                    .map(|i| column_kind(entry.batch.schema().field(i).data_type()))
+                    .unwrap_or("its");
+                return format!(
+                    "{} reads {what} column on a band scale, and a {mark} does not draw on a \
+                     band or date axis",
+                    channel.wire_name()
+                );
+            }
         }
     }
     // A line or an area joins a series' points, and a series with one point

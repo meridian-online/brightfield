@@ -30,7 +30,7 @@ brightfield export-png path/to/protocol <panel>
 brightfield export-data path/to/protocol <panel> --format parquet
 ```
 
-`brightfield --help` lists their options. `--out` names the file to write; for `export-data`, a path that is a folder, or ends in `/`, is a folder to write one file per table into. What a panel's load has to say (an option nothing draws, colours that repeat, a mark that drew nothing) is printed on stderr, one line per note naming the panel file, and the export still writes its file. None of them needs the network; the PDF and PNG exports draw on the machine's GPU.
+`brightfield --help` lists their options. `--out` names the file to write; for `export-data`, a path that is a folder, or ends in `/`, is a folder to write one file per table into. `export-png` and `export-pdf` print what a panel's load has to say (an option nothing draws, colours that repeat, a mark that drew nothing) on stderr, one line per note naming the panel file, and still write their file. None of them needs the network; the PDF and PNG exports draw on the machine's GPU.
 
 To build from source instead, Brightfield needs a recent Rust toolchain (1.95+, matching the CI pin). From a clone of the repo, render the self-contained example spec:
 

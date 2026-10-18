@@ -260,6 +260,11 @@ fn a_line_over_daily_or_monthly_days_says_nothing_of_spacing() {
     assert!(!says_uneven(&monthly), "{monthly:?}");
     let month_ends = notes_over(&["2024-01-31", "2024-02-29", "2024-03-31", "2024-04-30"]);
     assert!(!says_uneven(&month_ends), "{month_ends:?}");
+    let weekly = notes_over(&["2024-01-01", "2024-01-08", "2024-01-15", "2024-01-22"]);
+    assert!(!says_uneven(&weekly), "{weekly:?}");
+    // The 30th of each month, held to the 29th in February.
+    let clamped = notes_over(&["2024-01-30", "2024-02-29", "2024-03-30", "2024-04-30"]);
+    assert!(!says_uneven(&clamped), "{clamped:?}");
 }
 
 /// The colours a `lineY` split by an integer column draws over [`table`], with
@@ -293,5 +298,26 @@ fn a_number_stroke_line_takes_the_plots_colour_keys() {
         stroke_colours("colorScheme: turbo\n"),
         default,
         "a written scheme paints the series along it"
+    );
+}
+
+#[test]
+fn an_area_over_a_date_axis_says_it_does_not_draw_on_one() {
+    let source = format!(
+        "data:\n  {s}:\n    query: \"SELECT * FROM (VALUES (DATE '2024-01-01', 1.0), \
+         (DATE '2024-01-02', 2.0), (DATE '2024-01-03', 3.0)) t(day, v)\"\n\
+         plot:\n  - mark: areaY\n    data: {{ from: {s} }}\n    x: day\n    y: v\n",
+        s = brightfield_shell::data_file::SOURCE
+    );
+    let c = brightfield_shell::pipeline::LiveDashboard::load_str(&source, None)
+        .unwrap_or_else(|e| panic!("loads: {e}\n{source}"))
+        .present()
+        .unwrap_or_else(|e| panic!("composes: {e}\n{source}"));
+    let notes: Vec<&str> = c.diagnostics.notes();
+    assert!(
+        notes.iter().any(|n| n.contains("`areaY` drew nothing")
+            && n.contains("a date column")
+            && n.contains("band or date axis")),
+        "{notes:?}"
     );
 }

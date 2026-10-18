@@ -232,6 +232,26 @@ pub(crate) fn reported_run(markdown: &str) -> ReportedRun {
     run
 }
 
+/// The text of a block of HTML: comments left out whole, each tag left out,
+/// and runs of white space made one space.
+fn html_text(html: &str) -> String {
+    let mut text = String::new();
+    let mut rest = html;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("<!--") {
+            rest = after.find("-->").map_or("", |at| &after[at + 3..]);
+        } else if rest.starts_with('<') {
+            rest = rest.find('>').map_or("", |at| &rest[at + 1..]);
+        } else {
+            let at = rest.find('<').unwrap_or(rest.len());
+            text.push_str(&rest[..at]);
+            text.push(' ');
+            rest = &rest[at..];
+        }
+    }
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// `text` escaped for Typst markup, so each character prints as itself.
 /// `previous` is the character the markup written so far ends with, so a
 /// digit and a full stop split across two pieces of text are still caught.
@@ -397,6 +417,27 @@ impl Writer<'_> {
                     i = end + 1;
                     continue;
                 }
+                Event::Start(Tag::HtmlBlock) => {
+                    // A block of HTML keeps its text and loses its tags, so
+                    // `<p align="center">Source: ONS</p>` prints its source;
+                    // a comment in it is a note to the file's reader and is
+                    // left out whole.
+                    let end = matching_end(events, i);
+                    let html: String = events[i + 1..end]
+                        .iter()
+                        .filter_map(|e| match e {
+                            Event::Html(t) | Event::Text(t) => Some(t.as_ref()),
+                            _ => None,
+                        })
+                        .collect();
+                    let text = html_text(&html);
+                    if !text.is_empty() {
+                        self.push_text(&text);
+                        self.out.push_str("\n\n");
+                    }
+                    i = end + 1;
+                    continue;
+                }
                 Event::Start(Tag::Image { .. }) => {
                     // A picture the report links to is not fetched: its alt
                     // text stands in for it.
@@ -437,9 +478,13 @@ impl Writer<'_> {
     /// Text in the Run section: a content hash at its end is set as an id.
     fn write_run_text(&mut self, text: &str) {
         let trimmed = text.trim_end();
+        // Just past the last character that is not a hex digit, which may be
+        // several bytes long (an em dash, an accented letter).
         let start = trimmed
-            .rfind(|c: char| !c.is_ascii_hexdigit())
-            .map_or(0, |at| at + 1);
+            .char_indices()
+            .rev()
+            .find(|(_, c)| !c.is_ascii_hexdigit())
+            .map_or(0, |(at, c)| at + c.len_utf8());
         if is_hash(&trimmed[start..]) {
             self.push_text(&trimmed[..start]);
             self.write_code(&trimmed[start..]);
@@ -755,17 +800,35 @@ mod tests {
     }
 
     #[test]
+    fn run_text_ending_in_a_multi_byte_character_is_set_as_written() {
+        for (markdown, kept) in [
+            ("## Run\n\nEach table \u{2014} `x`\n", "Each table \u{2014}"),
+            ("## Run\n\ncaf\u{e9}\n", "caf\u{e9}"),
+            (
+                "## Run\n\nsaid \u{201c}done\u{201d}\n",
+                "\u{201c}done\u{201d}",
+            ),
+        ] {
+            let out = body(markdown, &[], None);
+            assert!(out.contains(kept), "{kept} in {out}");
+        }
+    }
+
+    #[test]
     fn html_comments_and_html_blocks_are_left_out() {
         let out = body(
             "Before <!-- an inline note --> after.\n\n<!--\na block note\n-->\n\n\
-             <details>\n<summary>More</summary>\n</details>\n\nLast.\n",
+             <details>\n<summary>More</summary>\n</details>\n\n\
+             <p align=\"center\">Source: ONS <!-- hidden --></p>\n\nLast.\n",
             &[],
             None,
         );
-        for gone in ["note", "<", "details", "summary"] {
+        for gone in ["note", "<", "details", "summary", "align", "hidden"] {
             assert!(!out.contains(gone), "{gone} in {out}");
         }
-        assert!(out.contains("Before") && out.contains("after.") && out.contains("Last."));
+        for kept in ["Before", "after.", "More", "Source: ONS", "Last."] {
+            assert!(out.contains(kept), "{kept} not in {out}");
+        }
     }
 
     #[test]

@@ -304,6 +304,10 @@ impl PanelTiles {
     /// than a run holding the database, and [`Self::reload_due`] opened them
     /// again because the folder changed, whose run records or manifest the
     /// rails read. A panel file alone leaves the rails as they are.
+    ///
+    /// Open tiles whose reload finds the database held by a run keep what they
+    /// draw, answer `false`, and stay due, so the change is read once the run
+    /// is done (`a_reload_under_a_runs_lock_keeps_the_tiles_and_tries_again`).
     pub fn reload(&mut self) -> bool {
         let before = (
             self.state.is_ok(),
@@ -317,8 +321,15 @@ impl PanelTiles {
         let (body, mode) = self
             .composed_at
             .unwrap_or((egui::vec2(MIN_TILE_WIDTH, MIN_TILE_HEIGHT), Mode::Light));
-        self.state = load(&self.dir, viewport(body));
+        let loaded = load(&self.dir, viewport(body));
         self.last_load = Instant::now();
+        // Open tiles that meet a run holding the database keep drawing what
+        // they drew, and the mark is left where it was, so the change that
+        // asked for this reload is still due once the run lets go.
+        if self.state.is_ok() && matches!(loaded, Err(OpenProblem::Locked { .. })) {
+            return false;
+        }
+        self.state = loaded;
         // The rasters were of the tiles that were; the sweep frees their slots.
         self.rasters.clear();
         if let Ok(panels) = &mut self.state {

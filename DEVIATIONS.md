@@ -625,13 +625,14 @@ drawn in proportion to the time between them.
 **Brightfield behaviour.** A `DATE` column takes a band scale, one band per distinct day in time
 order, and a line joins the band centres. Consecutive days are drawn one
 band apart whatever the time between them. When the days on such an axis
-are not evenly spaced (not every day, every week or every whole number of
-calendar months), the load says so in one line: "`<mark>` puts its
+are neither the same number of days apart nor on the same day of every
+Nth month (held to the last day of a shorter month), the load says so in
+one line: "`<mark>` puts its
 `<axis>` days one band apart, and these days are not evenly spaced, so
 the gaps between them are not drawn to scale". A Protocol panel's tile
 shows the line above its chart and the headless exports print it on
 stderr. An `areaY` or `areaX` over a `DATE` column draws nothing, and its
-load names the mark that drew nothing.
+load says the area does not draw on a band or date axis.
 
 
 **Rationale.** Bars and cells over a `DATE` are counts per day and read correctly on a

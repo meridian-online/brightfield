@@ -301,6 +301,62 @@ fn a_locked_database_says_the_protocol_is_running() {
     }
 }
 
+/// Open tiles keep drawing through a reload that meets a run's lock, and pick
+/// up the edit that prompted it once the lock is gone.
+#[test]
+fn a_reload_under_a_runs_lock_keeps_the_tiles_and_tries_again() {
+    use brightfield_shell::panel_tiles::{PanelTiles, RUN_CHECK_EVERY};
+    let fixture = ran_fixture(CO2);
+    let mut tiles = PanelTiles::new(loaded(&fixture.dir), egui::vec2(400.0, 300.0));
+    let db = arc::spec::protocol_db_path(&fixture.dir).unwrap();
+    let mut held = Command::new(engine_cli())
+        .arg(&db)
+        .args(["-noheader", "-list"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the DuckDB CLI starts");
+    let mut stdin = held.stdin.take().unwrap();
+    writeln!(stdin, "SELECT 'holding';").unwrap();
+    stdin.flush().unwrap();
+    let mut line = String::new();
+    BufReader::new(held.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line.trim(), "holding", "the CLI opened the database");
+
+    // An edit to a panel while the run holds the database.
+    let panel = fixture.dir.join(CHANGE);
+    let text = std::fs::read_to_string(&panel).unwrap();
+    std::fs::write(&panel, format!("{text}\n# edited\n")).unwrap();
+    std::thread::sleep(RUN_CHECK_EVERY);
+    assert!(tiles.reload_due(), "the edit is seen");
+    tiles.reload();
+    let kept = tiles.panels().is_some();
+    drop(stdin);
+    let _ = held.kill();
+    let _ = held.wait();
+    assert!(
+        kept,
+        "the tiles went to {:?}",
+        tiles.problem().map(OpenProblem::message)
+    );
+
+    std::thread::sleep(RUN_CHECK_EVERY);
+    assert!(
+        tiles.reload_due(),
+        "the edit the locked reload could not read is still due"
+    );
+    tiles.reload();
+    assert!(
+        tiles.panels().is_some(),
+        "the tiles open once the run is done"
+    );
+    std::thread::sleep(RUN_CHECK_EVERY);
+    assert!(!tiles.reload_due(), "and the edit is taken as read");
+}
+
 #[test]
 fn a_folder_with_a_space_and_a_quote_opens() {
     let fixture = copied_fixture_in(CO2, "it's a test");

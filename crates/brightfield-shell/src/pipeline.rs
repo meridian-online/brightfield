@@ -2993,9 +2993,10 @@ fn repeated_colours(scales: &ScaleSet, written: &ColourOverride) -> Vec<ParseWar
 ///
 /// A `DATE` takes a band scale, one band per distinct day, so a line through
 /// the band centres draws the gaps between consecutive days at one width.
-/// That is the picture only when the gaps are equal: days one day or one week
-/// apart, or a whole number of calendar months apart, which count as even
-/// though their lengths differ. Uneven days (weekdays only, a missing month,
+/// That is the picture when the days are the same number of days apart (a
+/// day, a week), or fall on the same day of every Nth month, held to the
+/// month's last day in a shorter month, which count as even though those
+/// months differ in length. Other days (weekdays only, a missing month,
 /// event dates) are named, since the axis misstates the intervals between
 /// them (`a_line_over_unevenly_spaced_days_says_they_are_drawn_evenly`,
 /// `a_line_over_daily_or_monthly_days_says_nothing_of_spacing`).
@@ -3039,9 +3040,11 @@ fn uneven_days(
     out
 }
 
-/// Whether consecutive `days`, in order, are all the same number of days apart
-/// or all the same number of calendar months apart on the same day of the
-/// month (or each on its month's last day).
+/// Whether consecutive `days`, in order, are all the same number of days apart,
+/// or fall on the same day of every Nth month. That day is the latest day of
+/// the month any of them falls on, held to a shorter month's last day, so
+/// 30 January, 29 February and 30 March are a month apart, and so are the
+/// last days of successive months.
 fn days_evenly_spaced(days: &[chrono::NaiveDate]) -> bool {
     use chrono::Datelike;
     if days.len() < 3 {
@@ -3051,9 +3054,14 @@ fn days_evenly_spaced(days: &[chrono::NaiveDate]) -> bool {
     if gaps.iter().all(|&g| g == gaps[0]) {
         return true;
     }
-    let month_end =
-        |d: &chrono::NaiveDate| d.succ_opt().is_none_or(|next| next.month() != d.month());
-    let same_place = days.iter().all(|d| d.day() == days[0].day()) || days.iter().all(month_end);
+    let anchor = days.iter().map(Datelike::day).max().unwrap_or(1);
+    let last_day = |d: &chrono::NaiveDate| {
+        (28..=31)
+            .rev()
+            .find(|&day| d.with_day(day).is_some())
+            .unwrap_or(28)
+    };
+    let same_place = days.iter().all(|d| d.day() == anchor.min(last_day(d)));
     let months: Vec<i32> = days
         .windows(2)
         .map(|w| (w[1].year() - w[0].year()) * 12 + w[1].month() as i32 - w[0].month() as i32)

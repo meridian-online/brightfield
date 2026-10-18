@@ -921,7 +921,8 @@ pub enum ParseWarning {
     /// draws it to scale.
     ///
     /// Raised by composition, which is where the days the axis holds are
-    /// known. Days a whole number of calendar months apart count as even.
+    /// known. Days the same number of days apart, or on the same day of every
+    /// Nth month (held to a shorter month's last day), count as even.
     UnevenDays {
         /// The mark's name (`lineY`).
         mark: String,
