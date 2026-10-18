@@ -30,7 +30,7 @@ brightfield export-png path/to/protocol <panel>
 brightfield export-data path/to/protocol <panel> --format parquet
 ```
 
-`brightfield --help` lists their options. None of them needs the network; the PDF and PNG exports draw on the machine's GPU.
+`brightfield --help` lists their options. `--out` names the file to write; for `export-data`, a path that is a folder, or ends in `/`, is a folder to write one file per table into. What a panel's load has to say (an option nothing draws, colours that repeat, a mark that drew nothing) is printed on stderr, one line per note naming the panel file, and the export still writes its file. None of them needs the network; the PDF and PNG exports draw on the machine's GPU.
 
 To build from source instead, Brightfield needs a recent Rust toolchain (1.95+, matching the CI pin). From a clone of the repo, render the self-contained example spec:
 
@@ -118,6 +118,20 @@ The system comprises four layers:
 **Coordinator.** A Rust equivalent of Mosaic's `mosaic-core` package. Manages reactive params, first-class selections with resolution strategies, SQL-keyed result caching, automatic pre-aggregation, M4 downsampling, and priority queuing for interactive vs background queries. Data flows as Arrow record batches via `duckdb-rs`, staying in Rust memory throughout.
 
 **Renderer.** A framework-free `brightfield-render` crate turns marks, scales (linear/log/sqrt/band/ordinal/time/colour), axes, legends, interactors, and layout primitives into a [Vello](https://github.com/linebender/vello) `Scene` — no UI-framework dependency, so the same scene builder feeds both the live window and the headless PNG path. The egui/eframe shell (`brightfield-shell`) rasterises the Vello scene on the shared wgpu device and presents it, wiring pointer events into the interaction transitions (the framework-free interaction logic lives in `brightfield-ui`). Text is shaped and rendered with [skrifa](https://github.com/googlefonts/fontations).
+
+### Agent-written Protocols
+
+An [arcform](https://github.com/meridian-online/arcform) Protocol that has run and holds a `panels/` folder opens as one tile per `panels/*.yaml`, in file-name order. Each panel is a Mosaic spec whose marks read the tables the Protocol's run made, by name: a mark's `data: { from: T }` reads table `T` from arc's database whenever the panel's own top-level `data:` does not define `T`, the rule arc's own panel check applies.
+
+Brightfield never holds that database open, since DuckDB refuses a writer while any reader holds the file and an open handle would make the next `arc run` fail. After arc's panel check, it attaches the database read-only to an in-memory DuckDB, copies each table a panel reads, detaches, and writes the copies to a Parquet snapshot in a temporary folder. Each panel is composed against the snapshot, and the snapshot is taken again when a new run record appears. A panel that cannot draw shows its problem in its own tile, naming the file (a missing table or column from arc's check, a mark Brightfield does not draw, a parse error), and the others draw. A panel's notes are shown above its chart.
+
+The headless exports read the same snapshot. `export-png` draws one panel as the window draws it, legend included. `export-data` copies the tables the panel reads out of the snapshot as CSV or Parquet. `export-pdf` reads the Protocol's `report.md`, draws each panel its `## Charts` section lists, and hands the Markdown and the pictures to the `brightfield-report` crate. When a table a chart reads has changed since the run the report describes, judged by the content hashes arc records for each table, the PDF says so above the charts.
+
+**`brightfield-report`** typesets that Markdown to PDF through Typst, offline, with the fonts bundled with the design system: A4 portrait, numbered pages, tables with numbers kept whole, and each listed chart drawn in its item's place under its title and never split across pages. It knows Markdown, Typst and PNG bytes and nothing of panels, databases or the GPU; the shell renders the charts and passes the pictures in.
+
+### Chart versions
+
+Each chart file Brightfield saves, including each panel file, is recorded in arcform's local history (`~/.arcform/history`, or `$ARCFORM_HISTORY_DIR`): the text a Save replaces, the text it writes, and the text a window closes without saving. A panel's Versions list joins that store with `arcform-log.txt`, the log arc keeps in the Protocol's folder, which names each version, when it was made and by which route. The WHO column shows that route: Brightfield, arc (command line), or arc (agent tool) for arc's MCP server. The log travels with the folder and the store's text does not, and the store keeps only a file's newest versions, so a version the log names whose text the store does not hold is listed with its text marked as not kept on this machine, dimmed, and cannot be shown or stepped back to.
 
 ## Platform Support
 
