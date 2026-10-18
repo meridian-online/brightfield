@@ -58,9 +58,10 @@ use brightfield_render::scale::{
     SequentialScheme, ViewExtent,
 };
 use brightfield_render::scene::{
-    axis_ends_apply, axis_keys_apply, build_multi_mark_scene_pinned, colour_categories_apply,
-    colour_override_applies, colour_reverse_applies, compose_dashboard, plot_axis_targets,
-    unrestorable_under_sampling, written_ends_held, ChartData, UnsampledDomains,
+    axis_ends_apply, axis_keys_apply, colour_categories_apply, colour_override_applies,
+    colour_reverse_applies, compose_dashboard, draw_plot, plot_axis_targets,
+    unrestorable_under_sampling, why_drew_nothing, written_ends_held, ChartData, DrawnPlot,
+    UnsampledDomains,
 };
 use brightfield_render::selection::{
     committed_selection_rect, render_committed_selection, CommittedSelection, Selected,
@@ -2711,7 +2712,11 @@ fn compose_from_results(
             // rect, from the scales returned here — one legend per chart, one
             // source of truth, and no in-plot swatch block a margin copy could
             // drift from or that could sit on top of the marks.
-            let (mut scene, scales) = build_multi_mark_scene_pinned(
+            let DrawnPlot {
+                mut scene,
+                scales,
+                blank,
+            } = draw_plot(
                 &refs,
                 false,
                 &titles,
@@ -2726,6 +2731,17 @@ fn compose_from_results(
                 colour_reverse,
                 ink,
             );
+            // A layer that had rows and put no ink down leaves a plot with axes
+            // and nothing in them unless it is named; the note says which mark
+            // and why, on the tile and on an export's stderr alike.
+            let blank_layers: Vec<ParseWarning> = blank
+                .iter()
+                .filter(|&&k| refs[k].batch.num_rows() > 0)
+                .map(|&k| ParseWarning::MarkDrewNothing {
+                    mark: plot_marks[k].wire_name().to_string(),
+                    reason: why_drew_nothing(refs[k], &scales, plot_marks[k]),
+                })
+                .collect();
             // Where the axes just drawn put their title, labels and line, taken
             // from the routine that drew them and kept on the plot's handle.
             let axes = plot_axis_targets(&refs, &titles, tick_counts, &tick_formats, &scales);
@@ -2758,6 +2774,7 @@ fn compose_from_results(
                     let mut found = param_held_axis_warnings(node, &spec.params);
                     found.extend(param_held_colour_warnings(node, &spec.params));
                     found.extend(repeated_colours(&scales, &colour_override));
+                    found.extend(blank_layers.iter().cloned());
                     found.extend(crossed_tick_formats(node, spec, &tick_formats, &scales));
                     found.extend(inert_axis_instructions(
                         &plot_label(&plot.path, node),

@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 
 use brightfield_spec::ast::{AggregateFunc, Mark, PlotNode, SpecValue, ValueOrParamRef};
-use brightfield_spec::layout::{resolve_plot_scales, PlotScales, ScaleType};
+use brightfield_spec::layout::{
+    plot_scale_key, resolve_plot_scales, PlotAxis, PlotScales, ScaleType,
+};
 use brightfield_spec::vocab::is_colour_literal;
 use brightfield_spec::vocab::MarkKind;
 use peniko::Color;
@@ -186,6 +188,25 @@ pub struct ChannelMap {
     equal_aspect: bool,
     projection: MarkProjection,
     scale_types: PlotScales,
+    bands: Vec<Channel>,
+}
+
+/// The channels a mark kind draws as bands of categories: a bar's band axis and
+/// both of a cell's axes. These renderers size each bar or cell to a band's
+/// width, so a continuous scale on one of these channels leaves them nothing to
+/// draw.
+///
+/// Observable Plot puts these channels on a band scale whatever the column
+/// holds, so a number column there (a month, an hour) reads as categories in
+/// ascending order. [`ChannelMap::wants_band`] is how scale inference asks.
+#[must_use]
+pub fn band_channels_of(kind: MarkKind) -> &'static [Channel] {
+    match kind {
+        MarkKind::BarY => &[Channel::X],
+        MarkKind::BarX => &[Channel::Y],
+        MarkKind::Cell => &[Channel::X, Channel::Y],
+        _ => &[],
+    }
 }
 
 /// What the plot's map projection means for one mark on it.
@@ -579,7 +600,37 @@ impl ChannelMap {
             cm.set_equal_aspect(true);
         }
         cm.bind_stacked_value_axis(mark);
+        // A band channel bound to a plain column. A transform there (a bin, an
+        // aggregate) is the lowerer's to shape, and is left as it was.
+        for ch in band_channels_of(mark.kind) {
+            if let Some(ValueOrParamRef::Value(SpecValue::String(_))) =
+                mark.options.get(ch.wire_name())
+            {
+                if cm.has(*ch) {
+                    cm.bands.push(*ch);
+                }
+            }
+        }
         cm
+    }
+
+    /// Whether this mark draws `channel` as bands of categories, so a number
+    /// column there takes a band scale of its distinct values rather than a
+    /// linear one. Set by [`ChannelMap::from_mark`] from
+    /// [`band_channels_of`], and cleared by [`ChannelMap::from_mark_in`] on an
+    /// axis whose plot names its scale (`xScale` / `yScale`): a written scale
+    /// is the author's, as Plot keeps a written `type`.
+    #[must_use]
+    pub fn wants_band(&self, channel: Channel) -> bool {
+        self.bands.contains(&channel)
+    }
+
+    /// Mark `channel` as one this mark draws as bands — see
+    /// [`ChannelMap::wants_band`]. For a map built without a mark behind it.
+    pub fn set_wants_band(&mut self, channel: Channel) {
+        if !self.bands.contains(&channel) {
+            self.bands.push(channel);
+        }
     }
 
     /// Bind the value axis's INTERVAL channels to the reserved stack-offset
@@ -667,6 +718,17 @@ impl ChannelMap {
         let mut cm = Self::from_mark(mark);
         cm.set_projection(MarkProjection::of(mark.kind, plot));
         cm.set_scale_types(plot.map(resolve_plot_scales).unwrap_or_default());
+        if let Some(plot) = plot {
+            for axis in [PlotAxis::X, PlotAxis::Y] {
+                let named = plot_scale_key(axis).is_some_and(|k| plot.attributes.contains_key(k));
+                if named {
+                    cm.bands.retain(|ch| match axis {
+                        PlotAxis::X => *ch != Channel::X,
+                        PlotAxis::Y => *ch != Channel::Y,
+                    });
+                }
+            }
+        }
         cm
     }
 
@@ -715,6 +777,50 @@ mod tests {
         assert_eq!(cm.get(Channel::Y), None);
         assert!(cm.has(Channel::X));
         assert!(!cm.has(Channel::Y));
+    }
+
+    fn mark_of(kind: MarkKind, channels: &[(&str, &str)]) -> Mark {
+        use brightfield_spec::vocab::ImplStatus;
+        Mark {
+            kind,
+            status: ImplStatus::Implemented,
+            data: None,
+            options: channels
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        (*k).to_string(),
+                        ValueOrParamRef::Value(SpecValue::String((*v).to_string())),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_bar_bands_its_band_axis_and_a_cell_both_and_a_line_neither() {
+        let bar = ChannelMap::from_mark(&mark_of(MarkKind::BarY, &[("x", "m"), ("y", "v")]));
+        assert!(bar.wants_band(Channel::X) && !bar.wants_band(Channel::Y));
+        let bar = ChannelMap::from_mark(&mark_of(MarkKind::BarX, &[("x", "v"), ("y", "m")]));
+        assert!(bar.wants_band(Channel::Y) && !bar.wants_band(Channel::X));
+        let cell = ChannelMap::from_mark(&mark_of(MarkKind::Cell, &[("x", "h"), ("y", "p")]));
+        assert!(cell.wants_band(Channel::X) && cell.wants_band(Channel::Y));
+        let line = ChannelMap::from_mark(&mark_of(MarkKind::LineY, &[("x", "m"), ("y", "v")]));
+        assert!(!line.wants_band(Channel::X) && !line.wants_band(Channel::Y));
+    }
+
+    #[test]
+    fn a_scale_the_plot_writes_is_kept_on_that_axis_alone() {
+        let mark = mark_of(MarkKind::Cell, &[("x", "h"), ("y", "p")]);
+        let plot = PlotNode {
+            items: Vec::new(),
+            attributes: [("xScale".to_string(), SpecValue::String("linear".into()))]
+                .into_iter()
+                .collect(),
+        };
+        let cm = ChannelMap::from_mark_in(&mark, Some(&plot));
+        assert!(!cm.wants_band(Channel::X), "the file wrote x's scale");
+        assert!(cm.wants_band(Channel::Y), "and said nothing of y's");
     }
 
     /// a POSITIONAL channel bound to a `$param` maps to

@@ -180,6 +180,27 @@ fn png_of_a_panel_with_an_option_nothing_draws_says_so_and_still_succeeds() {
 }
 
 #[test]
+fn png_of_a_panel_whose_mark_draws_nothing_says_why_and_still_succeeds() {
+    let ran = ran_fixture("co2-per-capita");
+    // A bar's band axis on a scale the file wrote linear: it has rows and no
+    // band to stand them in.
+    std::fs::write(
+        ran.dir.join("panels/blank.yaml"),
+        "plot:\n  - mark: barY\n    data: { from: co2_per_capita_change }\n    \
+         x: change_pct\n    y: change_pct\nxScale: linear\n",
+    )
+    .expect("the panel writes");
+    let out = export(&["export-png", path_arg(&ran.dir), "blank"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(ran.dir.join("exports/blank.png").is_file());
+    assert_eq!(
+        stderr(&out),
+        "panels/blank.yaml: `barY` drew nothing: x reads a number column on a linear scale, \
+         and a barY draws x as bands\n"
+    );
+}
+
+#[test]
 fn png_of_a_panel_that_fits_the_palette_says_nothing() {
     let ran = ran_fixture("co2-per-capita");
     let out = export(&[

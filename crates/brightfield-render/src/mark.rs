@@ -536,12 +536,16 @@ const DENSITY_COUNT_COL: &str = "__bf_count";
 // ---------------------------------------------------------------------------
 
 pub(crate) fn column_as_f64(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<f64>>> {
+    let idx = batch.schema().index_of(col_name).ok()?;
+    array_as_f64(batch.column(idx).as_ref())
+}
+
+/// [`column_as_f64`] over an array already in hand.
+pub(crate) fn array_as_f64(col: &dyn Array) -> Option<Vec<Option<f64>>> {
     use arrow::array::{
         Float32Array, Int16Array, Int32Array, Int8Array, UInt16Array, UInt32Array, UInt64Array,
         UInt8Array,
     };
-    let idx = batch.schema().index_of(col_name).ok()?;
-    let col = batch.column(idx);
 
     macro_rules! cast_numeric {
         ($arr_ty:ty) => {{
@@ -627,6 +631,25 @@ fn column_as_string(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<St
             })
             .collect(),
     )
+}
+
+/// The strings a positional channel finds its band by.
+///
+/// On a band scale, [`column_as_labels`]: a band over a number column names
+/// its categories as that function writes the numbers, so a bar, a cell, a
+/// line or a text over the same column finds its band by the same spelling.
+/// On any other scale, the column's own strings, which only a band reads; a
+/// number column is not written out for a scale that places it by value.
+fn position_keys(
+    batch: &RecordBatch,
+    col_name: &str,
+    scale: &Scale,
+) -> Option<Vec<Option<String>>> {
+    if matches!(scale, Scale::Band { .. }) {
+        column_as_labels(batch, col_name)
+    } else {
+        column_as_string(batch, col_name)
+    }
 }
 
 /// Resolve the pixel position for a value given a channel's scale.
@@ -1049,9 +1072,9 @@ impl MarkRenderer for DotRenderer {
         let projection = channel_map.projection();
 
         let x_f64 = column_as_f64(batch, x_col);
-        let x_str = column_as_string(batch, x_col);
+        let x_str = position_keys(batch, x_col, x_scale);
         let y_f64 = column_as_f64(batch, y_col);
-        let y_str = column_as_string(batch, y_col);
+        let y_str = position_keys(batch, y_col, y_scale);
 
         let fill = NumberFill::of(scales, channel_map, batch);
         let n = batch.num_rows();
@@ -1117,9 +1140,9 @@ impl MarkRenderer for DotRenderer {
         };
 
         let x_f64 = column_as_f64(batch, x_col);
-        let x_str = column_as_string(batch, x_col);
+        let x_str = position_keys(batch, x_col, x_scale);
         let y_f64 = column_as_f64(batch, y_col);
-        let y_str = column_as_string(batch, y_col);
+        let y_str = position_keys(batch, y_col, y_scale);
 
         let fill = NumberFill::of(scales, channel_map, batch);
         let n = batch.num_rows();
@@ -1365,7 +1388,7 @@ impl MarkRenderer for BarRenderer {
             None => return,
         };
 
-        let band_str = match column_as_string(batch, band_col) {
+        let band_str = match position_keys(batch, band_col, band_scale) {
             Some(v) => v,
             None => return,
         };
@@ -1549,8 +1572,14 @@ impl MarkRenderer for LineRenderer {
 
         // A position is a number on a continuous scale and a category on a
         // band one — a `DATE` axis is a band of days, read by its ISO spelling.
-        let (x_f64, x_str) = (column_as_f64(batch, x_col), column_as_string(batch, x_col));
-        let (y_f64, y_str) = (column_as_f64(batch, y_col), column_as_string(batch, y_col));
+        let (x_f64, x_str) = (
+            column_as_f64(batch, x_col),
+            position_keys(batch, x_col, x_scale),
+        );
+        let (y_f64, y_str) = (
+            column_as_f64(batch, y_col),
+            position_keys(batch, y_col, y_scale),
+        );
         let position = |scale: &Scale,
                         nums: &Option<Vec<Option<f64>>>,
                         strs: &Option<Vec<Option<String>>>,
@@ -2078,7 +2107,7 @@ const TEXT_MARK_SIZE: f32 = 11.0;
 
 /// Renders a `text` mark: a string label centred at each `(x, y)` data position.
 /// The label content comes from the `text` channel: a string column as it is,
-/// or a number column as [`column_as_labels`] writes its numbers; `x`/`y`
+/// or a number column as `column_as_labels` writes its numbers; `x`/`y`
 /// position it (numeric or categorical, like the dot mark). A row with no label
 /// or an unresolvable position is skipped.
 pub struct TextRenderer;
@@ -2114,9 +2143,9 @@ impl MarkRenderer for TextRenderer {
         };
 
         let x_f64 = column_as_f64(batch, x_col);
-        let x_str = column_as_string(batch, x_col);
+        let x_str = position_keys(batch, x_col, x_scale);
         let y_f64 = column_as_f64(batch, y_col);
-        let y_str = column_as_string(batch, y_col);
+        let y_str = position_keys(batch, y_col, y_scale);
         let labels = match column_as_labels(batch, text_col) {
             Some(v) => v,
             None => return,
@@ -2169,15 +2198,26 @@ impl MarkRenderer for TextRenderer {
 /// arrow writes it, with exactly its scale's digits (`12.10`). No grouping
 /// separator and no rounding. A NaN or infinite value gets no label, and
 /// neither does a timestamp column, which is not a number to a reader.
-fn column_as_labels(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<String>>> {
+pub(crate) fn column_as_labels(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<String>>> {
+    if let Some(strings) = column_as_string(batch, col_name) {
+        return Some(strings);
+    }
+    number_labels(
+        batch
+            .column(batch.schema().index_of(col_name).ok()?)
+            .as_ref(),
+    )
+}
+
+/// A number column's values written out as [`column_as_labels`] writes them,
+/// or `None` for a column that holds no numbers. The words a band over a
+/// number column names its categories by, so a bar finds its band by the same
+/// spelling the axis prints.
+pub(crate) fn number_labels(col: &dyn Array) -> Option<Vec<Option<String>>> {
     use arrow::array::{
         Decimal128Array, Float32Array, Int16Array, Int32Array, Int64Array, Int8Array, UInt16Array,
         UInt32Array, UInt64Array, UInt8Array,
     };
-    if let Some(strings) = column_as_string(batch, col_name) {
-        return Some(strings);
-    }
-    let col = batch.column(batch.schema().index_of(col_name).ok()?);
 
     macro_rules! labels {
         ($arr_ty:ty, $label:expr) => {{
@@ -3079,8 +3119,9 @@ impl MarkRenderer for HeatmapRenderer {
 /// Renders one filled rect per (x category, y category) pair — a
 /// calendar-style value matrix (density marks). Cell v1 is
 /// PRE-AGGREGATED: one row per pair, with a numeric `fill:` column carrying
-/// the cell's value. Both axes ride the existing per-channel Band inference;
-/// each rect is centred via `map_category` and sized via `band_width`.
+/// the cell's value. Both axes ride the per-channel Band inference, a number
+/// column included ([`crate::channel::band_channels_of`]); each rect is
+/// centred via `map_category` and sized via `band_width`.
 ///
 /// A NUMERIC fill maps through the Fill [`Scale::Sequential`] built in
 /// [`Self::augment_scales`] — generic column inference types a numeric fill
@@ -3110,12 +3151,14 @@ impl MarkRenderer for CellRenderer {
         else {
             return;
         };
-        // Cell v1 is categorical × categorical: both axes must be Band scales
-        // with string categories. band_width is None on non-Band scales, so a
-        // numeric axis degrades to rendering nothing rather than misplacing.
+        // Both axes are bands: a number column on either is banded by scale
+        // inference, as Plot bands it. An axis the plot wrote a continuous
+        // scale for has no band width, so the cell draws nothing rather than
+        // misplacing, and the composition names it as a mark that drew
+        // nothing.
         let (Some(x_strs), Some(y_strs)) = (
-            column_as_string(batch, x_col),
-            column_as_string(batch, y_col),
+            position_keys(batch, x_col, x_scale),
+            position_keys(batch, y_col, y_scale),
         ) else {
             return;
         };

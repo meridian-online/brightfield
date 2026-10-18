@@ -894,6 +894,21 @@ pub enum ParseWarning {
         /// How many colours the palette has.
         palette: usize,
     },
+
+    /// A mark had rows to draw and laid down no ink: a plot with axes and no
+    /// bars, cells or points in it, which says nothing about why unless this
+    /// does.
+    ///
+    /// Raised by composition, which is where the scales the rows were placed
+    /// against are known. A mark with no rows is not raised: an empty table is
+    /// a plot with nothing in it, and the picture says so.
+    MarkDrewNothing {
+        /// The mark's name (`barY`, `cell`).
+        mark: String,
+        /// Why, in words: what the mark needed that its rows or its scales did
+        /// not give it.
+        reason: String,
+    },
 }
 
 /// The words between the two numbers and the advice in the colours-repeat note,
@@ -1158,6 +1173,9 @@ impl fmt::Display for ParseWarning {
                 "{categories} series share {palette}{COLOURS_REPEAT_MARK}highlight the series \
                  that matter, fold the rest into \"Other\", or split the chart"
             ),
+            Self::MarkDrewNothing { mark, reason } => {
+                write!(f, "`{mark}` drew nothing: {reason}")
+            }
         }
     }
 }
