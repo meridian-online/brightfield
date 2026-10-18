@@ -516,24 +516,18 @@ impl Engine {
             // suite, which has no bundle beside its test binary and so never
             // reaches this branch.
             //
-            // WHAT LEAVING IT ON DOES NOT BUY, corrected here on a
-            // measurement rather than left as it stood. The reason recorded
-            // above this line used to be that `parquet` is linked statically
-            // and autoload merely registers what the process already has. It is
-            // not: on a `HOME` with no `~/.duckdb`, this build downloads
-            // `parquet` on first use. So on a relaxed connection — autoinstall
-            // off, repository unresolvable — autoload can only find a parquet
-            // the machine already cached, and a fresh machine has none.
-            // Measured on an empty `HOME`, through `data_file::open` with a
-            // bundle: a CSV opens and a Parquet fails with `Extension
-            // ".../parquet.duckdb_extension" not found`. The same open with no
-            // bundle succeeds, by downloading it.
+            // THE READER IS LINKED IN, so nothing here needs acquiring for a
+            // Parquet: the engine's `duckdb` dependency declares the `parquet`
+            // feature, and has since 6c692b7. So a relaxed connection under a `HOME` with no
+            // `~/.duckdb`, autoinstall off and the repository unresolvable,
+            // still opens a Parquet. Before that commit it did not: the reader
+            // was an extension DuckDB downloaded on first use, and this
+            // connection could only find one the machine had already cached.
             //
-            // That is a real gap in what a packaged build can open on a fresh
-            // machine and it is not fixed here: closing it means either
-            // staging `parquet` into the bundle or acquiring it before the
-            // relaxation, and both are packaging decisions rather than a
-            // setting.
+            // The packaged binary's `--check-type-source` is what holds this:
+            // its sealed run opens a Parquet through `data_file::open` with the
+            // bundle beside it, under an empty `HOME`, and refuses the artefact
+            // if that open fails or leaves an extension cache behind.
             conn.execute_batch(
                 "SET autoinstall_known_extensions=false; \
                  SET custom_extension_repository='/dev/null/brightfield-no-network';",
