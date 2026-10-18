@@ -44,6 +44,8 @@ MANIFEST="$DIR/arcform.yaml"
 # reading does not take apart. An item starts at a `- ` line at the block's own
 # indent; the block ends at the next top-level key. The op may carry a version,
 # `http_fetch@1`, and `with:` may be a flow mapping (`with: {out: f, url: u}`).
+# A key may be quoted and may have space before its colon (`"op" : http_fetch`),
+# as JSON written as YAML has it.
 fetch_steps() {
   awk '
     function flush() {
@@ -62,20 +64,23 @@ fetch_steps() {
           if ($0 ~ /^[ ]*-[ ]+\{/) flow = 1
         }
       }
-      if (flow) { if ($0 !~ /^[ ]*#/ && $0 ~ /op:[ ]*["\047]?http_fetch/) fetch = 1; next }
+      if (flow) {
+        if ($0 !~ /^[ ]*#/ && $0 ~ /["\047]?op["\047]?[ ]*:[ ]*["\047]?http_fetch/) fetch = 1
+        next
+      }
       line = $0
       sub(/^[ ]*(- )?/, "", line)
-      if (line ~ /^op:[ ]*["\047]?http_fetch(@[0-9]+)?["\047]?[ ]*(#.*)?$/) fetch = 1
-      if (line ~ /^with:[ ]*\{.*out:/) {
+      if (line ~ /^["\047]?op["\047]?[ ]*:[ ]*["\047]?http_fetch(@[0-9]+)?["\047]?[ ]*(#.*)?$/) fetch = 1
+      if (line ~ /^["\047]?with["\047]?[ ]*:[ ]*\{.*out["\047]?[ ]*:/) {
         v = line
-        sub(/^.*[{,][ ]*out:[ ]*/, "", v)
+        sub(/^.*[{,][ ]*["\047]?out["\047]?[ ]*:[ ]*/, "", v)
         sub(/[ ]*[,}].*$/, "", v)
         gsub(/^["\047]|["\047]$/, "", v)
         out = v
       }
-      if (line ~ /^out:/) {
+      if (line ~ /^["\047]?out["\047]?[ ]*:/) {
         v = line
-        sub(/^out:[ ]*/, "", v)
+        sub(/^["\047]?out["\047]?[ ]*:[ ]*/, "", v)
         sub(/[ ]+#.*$/, "", v)
         # An entry of a flow mapping written across lines ends in a comma or
         # the closing brace.
@@ -113,8 +118,14 @@ fi
 # The block reading above is of the text, not arc's parse of it, so check the
 # result whether or not it dropped anything: an http_fetch op still in the file,
 # in any spelling or style, means the reading missed a step. A commented-out
-# line is not a step.
-if grep -Ev '^[[:space:]]*#' "$MANIFEST" | grep -Eq "op:[[:space:]]*[\"']?http_fetch"; then
+# line is not a step. One awk rather than a pipe into `grep -q`: under pipefail
+# a grep that stops at its first match can leave the writer dead of SIGPIPE,
+# and the pipe's status would then read as no match.
+if awk '
+  /^[ \t]*#/ { next }
+  /["\047]?op["\047]?[ \t]*:[ \t]*["\047]?http_fetch/ { found = 1; exit }
+  END { exit !found }
+' "$MANIFEST"; then
   echo "an http_fetch step is still in $MANIFEST, in a form this script does not read" >&2
   exit 1
 fi

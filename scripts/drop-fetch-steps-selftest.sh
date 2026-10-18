@@ -167,6 +167,19 @@ steps:
 Y
 )" "delete 0"
 
+expect_drop "quoted keys with space before the colon, block style" "$(protocol quoted_keys <<'Y'
+name: p
+steps:
+  - "name": fetch
+    "op" : http_fetch
+    "with":
+      "out" : "data/a.csv"
+      "url": https://example.invalid/a.csv
+  - name: load
+    sql: models/load.sql
+Y
+)" "delete 0"
+
 echo "== nothing to drop"
 dir=$(protocol none <<'Y'
 name: p
@@ -245,6 +258,29 @@ steps:
     sql: models/load.sql
 Y
 )" "needs the network"
+
+expect_refusal "a JSON-style flow step with quoted keys" "$(protocol json_flow <<'Y'
+name: p
+steps:
+  - {"name": "fetch", "op": "http_fetch", "with": {"out": "data/a.csv"}}
+  - name: load
+    sql: models/load.sql
+Y
+)" "flow style"
+
+# The final check over a manifest far larger than a pipe's buffer, with the
+# leftover fetch near the top: a pipe into `grep -q` could lose this match to
+# SIGPIPE under pipefail and pass.
+big="$TMP/big.yaml"
+{
+  echo "name: p"
+  echo "steps: [{name: fetch, op: http_fetch, with: {out: data/a.csv}}]"
+  printf 'params:\n  sql: "'
+  for _ in $(seq 1 4000); do printf 'SELECT 1 AS some_long_column_name_to_fill_the_file, '; done
+  printf '1"\n'
+} > "$big"
+expect_refusal "a leftover fetch early in a manifest over 64 KiB" "$(protocol big < "$big")" \
+  "in a form this script does not read"
 
 if [ "$failures" -ne 0 ]; then
   echo "drop-fetch-steps-selftest: ${failures} case(s) did not behave as required." >&2
