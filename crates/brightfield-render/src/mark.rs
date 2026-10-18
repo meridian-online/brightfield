@@ -2077,7 +2077,8 @@ impl MarkRenderer for RuleRenderer {
 const TEXT_MARK_SIZE: f32 = 11.0;
 
 /// Renders a `text` mark: a string label centred at each `(x, y)` data position.
-/// The label content comes from the `text` channel (a string column); `x`/`y`
+/// The label content comes from the `text` channel: a string column as it is,
+/// or a number column as [`column_as_labels`] writes its numbers; `x`/`y`
 /// position it (numeric or categorical, like the dot mark). A row with no label
 /// or an unresolvable position is skipped.
 pub struct TextRenderer;
@@ -2116,7 +2117,7 @@ impl MarkRenderer for TextRenderer {
         let x_str = column_as_string(batch, x_col);
         let y_f64 = column_as_f64(batch, y_col);
         let y_str = column_as_string(batch, y_col);
-        let labels = match column_as_string(batch, text_col) {
+        let labels = match column_as_labels(batch, text_col) {
             Some(v) => v,
             None => return,
         };
@@ -2155,6 +2156,39 @@ impl MarkRenderer for TextRenderer {
             );
         }
     }
+}
+
+/// One column's values as a text mark's labels: [`column_as_string`]'s
+/// strings, or, for a number column, each number written out.
+///
+/// A whole number is written without a fractional part (`2024`, not
+/// `2024.0`), and any other as the shortest decimal that reads back as the
+/// same `f64` (`67.85`). No grouping separator and no rounding: the label is
+/// the value the table holds. A timestamp column is not a number to a reader
+/// and gets no labels here rather than its microseconds.
+fn column_as_labels(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<String>>> {
+    if let Some(strings) = column_as_string(batch, col_name) {
+        return Some(strings);
+    }
+    let idx = batch.schema().index_of(col_name).ok()?;
+    if matches!(batch.column(idx).data_type(), DataType::Timestamp(..)) {
+        return None;
+    }
+    let numbers = column_as_f64(batch, col_name)?;
+    Some(
+        numbers
+            .into_iter()
+            .map(|n| {
+                n.filter(|v| v.is_finite()).map(|v| {
+                    if v.fract() == 0.0 && v.abs() < 1e15 {
+                        format!("{v:.0}")
+                    } else {
+                        format!("{v}")
+                    }
+                })
+            })
+            .collect(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -6519,6 +6553,68 @@ mod tests {
             5,
             "one glyph per label character"
         );
+    }
+
+    #[test]
+    fn a_text_mark_labels_each_row_with_its_number_as_written() {
+        use arrow::array::Int64Array;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new("year", DataType::Int64, false),
+            Field::new("paid", DataType::Float64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+                Arc::new(Int64Array::from(vec![2024, 7, -3])),
+                Arc::new(Float64Array::from(vec![Some(67.85), Some(12.0), None])),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            column_as_labels(&batch, "year"),
+            Some(vec![
+                Some("2024".to_string()),
+                Some("7".to_string()),
+                Some("-3".to_string())
+            ])
+        );
+        assert_eq!(
+            column_as_labels(&batch, "paid"),
+            Some(vec![
+                Some("67.85".to_string()),
+                Some("12".to_string()),
+                None
+            ])
+        );
+
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.insert(Channel::Text, "year".to_string());
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        let mut scene = Scene::new();
+        TextRenderer.render(&mut scene, &batch, &cm, &scales, None);
+        // "2024" + "7" + "-3": a number column draws as the strings above.
+        assert_eq!(count_scene_glyphs(&scene), 7, "one glyph per character");
+    }
+
+    #[test]
+    fn a_text_mark_does_not_label_a_timestamp_with_its_microseconds() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "at",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(TimestampMicrosecondArray::from(vec![1_000_000]))],
+        )
+        .unwrap();
+        assert_eq!(column_as_labels(&batch, "at"), None);
     }
 
     // --- HighlightState ---

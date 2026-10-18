@@ -273,11 +273,13 @@ fn lines(file: &Path, problems: &[PanelProblem]) -> Vec<String> {
         .collect()
 }
 
-/// Say on stderr, as a problem is said, that the panel's colours repeat. A
-/// warning, not a failure: the export still draws and exits 0.
-fn warn_colours_repeat(file: &Path, composed: &crate::pipeline::Composed) {
-    if let Some(note) = composed.diagnostics.colours_repeat() {
-        eprintln!("{}: {note}", file.display());
+/// Say on stderr, as a problem is said, each thing the panel's load had to say:
+/// that its colours repeat, that it sets an option nothing draws, any part of
+/// it that did not draw. Warnings, not failures: the export still draws and
+/// exits 0, and an agent reading the output learns what the picture leaves out.
+fn warn_diagnostics(file: &Path, composed: &crate::pipeline::Composed) {
+    for diagnostic in &composed.diagnostics.diagnostics {
+        eprintln!("{}: {}", file.display(), diagnostic.message);
     }
 }
 
@@ -323,7 +325,7 @@ fn export_png(
         },
         Path::to_path_buf,
     );
-    warn_colours_repeat(&file, &composed);
+    warn_diagnostics(&file, &composed);
     let image = render_export(composed, scale).map_err(|e| vec![e])?;
     make_parent(&path)?;
     image.save(&path).map_err(|e| write_problem(&path, &e))?;
@@ -497,8 +499,8 @@ fn run_date(finished: &str) -> String {
 }
 
 /// Read the report of the Protocol at `dir` and draw each chart it lists.
-/// A panel whose colours repeat is said on stderr, still drawn, and its note
-/// set under its caption.
+/// What a panel's load had to say is said on stderr and the panel still drawn;
+/// a panel whose colours repeat has that note set under its caption.
 ///
 /// # Errors
 ///
@@ -570,7 +572,7 @@ pub fn prepare_report(dir: &Path) -> Result<PreparedReport, Vec<String>> {
                 Mode::Light,
             )
             .map_err(|p| lines(&tile.file, &[p]))?;
-        warn_colours_repeat(&tile.file, &composed);
+        warn_diagnostics(&tile.file, &composed);
         let note = composed.diagnostics.colours_repeat().map(|n| n.to_string());
         let image = render_export(composed, PDF_CHART_SCALE)
             .map_err(|e| vec![format!("{}: {e}", tile.file.display())])?;

@@ -158,6 +158,28 @@ fn png_of_a_panel_whose_colours_repeat_warns_and_still_succeeds() {
 }
 
 #[test]
+fn png_of_a_panel_with_an_option_nothing_draws_says_so_and_still_succeeds() {
+    let ran = ran_fixture("co2-per-capita");
+    std::fs::write(
+        ran.dir.join("panels/labelled.yaml"),
+        "plot:\n  - mark: text\n    data: { from: co2_per_capita_change }\n    \
+         x: change_pct\n    y: country\n    text: change_pct\n    dy: -10\n",
+    )
+    .expect("the panel writes");
+    let out = export(&["export-png", path_arg(&ran.dir), "labelled"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        ran.dir.join("exports/labelled.png").is_file(),
+        "the panel still draws"
+    );
+    assert_eq!(
+        stderr(&out),
+        "panels/labelled.yaml: mark `text` sets `dy`, which nothing in the render path reads \
+         — it has no effect\n"
+    );
+}
+
+#[test]
 fn png_of_a_panel_that_fits_the_palette_says_nothing() {
     let ran = ran_fixture("co2-per-capita");
     let out = export(&[
