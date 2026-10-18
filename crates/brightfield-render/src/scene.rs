@@ -651,7 +651,7 @@ pub struct DrawnPlot {
     pub blank: Vec<usize>,
 }
 
-/// [`build_multi_mark_scene_pinned`], keeping which layers drew nothing.
+/// [`build_multi_mark_scene_pinned`], keeping which layers laid down no ink.
 ///
 /// A layer's ink is counted as the draw commands it added to the scene, so
 /// asking costs nothing beyond the drawing itself.
@@ -1522,7 +1522,7 @@ fn draw_multi_mark_scene(
 /// Why a layer that had rows laid down no ink, in words, for the note its
 /// plot shows: what it needed that its rows or its scales did not give it.
 ///
-/// Asked only of a layer [`DrawnPlot::blank`] names. The first answer that
+/// Asked of a layer [`DrawnPlot::blank`] names. The first answer that
 /// holds is the one given:
 ///
 /// - a channel the mark draws as bands is on a scale with no bands (a written

@@ -2120,7 +2120,8 @@ pub fn infer_scales_in(
 /// - Band: set union of categories, preserving insertion order, then days in
 ///   time order and numbers in ascending order ahead of the rest. A number
 ///   column takes a band when any mark on the plot draws that channel as bands
-///   ([`ChannelMap::wants_band`]), and the band is every layer's.
+///   ([`ChannelMap::wants_band`]), and the line beside a bar shares it
+///   (`layers_on_one_number_band_merge_in_ascending_order_and_a_line_joins_the_band`).
 /// - Colour: set union of categories, then [`order_categories`]
 /// - Time: min(all_mins), max(all_maxes)
 ///
