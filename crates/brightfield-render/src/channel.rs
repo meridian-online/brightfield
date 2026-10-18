@@ -6,12 +6,13 @@
 
 use std::collections::HashMap;
 
-use brightfield_spec::ast::{AggregateFunc, Mark, PlotNode, SpecValue, ValueOrParamRef};
+use brightfield_spec::ast::{AggregateFunc, Mark, ParamNode, PlotNode, SpecValue, ValueOrParamRef};
 use brightfield_spec::layout::{
     plot_scale_key, resolve_plot_scales, PlotAxis, PlotScales, ScaleType,
 };
 use brightfield_spec::vocab::is_colour_literal;
 use brightfield_spec::vocab::MarkKind;
+use indexmap::IndexMap;
 use peniko::Color;
 
 /// Reserved output column the density / hexbin / cell lowerers alias their
@@ -206,18 +207,27 @@ pub fn band_channels_of(kind: MarkKind) -> impl Iterator<Item = Channel> {
 }
 
 /// Whether `plot` writes a continuous scale this build draws on `axis`: a
-/// `linear`, `log` or `symlog` `xScale` / `yScale`, or a `$param` there, whose
-/// value this reading has no params to look up. Any other word (`band`,
-/// `ordinal`, `point`) is not one, and leaves a banding mark's band in place.
-fn written_continuous(plot: &PlotNode, axis: PlotAxis) -> bool {
+/// `linear`, `log` or `symlog` `xScale` / `yScale`, or a `$param` there whose
+/// value in `params` is one. Any other word (`band`, `ordinal`, `point`) is
+/// not one and leaves a banding mark's band in place, and so does a `$param`
+/// that holds no string, which the spec reads as naming no scale.
+fn written_continuous(
+    plot: &PlotNode,
+    axis: PlotAxis,
+    params: &IndexMap<String, ParamNode>,
+) -> bool {
     let Some(key) = plot_scale_key(axis) else {
         return false;
     };
-    match plot.attributes.get(key) {
-        Some(SpecValue::String(name)) => ScaleType::from_wire(name).is_some(),
-        Some(SpecValue::Param(_)) => true,
-        _ => false,
-    }
+    let name = match plot.attributes.get(key) {
+        Some(SpecValue::String(name)) => Some(name.as_str()),
+        Some(SpecValue::Param(r)) => match params.get(&r.0) {
+            Some(ParamNode::Value(SpecValue::String(name))) => Some(name.as_str()),
+            _ => None,
+        },
+        _ => None,
+    };
+    name.is_some_and(|name| ScaleType::from_wire(name).is_some())
 }
 
 /// What the plot's map projection means for one mark on it.
@@ -727,12 +737,25 @@ impl ChannelMap {
     /// gets the cartesian reading, which is what such a mark has.
     #[must_use]
     pub fn from_mark_in(mark: &Mark, plot: Option<&PlotNode>) -> Self {
+        Self::from_mark_in_spec(mark, plot, &IndexMap::new())
+    }
+
+    /// [`ChannelMap::from_mark_in`], reading a `$param` the plot writes for
+    /// `xScale` / `yScale` through the spec's `params`, as the spec's own
+    /// undrawn-scale check reads it: a param that holds `band` keeps a bar's
+    /// band, and one that holds `linear` drops it.
+    #[must_use]
+    pub fn from_mark_in_spec(
+        mark: &Mark,
+        plot: Option<&PlotNode>,
+        params: &IndexMap<String, ParamNode>,
+    ) -> Self {
         let mut cm = Self::from_mark(mark);
         cm.set_projection(MarkProjection::of(mark.kind, plot));
         cm.set_scale_types(plot.map(resolve_plot_scales).unwrap_or_default());
         if let Some(plot) = plot {
             for axis in [PlotAxis::X, PlotAxis::Y] {
-                if written_continuous(plot, axis) {
+                if written_continuous(plot, axis, params) {
                     cm.bands.retain(|ch| match axis {
                         PlotAxis::X => *ch != Channel::X,
                         PlotAxis::Y => *ch != Channel::Y,

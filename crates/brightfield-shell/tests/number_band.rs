@@ -283,3 +283,28 @@ fn a_line_of_one_point_says_a_line_needs_two() {
         ]
     );
 }
+
+#[test]
+fn a_band_scale_held_by_a_param_is_the_band_it_draws() {
+    let composed = compose(&format!("params:\n  s: band\n{}", bar_spec("xScale: $s\n")));
+    let wanted: Vec<String> = (1..=12).map(|m| m.to_string()).collect();
+    assert_eq!(categories(&composed, Channel::X), wanted);
+    assert_eq!(bars(&raster(&composed), &ink_of(mark_ink())).len(), 12);
+    assert!(
+        composed.diagnostics.notes().is_empty(),
+        "{:?}",
+        composed.diagnostics.notes()
+    );
+
+    let linear = compose(&format!(
+        "params:\n  s: linear\n{}",
+        bar_spec("xScale: $s\n")
+    ));
+    assert!(
+        matches!(
+            linear.plots[0].scales.get(Channel::X),
+            Some(Scale::Linear { .. })
+        ),
+        "a param holding linear keeps the linear x it names"
+    );
+}

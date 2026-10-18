@@ -706,6 +706,10 @@ pub enum ParseWarning {
         value: String,
         /// The plot, as [`crate::layout::plot_label`] names one.
         plot: String,
+        /// Whether a bar or a cell on the plot draws this axis as bands
+        /// ([`crate::vocab::MarkKind::band_channels`]), which it does whatever
+        /// the file names here: the axis draws as bands, not linear.
+        banded: bool,
     },
 
     /// A plot's `projectionType` carried a value outside Mosaic's
@@ -1085,9 +1089,11 @@ impl fmt::Display for ParseWarning {
                 attribute,
                 value,
                 plot,
+                banded,
             } => write!(
                 f,
-                "plot {plot} sets `{attribute}: {value}`, a scale this build does not draw — the axis draws linear"
+                "plot {plot} sets `{attribute}: {value}`, a scale this build does not draw — the axis draws {}",
+                if *banded { "as bands" } else { "linear" }
             ),
             Self::UnknownProjection { value } => write!(
                 f,

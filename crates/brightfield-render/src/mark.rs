@@ -677,6 +677,42 @@ fn position_keys(
     )
 }
 
+/// How many of `batch`'s rows have a place on every positional axis the mark
+/// binds a column to (`x`, `y`), as [`resolve_position`] places them: a value
+/// on a continuous scale, a band its key names on a band scale. The question
+/// `crate::scene::why_drew_nothing` asks of a line that drew nothing, to tell
+/// rows that never placed from series too short to join.
+pub(crate) fn rows_placed(
+    batch: &RecordBatch,
+    channel_map: &ChannelMap,
+    scales: &ScaleSet,
+) -> usize {
+    let axes: Vec<_> = [Channel::X, Channel::Y]
+        .into_iter()
+        .filter_map(|ch| {
+            let col = channel_map.get(ch)?;
+            let scale = scales.get(ch)?;
+            Some((
+                scale,
+                column_as_f64(batch, col),
+                position_keys(batch, col, scale),
+            ))
+        })
+        .collect();
+    (0..batch.num_rows())
+        .filter(|&i| {
+            axes.iter().all(|(scale, nums, keys)| {
+                resolve_position(
+                    scale,
+                    nums.as_ref().and_then(|v| v[i]),
+                    keys.as_ref().and_then(|v| v[i].as_deref()),
+                )
+                .is_some_and(f64::is_finite)
+            })
+        })
+        .count()
+}
+
 /// A band's categories keyed by the number each reads as, for the ones that
 /// read as a number.
 fn band_categories_by_value(categories: &[String]) -> std::collections::HashMap<u64, &String> {

@@ -1018,7 +1018,23 @@ fn band_value(
         )
     });
     let typed = match data_type {
-        Some(dt) if dt.is_integer() => category.parse::<i64>().ok().map(SelectionValue::Int),
+        // A band over an integer column may be named by a `DECIMAL` layer's
+        // spelling of the same value ("2.0"), so the category is read as a
+        // number and sent as an integer when it is a whole one in range.
+        Some(dt) if dt.is_integer() => category
+            .parse::<i64>()
+            .ok()
+            .map(SelectionValue::Int)
+            .or_else(|| {
+                let v = category.parse::<f64>().ok().filter(|v| v.is_finite())?;
+                Some(
+                    if v.fract() == 0.0 && v >= i64::MIN as f64 && v < i64::MAX as f64 {
+                        SelectionValue::Int(v as i64)
+                    } else {
+                        SelectionValue::Number(v)
+                    },
+                )
+            }),
         Some(dt) if dt.is_numeric() => category
             .parse::<f64>()
             .ok()
@@ -1570,6 +1586,15 @@ mod commit_tests {
         let cm = ChannelMap::new();
         let marks = [(&batch, &cm)];
         assert_eq!(band_value("3", "hour", &marks), SelectionValue::Int(3));
+        assert_eq!(
+            band_value("2.0", "hour", &marks),
+            SelectionValue::Int(2),
+            "a band a DECIMAL layer named still selects the integer"
+        );
+        assert_eq!(
+            band_value("2.5", "hour", &marks),
+            SelectionValue::Number(2.5)
+        );
         assert_eq!(
             band_value("2.5", "share", &marks),
             SelectionValue::Number(2.5)

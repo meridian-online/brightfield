@@ -1423,13 +1423,15 @@ pub fn check_undrawn_scales(spec: &Spec) -> Vec<ParseWarning> {
             else {
                 continue;
             };
-            if ORDINAL_SCALES.contains(&value) && bands_axis(plot, axis) {
+            let banded = bands_axis(plot, axis);
+            if ORDINAL_SCALES.contains(&value) && banded {
                 continue;
             }
             warnings.push(ParseWarning::UndrawnScale {
                 attribute: attribute.to_string(),
                 value: value.to_string(),
                 plot: plot_label(&path, plot),
+                banded,
             });
         }
     }

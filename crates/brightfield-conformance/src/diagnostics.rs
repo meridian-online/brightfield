@@ -747,6 +747,7 @@ mod tests {
             attribute: "xScale".to_string(),
             value: "pow".to_string(),
             plot: "plot 1".to_string(),
+            banded: false,
         };
         let found = LoadDiagnostics::from_composition(&[crossed]);
         assert_eq!(found.colours_repeat(), None);

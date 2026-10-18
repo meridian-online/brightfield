@@ -1534,7 +1534,7 @@ fn draw_multi_mark_scene(
 ///   `xScale` on a bar's band axis, say);
 /// - a channel it binds names a column its rows do not have;
 /// - a positional channel it binds has no scale;
-/// - a line or an area had no series of two points to join;
+/// - a line or an area placed rows but had no series of two points to join;
 /// - otherwise, no row held values it could place.
 #[must_use]
 pub fn why_drew_nothing(entry: &ChartData<'_>, scales: &ScaleSet, kind: MarkKind) -> String {
@@ -1577,11 +1577,13 @@ pub fn why_drew_nothing(entry: &ChartData<'_>, scales: &ScaleSet, kind: MarkKind
         }
     }
     // A line or an area joins a series' points, and a series with one point
-    // has nothing to join.
+    // has nothing to join. When no row placed at all, the reason below is the
+    // true one instead.
     if matches!(
         kind,
         MarkKind::Line | MarkKind::LineX | MarkKind::LineY | MarkKind::AreaX | MarkKind::AreaY
-    ) {
+    ) && crate::mark::rows_placed(entry.batch, cm, scales) > 0
+    {
         return format!(
             "a {mark} needs at least two points in a series, and no series had two it could place"
         );
@@ -1928,6 +1930,67 @@ mod tests {
     use crate::channel::{Channel, ChannelMap};
     use crate::layout::ChartLayout;
     use crate::mark::{BarAxis, BarRenderer, DotRenderer, GeoRenderer, LineRenderer};
+
+    /// A line that placed one point is short of a series; one that placed
+    /// none had no values it could place, and says that instead.
+    #[test]
+    fn a_line_that_drew_nothing_says_whether_it_placed_any_row() {
+        use arrow::array::Float64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let batch_of = |y: Vec<Option<f64>>| {
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("x", DataType::Float64, true),
+                    Field::new("y", DataType::Float64, true),
+                ])),
+                vec![
+                    Arc::new(Float64Array::from(vec![Some(1.0), Some(2.0)])),
+                    Arc::new(Float64Array::from(y)),
+                ],
+            )
+            .unwrap()
+        };
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let mut scales = ScaleSet::new();
+        for ch in [Channel::X, Channel::Y] {
+            scales.insert(
+                ch,
+                Scale::Linear {
+                    domain_min: 0.0,
+                    domain_max: 3.0,
+                    range_start: 0.0,
+                    range_end: 100.0,
+                },
+            );
+        }
+        let renderer = LineRenderer {
+            axis: crate::mark::LineAxis::Y,
+        };
+        let why = |batch: &RecordBatch| {
+            let entry = ChartData {
+                batch,
+                channel_map: &cm,
+                renderer: &renderer,
+                layout: ChartLayout::new(100.0, 100.0),
+                view_extent: None,
+                highlight: None,
+                sample: None,
+                beyond_frame: false,
+            };
+            why_drew_nothing(&entry, &scales, MarkKind::LineY)
+        };
+        assert_eq!(
+            why(&batch_of(vec![Some(1.0), None])),
+            "a lineY needs at least two points in a series, and no series had two it could place"
+        );
+        assert_eq!(
+            why(&batch_of(vec![None, None])),
+            "none of its 2 rows held values it could place"
+        );
+    }
 
     // render_slider draws exactly two shapes — the track
     // and the thumb — into the scene (headless proof the widget renders).

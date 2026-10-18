@@ -2227,9 +2227,10 @@ fn compose_from_results(
             }
         };
         batches.push(batch);
-        channel_maps.push(ChannelMap::from_mark_in(
+        channel_maps.push(ChannelMap::from_mark_in_spec(
             marks[i],
             mark_plots.get(i).copied().flatten(),
+            &spec.params,
         ));
         kinds.push(marks[i].kind);
     }
