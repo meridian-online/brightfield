@@ -2159,36 +2159,93 @@ impl MarkRenderer for TextRenderer {
 }
 
 /// One column's values as a text mark's labels: [`column_as_string`]'s
-/// strings, or, for a number column, each number written out.
+/// strings, or, for a number column, each number written out from the type
+/// the table holds it in.
 ///
-/// A whole number is written without a fractional part (`2024`, not
-/// `2024.0`), and any other as the shortest decimal that reads back as the
-/// same `f64` (`67.85`). No grouping separator and no rounding: the label is
-/// the value the table holds. A timestamp column is not a number to a reader
-/// and gets no labels here rather than its microseconds.
+/// An integer is written exactly; a float as the shortest decimal that reads
+/// back as the same value of its own width, so a `FLOAT` 67.85 is `67.85`
+/// and not the digits of its widening to a double, and a whole one without a
+/// fractional part (`2024`, and `0` for a negative zero); a `DECIMAL` with
+/// exactly its scale's digits (`12.10`). No grouping separator and no
+/// rounding. A NaN or infinite value gets no label, and neither does a
+/// timestamp column, which is not a number to a reader.
 fn column_as_labels(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<String>>> {
+    use arrow::array::{
+        Decimal128Array, Float32Array, Int16Array, Int32Array, Int64Array, Int8Array, UInt16Array,
+        UInt32Array, UInt64Array, UInt8Array,
+    };
     if let Some(strings) = column_as_string(batch, col_name) {
         return Some(strings);
     }
-    let idx = batch.schema().index_of(col_name).ok()?;
-    if matches!(batch.column(idx).data_type(), DataType::Timestamp(..)) {
-        return None;
+    let col = batch.column(batch.schema().index_of(col_name).ok()?);
+
+    macro_rules! labels {
+        ($arr_ty:ty, $label:expr) => {{
+            let arr = col.as_any().downcast_ref::<$arr_ty>()?;
+            Some(
+                (0..arr.len())
+                    .map(|i| {
+                        if arr.is_null(i) {
+                            None
+                        } else {
+                            $label(arr.value(i))
+                        }
+                    })
+                    .collect(),
+            )
+        }};
     }
-    let numbers = column_as_f64(batch, col_name)?;
-    Some(
-        numbers
-            .into_iter()
-            .map(|n| {
-                n.filter(|v| v.is_finite()).map(|v| {
-                    if v.fract() == 0.0 && v.abs() < 1e15 {
-                        format!("{v:.0}")
-                    } else {
-                        format!("{v}")
-                    }
-                })
+    fn whole<T: ToString>(v: T) -> Option<String> {
+        Some(v.to_string())
+    }
+
+    match col.data_type() {
+        DataType::Int8 => labels!(Int8Array, whole),
+        DataType::Int16 => labels!(Int16Array, whole),
+        DataType::Int32 => labels!(Int32Array, whole),
+        DataType::Int64 => labels!(Int64Array, whole),
+        DataType::UInt8 => labels!(UInt8Array, whole),
+        DataType::UInt16 => labels!(UInt16Array, whole),
+        DataType::UInt32 => labels!(UInt32Array, whole),
+        DataType::UInt64 => labels!(UInt64Array, whole),
+        DataType::Float64 => labels!(Float64Array, |v: f64| {
+            v.is_finite().then(|| {
+                if v == 0.0 {
+                    "0".to_string()
+                } else {
+                    v.to_string()
+                }
             })
-            .collect(),
-    )
+        }),
+        DataType::Float32 => labels!(Float32Array, |v: f32| {
+            v.is_finite().then(|| {
+                if v == 0.0 {
+                    "0".to_string()
+                } else {
+                    v.to_string()
+                }
+            })
+        }),
+        DataType::Decimal128(_, scale) => {
+            let scale = *scale;
+            labels!(Decimal128Array, |v: i128| Some(decimal_label(v, scale)))
+        }
+        _ => None,
+    }
+}
+
+/// A `DECIMAL`'s unscaled value written with exactly `scale` digits after the
+/// point: 1210 at scale 2 is `12.10`, -5 at scale 2 is `-0.05`.
+fn decimal_label(value: i128, scale: i8) -> String {
+    if scale <= 0 {
+        return (value * 10_i128.pow(u32::from(scale.unsigned_abs()))).to_string();
+    }
+    let scale = usize::from(scale.unsigned_abs());
+    let digits = value.unsigned_abs().to_string();
+    let digits = format!("{digits:0>width$}", width = scale + 1);
+    let (whole, fraction) = digits.split_at(digits.len() - scale);
+    let sign = if value < 0 { "-" } else { "" };
+    format!("{sign}{whole}.{fraction}")
 }
 
 // ---------------------------------------------------------------------------
@@ -6600,6 +6657,48 @@ mod tests {
         TextRenderer.render(&mut scene, &batch, &cm, &scales, None);
         // "2024" + "7" + "-3": a number column draws as the strings above.
         assert_eq!(count_scene_glyphs(&scene), 7, "one glyph per character");
+    }
+
+    #[test]
+    fn a_number_label_is_written_from_the_type_the_table_holds_it_in() {
+        use arrow::array::{Decimal128Array, Float32Array, Int64Array};
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("f32", DataType::Float32, false),
+            Field::new("big", DataType::Int64, false),
+            Field::new("f64", DataType::Float64, false),
+            Field::new("dec", DataType::Decimal128(10, 2), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float32Array::from(vec![67.85_f32, -0.0, f32::NAN])),
+                Arc::new(Int64Array::from(vec![9_007_199_254_740_993, i64::MIN, 0])),
+                Arc::new(Float64Array::from(vec![-0.0, 0.1 + 0.2, f64::INFINITY])),
+                Arc::new(
+                    Decimal128Array::from(vec![1210, -5, 0])
+                        .with_precision_and_scale(10, 2)
+                        .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        let labels = |col| column_as_labels(&batch, col).expect("labels");
+        let some = |v: &[&str]| v.iter().map(|s| Some((*s).to_string())).collect::<Vec<_>>();
+        assert_eq!(
+            labels("f32"),
+            [Some("67.85".into()), Some("0".into()), None]
+        );
+        assert_eq!(
+            labels("big"),
+            some(&["9007199254740993", "-9223372036854775808", "0"])
+        );
+        assert_eq!(
+            labels("f64"),
+            [Some("0".into()), Some("0.30000000000000004".into()), None]
+        );
+        assert_eq!(labels("dec"), some(&["12.10", "-0.05", "0.00"]));
+        assert_eq!(decimal_label(42, 0), "42");
+        assert_eq!(decimal_label(42, -2), "4200");
     }
 
     #[test]
