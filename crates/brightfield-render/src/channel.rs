@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use brightfield_spec::ast::{AggregateFunc, Mark, ParamNode, PlotNode, SpecValue, ValueOrParamRef};
 use brightfield_spec::layout::{
-    plot_scale_key, resolve_plot_scales, PlotAxis, PlotScales, ScaleType,
+    plot_scale_key, resolve_plot_scales_in, PlotAxis, PlotScales, ScaleType,
 };
 use brightfield_spec::vocab::is_colour_literal;
 use brightfield_spec::vocab::MarkKind;
@@ -742,8 +742,9 @@ impl ChannelMap {
 
     /// [`ChannelMap::from_mark_in`], reading a `$param` the plot writes for
     /// `xScale` / `yScale` through the spec's `params`, as the spec's own
-    /// undrawn-scale check reads it: a param that holds `band` keeps a bar's
-    /// band, and one that holds `linear` drops it.
+    /// undrawn-scale check, the shelf and the SQL emitter read it: a param that
+    /// holds `log` draws a log axis, one that holds `band` keeps a bar's band,
+    /// and one that holds `linear` drops it.
     #[must_use]
     pub fn from_mark_in_spec(
         mark: &Mark,
@@ -752,7 +753,10 @@ impl ChannelMap {
     ) -> Self {
         let mut cm = Self::from_mark(mark);
         cm.set_projection(MarkProjection::of(mark.kind, plot));
-        cm.set_scale_types(plot.map(resolve_plot_scales).unwrap_or_default());
+        cm.set_scale_types(
+            plot.map(|plot| resolve_plot_scales_in(plot, params))
+                .unwrap_or_default(),
+        );
         if let Some(plot) = plot {
             for axis in [PlotAxis::X, PlotAxis::Y] {
                 if written_continuous(plot, axis, params) {

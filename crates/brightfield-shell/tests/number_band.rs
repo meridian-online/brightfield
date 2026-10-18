@@ -308,3 +308,21 @@ fn a_band_scale_held_by_a_param_is_the_band_it_draws() {
         "a param holding linear keeps the linear x it names"
     );
 }
+
+#[test]
+fn a_log_scale_held_by_a_param_draws_a_log_axis() {
+    let composed = compose(&format!("params:\n  s: log\n{}", bar_spec("yScale: $s\n")));
+    assert!(
+        matches!(
+            composed.plots[0].scales.get(Channel::Y),
+            Some(Scale::Log { .. })
+        ),
+        "the param names log, and the y axis is log: {:?}",
+        composed.plots[0].scales.get(Channel::Y)
+    );
+    assert_eq!(
+        categories(&composed, Channel::X).len(),
+        12,
+        "the bar's band axis is untouched"
+    );
+}
