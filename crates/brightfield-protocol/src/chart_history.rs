@@ -31,8 +31,9 @@
 //! before it and who made it, and [`HistoryStore::read_version`] returns one
 //! version's text. The list joins the store with the version log arc keeps in
 //! the Protocol's folder: the log travels with the folder and the store's
-//! snapshots do not, so a version the log names and the store lacks is listed
-//! as not on this machine.
+//! snapshots do not, and the store prunes its oldest versions, so a version
+//! the log names and the store lacks is listed as having no text on this
+//! machine.
 //! Neither writes under the chart file's folder: a listing reads the store,
 //! whose root opening it makes when that is missing, and the chart file's
 //! folder is not touched. The change is data, a [`ChartChange`], and the words for it are
@@ -369,7 +370,9 @@ pub struct ChartVersion {
     pub who: Who,
     /// Whether the store on this machine holds the version's text, so it can
     /// be shown and restored. A version the Protocol's log names and the store
-    /// lacks was made on another machine, or before a fresh clone.
+    /// lacks was made on another machine or before a fresh clone, or was made
+    /// here and has since been pruned from the store, which keeps at most
+    /// `HISTORY_MAX_ENTRIES` versions of a file.
     pub on_this_machine: bool,
 }
 

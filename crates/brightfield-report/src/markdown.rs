@@ -61,9 +61,8 @@ fn plain_text(events: &[Event]) -> String {
     let mut text = String::new();
     for event in events {
         match event {
-            Event::Text(t) | Event::Code(t) | Event::InlineHtml(t) | Event::Html(t) => {
-                text.push_str(t);
-            }
+            Event::Text(t) | Event::Code(t) => text.push_str(t),
+            Event::InlineHtml(t) if !t.trim_start().starts_with("<!--") => text.push_str(t),
             Event::SoftBreak | Event::HardBreak => text.push(' '),
             _ => {}
         }
@@ -505,7 +504,13 @@ impl Writer<'_> {
                 }
             }
             Event::Text(t) if self.section == Section::Run => self.write_run_text(t),
-            Event::Text(t) | Event::InlineHtml(t) | Event::Html(t) => self.push_text(t),
+            Event::Text(t) => self.push_text(t),
+            // A comment is a note to the file's reader, and a block of HTML
+            // such as `<details>` has nothing to draw in a PDF: both are left
+            // out. Any other inline HTML is printed as written, since prose
+            // like `a <b> c` reads as a tag to CommonMark but is meant as text.
+            Event::InlineHtml(t) if !t.trim_start().starts_with("<!--") => self.push_text(t),
+            Event::InlineHtml(_) | Event::Html(_) => {}
             Event::Code(code) => self.write_code(code),
             Event::SoftBreak => self.out.push(' '),
             Event::HardBreak => self.out.push_str("#linebreak();"),
@@ -747,6 +752,20 @@ mod tests {
         let run = reported_run(report);
         assert_eq!(run.finished.as_deref(), Some("2026-10-16T21:15:10Z"));
         assert_eq!(run.tables["a"].as_deref(), Some("4922e56a"));
+    }
+
+    #[test]
+    fn html_comments_and_html_blocks_are_left_out() {
+        let out = body(
+            "Before <!-- an inline note --> after.\n\n<!--\na block note\n-->\n\n\
+             <details>\n<summary>More</summary>\n</details>\n\nLast.\n",
+            &[],
+            None,
+        );
+        for gone in ["note", "<", "details", "summary"] {
+            assert!(!out.contains(gone), "{gone} in {out}");
+        }
+        assert!(out.contains("Before") && out.contains("after.") && out.contains("Last."));
     }
 
     #[test]

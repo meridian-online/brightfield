@@ -767,9 +767,9 @@ fn tile_key(index: usize) -> PaneKey {
     PaneKey::new(ItemId::new(names[index]))
 }
 
-/// What the Protocol's run records folder holds now, by arc's layout of it.
+/// What the Protocol's run records folder ([`crate::run::runs_dir`]) holds now.
 fn run_mark(dir: &Path) -> RunMark {
-    let entries = std::fs::read_dir(dir.join("build").join(".arcform").join("runs")).ok()?;
+    let entries = std::fs::read_dir(crate::run::runs_dir(dir)).ok()?;
     let mut count = 0;
     let mut newest: Option<SystemTime> = None;
     for entry in entries.flatten() {

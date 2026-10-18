@@ -932,6 +932,7 @@ pub fn render_export(composed: Composed, scale: f32) -> Result<image::RgbaImage,
             crate::legend::draw_below(ui, egui::Pos2::ZERO, &composed, composed.mode);
         },
     );
+    let composed_mode = composed.mode;
     let scene = render_composed(composed, scale)?;
 
     let size_px = [
@@ -939,8 +940,17 @@ pub fn render_export(composed: Composed, scale: f32) -> Result<image::RgbaImage,
         ((win_h * scale).round() as u32).max(1),
     ];
     // The scene's pixels at the top of a canvas tall enough for the bands
-    // under it, which stay transparent as the scene's own background does.
-    let mut canvas = image::RgbaImage::new(size_px[0], size_px[1]);
+    // under it. The band a legend hangs in below the plot is the chart
+    // surface the plot itself is drawn on, so a viewer that flattens alpha
+    // onto black does not lose the legend's text against it.
+    let surface = brightfield_render::ink::ChartInk::for_mode(composed_mode.is_dark())
+        .background
+        .to_rgba8();
+    let mut canvas = image::RgbaImage::from_pixel(
+        size_px[0],
+        size_px[1],
+        image::Rgba([surface.r, surface.g, surface.b, surface.a]),
+    );
     image::imageops::replace(&mut canvas, &scene, 0, 0);
 
     let extent = wgpu::Extent3d {

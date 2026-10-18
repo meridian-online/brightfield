@@ -26,10 +26,11 @@
 //! back control at its end, which steps the chart back to that version as an
 //! unsaved edit ([`ChartDoc::step_back_to_cursor`]).
 //!
-//! **A version not on this machine.** The list is read from the Protocol's
-//! version log as well as the store, and the log travels with the folder while
-//! the store's snapshots do not. A version the log names and the store lacks
-//! is listed, its row dimmed and its *what changed* reading
+//! **A version whose text is not kept here.** The list is read from the
+//! Protocol's version log as well as the store, and the log travels with the
+//! folder while the store's snapshots do not; the store also keeps only its
+//! newest versions of a file, so a version made here can fall out of it. A
+//! version the log names and the store lacks is listed, its row dimmed and its *what changed* reading
 //! [`NOT_ON_THIS_MACHINE`]; the cursor can rest on it, but it is not drawn or
 //! stepped back to, and the chart fault and the disabled Step back control say
 //! why ([`NOT_ON_THIS_MACHINE_REASON`];
@@ -81,16 +82,18 @@ pub const NOTHING_CHANGED: &str = "nothing changed";
 /// What a change outside the channels reads before its count of lines.
 pub const EDITED_OUTSIDE: &str = "edited outside brightfield";
 
-/// What a version reads whose version before is not on this machine, so has
-/// no text here to compare it with.
-pub const BEFORE_NOT_HERE: &str = "the version before is not on this machine";
+/// What a version reads whose version before has no text kept here, so has
+/// nothing to compare it with.
+pub const BEFORE_NOT_HERE: &str = "the version before's text is not kept on this machine";
 
-/// What a version not on this machine reads in place of what changed: the
-/// Protocol's log names it, and the store here holds no text to compare.
-pub const NOT_ON_THIS_MACHINE: &str = "not on this machine";
+/// What a version whose text the store here does not hold reads in place of
+/// what changed: the Protocol's log names it, and there is no text to compare.
+/// It was made on another machine, or made here and since dropped from the
+/// store, which keeps only a file's newest versions.
+pub const NOT_ON_THIS_MACHINE: &str = "its text is not kept on this machine";
 
-/// Why a version not on this machine is not drawn or stepped back to.
-pub const NOT_ON_THIS_MACHINE_REASON: &str = "this version is not on this machine: the Protocol's log names it, and its text is kept in the history of the machine it was made on";
+/// Why a version whose text is not kept here is not drawn or stepped back to.
+pub const NOT_ON_THIS_MACHINE_REASON: &str = "this version's text is not kept on this machine: the Protocol's log names it, and the history here does not hold its text, because it was made on another machine or has since been dropped from this machine's history, which keeps only a file's newest versions";
 
 /// A version's *who*: the route it was made by. The words name the route
 /// only, never a person or an agent, since an agent driving arc from a

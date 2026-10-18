@@ -256,6 +256,21 @@ fn data_of_a_panel() {
 }
 
 #[test]
+fn data_into_a_folder_named_with_a_trailing_separator() {
+    let ran = ran_fixture("co2-per-capita");
+    let folder = ran.dir.join("rows");
+    let out_arg = format!("{}{}", folder.display(), std::path::MAIN_SEPARATOR);
+    let out = export(&["export-data", path_arg(&ran.dir), CHANGE, "--out", &out_arg]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let csv = folder.join("co2_per_capita_change.csv");
+    assert!(
+        csv.is_file(),
+        "a trailing separator names a folder to write into: {}",
+        stdout(&out)
+    );
+}
+
+#[test]
 fn parquet_data() {
     let ran = ran_fixture("co2-per-capita");
     let out = export(&[

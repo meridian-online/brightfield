@@ -494,3 +494,25 @@ fn a_legend_under_a_plot_with_no_colour_scale_gives_the_colour_plot_none() {
         "the legend the file put under the plain plot is not placed there"
     );
 }
+
+#[test]
+fn an_export_fills_the_band_a_legend_hangs_below_the_plot_with_the_chart_surface() {
+    let composed = compose(&below("v"));
+    let height = composed.height;
+    assert!(
+        below_overhang(&composed) > 1.0,
+        "the legend hangs below the composition"
+    );
+    let surface = brightfield_render::ink::ChartInk::for_mode(composed.mode.is_dark())
+        .background
+        .to_rgba8();
+    let picture = brightfield_shell::capture::render_export(composed, 1.0).expect("renders");
+    assert!(picture.height() > height + 1, "the picture holds the band");
+    // The band's bottom-left corner: below the composition, clear of the legend.
+    let corner = picture.get_pixel(0, picture.height() - 1).0;
+    assert_eq!(
+        corner,
+        [surface.r, surface.g, surface.b, surface.a],
+        "the band under the plot is the chart surface, not transparent"
+    );
+}

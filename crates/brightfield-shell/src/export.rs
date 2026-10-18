@@ -288,11 +288,16 @@ fn warn_diagnostics(file: &Path, composed: &crate::pipeline::Composed) {
     }
 }
 
-/// The problem when there is no GPU to draw with.
+/// The problem when there is no GPU to draw with: the plain message, then
+/// what wgpu said, so a reader on a machine without one sees why.
 fn require_gpu() -> Result<(), Vec<String>> {
-    headless_device().map(|_| ()).map_err(|_| {
-        vec!["no GPU is available; headless export draws with the GPU and needs one".to_string()]
-    })
+    headless_device()
+        .map(|_| ())
+        .map_err(|e| vec![no_gpu_message(&e)])
+}
+
+fn no_gpu_message(cause: &str) -> String {
+    format!("no GPU is available; headless export draws with the GPU and needs one ({cause})")
 }
 
 fn panel_stem(file: &Path) -> String {
@@ -357,7 +362,7 @@ fn export_data(
         )]);
     }
     let into_dir = match out {
-        Some(out) => tables.len() > 1 || out.is_dir(),
+        Some(out) => tables.len() > 1 || names_a_directory(out),
         None => true,
     };
     if tables.len() > 1 && out.is_some_and(|o| o.exists() && !o.is_dir()) {
@@ -402,6 +407,14 @@ fn export_data(
         written.push(path);
     }
     Ok(written)
+}
+
+/// Whether `--out` names a folder to write into: one that is there, or a path
+/// written with a trailing separator (`rows/`), which names a folder whether
+/// or not it exists yet.
+fn names_a_directory(out: &Path) -> bool {
+    let text = out.as_os_str().to_string_lossy();
+    out.is_dir() || text.ends_with('/') || text.ends_with(std::path::MAIN_SEPARATOR)
 }
 
 /// The name of the report arc writes in a Protocol's folder.
@@ -468,9 +481,9 @@ fn protocol_title(dir: &Path, name: &str) -> String {
     name.to_string()
 }
 
-/// `2026-10-16T21:15:10Z` as `16 October 2026`; the text as it is when it does
-/// not start with a date.
-fn run_date(finished: &str) -> String {
+/// `2026-10-16T21:15:10Z` as `16 October 2026`; `None` when the text does not
+/// start with a date, as arc's `not recorded` does not.
+fn run_date(finished: &str) -> Option<String> {
     const MONTHS: [&str; 12] = [
         "January",
         "February",
@@ -493,13 +506,11 @@ fn run_date(finished: &str) -> String {
                 .parse::<usize>()
                 .ok()
                 .and_then(|m| MONTHS.get(m.checked_sub(1)?));
-            let day = day.parse::<u32>().ok();
-            match (month, day) {
-                (Some(month), Some(day)) => format!("{day} {month} {year}"),
-                _ => finished.to_string(),
-            }
+            let day = day.parse::<u32>().ok().filter(|d| (1..=31).contains(d));
+            year.parse::<u32>().ok()?;
+            Some(format!("{} {} {year}", day?, month?))
         }
-        _ => finished.to_string(),
+        _ => None,
     }
 }
 
@@ -625,7 +636,8 @@ pub fn prepare_report(dir: &Path) -> Result<PreparedReport, Vec<String>> {
         subtitle: run
             .finished
             .as_deref()
-            .map(|at| format!("Run finished {}", run_date(at))),
+            .and_then(run_date)
+            .map(|date| format!("Run finished {date}")),
     })
 }
 
@@ -737,9 +749,21 @@ mod tests {
     }
 
     #[test]
+    fn the_no_gpu_message_keeps_the_adapter_error() {
+        let message = no_gpu_message("no adapter found");
+        assert!(message.starts_with("no GPU is available;"), "{message}");
+        assert!(message.ends_with("(no adapter found)"), "{message}");
+    }
+
+    #[test]
     fn the_run_date_reads_as_words() {
-        assert_eq!(run_date("2026-10-16T21:15:10Z"), "16 October 2026");
-        assert_eq!(run_date("not recorded"), "not recorded");
+        assert_eq!(
+            run_date("2026-10-16T21:15:10Z").as_deref(),
+            Some("16 October 2026")
+        );
+        // arc writes this when it has no time; the subtitle is left out.
+        assert_eq!(run_date("not recorded"), None);
+        assert_eq!(run_date("2026-13-01"), None);
     }
 
     #[test]

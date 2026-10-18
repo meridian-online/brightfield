@@ -416,6 +416,8 @@ fi
 if [ -n "$DUCKDB_CLI" ]; then
   # The version fetch-duckdb-cli.sh pins, read from its own VERSION= line.
   DUCKDB_VERSION="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' scripts/fetch-duckdb-cli.sh)"
+  [ -n "$DUCKDB_VERSION" ] \
+    || { echo "package.sh: no VERSION= line in scripts/fetch-duckdb-cli.sh to name the bundled DuckDB by." >&2; exit 1; }
   cat >> "$STAGE/README.txt" <<EOF
 
 engine/duckdb is the DuckDB command-line shell, ${DUCKDB_VERSION}, the official build as

@@ -108,10 +108,9 @@ enum Store {
     Unopenable,
 }
 
-/// Every file under `dir`, path relative to it, with its bytes.
 /// The log arc keeps beside the Protocol, which records every version it
 /// stores: the one file a close without saving adds to.
-const LOG: &str = "arcform-log.txt";
+const LOG: &str = arc::spec::LOG_FILENAME;
 
 /// What a close without saving leaves in `folder`: every file but the log as
 /// it was in `before`, and the log one line longer than `logged`, that line an
@@ -145,6 +144,7 @@ fn assert_only_an_unsaved_version_was_logged(
     assert_eq!(line.file, chart, "{line:?}");
 }
 
+/// Every file under `dir`, path relative to it, with its bytes.
 fn files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
     fn walk(dir: &Path, base: &Path, into: &mut BTreeMap<String, Vec<u8>>) {
         for entry in std::fs::read_dir(dir).expect("a readable folder").flatten() {

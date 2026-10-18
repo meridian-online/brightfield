@@ -1196,8 +1196,9 @@ pub(crate) fn render_graticule_labels(
 mod tests {
     use super::*;
 
-    /// A title that fits is set at the heading size; a wider one is set as
-    /// much smaller as fits, and never below an axis title.
+    /// A title that fits is set at the heading size on one line; a wider one
+    /// wraps to two lines at the heading size, and only one too wide for two
+    /// lines is set smaller, never below an axis title.
     #[test]
     fn a_long_heading_wraps_to_two_lines_at_the_heading_size() {
         let title = "Per-capita CO2 since 1990, G7 countries vs China and India";
