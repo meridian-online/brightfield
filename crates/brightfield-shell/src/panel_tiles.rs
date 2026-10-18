@@ -41,7 +41,7 @@ use crate::canvas::EguiCanvasHost;
 use crate::design::Mode;
 use crate::protocol::ui_font;
 use crate::protocol_panels::{
-    load, notes_height, panel_paths, OpenProblem, PanelProblem, ProtocolPanels, NOTE_HEIGHT,
+    load, panel_paths, NoteBand, OpenProblem, PanelProblem, ProtocolPanels, NOTE_HEIGHT,
 };
 
 /// The narrowest a tile is laid out: room for a bar chart's category labels,
@@ -80,6 +80,9 @@ pub struct TileDrawn {
     pub body: egui::Rect,
     /// Whether the tile holds a chart, rather than its problems.
     pub drew: bool,
+    /// Where the chart's page was drawn, below any notes; `None` for a tile
+    /// that holds its problems.
+    pub chart: Option<egui::Rect>,
 }
 
 /// What a frame of the tiles asked the window to do.
@@ -466,6 +469,7 @@ impl PanelTiles {
             rect,
             body,
             drew,
+            chart: None,
         });
         match &tile.outcome {
             Ok(composed) => {
@@ -473,15 +477,18 @@ impl PanelTiles {
                 // A chart with notes (its colours repeat, a mark sets an option
                 // nothing draws) says them above itself, in the band it was
                 // composed to leave: the lines a headless export prints.
-                let notes = composed.diagnostics.notes();
-                let top = notes_height(composed) as f32;
+                // The band is read as the composition read it, from the body's
+                // height, so the chart lands in the room it was composed for.
+                let band = NoteBand::of(composed, f64::from(body.height()));
+                let top = band.height() as f32;
                 let page = egui::Rect::from_min_size(body.min + egui::vec2(0.0, top), size);
-                for (i, note) in notes.into_iter().enumerate() {
+                self.drawn.last_mut().expect("pushed above").chart = Some(page);
+                for (i, note) in band.lines.iter().enumerate() {
                     // At most two lines each, cut with an ellipsis, so a note
                     // stays inside its share of the band however narrow the
                     // tile is.
                     let mut job = egui::text::LayoutJob::single_section(
-                        note.to_string(),
+                        note.clone(),
                         egui::TextFormat::simple(ui_font(), chrome::colour(sem.text.secondary)),
                     );
                     job.wrap.max_width = body.width();
@@ -541,7 +548,14 @@ impl PanelTiles {
                         egui::Sense::click(),
                     )
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text(format!("{about}\nClick to open this panel as the chart"));
+                    .on_hover_text(if band.cut {
+                        format!(
+                            "{about}\nClick to open this panel as the chart\n\n{}",
+                            composed.diagnostics.notes().join("\n")
+                        )
+                    } else {
+                        format!("{about}\nClick to open this panel as the chart")
+                    });
                 response.clicked().then_some(TilesAction::Open(index))
             }
             Err(problems) => {

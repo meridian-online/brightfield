@@ -481,16 +481,67 @@ pub fn strip_protocol_tables(text: &str, injected: &[String]) -> String {
     serde_yaml::to_string(&doc).unwrap_or_else(|_| text.to_string())
 }
 
-/// The height a tile gives each of its notes above the chart (that its colours
-/// repeat, that a mark sets an option nothing draws): two lines of the
-/// interface text in a tile at its narrowest.
+/// The height a tile gives each line of its notes above the chart (that its
+/// colours repeat, that a mark sets an option nothing draws): two rows of the
+/// interface text, so a note that wraps in a narrow tile still fits its line.
 pub const NOTE_HEIGHT: f64 = 36.0;
 
-/// The band a tile leaves above its chart for `composed`'s notes, one
-/// [`NOTE_HEIGHT`] each; nothing for a panel with none.
-#[must_use]
-pub fn notes_height(composed: &Composed) -> f64 {
-    NOTE_HEIGHT * composed.diagnostics.notes().len() as f64
+/// The most lines of notes a tile shows above its chart. A panel with more
+/// shows the first `MAX_NOTE_LINES - 1` and a line saying how many more there
+/// are; the tile's tooltip and a headless export's stderr carry every one.
+pub const MAX_NOTE_LINES: usize = 3;
+
+/// The least height a tile keeps for its chart under the notes. A tile shorter
+/// than that and one note line shows no band, and its notes are in its
+/// tooltip only.
+pub const MIN_CHART_HEIGHT: f64 = 120.0;
+
+/// The notes a tile shows above its chart and the band they take, for a tile
+/// whose body is `height` tall: the one reading both the composition and the
+/// drawing take, so the chart is composed into exactly the room the tile
+/// leaves it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NoteBand {
+    /// The lines drawn, one [`NOTE_HEIGHT`] each: notes, and, when some did
+    /// not fit, a last line saying how many more there are.
+    pub lines: Vec<String>,
+    /// Whether some notes are not among [`Self::lines`].
+    pub cut: bool,
+}
+
+impl NoteBand {
+    /// The band for `composed`'s notes in a tile body `height` tall.
+    #[must_use]
+    pub fn of(composed: &Composed, height: f64) -> Self {
+        let notes = composed.diagnostics.notes();
+        let room = ((height - MIN_CHART_HEIGHT) / NOTE_HEIGHT).floor().max(0.0) as usize;
+        let max = room.min(MAX_NOTE_LINES);
+        if notes.len() <= max {
+            return Self {
+                lines: notes.iter().map(|n| (*n).to_string()).collect(),
+                cut: false,
+            };
+        }
+        if max == 0 {
+            return Self {
+                lines: Vec::new(),
+                cut: !notes.is_empty(),
+            };
+        }
+        let shown = max - 1;
+        let more = notes.len() - shown;
+        let mut lines: Vec<String> = notes[..shown].iter().map(|n| (*n).to_string()).collect();
+        lines.push(format!(
+            "…and {more} more notes about this panel: hover it for them all"
+        ));
+        Self { lines, cut: true }
+    }
+
+    /// The height the band takes above the chart.
+    #[must_use]
+    pub fn height(&self) -> f64 {
+        NOTE_HEIGHT * self.lines.len() as f64
+    }
 }
 
 /// Compose one panel that arc's check found nothing wrong with. A panel with
@@ -518,8 +569,8 @@ fn compose_tile(
     }
     let composed =
         compose_spec_str_in(&text, Some(dir), viewport, mode).map_err(PanelProblem::Failed)?;
-    let band = notes_height(&composed);
-    if band > 0.0 && viewport.height > band {
+    let band = NoteBand::of(&composed, viewport.height).height();
+    if band > 0.0 {
         let below_notes = Rect {
             height: viewport.height - band,
             ..viewport

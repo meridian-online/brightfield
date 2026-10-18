@@ -397,6 +397,53 @@ fn a_tile_shows_the_notes_the_export_prints_once_each() {
     assert_eq!(printed, [note], "the export prints what the tile shows");
 }
 
+/// A panel that sets more unread options than a tile has lines for shows the
+/// first notes and a line counting the rest, and its chart stays inside the
+/// tile under them rather than being pushed out of it.
+#[test]
+fn a_tile_with_many_notes_caps_them_and_keeps_its_chart_inside() {
+    use brightfield_shell::protocol_panels::{MAX_NOTE_LINES, NOTE_HEIGHT};
+    let ran = ran_fixture(CO2);
+    std::fs::write(
+        ran.dir.join("panels/busy.yaml"),
+        "plot:\n\
+         - mark: text\n  data: { from: co2_per_capita_change }\n  \
+         x: change_pct\n  y: country\n  text: country\n  \
+         dx: 4\n  dy: -10\n  fontSize: 8\n  opacity: 0.5\n  \
+         fillOpacity: 0.5\n  strokeWidth: 2\n  rotate: 45\n",
+    )
+    .expect("the panel writes");
+    let win = Window::over(open(&ran.dir));
+    let unread = win
+        .texts
+        .iter()
+        .filter(|t| t.contains("nothing in the render path reads"))
+        .count();
+    assert_eq!(unread, MAX_NOTE_LINES - 1, "{:?}", win.texts);
+    assert!(
+        win.drew("…and 5 more notes about this panel"),
+        "the last line counts the rest: {:?}",
+        win.texts
+    );
+    let drawn = win.app.panel_tiles().expect("tiles").drawn();
+    let tile = drawn
+        .iter()
+        .find(|t| t.file == Path::new("panels/busy.yaml"))
+        .expect("the busy tile");
+    let chart = tile.chart.expect("the tile drew its chart");
+    assert!(
+        (chart.top() - (tile.body.top() + (NOTE_HEIGHT * MAX_NOTE_LINES as f64) as f32)).abs()
+            < 1.0,
+        "the chart starts under the capped band: {chart:?} in {:?}",
+        tile.body
+    );
+    assert!(
+        chart.bottom() <= tile.body.bottom() + 1.0 && chart.right() <= tile.body.right() + 1.0,
+        "the chart stays inside the tile: {chart:?} in {:?}",
+        tile.body
+    );
+}
+
 /// In the narrowest window the note stays within its band, whatever it has to
 /// give up to do so, and the chart starts below it.
 #[test]
