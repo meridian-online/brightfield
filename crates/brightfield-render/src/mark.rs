@@ -677,11 +677,11 @@ fn position_keys(
     )
 }
 
-/// How many of `batch`'s rows have a place on every positional axis the mark
-/// binds a column to (`x`, `y`), as [`resolve_position`] places them: a value
-/// on a continuous scale, a band its key names on a band scale. The question
-/// `crate::scene::why_drew_nothing` asks of a line that drew nothing, to tell
-/// rows that never placed from series too short to join.
+/// How many of `batch`'s rows have a place on the `x` and `y` the mark binds
+/// columns to, as [`resolve_position`] places them: a value on a continuous
+/// scale, a band its key names on a band scale. `crate::scene::why_drew_nothing`
+/// asks it of a blank line, to tell rows that never placed from series too
+/// short to join (`a_line_that_drew_nothing_says_whether_it_placed_any_row`).
 pub(crate) fn rows_placed(
     batch: &RecordBatch,
     channel_map: &ChannelMap,
