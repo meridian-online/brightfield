@@ -1,0 +1,40 @@
+# A Protocol's report.md, typeset to PDF with its charts drawn in place. The
+# crate knows Markdown, Typst and PNG bytes and nothing of panels, DuckDB or the
+# GPU: the shell renders each chart and hands this crate the pictures.
+[package]
+name = "brightfield-report"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Typesets an arcform Protocol's report.md to PDF with its charts in place, offline, through Typst"
+
+[dependencies]
+# Typst as a library: the compiler, its PDF writer and its rasteriser, which
+# draws the page previews. The three are released together and are pinned
+# exactly to one release, because a page set by one Typst and checked by
+# another is not the page that was checked. 0.15.1 was released on 2026-07-17.
+typst = "=0.15.1"
+typst-pdf = "=0.15.1"
+typst-render = "=0.15.1"
+# The laid-out document the three pass between them, which `typst` does not
+# re-export.
+typst-layout = "=0.15.1"
+# CommonMark with GitHub's tables, which is what an agent writes report.md in.
+# The default features add a command-line binary's argument parser and an HTML
+# writer, neither of which this crate uses. 0.13.4 was released on 2026-05-20.
+pulldown-cmark = { version = "=0.13.4", default-features = false }
+# The bundled Inter and JetBrains Mono: the only fonts the report is set in.
+meridian-design = { workspace = true }
+
+[dev-dependencies]
+# Reads a compiled PDF's text back, so a test checks what a reader would see
+# rather than the Typst source. 0.12.1 was released on 2026-09-16.
+pdf-extract = "=0.12.1"
+# Writes the chart pictures the tests hand the report. Already in the graph,
+# on the shell's version line.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[lints]
+workspace = true

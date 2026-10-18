@@ -51,6 +51,7 @@ fn warned(spec: &brightfield_spec::Spec) -> Vec<(String, String, String)> {
                 attribute,
                 value,
                 plot,
+                ..
             } => Some((attribute, value, plot)),
             _ => None,
         })
@@ -167,4 +168,34 @@ fn a_plot_that_is_named_is_drawn_linear() {
     assert_eq!((upper.x, upper.y), (ScaleType::Log, ScaleType::Linear));
     let lower = resolve_plot_scales_in(plots[1].1, &spec.params);
     assert_eq!((lower.x, lower.y), (ScaleType::Linear, ScaleType::Log));
+}
+
+/// A bar draws its band axis as bands whatever the file names there, so a
+/// scale this build cannot read on that axis is named as drawing bands, not
+/// linear; and `band` there is the band it draws, named not at all.
+#[test]
+fn a_bars_band_axis_is_named_as_drawing_bands() {
+    let source = "data:\n  t:\n    - { m: 1, v: 2 }\nplot:\n  - { mark: barY, data: { from: t }, x: m, y: v }\nxScale: sqrt\n";
+    let spec = parse_spec(source, Format::Yaml)
+        .expect("the spec parses")
+        .spec;
+    let said: Vec<String> = analyse_spec(&spec)
+        .expect("the spec analyses")
+        .warnings
+        .iter()
+        .filter(|w| matches!(w, ParseWarning::UndrawnScale { .. }))
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        said,
+        ["plot root sets `xScale: sqrt`, a scale this build does not draw — the axis draws as bands"]
+    );
+
+    let band = parse_spec(&source.replace("sqrt", "band"), Format::Yaml)
+        .expect("parses")
+        .spec;
+    assert!(
+        warned(&band).is_empty(),
+        "a band is drawn on a bar's band axis"
+    );
 }

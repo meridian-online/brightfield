@@ -536,12 +536,16 @@ const DENSITY_COUNT_COL: &str = "__bf_count";
 // ---------------------------------------------------------------------------
 
 pub(crate) fn column_as_f64(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<f64>>> {
+    let idx = batch.schema().index_of(col_name).ok()?;
+    array_as_f64(batch.column(idx).as_ref())
+}
+
+/// [`column_as_f64`] over an array already in hand.
+pub(crate) fn array_as_f64(col: &dyn Array) -> Option<Vec<Option<f64>>> {
     use arrow::array::{
         Float32Array, Int16Array, Int32Array, Int8Array, UInt16Array, UInt32Array, UInt64Array,
         UInt8Array,
     };
-    let idx = batch.schema().index_of(col_name).ok()?;
-    let col = batch.column(idx);
 
     macro_rules! cast_numeric {
         ($arr_ty:ty) => {{
@@ -604,6 +608,14 @@ fn column_as_string(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<St
                 .collect(),
         );
     }
+    if let DataType::Boolean = col.data_type() {
+        let arr = col.as_any().downcast_ref::<arrow::array::BooleanArray>()?;
+        return Some(
+            (0..arr.len())
+                .map(|i| (!arr.is_null(i)).then(|| arr.value(i).to_string()))
+                .collect(),
+        );
+    }
     if !matches!(col.data_type(), DataType::Utf8) {
         return None;
     }
@@ -619,6 +631,104 @@ fn column_as_string(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<St
             })
             .collect(),
     )
+}
+
+/// The strings a positional channel finds its band by.
+///
+/// On a band scale, [`column_as_labels`]: a band over a number column names
+/// its categories as that function writes the numbers, so a bar, a cell, a
+/// line or a text over the same column finds its band by the same spelling.
+/// A number whose own spelling names no band is found by its value instead
+/// (`band_categories_by_value`): two layers at different number types, an
+/// `INTEGER` 3 and a `DECIMAL` 3.0, share the one band scale inference made
+/// for the value. On any other scale, the column's own strings, which only a
+/// band reads; a number column is not written out for a scale that places it
+/// by value.
+fn position_keys(
+    batch: &RecordBatch,
+    col_name: &str,
+    scale: &Scale,
+) -> Option<Vec<Option<String>>> {
+    let Scale::Band { categories, .. } = scale else {
+        return column_as_string(batch, col_name);
+    };
+    if let Some(strings) = column_as_string(batch, col_name) {
+        return Some(strings);
+    }
+    let labels = column_as_labels(batch, col_name)?;
+    let Some(values) = column_as_f64(batch, col_name) else {
+        return Some(labels);
+    };
+    let named: std::collections::HashSet<&str> = categories.iter().map(String::as_str).collect();
+    let mut by_value: Option<std::collections::HashMap<u64, &String>> = None;
+    Some(
+        labels
+            .into_iter()
+            .zip(values)
+            .map(|(label, value)| {
+                let label = label?;
+                if named.contains(label.as_str()) {
+                    return Some(label);
+                }
+                let by_value = by_value.get_or_insert_with(|| band_categories_by_value(categories));
+                by_value.get(&value_key(value?)).map(|c| (*c).clone())
+            })
+            .collect(),
+    )
+}
+
+/// How many of `batch`'s rows have a place on the `x` and `y` the mark binds
+/// columns to, as [`resolve_position`] places them: a value on a continuous
+/// scale, a band its key names on a band scale. `crate::scene::why_drew_nothing`
+/// asks it of a blank line, to tell rows that never placed from series too
+/// short to join (`a_line_that_drew_nothing_says_whether_it_placed_any_row`).
+pub(crate) fn rows_placed(
+    batch: &RecordBatch,
+    channel_map: &ChannelMap,
+    scales: &ScaleSet,
+) -> usize {
+    let axes: Vec<_> = [Channel::X, Channel::Y]
+        .into_iter()
+        .filter_map(|ch| {
+            let col = channel_map.get(ch)?;
+            let scale = scales.get(ch)?;
+            Some((
+                scale,
+                column_as_f64(batch, col),
+                position_keys(batch, col, scale),
+            ))
+        })
+        .collect();
+    (0..batch.num_rows())
+        .filter(|&i| {
+            axes.iter().all(|(scale, nums, keys)| {
+                resolve_position(
+                    scale,
+                    nums.as_ref().and_then(|v| v[i]),
+                    keys.as_ref().and_then(|v| v[i].as_deref()),
+                )
+                .is_some_and(f64::is_finite)
+            })
+        })
+        .count()
+}
+
+/// A band's categories keyed by the number each reads as, for the ones that
+/// read as a number.
+fn band_categories_by_value(categories: &[String]) -> std::collections::HashMap<u64, &String> {
+    categories
+        .iter()
+        .filter_map(|c| Some((value_key(c.parse::<f64>().ok()?), c)))
+        .collect()
+}
+
+/// A number as a map key: its bits, with a negative zero read as zero.
+fn value_key(value: f64) -> u64 {
+    if value == 0.0 {
+        0.0_f64.to_bits()
+    } else {
+        value.to_bits()
+    }
 }
 
 /// Resolve the pixel position for a value given a channel's scale.
@@ -1041,9 +1151,9 @@ impl MarkRenderer for DotRenderer {
         let projection = channel_map.projection();
 
         let x_f64 = column_as_f64(batch, x_col);
-        let x_str = column_as_string(batch, x_col);
+        let x_str = position_keys(batch, x_col, x_scale);
         let y_f64 = column_as_f64(batch, y_col);
-        let y_str = column_as_string(batch, y_col);
+        let y_str = position_keys(batch, y_col, y_scale);
 
         let fill = NumberFill::of(scales, channel_map, batch);
         let n = batch.num_rows();
@@ -1109,9 +1219,9 @@ impl MarkRenderer for DotRenderer {
         };
 
         let x_f64 = column_as_f64(batch, x_col);
-        let x_str = column_as_string(batch, x_col);
+        let x_str = position_keys(batch, x_col, x_scale);
         let y_f64 = column_as_f64(batch, y_col);
-        let y_str = column_as_string(batch, y_col);
+        let y_str = position_keys(batch, y_col, y_scale);
 
         let fill = NumberFill::of(scales, channel_map, batch);
         let n = batch.num_rows();
@@ -1357,7 +1467,7 @@ impl MarkRenderer for BarRenderer {
             None => return,
         };
 
-        let band_str = match column_as_string(batch, band_col) {
+        let band_str = match position_keys(batch, band_col, band_scale) {
             Some(v) => v,
             None => return,
         };
@@ -1495,10 +1605,86 @@ impl MarkRenderer for BarRenderer {
 // LineRenderer
 // ---------------------------------------------------------------------------
 
-/// Renders line marks as a connected path in x-order.
-pub struct LineRenderer;
+/// Which axis a line mark is ordered along.
+#[derive(Clone, Copy)]
+pub enum LineAxis {
+    /// `line` and `lineY`: points joined in increasing x.
+    Y,
+    /// `lineX`: points joined in increasing y.
+    X,
+}
+
+/// Renders line marks as a connected path, ordered along the position axis.
+///
+/// A `stroke` bound to a column draws one path per distinct value of it, in the
+/// colour the stroke scale gives that value; any other line is a single path.
+pub struct LineRenderer {
+    /// Orientation — `Y` for line and lineY, `X` for lineX.
+    pub axis: LineAxis,
+    /// The continuous colour scheme a number-column stroke is painted along
+    /// (default viridis): the plot's `colorScheme`, carried by
+    /// [`configured_renderer`] as a dot's is.
+    pub scheme: SequentialScheme,
+}
 
 impl MarkRenderer for LineRenderer {
+    /// Put a number `stroke` column on a sequential ramp.
+    ///
+    /// Column inference types a number column `Linear`, which no colour is
+    /// read from, so a line split by a number would draw its series in one
+    /// ink (`line_y_splits_on_an_integer_stroke_in_one_colour_per_value`). As [`DotRenderer`] does for a number fill, the `Linear` is
+    /// replaced with a `Sequential` in the plot's scheme over the rows' extent, and a
+    /// `Sequential` already in the set has its domain widened. Any other
+    /// stroke scale, such as a categorical `Colour`, is left as it is.
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        _x_range: (f64, f64),
+        _y_range: (f64, f64),
+    ) {
+        if channel_map.colour(Channel::Stroke).is_some() {
+            return;
+        }
+        let Some(column) = channel_map.get(Channel::Stroke) else {
+            return;
+        };
+        if column_as_string(batch, column).is_some() {
+            return;
+        }
+        let Some(values) = column_as_f64(batch, column) else {
+            return;
+        };
+        let (lo, hi) = values
+            .iter()
+            .flatten()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+                (lo.min(v), hi.max(v))
+            });
+        if !(lo.is_finite() && hi.is_finite()) {
+            return;
+        }
+        let ramp = match scales.get(Channel::Stroke) {
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            }) => Scale::Sequential {
+                domain_min: domain_min.min(lo),
+                domain_max: domain_max.max(hi),
+                stops: stops.clone(),
+            },
+            Some(Scale::Linear { .. }) | None => Scale::Sequential {
+                domain_min: lo,
+                domain_max: hi,
+                stops: self.scheme.stops(),
+            },
+            Some(_) => return,
+        };
+        scales.insert(Channel::Stroke, ramp);
+    }
+
     fn render(
         &self,
         scene: &mut Scene,
@@ -1524,41 +1710,100 @@ impl MarkRenderer for LineRenderer {
             None => return,
         };
 
-        let x_f64 = column_as_f64(batch, x_col);
-        let y_f64 = column_as_f64(batch, y_col);
+        // A position is a number on a continuous scale and a category on a
+        // band one — a `DATE` axis is a band of days, read by its ISO spelling.
+        let (x_f64, x_str) = (
+            column_as_f64(batch, x_col),
+            position_keys(batch, x_col, x_scale),
+        );
+        let (y_f64, y_str) = (
+            column_as_f64(batch, y_col),
+            position_keys(batch, y_col, y_scale),
+        );
+        let position = |scale: &Scale,
+                        nums: &Option<Vec<Option<f64>>>,
+                        strs: &Option<Vec<Option<String>>>,
+                        i: usize| {
+            resolve_position(
+                scale,
+                nums.as_ref().and_then(|v| v[i]),
+                strs.as_ref().and_then(|v| v[i].as_deref()),
+            )
+        };
 
-        if x_f64.is_none() || y_f64.is_none() {
-            return;
-        }
-        let x_vals = x_f64.unwrap();
-        let y_vals = y_f64.unwrap();
-
-        // Collect valid (x_data, y_data) pairs, then sort by x.
-        let mut points: Vec<(f64, f64)> = Vec::new();
+        // A stroke column splits the rows into one series per value, in the
+        // order the values first appear, whatever the column's type: a number
+        // column is keyed by its values written out, so `stroke: year` draws
+        // a line per year. Each series keeps the first row it saw, which is
+        // the row its colour is resolved from.
+        let stroke_col = channel_map
+            .get(Channel::Stroke)
+            .filter(|_| channel_map.colour(Channel::Stroke).is_none());
+        let groups = stroke_col.and_then(|col| column_as_labels(batch, col));
+        let stroke_values = stroke_col.and_then(|col| column_as_f64(batch, col));
+        let mut series: Vec<(usize, Vec<(f64, f64)>)> = Vec::new();
+        let mut seen: std::collections::HashMap<Option<String>, usize> =
+            std::collections::HashMap::new();
         for i in 0..batch.num_rows() {
-            if let (Some(xv), Some(yv)) = (x_vals[i], y_vals[i]) {
-                let px = x_scale.map_f64(xv);
-                let py = y_scale.map_f64(yv);
-                points.push((px, py));
+            if let (Some(px), Some(py)) = (
+                position(x_scale, &x_f64, &x_str, i),
+                position(y_scale, &y_f64, &y_str, i),
+            ) {
+                let key = groups.as_ref().and_then(|g| g[i].clone());
+                let slot = *seen.entry(key).or_insert_with(|| {
+                    series.push((i, Vec::new()));
+                    series.len() - 1
+                });
+                series[slot].1.push((px, py));
             }
         }
 
-        // Sort by pixel x (preserves data x-order since the scale is monotonic).
-        points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        if points.len() < 2 {
-            return;
-        }
-
-        // Draw connected line segments.
-        let colour = constant_ink(channel_map, scales.ink());
         let stroke = kurbo::Stroke::new(LINE_STROKE_WIDTH);
-        for window in points.windows(2) {
-            let line = Line::new(
-                kurbo::Point::new(window[0].0, window[0].1),
-                kurbo::Point::new(window[1].0, window[1].1),
-            );
-            scene.stroke(&stroke, Affine::IDENTITY, colour, None, &line);
+        for (first_row, mut points) in series {
+            // Sort along the position axis (pixel order matches data order
+            // since the scale is monotonic): x for line and lineY, y for lineX.
+            match self.axis {
+                LineAxis::Y => points
+                    .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)),
+                LineAxis::X => points
+                    .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
+            }
+            if points.len() < 2 {
+                continue;
+            }
+
+            // Draw connected line segments.
+            let colour = if groups.is_some() {
+                // A number on the stroke ramp `augment_scales` built takes
+                // its colour by value; anything else resolves as before.
+                let on_ramp = scales.get(Channel::Stroke).filter(|scale| {
+                    matches!(
+                        scale,
+                        Scale::Sequential { .. }
+                            | Scale::Diverging { .. }
+                            | Scale::Quantized { .. }
+                    )
+                });
+                // A NaN or infinite value has no place on the ramp and
+                // falls back as a NULL does.
+                let value = stroke_values
+                    .as_ref()
+                    .and_then(|v| v[first_row])
+                    .filter(|v| v.is_finite());
+                match (on_ramp, value) {
+                    (Some(ramp), Some(value)) => Color::new(ramp.map_continuous(value)),
+                    _ => resolve_stroke_colour(scales, channel_map, batch, first_row),
+                }
+            } else {
+                constant_ink(channel_map, scales.ink())
+            };
+            for window in points.windows(2) {
+                let line = Line::new(
+                    kurbo::Point::new(window[0].0, window[0].1),
+                    kurbo::Point::new(window[1].0, window[1].1),
+                );
+                scene.stroke(&stroke, Affine::IDENTITY, colour, None, &line);
+            }
         }
     }
 }
@@ -2023,7 +2268,8 @@ impl MarkRenderer for RuleRenderer {
 const TEXT_MARK_SIZE: f32 = 11.0;
 
 /// Renders a `text` mark: a string label centred at each `(x, y)` data position.
-/// The label content comes from the `text` channel (a string column); `x`/`y`
+/// The label content comes from the `text` channel: a string column as it is,
+/// or a number column as `column_as_labels` writes its numbers; `x`/`y`
 /// position it (numeric or categorical, like the dot mark). A row with no label
 /// or an unresolvable position is skipped.
 pub struct TextRenderer;
@@ -2059,10 +2305,10 @@ impl MarkRenderer for TextRenderer {
         };
 
         let x_f64 = column_as_f64(batch, x_col);
-        let x_str = column_as_string(batch, x_col);
+        let x_str = position_keys(batch, x_col, x_scale);
         let y_f64 = column_as_f64(batch, y_col);
-        let y_str = column_as_string(batch, y_col);
-        let labels = match column_as_string(batch, text_col) {
+        let y_str = position_keys(batch, y_col, y_scale);
+        let labels = match column_as_labels(batch, text_col) {
             Some(v) => v,
             None => return,
         };
@@ -2100,6 +2346,97 @@ impl MarkRenderer for TextRenderer {
                 TextAnchor::Middle,
             );
         }
+    }
+}
+
+/// One column's values as a text mark's labels: [`column_as_string`]'s
+/// strings, or, for a number column, each number written out from the type
+/// the table holds it in.
+///
+/// An integer is written exactly; a float as the shortest decimal that reads
+/// back as the same value of its own width, so a `FLOAT` 67.85 is `67.85`
+/// and not the digits of its widening to a double, and a whole one without a
+/// fractional part (`2024`, and `0` for a negative zero); a `DECIMAL` as
+/// arrow writes it, with exactly its scale's digits (`12.10`). No grouping
+/// separator and no rounding. A NaN or infinite value gets no label, and
+/// neither does a timestamp column, which is not a number to a reader.
+pub(crate) fn column_as_labels(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<String>>> {
+    if let Some(strings) = column_as_string(batch, col_name) {
+        return Some(strings);
+    }
+    number_labels(
+        batch
+            .column(batch.schema().index_of(col_name).ok()?)
+            .as_ref(),
+    )
+}
+
+/// A number column's values written out as [`column_as_labels`] writes them,
+/// or `None` for a column that holds no numbers. The words a band over a
+/// number column names its categories by, so a bar finds its band by the same
+/// spelling the axis prints.
+pub(crate) fn number_labels(col: &dyn Array) -> Option<Vec<Option<String>>> {
+    use arrow::array::{
+        Decimal128Array, Float32Array, Int16Array, Int32Array, Int64Array, Int8Array, UInt16Array,
+        UInt32Array, UInt64Array, UInt8Array,
+    };
+
+    macro_rules! labels {
+        ($arr_ty:ty, $label:expr) => {{
+            let arr = col.as_any().downcast_ref::<$arr_ty>()?;
+            Some(
+                (0..arr.len())
+                    .map(|i| {
+                        if arr.is_null(i) {
+                            None
+                        } else {
+                            $label(arr.value(i))
+                        }
+                    })
+                    .collect(),
+            )
+        }};
+    }
+    fn whole<T: ToString>(v: T) -> Option<String> {
+        Some(v.to_string())
+    }
+
+    match col.data_type() {
+        DataType::Int8 => labels!(Int8Array, whole),
+        DataType::Int16 => labels!(Int16Array, whole),
+        DataType::Int32 => labels!(Int32Array, whole),
+        DataType::Int64 => labels!(Int64Array, whole),
+        DataType::UInt8 => labels!(UInt8Array, whole),
+        DataType::UInt16 => labels!(UInt16Array, whole),
+        DataType::UInt32 => labels!(UInt32Array, whole),
+        DataType::UInt64 => labels!(UInt64Array, whole),
+        DataType::Float64 => labels!(Float64Array, |v: f64| {
+            v.is_finite().then(|| {
+                if v == 0.0 {
+                    "0".to_string()
+                } else {
+                    v.to_string()
+                }
+            })
+        }),
+        DataType::Float32 => labels!(Float32Array, |v: f32| {
+            v.is_finite().then(|| {
+                if v == 0.0 {
+                    "0".to_string()
+                } else {
+                    v.to_string()
+                }
+            })
+        }),
+        DataType::Decimal128(..) => {
+            let arr = col.as_any().downcast_ref::<Decimal128Array>()?;
+            Some(
+                (0..arr.len())
+                    .map(|i| (!arr.is_null(i)).then(|| arr.value_as_string(i)))
+                    .collect(),
+            )
+        }
+        _ => None,
     }
 }
 
@@ -2944,8 +3281,9 @@ impl MarkRenderer for HeatmapRenderer {
 /// Renders one filled rect per (x category, y category) pair — a
 /// calendar-style value matrix (density marks). Cell v1 is
 /// PRE-AGGREGATED: one row per pair, with a numeric `fill:` column carrying
-/// the cell's value. Both axes ride the existing per-channel Band inference;
-/// each rect is centred via `map_category` and sized via `band_width`.
+/// the cell's value. Both axes ride the per-channel Band inference, a number
+/// column included ([`crate::channel::band_channels_of`]); each rect is
+/// centred via `map_category` and sized via `band_width`.
 ///
 /// A NUMERIC fill maps through the Fill [`Scale::Sequential`] built in
 /// [`Self::augment_scales`] — generic column inference types a numeric fill
@@ -2975,12 +3313,14 @@ impl MarkRenderer for CellRenderer {
         else {
             return;
         };
-        // Cell v1 is categorical × categorical: both axes must be Band scales
-        // with string categories. band_width is None on non-Band scales, so a
-        // numeric axis degrades to rendering nothing rather than misplacing.
+        // Both axes are bands: a number column on either is banded by scale
+        // inference, as Plot bands it. An axis the plot wrote a continuous
+        // scale for has no band width, so the cell draws nothing rather than
+        // misplacing, and the composition names it as a mark that drew
+        // nothing.
         let (Some(x_strs), Some(y_strs)) = (
-            column_as_string(batch, x_col),
-            column_as_string(batch, y_col),
+            position_keys(batch, x_col, x_scale),
+            position_keys(batch, y_col, y_scale),
         ) else {
             return;
         };
@@ -5486,9 +5826,27 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
         (MarkKind::Circle, Box::new(DotRenderer::default())),
         (MarkKind::BarX, Box::new(BarRenderer { axis: BarAxis::X })),
         (MarkKind::BarY, Box::new(BarRenderer { axis: BarAxis::Y })),
-        (MarkKind::Line, Box::new(LineRenderer)),
-        (MarkKind::LineX, Box::new(LineRenderer)),
-        (MarkKind::LineY, Box::new(LineRenderer)),
+        (
+            MarkKind::Line,
+            Box::new(LineRenderer {
+                axis: LineAxis::Y,
+                scheme: Default::default(),
+            }),
+        ),
+        (
+            MarkKind::LineX,
+            Box::new(LineRenderer {
+                axis: LineAxis::X,
+                scheme: Default::default(),
+            }),
+        ),
+        (
+            MarkKind::LineY,
+            Box::new(LineRenderer {
+                axis: LineAxis::Y,
+                scheme: Default::default(),
+            }),
+        ),
         (
             MarkKind::AreaY,
             Box::new(AreaRenderer { axis: AreaAxis::Y }),
@@ -5588,6 +5946,14 @@ pub fn configured_renderer(
                 colour_scale: ColourScale::default(),
             }))
         }
+        MarkKind::Line | MarkKind::LineY => Some(Box::new(LineRenderer {
+            axis: LineAxis::Y,
+            scheme,
+        })),
+        MarkKind::LineX => Some(Box::new(LineRenderer {
+            axis: LineAxis::X,
+            scheme,
+        })),
         MarkKind::Raster => Some(Box::new(RasterRenderer { scheme })),
         MarkKind::Heatmap => Some(Box::new(HeatmapRenderer { scheme, bandwidth })),
         MarkKind::Cell => Some(Box::new(CellRenderer { scheme })),
@@ -5804,6 +6170,52 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
+
+    /// An `INTEGER` layer and a `DECIMAL(4,1)` layer on one number band: one
+    /// band per value, named by the first spelling met, and both layers find
+    /// the same slot for 3.
+    #[test]
+    fn layers_at_two_number_types_share_one_band_per_value() {
+        let ints = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("m", DataType::Int32, false)])),
+            vec![Arc::new(arrow::array::Int32Array::from(vec![1, 3]))],
+        )
+        .unwrap();
+        let decimals = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "m",
+                DataType::Decimal128(4, 1),
+                false,
+            )])),
+            vec![Arc::new(
+                arrow::array::Decimal128Array::from(vec![30_i128, 20])
+                    .with_precision_and_scale(4, 1)
+                    .unwrap(),
+            )],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "m".to_string());
+        cm.set_wants_band(Channel::X);
+        let scales = crate::scale::infer_scales_multi(
+            &[(&ints, &cm), (&decimals, &cm)],
+            (0.0, 300.0),
+            (0.0, 100.0),
+        );
+        let band = scales.get(Channel::X).expect("an x scale");
+        let Scale::Band { categories, .. } = band else {
+            panic!("a band: {band:?}");
+        };
+        assert_eq!(categories, &["1", "2.0", "3"]);
+        let int_keys = position_keys(&ints, "m", band).unwrap();
+        let dec_keys = position_keys(&decimals, "m", band).unwrap();
+        assert_eq!(int_keys, [Some("1".into()), Some("3".into())]);
+        assert_eq!(
+            dec_keys,
+            [Some("3".into()), Some("2.0".into())],
+            "the DECIMAL 3.0 finds the band its value already has"
+        );
+    }
 
     #[test]
     fn dot_renderer_positions_circles() {
@@ -6069,7 +6481,10 @@ mod tests {
         let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         let mut scene = Scene::new();
-        let renderer = LineRenderer;
+        let renderer = LineRenderer {
+            axis: LineAxis::Y,
+            scheme: Default::default(),
+        };
         renderer.render(&mut scene, &batch, &cm, &scales, None);
 
         // Line renderer should produce stroke operations for 3 line segments (4 points).
@@ -6078,6 +6493,282 @@ mod tests {
             !encoding.path_tags.is_empty(),
             "scene should have path tags after rendering 4-point line"
         );
+    }
+
+    // --- mark breadth: lineY / lineX ---
+
+    /// A batch of `(g, x, y)` rows for the oriented-line tests.
+    fn grouped_batch(rows: &[(&str, f64, f64)]) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("g", DataType::Utf8, false),
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                )),
+                Arc::new(Float64Array::from(
+                    rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                )),
+                Arc::new(Float64Array::from(
+                    rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// Render `batch` through a `LineRenderer` with `stroke` bound to `g`,
+    /// over scales fixed by `domain_rows` so two batches share a mapping.
+    fn render_lines(
+        batch: &RecordBatch,
+        domain_rows: &RecordBatch,
+        axis: LineAxis,
+        grouped: bool,
+    ) -> Scene {
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        if grouped {
+            cm.insert(Channel::Stroke, "g".to_string());
+        }
+        let scales = infer_scales(domain_rows, &cm, (40.0, 600.0), (450.0, 20.0));
+        let mut scene = Scene::new();
+        LineRenderer {
+            axis,
+            scheme: Default::default(),
+        }
+        .render(&mut scene, batch, &cm, &scales, None);
+        scene
+    }
+
+    #[test]
+    fn line_y_draws_one_polyline_per_stroke_value_in_x_order() {
+        // Three countries over five years, each series' rows shuffled.
+        let ordered: Vec<(&str, f64, f64)> = [("a", 1), ("b", 2), ("c", 3)]
+            .iter()
+            .flat_map(|&(g, k)| (0..5).map(move |t| (g, t as f64, (t * k + k) as f64)))
+            .collect();
+        let mut shuffled = ordered.clone();
+        shuffled.reverse();
+        shuffled.swap(1, 7);
+
+        let ordered_batch = grouped_batch(&ordered);
+        let shuffled_batch = grouped_batch(&shuffled);
+        let sorted = render_lines(&ordered_batch, &ordered_batch, LineAxis::Y, true);
+        let unsorted = render_lines(&shuffled_batch, &ordered_batch, LineAxis::Y, true);
+
+        // 3 series x 4 segments, not one 14-segment path across all rows.
+        assert_eq!(count_scene_paths(&sorted), 12);
+        assert_eq!(count_scene_paths(&unsorted), 12);
+
+        // The same geometry per series regardless of row order: joining in
+        // increasing x is the renderer's job, not the data's.
+        let lines = |scene: &Scene| {
+            let mut segs = scene.encoding().path_data.clone();
+            segs.sort_unstable();
+            segs
+        };
+        assert_eq!(lines(&sorted), lines(&unsorted));
+
+        // Without a stroke column the same rows are one series.
+        let single = render_lines(&ordered_batch, &ordered_batch, LineAxis::Y, false);
+        assert_eq!(count_scene_paths(&single), 14);
+    }
+
+    #[test]
+    fn line_x_joins_points_in_increasing_y() {
+        // x zig-zags while y rises, so only y order gives a clean polyline.
+        let ordered = [
+            ("a", 5.0, 0.0),
+            ("a", 1.0, 1.0),
+            ("a", 4.0, 2.0),
+            ("a", 2.0, 3.0),
+        ];
+        let shuffled = [
+            ("a", 4.0, 2.0),
+            ("a", 5.0, 0.0),
+            ("a", 2.0, 3.0),
+            ("a", 1.0, 1.0),
+        ];
+        let ordered_batch = grouped_batch(&ordered);
+        let shuffled_batch = grouped_batch(&shuffled);
+
+        let by_y = render_lines(&ordered_batch, &ordered_batch, LineAxis::X, true);
+        let by_y_shuffled = render_lines(&shuffled_batch, &ordered_batch, LineAxis::X, true);
+        assert_eq!(count_scene_paths(&by_y), 3);
+        assert_eq!(
+            by_y.encoding().path_data,
+            by_y_shuffled.encoding().path_data,
+            "lineX order must not depend on row order"
+        );
+
+        // lineY over the same rows joins in x order, which is a different path.
+        let by_x = render_lines(&ordered_batch, &ordered_batch, LineAxis::Y, true);
+        assert_ne!(by_x.encoding().path_data, by_y.encoding().path_data);
+    }
+
+    #[test]
+    fn line_y_splits_on_a_boolean_stroke_and_reads_a_date_x() {
+        use arrow::array::{BooleanArray, Date32Array};
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Date32, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new("g", DataType::Boolean, false),
+        ]));
+        // Two series of three points, interleaved and out of date order.
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Date32Array::from(vec![
+                    19060, 19000, 19031, 19000, 19060, 19031,
+                ])),
+                Arc::new(Float64Array::from(vec![1.0, 5.0, 2.0, 9.0, 4.0, 6.5])),
+                Arc::new(BooleanArray::from(vec![
+                    true, true, true, false, false, false,
+                ])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.insert(Channel::Stroke, "g".to_string());
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        assert!(
+            matches!(scales.get(Channel::Stroke), Some(Scale::Colour { categories, .. }) if categories.len() == 2),
+            "a boolean stroke gets a two-category colour scale"
+        );
+
+        let mut scene = Scene::new();
+        LineRenderer {
+            axis: LineAxis::Y,
+            scheme: Default::default(),
+        }
+        .render(&mut scene, &batch, &cm, &scales, None);
+        // Two series, two segments each; one tangled series would be five.
+        assert_eq!(count_scene_paths(&scene), 4);
+    }
+
+    #[test]
+    fn line_y_splits_on_an_integer_stroke_in_one_colour_per_value() {
+        use arrow::array::Int32Array;
+        // One line per year over three months, the rows interleaved.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new("g", DataType::Int32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0])),
+                Arc::new(Float64Array::from(vec![5.0, 1.0, 6.0, 2.0, 4.0, 3.0])),
+                Arc::new(Int32Array::from(vec![2023, 2024, 2023, 2024, 2023, 2024])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.insert(Channel::Stroke, "g".to_string());
+        let (x_range, y_range) = ((40.0, 600.0), (450.0, 20.0));
+        let renderer = LineRenderer {
+            axis: LineAxis::Y,
+            scheme: Default::default(),
+        };
+        let mut scales = infer_scales(&batch, &cm, x_range, y_range);
+        renderer.augment_scales(&mut scales, &batch, &cm, x_range, y_range);
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        // Two series of two segments; one zigzag through all six rows is five.
+        assert_eq!(count_scene_paths(&scene), 4);
+        let colours: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert_eq!(colours.len(), 2, "one colour per year: {colours:?}");
+
+        // A NaN first row falls back as a NULL does, rather than painting NaN.
+        let nan = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("x", DataType::Float64, false),
+                Field::new("y", DataType::Float64, false),
+                Field::new("g", DataType::Float64, false),
+            ])),
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0, 4.0])),
+                Arc::new(Float64Array::from(vec![f64::NAN, f64::NAN, 1.0, 1.0])),
+            ],
+        )
+        .unwrap();
+        let mut scales = infer_scales(&nan, &cm, x_range, y_range);
+        renderer.augment_scales(&mut scales, &nan, &cm, x_range, y_range);
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &nan, &cm, &scales, None);
+        let fallback = resolve_stroke_colour(&scales, &cm, &nan, 0);
+        assert!(
+            fallback.components.iter().all(|c| c.is_finite()),
+            "{fallback:?}"
+        );
+        let words: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        let rgba = fallback.premultiply().to_rgba8();
+        assert!(
+            words.contains(&u32::from_le_bytes([rgba.r, rgba.g, rgba.b, rgba.a])),
+            "the NaN series wears the fallback colour: {words:?}"
+        );
+    }
+
+    #[test]
+    fn line_and_line_y_lay_out_out_of_order_dates_in_time_order() {
+        use arrow::array::Date32Array;
+        let make = |days: Vec<i32>, ys: Vec<f64>| {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("x", DataType::Date32, false),
+                Field::new("y", DataType::Float64, false),
+            ]));
+            RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(Date32Array::from(days)),
+                    Arc::new(Float64Array::from(ys)),
+                ],
+            )
+            .unwrap()
+        };
+        let ordered = make(vec![19000, 19031, 19060], vec![1.0, 5.0, 2.0]);
+        let shuffled = make(vec![19060, 19000, 19031], vec![2.0, 1.0, 5.0]);
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+
+        // The band's categories, so the axis, run in ascending date order.
+        let scales = infer_scales(&shuffled, &cm, (40.0, 600.0), (450.0, 20.0));
+        let Some(Scale::Band { categories, .. }) = scales.get(Channel::X) else {
+            panic!("a DATE axis is a band");
+        };
+        let mut ascending = categories.clone();
+        ascending.sort();
+        assert_eq!(categories, &ascending);
+        assert_eq!(categories.first().map(String::as_str), Some("2022-01-08"));
+
+        // And both line kinds draw the shuffled rows exactly as the ordered ones.
+        let registry = default_renderers();
+        for kind in [MarkKind::Line, MarkKind::LineY] {
+            let renderer = find_renderer(&registry, kind).expect("registered");
+            let draw = |batch: &RecordBatch| {
+                let mut scene = Scene::new();
+                renderer.render(&mut scene, batch, &cm, &scales, None);
+                scene.encoding().path_data.clone()
+            };
+            let (a, b) = (draw(&ordered), draw(&shuffled));
+            assert!(!a.is_empty(), "{kind:?} draws on a date axis");
+            assert_eq!(a, b, "{kind:?} must not depend on row order");
+        }
     }
 
     // --- mark breadth: areaY ---
@@ -6261,6 +6952,135 @@ mod tests {
             5,
             "one glyph per label character"
         );
+    }
+
+    #[test]
+    fn a_text_mark_labels_each_row_with_its_number_as_written() {
+        use arrow::array::Int64Array;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new("year", DataType::Int64, false),
+            Field::new("paid", DataType::Float64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+                Arc::new(Int64Array::from(vec![2024, 7, -3])),
+                Arc::new(Float64Array::from(vec![Some(67.85), Some(12.0), None])),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            column_as_labels(&batch, "year"),
+            Some(vec![
+                Some("2024".to_string()),
+                Some("7".to_string()),
+                Some("-3".to_string())
+            ])
+        );
+        assert_eq!(
+            column_as_labels(&batch, "paid"),
+            Some(vec![
+                Some("67.85".to_string()),
+                Some("12".to_string()),
+                None
+            ])
+        );
+
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.insert(Channel::Text, "year".to_string());
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        let mut scene = Scene::new();
+        TextRenderer.render(&mut scene, &batch, &cm, &scales, None);
+        // "2024" + "7" + "-3": a number column draws as the strings above.
+        assert_eq!(count_scene_glyphs(&scene), 7, "one glyph per character");
+    }
+
+    #[test]
+    fn a_number_label_is_written_from_the_type_the_table_holds_it_in() {
+        use arrow::array::{Decimal128Array, Float32Array, Int64Array};
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("f32", DataType::Float32, false),
+            Field::new("big", DataType::Int64, false),
+            Field::new("f64", DataType::Float64, false),
+            Field::new("dec", DataType::Decimal128(10, 2), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float32Array::from(vec![67.85_f32, -0.0, f32::NAN])),
+                Arc::new(Int64Array::from(vec![9_007_199_254_740_993, i64::MIN, 0])),
+                Arc::new(Float64Array::from(vec![-0.0, 0.1 + 0.2, f64::INFINITY])),
+                Arc::new(
+                    Decimal128Array::from(vec![1210, -5, 0])
+                        .with_precision_and_scale(10, 2)
+                        .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        let labels = |col| column_as_labels(&batch, col).expect("labels");
+        let some = |v: &[&str]| v.iter().map(|s| Some((*s).to_string())).collect::<Vec<_>>();
+        assert_eq!(
+            labels("f32"),
+            [Some("67.85".into()), Some("0".into()), None]
+        );
+        assert_eq!(
+            labels("big"),
+            some(&["9007199254740993", "-9223372036854775808", "0"])
+        );
+        assert_eq!(
+            labels("f64"),
+            [Some("0".into()), Some("0.30000000000000004".into()), None]
+        );
+        assert_eq!(labels("dec"), some(&["12.10", "-0.05", "0.00"]));
+
+        // A scale of zero or below, and the widest value a DECIMAL holds.
+        let wide = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("whole", DataType::Decimal128(38, 0), false),
+                Field::new("hundreds", DataType::Decimal128(10, -2), false),
+            ])),
+            vec![
+                Arc::new(
+                    Decimal128Array::from(vec![42, -(10_i128.pow(38) - 1)])
+                        .with_precision_and_scale(38, 0)
+                        .unwrap(),
+                ),
+                Arc::new(
+                    Decimal128Array::from(vec![42, 10_i128.pow(9)])
+                        .with_precision_and_scale(10, -2)
+                        .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        let wide_labels = |col| column_as_labels(&wide, col).expect("labels");
+        assert_eq!(
+            wide_labels("whole"),
+            some(&["42", "-99999999999999999999999999999999999999"])
+        );
+        assert_eq!(wide_labels("hundreds"), some(&["4200", "100000000000"]));
+    }
+
+    #[test]
+    fn a_text_mark_does_not_label_a_timestamp_with_its_microseconds() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "at",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(TimestampMicrosecondArray::from(vec![1_000_000]))],
+        )
+        .unwrap();
+        assert_eq!(column_as_labels(&batch, "at"), None);
     }
 
     // --- HighlightState ---

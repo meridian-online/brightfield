@@ -95,7 +95,8 @@ fn reservoir_tablesample_reshuffles_when_the_filter_changes() {
     // were a property of the ROW would be almost entirely retained.
     // A row-determined sample would retain ~all of `narrow`; chance alone
     // retains ~10% (1000 picks out of 10000 rows). Measured on the bundled
-    // v1.5.2: 102/1000 — chance, not retention.
+    // v1.5.6: 102, 114 and 98 of 1000 over three runs (the reservoir is
+    // unseeded) — chance, not retention.
     let kept = narrow.iter().filter(|id| wide.contains(id)).count();
     assert!(
         kept * 2 < narrow.len(),

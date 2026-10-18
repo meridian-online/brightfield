@@ -43,7 +43,7 @@ pub use nearest::{find_nearest, NearestHit, NearestMode};
 pub use scale::{infer_scales_multi, Scale, ScaleSet, ViewExtent};
 pub use scene::{build_chart_scene, build_multi_mark_scene};
 pub use selection::{render_committed_selection, CommittedSelection, Selected};
-pub use title::{grow_margins, resolve_titles, ResolvedTitles};
+pub use title::{grow_margins, grow_margins_at, resolve_titles, ResolvedTitles};
 pub use tooltip::TooltipContent;
 pub use transition::{Transition, TransitionState};
 pub use vello_renderer::VelloRenderer;

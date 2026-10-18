@@ -11,7 +11,10 @@
 //! golden `dashboard.yaml` and the simple examples do not exercise them). A
 //! plot's `colorDomain` and `colorRange` are ported for its dot marks: the ends
 //! of a number ramp, the order of a string column's categories and the colours
-//! both draw in. Mosaic's `colorDomain: Fixed` is not read. A plot's
+//! both draw in. A line, an area, a bar, a rectangle, a cell or text takes the
+//! categories and colours they write for a categorical colour scale and leaves
+//! a fill ramp alone; a line split by a number `stroke` column takes them all
+//! on its stroke ramp. Mosaic's `colorDomain: Fixed` is not read. A plot's
 //! `colorScale: quantize` with `colorN` cuts a dot's number ramp into steps.
 //! Standalone-legend relocation is ported for one placement: a colour
 //! legend under the plot it is for in a `vconcat` is drawn in the band the layout
@@ -58,14 +61,15 @@ use brightfield_render::scale::{
     SequentialScheme, ViewExtent,
 };
 use brightfield_render::scene::{
-    axis_ends_apply, axis_keys_apply, build_multi_mark_scene_pinned, colour_override_applies,
-    colour_reverse_applies, compose_dashboard, plot_axis_targets, unrestorable_under_sampling,
-    written_ends_held, ChartData, UnsampledDomains,
+    axis_ends_apply, axis_keys_apply, colour_categories_apply, colour_override_applies,
+    colour_reverse_applies, compose_dashboard, draw_plot, plot_axis_targets,
+    unrestorable_under_sampling, why_drew_nothing, written_ends_held, ChartData, DrawnPlot,
+    UnsampledDomains,
 };
 use brightfield_render::selection::{
     committed_selection_rect, render_committed_selection, CommittedSelection, Selected,
 };
-use brightfield_render::{grow_margins, resolve_titles};
+use brightfield_render::{grow_margins_at, resolve_titles};
 use brightfield_spec::analysis::{
     analyse_spec, build_brushable_bindings, BrushKind, ComponentPath,
 };
@@ -213,8 +217,10 @@ pub struct PlotHandle {
     /// legend carries over its ramp or its swatches. A fill the transform
     /// produced is the reserved count column (`fill: { count: }`), and a raster
     /// or a heatmap sets a fill channel of neither kind. [`crate::legend::legend_name`]
-    /// names those legends. A plot whose fill is a colour literal or is not set
-    /// holds `None`.
+    /// names those legends. When no mark of the plot fills by a column but one
+    /// colours a `stroke` column, a line per category, the stroke column is
+    /// given instead. A plot whose
+    /// fill is a colour literal or is not set holds `None`.
     pub fill_column: Option<String>,
     /// **The file puts a colour legend on this plot** — its own `legend: color`
     /// item, a standalone one that names it by `for:`, or a standalone one with
@@ -968,8 +974,24 @@ pub fn compose_spec_str_at(
     base_dir: Option<&Path>,
     viewport: Rect,
 ) -> Result<Composed, String> {
+    compose_spec_str_in(source, base_dir, viewport, Mode::Light)
+}
+
+/// [`compose_spec_str_at`] with the ink resolved for `mode`, for a one-shot
+/// picture drawn in a window of either mode: the reason
+/// [`compose_spec_in_mode`] gives, over spec text.
+///
+/// # Errors
+///
+/// As [`compose_spec`].
+pub fn compose_spec_str_in(
+    source: &str,
+    base_dir: Option<&Path>,
+    viewport: Rect,
+    mode: Mode,
+) -> Result<Composed, String> {
     let parsed = parse_spec(source, Format::Yaml).map_err(|e| format!("parse error: {e}"))?;
-    compose(parsed, None, base_dir, None, viewport, Mode::Light)
+    compose(parsed, None, base_dir, None, viewport, mode)
 }
 
 /// The name a diagnostic cites for a spec loaded from a path: its file name,
@@ -2208,9 +2230,10 @@ fn compose_from_results(
             }
         };
         batches.push(batch);
-        channel_maps.push(ChannelMap::from_mark_in(
+        channel_maps.push(ChannelMap::from_mark_in_spec(
             marks[i],
             mark_plots.get(i).copied().flatten(),
+            &spec.params,
         ));
         kinds.push(marks[i].kind);
     }
@@ -2324,6 +2347,7 @@ fn compose_from_results(
             let mut plot_y_column: Option<String> = None;
             let mut plot_group_column: Option<String> = None;
             let mut plot_fill_column: Option<String> = None;
+            let mut plot_stroke_column: Option<String> = None;
             // The marks this plot DREW, in draw order — the candidates a hover can
             // read. A mark the engine refused is not on screen, so a pointer
             // cannot be resting on it, and offering it here would hand a reader a
@@ -2353,6 +2377,9 @@ fn compose_from_results(
                 }
                 if plot_fill_column.is_none() {
                     plot_fill_column = channel_maps[mi].get(Channel::Fill).map(str::to_string);
+                }
+                if plot_stroke_column.is_none() {
+                    plot_stroke_column = channel_maps[mi].get(Channel::Stroke).map(str::to_string);
                 }
                 // A mark is sampled exactly when the session produced unsampled
                 // facts for it; `drawn` is what actually arrived, `of` is what the
@@ -2459,6 +2486,10 @@ fn compose_from_results(
                                 if plot_fill_column.is_none() {
                                     plot_fill_column =
                                         channel_maps[mi].get(Channel::Fill).map(str::to_string);
+                                }
+                                if plot_stroke_column.is_none() {
+                                    plot_stroke_column =
+                                        channel_maps[mi].get(Channel::Stroke).map(str::to_string);
                                 }
                                 chart_data.push(ChartData {
                                     batch: &synthetic_batches[k],
@@ -2569,7 +2600,11 @@ fn compose_from_results(
             let plot_sample = chart_data.iter().find_map(|d| d.sample);
             let margins = rows_past_band_margins(
                 sample_band_margins(
-                    grow_margins(Margins::default().with_declared(declared_margins), &titles),
+                    grow_margins_at(
+                        Margins::default().with_declared(declared_margins),
+                        &titles,
+                        rect.width,
+                    ),
                     plot_sample.is_some(),
                 ),
                 &titles,
@@ -2580,9 +2615,11 @@ fn compose_from_results(
             for d in &mut chart_data {
                 d.layout = layout;
             }
-            // A title is drawn across the top margin with no width limit, so the
-            // band at a titled plot's right starts under that row rather than
-            // beside it, where its legend would cover the end of a long title.
+            // A title is the plot's heading, set across the plot's whole width,
+            // the band at its right included, and wrapped onto a second line
+            // when it is wider than that; so the band at a titled plot's right
+            // starts under the heading's lines rather than beside them, where
+            // its legend would cover the end of a long title.
             let legend_right = match legend_right {
                 Some(band) if titles.plot.is_some() => {
                     Some(crate::legend::below_title(band, layout.plot_y_start()))
@@ -2655,12 +2692,23 @@ fn compose_from_results(
             // `colorDomain` and `colorRange` — and the steps it cuts the ramp into,
             // `colorScale: quantize` with `colorN`, read from the spec this
             // composition draws so a param that holds any of them is read as it
-            // stands now. The dots are the marks that take them, as they are
-            // `colorReverse`'s: a plot with no dot among its marks keeps the ramp it
-            // draws today (`a_cell_a_heatmap_and_a_raster_keep_their_ramp`).
+            // stands now. The dots take all of them, as they do `colorReverse`: a
+            // plot with no dot among its marks keeps the ramp it draws today
+            // (`a_cell_a_heatmap_and_a_raster_keep_their_ramp`). A line, an area, a
+            // bar, a rectangle, a cell or text takes the categories and colours the
+            // plot writes for a categorical colour scale and leaves a fill ramp
+            // alone (`a_line_with_a_written_colour_range_draws_it`); a line split
+            // by a number stroke column takes them all on its stroke ramp.
             let colour_override = plot_node
-                .filter(|_| colour_override_applies(&plot_marks))
-                .map(|node| ColourOverride::of_plot(node, &spec.params))
+                .and_then(|node| {
+                    if colour_override_applies(&plot_marks) {
+                        Some(ColourOverride::of_plot(node, &spec.params))
+                    } else if colour_categories_apply(&plot_marks) {
+                        Some(ColourOverride::of_plot(node, &spec.params).categorical_only())
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or_default();
 
             let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
@@ -2669,7 +2717,11 @@ fn compose_from_results(
             // rect, from the scales returned here — one legend per chart, one
             // source of truth, and no in-plot swatch block a margin copy could
             // drift from or that could sit on top of the marks.
-            let (mut scene, scales) = build_multi_mark_scene_pinned(
+            let DrawnPlot {
+                mut scene,
+                scales,
+                blank,
+            } = draw_plot(
                 &refs,
                 false,
                 &titles,
@@ -2684,6 +2736,20 @@ fn compose_from_results(
                 colour_reverse,
                 ink,
             );
+            // A layer that had rows and put no ink down leaves a plot with axes
+            // and nothing in them unless it is named; the note says which mark
+            // and why, on the tile and on an export's stderr alike.
+            let blank_layers: Vec<ParseWarning> = blank
+                .iter()
+                .filter(|&&k| refs[k].batch.num_rows() > 0)
+                .map(|&k| ParseWarning::MarkDrewNothing {
+                    mark: plot_marks[k].wire_name().to_string(),
+                    reason: why_drew_nothing(refs[k], &scales, plot_marks[k]),
+                })
+                .collect();
+            // A line over a `DATE` axis draws its days one band apart; when the
+            // days are not evenly spaced the note says the gaps are not to scale.
+            let uneven = uneven_days(&refs, &plot_marks, &scales);
             // Where the axes just drawn put their title, labels and line, taken
             // from the routine that drew them and kept on the plot's handle.
             let axes = plot_axis_targets(&refs, &titles, tick_counts, &tick_formats, &scales);
@@ -2715,6 +2781,9 @@ fn compose_from_results(
                     // the parser could not, having no value to judge.
                     let mut found = param_held_axis_warnings(node, &spec.params);
                     found.extend(param_held_colour_warnings(node, &spec.params));
+                    found.extend(repeated_colours(&scales, &colour_override));
+                    found.extend(blank_layers.iter().cloned());
+                    found.extend(uneven.iter().cloned());
                     found.extend(crossed_tick_formats(node, spec, &tick_formats, &scales));
                     found.extend(inert_axis_instructions(
                         &plot_label(&plot.path, node),
@@ -2799,7 +2868,9 @@ fn compose_from_results(
                 x_column: plot_x_column,
                 y_column: plot_y_column,
                 group_column: plot_group_column,
-                fill_column: plot_fill_column,
+                // The legend scale is the plot's fill scale, or its stroke scale
+                // when no mark fills, so the name follows the same order.
+                fill_column: plot_fill_column.or(plot_stroke_column),
                 stack_offset: plot_nodes
                     .iter()
                     .find(|(p, _)| *p == plot.path)
@@ -2891,6 +2962,111 @@ fn compose_from_results(
         // already fetched, and has no session to query.
         rows: None,
     })
+}
+
+/// The note a plot owes when its categorical colour scale has more categories
+/// than the palette has colours: the scale starts the palette again, so two
+/// categories wear one colour. A plot that writes its own `colorRange` chose its
+/// colours and gets no note (`an_explicit_colour_range_carries_no_note`). Fill and stroke are judged alike, and a plot that
+/// colours both over the same categories gets the one note, as the caller keeps
+/// a warning once.
+fn repeated_colours(scales: &ScaleSet, written: &ColourOverride) -> Vec<ParseWarning> {
+    if written.range.is_some() {
+        return Vec::new();
+    }
+    [Channel::Fill, Channel::Stroke]
+        .into_iter()
+        .filter_map(|channel| match scales.get(channel)? {
+            Scale::Colour {
+                categories,
+                palette,
+            } if categories.len() > palette.len() => Some(ParseWarning::ColoursRepeat {
+                categories: categories.len(),
+                palette: palette.len(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The note a line owes for each `DATE` axis whose days are not evenly spaced.
+///
+/// A `DATE` takes a band scale, one band per distinct day, so a line through
+/// the band centres draws the gaps between consecutive days at one width.
+/// That is the picture when the days are the same number of days apart (a
+/// day, a week), or fall on the same day of every Nth month, held to the
+/// month's last day in a shorter month, which count as even though those
+/// months differ in length. Other days (weekdays only, a missing month,
+/// event dates) are named, since the axis misstates the intervals between
+/// them (`a_line_over_unevenly_spaced_days_says_they_are_drawn_evenly`,
+/// `a_line_over_daily_or_monthly_days_says_nothing_of_spacing`).
+fn uneven_days(
+    refs: &[&ChartData<'_>],
+    marks: &[MarkKind],
+    scales: &ScaleSet,
+) -> Vec<ParseWarning> {
+    let mut out = Vec::new();
+    for (entry, &kind) in refs.iter().zip(marks) {
+        if !matches!(kind, MarkKind::Line | MarkKind::LineY | MarkKind::LineX) {
+            continue;
+        }
+        for channel in [Channel::X, Channel::Y] {
+            let Some(col) = entry.channel_map.get(channel) else {
+                continue;
+            };
+            let is_date = entry
+                .batch
+                .schema()
+                .field_with_name(col)
+                .is_ok_and(|f| matches!(f.data_type(), arrow::datatypes::DataType::Date32));
+            let Some(Scale::Band { categories, .. }) = scales.get(channel) else {
+                continue;
+            };
+            if !is_date {
+                continue;
+            }
+            let days: Vec<chrono::NaiveDate> = categories
+                .iter()
+                .filter_map(|c| chrono::NaiveDate::parse_from_str(c, "%Y-%m-%d").ok())
+                .collect();
+            if !days_evenly_spaced(&days) {
+                out.push(ParseWarning::UnevenDays {
+                    mark: kind.wire_name().to_string(),
+                    channel: channel.wire_name().to_string(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Whether consecutive `days`, in order, are all the same number of days apart,
+/// or fall on the same day of every Nth month. That day is the latest day of
+/// the month any of them falls on, held to a shorter month's last day, so
+/// 30 January, 29 February and 30 March are a month apart, and so are the
+/// last days of successive months.
+fn days_evenly_spaced(days: &[chrono::NaiveDate]) -> bool {
+    use chrono::Datelike;
+    if days.len() < 3 {
+        return true;
+    }
+    let gaps: Vec<i64> = days.windows(2).map(|w| (w[1] - w[0]).num_days()).collect();
+    if gaps.iter().all(|&g| g == gaps[0]) {
+        return true;
+    }
+    let anchor = days.iter().map(Datelike::day).max().unwrap_or(1);
+    let last_day = |d: &chrono::NaiveDate| {
+        (28..=31)
+            .rev()
+            .find(|&day| d.with_day(day).is_some())
+            .unwrap_or(28)
+    };
+    let same_place = days.iter().all(|d| d.day() == anchor.min(last_day(d)));
+    let months: Vec<i32> = days
+        .windows(2)
+        .map(|w| (w[1].year() - w[0].year()) * 12 + w[1].month() as i32 - w[0].month() as i32)
+        .collect();
+    same_place && months[0] > 0 && months.iter().all(|&m| m == months[0])
 }
 
 /// The warnings for a plot's tick formats that sit on an axis of the other kind:

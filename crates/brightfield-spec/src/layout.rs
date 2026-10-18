@@ -539,6 +539,12 @@ pub const DEFAULT_MARGIN_LEFT: f64 = 40.0;
 /// crate's `title::TITLE_BAND` is this constant, tied there to its title font.
 pub const TITLE_BAND: f64 = 20.0;
 
+/// The band a plot's own `title:` adds to its top margin: the title is the
+/// chart's heading, set larger than an axis title and with room beneath it
+/// before the plot. The render crate's `title::PLOT_TITLE_BAND` is this
+/// constant, tied there to its heading font.
+pub const PLOT_TITLE_BAND: f64 = 30.0;
+
 /// **Why this plot has no data area to draw in**, or `None` when it has one.
 ///
 /// Two faults, in the order they are checked:
@@ -611,7 +617,11 @@ pub fn plot_frame_fault(plot: &PlotNode) -> Option<FrameFault> {
         "marginTop",
         declared.top,
         DEFAULT_MARGIN_TOP,
-        band(titles.plot.is_some()),
+        if titles.plot.is_some() {
+            PLOT_TITLE_BAND
+        } else {
+            0.0
+        },
     );
     let bottom = side(
         "marginBottom",

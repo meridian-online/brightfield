@@ -482,15 +482,16 @@ impl Session {
     }
 
     /// Every row the panel drew, the row for edits not yet saved first: its
-    /// rectangle, and the three cells read off the galleys inside it, left to
-    /// right.
+    /// rectangle, and the *when*, *kind* and *what changed* cells read off the
+    /// galleys inside it, left to right. The *who* column is left out, so a
+    /// row reads as these three.
     ///
-    /// A cell is a galley that begins at one of the panel's three column
-    /// origins. A confirmation toast is drawn over the foot of the window, and
-    /// a galley of its own can sit inside a row's rectangle without being one of
-    /// the row's cells.
+    /// A cell is a galley that begins at one of those three columns' origins.
+    /// A confirmation toast is drawn over the foot of the window, and a galley
+    /// of its own can sit inside a row's rectangle without being one of the
+    /// row's cells.
     fn rows(&self) -> Vec<(egui::Rect, Vec<String>)> {
-        const COLUMNS: [f32; 3] = [12.0, 162.0, 312.0];
+        const COLUMNS: [f32; 3] = [12.0, 162.0, 462.0];
         self.app
             .chart_doc()
             .versions()
@@ -626,7 +627,7 @@ fn the_strip_names_five_panels_and_a_click_on_versions_opens_the_rail_at_the_led
 
 /// **AC2.** After two Saves of a data file's chart with one edit between them,
 /// the panel lists two rows, the newer first, under a header row reading *when*,
-/// *kind* and *what changed*, and each row is 24 high.
+/// *kind*, *who* and *what changed*, and each row is 24 high.
 #[test]
 fn after_two_saves_with_an_edit_between_the_panel_lists_two_rows_newest_first_under_a_header() {
     let mut s = Session::open("ac2");
@@ -665,22 +666,33 @@ fn after_two_saves_with_an_edit_between_the_panel_lists_two_rows_newest_first_un
         "the second row is not the older version"
     );
 
-    // The header row: its three words on one line, left to right, above the
+    // The header row: its four words on one line, left to right, above the
     // first row.
     let when = s.rail_text_reading("when").expect("a *when* header");
     let kind = s.rail_text_reading("kind").expect("a *kind* header");
+    let who = s.rail_text_reading("who").expect("a *who* header");
     let changed = s
         .rail_text_reading("what changed")
         .expect("a *what changed* header");
     // One line is what fits in one row's height. The ink boxes are compared as
     // a group and not centre to centre, because a box is the glyphs' own and
     // `kind` and `what changed` reach above and below where `when` does.
-    let line = when.ink.union(kind.ink).union(changed.ink);
+    let line = when.ink.union(kind.ink).union(who.ink).union(changed.ink);
     assert!(
         line.height() < ROW_HEIGHT
             && when.ink.min.x < kind.ink.min.x
-            && kind.ink.min.x < changed.ink.min.x,
-        "the header's three words are not one line, left to right: {line:?}"
+            && kind.ink.min.x < who.ink.min.x
+            && who.ink.min.x < changed.ink.min.x,
+        "the header's four words are not one line, left to right: {line:?}"
+    );
+    // Both versions were made by this window's Saves.
+    assert!(
+        s.rail_texts()
+            .iter()
+            .filter(|t| t.text == "Brightfield")
+            .count()
+            >= 2,
+        "a row's *who* does not read Brightfield"
     );
     assert!(
         line.max.y < rows[0].0.top() + 1.0,

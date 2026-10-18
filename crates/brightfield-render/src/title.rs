@@ -15,7 +15,7 @@ use brightfield_spec::layout::{
 
 use crate::channel::{Channel, ChannelMap};
 use crate::layout::Margins;
-use crate::text::TITLE_SIZE;
+use crate::text::{HEADING_SIZE, TITLE_SIZE};
 
 /// A plot's fully-resolved titles: the concrete text (or `None`) for each
 /// positional axis and the plot, ready to render and to size margins. A
@@ -135,8 +135,28 @@ pub fn resolve_titles(plot: &PlotNode, channel_maps: &[&ChannelMap]) -> Resolved
 pub const TITLE_BAND: f64 = brightfield_spec::layout::TITLE_BAND;
 const _: () = assert!(TITLE_BAND == TITLE_SIZE as f64 + 8.0);
 
-/// Grow the base margins to reserve a fixed [`TITLE_BAND`] for each present
-/// title: left for a y-title, bottom for an x-title, top for a plot title.
+/// The band a plot title adds to the top margin: the heading's size plus the
+/// room above its baseline and beneath it before the plot. The spec crate's
+/// constant, for the reason [`TITLE_BAND`] is.
+pub const PLOT_TITLE_BAND: f64 = brightfield_spec::layout::PLOT_TITLE_BAND;
+const _: () = assert!(PLOT_TITLE_BAND == HEADING_SIZE as f64 + 14.0);
+
+/// [`grow_margins`] for a chart `width` wide: a plot title that wraps onto a
+/// second line there ([`crate::axis::heading_lines`]) grows the top by that
+/// line's height too.
+#[must_use]
+pub fn grow_margins_at(base: Margins, titles: &ResolvedTitles, width: f64) -> Margins {
+    let mut grown = grow_margins(base, titles);
+    if let Some(title) = titles.plot.as_deref() {
+        let lines = crate::axis::heading_lines(title, width).lines.len();
+        grown.top += crate::axis::HEADING_LINE_HEIGHT * (lines.saturating_sub(1) as f64);
+    }
+    grown
+}
+
+/// Grow the base margins to reserve a fixed band for each present title: a
+/// [`TITLE_BAND`] left for a y-title and bottom for an x-title, and a
+/// [`PLOT_TITLE_BAND`] top for a plot title.
 /// Absent titles leave that side at its base (Observable-default) value; the
 /// right margin never grows. Both layout models feed this the same base +
 /// titles, so their grown margins agree per-side.
@@ -147,7 +167,7 @@ pub fn grow_margins(base: Margins, titles: &ResolvedTitles) -> Margins {
         bottom: base.bottom + if titles.x.is_some() { TITLE_BAND } else { 0.0 },
         top: base.top
             + if titles.plot.is_some() {
-                TITLE_BAND
+                PLOT_TITLE_BAND
             } else {
                 0.0
             },
@@ -318,7 +338,7 @@ mod tests {
         let g = grow_margins(base, &all);
         assert!((g.left - (base.left + TITLE_BAND)).abs() < f64::EPSILON);
         assert!((g.bottom - (base.bottom + TITLE_BAND)).abs() < f64::EPSILON);
-        assert!((g.top - (base.top + TITLE_BAND)).abs() < f64::EPSILON);
+        assert!((g.top - (base.top + PLOT_TITLE_BAND)).abs() < f64::EPSILON);
         assert!(
             (g.right - base.right).abs() < f64::EPSILON,
             "right never grows"

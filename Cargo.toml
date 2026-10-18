@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/brightfield-workbench", "crates/brightfield-spec", "crates/brightfield-keys", "crates/brightfield-conformance", "crates/brightfield-sql", "crates/brightfield-protocol", "crates/brightfield-engine", "crates/brightfield-render", "crates/brightfield-ui", "crates/brightfield-model", "crates/brightfield-shell", "crates/brightfield-bench", "xtask"]
+members = ["crates/brightfield-workbench", "crates/brightfield-spec", "crates/brightfield-keys", "crates/brightfield-conformance", "crates/brightfield-sql", "crates/brightfield-protocol", "crates/brightfield-engine", "crates/brightfield-render", "crates/brightfield-ui", "crates/brightfield-model", "crates/brightfield-shell", "crates/brightfield-bench", "crates/brightfield-report", "xtask"]
 resolver = "2"
 
 [workspace.package]
@@ -23,23 +23,10 @@ repository = "https://github.com/meridian-online/brightfield"
 # The arcform spec library (`arc`) is consumed the same way: a rev-pinned git
 # dependency in `[workspace.dependencies]`, used by `brightfield-protocol` and
 # `brightfield-shell` (README §"The arcform dependency" has the bump procedure).
-# arc parses SQL
-# with a vendored fork of sqlparser 0.55 (statement-form PIVOT/UNPIVOT +
-# multi-option COPY), wired inside arc's own workspace via `[patch.crates-io]` —
-# and Cargo patch tables do NOT propagate through dependencies, so this
-# workspace must carry the same patch itself or arc fails to compile (missing
-# `SetExpr::Pivot`/`Unpivot` variants). The GIT form below points at the same
-# repo+rev as the arc pin: Cargo scans that repository's packages and finds
-# `vendor/sqlparser-0.55.0`, so a bare CI checkout resolves with no sibling
-# ../arcform on disk. (A path-form patch into a sibling checkout works locally
-# and breaks CI — same lesson as the design-repo pin above.) The patch carries
-# version 0.55.0, so it applies only to arc's `sqlparser = "0.55"` requirement;
-# the workspace's own sqlparser 0.61 keeps resolving from crates.io untouched.
-# BUMPING: move this rev and the `arc` rev in `[workspace.dependencies]` IN LOCKSTEP,
-# then refresh Cargo.lock (and re-pin tree-sitter-iter if the resolver drifts
-# above the toolchain — see the lock).
-[patch.crates-io]
-sqlparser = { git = "https://github.com/meridian-online/arcform", rev = "f0561cd255e010e12a6ae82edc0b70785c3d19fc" }
+# arc parses SQL with its own sqlparser fork, which it publishes as
+# `arcform-sqlparser`; arcform declares it as a path dependency inside its own repo,
+# so Cargo.lock resolves it from the arc git rev and this workspace carries no
+# `[patch.crates-io]` for it. The workspace's own sqlparser 0.61 is untouched.
 
 # Every dependency two or more members share is declared here once; a member names
 # it with `workspace = true` and adds only the features that member alone needs.
@@ -60,15 +47,15 @@ brightfield-sql = { path = "crates/brightfield-sql" }
 # CLI — `cli_main` parses the *caller's* argv and can exit the process, so it has no
 # business being linkable from `brightfield-protocol`; `brightfield-shell` turns it
 # back on, as a feature, for the one child process that runs a Protocol. BUMPING is
-# three moves in lockstep: this `rev`, the `[patch.crates-io]` sqlparser rev above
-# (arc's vendored sqlparser fork — patch tables do not propagate through
-# dependencies), and Cargo.lock. See README §"The arcform dependency".
-arc = { git = "https://github.com/meridian-online/arcform", rev = "f0561cd255e010e12a6ae82edc0b70785c3d19fc", default-features = false, features = ["http-fetch"] }
+# two moves in lockstep: this `rev` and Cargo.lock. See README §"The arcform
+# dependency". The package is named `arcform` upstream; `package =` keeps the
+# crate `arc` in this workspace's source.
+arc = { package = "arcform", git = "https://github.com/meridian-online/arcform", rev = "01bc1c01b8fca1276af6d7e74ad207ae350a5512", default-features = false, features = ["http-fetch"] }
 arrow = { version = "58", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # `bundled` builds DuckDB from source, so no member needs a system libduckdb. One
 # spec here is one `duckdb` build in the graph.
-duckdb = { version = "1.2", features = ["bundled"] }
+duckdb = { version = "=1.10506.0", features = ["bundled"] }
 # VERSION LOCK — egui 0.35 rides wgpu 29, the same wgpu major Vello 0.9 uses, so
 # `egui_wgpu`'s wgpu and `vello::wgpu` resolve to ONE crate instance and therefore
 # one `wgpu::Device`. That is what lets a Vello scene rasterise onto a texture egui

@@ -1,0 +1,2 @@
+# Written by `arc`: when two clones of a Protocol are merged, git keeps both sides' lines of the log below.
+/arcform-log.txt merge=union

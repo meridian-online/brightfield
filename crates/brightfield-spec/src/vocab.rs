@@ -124,8 +124,8 @@ vocab_enum! {
         Circle => ("circle", Unimplemented),
         // Lines
         Line => ("line", Implemented),
-        LineX => ("lineX", Unimplemented),
-        LineY => ("lineY", Unimplemented),
+        LineX => ("lineX", Implemented),
+        LineY => ("lineY", Implemented),
         // Rectangles
         // rect/rectX/rectY wired end-to-end (2026-07-03): RectRenderer
         // draws rectangles from explicit x1/x2 × y1/y2 extents (bare `rect`), or a
@@ -229,6 +229,23 @@ impl MarkKind {
     #[must_use]
     pub fn bins_positionally(self) -> bool {
         matches!(self, Self::RectX | Self::RectY)
+    }
+
+    /// The channels a mark of this kind draws as bands of categories: a bar's
+    /// band axis and both of a cell's axes, by wire name.
+    ///
+    /// Observable Plot puts these channels on a band scale whatever the column
+    /// holds, so a number column there (a month, an hour) reads as categories
+    /// in ascending order. The render crate's scale inference bands them, and a
+    /// plot's `xScale: band` on one of them is a scale this build draws.
+    #[must_use]
+    pub fn band_channels(self) -> &'static [&'static str] {
+        match self {
+            Self::BarY => &["x"],
+            Self::BarX => &["y"],
+            Self::Cell => &["x", "y"],
+            _ => &[],
+        }
     }
 
     /// The `(value, band)` positional channel pair this mark aggregates over,

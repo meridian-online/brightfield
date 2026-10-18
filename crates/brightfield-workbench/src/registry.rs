@@ -952,8 +952,9 @@ impl<S> ChartKind<S> {
     ///
     /// Greedy and order-sensitive by design: the slots are declared in the
     /// order the kind wants them filled, and a caller that wants a particular
-    /// column in a particular role hands the fields in that order. A column is
-    /// used at most once.
+    /// column in a particular role hands the fields in that order. Within one
+    /// slot that takes several types, the type listed first wins over the
+    /// order of the columns. A column is used at most once.
     ///
     /// # Errors
     ///
@@ -964,10 +965,15 @@ impl<S> ChartKind<S> {
         let mut used = vec![false; fields.len()];
         let mut bound = Vec::new();
         for slot in self.slots {
-            let found = fields
-                .iter()
-                .enumerate()
-                .find(|(i, f)| !used[*i] && slot.takes(f));
+            // A slot that takes several types prefers the earlier one in its
+            // `accepts` list over an earlier column, so a kind that takes a
+            // date or a measure on x lands on the date when the table has both.
+            let found = slot.accepts.iter().find_map(|ty| {
+                fields
+                    .iter()
+                    .enumerate()
+                    .find(|(i, f)| !used[*i] && f.ty == *ty)
+            });
             match found {
                 Some((i, field)) => {
                     used[i] = true;
@@ -1482,6 +1488,29 @@ mod chart_kind_tests {
 
         // The kind with no controls is unmoved by any of it.
         assert!(points().toolbar(&options).is_empty());
+    }
+
+    /// A slot taking two types prefers the first one listed over the order the
+    /// columns arrive in.
+    #[test]
+    fn a_slot_prefers_the_type_it_lists_first() {
+        const SLOTS: &[FieldSlot] = &[
+            FieldSlot::required("x", &[FieldType::Temporal, FieldType::Quantitative]),
+            FieldSlot::required("y", &[FieldType::Quantitative]),
+        ];
+        let kind = ChartKind {
+            slots: SLOTS,
+            ..bars()
+        };
+        let binding = kind
+            .bind(&[
+                Field::new("amount", FieldType::Quantitative),
+                Field::new("weight", FieldType::Quantitative),
+                Field::new("day", FieldType::Temporal),
+            ])
+            .expect("fills both slots");
+        assert_eq!(binding.field("x").map(|f| f.name.as_str()), Some("day"));
+        assert_eq!(binding.field("y").map(|f| f.name.as_str()), Some("amount"));
     }
 
     /// The conformance gate over a registry that satisfies it.

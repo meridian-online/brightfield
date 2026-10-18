@@ -289,8 +289,11 @@ pub fn build_chart_scene(data: &ChartData<'_>, ink: ChartInk) -> (Scene, ScaleSe
         crate::axis::render_graticule_labels(&mut scene, &data.layout, &meridians, &parallels, ink);
     }
 
-    // Colour legend.
-    if let Some(fill_scale) = scales.get(Channel::Fill) {
+    // Colour legend (a line coloured by `stroke` has no fill scale).
+    if let Some(fill_scale) = scales
+        .get(Channel::Fill)
+        .or_else(|| scales.get(Channel::Stroke))
+    {
         render_colour_legend(&mut scene, &data.layout, fill_scale, ink);
     }
 
@@ -616,8 +619,64 @@ pub fn build_multi_mark_scene_pinned(
     colour_reverse: bool,
     ink: ChartInk,
 ) -> (Scene, ScaleSet) {
+    let drawn = draw_plot(
+        entries,
+        draw_inline_legend,
+        titles,
+        domains,
+        pins,
+        tick_counts,
+        tick_formats,
+        grid,
+        axis_ends,
+        axis_reverse,
+        colour_override,
+        colour_reverse,
+        ink,
+    );
+    (drawn.scene, drawn.scales)
+}
+
+/// One plot drawn by [`draw_plot`]: its scene, the scales it drew against, and
+/// which of its layers laid down no ink.
+pub struct DrawnPlot {
+    /// The plot's scene.
+    pub scene: Scene,
+    /// The scales the marks were drawn against.
+    pub scales: ScaleSet,
+    /// The index into the entries of each layer that put nothing into the
+    /// scene: no bar, no cell, no point. Whether the layer had rows to draw is
+    /// the caller's to judge; [`why_drew_nothing`] says why one that had did
+    /// not.
+    pub blank: Vec<usize>,
+}
+
+/// [`build_multi_mark_scene_pinned`], keeping which layers laid down no ink.
+///
+/// A layer's ink is counted as the draw commands it added to the scene, so
+/// asking costs nothing beyond the drawing itself.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_plot(
+    entries: &[&ChartData<'_>],
+    draw_inline_legend: bool,
+    titles: &ResolvedTitles,
+    domains: &UnsampledDomains,
+    pins: &PinnedDomains,
+    tick_counts: TickCounts,
+    tick_formats: TickFormats,
+    grid: GridLines,
+    axis_ends: AxisEnds,
+    axis_reverse: AxisReverse,
+    colour_override: &ColourOverride,
+    colour_reverse: bool,
+    ink: ChartInk,
+) -> DrawnPlot {
     if entries.is_empty() {
-        return (Scene::new(), ScaleSet::in_ink(ink));
+        return DrawnPlot {
+            scene: Scene::new(),
+            scales: ScaleSet::in_ink(ink),
+            blank: Vec::new(),
+        };
     }
     let mut scales = infer_multi_mark_scales(entries, ink);
     apply_unsampled_domains(
@@ -640,7 +699,7 @@ pub fn build_multi_mark_scene_pinned(
     apply_colour_pin(&mut scales, &pins);
     apply_colour_override(&mut scales, colour_override);
     apply_colour_reverse(&mut scales, colour_reverse);
-    let scene = draw_multi_mark_scene(
+    let (scene, blank) = draw_multi_mark_scene(
         entries,
         draw_inline_legend,
         titles,
@@ -649,7 +708,11 @@ pub fn build_multi_mark_scene_pinned(
         grid,
         &scales,
     );
-    (scene, scales)
+    DrawnPlot {
+        scene,
+        scales,
+        blank,
+    }
 }
 
 /// Whether a plot's x and y axis instructions have an axis to act on: not when
@@ -686,10 +749,44 @@ pub fn axis_reverse_applies(scales: &ScaleSet) -> bool {
 /// one colour scale between them, and the dot's request sets the shared scale,
 /// as [`colour_reverse_applies`] says of `colorReverse`.
 ///
+/// A plot with no dot can still have `colorDomain` and `colorRange` set the
+/// categories and colours of a categorical colour scale, which
+/// [`colour_categories_apply`] judges; this judges the whole set of keys.
+///
 /// It is the judge the composition asks before it reads the keys from the plot.
 #[must_use]
 pub fn colour_override_applies(marks: &[MarkKind]) -> bool {
     colour_reverse_applies(marks)
+}
+
+/// Whether a plot's `colorDomain` and `colorRange` set its **categorical** colour
+/// scale: when the plot drew a line, an area, a bar, a rectangle, a cell or text.
+///
+/// These marks take their categories from a `stroke` or `fill` column, and an
+/// author who writes the colours (one for the series that matters, grey for the
+/// rest) means them. They take no ramp from the keys: a cell's number fill keeps
+/// the ramp it draws, as [`colour_override_applies`] says, so the composition
+/// reads only the categorical half for them
+/// (`a_cell_a_heatmap_and_a_raster_keep_their_ramp`).
+#[must_use]
+pub fn colour_categories_apply(marks: &[MarkKind]) -> bool {
+    marks.iter().any(|kind| {
+        matches!(
+            kind,
+            MarkKind::AreaY
+                | MarkKind::AreaX
+                | MarkKind::BarY
+                | MarkKind::BarX
+                | MarkKind::Cell
+                | MarkKind::Line
+                | MarkKind::LineX
+                | MarkKind::LineY
+                | MarkKind::Rect
+                | MarkKind::RectX
+                | MarkKind::RectY
+                | MarkKind::Text
+        )
+    })
 }
 
 /// Whether a plot's `colorReverse` runs its colour the other way: when a dot is
@@ -1335,7 +1432,7 @@ fn draw_multi_mark_scene(
     tick_formats: TickFormats,
     grid: GridLines,
     scales: &ScaleSet,
-) -> Scene {
+) -> (Scene, Vec<usize>) {
     let layout = &entries[0].layout;
     // One canvas per plot, read off the scale set the marks will draw against —
     // so the frame's chrome and the ink inside it cannot disagree about the mode.
@@ -1373,8 +1470,18 @@ fn draw_multi_mark_scene(
     if let Some(graticule) = &graticule {
         graticule.stroke(&mut scene, ink.grid);
     }
-    for entry in entries {
+    let mut blank = Vec::new();
+    for (i, entry) in entries.iter().enumerate() {
+        let before = scene.encoding().draw_tags.len();
         render_entry(&mut scene, entry, scales);
+        // A layer the plot's projection leaves undrawable is named by the
+        // parser's `MarkCannotProject`, with the reason that is true; it is not
+        // a layer that tried and drew nothing.
+        if scene.encoding().draw_tags.len() == before
+            && !entry.channel_map.mark_projection().is_undrawable()
+        {
+            blank.push(i);
+        }
     }
     scene.pop_layer();
 
@@ -1403,7 +1510,10 @@ fn draw_multi_mark_scene(
 
     // Colour legend — unless a standalone `legend:` node has relocated it.
     if draw_inline_legend {
-        if let Some(fill_scale) = scales.get(Channel::Fill) {
+        if let Some(fill_scale) = scales
+            .get(Channel::Fill)
+            .or_else(|| scales.get(Channel::Stroke))
+        {
             render_colour_legend(&mut scene, layout, fill_scale, ink);
         }
     }
@@ -1415,7 +1525,131 @@ fn draw_multi_mark_scene(
         render_sample_notice(&mut scene, layout, fact);
     }
 
-    scene
+    (scene, blank)
+}
+
+/// Why a layer that had rows laid down no ink, in words, for the note its
+/// plot shows: what it needed that its rows or its scales did not give it.
+///
+/// Asked of a layer [`DrawnPlot::blank`] names. The first answer that
+/// holds is the one given:
+///
+/// - a channel the mark draws as bands is on a scale with no bands (a written
+///   `xScale` on a bar's band axis, say);
+/// - a channel it binds names a column its rows do not have;
+/// - a positional channel it binds has no scale;
+/// - an area has a band axis (a date or names), which it does not draw on;
+/// - a line or an area placed rows but had no series of two points to join;
+/// - otherwise, no row held values it could place.
+#[must_use]
+pub fn why_drew_nothing(entry: &ChartData<'_>, scales: &ScaleSet, kind: MarkKind) -> String {
+    let cm = entry.channel_map;
+    let mark = kind.wire_name();
+    for channel in crate::channel::band_channels_of(kind) {
+        if !cm.has(channel) {
+            continue;
+        }
+        let Some(scale) = scales.get(channel) else {
+            continue;
+        };
+        if matches!(scale, Scale::Band { .. }) {
+            continue;
+        }
+        let what = cm
+            .get(channel)
+            .and_then(|col| entry.batch.schema().index_of(col).ok())
+            .map(|i| column_kind(entry.batch.schema().field(i).data_type()))
+            .unwrap_or("its");
+        return format!(
+            "{} reads {} column on {} scale, and a {mark} draws {} as bands",
+            channel.wire_name(),
+            what,
+            scale_kind(scale),
+            channel.wire_name()
+        );
+    }
+    for (channel, col) in cm.iter() {
+        if entry.batch.schema().index_of(col).is_err() {
+            return format!(
+                "{} names `{col}`, which its rows do not have",
+                channel.wire_name()
+            );
+        }
+    }
+    for channel in [Channel::X, Channel::Y] {
+        if cm.has(channel) && scales.get(channel).is_none() {
+            return format!("{} has no scale to be placed on", channel.wire_name());
+        }
+    }
+    // An area reads its positions as numbers, so it has no place on a band
+    // axis: a `DATE` column, or names. Its rows count as placed through the
+    // band all the same, which would send the reason below astray.
+    if matches!(kind, MarkKind::AreaX | MarkKind::AreaY) {
+        for channel in [Channel::X, Channel::Y] {
+            if cm.has(channel) && matches!(scales.get(channel), Some(Scale::Band { .. })) {
+                let what = cm
+                    .get(channel)
+                    .and_then(|col| entry.batch.schema().index_of(col).ok())
+                    .map(|i| column_kind(entry.batch.schema().field(i).data_type()))
+                    .unwrap_or("its");
+                return format!(
+                    "{} reads {what} column on a band scale, and a {mark} does not draw on a \
+                     band or date axis",
+                    channel.wire_name()
+                );
+            }
+        }
+    }
+    // A line or an area joins a series' points, and a series with one point
+    // has nothing to join. When no row placed at all, the reason below is the
+    // true one instead.
+    if matches!(
+        kind,
+        MarkKind::Line | MarkKind::LineX | MarkKind::LineY | MarkKind::AreaX | MarkKind::AreaY
+    ) && crate::mark::rows_placed(entry.batch, cm, scales) > 0
+    {
+        return format!(
+            "a {mark} needs at least two points in a series, and no series had two it could place"
+        );
+    }
+    format!(
+        "none of its {} rows held values it could place",
+        entry.batch.num_rows()
+    )
+}
+
+/// What a column holds, in the words [`why_drew_nothing`] names it by.
+fn column_kind(data_type: &arrow::datatypes::DataType) -> &'static str {
+    use arrow::datatypes::DataType;
+    match data_type {
+        DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32
+        | DataType::UInt64
+        | DataType::Float32
+        | DataType::Float64
+        | DataType::Decimal128(..) => "a number",
+        DataType::Timestamp(..) => "a timestamp",
+        DataType::Date32 => "a date",
+        DataType::Utf8 => "a text",
+        _ => "its",
+    }
+}
+
+/// A scale's kind, with its article, as [`why_drew_nothing`] names it.
+fn scale_kind(scale: &Scale) -> &'static str {
+    match scale {
+        Scale::Linear { .. } => "a linear",
+        Scale::Log { .. } => "a log",
+        Scale::Symlog { .. } => "a symlog",
+        Scale::Time { .. } => "a time",
+        Scale::Band { .. } => "a band",
+        _ => "a colour",
+    }
 }
 
 /// Launch-anchored sibling of [`build_multi_mark_scene`]: infers FRESH scales
@@ -1457,7 +1691,7 @@ pub fn build_multi_mark_scene_anchored(
     }
     let fresh = infer_multi_mark_scales(entries, launch.ink());
     let anchored = crate::scale::anchor_scales(launch, fresh);
-    let scene = draw_multi_mark_scene(
+    let (scene, _) = draw_multi_mark_scene(
         entries,
         draw_inline_legend,
         titles,
@@ -1720,6 +1954,68 @@ mod tests {
     use crate::channel::{Channel, ChannelMap};
     use crate::layout::ChartLayout;
     use crate::mark::{BarAxis, BarRenderer, DotRenderer, GeoRenderer, LineRenderer};
+
+    /// A line that placed one point is short of a series; one that placed
+    /// none had no values it could place, and says that instead.
+    #[test]
+    fn a_line_that_drew_nothing_says_whether_it_placed_any_row() {
+        use arrow::array::Float64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let batch_of = |y: Vec<Option<f64>>| {
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("x", DataType::Float64, true),
+                    Field::new("y", DataType::Float64, true),
+                ])),
+                vec![
+                    Arc::new(Float64Array::from(vec![Some(1.0), Some(2.0)])),
+                    Arc::new(Float64Array::from(y)),
+                ],
+            )
+            .unwrap()
+        };
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let mut scales = ScaleSet::new();
+        for ch in [Channel::X, Channel::Y] {
+            scales.insert(
+                ch,
+                Scale::Linear {
+                    domain_min: 0.0,
+                    domain_max: 3.0,
+                    range_start: 0.0,
+                    range_end: 100.0,
+                },
+            );
+        }
+        let renderer = LineRenderer {
+            axis: crate::mark::LineAxis::Y,
+            scheme: Default::default(),
+        };
+        let why = |batch: &RecordBatch| {
+            let entry = ChartData {
+                batch,
+                channel_map: &cm,
+                renderer: &renderer,
+                layout: ChartLayout::new(100.0, 100.0),
+                view_extent: None,
+                highlight: None,
+                sample: None,
+                beyond_frame: false,
+            };
+            why_drew_nothing(&entry, &scales, MarkKind::LineY)
+        };
+        assert_eq!(
+            why(&batch_of(vec![Some(1.0), None])),
+            "a lineY needs at least two points in a series, and no series had two it could place"
+        );
+        assert_eq!(
+            why(&batch_of(vec![None, None])),
+            "none of its 2 rows held values it could place"
+        );
+    }
 
     // render_slider draws exactly two shapes — the track
     // and the thumb — into the scene (headless proof the widget renders).
@@ -2541,7 +2837,10 @@ mod tests {
         cm.insert(Channel::Y, "value".to_string());
 
         let layout = ChartLayout::new(640.0, 480.0);
-        let renderer = LineRenderer;
+        let renderer = LineRenderer {
+            axis: crate::mark::LineAxis::Y,
+            scheme: Default::default(),
+        };
 
         let data = ChartData {
             batch: &batch,
@@ -2662,7 +2961,10 @@ mod tests {
 
         let layout = ChartLayout::new(640.0, 480.0);
         let dot_renderer = DotRenderer::default();
-        let line_renderer = LineRenderer;
+        let line_renderer = LineRenderer {
+            axis: crate::mark::LineAxis::Y,
+            scheme: Default::default(),
+        };
 
         let data1 = ChartData {
             batch: &batch1,

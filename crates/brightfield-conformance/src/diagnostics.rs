@@ -18,6 +18,7 @@
 
 use std::fmt;
 
+use brightfield_spec::parse::COLOURS_REPEAT_MARK;
 use brightfield_spec::{ImplStatus, ParseWarning, Spec};
 
 use crate::support::{preflight, SupportReport};
@@ -236,6 +237,32 @@ impl LoadDiagnostics {
         out
     }
 
+    /// The sentence saying a plot's colours repeat, when a plot's categorical
+    /// colour scale has more categories than the palette has colours: the one a
+    /// panel tile draws above its chart and a headless export prints.
+    #[must_use]
+    pub fn colours_repeat(&self) -> Option<&str> {
+        self.advisory()
+            .into_iter()
+            .map(|d| d.message.as_str())
+            .find(|m| m.contains(COLOURS_REPEAT_MARK))
+    }
+
+    /// What a Protocol panel says about itself: each diagnostic's sentence, in
+    /// order, once. Two marks that set the same unread option word the same
+    /// sentence, and it is said once. The one list a panel tile shows above its
+    /// chart and a headless export prints on stderr, so the two never disagree.
+    #[must_use]
+    pub fn notes(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for d in &self.diagnostics {
+            if !out.contains(&d.message.as_str()) {
+                out.push(d.message.as_str());
+            }
+        }
+        out
+    }
+
     /// One line per diagnostic, ready to render.
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
@@ -288,12 +315,14 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         | ParseWarning::UnreadAxisAttribute { attribute, .. } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
         ParseWarning::AspectRatioWithProjection { mark }
-        | ParseWarning::MarkCannotProject { mark, .. } => mark.clone(),
+        | ParseWarning::MarkCannotProject { mark, .. }
+        | ParseWarning::MarkDrewNothing { mark, .. }
+        | ParseWarning::UnevenDays { mark, .. } => mark.clone(),
         ParseWarning::IntervalBrushUnderCurvedProjection { interactor, .. } => interactor.clone(),
         // The widget the author asked for by name, so the banner names
         // something they can search their own file for.
         ParseWarning::IntervalSliderIncomplete { .. } => "slider".to_string(),
-        ParseWarning::VersionMismatch { .. } => String::new(),
+        ParseWarning::VersionMismatch { .. } | ParseWarning::ColoursRepeat { .. } => String::new(),
     }
 }
 
@@ -305,6 +334,8 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::UnconsumedSort { .. }
         | ParseWarning::AspectRatioWithProjection { .. }
         | ParseWarning::MarkCannotProject { .. }
+        | ParseWarning::MarkDrewNothing { .. }
+        | ParseWarning::UnevenDays { .. }
         | ParseWarning::HighlightOnAggregate { .. } => "mark",
         ParseWarning::InteractorBindingMissing { .. }
         | ParseWarning::InteractorBindingNonSelection { .. }
@@ -337,6 +368,7 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::AxisAttributeUnderProjection { .. }
         | ParseWarning::UnreadColourKey { .. }
         | ParseWarning::UndrawnScale { .. }
+        | ParseWarning::ColoursRepeat { .. }
         | ParseWarning::UnreadAxisEnds { .. }
         | ParseWarning::AxisEndsOnFixedAxis { .. }
         | ParseWarning::AxisEndsThroughZeroOnLog { .. }
@@ -688,6 +720,39 @@ mod tests {
             "the sentence names the key, the value and the directive: {}",
             hit.message
         );
+    }
+
+    /// A colour scale that starts the palette again is known only to a
+    /// composition. It reads as an advisory in the words the reader is given,
+    /// and a tile finds it by `colours_repeat`.
+    #[test]
+    fn nine_series_note_that_colours_repeat() {
+        let repeat = ParseWarning::ColoursRepeat {
+            categories: 9,
+            palette: 8,
+        };
+        let found = LoadDiagnostics::from_composition(&[repeat]);
+        assert!(found.blocking().is_empty());
+        let advisory = found.advisory();
+        assert_eq!(advisory.len(), 1, "{:?}", found.lines());
+        assert_eq!(
+            advisory[0].message,
+            "9 series share 8 colours, so colours repeat; highlight the series that matter, \
+             fold the rest into \"Other\", or split the chart"
+        );
+        assert_eq!(found.colours_repeat(), Some(advisory[0].message.as_str()));
+    }
+
+    #[test]
+    fn a_load_with_other_advisories_has_no_repeat_note() {
+        let crossed = ParseWarning::UndrawnScale {
+            attribute: "xScale".to_string(),
+            value: "pow".to_string(),
+            plot: "plot 1".to_string(),
+            banded: false,
+        };
+        let found = LoadDiagnostics::from_composition(&[crossed]);
+        assert_eq!(found.colours_repeat(), None);
     }
 
     /// A tick format on an axis of the other kind is known only to a

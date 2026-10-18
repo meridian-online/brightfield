@@ -31,10 +31,13 @@ use crate::ink::ChartInk;
 /// and a render over a subset of the rows agrees with the render over all of
 /// them as long as the subset's set is the same.
 ///
-/// **Colour only, and positional band scales deliberately not.** A band scale's
+/// **Colour only, and text band scales deliberately not.** A band scale's
 /// order is where the bars are, and the query that produced the rows may have
 /// ordered them on purpose — re-ordering it alphabetically would answer a
-/// determinism problem by discarding an author's `ORDER BY`. A colour scale
+/// determinism problem by discarding an author's `ORDER BY`. A `DATE` band is
+/// the exception, and not through this function: its days are laid out in time
+/// order by day number, because a date has a natural order and the text
+/// spelling of one is not a faithful key for it. A colour scale
 /// carries no such instruction: what a reader needs from it is that the same
 /// category takes the same slot every time, not that a particular one leads.
 ///
@@ -50,6 +53,18 @@ use crate::ink::ChartInk;
 /// exactly the inputs where it matters.
 pub fn order_categories(categories: &mut [String]) {
     categories.sort_unstable();
+}
+
+/// The ISO spellings of a set of day numbers, in time order.
+///
+/// The order a `DATE` band lays its days out in: by day number, so it holds for
+/// negative years too (`a_date_band_sorts_by_day_not_by_spelling`), whatever
+/// order the rows arrive in. A day with no calendar date behind it is skipped.
+fn sorted_day_categories(days: std::collections::BTreeSet<i32>) -> Vec<String> {
+    let days = arrow::array::Date32Array::from(days.into_iter().collect::<Vec<_>>());
+    (0..days.len())
+        .filter_map(|i| days.value_as_date(i).map(|d| d.to_string()))
+        .collect()
 }
 
 /// A single scale mapping a data domain to a pixel range.
@@ -1437,6 +1452,10 @@ pub struct ColourOverride {
     /// ramp. A `colorRange` of two or more colours gives the steps their colours
     /// and their count, whatever this says.
     pub steps: Option<usize>,
+    /// Apply to a categorical colour scale and a stroke ramp only, leaving a
+    /// fill ramp as it is: how a plot with no dot reads the keys. A stroke ramp
+    /// is a line's split by a number column, which the keys set.
+    pub categorical_only: bool,
 }
 
 impl ColourOverride {
@@ -1467,6 +1486,17 @@ impl ColourOverride {
             domain,
             range,
             steps,
+            categorical_only: false,
+        }
+    }
+
+    /// This override as a plot with no dot reads it: its categories and colours
+    /// for a categorical scale, and nothing for a ramp.
+    #[must_use]
+    pub fn categorical_only(self) -> Self {
+        Self {
+            categorical_only: true,
+            ..self
         }
     }
 
@@ -1512,6 +1542,14 @@ pub fn apply_colour_override(set: &mut ScaleSet, ov: &ColourOverride) {
                     categories,
                     palette,
                 }
+            }
+            // A categorical-only override leaves a fill ramp alone. A stroke
+            // ramp is a line's split by a number column, and the plot's
+            // colour keys set it as they set a dot's fill ramp.
+            Scale::Sequential { .. } | Scale::Diverging { .. }
+                if ov.categorical_only && ch == Channel::Fill =>
+            {
+                continue
             }
             Scale::Sequential {
                 domain_min,
@@ -1869,7 +1907,9 @@ pub fn diverging_scale(
 /// Infer scales from a RecordBatch and ChannelMap.
 ///
 /// For each channel in the map, examines the corresponding Arrow column type:
-/// - Float64 / Int64 / Int32 / Int16 / numeric -> LinearScale
+/// - Float64 / Int64 / Int32 / Int16 / numeric -> LinearScale, or a band of
+///   its values in ascending order on a channel the mark draws as bands
+///   ([`ChannelMap::wants_band`])
 /// - Utf8 / string -> BandScale
 /// - Timestamp -> TimeScale
 ///
@@ -2059,7 +2099,14 @@ pub fn infer_scales_in(
             _ => (0.0, 0.0),
         };
 
-        let scale = infer_column_scale(col.as_ref(), range_start, range_end, *channel, ink);
+        let scale = infer_channel_scale(
+            col.as_ref(),
+            range_start,
+            range_end,
+            *channel,
+            ink,
+            channel_map.wants_band(*channel),
+        );
         if let Some(s) = scale {
             set.insert(
                 *channel,
@@ -2078,7 +2125,11 @@ pub fn infer_scales_in(
 /// For each channel that appears in any channel map, collects domain values from
 /// all batches and produces a single scale spanning the combined range:
 /// - Linear: min(all_mins), max(all_maxes)
-/// - Band: set union of categories, preserving insertion order
+/// - Band: set union of categories, preserving insertion order, then days in
+///   time order and numbers in ascending order ahead of the rest. A number
+///   column takes a band when any mark on the plot draws that channel as bands
+///   ([`ChannelMap::wants_band`]), and the line beside a bar shares it
+///   (`layers_on_one_number_band_merge_in_ascending_order_and_a_line_joins_the_band`).
 /// - Colour: set union of categories, then [`order_categories`]
 /// - Time: min(all_mins), max(all_maxes)
 ///
@@ -2117,6 +2168,10 @@ pub fn infer_scales_multi_in(
             Channel::Y | Channel::Y1 | Channel::Y2 => y_range,
             _ => (0.0, 0.0),
         };
+        // One mark that draws this channel as bands makes it a band for every
+        // layer on the plot, as a bar's band scale is the line's beside it in
+        // Plot; the line is then drawn through the band's centres.
+        let band = entries.iter().any(|(_, cm)| cm.wants_band(*channel));
 
         // Collect per-batch scales for this channel and union them.
         let mut scales_for_channel: Vec<Scale> = Vec::new();
@@ -2128,14 +2183,73 @@ pub fn infer_scales_multi_in(
                 };
                 let col = batch.column(col_idx);
                 if let Some(s) =
-                    infer_column_scale(col.as_ref(), range_start, range_end, *channel, ink)
+                    infer_channel_scale(col.as_ref(), range_start, range_end, *channel, ink, band)
                 {
                     scales_for_channel.push(s);
                 }
             }
         }
 
-        if let Some(merged) = union_scales(&scales_for_channel, range_start, range_end) {
+        if let Some(mut merged) = union_scales(&scales_for_channel, range_start, range_end) {
+            // Layers on one `DATE` axis each bring their own days, and the
+            // union appends the unseen ones; the merged band is re-laid in time
+            // order, the days of any other column following in the order the
+            // union found them.
+            if let Scale::Band { categories, .. } = &mut merged {
+                let mut days = std::collections::BTreeSet::new();
+                for (batch, cm) in entries {
+                    let Some(name) = cm.get(*channel) else {
+                        continue;
+                    };
+                    let Ok(idx) = batch.schema().index_of(name) else {
+                        continue;
+                    };
+                    if let Some(arr) = batch
+                        .column(idx)
+                        .as_any()
+                        .downcast_ref::<arrow::array::Date32Array>()
+                    {
+                        days.extend(arr.iter().flatten());
+                    }
+                }
+                if !days.is_empty() {
+                    let dated = sorted_day_categories(days);
+                    let rest: Vec<String> = categories
+                        .iter()
+                        .filter(|c| !dated.contains(c))
+                        .cloned()
+                        .collect();
+                    *categories = dated.into_iter().chain(rest).collect();
+                }
+                // Layers on one band over numbers each bring their own, and
+                // the union appends the unseen ones; the merged band is re-laid
+                // in ascending order the same way.
+                let mut numbers: Vec<(f64, String)> = Vec::new();
+                for (batch, cm) in entries.iter().filter(|_| band) {
+                    let Some(name) = cm.get(*channel) else {
+                        continue;
+                    };
+                    let Ok(idx) = batch.schema().index_of(name) else {
+                        continue;
+                    };
+                    numbers.extend(number_categories(batch.column(idx).as_ref()));
+                }
+                if !numbers.is_empty() {
+                    // Every label a number was written with, the ones a
+                    // second spelling of an earlier value lost included: none
+                    // of them is a category of another kind.
+                    let numbered: std::collections::HashSet<String> =
+                        numbers.iter().map(|(_, l)| l.clone()).collect();
+                    let ordered = sorted_number_categories(numbers);
+                    let seen: std::collections::HashSet<&String> = numbered.iter().collect();
+                    let rest: Vec<String> = categories
+                        .iter()
+                        .filter(|c| !seen.contains(c))
+                        .cloned()
+                        .collect();
+                    *categories = ordered.into_iter().chain(rest).collect();
+                }
+            }
             // Every entry is a layer of ONE plot, so they share that plot's
             // attributes; the first channel map that binds this channel is
             // asked, which is the same map the domain came from.
@@ -2488,6 +2602,9 @@ pub fn positional_axis_class(
     };
     let mut saw_continuous = false;
     let mut saw_band = false;
+    // A number column on an axis a bar or a cell bands is a band, as
+    // `infer_scales_multi_in` draws it.
+    let numbers_band = entries.iter().any(|(_, cm)| cm.wants_band(axis));
     for (batch, cm) in entries {
         for ch in family {
             let Some(col_name) = cm.get(*ch) else {
@@ -2501,6 +2618,21 @@ pub fn positional_axis_class(
                 // `Date32` arm of `infer_column_scale` for why a day is a
                 // category and a timestamp is not.
                 DataType::Utf8 | DataType::Date32 => saw_band = true,
+                DataType::Float64
+                | DataType::Float32
+                | DataType::Decimal128(..)
+                | DataType::Int64
+                | DataType::Int32
+                | DataType::Int16
+                | DataType::Int8
+                | DataType::UInt64
+                | DataType::UInt32
+                | DataType::UInt16
+                | DataType::UInt8
+                    if numbers_band && *ch == axis =>
+                {
+                    saw_band = true;
+                }
                 DataType::Float64
                 | DataType::Decimal128(..)
                 | DataType::Int64
@@ -2592,6 +2724,76 @@ pub(crate) fn decimal_twin_batch() -> RecordBatch {
         ],
     )
     .unwrap()
+}
+
+/// [`infer_column_scale`], or, when `band` is set and the column holds
+/// numbers, a band over its distinct values in ascending order.
+///
+/// `band` is [`ChannelMap::wants_band`]: a bar's band axis or a cell's axes,
+/// where Observable Plot takes a number column's values as ordinal categories
+/// rather than as positions on a line. Each category is named as
+/// `crate::mark::column_as_labels` writes the number, so `3` and not `3.0`,
+/// and the marks look their rows up by the same spelling. A timestamp is not a
+/// number here and keeps its time scale.
+fn infer_channel_scale(
+    col: &dyn Array,
+    range_start: f64,
+    range_end: f64,
+    channel: Channel,
+    ink: ChartInk,
+    band: bool,
+) -> Option<Scale> {
+    if band && !matches!(col.data_type(), DataType::Timestamp(..)) {
+        let numbers = number_categories(col);
+        if !numbers.is_empty() {
+            return Some(Scale::Band {
+                categories: sorted_number_categories(numbers),
+                range_start,
+                range_end,
+                padding: 0.1,
+            });
+        }
+    }
+    infer_column_scale(col, range_start, range_end, channel, ink)
+}
+
+/// Each finite number in `col` with its label, or nothing for a column that
+/// holds no numbers (strings, days, timestamps).
+fn number_categories(col: &dyn Array) -> Vec<(f64, String)> {
+    if matches!(col.data_type(), DataType::Timestamp(..)) {
+        return Vec::new();
+    }
+    let (Some(values), Some(labels)) = (
+        crate::mark::array_as_f64(col),
+        crate::mark::number_labels(col),
+    ) else {
+        return Vec::new();
+    };
+    values
+        .into_iter()
+        .zip(labels)
+        .filter_map(|(v, l)| Some((v.filter(|v| v.is_finite())?, l?)))
+        .collect()
+}
+
+/// The labels of `numbers` in ascending order of value, one per value: where
+/// two labels name one value (an `INTEGER` 3 and a `DECIMAL` 3.0, a `3.50` and
+/// a `3.5`), the first met names its band, and the marks find that band by the
+/// value (`crate::mark` reads a number band through
+/// `band_categories_by_value`), so two layers land in the one slot
+/// (`layers_at_two_number_types_share_one_band_per_value`).
+fn sorted_number_categories(mut numbers: Vec<(f64, String)>) -> Vec<String> {
+    numbers.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<String> = Vec::new();
+    let mut last: Option<f64> = None;
+    for (value, label) in numbers {
+        if last == Some(value) {
+            continue;
+        }
+        last = Some(value);
+        out.push(label);
+    }
+    out
 }
 
 fn infer_column_scale(
@@ -2720,9 +2922,7 @@ fn infer_column_scale(
         }
         // A day is a discrete thing to count rows in, so a `DATE` column takes
         // a band and NOT the `Scale::Time` a timestamp takes. Each day is one
-        // category, named by its ISO spelling, in first-seen row order — the
-        // same rule the `Utf8` arm below follows, so a query ordered by the
-        // date column draws its days left to right in time order.
+        // category, named by its ISO spelling and laid out in time order.
         //
         // A value with no calendar date behind it is skipped rather than
         // failing the whole scale: one unrepresentable row would otherwise
@@ -2730,17 +2930,9 @@ fn infer_column_scale(
         // instead of a picture missing a bar.
         DataType::Date32 => {
             let arr = col.as_any().downcast_ref::<arrow::array::Date32Array>()?;
-            let mut categories: Vec<String> = Vec::new();
-            for i in 0..arr.len() {
-                if arr.is_null(i) {
-                    continue;
-                }
-                if let Some(day) = arr.value_as_date(i).map(|d| d.to_string()) {
-                    if !categories.contains(&day) {
-                        categories.push(day);
-                    }
-                }
-            }
+            // Sorted by day number rather than by spelling: an ISO string
+            // sorts in time order only for years 0000 to 9999.
+            let categories = sorted_day_categories(arr.iter().flatten().collect());
             Some(Scale::Band {
                 categories,
                 range_start,
@@ -2773,6 +2965,26 @@ fn infer_column_scale(
                     padding: 0.1,
                 })
             }
+        }
+        // A boolean colours as two categories, so a line or a mark split by a
+        // true/false column wears one ink per value. On a positional channel it
+        // has no scale, as before.
+        DataType::Boolean if matches!(channel, Channel::Fill | Channel::Stroke) => {
+            let arr = col.as_any().downcast_ref::<arrow::array::BooleanArray>()?;
+            let mut categories: Vec<String> = Vec::new();
+            for i in 0..arr.len() {
+                if !arr.is_null(i) {
+                    let v = arr.value(i).to_string();
+                    if !categories.contains(&v) {
+                        categories.push(v);
+                    }
+                }
+            }
+            order_categories(&mut categories);
+            Some(Scale::Colour {
+                palette: ink.categorical.to_vec(),
+                categories,
+            })
         }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             let arr = col.as_any().downcast_ref::<TimestampMicrosecondArray>()?;
@@ -2935,6 +3147,168 @@ mod tests {
             }
             other => panic!("expected Time scale for x, got: {other:?}"),
         }
+    }
+
+    fn date_batch(days: Vec<i32>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("d", DataType::Date32, false),
+            Field::new("v", DataType::Float64, false),
+        ]));
+        let n = days.len();
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(arrow::array::Date32Array::from(days)),
+                Arc::new(Float64Array::from(vec![1.0; n])),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn two_layers_on_one_date_axis_merge_in_time_order() {
+        // Overlapping, offset ranges: appending the unseen days would give
+        // 19031, 19060, 19000, 19090.
+        let a = date_batch(vec![19060, 19031]);
+        let b = date_batch(vec![19090, 19000, 19031]);
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "d".to_string());
+        cm.insert(Channel::Y, "v".to_string());
+        let scales = infer_scales_multi(&[(&a, &cm), (&b, &cm)], (0.0, 100.0), (0.0, 100.0));
+        let Some(Scale::Band { categories, .. }) = scales.get(Channel::X) else {
+            panic!("a DATE axis is a band");
+        };
+        assert_eq!(
+            categories,
+            &["2022-01-08", "2022-02-08", "2022-03-09", "2022-04-08"]
+        );
+    }
+
+    fn month_batch(months: Vec<i32>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("m", DataType::Int32, false),
+            Field::new("v", DataType::Float64, false),
+        ]));
+        let n = months.len();
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(arrow::array::Int32Array::from(months)),
+                Arc::new(Float64Array::from(vec![1.0; n])),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn banded_x() -> ChannelMap {
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "m".to_string());
+        cm.insert(Channel::Y, "v".to_string());
+        cm.set_wants_band(Channel::X);
+        cm
+    }
+
+    #[test]
+    fn a_number_column_a_bar_bands_is_a_band_in_ascending_order() {
+        let batch = month_batch(vec![7, 1, 12, 3, 10, 5, 2, 11, 4, 9, 6, 8, 3]);
+        let scales = infer_scales(&batch, &banded_x(), (0.0, 120.0), (100.0, 0.0));
+        let Some(Scale::Band { categories, .. }) = scales.get(Channel::X) else {
+            panic!(
+                "a bar's x over months is a band: {:?}",
+                scales.get(Channel::X)
+            );
+        };
+        let wanted: Vec<String> = (1..=12).map(|m| m.to_string()).collect();
+        assert_eq!(categories, &wanted);
+        assert!(
+            matches!(scales.get(Channel::Y), Some(Scale::Linear { .. })),
+            "the value axis stays continuous"
+        );
+    }
+
+    #[test]
+    fn a_number_column_no_mark_bands_stays_linear() {
+        let batch = month_batch(vec![3, 1, 2]);
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "m".to_string());
+        cm.insert(Channel::Y, "v".to_string());
+        let scales = infer_scales(&batch, &cm, (0.0, 120.0), (100.0, 0.0));
+        assert!(matches!(scales.get(Channel::X), Some(Scale::Linear { .. })));
+    }
+
+    #[test]
+    fn a_band_over_fractions_names_each_as_it_reads_and_orders_by_value() {
+        let schema = Arc::new(Schema::new(vec![Field::new("m", DataType::Float64, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Float64Array::from(vec![10.0, 2.5, -1.0, 2.0]))],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "m".to_string());
+        cm.set_wants_band(Channel::X);
+        let scales = infer_scales(&batch, &cm, (0.0, 100.0), (0.0, 100.0));
+        let Some(Scale::Band { categories, .. }) = scales.get(Channel::X) else {
+            panic!("a band");
+        };
+        assert_eq!(categories, &["-1", "2", "2.5", "10"]);
+    }
+
+    #[test]
+    fn layers_on_one_number_band_merge_in_ascending_order_and_a_line_joins_the_band() {
+        // The bar brings 5, 1 and 9; the line beside it 3 and 7. Appending the
+        // line's unseen values would give 1, 5, 9, 3, 7.
+        let bars = month_batch(vec![5, 1, 9]);
+        let line = month_batch(vec![7, 3]);
+        let mut line_cm = ChannelMap::new();
+        line_cm.insert(Channel::X, "m".to_string());
+        line_cm.insert(Channel::Y, "v".to_string());
+        let scales = infer_scales_multi(
+            &[(&bars, &banded_x()), (&line, &line_cm)],
+            (0.0, 100.0),
+            (100.0, 0.0),
+        );
+        let Some(Scale::Band { categories, .. }) = scales.get(Channel::X) else {
+            panic!("one mark bands x, so x is a band for both");
+        };
+        assert_eq!(categories, &["1", "3", "5", "7", "9"]);
+        // Whichever layer comes first.
+        let scales = infer_scales_multi(
+            &[(&line, &line_cm), (&bars, &banded_x())],
+            (0.0, 100.0),
+            (100.0, 0.0),
+        );
+        let Some(Scale::Band { categories, .. }) = scales.get(Channel::X) else {
+            panic!("the band does not depend on layer order");
+        };
+        assert_eq!(categories, &["1", "3", "5", "7", "9"]);
+    }
+
+    #[test]
+    fn a_date_band_sorts_by_day_not_by_spelling() {
+        // Two orders text gets wrong. Year 10000 spells "+10000-01-01", and
+        // `+` sorts before every digit and `-`, so by text it would come
+        // first. Of two years before year 0, the earlier has the larger
+        // number after its `-` ("-0069" against "-0056"), so by text it would
+        // come second.
+        let a = date_batch(vec![2_932_897, -740_000, 19_000, -745_000, -719_000]);
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "d".to_string());
+        let scales = infer_scales(&a, &cm, (0.0, 100.0), (0.0, 100.0));
+        let Some(Scale::Band { categories, .. }) = scales.get(Channel::X) else {
+            panic!("a DATE axis is a band");
+        };
+        assert_eq!(categories.len(), 5);
+        assert!(
+            categories[0].starts_with('-') && categories[1].starts_with('-'),
+            "{categories:?}"
+        );
+        assert!(
+            categories[0] > categories[1],
+            "the earlier year first: {categories:?}"
+        );
+        assert_eq!(categories[3], "2022-01-08");
+        assert_eq!(categories[4], "+10000-01-01", "{categories:?}");
     }
 
     #[test]
@@ -3522,6 +3896,7 @@ mod tests {
             domain: None,
             range: Some(vec![[c1[0], c1[1], c1[2], 1.0], [c2[0], c2[1], c2[2], 1.0]]),
             steps: None,
+            categorical_only: false,
         };
         apply_colour_override(&mut set, &ov);
         let scale = set.get(Channel::Fill).expect("fill scale kept");
@@ -3549,6 +3924,7 @@ mod tests {
             domain: Some((0.0, 100.0)),
             range: Some(vec![lo, hi]),
             steps: None,
+            categorical_only: false,
         };
         apply_colour_override(&mut set, &ov);
         let scale = set.get(Channel::Fill).expect("fill scale kept");

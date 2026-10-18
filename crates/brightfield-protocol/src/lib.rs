@@ -51,7 +51,7 @@ use std::path::Path;
 pub use chain::{chain_tails, contract_chains};
 pub use chart_history::{
     record_unsaved, ChartChange, ChartVersion, ChartVersions, HistoryStore, NotListed, NotRecorded,
-    VersionChange, VersionList,
+    VersionChange, VersionList, Who,
 };
 pub use chart_text::{write_chart_edit, ChartTextRefusal};
 pub use collapse::collapse_families;

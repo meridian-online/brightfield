@@ -414,8 +414,9 @@ fn the_protocols_own_history_lists_what_it_listed_before_two_saves() {
 // ---------------------------------------------------------------------------
 
 /// **AC3.** After two Saves the data file's folder has gained `arcform.yaml`,
-/// `models/` and `panels/` and no other entry: the history lives in the store
-/// and not beside the data.
+/// `models/`, `panels/` and arc's version log, and no other entry: the
+/// versions' texts live in the store and not beside the data, and the log
+/// beside the Protocol names them without their contents.
 #[test]
 fn two_saves_leave_the_data_folder_with_the_protocol_the_chart_and_nothing_else() {
     let mut session = Session::open("ac3");
@@ -432,7 +433,7 @@ fn two_saves_leave_the_data_folder_with_the_protocol_the_chart_and_nothing_else(
     let gained: Vec<&String> = after.iter().filter(|name| !before.contains(name)).collect();
     assert_eq!(
         gained,
-        vec!["arcform.yaml", "models", "panels"],
+        vec!["arcform-log.txt", "arcform.yaml", "models", "panels"],
         "the folder holds {after:?}"
     );
     assert!(

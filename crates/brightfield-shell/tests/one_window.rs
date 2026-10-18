@@ -174,6 +174,8 @@ fn both() -> Boot {
         flow: Flow::Vertical,
         focus: None,
         opened_id: None,
+        panels: None,
+        panels_problem: None,
     }
 }
 

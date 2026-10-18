@@ -117,7 +117,7 @@ const SECOND_PLOT: &str = "root/vconcat[1]";
 fn newest_changes(list: &VersionList) -> Vec<ChartChange> {
     match &list.versions[0].change {
         VersionChange::Changes(changes) => changes.clone(),
-        VersionChange::NoPredecessor => panic!("the newest version has a version before it"),
+        other => panic!("the newest version has a version before it here: {other:?}"),
     }
 }
 

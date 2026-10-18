@@ -706,6 +706,10 @@ pub enum ParseWarning {
         value: String,
         /// The plot, as [`crate::layout::plot_label`] names one.
         plot: String,
+        /// Whether a bar or a cell on the plot draws this axis as bands
+        /// ([`crate::vocab::MarkKind::band_channels`]), which it does whatever
+        /// the file names here: the axis draws as bands, not linear.
+        banded: bool,
     },
 
     /// A plot's `projectionType` carried a value outside Mosaic's
@@ -880,7 +884,56 @@ pub enum ParseWarning {
         /// The data source that has a column by that name.
         source: String,
     },
+
+    /// A plot's categorical colour scale has more categories than the palette
+    /// has colours, so the scale starts the palette again and two categories
+    /// wear one colour; only the legend tells them apart.
+    ///
+    /// Raised by composition, which is where the categories the data holds are
+    /// known. Not raised when the plot writes its own `colorRange`: those colours
+    /// are the author's choice.
+    ColoursRepeat {
+        /// How many categories the colour scale has.
+        categories: usize,
+        /// How many colours the palette has.
+        palette: usize,
+    },
+
+    /// A mark had rows to draw and laid down no ink: a plot with axes and no
+    /// bars, cells or points in it, which says nothing about why unless this
+    /// does.
+    ///
+    /// Raised by composition, which is where the scales the rows were placed
+    /// against are known. A mark with no rows is not raised: an empty table is
+    /// a plot with nothing in it, and the picture says so.
+    MarkDrewNothing {
+        /// The mark's name (`barY`, `cell`).
+        mark: String,
+        /// Why, in words: what the mark needed that its rows or its scales did
+        /// not give it.
+        reason: String,
+    },
+
+    /// A line placed its points on a `DATE` axis whose days are not evenly
+    /// spaced. A `DATE` axis is a band of its distinct days, one band apart
+    /// whatever the gap between them, so a weekend, a missing month or a run
+    /// of event dates is drawn as wide as one day where Mosaic's time scale
+    /// draws it to scale.
+    ///
+    /// Raised by composition, which is where the days the axis holds are
+    /// known. Days the same number of days apart, or on the same day of every
+    /// Nth month (held to a shorter month's last day), count as even.
+    UnevenDays {
+        /// The mark's name (`lineY`).
+        mark: String,
+        /// The axis the days are on (`x` or `y`).
+        channel: String,
+    },
 }
+
+/// The words between the two numbers and the advice in the colours-repeat note,
+/// which a reader of diagnostics finds the note by.
+pub const COLOURS_REPEAT_MARK: &str = " colours, so colours repeat; ";
 
 impl fmt::Display for ParseWarning {
     /// One honest line per warning — what was seen and what it cost.
@@ -1052,9 +1105,11 @@ impl fmt::Display for ParseWarning {
                 attribute,
                 value,
                 plot,
+                banded,
             } => write!(
                 f,
-                "plot {plot} sets `{attribute}: {value}`, a scale this build does not draw — the axis draws linear"
+                "plot {plot} sets `{attribute}: {value}`, a scale this build does not draw — the axis draws {}",
+                if *banded { "as bands" } else { "linear" }
             ),
             Self::UnknownProjection { value } => write!(
                 f,
@@ -1131,6 +1186,22 @@ impl fmt::Display for ParseWarning {
                  read as a colour constant, the same as Mosaic, so each bin counts every row in \
                  it rather than splitting by `{name}`. Brightfield cannot group a binned rect \
                  yet, so that split is not available from this spec"
+            ),
+            Self::ColoursRepeat {
+                categories,
+                palette,
+            } => write!(
+                f,
+                "{categories} series share {palette}{COLOURS_REPEAT_MARK}highlight the series \
+                 that matter, fold the rest into \"Other\", or split the chart"
+            ),
+            Self::MarkDrewNothing { mark, reason } => {
+                write!(f, "`{mark}` drew nothing: {reason}")
+            }
+            Self::UnevenDays { mark, channel } => write!(
+                f,
+                "`{mark}` puts its `{channel}` days one band apart, and these days are not \
+                 evenly spaced, so the gaps between them are not drawn to scale"
             ),
         }
     }

@@ -1,0 +1,2 @@
+CREATE OR REPLACE TABLE "china_overtakes_g7" AS
+SELECT g.country AS g7_country, min(c.year) FILTER (WHERE c.co2_t_per_person > g.co2_t_per_person) AS china_first_above, bool_and(c.co2_t_per_person > g.co2_t_per_person) FILTER (WHERE c.year >= 2020) AS china_above_since_2020 FROM clean_co2_per_capita g JOIN clean_co2_per_capita c ON c.year = g.year AND c.iso_code = 'CHN' WHERE g.grouping = 'G7' GROUP BY g.country ORDER BY china_first_above NULLS LAST

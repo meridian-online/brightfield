@@ -1,0 +1,546 @@
+{
+  "$id": "finetype://raw_owid_co2",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "cement_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "cement_co2_per_capita": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "co2_growth_abs": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column technology.internet.cidr"
+    },
+    "co2_growth_prct": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "co2_including_luc": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "co2_including_luc_growth_abs": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "co2_including_luc_growth_prct": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "co2_including_luc_per_capita": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "co2_including_luc_per_gdp": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column datetime.date.dmy_short_dot"
+    },
+    "co2_including_luc_per_unit_energy": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "co2_per_capita": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "co2_per_gdp": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "co2_per_unit_energy": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "coal_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "coal_co2_per_capita": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "consumption_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "consumption_co2_per_capita": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "consumption_co2_per_gdp": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "country": {
+      "maxLength": 100,
+      "minLength": 2,
+      "type": "string",
+      "x-finetype-enum": {
+        "cohesion": 0.800000011920929,
+        "distinct": 10,
+        "domain": [
+          "Afghanistan",
+          "Africa",
+          "Africa (GCP)",
+          "Albania",
+          "Algeria",
+          "Andorra",
+          "Angola",
+          "Anguilla",
+          "Antarctica",
+          "Antigua and Barbuda"
+        ],
+        "open": true,
+        "rows": 2000
+      },
+      "x-finetype-label": "geography.location.country",
+      "x-finetype-pii": false
+    },
+    "cumulative_cement_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "cumulative_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "cumulative_co2_including_luc": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "cumulative_coal_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "cumulative_flaring_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "cumulative_gas_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "cumulative_luc_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "cumulative_oil_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "cumulative_other_co2": {
+      "type": "string",
+      "x-finetype-label": "unknown",
+      "x-finetype-unknown-reason": "too few non-null values to classify"
+    },
+    "energy_per_capita": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "energy_per_gdp": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "flaring_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "flaring_co2_per_capita": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "gas_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "gas_co2_per_capita": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "gdp": {
+      "pattern": "^[0-9]+$",
+      "type": "string",
+      "x-finetype-label": "representation.identifier.numeric_code",
+      "x-finetype-pii": false
+    },
+    "ghg_excluding_lucf_per_capita": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "ghg_per_capita": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "iso_code": {
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9\\-_]*[a-zA-Z0-9])?$",
+      "type": "string",
+      "x-finetype-enum": {
+        "cohesion": 1.0,
+        "distinct": 8,
+        "domain": [
+          "AFG",
+          "AGO",
+          "AIA",
+          "ALB",
+          "AND",
+          "ATA",
+          "ATG",
+          "DZA"
+        ],
+        "open": true,
+        "rows": 1550
+      },
+      "x-finetype-label": "representation.text.word",
+      "x-finetype-pii": false
+    },
+    "land_use_change_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "land_use_change_co2_per_capita": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "methane": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "methane_per_capita": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "nitrous_oxide": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "nitrous_oxide_per_capita": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "oil_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "oil_co2_per_capita": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "other_co2_per_capita": {
+      "type": "string",
+      "x-finetype-label": "unknown",
+      "x-finetype-unknown-reason": "too few non-null values to classify"
+    },
+    "other_industry_co2": {
+      "type": "string",
+      "x-finetype-label": "unknown",
+      "x-finetype-unknown-reason": "too few non-null values to classify"
+    },
+    "population": {
+      "pattern": "^-?[0-9]+$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.integer_number",
+      "x-finetype-pii": false
+    },
+    "primary_energy_consumption": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "share_global_cement_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "share_global_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "share_global_co2_including_luc": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "share_global_coal_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "share_global_cumulative_cement_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "share_global_cumulative_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "share_global_cumulative_co2_including_luc": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column datetime.date.dmy_short_dot"
+    },
+    "share_global_cumulative_coal_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column datetime.date.dmy_short_dot"
+    },
+    "share_global_cumulative_flaring_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "share_global_cumulative_gas_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "share_global_cumulative_luc_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column technology.internet.cidr"
+    },
+    "share_global_cumulative_oil_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column datetime.date.dmy_short_dot"
+    },
+    "share_global_cumulative_other_co2": {
+      "type": "string",
+      "x-finetype-label": "unknown",
+      "x-finetype-unknown-reason": "too few non-null values to classify"
+    },
+    "share_global_flaring_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "share_global_gas_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "share_global_luc_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column technology.internet.cidr"
+    },
+    "share_global_oil_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false,
+      "description": "Corrected by hand: FineType labelled this sparse decimal column as a version string"
+    },
+    "share_global_other_co2": {
+      "type": "string",
+      "x-finetype-label": "unknown",
+      "x-finetype-unknown-reason": "too few non-null values to classify"
+    },
+    "share_of_temperature_change_from_ghg": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "temperature_change_from_ch4": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "temperature_change_from_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "temperature_change_from_ghg": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "temperature_change_from_n2o": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "total_ghg": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "total_ghg_excluding_lucf": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "trade_co2": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "trade_co2_share": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "year": {
+      "pattern": "^\\d{4}(\\.0+)?$",
+      "type": "string",
+      "x-finetype-label": "datetime.component.year",
+      "x-finetype-pii": false
+    }
+  },
+  "required": [
+    "country",
+    "year"
+  ],
+  "title": "table",
+  "type": "object"
+}

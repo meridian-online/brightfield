@@ -98,7 +98,8 @@ fn a_size_that_is_not_a_positive_number_is_refused() {
 /// A 60-pixel-tall plot fits the default top and bottom margins, 20 and 30,
 /// with 10 to spare; the x-axis title it derives from `x: a` grows the bottom
 /// by a 20-pixel band and it no longer does. The same plot with its x title
-/// suppressed is the control. A plot title grows the top the same way.
+/// suppressed is the control. A plot title grows the top the same way, by
+/// the 30-pixel band its heading takes.
 #[test]
 fn default_margins_grown_by_a_title_are_judged() {
     let err = refused(&dot_plot(&["height: 60", "yLabel: null"]));
@@ -117,7 +118,7 @@ fn default_margins_grown_by_a_title_are_judged() {
         "yLabel: null",
     ]));
     for needle in [
-        "marginTop 40 (default 20 + title band 20)",
+        "marginTop 50 (default 20 + title band 30)",
         "marginBottom 50 (default 30 + title band 20)",
         "height 80",
     ] {

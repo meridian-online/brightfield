@@ -28,7 +28,12 @@
 //!
 //! **Listing and reading back.** [`HistoryStore::versions`] lists a chart
 //! file's versions newest first, each with what changed since the version
-//! before it, and [`HistoryStore::read_version`] returns one version's text.
+//! before it and who made it, and [`HistoryStore::read_version`] returns one
+//! version's text. The list joins the store with the version log arc keeps in
+//! the Protocol's folder: the log travels with the folder and the store's
+//! snapshots do not, and the store prunes its oldest versions, so a version
+//! the log names and the store lacks is listed as having no text on this
+//! machine.
 //! Neither writes under the chart file's folder: a listing reads the store,
 //! whose root opening it makes when that is missing, and the chart file's
 //! folder is not touched. The change is data, a [`ChartChange`], and the words for it are
@@ -51,7 +56,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use arc::spec::{HISTORY_MAX_ENTRIES, HISTORY_MERGE_WINDOW};
+use arc::spec::{read_log, LogLine, HISTORY_MAX_ENTRIES, HISTORY_MERGE_WINDOW, MANIFEST_FILENAME};
 use brightfield_spec::layout::collect_plot_nodes;
 use brightfield_spec::{
     parse_spec, serialise_value, Component, Format, Mark, PlotNode, Spec, SpecValue,
@@ -346,14 +351,63 @@ pub struct ChartVersion {
     /// which it was.
     pub kind: HistoryKind,
     /// The way it was reached: `brightfield`, `terminal`, `mcp`, or no way for
-    /// an entry written by a handle that was not given one.
+    /// an entry written by a handle that was not given one. For a version only
+    /// the log names, the log line's interface word.
     pub way: Option<String>,
-    /// The time the store recorded it, to the millisecond.
+    /// The time the store recorded it, or the log line names, to the
+    /// millisecond.
     pub at: SystemTime,
-    /// The version's size in bytes.
+    /// The version's size in bytes: 0 for a version not on this machine,
+    /// whose text the store does not hold.
     pub bytes: u64,
-    /// What changed since the version before.
+    /// What changed since the version before. A version not on this machine,
+    /// and one whose version before is not, has nothing to compare with.
     pub change: VersionChange,
+    /// Who made it, read from the log line's interface word and, for a store
+    /// entry the log does not name, from the way the store recorded. arc's log
+    /// does not yet name the person or agent behind a version, so this names
+    /// the route only.
+    pub who: Who,
+    /// Whether the store on this machine holds the version's text, so it can
+    /// be shown and restored. A version the Protocol's log names and the store
+    /// lacks was made on another machine or before a fresh clone, or was made
+    /// here and has since been pruned from the store, which keeps at most
+    /// `HISTORY_MAX_ENTRIES` versions of a file.
+    pub on_this_machine: bool,
+}
+
+/// The route a version was made by: the interface word arc wrote on its log
+/// line, or the way the store recorded.
+///
+/// The route is not the maker. An agent driving arc from a terminal comes
+/// through as [`Self::ArcCommandLine`], as a person typing would.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Who {
+    /// Brightfield's own Save, or a step Brightfield had arc record.
+    Brightfield,
+    /// arc's command line (`terminal`).
+    ArcCommandLine,
+    /// arc's MCP server (`mcp`).
+    ArcMcp,
+    /// A library caller that named itself by another word.
+    Other(String),
+    /// No word was written.
+    Unknown,
+}
+
+impl Who {
+    /// The route `word` names: `brightfield`, `terminal`, `mcp`, any other
+    /// word, or none.
+    #[must_use]
+    pub fn from_interface(word: Option<&str>) -> Self {
+        match word {
+            Some(WAY) => Self::Brightfield,
+            Some("terminal") => Self::ArcCommandLine,
+            Some("mcp") => Self::ArcMcp,
+            Some(other) => Self::Other(other.to_string()),
+            None => Self::Unknown,
+        }
+    }
 }
 
 /// What changed in a version since the version before it.
@@ -361,6 +415,10 @@ pub struct ChartVersion {
 pub enum VersionChange {
     /// The oldest version kept: no version before it to compare with.
     NoPredecessor,
+    /// The version before it is listed but not on this machine: the
+    /// Protocol's log names it, and the store here holds no text of it to
+    /// compare with.
+    PredecessorNotHere,
     /// The changes since the version before, in the order the chart reads: each
     /// plot in turn, its attributes and then its marks' channels, and the
     /// edit outside them last. Empty when the two texts are the same.
@@ -409,12 +467,26 @@ pub enum ChartChange {
 }
 
 impl HistoryStore {
-    /// List the versions kept for the chart file at `file`, the newest first,
-    /// each with what changed since the version before it.
+    /// List the versions of the chart file at `file`, the newest first, each
+    /// with what changed since the version before it and who made it.
     ///
-    /// A file with no recorded version lists none. The listing reads the store
-    /// and each version's text and writes nothing under the chart file's
-    /// folder.
+    /// A file with no recorded version lists none. The listing reads the store,
+    /// each version's text, and the version log of the Protocol `file` is in,
+    /// and writes nothing under the chart file's folder.
+    ///
+    /// **The store joined with the log.** A version is listed when the store
+    /// holds it or the log names it. One the store holds is on this machine,
+    /// and its [`Who`] is the log line's interface word, or the way the store
+    /// recorded when the log does not name it, as for an entry an arc from
+    /// before the log recorded (`a_store_entry_missing_from_the_log_is_listed`).
+    /// A version the log names and the store lacks is not on this machine: its
+    /// size is 0 and it has nothing to compare with, so it is
+    /// [`VersionChange::NoPredecessor`]; a version of this machine listed
+    /// after it is [`VersionChange::PredecessorNotHere`]
+    /// (`a_save_here_is_listed_once_newest_first_after_the_logs_older_version`).
+    /// A log line whose kind or time does not read is passed over, and a log
+    /// that cannot be read names no version, so the store's are listed alone
+    /// (`an_unreadable_log_lists_the_stores_versions`).
     ///
     /// **What a change is.** Two versions are parsed as charts. A plot is the
     /// same plot in both when its path is the same, and a mark is the same mark
@@ -440,28 +512,72 @@ impl HistoryStore {
         let entries = history
             .entries_for_file(file)
             .map_err(|e| NotListed::new(e.to_string()))?;
-        let mut texts = Vec::with_capacity(entries.len());
+        let logged = logged_for(file);
+
+        // Each version oldest first, with its text when the store holds it:
+        // the store's entries, then the versions only the log names, placed
+        // by time. The sort is stable, so entries of one time keep their order.
+        let mut listed: Vec<(ChartVersion, Option<String>)> =
+            Vec::with_capacity(entries.len() + logged.len());
         for entry in &entries {
-            texts.push(
-                history
-                    .read_for_file(file, &entry.id)
-                    .map_err(|e| NotListed::new(e.to_string()))?,
-            );
+            let text = history
+                .read_for_file(file, &entry.id)
+                .map_err(|e| NotListed::new(e.to_string()))?;
+            let way = entry.way.as_ref().map(|way| way.as_str().to_string());
+            let interface = logged
+                .iter()
+                .find(|line| line.version == entry.id)
+                .map_or(way.as_deref(), |line| line.interface.as_deref());
+            listed.push((
+                ChartVersion {
+                    id: entry.id.clone(),
+                    kind: entry.kind,
+                    who: Who::from_interface(interface),
+                    way,
+                    at: entry.at,
+                    bytes: entry.bytes,
+                    change: VersionChange::NoPredecessor,
+                    on_this_machine: true,
+                },
+                Some(text),
+            ));
         }
-        let mut versions = Vec::with_capacity(entries.len());
-        for (i, entry) in entries.iter().enumerate() {
-            let change = match i.checked_sub(1) {
-                None => VersionChange::NoPredecessor,
-                Some(before) => VersionChange::Changes(changes_between(&texts[before], &texts[i])),
+        for line in &logged {
+            if entries.iter().any(|entry| entry.id == line.version) {
+                continue;
+            }
+            let (Some(kind), Some(at)) = (kind_of(&line.kind), time_of(&line.at)) else {
+                continue;
             };
-            versions.push(ChartVersion {
-                id: entry.id.clone(),
-                kind: entry.kind,
-                way: entry.way.as_ref().map(|way| way.as_str().to_string()),
-                at: entry.at,
-                bytes: entry.bytes,
-                change,
-            });
+            listed.push((
+                ChartVersion {
+                    id: line.version.clone(),
+                    kind,
+                    way: line.interface.clone(),
+                    at,
+                    bytes: 0,
+                    change: VersionChange::NoPredecessor,
+                    who: Who::from_interface(line.interface.as_deref()),
+                    on_this_machine: false,
+                },
+                None,
+            ));
+        }
+        listed.sort_by_key(|(version, _)| version.at);
+
+        // Each version of this machine is compared with the one listed
+        // before it, when that one's text is here too.
+        let mut versions = Vec::with_capacity(listed.len());
+        let mut before: Option<Option<String>> = None;
+        for (mut version, text) in listed {
+            if let (Some(before), Some(text)) = (&before, &text) {
+                version.change = match before {
+                    Some(before) => VersionChange::Changes(changes_between(before, text)),
+                    None => VersionChange::PredecessorNotHere,
+                };
+            }
+            before = Some(text);
+            versions.push(version);
         }
         versions.reverse();
         Ok(VersionList {
@@ -485,6 +601,81 @@ impl HistoryStore {
             .read_for_file(file, id)
             .map_err(|e| NotListed::new(e.to_string()))
     }
+}
+
+/// The lines of the version log of `file`'s Protocol that name `file`, in the
+/// log's order and each version once. A file in no Protocol's folder, a
+/// Protocol with no log, and a log that cannot be read name none, as arc's
+/// own `logged_versions` reads a log
+/// (`an_unreadable_log_lists_the_stores_versions`).
+///
+/// The log is the one arc appends a line to as it records a version of
+/// `file`. arc keeps the rules that find it private, so they are mirrored
+/// here, each beside the arc function it copies, and
+/// `arc_s_own_records_are_found_under_the_same_file` in the crate's
+/// `chart_history` tests fails if they drift.
+fn logged_for(file: &Path) -> Vec<LogLine> {
+    let Some((folder, inside)) = log_place(file) else {
+        return Vec::new();
+    };
+    let Ok(lines) = read_log(&folder) else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    lines
+        .into_iter()
+        .filter(|line| line.file == inside && seen.insert(line.version.clone()))
+        .collect()
+}
+
+/// The Protocol folder whose log names the versions of `file`, and the name a
+/// line gives `file` there: its path inside that folder, with `/` between its
+/// parts. `None` for a file in no Protocol's folder.
+///
+/// Mirrors arc's `LocalHistory::file_key` (the folder canonicalised, the name
+/// not), `protocol_folder` (an `arcform.yaml` belongs to its own folder; any
+/// other file to the nearest folder above it holding one) and `log_place`.
+fn log_place(file: &Path) -> Option<(PathBuf, String)> {
+    let name = file.file_name()?;
+    let parent = match file.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let dir = std::fs::canonicalize(parent).ok()?;
+    let file = dir.join(name);
+    let folder = if name == MANIFEST_FILENAME {
+        dir.as_path()
+    } else {
+        dir.ancestors()
+            .find(|dir| dir.join(MANIFEST_FILENAME).is_file())?
+    };
+    let inside = file
+        .strip_prefix(folder)
+        .unwrap_or(&file)
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    Some((folder.to_path_buf(), inside))
+}
+
+/// The kind a log line's kind word names, or `None` for a word arc does not
+/// write. Mirrors arc's `HistoryKind::from_tag`.
+fn kind_of(word: &str) -> Option<HistoryKind> {
+    match word {
+        "save" => Some(HistoryKind::Save),
+        "checkpoint" => Some(HistoryKind::Checkpoint),
+        "unsaved" => Some(HistoryKind::Unsaved),
+        _ => None,
+    }
+}
+
+/// The time a log line's `at` names, which arc writes as RFC 3339, or `None`
+/// for one that does not read as a time.
+fn time_of(at: &str) -> Option<SystemTime> {
+    let at = chrono::DateTime::parse_from_rfc3339(at).ok()?;
+    let millis = u64::try_from(at.timestamp_millis()).ok()?;
+    Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(millis))
 }
 
 /// What changed from `before` to `after`, as [`HistoryStore::versions`] says.

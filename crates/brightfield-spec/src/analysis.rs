@@ -1375,8 +1375,35 @@ fn validate_interactor_bindings_in(
 // Undrawn scales
 // ---------------------------------------------------------------------------
 
+/// The ordinal scale names Plot gives a position axis. A bar or a cell draws
+/// its band axis as one whatever the file writes there, so on that axis they
+/// are drawn, not undrawn.
+const ORDINAL_SCALES: [&str; 3] = ["band", "ordinal", "point"];
+
+/// Whether a mark in `plot` draws `axis` as bands of a plain column
+/// ([`crate::vocab::MarkKind::band_channels`]).
+fn bands_axis(plot: &crate::ast::PlotNode, axis: crate::layout::PlotAxis) -> bool {
+    use crate::ast::{Component, SpecValue, ValueOrParamRef};
+    let wire = match axis {
+        crate::layout::PlotAxis::X => "x",
+        crate::layout::PlotAxis::Y => "y",
+    };
+    plot.items.iter().any(|item| match item {
+        Component::Mark(mark) => {
+            mark.kind.band_channels().contains(&wire)
+                && matches!(
+                    mark.options.get(wire),
+                    Some(ValueOrParamRef::Value(SpecValue::String(_)))
+                )
+        }
+        _ => false,
+    })
+}
+
 /// Name each plot axis whose file asks for a scale this build does not draw.
 ///
+/// `band`, `ordinal` and `point` on an axis a bar or a cell bands are drawn as
+/// that band and are not named.
 /// Asks [`crate::layout::read_plot_scales_in`] — the reading the drawn scale is
 /// taken from — over each plot as built, so a `$param` is read through its
 /// declared value and a `plotDefaults:` scale is named at each plot that
@@ -1396,10 +1423,15 @@ pub fn check_undrawn_scales(spec: &Spec) -> Vec<ParseWarning> {
             else {
                 continue;
             };
+            let banded = bands_axis(plot, axis);
+            if ORDINAL_SCALES.contains(&value) && banded {
+                continue;
+            }
             warnings.push(ParseWarning::UndrawnScale {
                 attribute: attribute.to_string(),
                 value: value.to_string(),
                 plot: plot_label(&path, plot),
+                banded,
             });
         }
     }

@@ -1,0 +1,34 @@
+meta:
+  title: Line over time — Brightfield example
+  description: |
+    A `lineY` mark with a `stroke` column: one line per country, each joining
+    its points in increasing x. `lineX` is the same mark turned a quarter: it
+    joins in increasing y.
+
+      cargo run -p brightfield-shell -- examples/line-y.yaml
+data:
+  series:
+    - { year: 2018, country: Chile, v: 12 }
+    - { year: 2019, country: Chile, v: 19 }
+    - { year: 2020, country: Chile, v: 15 }
+    - { year: 2021, country: Chile, v: 27 }
+    - { year: 2022, country: Chile, v: 34 }
+    - { year: 2018, country: Peru, v: 30 }
+    - { year: 2019, country: Peru, v: 28 }
+    - { year: 2020, country: Peru, v: 33 }
+    - { year: 2021, country: Peru, v: 31 }
+    - { year: 2022, country: Peru, v: 40 }
+    - { year: 2018, country: Brazil, v: 5 }
+    - { year: 2019, country: Brazil, v: 11 }
+    - { year: 2020, country: Brazil, v: 22 }
+    - { year: 2021, country: Brazil, v: 24 }
+    - { year: 2022, country: Brazil, v: 29 }
+plot:
+  - mark: lineY
+    data: { from: series }
+    x: year
+    y: v
+    stroke: country
+  - legend: color
+width: 640
+height: 400

@@ -129,8 +129,22 @@ rfd = "0.17"
 # that a source served with `Content-Encoding: gzip` arrives usable rather than
 # as a compressed file DuckDB cannot read.
 ureq = "2"
+# The snapshot an opened agent Protocol's panels read — `crate::protocol_panels`
+# attaches the Protocol's database read-only, copies the tables the panels read
+# into memory, detaches, and writes each to Parquet. Neither crate is new to the
+# graph: `duckdb` is brightfield-engine's, on the workspace's one version line
+# with the same `parquet` feature this crate's tests already declare, and
+# `tempfile` 3 is already in Cargo.lock through egui_kittest.
+duckdb = { workspace = true, features = ["parquet"] }
+tempfile = "3"
+# Sets a Protocol's report.md as the PDF `export-pdf` writes, with the charts
+# this crate draws handed to it as pictures.
+brightfield-report = { path = "../brightfield-report" }
 
 [dev-dependencies]
+# Reads the PDF `export-pdf` writes back as text, as `brightfield-report`'s own
+# tests do; the same pinned release.
+pdf-extract = "=0.12.1"
 # Tier-1 real-UI snapshot loop: egui_kittest renders the real app headlessly on
 # wgpu and perceptually diffs against committed baselines (dify under the hood).
 egui_kittest = { version = "0.35", features = ["wgpu", "snapshot"] }

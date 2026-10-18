@@ -95,12 +95,14 @@ use crate::overlays::{
     close_question_body, close_question_keys, CloseAnswer, CloseQuestion, CommandPalette,
     HelpSheet, JumpTarget, JumpToNode, CLOSE_QUESTION_TITLE,
 };
+use crate::panel_tiles::{PanelTiles, TilesAction};
 use crate::pipeline::Composed;
 use crate::protocol::{
     hint_ui, load_protocol_offline, mono_font, protocol_registry, ui_font, NodeView, ProtocolDoc,
     ProtocolInputs, ProtocolModel, SpineRole, SpineRow, CANVAS as PROTOCOL_CANVAS,
     INSPECTOR as PROTOCOL_INSPECTOR, LOG, OUTLINE, QUALITY, STEPS,
 };
+use crate::protocol_panels::{OpenProblem, ProtocolPanels};
 use crate::shelf::{
     BandDrawn, Binding, CardDrawn, ChannelSettings, ListReport, ListTab, RowEdit, ShelfBand,
     ShelfChannels,
@@ -645,6 +647,61 @@ fn chrome_budget(surface: Surface) -> (f32, f32) {
     (across, down)
 }
 
+/// The cell body each of `count` panel tiles is composed into before the
+/// window has drawn a frame: their cells on the canvas a first launch's window
+/// leaves once its bands and rails are laid out. The first frame composes
+/// them again only if the canvas it draws differs.
+fn boot_tile_body(count: usize) -> egui::Vec2 {
+    let [w, h] = WindowGeometry::default().size;
+    // The rails are shut while the tiles hold the canvas
+    // (`MeridianApp::apply_rail_defaults`), so each takes its collapsed
+    // extent rather than the open one `chrome_budget` counts.
+    let plan = arrangement::default_arrangement();
+    let across = rail_collapsed(plan.expect_region(arrangement::NAVIGATOR_RAIL))
+        + rail_collapsed(plan.expect_region(arrangement::INSPECTOR_RAIL));
+    let down = band_extent(plan.expect_region(arrangement::TITLE_BAND))
+        + band_extent(plan.expect_region(arrangement::LOCATOR_BAND))
+        + rail_collapsed(plan.expect_region(arrangement::LEDGER_RAIL));
+    crate::panel_tiles::body_for_canvas(egui::vec2(w - across, h - down), count)
+}
+
+/// The Protocol in `dir` as its rails read it: its steps and the tables they
+/// make, from the manifest and its models, through the graph the manifest
+/// route draws ([`load_protocol_offline`]) since arc exports no graph of its
+/// own and an agent's Protocol declares no `assets:`; with its newest run
+/// record adopted, as a saved Protocol's are, so its steps read as run.
+fn agent_protocol_inputs(dir: &std::path::Path) -> ProtocolInputs {
+    let spec = dir.join(arc::spec::MANIFEST_FILENAME);
+    let spec = spec.to_string_lossy();
+    let mut inputs = load_protocol_offline(&spec).unwrap_or_else(|e| {
+        eprintln!("{spec}: the Protocol's steps could not be laid out: {e}");
+        ProtocolInputs::empty()
+    });
+    if let Ok(manifest) = arc::spec::Manifest::load(dir) {
+        for view in crate::run::records_newest_first(dir, &manifest.name) {
+            if inputs.adopt_run(&view) {
+                break;
+            }
+        }
+    }
+    inputs
+}
+
+/// The window's hold on the panels a boot opened, when it opened any.
+fn panel_tiles_of(
+    panels: Option<ProtocolPanels>,
+    problem: Option<(PathBuf, OpenProblem)>,
+) -> Option<PanelTiles> {
+    match (panels, problem) {
+        (Some(panels), _) => {
+            let body = boot_tile_body(panels.tiles.len());
+            Some(PanelTiles::new(panels, body))
+        }
+        (None, Some((dir, problem))) => Some(PanelTiles::unopened(dir, problem)),
+        (None, None) => None,
+    }
+}
+
 /// Which occupant a window is being sized for. [`chrome_budget`] is its one
 /// reader.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1136,6 +1193,15 @@ pub struct Boot {
     /// `open_protocol_path` already made for the front door's row, moved
     /// somewhere both routes reach.
     pub opened_id: Option<String>,
+    /// **An arc Protocol's own panels**, loaded for the canvas to draw as
+    /// tiles, when this boot opened a Protocol whose `panels/` holds a panel
+    /// Brightfield did not write — see [`Boot::agent_protocol`]. Both
+    /// documents are empty beside it: the tiles are the window's content.
+    pub panels: Option<ProtocolPanels>,
+    /// A Protocol that took the agent-panels route and did not open for its
+    /// panels, with why: one that has not run, whose tiles offer a Run, and
+    /// one whose database a run holds, which opens when the run ends.
+    pub panels_problem: Option<(PathBuf, OpenProblem)>,
 }
 
 impl Boot {
@@ -1153,6 +1219,8 @@ impl Boot {
             flow: Flow::Vertical,
             focus: None,
             opened_id: None,
+            panels: None,
+            panels_problem: None,
         }
     }
 
@@ -1170,6 +1238,20 @@ impl Boot {
             flow,
             focus,
             opened_id: None,
+            panels: None,
+            panels_problem: None,
+        }
+    }
+
+    /// Open an arc Protocol's own panels as tiles, with both documents
+    /// empty: the route [`Boot::open`] takes for a Protocol whose `panels/`
+    /// holds a panel Brightfield did not write.
+    #[must_use]
+    pub fn agent_protocol(panels: ProtocolPanels, flow: Flow) -> Self {
+        Self {
+            panels: Some(panels),
+            flow,
+            ..Self::empty()
         }
     }
 
@@ -1200,6 +1282,8 @@ impl Boot {
             flow: Flow::Vertical,
             focus: None,
             opened_id: None,
+            panels: None,
+            panels_problem: None,
         }
     }
 
@@ -1270,7 +1354,9 @@ impl Boot {
     /// nothing left to default.
     #[must_use]
     pub fn graph_on_canvas(&self) -> bool {
-        graph_takes_the_canvas(!self.protocol.graph_full.nodes.is_empty(), self.has_chart())
+        // A Protocol's panel tiles hold the canvas, whatever its graph holds.
+        !self.opens_agent_panels()
+            && graph_takes_the_canvas(!self.protocol.graph_full.nodes.is_empty(), self.has_chart())
     }
 
     /// Whether the chart document this boot loaded has a picture in it.
@@ -1295,6 +1381,15 @@ impl Boot {
         self.composed.width == 0
             && self.composed.height == 0
             && self.protocol.graph_full.nodes.is_empty()
+            && self.panels.is_none()
+            && self.panels_problem.is_none()
+    }
+
+    /// Whether this boot opened an arc Protocol's own panels, or one that took
+    /// that route and did not open for them.
+    #[must_use]
+    pub const fn opens_agent_panels(&self) -> bool {
+        self.panels.is_some() || self.panels_problem.is_some()
     }
 
     /// Open the data file at `chosen` as the dashboard generated for it.
@@ -1512,6 +1607,56 @@ impl Boot {
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .to_path_buf();
+        // **A Protocol an agent drew panels for opens as those panels**, ahead
+        // of the three shapes below and whatever its steps' shape: its
+        // `panels/` holds a panel other than the one chart file Brightfield
+        // writes for it (`protocol_panels::agent_panels_in`), so the panels are
+        // the picture its author made, and a dashboard generated over its data
+        // file would draw over them. A one-step or generated Protocol whose
+        // `panels/` holds only Brightfield's own file is not one, and opens as
+        // it always has. The tables the panels read are the run's, so nothing
+        // here reads the data file or renders the declaration.
+        if brightfield_protocol::is_protocol_manifest(&text)
+            && crate::protocol_panels::agent_panels_in(&dir)
+        {
+            if sample.is_some() {
+                return Err(format!(
+                    "{spec}: a sample rate is pushed into a plot's own query, and a Protocol's \
+                     panels are drawn from its run's tables as written. Open it without the flag."
+                ));
+            }
+            let body = boot_tile_body(crate::protocol_panels::panel_count(&dir));
+            let inputs = agent_protocol_inputs(&dir);
+            let boot = match crate::protocol_panels::load(&dir, crate::panel_tiles::viewport(body))
+            {
+                Ok(panels) => {
+                    for tile in &panels.tiles {
+                        if let Err(problems) = &tile.outcome {
+                            for problem in problems {
+                                eprintln!("{}: {}", tile.file.display(), problem.message());
+                            }
+                        }
+                    }
+                    Self {
+                        protocol: inputs,
+                        ..Self::agent_protocol(panels, flow)
+                    }
+                }
+                Err(problem) => {
+                    eprintln!("{spec}: {}", problem.message());
+                    Self {
+                        panels_problem: Some((dir, problem)),
+                        protocol: inputs,
+                        flow,
+                        ..Self::empty()
+                    }
+                }
+            };
+            return Ok(Self {
+                opened_id: Some(remembered_id(spec)),
+                ..boot
+            });
+        }
         if let Some(data) = crate::one_step::data_file_named_by(&text, &dir) {
             if sample.is_some() {
                 return Err(format!(
@@ -1634,7 +1779,13 @@ impl Boot {
     /// capture tiers, which have no monitor and must not acquire one, do not.
     #[must_use]
     pub fn window_size(&self) -> (f32, f32) {
-        if self.graph_on_canvas() {
+        if self.opens_agent_panels() {
+            // The tiles reflow to whatever canvas they are given, so there is
+            // no natural size to read off them: the window a first launch
+            // opens at, which is the size they are held readable at.
+            let [w, h] = WindowGeometry::default().size;
+            (w, h)
+        } else if self.graph_on_canvas() {
             // The ENVELOPE, not the boot canvas. Sizing to the boot canvas
             // fitted the graph the window opens on and nothing else: every
             // state one keystroke away overflowed and stayed overflowed,
@@ -1665,7 +1816,9 @@ impl Boot {
     /// at this call stays wrong until one of those runs.
     #[must_use]
     pub fn title(&self) -> String {
-        if self.graph_on_canvas() {
+        if let Some(panels) = &self.panels {
+            format!("Protocol · {}", panels.name)
+        } else if self.graph_on_canvas() {
             format!("Protocol · {}", self.protocol.protocol)
         } else {
             self.composed
@@ -1694,6 +1847,18 @@ impl Boot {
     pub fn describe(&self) -> String {
         if self.is_empty() {
             return "nothing open".to_string();
+        }
+        if let Some(panels) = &self.panels {
+            let drew = panels.tiles.iter().filter(|t| t.outcome.is_ok()).count();
+            return format!(
+                "protocol {} panels ({} of {} drawn)",
+                panels.name,
+                drew,
+                panels.tiles.len()
+            );
+        }
+        if let Some((dir, _)) = &self.panels_problem {
+            return format!("protocol panels at {} (not opened)", dir.display());
         }
         if self.graph_on_canvas() {
             format!(
@@ -2526,6 +2691,23 @@ pub struct MeridianApp {
     /// copy of the composing logic. Empty on a frame the rail drew nothing,
     /// which is most frames — the rail is quiet when there is nothing to say.
     rail: chrome::StatusDrawn,
+    /// **An arc Protocol's own panels, as tiles**, when the window opened one
+    /// — see [`Boot::agent_protocol`]. While no tile is open the canvas draws
+    /// these and both documents stay empty; a tile opened is the chart
+    /// document, under [`crate::panel_tiles::back_band`].
+    tiles: Option<PanelTiles>,
+    /// Whether [`Self::apply_rail_defaults`] shut the navigator for panel
+    /// tiles, so the next document opens it again.
+    rails_shut_for_tiles: bool,
+    /// Where the locator band drew the Protocol's crumb as the way back to
+    /// every panel tile, on the last frame that drew one.
+    crumb_link_rect: Option<egui::Rect>,
+    /// Whether a widget held the keyboard at the end of the last frame drawn:
+    /// what tells an Esc that leaves a field from one that leaves a panel.
+    keyboard_held: bool,
+    /// The panel tile open when the OS window was last titled, so a tile
+    /// opened or closed re-titles it.
+    titled_tile: Option<usize>,
 }
 
 impl MeridianApp {
@@ -2571,6 +2753,7 @@ impl MeridianApp {
         mode: Mode,
     ) -> Self {
         let opened_id = boot.opened_id.clone();
+        let tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         let mut doc = ChartDoc::new(boot.composed, chart_host);
         if let Some(live) = boot.live {
             doc.attach_live(live);
@@ -2588,6 +2771,7 @@ impl MeridianApp {
             layout,
             doc,
             ProtocolDoc::new(model, protocol_host),
+            tiles,
             mode,
         )
     }
@@ -2616,6 +2800,7 @@ impl MeridianApp {
     #[must_use]
     pub fn headless_with_layout(boot: Boot, layout: SavedLayout, mode: Mode) -> Self {
         let opened_id = boot.opened_id.clone();
+        let tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         let mut doc = ChartDoc::headless(boot.composed);
         if let Some(live) = boot.live {
             doc.attach_live(live);
@@ -2633,6 +2818,7 @@ impl MeridianApp {
             layout,
             doc,
             ProtocolDoc::headless(model),
+            tiles,
             mode,
         )
     }
@@ -2641,12 +2827,14 @@ impl MeridianApp {
     /// [`Boot::opened_id`] — the id, if the route that built the boot knew
     /// one, `layout` is consulted under to seed the grid pane's opening
     /// state; see that field's own docs for who sets it and why.
+    #[allow(clippy::too_many_arguments)]
     fn assemble(
         focus: Option<String>,
         opened_id: Option<String>,
         mut layout: SavedLayout,
         mut chart_doc: ChartDoc,
         mut protocol_doc: ProtocolDoc,
+        tiles: Option<PanelTiles>,
         mode: Mode,
     ) -> Self {
         // Both registries' vocabularies, published before any layout file
@@ -2857,6 +3045,14 @@ impl MeridianApp {
             diagnostic_banners: Vec::new(),
             toasts: ToastLayer::new(),
             rail: chrome::StatusDrawn::default(),
+            // In place before the reconcile and the rail defaults below, so
+            // the one pass of each sees them and the grid's spot, put through
+            // its move after the defaults, has the last word on the ledger.
+            tiles,
+            rails_shut_for_tiles: false,
+            crumb_link_rect: None,
+            keyboard_held: false,
+            titled_tile: None,
         };
         // What the canvas holds, before the first frame and from the same two
         // documents the arrangement above was derived from.
@@ -3094,6 +3290,12 @@ impl MeridianApp {
     /// itself. Opening a second file therefore comes back to the new table's
     /// dashboard from the graph exactly as it does from a grid.
     fn reconcile_canvas_holds(&mut self) {
+        // A Protocol's panel tiles, or the panel opened from one, hold the
+        // canvas: the graph lists in the rail and is nobody's canvas here.
+        if self.tiles.is_some() {
+            self.canvas_holds = CanvasHolds::Chart;
+            return;
+        }
         if graph_takes_the_canvas(
             self.protocol.doc.model.has_assets(),
             !self.charts.doc.is_empty(),
@@ -3277,6 +3479,11 @@ impl MeridianApp {
         // "Brightfield"), so this fixes the reached-from-a-graph case.
         if self.front_door_is_live() {
             return "Brightfield".to_string();
+        }
+        if self.tiles.is_some() {
+            // The Protocol, and the panel open from its tile when one is: the
+            // crumbs the locator band draws, joined.
+            return self.crumb_line().join(" \u{203a} ");
         }
         if self.graph_on_canvas() {
             format!("Protocol · {}", self.protocol.doc.model.protocol)
@@ -3462,6 +3669,16 @@ impl MeridianApp {
     /// the caret on the Operator pane over a chart document that has since
     /// taken the canvas. The inspector rail's own default is the ledger's,
     /// copied rather than re-derived from a rule of its own.
+    ///
+    /// These are defaults, and a saved layout's grid spot comes after them:
+    /// [`Self::assemble`] applies them and then puts the restored grid spot
+    /// through [`Self::set_grid_spot`], which opens the ledger when the spot
+    /// is the ledger. So a saved layout that puts the grid in the ledger opens
+    /// the ledger at boot even beside a Protocol's panel tiles, which would
+    /// otherwise keep it shut: where the reader put the grid is the reader's
+    /// own choice, and it wins over the tiles' default. A later call, on a
+    /// document swap or on the way back from an open tile, applies the
+    /// defaults alone.
     fn apply_rail_defaults(&mut self) {
         if self.ledger_opens_collapsed() {
             self.collapsed.insert(arrangement::LEDGER_RAIL);
@@ -3474,6 +3691,29 @@ impl MeridianApp {
             self.protocol.doc.model.has_assets(),
             !self.charts.doc.is_empty(),
         ));
+        // **A Protocol's panel tiles take the window's width.** The ledger
+        // and the inspector have nothing to say about the tiles, so they stay
+        // shut while the tiles hold the canvas. The navigator lists the
+        // Protocol's steps and tables; it opens shut, so two tiles stand side
+        // by side at the default window size, and stays as the reader leaves
+        // it after that. It opens again with the next document.
+        match &self.tiles {
+            Some(tiles) => {
+                if tiles.selected().is_none() {
+                    self.collapsed.insert(arrangement::LEDGER_RAIL);
+                    self.collapsed.insert(arrangement::INSPECTOR_RAIL);
+                }
+                if !self.rails_shut_for_tiles {
+                    self.collapsed.insert(arrangement::NAVIGATOR_RAIL);
+                }
+                self.rails_shut_for_tiles = true;
+            }
+            None if self.rails_shut_for_tiles => {
+                self.collapsed.remove(&arrangement::NAVIGATOR_RAIL);
+                self.rails_shut_for_tiles = false;
+            }
+            None => {}
+        }
     }
 
     /// Where the document on the canvas came from, for the locator band's
@@ -3487,6 +3727,11 @@ impl MeridianApp {
     /// photographs this band would be a baseline of one developer's home
     /// directory. The file name is the part the reader wrote.
     fn document_source(&self) -> Option<String> {
+        // A Protocol's panel is named as its tile names it, without `.yaml`;
+        // its path is the tooltip ([`Self::document_source_about`]).
+        if let Some(file) = self.open_tile_file() {
+            return Some(crate::panel_tiles::panel_name(&file));
+        }
         self.charts
             .doc
             .spec_path
@@ -3508,6 +3753,18 @@ impl MeridianApp {
     /// which is also the fallback for a view whose node the graph no longer
     /// knows.
     fn crumb_line(&self) -> Vec<String> {
+        // A Protocol's panel open from its tile: the Protocol, then the panel.
+        if let Some(tiles) = &self.tiles {
+            let protocol = format!("Protocol \u{b7} {}", tiles.name());
+            let open = tiles.panels().and_then(|panels| {
+                let tile = panels.tiles.get(tiles.selected()?)?;
+                Some(crate::panel_tiles::panel_name(&tile.file))
+            });
+            return match open {
+                Some(panel) => vec![protocol, panel],
+                None => vec![protocol],
+            };
+        }
         match self.canvas_holds() {
             CanvasHolds::Graph => vec!["Protocol".to_string()],
             CanvasHolds::View { node, view } => self
@@ -3936,7 +4193,7 @@ impl MeridianApp {
     /// outcompeted by content the moment either document has any.
     #[must_use]
     pub fn front_door_is_live(&self) -> bool {
-        self.charts.doc.is_empty() && !self.protocol.doc.model.has_assets()
+        self.charts.doc.is_empty() && !self.protocol.doc.model.has_assets() && self.tiles.is_none()
     }
 
     /// The rect the front door drew the gallery card for the start `id` at,
@@ -4151,8 +4408,25 @@ impl MeridianApp {
 
     /// Bring the Versions panel's listing up to date for a frame in which it is,
     /// or is not, the panel the ledger rail shows.
+    ///
+    /// The file listed is the panel open from its tile when one is, since that
+    /// is the file a Save writes ([`Self::save_panel_tile`]), and otherwise
+    /// Brightfield's own chart file beside the Protocol.
     fn sync_versions(&mut self, shown: bool) {
+        let tile = self.open_tile_path().zip(
+            self.tiles
+                .as_ref()
+                .and_then(PanelTiles::panels)
+                .map(|panels| panels.dir.clone()),
+        );
         let source = self.history.as_ref().and_then(|store| {
+            if let Some((file, dir)) = tile {
+                return Some(crate::versions::Source {
+                    store: store.clone(),
+                    file,
+                    dir,
+                });
+            }
             let protocol = self.protocol.doc.model.source()?;
             Some(crate::versions::Source {
                 store: store.clone(),
@@ -4298,6 +4572,9 @@ impl MeridianApp {
         // reloads the Protocol document, and a frame should draw the state the
         // run left rather than one frame of the state before it.
         self.poll_run(&ctx);
+        // A Protocol's panel tiles, when its newest run is not the one they
+        // were drawn from: for the reason a finished run lands here.
+        self.poll_panel_tiles(&ctx);
         // A count of a kept statement's rows that arrived since the last
         // frame, for the spine row that says it.
         self.poll_typed_counts();
@@ -4329,6 +4606,13 @@ impl MeridianApp {
         let marked = self.charts.doc.has_unsaved_work();
         if marked != self.title_marked {
             self.title_marked = marked;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        }
+        // …and when a Protocol's panel opened from its tile, or the tiles came
+        // back, since the last frame: the title is the crumbs, which moved.
+        let open_tile = self.tiles.as_ref().and_then(PanelTiles::selected);
+        if open_tile != self.titled_tile {
+            self.titled_tile = open_tile;
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         }
 
@@ -4444,6 +4728,8 @@ impl MeridianApp {
         // The Versions panel's keys, on the same terms: with the panel focused
         // its keys are the cursor's, the step back's and the way back to now.
         self.versions_keys(&ctx, graph_on_canvas);
+        // Esc back to every panel tile, from a panel opened from one.
+        self.tile_back_key(&ctx);
         // The frame verbs, on the same gate and only where the chart holds the
         // canvas: they are bare keys, so an overlay or a text field must own
         // the keyboard first.
@@ -4666,14 +4952,34 @@ impl MeridianApp {
             let crumbs = self.crumb_line();
             let counts = self.locator_counts();
             let source = self.document_source();
+            let source_about = self.document_source_about();
+            // With a Protocol's panel open from its tile, the Protocol's crumb
+            // is the way back to every tile.
+            let crumb_link = self
+                .tiles
+                .as_ref()
+                .is_some_and(|tiles| tiles.selected().is_some());
+            let mut crumb_back = false;
             let drawn = Panel::top(panel_id(locator, false))
                 .resizable(false)
                 .exact_size(band_extent(locator))
                 .frame(chrome::region_frame(locator.frame, ui, mode))
                 .show(ui, |ui| {
-                    locator_band_ui(ui, &crumbs, counts.as_deref(), source.as_deref(), mode)
+                    locator_band_ui(
+                        ui,
+                        &crumbs,
+                        counts.as_deref(),
+                        source.as_deref(),
+                        source_about.as_deref(),
+                        crumb_link,
+                        mode,
+                    )
                 });
             self.regions.push((locator.id, drawn.response.rect));
+            self.crumb_link_rect = drawn.inner.map(|(rect, _)| rect);
+            if drawn.inner.is_some_and(|(_, clicked)| clicked) {
+                crumb_back = true;
+            }
 
             // The key-hint band belongs to a key grammar, so it is drawn where
             // there is one. The chart projections have no bare-key grammar, and
@@ -4841,11 +5147,20 @@ impl MeridianApp {
                         && projections[projection].item == CHART
                         && self.charts.doc.stacked_tiles().is_some()));
             self.charts.doc.begin_grid_frame();
-            let (ws, charts, protocol, affordances) = (
+            // The panel file of the tile open as the chart document, when one
+            // is: the canvas draws the way back to every tile above it.
+            let open_tile_file: Option<PathBuf> = self.tiles.as_ref().and_then(|tiles| {
+                let panels = tiles.panels()?;
+                Some(panels.tiles.get(tiles.selected()?)?.file.clone())
+            });
+            let mut tile_action: Option<TilesAction> = None;
+            let mut tile_back = false;
+            let (ws, charts, protocol, affordances, tiles) = (
                 self.layout.workspace_mut(),
                 &mut self.charts,
                 &mut self.protocol,
                 &mut self.affordances,
+                &mut self.tiles,
             );
             // A region draws its occupant under its own strip, so the pane's
             // header band is suppressed the same way a tab strip suppresses
@@ -5178,7 +5493,15 @@ impl MeridianApp {
                     // The graph canvas keeps it. Its occupant is one pane
                     // drawing a whole DAG, not a group of panes with headers,
                     // so the band is the only thing naming what is on it.
-                    if graph_on_canvas {
+                    if let Some(tiles) = tiles.as_mut().filter(|t| t.selected().is_none()) {
+                        // **An arc Protocol's own panels, as tiles**, across
+                        // the whole canvas. Both documents are empty, so no
+                        // grid and no page stands here.
+                        charts.doc.grid_density = None;
+                        canvas_scroll = 0.0;
+                        let area = ui.max_rect();
+                        tile_action = tiles.ui(ui, area, charts.doc.canvas_host(), mode);
+                    } else if graph_on_canvas {
                         // No grid is drawn on this branch, and a density left
                         // standing from a previous frame is what a stale one
                         // looks like.
@@ -5232,7 +5555,17 @@ impl MeridianApp {
                             affordances,
                         );
                     } else {
-                        let body = ui.max_rect();
+                        let mut body = ui.max_rect();
+                        // A tile open as the chart: the way back to every tile,
+                        // in a band above it, and the chart in what is left.
+                        if let Some(file) = &open_tile_file {
+                            let band = egui::Rect::from_min_size(
+                                body.min,
+                                egui::vec2(body.width(), crate::panel_tiles::back_band_height()),
+                            );
+                            tile_back = crate::panel_tiles::back_band(ui, band, file, mode);
+                            body.min.y = band.max.y;
+                        }
                         let item = projections[projection].item;
                         // A generated dashboard is a hero beside a column, and
                         // the canvas draws it as the pane group that is. Any
@@ -5468,6 +5801,18 @@ impl MeridianApp {
             if picks.run {
                 self.run_protocol(&ctx);
             }
+            match tile_action {
+                Some(TilesAction::Open(index)) => {
+                    self.open_panel_tile(index);
+                }
+                Some(TilesAction::Run) => {
+                    self.run_protocol(&ctx);
+                }
+                None => {}
+            }
+            if tile_back || crumb_back {
+                self.back_to_panel_tiles();
+            }
             for id in picks.collapse {
                 if !self.collapsed.remove(&id) {
                     self.collapsed.insert(id);
@@ -5528,6 +5873,7 @@ impl MeridianApp {
         self.notifications.show(&ctx);
         self.toasts.show(&ctx);
 
+        self.keyboard_held = ctx.memory(|m| m.focused().is_some());
         self.sweep();
     }
 
@@ -6571,7 +6917,10 @@ impl MeridianApp {
     /// `going_home_takes_the_save_offer_with_the_start` walks one window from
     /// a data file, to the front door, and into a shipped start.
     fn open_chart_search(&mut self) {
-        let allow = crate::overlays::chart_palette_verbs(self.has_protocol_to_save());
+        // A Protocol's panels save and run through the same two verbs.
+        let allow = crate::overlays::chart_palette_verbs(
+            self.has_protocol_to_save() || self.tiles.is_some(),
+        );
         self.overlay = Some(Overlay::Palette(Picker::new(
             CommandPalette::new_restricted(Altitude::View, self.recency.clone(), &allow),
         )));
@@ -7334,6 +7683,16 @@ impl MeridianApp {
     /// Why it could not be kept: a window with no Protocol to keep the
     /// chart's versions beside, and [`ChartDoc::keep_unsaved_beside`]'s.
     fn keep_unsaved(&mut self) -> Result<(), String> {
+        // A Protocol's panel open from its tile is kept as a version of its
+        // own file, the file its Save records versions against.
+        if let Some(file) = self.open_tile_path() {
+            let kept = self
+                .charts
+                .doc
+                .keep_unsaved_at(&file, self.history.as_ref());
+            self.charts.doc.versions_mut().invalidate();
+            return kept;
+        }
         let Some(source) = self.protocol.doc.model.source() else {
             return Err(NO_PROTOCOL_TO_KEEP_BESIDE.to_string());
         };
@@ -8062,6 +8421,7 @@ impl MeridianApp {
         if self.front_door_is_live() {
             return;
         }
+        self.tiles = None;
         self.open_chart(Composed::empty());
         self.protocol.doc.open(ProtocolInputs::empty());
         // Going Home is a document swap, so the fetched files go with the
@@ -8249,6 +8609,9 @@ impl MeridianApp {
     /// that would quietly stop being true if there were two tails.
     fn land_start(&mut self, ctx: &egui::Context, id: &'static str, opened: crate::starts::Opened) {
         let banner = NotificationId::composite("open-start", id);
+        // A start is a new document, and a Protocol's panel tiles are the
+        // outgoing one's.
+        self.tiles = None;
         match opened {
             // A new chart document is a new set of things to say, and a
             // reason to stop saying the last one's.
@@ -8400,6 +8763,7 @@ impl MeridianApp {
     /// everything else that belonged to the outgoing document, so each of them
     /// has to be put back **after** it rather than before.
     fn adopt_boot(&mut self, boot: Boot) {
+        self.tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         self.open_chart(boot.composed);
         if let Some(live) = boot.live {
             self.charts.doc.attach_live(live);
@@ -8558,6 +8922,12 @@ impl MeridianApp {
     /// is listed on the next launch and the Protocols section leads with it —
     /// which is the whole of what saving buys a reader who closes the window.
     pub fn save_protocol(&mut self, ctx: &egui::Context) -> Option<Result<PathBuf, String>> {
+        // A Protocol's panel open from its tile is saved to its own file: the
+        // Protocol around it is the agent's, and this window writes nothing
+        // else of it.
+        if let Some(saved) = self.save_panel_tile(ctx) {
+            return Some(saved);
+        }
         let banner = NotificationId::new("save-protocol");
         let source = self.protocol.doc.model.source()?.clone();
         let written = source
@@ -8891,12 +9261,25 @@ impl MeridianApp {
     /// failure's words rather than stacking beside them, and a Save that
     /// writes the chart takes it down.
     fn save_chart_beside_protocol(&mut self, source: &crate::one_step::OneStepProtocol) {
-        let banner = NotificationId::new("save-chart");
-        let history_banner = NotificationId::new("save-history");
         let saved =
             self.charts
                 .doc
                 .save_chart_beside(&source.dir, &source.name, self.history.as_ref());
+        let _ = self.say_chart_saved(saved);
+    }
+
+    /// What a chart Save came to, said: the chart banner for a chart that was
+    /// not written, and the history banner for a version that was not
+    /// recorded. Each banner is keyed, so a second failed Save replaces the
+    /// first failure's words rather than stacking beside them, and a Save that
+    /// writes the chart takes it down. Answers whether the chart was written,
+    /// with the reason when it was not.
+    fn say_chart_saved(
+        &mut self,
+        saved: Result<Option<brightfield_protocol::NotRecorded>, crate::app::ChartSaveError>,
+    ) -> Result<(), String> {
+        let banner = NotificationId::new("save-chart");
+        let history_banner = NotificationId::new("save-history");
         // A Save may have recorded a version; the panel reads the store again.
         self.charts.doc.versions_mut().invalidate();
         match saved {
@@ -8921,6 +9304,7 @@ impl MeridianApp {
                         );
                     }
                 }
+                Ok(())
             }
             Err(e) => {
                 eprintln!("could not save the chart: {e}");
@@ -8928,8 +9312,237 @@ impl MeridianApp {
                     Notification::new(banner, Severity::Error, "Could not save this chart")
                         .body(e.to_string()),
                 );
+                Err(e.to_string())
             }
         }
+    }
+
+    /// **Save the Protocol panel open from its tile, to its own file**:
+    /// `None` when no tile is open, so [`Self::save_protocol`] goes on to the
+    /// Protocol Brightfield writes.
+    ///
+    /// The edits held since the tile opened are placed into the panel file's
+    /// text and written through [`ChartDoc::save_chart_at`], which takes out
+    /// the snapshot's table entries the tile was drawn with; a version is
+    /// recorded as for Brightfield's own chart file.
+    fn save_panel_tile(&mut self, ctx: &egui::Context) -> Option<Result<PathBuf, String>> {
+        let file = self.open_tile_path()?;
+        let saved = self.charts.doc.save_chart_at(&file, self.history.as_ref());
+        let said = self.say_chart_saved(saved).map(|()| {
+            let name = file.file_name().map_or_else(
+                || file.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            self.toasts
+                .push(Toast::new(Severity::Success, format!("Saved {name}")));
+            file
+        });
+        ctx.request_repaint();
+        Some(said)
+    }
+
+    /// Where the locator band drew the Protocol's crumb as a link back to
+    /// every panel tile, on the last frame that drew one — a test hook.
+    #[must_use]
+    pub fn crumb_link_rect(&self) -> Option<egui::Rect> {
+        self.crumb_link_rect
+    }
+
+    /// **Esc goes back from a panel open from its tile to every tile**, as the
+    /// next rung of the Esc ladder: an overlay, a field holding the keyboard,
+    /// the shelf and a selection each take the key first.
+    fn tile_back_key(&mut self, ctx: &egui::Context) {
+        let open = self
+            .tiles
+            .as_ref()
+            .is_some_and(|tiles| tiles.selected().is_some());
+        // A widget that held the keyboard at the end of the last frame takes
+        // this Esc as its way out: egui lets go of the focused widget on a
+        // bare Esc as the frame begins, so the focus asked about below has
+        // already gone by the time this runs.
+        if !open
+            || self.keyboard_held
+            || self.overlay.is_some()
+            || ctx.egui_wants_keyboard_input()
+            || self.shelf_holds_keys()
+            || self.charts.doc.selection_active()
+        {
+            return;
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.back_to_panel_tiles();
+            ctx.request_repaint();
+        }
+    }
+
+    /// The open tile's panel file, relative to its Protocol, when one is open.
+    fn open_tile_file(&self) -> Option<PathBuf> {
+        let tiles = self.tiles.as_ref()?;
+        let panels = tiles.panels()?;
+        Some(panels.tiles.get(tiles.selected()?)?.file.clone())
+    }
+
+    /// What the locator band's source says when it is hovered: the open
+    /// panel's path and kind, the tooltip its tile carries.
+    fn document_source_about(&self) -> Option<String> {
+        self.open_tile_file()
+            .map(|file| crate::panel_tiles::panel_about(&file))
+    }
+
+    /// The panel file of the tile open as the chart document, when one is.
+    fn open_tile_path(&self) -> Option<PathBuf> {
+        let tiles = self.tiles.as_ref()?;
+        let panels = tiles.panels()?;
+        Some(panels.dir.join(&panels.tiles.get(tiles.selected()?)?.file))
+    }
+
+    /// The window's hold on an arc Protocol's own panels, when it opened one —
+    /// a test hook, and what the canvas draws while no tile is open.
+    #[must_use]
+    pub fn panel_tiles(&self) -> Option<&PanelTiles> {
+        self.tiles.as_ref()
+    }
+
+    /// **Open the tile at `index` as the chart document**: its panel as a live
+    /// dashboard over the snapshot the tiles were drawn from, so it answers a
+    /// brush, a click and an axis edit as any chart does, and Save writes the
+    /// panel's own file. A tile that holds problems has no chart to open.
+    ///
+    /// Answers whether the tile opened. A panel that will not load live says
+    /// why in a banner, and the tiles stay.
+    pub fn open_panel_tile(&mut self, index: usize) -> bool {
+        let opened = {
+            let Some(panels) = self.tiles.as_ref().and_then(PanelTiles::panels) else {
+                return false;
+            };
+            let Some(tile) = panels.tiles.get(index).filter(|t| t.outcome.is_ok()) else {
+                return false;
+            };
+            let file = panels.dir.join(&tile.file);
+            let file = std::path::absolute(&file).unwrap_or(file);
+            let tables = crate::protocol_panels::protocol_tables(&tile.source);
+            panels
+                .live_tile(index)
+                .map(|(live, composed)| (file, tables, live, composed))
+        };
+        let banner = NotificationId::new("open-panel");
+        match opened {
+            Ok((file, tables, live, composed)) => {
+                self.notifications.dismiss(banner);
+                self.open_chart(composed);
+                self.charts.doc.attach_live(live);
+                self.charts.doc.spec_path = Some(file);
+                self.charts.doc.protocol_tables = tables;
+                self.charts.doc.wire_watch();
+                if let Some(tiles) = self.tiles.as_mut() {
+                    tiles.select(Some(index));
+                }
+                self.documents_changed();
+                true
+            }
+            Err(e) => {
+                eprintln!("could not open the panel: {e}");
+                self.notifications.raise(
+                    Notification::new(banner, Severity::Error, "Could not open this panel").body(e),
+                );
+                false
+            }
+        }
+    }
+
+    /// **Go back from a tile open as the chart to every tile**, drawn again
+    /// from the Protocol's newest run so a panel saved meanwhile shows as
+    /// saved. Held while the open panel has edits no file holds, with a banner
+    /// saying so: going back would drop them unsaid.
+    pub fn back_to_panel_tiles(&mut self) -> bool {
+        if self.tiles.as_ref().and_then(PanelTiles::selected).is_none() {
+            return false;
+        }
+        let banner = NotificationId::new("panel-unsaved");
+        if self.charts.doc.has_unsaved_work() {
+            self.notifications.raise(
+                Notification::new(banner, Severity::Warning, "This panel has unsaved edits")
+                    .body("Save the panel, or undo its edits, before going back to every panel."),
+            );
+            return false;
+        }
+        self.notifications.dismiss(banner);
+        // The open panel's session reads the snapshot; it goes before the
+        // snapshot is made again.
+        self.open_chart(Composed::empty());
+        let moved = self.tiles.as_mut().is_some_and(PanelTiles::reload);
+        if moved {
+            self.refresh_agent_protocol();
+        }
+        self.documents_changed();
+        true
+    }
+
+    /// Reload the panel tiles when the Protocol's newest run is not the one
+    /// they were drawn from, looked at on [`crate::panel_tiles::RUN_CHECK_EVERY`]'s
+    /// cadence. Not while a tile is open as the chart: its session reads the
+    /// snapshot a reload would replace, so the reload waits for the way back.
+    fn poll_panel_tiles(&mut self, ctx: &egui::Context) {
+        // While a tile is open nothing is checked, so nothing is scheduled.
+        let Some(tiles) = self.tiles.as_mut().filter(|t| t.selected().is_none()) else {
+            return;
+        };
+        ctx.request_repaint_after(crate::panel_tiles::RUN_CHECK_EVERY);
+        if tiles.reload_due() {
+            // The rails are read again when `PanelTiles::reload` says what
+            // they read may have moved
+            // (`panels_added_to_a_protocol_without_any_open_as_tiles`), and
+            // not on every reload, since reading them resets the rail's
+            // cursor and what it expanded.
+            if tiles.reload() {
+                self.refresh_agent_protocol();
+            }
+            ctx.request_repaint();
+        }
+    }
+
+    /// Read the panel tiles' Protocol into the rails again, after a reload or
+    /// a run: its steps and their newest run, as [`agent_protocol_inputs`]
+    /// reads them on the way in.
+    fn refresh_agent_protocol(&mut self) {
+        let Some(dir) = self.tiles.as_ref().map(|t| t.dir().to_path_buf()) else {
+            return;
+        };
+        self.protocol.doc.open(agent_protocol_inputs(&dir));
+    }
+
+    /// [`Self::run_protocol`] over a Protocol whose panels the window holds
+    /// as tiles: `arc run` on its folder as written, since the agent wrote
+    /// the folder and the window does not write its spec first, as it does
+    /// for one of its own. The tiles reload when the run lands.
+    fn run_panel_protocol(&mut self, ctx: &egui::Context) -> bool {
+        let Some((dir, name)) = self
+            .tiles
+            .as_ref()
+            .map(|t| (t.dir().to_path_buf(), t.name().to_string()))
+        else {
+            return false;
+        };
+        if self.run_in_progress() {
+            return true;
+        }
+        let banner = NotificationId::new("run-protocol");
+        let Some(runner) = self.runner.as_ref() else {
+            eprintln!("could not run the Protocol: no runner");
+            self.notifications.raise(
+                Notification::new(banner, Severity::Error, "Could not run this Protocol")
+                    .body("this window was started without a runner to hand the run to"),
+            );
+            return false;
+        };
+        self.notifications.dismiss(banner);
+        let wake = ctx.clone();
+        self.running = Some(PendingRun {
+            run: crate::run::Run::begin(runner, &dir, move || wake.request_repaint()),
+            protocol: name,
+        });
+        ctx.request_repaint();
+        true
     }
 
     /// **Run the Protocol this window holds** — the `run-protocol` verb, and
@@ -8958,7 +9571,7 @@ impl MeridianApp {
     /// second press while it runs is the same press.
     pub fn run_protocol(&mut self, ctx: &egui::Context) -> bool {
         let Some(source) = self.protocol.doc.model.source().cloned() else {
-            return false;
+            return self.run_panel_protocol(ctx);
         };
         if self.run_in_progress() {
             return true;
@@ -9029,6 +9642,10 @@ impl MeridianApp {
             .model
             .source()
             .is_some_and(|source| source.dir == dir && source.name == protocol)
+            || self
+                .tiles
+                .as_ref()
+                .is_some_and(|tiles| tiles.dir() == dir && tiles.name() == protocol)
     }
 
     /// Land a run that has finished, if one has.
@@ -9055,6 +9672,29 @@ impl MeridianApp {
         let protocol = std::mem::take(&mut pending.protocol);
         self.running = None;
         if !self.holds_protocol(&dir, &protocol) {
+            return;
+        }
+        if let Some(tiles) = self.tiles.as_mut() {
+            // A Protocol drawn as panel tiles: the run's tables are what they
+            // draw, so they are drawn again from it.
+            if tiles.selected().is_none() {
+                tiles.reload();
+            }
+            // A run landed, so the run records the rails read have moved.
+            self.refresh_agent_protocol();
+            let banner = NotificationId::new("run-protocol");
+            if finished.succeeded && finished.record.is_some() {
+                self.notifications.dismiss(banner);
+                self.toasts
+                    .push(Toast::new(Severity::Success, format!("Ran {protocol}")));
+            } else {
+                eprintln!("the run of {protocol} did not finish:\n{}", finished.log);
+                self.notifications.raise(
+                    Notification::new(banner, Severity::Error, "The run did not finish")
+                        .body(finished.log.trim().to_string()),
+                );
+            }
+            ctx.request_repaint();
             return;
         }
         let Some(source) = self.protocol.doc.model.source().cloned() else {
@@ -9768,7 +10408,12 @@ impl MeridianApp {
     /// failure in the other direction is a leak, which is the safe one to be
     /// wrong in.
     fn sweep(&mut self) {
-        let panes: BTreeSet<PaneKey> = self.ws().panes().into_iter().collect();
+        let mut panes: BTreeSet<PaneKey> = self.ws().panes().into_iter().collect();
+        // The panel tiles' rasters live in the chart document's host, each in
+        // a slot of its own, and are presented only when a tile changes.
+        if let Some(tiles) = &self.tiles {
+            panes.extend(tiles.raster_keys());
+        }
         self.charts.doc.sweep(&panes);
         self.protocol.doc.sweep(&panes);
     }
@@ -12157,18 +12802,26 @@ fn locator_band_ui(
     crumbs: &[String],
     counts: Option<&str>,
     source: Option<&str>,
+    source_about: Option<&str>,
+    link_first: bool,
     mode: Mode,
-) {
+) -> Option<(egui::Rect, bool)> {
+    let mut link = None;
     let sem = semantic(mode.is_dark());
     let rect = ui.max_rect();
     if let Some(source) = source {
-        ui.painter().text(
+        let drawn = ui.painter().text(
             egui::pos2(rect.right() - spacing::SPACE_4, rect.center().y),
             egui::Align2::RIGHT_CENTER,
             source,
             egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0),
             chrome::colour(sem.text.muted),
         );
+        if let Some(about) = source_about {
+            let _ = ui
+                .interact(drawn, ui.id().with("locator-source"), egui::Sense::hover())
+                .on_hover_text(about);
+        }
     }
     let mut x = rect.left() + spacing::SPACE_4;
     for (i, crumb) in crumbs.iter().enumerate() {
@@ -12186,7 +12839,10 @@ fn locator_band_ui(
             );
             x += width + spacing::SPACE_3;
         }
-        let ink = if i + 1 == crumbs.len() {
+        let linked = link_first && i == 0;
+        let ink = if linked {
+            sem.borders.focus
+        } else if i + 1 == crumbs.len() {
             sem.text.primary
         } else {
             sem.text.secondary
@@ -12195,11 +12851,28 @@ fn locator_band_ui(
             .painter()
             .layout_no_wrap(crumb.clone(), ui_font(), chrome::colour(ink));
         let width = galley.size().x;
-        ui.painter().galley(
-            egui::pos2(x, rect.center().y - galley.size().y / 2.0),
-            galley,
-            chrome::colour(ink),
-        );
+        let at = egui::pos2(x, rect.center().y - galley.size().y / 2.0);
+        if linked {
+            // The crumb a reader goes back to: a link, underlined while the
+            // pointer is over it.
+            let hit = egui::Rect::from_min_size(at, galley.size());
+            let response = ui
+                .interact(
+                    hit,
+                    ui.id().with("locator-crumb-link"),
+                    egui::Sense::click(),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Back to every panel");
+            if response.hovered() {
+                ui.painter().line_segment(
+                    [hit.left_bottom(), hit.right_bottom()],
+                    egui::Stroke::new(1.0, chrome::colour(ink)),
+                );
+            }
+            link = Some((hit, response.clicked()));
+        }
+        ui.painter().galley(at, galley, chrome::colour(ink));
         x += width + spacing::SPACE_3;
     }
     if let Some(counts) = counts {
@@ -12214,6 +12887,7 @@ fn locator_band_ui(
             chrome::colour(sem.text.muted),
         );
     }
+    link
 }
 
 /// How wide the top bar's right-hand group would be if it drew: the renderer

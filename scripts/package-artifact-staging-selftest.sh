@@ -46,6 +46,10 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The DuckDB version fetch-duckdb-cli.sh pins, read from its own VERSION= line
+# so a bump there cannot be missed here.
+PINNED_DUCKDB="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$HERE/fetch-duckdb-cli.sh")"
+[ -n "$PINNED_DUCKDB" ] || { echo "no VERSION= line in fetch-duckdb-cli.sh" >&2; exit 1; }
 ROOT="$(cd "$HERE/.." && pwd)"
 
 if [ "$(uname -s)" != "Darwin" ]; then
@@ -202,7 +206,7 @@ attach_image() {
 
 # engine_in KIND -> 0 when the artifact holds the pinned CLI at the path
 # `staged_engine_beside` in crates/brightfield-shell/src/run.rs reads for that
-# layout, and it runs as v1.5.2; the reason it does not is appended to $out.
+# layout, and it runs as the pinned version; the reason it does not is appended to $out.
 LOOK="$TMP/look"
 engine_in() {
 	local kind="$1" root rel status=0 version
@@ -228,7 +232,7 @@ engine_in() {
 	else
 		version="$("$root/$rel" --version 2>&1)"
 		case "$version" in
-		"v1.5.2 "*) ;;
+		"${PINNED_DUCKDB} "*) ;;
 		*)
 			echo "the ${kind}'s engine answered --version with: ${version}" >>"$out"
 			status=1
@@ -475,13 +479,13 @@ broken_engine_case "the tarball's engine staging call is deleted" \
 echo "== packaging handed a duckdb that is not the pin"
 copy_checkout
 mkdir -p "$TMP/impostor"
-printf '#!/bin/sh\necho "v1.5.2 (impostor)"\n' >"$TMP/impostor/duckdb"
+printf '#!/bin/sh\necho "%s (impostor)"\n' "$PINNED_DUCKDB" >"$TMP/impostor/duckdb"
 chmod +x "$TMP/impostor/duckdb"
 ENGINE_ARG="$TMP/impostor"
 if run_packaging; then
 	echo "  FAIL packaging staged an engine whose sha256 is not the pin"
 	failures=$((failures + 1))
-elif ! grep -qF "is not the pinned DuckDB v1.5.2 CLI for ${TARGET}" "$out"; then
+elif ! grep -qF "is not the pinned DuckDB ${PINNED_DUCKDB} CLI for ${TARGET}" "$out"; then
 	echo "  FAIL packaging refused, but not for the engine:"
 	sed 's/^/       /' "$out"
 	failures=$((failures + 1))

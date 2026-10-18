@@ -25,8 +25,16 @@ static FONT_DATA: &[u8] = meridian_design::fonts::INTER_REGULAR;
 /// same number in both modes (ADR 0003 sets one type scale), and an ink is not.
 pub const LABEL_SIZE: f32 = 11.0;
 
-/// Axis / plot title size in pixels (a touch larger than tick labels).
+/// Axis title size in pixels (a touch larger than tick labels).
 pub const TITLE_SIZE: f32 = 12.0;
+
+/// A plot title's size in pixels: the chart's heading. Meridian's heading
+/// step, four points over the UI body size, as `meridian-egui` sets egui's
+/// `TextStyle::Heading`; drawn in the semibold face ([`draw_heading`]).
+pub const HEADING_SIZE: f32 = meridian_design::typography::UI_SIZE + 4.0;
+
+/// The heading face: Inter SemiBold, from the same bundle as [`FONT_DATA`].
+static HEADING_FONT_DATA: &[u8] = meridian_design::fonts::INTER_SEMIBOLD;
 
 /// Horizontal placement of a label relative to its anchor x.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +51,12 @@ pub enum TextAnchor {
 fn ui_font() -> &'static FontData {
     static FONT: OnceLock<FontData> = OnceLock::new();
     FONT.get_or_init(|| FontData::new(Blob::new(Arc::new(FONT_DATA)), 0))
+}
+
+/// The heading face, parsed once and reused across draws.
+fn heading_font() -> &'static FontData {
+    static FONT: OnceLock<FontData> = OnceLock::new();
+    FONT.get_or_init(|| FontData::new(Blob::new(Arc::new(HEADING_FONT_DATA)), 0))
 }
 
 /// Sum the pixel advance widths of `text`'s glyphs at the metrics' size.
@@ -79,10 +93,56 @@ pub fn draw_text(
     colour: Color,
     anchor: TextAnchor,
 ) {
+    draw_in_face(
+        scene,
+        (FONT_DATA, ui_font()),
+        text,
+        (x, y),
+        size,
+        colour,
+        anchor,
+    );
+}
+
+/// Draw `text` as a heading at `size`, in the semibold face, starting at `x`
+/// with its baseline at `y`. No-op for an empty string.
+pub fn draw_heading(scene: &mut Scene, text: &str, x: f64, y: f64, size: f32, colour: Color) {
+    draw_in_face(
+        scene,
+        (HEADING_FONT_DATA, heading_font()),
+        text,
+        (x, y),
+        size,
+        colour,
+        TextAnchor::Start,
+    );
+}
+
+/// Pixel width of `text` set as a heading ([`draw_heading`]) at `size`.
+#[must_use]
+pub fn measure_heading_width(text: &str, size: f32) -> f64 {
+    let Ok(font_ref) = FontRef::new(HEADING_FONT_DATA) else {
+        return 0.0;
+    };
+    let metrics = font_ref.glyph_metrics(Size::new(size), LocationRef::default());
+    measure(&font_ref.charmap(), &metrics, text)
+}
+
+/// [`draw_text`] in the face `face`: its bytes, for metrics, and the parsed
+/// font Vello draws with.
+fn draw_in_face(
+    scene: &mut Scene,
+    face: (&'static [u8], &'static FontData),
+    text: &str,
+    (x, y): (f64, f64),
+    size: f32,
+    colour: Color,
+    anchor: TextAnchor,
+) {
     if text.is_empty() {
         return;
     }
-    let Ok(font_ref) = FontRef::new(FONT_DATA) else {
+    let Ok(font_ref) = FontRef::new(face.0) else {
         return;
     };
     let metrics = font_ref.glyph_metrics(Size::new(size), LocationRef::default());
@@ -110,7 +170,7 @@ pub fn draw_text(
         .collect();
 
     scene
-        .draw_glyphs(ui_font())
+        .draw_glyphs(face.1)
         .font_size(size)
         .transform(Affine::translate((start_x, y)))
         .brush(colour)

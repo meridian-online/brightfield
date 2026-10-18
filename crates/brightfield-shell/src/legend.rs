@@ -112,18 +112,26 @@ pub struct LegendEntry {
 impl LegendSpec {
     /// The legend `scales` calls for, or `None` when nothing on the plot maps
     /// colour. Reads the **fill** channel — what a legend over the plot would
-    /// show. Whether the page draws it is the file's to say, and
+    /// show — or the **stroke** channel when nothing is filled, which is how a
+    /// line is coloured. Whether the page draws it is the file's to say, and
     /// [`Self::of_plot`] is the one that answers for it.
     #[must_use]
     pub fn from_scales(scales: &ScaleSet) -> Option<Self> {
-        match scales.get(Channel::Fill)? {
+        match scales
+            .get(Channel::Fill)
+            .or_else(|| scales.get(Channel::Stroke))?
+        {
             Scale::Colour {
                 categories,
                 palette,
             } => Some(Self::Categorical {
+                // The palette cycles, as the marks take it
+                // (`Scale::map_colour`): a category past the palette's end
+                // wears the colour the marks give it and keeps its row
+                // (`a_legend_lists_every_category_in_the_colour_its_marks_wear`).
                 entries: categories
                     .iter()
-                    .zip(palette.iter())
+                    .zip(palette.iter().cycle())
                     .map(|(label, colour)| LegendEntry {
                         label: label.clone(),
                         colour: *colour,
@@ -1213,6 +1221,44 @@ pub(crate) fn chart_ink(c: [f32; 4]) -> egui::Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A line plot of more categories than the palette has colours: its legend
+    /// lists every category, each in the colour the plot's own scale gives
+    /// that category's marks.
+    #[test]
+    fn a_legend_lists_every_category_in_the_colour_its_marks_wear() {
+        let dir = tempfile::tempdir().expect("a temp directory");
+        let mut csv = String::from("k,x,y\n");
+        let names: Vec<String> = (0..9).map(|i| format!("c{i}")).collect();
+        for name in &names {
+            for x in 0..2 {
+                csv.push_str(&format!("{name},{x},{x}\n"));
+            }
+        }
+        std::fs::write(dir.path().join("t.csv"), csv).expect("the data writes");
+        let spec =
+            "data:\n  t: { file: t.csv }\nplot:\n  - mark: lineY\n    data: { from: t }\n    \
+                    x: x\n    y: y\n    stroke: k\n  - legend: color\n";
+        let composed =
+            crate::pipeline::compose_spec_str(spec, Some(dir.path())).expect("the plot composes");
+        let plot = &composed.plots[0];
+        let scale = plot.scales.get(Channel::Stroke).expect("a stroke scale");
+        let Some(LegendSpec::Categorical { entries }) = LegendSpec::of_plot(plot) else {
+            panic!("no categorical legend");
+        };
+        assert_eq!(entries.len(), 9, "{:?}", LegendSpec::of_plot(plot));
+        for entry in &entries {
+            assert_eq!(
+                Some(entry.colour),
+                scale.map_colour(&entry.label),
+                "{}",
+                entry.label
+            );
+        }
+        let mut labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
+        labels.sort_unstable();
+        assert_eq!(labels, names.iter().map(String::as_str).collect::<Vec<_>>());
+    }
 
     fn colour_scale() -> ScaleSet {
         let mut scales = ScaleSet::new();

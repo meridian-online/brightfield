@@ -637,6 +637,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
                     new_marks.push(build_fresh_mark_input(
                         m,
                         plot,
+                        &spec,
                         scheme,
                         highlight_style.as_ref(),
                     ));
@@ -1405,7 +1406,7 @@ fn rebuild_flat_index_space(
         for (j, mark) in marks_in_plot.iter().enumerate() {
             let new_flat = new_marks.len();
             let input = if path == affected_path {
-                build_fresh_mark_input(mark, plot, *scheme, highlight_style.as_ref())
+                build_fresh_mark_input(mark, plot, spec, *scheme, highlight_style.as_ref())
             } else {
                 // Preserve by (plot, position) — unaffected plots keep their
                 // batches/renderers/channels/highlight/projection.
@@ -1413,7 +1414,7 @@ fn rebuild_flat_index_space(
                     .get(j)
                     .and_then(|&oi| old_slots.get_mut(oi).and_then(Option::take))
                     .unwrap_or_else(|| {
-                        build_fresh_mark_input(mark, plot, *scheme, highlight_style.as_ref())
+                        build_fresh_mark_input(mark, plot, spec, *scheme, highlight_style.as_ref())
                     })
             };
             new_marks.push(input);
@@ -1449,12 +1450,14 @@ fn plot_highlight_style(
 /// plot's scheme + highlight style. `highlight_style` is applied to the
 /// honouring families (`mark_honours_highlight`) and to no others; the plot's
 /// projection is gated by mark kind inside `ChannelMap::from_mark_in`. Both
-/// gates are held by `build_fresh_mark_input_gates_by_kind`. Used by
-/// the
-/// count-changing rebuild + the undo full-reload path.
+/// gates are held by `build_fresh_mark_input_gates_by_kind`. `spec` is the
+/// spec the plot is in, whose params a `$param` scale is read through, as the
+/// static composition reads it. Used by the count-changing rebuild + the undo
+/// full-reload path.
 fn build_fresh_mark_input(
     mark: &Mark,
     plot: &PlotNode,
+    spec: &Spec,
     scheme: SequentialScheme,
     plot_highlight: Option<&HighlightStyle>,
 ) -> MarkInput {
@@ -1469,7 +1472,7 @@ fn build_fresh_mark_input(
         .flatten();
     MarkInput {
         batch: None,
-        channels: ChannelMap::from_mark_in(mark, Some(plot)),
+        channels: ChannelMap::from_mark_in_spec(mark, Some(plot), &spec.params),
         kind: mark.kind,
         renderer_override: configured_renderer(mark.kind, scheme, bandwidth, thresholds, bin_width),
         bandwidth,
@@ -2168,6 +2171,7 @@ plot:
         let dot = build_fresh_mark_input(
             &mk(K::Dot),
             albers,
+            &Spec::default(),
             SequentialScheme::default(),
             Some(&style),
         );
@@ -2187,6 +2191,7 @@ plot:
         let line = build_fresh_mark_input(
             &mk(K::Line),
             albers,
+            &Spec::default(),
             SequentialScheme::default(),
             Some(&style),
         );
@@ -2204,7 +2209,13 @@ plot:
         // must be the ALBERS the plot named, not the equirectangular default:
         // the regression this pins was a rebuild dropping the projection,
         // which `unwrap_or_default()` silently masks as equirectangular.
-        let geo = build_fresh_mark_input(&mk(K::Geo), albers, SequentialScheme::default(), None);
+        let geo = build_fresh_mark_input(
+            &mk(K::Geo),
+            albers,
+            &Spec::default(),
+            SequentialScheme::default(),
+            None,
+        );
         assert_eq!(
             geo.channels.projection(),
             Some(Projection::Albers),
@@ -2213,8 +2224,13 @@ plot:
 
         // And a geo mark on a plot naming nothing draws the plate carrée — the
         // one kind that projects regardless, since its column is geometry.
-        let geo_default =
-            build_fresh_mark_input(&mk(K::Geo), bare, SequentialScheme::default(), None);
+        let geo_default = build_fresh_mark_input(
+            &mk(K::Geo),
+            bare,
+            &Spec::default(),
+            SequentialScheme::default(),
+            None,
+        );
         assert_eq!(
             geo_default.channels.projection(),
             Some(Projection::Equirectangular),

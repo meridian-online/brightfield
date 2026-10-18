@@ -14,7 +14,7 @@
 //! band and this file would otherwise be asserting the band's size at the same
 //! time; the one test that wants the growth asks for it by name.
 
-use brightfield_render::title::TITLE_BAND;
+use brightfield_render::title::{PLOT_TITLE_BAND, TITLE_BAND};
 use brightfield_shell::data_file;
 use brightfield_shell::pipeline::{compose_spec_str, Composed};
 use brightfield_spec::MarkKind;
@@ -154,7 +154,12 @@ fn titles_grow_the_declared_margins_and_do_not_replace_them() {
     ])]);
     assert_eq!(
         margins_of(&composed, 0),
-        (4.0 + TITLE_BAND, 6.0, 8.0 + TITLE_BAND, 10.0 + TITLE_BAND)
+        (
+            4.0 + PLOT_TITLE_BAND,
+            6.0,
+            8.0 + TITLE_BAND,
+            10.0 + TITLE_BAND
+        )
     );
 }
 

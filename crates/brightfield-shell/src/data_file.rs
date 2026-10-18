@@ -28,7 +28,7 @@
 //! over it**, so the wait before the first picture is a count of statements
 //! times the cost of one read — and the dashboard [`crate::dashboard`] chooses
 //! is a tile per column, which makes that count grow with the table's width.
-//! Measured on an Apple M1 Pro against this build's DuckDB v1.5.2, on a
+//! Measured on an Apple M1 Pro against DuckDB v1.5.2, the version built in then, on a
 //! 2,967,637-byte CSV of 14,133 rows and 22 columns: the first composition read
 //! the file 46 times and took 8,199.1 ms of a 9,033.6 ms open — the record is
 //! `benchmarks/results/open-scan/2026-09-07-apple-m1-pro-from-the-file.json`,
@@ -136,7 +136,7 @@
 //! that opens is not the file that was picked, under a window titled with the
 //! picked name.
 //!
-//! Measured against this build's DuckDB (`SELECT version()` reports `v1.5.2`),
+//! Measured against DuckDB v1.5.2 (`SELECT version()` reported `v1.5.2`),
 //! with `sales1.csv` sitting beside `sales[1].csv`: `read_csv` on the second
 //! path returns the first file's rows. `glob()` is what decides it, and the
 //! danger is exactly *`glob(p)` matching a non-empty set that is not `{p}`* —

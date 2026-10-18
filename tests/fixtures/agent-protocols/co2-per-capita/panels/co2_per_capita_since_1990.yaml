@@ -1,0 +1,13 @@
+title: Per-capita CO2 since 1990, G7 countries vs China and India (tonnes per person)
+plot:
+  - mark: lineY
+    data: { from: clean_co2_per_capita }
+    x: year
+    y: co2_t_per_person
+    stroke: country
+  - legend: color
+xLabel: year
+yLabel: tonnes CO2 per person
+xTickFormat: d
+width: 760
+height: 440

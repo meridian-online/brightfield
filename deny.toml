@@ -64,6 +64,30 @@ ignore = [
   # its own change in both repos, under the conformance corpus. Drop this
   # waiver when both move off serde_yaml.
   "RUSTSEC-2024-0449",
+  # The five below arrive with Typst 0.15.1, which brightfield-report uses to
+  # set a Protocol's report as a PDF, and each is fixed only by a Typst release
+  # that moves off the crate. Drop each when a Typst release does.
+  #
+  # quick-xml 0.38.4 — two denial-of-service VULNERABILITIES on hostile XML:
+  # quadratic time on duplicate attribute names, and unbounded allocation in
+  # `NsReader`. It is reached only through hayagriva's citationberg, which
+  # parses citation styles when a document calls `bibliography` or `cite`. The
+  # source brightfield-report writes never calls either: every character of the
+  # report's prose is escaped, so no report can call a function, and the world
+  # it compiles in serves no file but the chart pictures. citationberg 0.7 asks
+  # for quick-xml 0.38, so the fixed 0.41 cannot be chosen from here.
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+  # bincode 1.3.3 and yaml-rust 0.4.5 — unmaintained-crate NOTICES, not
+  # vulnerabilities, both under syntect, which Typst uses to colour code
+  # blocks. No safe upgrade exists.
+  "RUSTSEC-2025-0141",
+  "RUSTSEC-2024-0320",
+  # rustybuzz 0.20.1 and ttf-parser 0.25.1 — unmaintained-crate NOTICES, not
+  # vulnerabilities: Typst's text shaper and font parser. They read only the
+  # fonts bundled with meridian-design. No safe upgrade exists.
+  "RUSTSEC-2026-0206",
+  "RUSTSEC-2026-0192",
   # zip 6.0.0 — three advisories in `ZipArchive::extract` and
   # `ZipStreamReader::extract`: SUID/SGID bits kept on extraction, symbolic
   # links whose targets leave the destination, and permissions applied through

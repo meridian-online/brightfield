@@ -1,5 +1,5 @@
-//! **The ledger rail's Versions panel**: the versions the store keeps of one
-//! chart file, newest first, each with when it was recorded, which kind it is
+//! **The ledger rail's Versions panel**: the versions of one chart file,
+//! newest first, each with when it was recorded, which kind it is, who made it
 //! and what changed in it.
 //!
 //! The listing is [`HistoryStore::versions`]'s: this module asks it, words what
@@ -25,13 +25,23 @@
 //! version it was on. Its row is drawn on the cursor's ground with the Step
 //! back control at its end, which steps the chart back to that version as an
 //! unsaved edit ([`ChartDoc::step_back_to_cursor`]).
+//!
+//! **A version whose text is not kept here.** The list is read from the
+//! Protocol's version log as well as the store, and the log travels with the
+//! folder while the store's snapshots do not; the store also keeps only its
+//! newest versions of a file, so a version made here can fall out of it. A
+//! version the log names and the store lacks is listed, its row dimmed and its *what changed* reading
+//! [`NOT_ON_THIS_MACHINE`]; the cursor can rest on it, but it is not drawn or
+//! stepped back to, and the chart fault and the disabled Step back control say
+//! why ([`NOT_ON_THIS_MACHINE_REASON`];
+//! `the_panel_marks_a_version_not_on_this_machine_and_will_not_read_it`).
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use brightfield_keys::BindingContext;
 use brightfield_protocol::chart_history::HistoryKind;
-use brightfield_protocol::{ChartChange, HistoryStore, VersionChange};
+use brightfield_protocol::{ChartChange, HistoryStore, VersionChange, Who};
 use brightfield_spec::edit::ChartEdit;
 use brightfield_workbench::channel::ShelfChannel;
 use brightfield_workbench::{
@@ -51,10 +61,11 @@ const ICON_VERSIONS: Icon = Icon("history");
 /// What a row, the head line and the header row are high, in logical points.
 pub const ROW_HEIGHT: f32 = 24.0;
 
-/// Where the three columns begin, from the panel's left edge.
+/// Where the four columns begin, from the panel's left edge.
 const WHEN_X: f32 = 12.0;
 const KIND_X: f32 = 162.0;
-const CHANGED_X: f32 = 312.0;
+const WHO_X: f32 = 312.0;
+const CHANGED_X: f32 = 462.0;
 
 /// The right edge's margin, so a truncated row's ellipsis does not touch it.
 const RIGHT_PAD: f32 = 12.0;
@@ -70,6 +81,33 @@ pub const NOTHING_CHANGED: &str = "nothing changed";
 
 /// What a change outside the channels reads before its count of lines.
 pub const EDITED_OUTSIDE: &str = "edited outside brightfield";
+
+/// What a version reads whose version before has no text kept here, so has
+/// nothing to compare it with.
+pub const BEFORE_NOT_HERE: &str = "the version before's text is not kept on this machine";
+
+/// What a version whose text the store here does not hold reads in place of
+/// what changed: the Protocol's log names it, and there is no text to compare.
+/// It was made on another machine, or made here and since dropped from the
+/// store, which keeps only a file's newest versions.
+pub const NOT_ON_THIS_MACHINE: &str = "its text is not kept on this machine";
+
+/// Why a version whose text is not kept here is not drawn or stepped back to.
+pub const NOT_ON_THIS_MACHINE_REASON: &str = "this version's text is not kept on this machine: the Protocol's log names it, and the history here does not hold its text, because it was made on another machine or has since been dropped from this machine's history, which keeps only a file's newest versions";
+
+/// A version's *who*: the route it was made by. The words name the route
+/// only, never a person or an agent, since an agent driving arc from a
+/// terminal reaches it as a person typing would.
+#[must_use]
+pub fn who_words(who: &Who) -> String {
+    match who {
+        Who::Brightfield => "Brightfield".to_string(),
+        Who::ArcCommandLine => "arc (command line)".to_string(),
+        Who::ArcMcp => "arc (agent tool)".to_string(),
+        Who::Other(word) => word.clone(),
+        Who::Unknown => "unknown".to_string(),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The registry entry
@@ -452,12 +490,14 @@ fn said_changes(changes: &[ChartChange]) -> Vec<(Option<&str>, String)> {
         .collect()
 }
 
-/// A version's *what changed*: [`FIRST_KEPT`] for the oldest, and
-/// [`change_words`] for any other.
+/// A version's *what changed*: [`FIRST_KEPT`] for the oldest,
+/// [`BEFORE_NOT_HERE`] for one whose version before is not on this machine,
+/// and [`change_words`] for any other.
 #[must_use]
 pub fn version_words(change: &VersionChange, tile_of: &dyn Fn(&str) -> String) -> String {
     match change {
         VersionChange::NoPredecessor => FIRST_KEPT.to_string(),
+        VersionChange::PredecessorNotHere => BEFORE_NOT_HERE.to_string(),
         VersionChange::Changes(changes) => change_words(changes, tile_of),
     }
 }
@@ -507,8 +547,13 @@ pub struct Row {
     pub when: String,
     /// The *kind* column.
     pub kind: String,
+    /// The *who* column.
+    pub who: String,
     /// The *what changed* column.
     pub changed: String,
+    /// Whether this machine's store holds the version's text, so it can be
+    /// drawn and stepped back to.
+    pub on_this_machine: bool,
 }
 
 /// Where the versions are read from: the store, and the chart file whose
@@ -667,9 +712,15 @@ impl Versions {
     ///
     /// # Errors
     ///
-    /// The reason, for a panel with no store to read and for a store that does
+    /// The reason, for a panel with no store to read, for a version not on
+    /// this machine ([`NOT_ON_THIS_MACHINE_REASON`]), and for a store that does
     /// not give the version up.
     pub fn read_version(&self, id: &str) -> Result<String, String> {
+        if let Listing::Listed { rows, .. } = &self.listing {
+            if rows.iter().any(|row| row.id == id && !row.on_this_machine) {
+                return Err(NOT_ON_THIS_MACHINE_REASON.to_string());
+            }
+        }
         let source = self
             .source
             .as_ref()
@@ -801,7 +852,13 @@ impl Versions {
                 recorded: v.kind,
                 when: when_words(v.at, &self.clock),
                 kind: kind_words(v.kind).to_string(),
-                changed: version_words(&v.change, tile_of),
+                who: who_words(&v.who),
+                changed: if v.on_this_machine {
+                    version_words(&v.change, tile_of)
+                } else {
+                    NOT_ON_THIS_MACHINE.to_string()
+                },
+                on_this_machine: v.on_this_machine,
             })
             .collect();
         let file = source
@@ -913,10 +970,10 @@ impl Item<ChartDoc> for VersionsPane {
         let mut drawn: Vec<egui::Rect> = Vec::with_capacity(rows.len() + 1);
         let mut step_back: Option<(egui::Rect, bool)> = None;
 
-        // A row's three columns, the last ending `end` points from the row's
+        // A row's four columns, the last ending `end` points from the row's
         // left edge: the panel's width, or short of the controls on the
         // cursor's row.
-        let line = |ui: &mut egui::Ui, columns: [(f32, &str, egui::Color32); 3], end: f32| {
+        let line = |ui: &mut egui::Ui, columns: [(f32, &str, egui::Color32); 4], end: f32| {
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::hover());
             for (i, (x, text, colour)) in columns.iter().enumerate() {
@@ -949,6 +1006,7 @@ impl Item<ChartDoc> for VersionsPane {
             [
                 (WHEN_X, "when", secondary),
                 (KIND_X, "kind", secondary),
+                (WHO_X, "who", secondary),
                 (CHANGED_X, "what changed", secondary),
             ],
             width,
@@ -971,6 +1029,7 @@ impl Item<ChartDoc> for VersionsPane {
                         [
                             (WHEN_X, "now", primary),
                             (KIND_X, "unsaved", primary),
+                            (WHO_X, "", primary),
                             (CHANGED_X, words, primary),
                         ],
                         width,
@@ -1013,17 +1072,26 @@ impl Item<ChartDoc> for VersionsPane {
                     let end = geometry
                         .as_ref()
                         .map_or(width, |g| g.button.left() - whole.left());
+                    // A version not on this machine is dimmed: listed, but
+                    // not one the chart can be drawn as.
+                    let (quiet, loud) = if row.on_this_machine {
+                        (secondary, primary)
+                    } else {
+                        (muted, muted)
+                    };
                     drawn.push(line(
                         ui,
                         [
-                            (WHEN_X, &row.when, secondary),
-                            (KIND_X, &row.kind, secondary),
-                            (CHANGED_X, &row.changed, primary),
+                            (WHEN_X, &row.when, quiet),
+                            (KIND_X, &row.kind, quiet),
+                            (WHO_X, &row.who, quiet),
+                            (CHANGED_X, &row.changed, loud),
                         ],
                         end,
                     ));
                     if let Some(g) = geometry {
-                        step_back = Some(step_back_controls(ui, &g, &font, sem));
+                        step_back =
+                            Some(step_back_controls(ui, &g, &font, sem, row.on_this_machine));
                     }
                     n += 1;
                 }
@@ -1083,23 +1151,33 @@ fn step_back_geometry(
 }
 
 /// Draw the Step back control and its key chip where `g` puts them, and answer
-/// the control's box and whether it was clicked this frame.
+/// the control's box and whether it was clicked this frame. A control that is
+/// not `enabled`, on a version not on this machine, cannot be clicked and says
+/// why when the pointer rests on it.
 fn step_back_controls(
     ui: &mut egui::Ui,
     g: &StepBackGeometry,
     font: &egui::FontId,
     sem: &meridian_design::Semantic,
+    enabled: bool,
 ) -> (egui::Rect, bool) {
-    let response = ui.put(
-        g.button,
-        egui::Button::new(
-            egui::RichText::new(STEP_BACK)
-                .font(font.clone())
-                .color(chrome::colour(sem.text.primary)),
-        )
-        .corner_radius(0.0)
-        .min_size(g.button.size()),
-    );
+    let ink = if enabled {
+        sem.text.primary
+    } else {
+        sem.text.muted
+    };
+    let button = egui::Button::new(
+        egui::RichText::new(STEP_BACK)
+            .font(font.clone())
+            .color(chrome::colour(ink)),
+    )
+    .corner_radius(0.0)
+    .min_size(g.button.size());
+    let response = ui
+        .put(g.button, |ui: &mut egui::Ui| {
+            ui.add_enabled(enabled, button)
+        })
+        .on_disabled_hover_text(NOT_ON_THIS_MACHINE_REASON);
     ui.painter().rect_stroke(
         g.chip,
         0.0,

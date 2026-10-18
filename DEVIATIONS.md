@@ -582,3 +582,66 @@ is left for a change of its own.
 
 **Conformance layers suppressed:** 3
 
+## DEV-0017 — marks — options read and not drawn: `dx`, `dy` and `fontSize` on `text`, `inset` on bars and cells, `opacity`, `r` on `dot`
+
+**Mosaic behaviour.** Mosaic hands these mark options to Observable Plot. `dx` and `dy` move a
+`text` mark's labels by that many pixels, and `fontSize` sets their size.
+`inset` shrinks each rectangle of a `barX`, `barY`, `rect` or `cell` by
+that many pixels on every side. `opacity` sets a mark's opacity, from 0
+to 1. `r` sets a `dot`'s radius in pixels, or maps a column to the radius
+through a square-root scale.
+
+
+**Brightfield behaviour.** The mark is drawn as the same file draws it without the option: labels at
+their data position in the default size, rectangles filling their band,
+marks opaque, dots at the default radius. Each option a mark sets is named
+in one line: "mark `<mark>` sets `<key>`, which nothing in the render path
+reads — it has no effect", and two marks of one kind that set the same
+option give that line once. A Protocol panel's tile shows the lines above
+its chart and the headless exports (`export-png`, `export-pdf`) print
+them on stderr, naming the panel file, from the same list. The export
+still writes its file and exits 0.
+
+
+**Rationale.** Agents writing charts reach for these options unprompted: a sample of ten
+agent-written Protocols sets `dx` or `dy` to pull a value label inside its
+bar or above its dot, `fontSize` to fit labels in heatmap cells, `inset`
+to separate cells, `opacity` to show overplotted dots, and `r` on many of
+its dot marks. Drawing each is a change of its own to the renderer. Until
+then the picture is the one Mosaic draws without the key, and the reader
+and the agent are told which key the picture leaves out, rather than
+reading a label on top of its dot as the chart the file describes.
+
+
+**Conformance layers suppressed:** 3
+
+## DEV-0018 — scales — a `line`, `lineY` or `lineX` over a `DATE` column
+
+**Mosaic behaviour.** Mosaic hands a `DATE` column to Observable Plot, which puts it on a time
+scale: each point sits at its date, so the gap between two points is
+drawn in proportion to the time between them.
+
+
+**Brightfield behaviour.** A `DATE` column takes a band scale, one band per distinct day in time
+order, and a line joins the band centres. Consecutive days are drawn one
+band apart whatever the time between them. When the days on such an axis
+are neither the same number of days apart nor on the same day of every
+Nth month (held to the last day of a shorter month), the load says so in
+one line: "`<mark>` puts its
+`<axis>` days one band apart, and these days are not evenly spaced, so
+the gaps between them are not drawn to scale". A Protocol panel's tile
+shows the line above its chart and the headless exports print it on
+stderr. An `areaY` or `areaX` over a `DATE` column draws nothing, and its
+load says the area does not draw on a band or date axis.
+
+
+**Rationale.** Bars and cells over a `DATE` are counts per day and read correctly on a
+band. A time scale for lines and areas is a change of its own to the
+renderer. Until then a line over evenly spaced days is the picture Mosaic
+draws, and a line over uneven days (weekdays only, a missing month,
+event dates) is drawn with the gaps evened out and says so, rather than
+misstating the intervals without a word.
+
+
+**Conformance layers suppressed:** 3
+

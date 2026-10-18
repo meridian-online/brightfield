@@ -8,7 +8,31 @@ The goal is a tool that can interactively visualise and explore datasets from th
 
 ## Quick Start
 
-Brightfield builds with a recent Rust toolchain (1.95+, matching the CI pin). From a clone of the repo, render the self-contained example spec:
+Install the released app on macOS with Homebrew:
+
+```sh
+brew install meridian-online/tap/brightfield
+
+# Open a chart spec, a data file, or a Protocol an agent wrote with arc
+brightfield path/to/protocol/arcform.yaml
+```
+
+The same binary exports a Protocol with no window, for an agent or a script. Each command needs the Protocol to have run, prints the path it wrote, and exits non-zero naming the problem when it cannot:
+
+```sh
+# The Protocol's report.md as a PDF, each panel the report lists drawn in place
+brightfield export-pdf path/to/protocol
+
+# One panel as a PNG, drawn as the window draws it
+brightfield export-png path/to/protocol <panel>
+
+# The rows a panel reads from the Protocol's database, as CSV or Parquet
+brightfield export-data path/to/protocol <panel> --format parquet
+```
+
+`brightfield --help` lists their options. `--out` names the file to write; for `export-data`, a path that is a folder, or ends in `/`, is a folder to write one file per table into. `export-png` and `export-pdf` print what a panel's load has to say (an option nothing draws, colours that repeat, a mark that drew nothing) on stderr, one line per note naming the panel file, and still write their file. None of them needs the network; the PDF and PNG exports draw on the machine's GPU.
+
+To build from source instead, Brightfield needs a recent Rust toolchain (1.95+, matching the CI pin). From a clone of the repo, render the self-contained example spec:
 
 ```sh
 # Opens the native, GPU-rendered window
@@ -95,6 +119,20 @@ The system comprises four layers:
 
 **Renderer.** A framework-free `brightfield-render` crate turns marks, scales (linear/log/sqrt/band/ordinal/time/colour), axes, legends, interactors, and layout primitives into a [Vello](https://github.com/linebender/vello) `Scene` — no UI-framework dependency, so the same scene builder feeds both the live window and the headless PNG path. The egui/eframe shell (`brightfield-shell`) rasterises the Vello scene on the shared wgpu device and presents it, wiring pointer events into the interaction transitions (the framework-free interaction logic lives in `brightfield-ui`). Text is shaped and rendered with [skrifa](https://github.com/googlefonts/fontations).
 
+### Agent-written Protocols
+
+An [arcform](https://github.com/meridian-online/arcform) Protocol that has run and holds a `panels/` folder opens as one tile per `panels/*.yaml`, in file-name order. Each panel is a Mosaic spec whose marks read the tables the Protocol's run made, by name: a mark's `data: { from: T }` reads table `T` from arc's database whenever the panel's own top-level `data:` does not define `T`, the rule arc's own panel check applies.
+
+Brightfield never holds that database open, since DuckDB refuses a writer while any reader holds the file and an open handle would make the next `arc run` fail. After arc's panel check, it attaches the database read-only to an in-memory DuckDB, copies each table a panel reads, detaches, and writes the copies to a Parquet snapshot in a temporary folder. Each panel is composed against the snapshot, and the snapshot is taken again when a new run record appears. A panel that cannot draw shows its problem in its own tile, naming the file (a missing table or column from arc's check, a mark Brightfield does not draw, a parse error), and the others draw. A panel's notes are shown above its chart.
+
+The headless exports read the same snapshot. `export-png` draws one panel as the window draws it, legend included. `export-data` copies the tables the panel reads out of the snapshot as CSV or Parquet. `export-pdf` reads the Protocol's `report.md`, draws each panel its `## Charts` section lists, and hands the Markdown and the pictures to the `brightfield-report` crate. When a table a chart reads has changed since the run the report describes, judged by the content hashes arc records for each table, the PDF says so above the charts.
+
+**`brightfield-report`** typesets that Markdown to PDF through Typst, offline, with the fonts bundled with the design system: A4 portrait, numbered pages, tables with numbers kept whole, and each listed chart drawn in its item's place under its title and never split across pages. It knows Markdown, Typst and PNG bytes and nothing of panels, databases or the GPU; the shell renders the charts and passes the pictures in.
+
+### Chart versions
+
+Each chart file Brightfield saves, including each panel file, is recorded in arcform's local history (`~/.arcform/history`, or `$ARCFORM_HISTORY_DIR`): the text a Save replaces, the text it writes, and the text a window closes without saving. A panel's Versions list joins that store with `arcform-log.txt`, the log arc keeps in the Protocol's folder, which names each version, when it was made and by which route. The WHO column shows that route: Brightfield, arc (command line), or arc (agent tool) for arc's MCP server. The log travels with the folder and the store's text does not, and the store keeps only a file's newest versions, so a version the log names whose text the store does not hold is listed with its text marked as not kept on this machine, dimmed, and cannot be shown or stepped back to.
+
 ## Platform Support
 
 - **macOS** — primary target (Metal via wgpu). Full support; the whole suite, pixel tier included, runs here.
@@ -106,11 +144,13 @@ The system comprises four layers:
 One native binary, no runtime dependencies beyond the OS graphics stack — no
 server, no webview, no language runtime, and no network required to start,
 render, or open a local protocol. A release artifact carries one more
-executable: the official DuckDB v1.5.2 command-line shell (`engine/duckdb` in
+executable: the official DuckDB v1.5.6 command-line shell (`engine/duckdb` in
 the tarball, `Contents/Helpers/duckdb` in the app), which the Run control hands
 a Protocol's SQL steps to so a run needs nothing installed.
 `scripts/fetch-duckdb-cli.sh` pins it by sha256; `scripts/package.sh` stages it
 when `BRIGHTFIELD_DUCKDB_CLI` names the directory that script wrote.
+
+Each tagged release is installed with `brew install meridian-online/tap/brightfield`, and the installed binary carries the headless exports (`export-pdf`, `export-png`, `export-data`) as well as the window.
 
 ```bash
 # Package: release build → linked-library audit (OS allowlist) →
@@ -119,7 +159,8 @@ scripts/package.sh
 
 # Prove the air-gapped claim against the artifact itself: a negative control
 # (curl must FAIL inside the jail), then the *packaged* binary renders a chart
-# and a Protocol manifest with the network denied (sandbox-exec / unshare -rn)
+# and a Protocol manifest, and runs an agent-written Protocol and exports its
+# report to PDF, with the network denied (sandbox-exec / unshare -rn)
 scripts/verify-airgapped.sh dist/brightfield-*.tar.gz
 ```
 
@@ -246,23 +287,17 @@ the caller's argv, so it is switched off). `brightfield-protocol` and `brightfie
 both inherit that one entry; the shell adds the `cli` feature to run a Protocol as a child
 process. Treat every bump as potentially breaking and move deliberately.
 
-**The sqlparser patch mirror — do not skip this.** arc parses SQL with a **vendored fork of
-sqlparser 0.55** (`vendor/sqlparser-0.55.0` in the arcform repo), wired up there via
-`[patch.crates-io]`. Cargo patch tables **do not propagate through dependencies**, so this
-workspace's root `Cargo.toml` carries the same patch itself — in **git form**, pointing at
-the same repo and rev as the arc pin, so a bare CI checkout (no sibling `../arcform`)
-resolves it. A path-form patch into a sibling checkout works locally and breaks CI. The
-patch's package version is 0.55.0, so it applies only to arc's requirement; the workspace's
-own newer `sqlparser` keeps coming from crates.io.
+**The sqlparser fork.** arc parses SQL with its own fork of sqlparser 0.55, which arcform publishes as `arcform-sqlparser`. arcform declares it as a path dependency inside its own repo, so Cargo.lock resolves it from the arc git rev and this workspace carries no `[patch.crates-io]` for it. The workspace's own newer `sqlparser` keeps coming from crates.io too. The upstream package is named `arcform`; the root entry says `package = "arcform"` so the crate stays `arc` in this workspace's source.
 
-**To bump the pin**, move three things in lockstep, in one commit:
+**To bump the pin**, move two things in lockstep, in one commit:
 
 1. the `rev` on `arc` in the root `[workspace.dependencies]`;
-2. the `rev` on `sqlparser` in the root `[patch.crates-io]` (same sha);
-3. `Cargo.lock` — run a build, and if the resolver pulls a transitive dep above the CI
+2. `Cargo.lock` — run a build, and if the resolver pulls a transitive dep above the CI
    toolchain pin (`tree-sitter-iter` has done this: arc pins `yamlpath = "=1.27.0"`, but a
    fresh resolve can still float its deps), pin it back with
    `cargo update <crate>@<ver> --precise <ok-ver>`.
+
+arc pins `duckdb` exactly, so a bump that moves arc's DuckDB moves the workspace `duckdb` pin and the CLI pin in `scripts/fetch-duckdb-cli.sh` with it, and the version named in the Distribution section above. The packaging scripts read the CLI version from that pin.
 
 **What tells you the pin has gone stale.** Not a person. The pin drifted three weeks behind
 arcform's operator catalog once, and the first signal was somebody opening a shipped Protocol

@@ -977,7 +977,11 @@ fn a_mark_that_cannot_project_contributes_no_geometry() {
         }
         let dot_renderer = DotRenderer::default();
         let dot = entry(&batch, &dot_cm, &dot_renderer, layout);
-        let line = entry(&batch, &line_cm, &LineRenderer, layout);
+        let line_renderer = LineRenderer {
+            axis: brightfield_render::mark::LineAxis::Y,
+            scheme: Default::default(),
+        };
+        let line = entry(&batch, &line_cm, &line_renderer, layout);
         let both = build_multi_mark_scene(&[&dot, &line], false, &ResolvedTitles::default())
             .0
             .encoding()
