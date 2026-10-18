@@ -66,6 +66,13 @@
 #      An artifact with NO bundle skips this leg (a supported build, see
 #      scripts/package.sh); a bundle that is present and does not work is a
 #      failure.
+#   6. THE HEADLESS EXPORT. The packaged binary runs an agent-written Protocol
+#      with arc (through its runner mode and the DuckDB CLI the artifact
+#      stages) and writes its report with `export-pdf`, all inside the jail,
+#      and must leave a PDF. The Protocol is the repository's committed
+#      fixture with its fetch step dropped from a copy, since arc would
+#      download the data again; scripts/check-export-airgapped.sh holds the
+#      leg and names what it checks.
 #
 # The jail: macOS `sandbox-exec` with `(deny network*)`; Linux `unshare -rn`
 # (a network namespace with no interfaces). Both windows open briefly on a
@@ -83,7 +90,9 @@
 # Every SPEC the test opens ships inside the artifact, so the render legs are
 # about the artifact rather than the artifact-plus-repo. That is a statement
 # about the specs, and it does not extend to the type-source leg: see leg 5,
-# which names precisely what it does and does not establish.
+# which names precisely what it does and does not establish. Nor to the export
+# leg, 6, whose Protocol comes from this checkout: the artifact ships no
+# fixtures, and that leg's claim is about the binary given a Protocol on disk.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -338,5 +347,14 @@ echo "== run 4: the local chart again, AFTER the refusal — the jail is unchang
 smoke "$TMP/chart-again.png" -- "$EXAMPLES/bars.yaml"
 is_png "$TMP/chart-again.png" 20000
 
+echo "== run 5: an agent-written Protocol run and exported to PDF, jailed (no window)"
+# The packaged binary, its staged DuckDB CLI and the committed fixture: see
+# scripts/check-export-airgapped.sh, which can also be pointed at a repo build.
+"${HERE}/check-export-airgapped.sh" "$PKG/${EXE#./}" | sed 's/^/   /' || {
+  echo "   FAILED: the packaged binary could not run and export a Protocol with the network denied"
+  exit 1
+}
+
 echo "== PASS: the packaged binary starts, renders and opens a local protocol with the"
-echo "         network denied — and refuses a remote spec by name without disturbing either"
+echo "         network denied, runs and exports an agent-written Protocol to PDF the same way,"
+echo "         and refuses a remote spec by name without disturbing any of it"

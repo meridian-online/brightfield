@@ -8,7 +8,31 @@ The goal is a tool that can interactively visualise and explore datasets from th
 
 ## Quick Start
 
-Brightfield builds with a recent Rust toolchain (1.95+, matching the CI pin). From a clone of the repo, render the self-contained example spec:
+Install the released app on macOS with Homebrew:
+
+```sh
+brew install meridian-online/tap/brightfield
+
+# Open a chart spec, a data file, or a Protocol an agent wrote with arc
+brightfield path/to/protocol/arcform.yaml
+```
+
+The same binary exports a Protocol with no window, for an agent or a script. Each command needs the Protocol to have run, prints the path it wrote, and exits non-zero naming the problem when it cannot:
+
+```sh
+# The Protocol's report.md as a PDF, each panel the report lists drawn in place
+brightfield export-pdf path/to/protocol
+
+# One panel as a PNG, drawn as the window draws it
+brightfield export-png path/to/protocol <panel>
+
+# The rows a panel reads from the Protocol's database, as CSV or Parquet
+brightfield export-data path/to/protocol <panel> --format parquet
+```
+
+`brightfield --help` lists their options. They draw on the machine's GPU and need no network.
+
+To build from source instead, Brightfield needs a recent Rust toolchain (1.95+, matching the CI pin). From a clone of the repo, render the self-contained example spec:
 
 ```sh
 # Opens the native, GPU-rendered window
@@ -112,6 +136,8 @@ a Protocol's SQL steps to so a run needs nothing installed.
 `scripts/fetch-duckdb-cli.sh` pins it by sha256; `scripts/package.sh` stages it
 when `BRIGHTFIELD_DUCKDB_CLI` names the directory that script wrote.
 
+Each tagged release is installed with `brew install meridian-online/tap/brightfield`, and the installed binary carries the headless exports (`export-pdf`, `export-png`, `export-data`) as well as the window.
+
 ```bash
 # Package: release build → linked-library audit (OS allowlist) →
 # brightfield-<version>-<target>.tar.gz + .sha256 under dist/
@@ -119,7 +145,8 @@ scripts/package.sh
 
 # Prove the air-gapped claim against the artifact itself: a negative control
 # (curl must FAIL inside the jail), then the *packaged* binary renders a chart
-# and a Protocol manifest with the network denied (sandbox-exec / unshare -rn)
+# and a Protocol manifest, and runs an agent-written Protocol and exports its
+# report to PDF, with the network denied (sandbox-exec / unshare -rn)
 scripts/verify-airgapped.sh dist/brightfield-*.tar.gz
 ```
 
