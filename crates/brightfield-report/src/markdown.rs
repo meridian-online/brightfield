@@ -235,21 +235,81 @@ pub(crate) fn reported_run(markdown: &str) -> ReportedRun {
 /// The text of a block of HTML: comments left out whole, each tag left out,
 /// and runs of white space made one space.
 fn html_text(html: &str) -> String {
+    // A `<` opens a tag only before a letter, `/` or `!`; any other is text,
+    // as in `x < y`.
+    let opens_tag = |s: &str| {
+        let mut chars = s.chars();
+        chars.next() == Some('<')
+            && chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '/' || c == '!')
+    };
     let mut text = String::new();
     let mut rest = html;
     while !rest.is_empty() {
         if let Some(after) = rest.strip_prefix("<!--") {
             rest = after.find("-->").map_or("", |at| &after[at + 3..]);
-        } else if rest.starts_with('<') {
-            rest = rest.find('>').map_or("", |at| &rest[at + 1..]);
-        } else {
-            let at = rest.find('<').unwrap_or(rest.len());
-            text.push_str(&rest[..at]);
             text.push(' ');
+        } else if opens_tag(rest) {
+            let name: String = rest[1..]
+                .chars()
+                .take_while(char::is_ascii_alphanumeric)
+                .collect::<String>()
+                .to_ascii_lowercase();
+            rest = rest.find('>').map_or("", |at| &rest[at + 1..]);
+            // What a script or a style holds is not text to read.
+            if name == "script" || name == "style" {
+                let close = format!("</{name}");
+                rest = rest
+                    .to_ascii_lowercase()
+                    .find(&close)
+                    .map_or("", |at| &rest[at..]);
+                rest = rest.find('>').map_or("", |at| &rest[at + 1..]);
+            }
+            text.push(' ');
+        } else {
+            let at = rest
+                .char_indices()
+                .skip(1)
+                .find(|&(at, _)| opens_tag(&rest[at..]))
+                .map_or(rest.len(), |(at, _)| at);
+            text.push_str(&decode_entities(&rest[..at]));
             rest = &rest[at..];
         }
     }
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    // ASCII white space only, so a decoded `&nbsp;` stays unbreakable.
+    text.split_ascii_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `text` with the HTML character references a report is likely to hold
+/// written as the characters they stand for; any other is left as written.
+fn decode_entities(text: &str) -> String {
+    const ENTITIES: [(&str, &str); 6] = [
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", "\""),
+        ("&#39;", "'"),
+        ("&nbsp;", "\u{a0}"),
+        ("&amp;", "&"),
+    ];
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        match ENTITIES.iter().find(|(name, _)| rest.starts_with(name)) {
+            Some((name, ch)) => {
+                out.push_str(ch);
+                rest = &rest[name.len()..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// `text` escaped for Typst markup, so each character prints as itself.
@@ -812,6 +872,21 @@ mod tests {
             let out = body(markdown, &[], None);
             assert!(out.contains(kept), "{kept} in {out}");
         }
+    }
+
+    #[test]
+    fn an_html_block_keeps_a_bare_less_than_and_its_entities_and_drops_scripts() {
+        assert_eq!(html_text("<p>x < y</p>"), "x < y");
+        assert_eq!(
+            html_text("<p>A &amp; B &lt;5&gt; &quot;q&quot; it&#39;s&nbsp;so &copy;</p>"),
+            "A & B <5> \"q\" it's\u{a0}so &copy;"
+        );
+        assert_eq!(
+            html_text(
+                "<div>Shown<script>var a = '<b>';</script><STYLE>p { x: 1 }</STYLE> too</div>"
+            ),
+            "Shown too"
+        );
     }
 
     #[test]

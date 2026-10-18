@@ -357,6 +357,58 @@ fn a_reload_under_a_runs_lock_keeps_the_tiles_and_tries_again() {
     assert!(!tiles.reload_due(), "and the edit is taken as read");
 }
 
+/// A run whose record lands while it still holds the database, with no panel
+/// file changed: the reload meets the lock, and the tiles still move to the
+/// new run once the lock is gone and the retry comes round.
+#[test]
+fn a_new_run_met_under_its_lock_is_drawn_once_the_lock_is_gone() {
+    use brightfield_shell::panel_tiles::{PanelTiles, RUN_CHECK_EVERY};
+    let fixture = ran_fixture(CO2);
+    let mut tiles = PanelTiles::new(loaded(&fixture.dir), egui::vec2(400.0, 300.0))
+        .with_locked_retry_every(std::time::Duration::ZERO);
+    let first = tiles.panels().and_then(|p| p.run_id.clone());
+
+    force_run_protocol(&fixture.dir);
+    let db = arc::spec::protocol_db_path(&fixture.dir).unwrap();
+    let mut held = Command::new(engine_cli())
+        .arg(&db)
+        .args(["-noheader", "-list"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the DuckDB CLI starts");
+    let mut stdin = held.stdin.take().unwrap();
+    writeln!(stdin, "SELECT 'holding';").unwrap();
+    stdin.flush().unwrap();
+    let mut line = String::new();
+    BufReader::new(held.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line.trim(), "holding", "the CLI opened the database");
+
+    std::thread::sleep(RUN_CHECK_EVERY);
+    assert!(tiles.reload_due(), "the new run's record is seen");
+    tiles.reload();
+    let kept = tiles.panels().and_then(|p| p.run_id.clone());
+    drop(stdin);
+    let _ = held.kill();
+    let _ = held.wait();
+    assert_eq!(
+        kept, first,
+        "the tiles keep the run they drew under the lock"
+    );
+
+    std::thread::sleep(RUN_CHECK_EVERY);
+    assert!(tiles.reload_due(), "the refused reload is tried again");
+    tiles.reload();
+    let now = tiles.panels().and_then(|p| p.run_id.clone());
+    assert!(
+        now.is_some() && now != first,
+        "the tiles draw the new run: {now:?}"
+    );
+}
+
 #[test]
 fn a_folder_with_a_space_and_a_quote_opens() {
     let fixture = copied_fixture_in(CO2, "it's a test");

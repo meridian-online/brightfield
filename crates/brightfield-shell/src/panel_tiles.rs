@@ -154,6 +154,13 @@ pub struct PanelTiles {
     last_check: Option<Instant>,
     /// When the Protocol was last opened for its panels.
     last_load: Instant,
+    /// Whether the last reload of open tiles met a run holding the database,
+    /// so they still draw an older run and are opened again once per
+    /// [`Self::locked_retry_every`], whatever the folder does meanwhile.
+    locked_retry: bool,
+    /// How often a reload a run's lock refused is tried again:
+    /// [`LOCKED_RETRY_EVERY`] unless a test shortened it.
+    locked_retry_every: Duration,
 }
 
 impl PanelTiles {
@@ -195,6 +202,8 @@ impl PanelTiles {
             mark,
             last_check: Some(Instant::now()),
             last_load: Instant::now(),
+            locked_retry: false,
+            locked_retry_every: LOCKED_RETRY_EVERY,
         }
     }
 
@@ -254,6 +263,15 @@ impl PanelTiles {
             .map(|(i, _)| tile_key(i))
     }
 
+    /// `self`, with a reload a run's lock refused tried again after `every`
+    /// rather than [`LOCKED_RETRY_EVERY`]: how a test reaches the retry without
+    /// waiting out the real interval.
+    #[must_use]
+    pub fn with_locked_retry_every(mut self, every: Duration) -> Self {
+        self.locked_retry_every = every;
+        self
+    }
+
     /// Whether the Protocol's newest run is not the one the tiles were drawn
     /// from, looked at no more often than [`RUN_CHECK_EVERY`].
     ///
@@ -273,8 +291,8 @@ impl PanelTiles {
             return false;
         }
         self.last_check = Some(Instant::now());
-        let locked = matches!(self.state, Err(OpenProblem::Locked { .. }));
-        if locked && self.last_load.elapsed() >= LOCKED_RETRY_EVERY {
+        let locked = self.locked_retry || matches!(self.state, Err(OpenProblem::Locked { .. }));
+        if locked && self.last_load.elapsed() >= self.locked_retry_every {
             return true;
         }
         let mark = FolderMark::of(&self.dir);
@@ -324,11 +342,15 @@ impl PanelTiles {
         let loaded = load(&self.dir, viewport(body));
         self.last_load = Instant::now();
         // Open tiles that meet a run holding the database keep drawing what
-        // they drew, and the mark is left where it was, so the change that
-        // asked for this reload is still due once the run lets go.
+        // they drew, and the mark is left where it was. The listing-only check
+        // in `reload_due` records a new run's mark before this runs, so the
+        // retry is held as a flag as well: it fires once per
+        // `locked_retry_every` until a reload gets past the lock.
         if self.state.is_ok() && matches!(loaded, Err(OpenProblem::Locked { .. })) {
+            self.locked_retry = true;
             return false;
         }
+        self.locked_retry = false;
         self.state = loaded;
         // The rasters were of the tiles that were; the sweep frees their slots.
         self.rasters.clear();
