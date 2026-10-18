@@ -2992,11 +2992,13 @@ fn repeated_colours(scales: &ScaleSet, written: &ColourOverride) -> Vec<ParseWar
 /// The note a line owes for each `DATE` axis whose days are not evenly spaced.
 ///
 /// A `DATE` takes a band scale, one band per distinct day, so a line through
-/// the band centres draws every gap between consecutive days the same width.
-/// That is the picture only when the gaps are equal: every day, every week, or
-/// a whole number of calendar months, which count as even though their days
-/// differ. Anything else (weekdays only, a missing month, event dates) is
-/// named, since the axis misstates the intervals between them.
+/// the band centres draws the gaps between consecutive days at one width.
+/// That is the picture only when the gaps are equal: days one day or one week
+/// apart, or a whole number of calendar months apart, which count as even
+/// though their lengths differ. Uneven days (weekdays only, a missing month,
+/// event dates) are named, since the axis misstates the intervals between
+/// them (`a_line_over_unevenly_spaced_days_says_they_are_drawn_evenly`,
+/// `a_line_over_daily_or_monthly_days_says_nothing_of_spacing`).
 fn uneven_days(
     refs: &[&ChartData<'_>],
     marks: &[MarkKind],
