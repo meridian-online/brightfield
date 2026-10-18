@@ -2227,8 +2227,13 @@ pub fn infer_scales_multi_in(
                     numbers.extend(number_categories(batch.column(idx).as_ref()));
                 }
                 if !numbers.is_empty() {
+                    // Every label a number was written with, the ones a
+                    // second spelling of an earlier value lost included: none
+                    // of them is a category of another kind.
+                    let numbered: std::collections::HashSet<String> =
+                        numbers.iter().map(|(_, l)| l.clone()).collect();
                     let ordered = sorted_number_categories(numbers);
-                    let seen: std::collections::HashSet<&String> = ordered.iter().collect();
+                    let seen: std::collections::HashSet<&String> = numbered.iter().collect();
                     let rest: Vec<String> = categories
                         .iter()
                         .filter(|c| !seen.contains(c))
@@ -2606,10 +2611,16 @@ pub fn positional_axis_class(
                 // category and a timestamp is not.
                 DataType::Utf8 | DataType::Date32 => saw_band = true,
                 DataType::Float64
+                | DataType::Float32
                 | DataType::Decimal128(..)
                 | DataType::Int64
                 | DataType::Int32
                 | DataType::Int16
+                | DataType::Int8
+                | DataType::UInt64
+                | DataType::UInt32
+                | DataType::UInt16
+                | DataType::UInt8
                     if numbers_band && *ch == axis =>
                 {
                     saw_band = true;
@@ -2757,16 +2768,23 @@ fn number_categories(col: &dyn Array) -> Vec<(f64, String)> {
         .collect()
 }
 
-/// The labels of `numbers` in ascending order of value, each once. Ties in
-/// value keep the first label met, so a column read at two widths names one
-/// band once.
+/// The labels of `numbers` in ascending order of value, one per value: where
+/// two labels name one value (an `INTEGER` 3 and a `DECIMAL` 3.0, a `3.50` and
+/// a `3.5`), the first met names its band, and the marks find that band by the
+/// value (`crate::mark` reads a number band through
+/// `band_categories_by_value`), so every layer lands in the one slot.
 fn sorted_number_categories(mut numbers: Vec<(f64, String)>) -> Vec<String> {
     numbers.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut seen = std::collections::HashSet::new();
-    numbers
-        .into_iter()
-        .filter_map(|(_, label)| seen.insert(label.clone()).then_some(label))
-        .collect()
+    let mut out: Vec<String> = Vec::new();
+    let mut last: Option<f64> = None;
+    for (value, label) in numbers {
+        if last == Some(value) {
+            continue;
+        }
+        last = Some(value);
+        out.push(label);
+    }
+    out
 }
 
 fn infer_column_scale(

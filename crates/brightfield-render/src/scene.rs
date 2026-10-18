@@ -1470,7 +1470,12 @@ fn draw_multi_mark_scene(
     for (i, entry) in entries.iter().enumerate() {
         let before = scene.encoding().draw_tags.len();
         render_entry(&mut scene, entry, scales);
-        if scene.encoding().draw_tags.len() == before {
+        // A layer the plot's projection leaves undrawable is named by the
+        // parser's `MarkCannotProject`, with the reason that is true; it is not
+        // a layer that tried and drew nothing.
+        if scene.encoding().draw_tags.len() == before
+            && !entry.channel_map.mark_projection().is_undrawable()
+        {
             blank.push(i);
         }
     }
@@ -1529,12 +1534,13 @@ fn draw_multi_mark_scene(
 ///   `xScale` on a bar's band axis, say);
 /// - a channel it binds names a column its rows do not have;
 /// - a positional channel it binds has no scale;
+/// - a line or an area had no series of two points to join;
 /// - otherwise, no row held values it could place.
 #[must_use]
 pub fn why_drew_nothing(entry: &ChartData<'_>, scales: &ScaleSet, kind: MarkKind) -> String {
     let cm = entry.channel_map;
     let mark = kind.wire_name();
-    for &channel in crate::channel::band_channels_of(kind) {
+    for channel in crate::channel::band_channels_of(kind) {
         if !cm.has(channel) {
             continue;
         }
@@ -1569,6 +1575,16 @@ pub fn why_drew_nothing(entry: &ChartData<'_>, scales: &ScaleSet, kind: MarkKind
         if cm.has(channel) && scales.get(channel).is_none() {
             return format!("{} has no scale to be placed on", channel.wire_name());
         }
+    }
+    // A line or an area joins a series' points, and a series with one point
+    // has nothing to join.
+    if matches!(
+        kind,
+        MarkKind::Line | MarkKind::LineX | MarkKind::LineY | MarkKind::AreaX | MarkKind::AreaY
+    ) {
+        return format!(
+            "a {mark} needs at least two points in a series, and no series had two it could place"
+        );
     }
     format!(
         "none of its {} rows held values it could place",

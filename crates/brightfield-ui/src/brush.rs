@@ -990,10 +990,53 @@ fn resolve_point_value(
         if cursor_on_axis < lo || cursor_on_axis > hi {
             return None;
         }
-        return band_category_at(scale, cursor_on_axis).map(SelectionValue::Text);
+        let category = band_category_at(scale, cursor_on_axis)?;
+        return Some(band_value(&category, column, marks));
     }
 
     // Continuous axis: snap to the nearest rendered datum, read its typed value.
+    point_value_on_continuous(click_px, marks, scales, column, mode)
+}
+
+/// The value a clicked band category selects: the category's text, or, when
+/// the band was built over a number column (an hour, a month), the number in
+/// the column's own type, so the predicate compares a number with a number
+/// rather than leaning on the engine to cast `'3'`.
+fn band_value(
+    category: &str,
+    column: &str,
+    marks: &[(&RecordBatch, &ChannelMap)],
+) -> SelectionValue {
+    let data_type = marks.iter().find_map(|(batch, _)| {
+        Some(
+            batch
+                .schema()
+                .field_with_name(column)
+                .ok()?
+                .data_type()
+                .clone(),
+        )
+    });
+    let typed = match data_type {
+        Some(dt) if dt.is_integer() => category.parse::<i64>().ok().map(SelectionValue::Int),
+        Some(dt) if dt.is_numeric() => category
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite())
+            .map(SelectionValue::Number),
+        _ => None,
+    };
+    typed.unwrap_or_else(|| SelectionValue::Text(category.to_string()))
+}
+
+/// [`resolve_point_value`] on a continuous axis.
+fn point_value_on_continuous(
+    click_px: kurbo::Point,
+    marks: &[(&RecordBatch, &ChannelMap)],
+    scales: &ScaleSet,
+    column: &str,
+    mode: NearestMode,
+) -> Option<SelectionValue> {
     let mut best: Option<(f64, SelectionValue)> = None; // (pixel distance, value)
     for (batch, channel_map) in marks {
         let hit = match find_nearest(click_px, batch, channel_map, scales, mode, None) {
@@ -1504,5 +1547,41 @@ mod commit_tests {
         assert_eq!(ui_binding.kind, BrushKind::IntervalXY);
         assert_eq!(ui_binding.channels.x.as_deref(), Some("speed"));
         assert_eq!(ui_binding.channels.y.as_deref(), Some("delay"));
+    }
+
+    #[test]
+    fn a_click_on_a_band_over_numbers_selects_the_number_in_its_own_type() {
+        use arrow::array::{Float64Array, Int32Array, StringArray};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("hour", DataType::Int32, false),
+                Field::new("share", DataType::Float64, false),
+                Field::new("place", DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(Int32Array::from(vec![3])),
+                Arc::new(Float64Array::from(vec![2.5])),
+                Arc::new(StringArray::from(vec!["north"])),
+            ],
+        )
+        .unwrap();
+        let cm = ChannelMap::new();
+        let marks = [(&batch, &cm)];
+        assert_eq!(band_value("3", "hour", &marks), SelectionValue::Int(3));
+        assert_eq!(
+            band_value("2.5", "share", &marks),
+            SelectionValue::Number(2.5)
+        );
+        assert_eq!(
+            band_value("north", "place", &marks),
+            SelectionValue::Text("north".into())
+        );
+        assert_eq!(
+            band_value("3", "absent", &marks),
+            SelectionValue::Text("3".into()),
+            "a column no mark carries keeps the category's text"
+        );
     }
 }

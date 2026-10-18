@@ -231,3 +231,55 @@ fn a_written_linear_scale_is_kept_and_the_bars_that_cannot_draw_on_it_say_so() {
         ],
     );
 }
+
+#[test]
+fn a_written_band_scale_on_a_bar_over_numbers_is_the_band_it_draws() {
+    let composed = compose(&bar_spec("xScale: band\n"));
+    let wanted: Vec<String> = (1..=12).map(|m| m.to_string()).collect();
+    assert_eq!(categories(&composed, Channel::X), wanted);
+    assert_eq!(bars(&raster(&composed), &ink_of(mark_ink())).len(), 12);
+    assert!(
+        composed.diagnostics.notes().is_empty(),
+        "a band is a scale this build draws on a bar's band axis: {:?}",
+        composed.diagnostics.notes()
+    );
+}
+
+#[test]
+fn a_layer_the_projection_cannot_draw_is_named_once_and_not_as_drawing_nothing() {
+    let composed = compose(
+        "data:\n  t:\n    - { lon: 150, lat: -30 }\n    - { lon: 151, lat: -31 }\n\
+         plot:\n  - mark: dot\n    data: { from: t }\n    x: lon\n    y: lat\n  \
+         - mark: lineY\n    data: { from: t }\n    x: lon\n    y: lat\n\
+         projectionType: mercator\nwidth: 400\nheight: 300\n",
+    );
+    assert!(
+        drew_nothing(&composed).is_empty(),
+        "{:?}",
+        composed.diagnostics.notes()
+    );
+    assert!(
+        composed
+            .diagnostics
+            .notes()
+            .iter()
+            .any(|n| n.contains("lineY") && n.contains("project")),
+        "the parser's own note names the line: {:?}",
+        composed.diagnostics.notes()
+    );
+}
+
+#[test]
+fn a_line_of_one_point_says_a_line_needs_two() {
+    let composed = compose(
+        "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - mark: lineY\n    data: { from: t }\n    \
+         x: x\n    y: y\n",
+    );
+    assert_eq!(
+        drew_nothing(&composed),
+        [
+            "`lineY` drew nothing: a lineY needs at least two points in a series, and no series \
+             had two it could place"
+        ]
+    );
+}

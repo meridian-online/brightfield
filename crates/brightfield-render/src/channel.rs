@@ -192,20 +192,31 @@ pub struct ChannelMap {
 }
 
 /// The channels a mark kind draws as bands of categories: a bar's band axis and
-/// both of a cell's axes. These renderers size each bar or cell to a band's
-/// width, so a continuous scale on one of these channels leaves them nothing to
-/// draw.
+/// both of a cell's axes, as [`MarkKind::band_channels`] names them. These
+/// renderers size each bar or cell to a band's width, so a continuous scale on
+/// one of these channels leaves them nothing to draw.
 ///
 /// Observable Plot puts these channels on a band scale whatever the column
 /// holds, so a number column there (a month, an hour) reads as categories in
 /// ascending order. [`ChannelMap::wants_band`] is how scale inference asks.
-#[must_use]
-pub fn band_channels_of(kind: MarkKind) -> &'static [Channel] {
-    match kind {
-        MarkKind::BarY => &[Channel::X],
-        MarkKind::BarX => &[Channel::Y],
-        MarkKind::Cell => &[Channel::X, Channel::Y],
-        _ => &[],
+pub fn band_channels_of(kind: MarkKind) -> impl Iterator<Item = Channel> {
+    kind.band_channels()
+        .iter()
+        .filter_map(|name| Channel::from_wire(name))
+}
+
+/// Whether `plot` writes a continuous scale this build draws on `axis`: a
+/// `linear`, `log` or `symlog` `xScale` / `yScale`, or a `$param` there, whose
+/// value this reading has no params to look up. Any other word (`band`,
+/// `ordinal`, `point`) is not one, and leaves a banding mark's band in place.
+fn written_continuous(plot: &PlotNode, axis: PlotAxis) -> bool {
+    let Some(key) = plot_scale_key(axis) else {
+        return false;
+    };
+    match plot.attributes.get(key) {
+        Some(SpecValue::String(name)) => ScaleType::from_wire(name).is_some(),
+        Some(SpecValue::Param(_)) => true,
+        _ => false,
     }
 }
 
@@ -606,8 +617,8 @@ impl ChannelMap {
             if let Some(ValueOrParamRef::Value(SpecValue::String(_))) =
                 mark.options.get(ch.wire_name())
             {
-                if cm.has(*ch) {
-                    cm.bands.push(*ch);
+                if cm.has(ch) {
+                    cm.bands.push(ch);
                 }
             }
         }
@@ -618,8 +629,9 @@ impl ChannelMap {
     /// column there takes a band scale of its distinct values rather than a
     /// linear one. Set by [`ChannelMap::from_mark`] from
     /// [`band_channels_of`], and cleared by [`ChannelMap::from_mark_in`] on an
-    /// axis whose plot names its scale (`xScale` / `yScale`): a written scale
-    /// is the author's, as Plot keeps a written `type`.
+    /// axis whose plot writes a continuous scale there (`xScale: linear`,
+    /// `log`, `symlog`): a written scale is the author's, as Plot keeps a
+    /// written `type`. A written `band`, `ordinal` or `point` keeps the band.
     #[must_use]
     pub fn wants_band(&self, channel: Channel) -> bool {
         self.bands.contains(&channel)
@@ -720,8 +732,7 @@ impl ChannelMap {
         cm.set_scale_types(plot.map(resolve_plot_scales).unwrap_or_default());
         if let Some(plot) = plot {
             for axis in [PlotAxis::X, PlotAxis::Y] {
-                let named = plot_scale_key(axis).is_some_and(|k| plot.attributes.contains_key(k));
-                if named {
+                if written_continuous(plot, axis) {
                     cm.bands.retain(|ch| match axis {
                         PlotAxis::X => *ch != Channel::X,
                         PlotAxis::Y => *ch != Channel::Y,
@@ -821,6 +832,17 @@ mod tests {
         let cm = ChannelMap::from_mark_in(&mark, Some(&plot));
         assert!(!cm.wants_band(Channel::X), "the file wrote x's scale");
         assert!(cm.wants_band(Channel::Y), "and said nothing of y's");
+
+        for word in ["band", "ordinal", "point"] {
+            let plot = PlotNode {
+                items: Vec::new(),
+                attributes: [("xScale".to_string(), SpecValue::String(word.into()))]
+                    .into_iter()
+                    .collect(),
+            };
+            let cm = ChannelMap::from_mark_in(&mark, Some(&plot));
+            assert!(cm.wants_band(Channel::X), "`xScale: {word}` keeps the band");
+        }
     }
 
     /// a POSITIONAL channel bound to a `$param` maps to

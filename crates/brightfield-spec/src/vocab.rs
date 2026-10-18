@@ -231,6 +231,23 @@ impl MarkKind {
         matches!(self, Self::RectX | Self::RectY)
     }
 
+    /// The channels a mark of this kind draws as bands of categories: a bar's
+    /// band axis and both of a cell's axes, by wire name.
+    ///
+    /// Observable Plot puts these channels on a band scale whatever the column
+    /// holds, so a number column there (a month, an hour) reads as categories
+    /// in ascending order. The render crate's scale inference bands them, and a
+    /// plot's `xScale: band` on one of them is a scale this build draws.
+    #[must_use]
+    pub fn band_channels(self) -> &'static [&'static str] {
+        match self {
+            Self::BarY => &["x"],
+            Self::BarX => &["y"],
+            Self::Cell => &["x", "y"],
+            _ => &[],
+        }
+    }
+
     /// The `(value, band)` positional channel pair this mark aggregates over,
     /// or `None` for a kind that has no band axis.
     ///

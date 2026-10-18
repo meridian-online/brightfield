@@ -638,17 +638,60 @@ fn column_as_string(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<St
 /// On a band scale, [`column_as_labels`]: a band over a number column names
 /// its categories as that function writes the numbers, so a bar, a cell, a
 /// line or a text over the same column finds its band by the same spelling.
-/// On any other scale, the column's own strings, which only a band reads; a
-/// number column is not written out for a scale that places it by value.
+/// A number whose own spelling names no band is found by its value instead
+/// (`band_categories_by_value`): two layers at different number types, an
+/// `INTEGER` 3 and a `DECIMAL` 3.0, share the one band scale inference made
+/// for the value. On any other scale, the column's own strings, which only a
+/// band reads; a number column is not written out for a scale that places it
+/// by value.
 fn position_keys(
     batch: &RecordBatch,
     col_name: &str,
     scale: &Scale,
 ) -> Option<Vec<Option<String>>> {
-    if matches!(scale, Scale::Band { .. }) {
-        column_as_labels(batch, col_name)
+    let Scale::Band { categories, .. } = scale else {
+        return column_as_string(batch, col_name);
+    };
+    if let Some(strings) = column_as_string(batch, col_name) {
+        return Some(strings);
+    }
+    let labels = column_as_labels(batch, col_name)?;
+    let Some(values) = column_as_f64(batch, col_name) else {
+        return Some(labels);
+    };
+    let named: std::collections::HashSet<&str> = categories.iter().map(String::as_str).collect();
+    let mut by_value: Option<std::collections::HashMap<u64, &String>> = None;
+    Some(
+        labels
+            .into_iter()
+            .zip(values)
+            .map(|(label, value)| {
+                let label = label?;
+                if named.contains(label.as_str()) {
+                    return Some(label);
+                }
+                let by_value = by_value.get_or_insert_with(|| band_categories_by_value(categories));
+                by_value.get(&value_key(value?)).map(|c| (*c).clone())
+            })
+            .collect(),
+    )
+}
+
+/// A band's categories keyed by the number each reads as, for the ones that
+/// read as a number.
+fn band_categories_by_value(categories: &[String]) -> std::collections::HashMap<u64, &String> {
+    categories
+        .iter()
+        .filter_map(|c| Some((value_key(c.parse::<f64>().ok()?), c)))
+        .collect()
+}
+
+/// A number as a map key: its bits, with a negative zero read as zero.
+fn value_key(value: f64) -> u64 {
+    if value == 0.0 {
+        0.0_f64.to_bits()
     } else {
-        column_as_string(batch, col_name)
+        value.to_bits()
     }
 }
 
@@ -5988,6 +6031,52 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
+
+    /// An `INTEGER` layer and a `DECIMAL(4,1)` layer on one number band: one
+    /// band per value, named by the first spelling met, and both layers find
+    /// the same slot for 3.
+    #[test]
+    fn layers_at_two_number_types_share_one_band_per_value() {
+        let ints = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("m", DataType::Int32, false)])),
+            vec![Arc::new(arrow::array::Int32Array::from(vec![1, 3]))],
+        )
+        .unwrap();
+        let decimals = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "m",
+                DataType::Decimal128(4, 1),
+                false,
+            )])),
+            vec![Arc::new(
+                arrow::array::Decimal128Array::from(vec![30_i128, 20])
+                    .with_precision_and_scale(4, 1)
+                    .unwrap(),
+            )],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "m".to_string());
+        cm.set_wants_band(Channel::X);
+        let scales = crate::scale::infer_scales_multi(
+            &[(&ints, &cm), (&decimals, &cm)],
+            (0.0, 300.0),
+            (0.0, 100.0),
+        );
+        let band = scales.get(Channel::X).expect("an x scale");
+        let Scale::Band { categories, .. } = band else {
+            panic!("a band: {band:?}");
+        };
+        assert_eq!(categories, &["1", "2.0", "3"]);
+        let int_keys = position_keys(&ints, "m", band).unwrap();
+        let dec_keys = position_keys(&decimals, "m", band).unwrap();
+        assert_eq!(int_keys, [Some("1".into()), Some("3".into())]);
+        assert_eq!(
+            dec_keys,
+            [Some("3".into()), Some("2.0".into())],
+            "the DECIMAL 3.0 finds the band its value already has"
+        );
+    }
 
     #[test]
     fn dot_renderer_positions_circles() {
