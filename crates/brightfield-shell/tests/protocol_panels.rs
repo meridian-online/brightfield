@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use agent_protocol::{
-    copied_fixture, copied_fixture_in, engine_cli, force_run_protocol, ran_fixture, run_protocol,
+    copied_fixture, copied_fixture_in, drop_fetch_steps, engine_cli, force_run_protocol,
+    is_fetch_op, ran_fixture, run_protocol,
 };
 use brightfield_model::panel_capture::panel_file;
 use brightfield_shell::protocol_panels::{
@@ -458,4 +459,41 @@ fn a_database_from_another_duckdb_says_so() {
         }
         Ok(_) => panic!("garbage opened as a database"),
     }
+}
+
+#[test]
+fn a_copy_drops_every_version_of_a_fetch_step_and_keeps_the_rest() {
+    assert!(is_fetch_op("http_fetch"));
+    assert!(is_fetch_op("http_fetch@1"));
+    assert!(is_fetch_op("http_fetch@12"));
+    assert!(!is_fetch_op("http_fetch@"));
+    assert!(!is_fetch_op("http_fetch@x"));
+    assert!(!is_fetch_op("http_fetcher"));
+    assert!(!is_fetch_op("sql"));
+
+    let tmp = tempfile::tempdir().expect("a temp directory");
+    std::fs::write(
+        tmp.path().join("arcform.yaml"),
+        "name: p\nsteps:\n\
+         - name: plain\n  op: http_fetch\n  with: { out: data/a.csv, url: https://example.invalid/a }\n\
+         - name: versioned\n  op: http_fetch@1\n  with: { out: data/b.csv, url: https://example.invalid/b }\n\
+         - name: load\n  sql: models/load.sql\n",
+    )
+    .expect("the manifest writes");
+    drop_fetch_steps(tmp.path());
+    let manifest: serde_yaml::Value = serde_yaml::from_str(
+        &std::fs::read_to_string(tmp.path().join("arcform.yaml")).expect("the manifest reads"),
+    )
+    .expect("the manifest parses");
+    let names: Vec<&str> = manifest["steps"]
+        .as_sequence()
+        .expect("a step list")
+        .iter()
+        .filter_map(|step| step["name"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["load"],
+        "both fetch steps went and the SQL step stayed"
+    );
 }

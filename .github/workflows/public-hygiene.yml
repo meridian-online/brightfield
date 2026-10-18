@@ -205,6 +205,14 @@ jobs:
       - name: installed-copy check self-test
         run: cargo xtask ci --step brew-install-selftest
 
+      # The fetch handling the agent-Protocol check and the air-gapped export
+      # leg share: a Protocol's http_fetch steps are dropped from a copy when
+      # their files are there, in every spelling the manifests use, and what
+      # the script cannot read is refused rather than left to fetch. Run
+      # against a stand-in arc, so it needs no build and no network.
+      - name: fetch-step drop self-test
+        run: cargo xtask ci --step drop-fetch-steps-selftest
+
   # THE ONE GATE IN THIS WORKFLOW WHOSE CHECK READS RUSTC. It became a job of
   # its own so the job above could run with no toolchain; that job installs
   # one now, to build the command, and this job stays its own check on a pull

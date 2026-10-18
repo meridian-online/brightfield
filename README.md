@@ -30,7 +30,7 @@ brightfield export-png path/to/protocol <panel>
 brightfield export-data path/to/protocol <panel> --format parquet
 ```
 
-`brightfield --help` lists their options. They draw on the machine's GPU and need no network.
+`brightfield --help` lists their options. None of them needs the network; the PDF and PNG exports draw on the machine's GPU.
 
 To build from source instead, Brightfield needs a recent Rust toolchain (1.95+, matching the CI pin). From a clone of the repo, render the self-contained example spec:
 

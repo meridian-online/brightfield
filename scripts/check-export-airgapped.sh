@@ -3,9 +3,11 @@
 # report to PDF with the network denied.
 #
 #   scripts/check-export-airgapped.sh <brightfield> [<duckdb-cli>]
+#   scripts/check-export-airgapped.sh --packaged <brightfield>
 #
-# scripts/verify-airgapped.sh runs this against the PACKAGED binary; it can be
-# pointed at any build (a `cargo build` one, say) to try the leg on its own.
+# scripts/verify-airgapped.sh runs this against the PACKAGED binary, with
+# --packaged; without it, it can be pointed at any build (a `cargo build` one,
+# say) to try the leg on its own.
 #
 # The Protocol is the committed fixture tests/fixtures/agent-protocols/
 # co2-per-capita, an agent's Protocol kept as written, with its data file cut
@@ -34,18 +36,40 @@
 # The DuckDB CLI: the second argument; else the one a package stages beside the
 # binary (engine/duckdb in the tarball, Contents/Helpers/duckdb in the app),
 # the places the binary itself looks; else $ARC_DUCKDB_BIN.
+#
+# With --packaged, ONLY the staged one: the claim is about the artifact, so an
+# engine from the caller's environment would make it about this machine. The
+# leg unsets ARC_DUCKDB_BIN for that case and always sets it to the engine it
+# found, so arc never falls back to a `duckdb` on PATH. An artifact that stages
+# no engine (a supported build: scripts/package.sh stages one only when
+# BRIGHTFIELD_DUCKDB_CLI is set) cannot run a Protocol on its own, so the leg
+# says so and is SKIPPED with exit 0, as the type-source leg skips an artifact
+# with no bundle.
 set -euo pipefail
 
+usage="usage: scripts/check-export-airgapped.sh [--packaged] <brightfield> [<duckdb-cli>]"
+PACKAGED=0
+if [ "${1:-}" = "--packaged" ]; then
+  PACKAGED=1
+  shift
+  unset ARC_DUCKDB_BIN
+fi
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-EXE="${1:?usage: scripts/check-export-airgapped.sh <brightfield> [<duckdb-cli>]}"
+EXE="${1:?$usage}"
 [ -x "$EXE" ] || { echo "not an executable: $EXE"; exit 1; }
 EXE=$(cd "$(dirname "$EXE")" && pwd)/$(basename "$EXE")
 
-ENGINE="${2:-}"
+ENGINE=""
+if [ "$PACKAGED" -eq 0 ]; then ENGINE="${2:-}"; fi
 if [ -z "$ENGINE" ]; then
   for candidate in "$(dirname "$EXE")/engine/duckdb" "$(dirname "$EXE")/../Helpers/duckdb"; do
     if [ -x "$candidate" ]; then ENGINE="$candidate"; break; fi
   done
+fi
+if [ -z "$ENGINE" ] && [ "$PACKAGED" -eq 1 ]; then
+  echo "skipped: the artifact stages no DuckDB CLI beside $EXE, so it cannot run a"
+  echo "Protocol by itself; package with BRIGHTFIELD_DUCKDB_CLI set to run this leg"
+  exit 0
 fi
 ENGINE="${ENGINE:-${ARC_DUCKDB_BIN:-}}"
 [ -n "$ENGINE" ] && [ -x "$ENGINE" ] || {

@@ -228,6 +228,12 @@ pub static STEPS: &[Step] = &[
         run: |c| c.script("scripts/check-brew-install-selftest.sh", &[]),
     },
     Step {
+        name: "drop-fetch-steps-selftest",
+        runs: "./scripts/drop-fetch-steps-selftest.sh",
+        only_in_ci: None,
+        run: |c| c.script("scripts/drop-fetch-steps-selftest.sh", &[]),
+    },
+    Step {
         name: "fmt",
         runs: "cargo fmt --all --check",
         only_in_ci: None,

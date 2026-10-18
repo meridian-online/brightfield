@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Draw every panel and export every report of a set of agent-written Protocols.
+# Export every panel and every report of a set of agent-written Protocols.
 #
 #   scripts/check-agent-protocols.sh <runs-dir> [<out-dir>]
 #
@@ -10,17 +10,22 @@
 #   1. Its http_fetch steps are dropped when their files are already there
 #      (scripts/drop-fetch-steps.sh), so the check needs no network and cannot
 #      replace the data the agent fetched.
-#   2. `arc run` runs, unless the copy already has a database in this check's
-#      store. arc keys a database by the folder's path, so a copy never has one
-#      to begin with, and the run records the agent's runs left in the folder
-#      say nothing about this store. They are kept, so the report's run is
-#      still found next to the new one.
+#   2. `arc run` runs. arc keys a Protocol's database by the folder's path, so
+#      a copy never has one, whatever run records the agent's runs left in the
+#      folder; those are kept, so the report's run is still found next to the
+#      new one.
 #   3. `export-png` for each panels/*.yaml, and `export-pdf` when there is a
 #      report.md.
 #
 # Prints one line per panel and report, `ok <what>` or `FAIL <what>: <message>`,
-# with any warning an export printed indented under it, then the counts. Exits 1
-# on any failure.
+# then the counts. Exits 1 on any failure.
+#
+# WHAT "ok" COVERS: the export exited 0 and wrote a file that is a PNG or a
+# PDF. It is not a check of what the picture shows: a plot that draws nothing,
+# or draws a mark without an option the file sets, is still "ok". What the
+# export said about the panel on stderr (an option nothing draws, colours that
+# repeat) is printed indented under its ok line, and the pictures themselves
+# are kept in <out-dir> to be looked at.
 #
 # The pictures go to <out-dir>, one folder per Protocol, when it is given, and
 # are removed with the temp directory otherwise.
@@ -75,7 +80,8 @@ magic() {
   [ -f "$1" ] && [ "$(head -c $(( ${#2} / 2 )) "$1" | od -An -tx1 | tr -d ' \n')" = "$2" ]
 }
 
-while IFS= read -r manifest; do
+# The list is read on descriptor 3, so no command in the loop can read it.
+while IFS= read -r -u 3 manifest; do
   src=$(dirname "$manifest")
   [ -d "$src/panels" ] || continue
   protocols=$((protocols + 1))
@@ -91,23 +97,20 @@ while IFS= read -r manifest; do
   log="$work/log"
 
   echo "== $rel"
-  if ! "$ROOT/scripts/drop-fetch-steps.sh" "$copy" "${ARC[@]}" > "$log" 2>&1; then
+  if ! "$ROOT/scripts/drop-fetch-steps.sh" "$copy" "${ARC[@]}" > "$log" 2>&1 < /dev/null; then
     fail "$rel" "$log"; protocols_failed=$((protocols_failed + 1)); continue
   fi
   notes "$log"
-  # A database in this store, under arc's hash of the copy's path.
-  if ! grep -rqsxF "$(cd "$copy" && pwd -P)" "$ARCFORM_DB_DIR"/*/protocol-path; then
-    if ! ( cd "$copy" && "${ARC[@]}" run ) > "$log" 2>&1; then
-      echo "FAIL $rel: arc run failed:"; tail -20 "$log" | sed 's/^/    /'
-      protocols_failed=$((protocols_failed + 1)); continue
-    fi
+  if ! ( cd "$copy" && "${ARC[@]}" run ) > "$log" 2>&1 < /dev/null; then
+    echo "FAIL $rel: arc run failed:"; tail -20 "$log" | sed 's/^/    /'
+    protocols_failed=$((protocols_failed + 1)); continue
   fi
 
   for panel in "$copy"/panels/*.yaml; do
     [ -f "$panel" ] || continue
     file="panels/$(basename "$panel")"
     png="$pictures/$(basename "$panel" .yaml).png"
-    if "$BF" export-png "$copy" "$file" --out "$png" > /dev/null 2> "$log" && magic "$png" 89504e47; then
+    if "$BF" export-png "$copy" "$file" --out "$png" > /dev/null 2> "$log" < /dev/null && magic "$png" 89504e47; then
       echo "ok $rel/$file"; notes "$log"; panels_ok=$((panels_ok + 1))
     else
       fail "$rel/$file" "$log"; panels_failed=$((panels_failed + 1))
@@ -116,14 +119,15 @@ while IFS= read -r manifest; do
 
   if [ -f "$copy/report.md" ]; then
     pdf="$pictures/report.pdf"
-    if "$BF" export-pdf "$copy" --out "$pdf" > /dev/null 2> "$log" && magic "$pdf" 25504446; then
+    if "$BF" export-pdf "$copy" --out "$pdf" > /dev/null 2> "$log" < /dev/null && magic "$pdf" 25504446; then
       echo "ok $rel/report.md"; notes "$log"; pdfs_ok=$((pdfs_ok + 1))
     else
       fail "$rel/report.md" "$log"; pdfs_failed=$((pdfs_failed + 1))
     fi
   fi
-done < <(find "$RUNS" -name arcform.yaml -type f -not -path '*/build/*' | LC_ALL=C sort)
+done 3< <(find "$RUNS" -name arcform.yaml -type f -not -path '*/build/*' | LC_ALL=C sort)
 
 echo "== $protocols Protocols ($protocols_failed could not be run); panels: $panels_ok ok, $panels_failed failed; PDFs: $pdfs_ok ok, $pdfs_failed failed"
+echo "   (ok = exported: exit 0 and a valid file; not a check of what the picture shows)"
 [ "$protocols" -gt 0 ] || { echo "no Protocol (an arcform.yaml beside a panels/ folder) under $RUNS"; exit 1; }
 [ $((protocols_failed + panels_failed + pdfs_failed)) -eq 0 ]

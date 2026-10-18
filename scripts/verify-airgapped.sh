@@ -72,7 +72,9 @@
 #      and must leave a PDF. The Protocol is the repository's committed
 #      fixture with its fetch step dropped from a copy, since arc would
 #      download the data again; scripts/check-export-airgapped.sh holds the
-#      leg and names what it checks.
+#      leg and names what it checks. The DuckDB CLI the run needs is the one
+#      the artifact stages and no other; an artifact that stages none skips
+#      this leg, saying so.
 #
 # The jail: macOS `sandbox-exec` with `(deny network*)`; Linux `unshare -rn`
 # (a network namespace with no interfaces). Both windows open briefly on a
@@ -350,11 +352,13 @@ is_png "$TMP/chart-again.png" 20000
 echo "== run 5: an agent-written Protocol run and exported to PDF, jailed (no window)"
 # The packaged binary, its staged DuckDB CLI and the committed fixture: see
 # scripts/check-export-airgapped.sh, which can also be pointed at a repo build.
-"${HERE}/check-export-airgapped.sh" "$PKG/${EXE#./}" | sed 's/^/   /' || {
+# --packaged: the engine comes only from the artifact (never the caller's
+# ARC_DUCKDB_BIN or PATH), and an artifact that stages none skips the leg.
+"${HERE}/check-export-airgapped.sh" --packaged "$PKG/${EXE#./}" | sed 's/^/   /' || {
   echo "   FAILED: the packaged binary could not run and export a Protocol with the network denied"
   exit 1
 }
 
 echo "== PASS: the packaged binary starts, renders and opens a local protocol with the"
-echo "         network denied, runs and exports an agent-written Protocol to PDF the same way,"
-echo "         and refuses a remote spec by name without disturbing any of it"
+echo "         network denied, runs and exports an agent-written Protocol to PDF the same way"
+echo "         (unless run 5 said it was skipped), and refuses a remote spec by name"

@@ -13,10 +13,10 @@
 //! a `<out>.arcmeta` sidecar gives it a validator to ask with, it GETs the URL
 //! and writes the whole remote file over `out`. The fixture has neither, so a
 //! run with the step in place would download 13.7 MB and replace the cut file.
-//! [`copied_fixture`] therefore drops the `http_fetch` steps from the COPY's
-//! `arcform.yaml`, leaving the fixture's as committed, and [`run_protocol`]
-//! asserts the data file is byte-identical after the run, which a fetch could
-//! not leave it.
+//! [`copied_fixture`] therefore drops the `http_fetch` steps, in any version
+//! (`http_fetch@1` too), from the COPY's `arcform.yaml`, leaving the fixture's
+//! as committed, and [`run_protocol`] asserts the data file is byte-identical
+//! after the run, which a fetch could not leave it.
 //!
 //! **One store per test binary.** arc keys a Protocol's database by a hash of
 //! its folder, under `ARCFORM_DB_DIR`, and keeps history under
@@ -148,8 +148,20 @@ fn run_protocol_with(dir: &Path, args: &[&str]) -> run::ArcOutput {
     out
 }
 
-/// Remove the `http_fetch` steps from the `arcform.yaml` in `dir`.
-fn drop_fetch_steps(dir: &Path) {
+/// Whether a step's `op:` names arc's `http_fetch`, with or without a version
+/// (`http_fetch@1`).
+pub fn is_fetch_op(op: &str) -> bool {
+    op.strip_prefix("http_fetch").is_some_and(|rest| {
+        rest.is_empty()
+            || rest
+                .strip_prefix('@')
+                .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
+/// Remove the `http_fetch` steps, in any version, from the `arcform.yaml` in
+/// `dir`.
+pub fn drop_fetch_steps(dir: &Path) {
     let path = dir.join("arcform.yaml");
     let text = std::fs::read_to_string(&path).expect("the copy has an arcform.yaml");
     let mut manifest: serde_yaml::Value = serde_yaml::from_str(&text).expect("the manifest parses");
@@ -158,7 +170,10 @@ fn drop_fetch_steps(dir: &Path) {
         .and_then(serde_yaml::Value::as_sequence_mut)
     {
         steps.retain(|step| {
-            step.get("op").and_then(serde_yaml::Value::as_str) != Some("http_fetch")
+            !step
+                .get("op")
+                .and_then(serde_yaml::Value::as_str)
+                .is_some_and(is_fetch_op)
         });
     }
     std::fs::write(
