@@ -11,7 +11,10 @@
 //! golden `dashboard.yaml` and the simple examples do not exercise them). A
 //! plot's `colorDomain` and `colorRange` are ported for its dot marks: the ends
 //! of a number ramp, the order of a string column's categories and the colours
-//! both draw in. Mosaic's `colorDomain: Fixed` is not read. A plot's
+//! both draw in. A line, an area, a bar, a rectangle, a cell or text takes the
+//! categories and colours they write for a categorical colour scale and leaves
+//! a fill ramp alone; a line split by a number `stroke` column takes them all
+//! on its stroke ramp. Mosaic's `colorDomain: Fixed` is not read. A plot's
 //! `colorScale: quantize` with `colorN` cuts a dot's number ramp into steps.
 //! Standalone-legend relocation is ported for one placement: a colour
 //! legend under the plot it is for in a `vconcat` is drawn in the band the layout
@@ -2693,8 +2696,9 @@ fn compose_from_results(
             // plot with no dot among its marks keeps the ramp it draws today
             // (`a_cell_a_heatmap_and_a_raster_keep_their_ramp`). A line, an area, a
             // bar, a rectangle, a cell or text takes the categories and colours the
-            // plot writes for a categorical colour scale and leaves a ramp alone
-            // (`a_line_with_a_written_colour_range_draws_it`).
+            // plot writes for a categorical colour scale and leaves a fill ramp
+            // alone (`a_line_with_a_written_colour_range_draws_it`); a line split
+            // by a number stroke column takes them all on its stroke ramp.
             let colour_override = plot_node
                 .and_then(|node| {
                     if colour_override_applies(&plot_marks) {
@@ -2743,6 +2747,9 @@ fn compose_from_results(
                     reason: why_drew_nothing(refs[k], &scales, plot_marks[k]),
                 })
                 .collect();
+            // A line over a `DATE` axis draws its days one band apart; when the
+            // days are not evenly spaced the note says the gaps are not to scale.
+            let uneven = uneven_days(&refs, &plot_marks, &scales);
             // Where the axes just drawn put their title, labels and line, taken
             // from the routine that drew them and kept on the plot's handle.
             let axes = plot_axis_targets(&refs, &titles, tick_counts, &tick_formats, &scales);
@@ -2776,6 +2783,7 @@ fn compose_from_results(
                     found.extend(param_held_colour_warnings(node, &spec.params));
                     found.extend(repeated_colours(&scales, &colour_override));
                     found.extend(blank_layers.iter().cloned());
+                    found.extend(uneven.iter().cloned());
                     found.extend(crossed_tick_formats(node, spec, &tick_formats, &scales));
                     found.extend(inert_axis_instructions(
                         &plot_label(&plot.path, node),
@@ -2979,6 +2987,76 @@ fn repeated_colours(scales: &ScaleSet, written: &ColourOverride) -> Vec<ParseWar
             _ => None,
         })
         .collect()
+}
+
+/// The note a line owes for each `DATE` axis whose days are not evenly spaced.
+///
+/// A `DATE` takes a band scale, one band per distinct day, so a line through
+/// the band centres draws every gap between consecutive days the same width.
+/// That is the picture only when the gaps are equal: every day, every week, or
+/// a whole number of calendar months, which count as even though their days
+/// differ. Anything else (weekdays only, a missing month, event dates) is
+/// named, since the axis misstates the intervals between them.
+fn uneven_days(
+    refs: &[&ChartData<'_>],
+    marks: &[MarkKind],
+    scales: &ScaleSet,
+) -> Vec<ParseWarning> {
+    let mut out = Vec::new();
+    for (entry, &kind) in refs.iter().zip(marks) {
+        if !matches!(kind, MarkKind::Line | MarkKind::LineY | MarkKind::LineX) {
+            continue;
+        }
+        for channel in [Channel::X, Channel::Y] {
+            let Some(col) = entry.channel_map.get(channel) else {
+                continue;
+            };
+            let is_date = entry
+                .batch
+                .schema()
+                .field_with_name(col)
+                .is_ok_and(|f| matches!(f.data_type(), arrow::datatypes::DataType::Date32));
+            let Some(Scale::Band { categories, .. }) = scales.get(channel) else {
+                continue;
+            };
+            if !is_date {
+                continue;
+            }
+            let days: Vec<chrono::NaiveDate> = categories
+                .iter()
+                .filter_map(|c| chrono::NaiveDate::parse_from_str(c, "%Y-%m-%d").ok())
+                .collect();
+            if !days_evenly_spaced(&days) {
+                out.push(ParseWarning::UnevenDays {
+                    mark: kind.wire_name().to_string(),
+                    channel: channel.wire_name().to_string(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Whether consecutive `days`, in order, are all the same number of days apart
+/// or all the same number of calendar months apart on the same day of the
+/// month (or each on its month's last day).
+fn days_evenly_spaced(days: &[chrono::NaiveDate]) -> bool {
+    use chrono::Datelike;
+    if days.len() < 3 {
+        return true;
+    }
+    let gaps: Vec<i64> = days.windows(2).map(|w| (w[1] - w[0]).num_days()).collect();
+    if gaps.iter().all(|&g| g == gaps[0]) {
+        return true;
+    }
+    let month_end =
+        |d: &chrono::NaiveDate| d.succ_opt().is_none_or(|next| next.month() != d.month());
+    let same_place = days.iter().all(|d| d.day() == days[0].day()) || days.iter().all(month_end);
+    let months: Vec<i32> = days
+        .windows(2)
+        .map(|w| (w[1].year() - w[0].year()) * 12 + w[1].month() as i32 - w[0].month() as i32)
+        .collect();
+    same_place && months[0] > 0 && months.iter().all(|&m| m == months[0])
 }
 
 /// The warnings for a plot's tick formats that sit on an axis of the other kind:

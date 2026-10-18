@@ -316,7 +316,8 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         ParseWarning::UnknownProjection { value } => value.clone(),
         ParseWarning::AspectRatioWithProjection { mark }
         | ParseWarning::MarkCannotProject { mark, .. }
-        | ParseWarning::MarkDrewNothing { mark, .. } => mark.clone(),
+        | ParseWarning::MarkDrewNothing { mark, .. }
+        | ParseWarning::UnevenDays { mark, .. } => mark.clone(),
         ParseWarning::IntervalBrushUnderCurvedProjection { interactor, .. } => interactor.clone(),
         // The widget the author asked for by name, so the banner names
         // something they can search their own file for.
@@ -334,6 +335,7 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::AspectRatioWithProjection { .. }
         | ParseWarning::MarkCannotProject { .. }
         | ParseWarning::MarkDrewNothing { .. }
+        | ParseWarning::UnevenDays { .. }
         | ParseWarning::HighlightOnAggregate { .. } => "mark",
         ParseWarning::InteractorBindingMissing { .. }
         | ParseWarning::InteractorBindingNonSelection { .. }

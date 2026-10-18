@@ -577,3 +577,29 @@ deviations:
       reading a label on top of its dot as the chart the file describes.
     affected_specs: []
     conformance_layers_suppressed: [3]
+  - id: DEV-0018
+    surface: "scales — a `line`, `lineY` or `lineX` over a `DATE` column"
+    mosaic_behaviour: |
+      Mosaic hands a `DATE` column to Observable Plot, which puts it on a time
+      scale: each point sits at its date, so the gap between two points is
+      drawn in proportion to the time between them.
+    brightfield_behaviour: |
+      A `DATE` column takes a band scale, one band per distinct day in time
+      order, and a line joins the band centres. Consecutive days are drawn one
+      band apart whatever the time between them. When the days on such an axis
+      are not evenly spaced (not every day, every week or every whole number of
+      calendar months), the load says so in one line: "`<mark>` puts its
+      `<axis>` days one band apart, and these days are not evenly spaced, so
+      the gaps between them are not drawn to scale". A Protocol panel's tile
+      shows the line above its chart and the headless exports print it on
+      stderr. An `areaY` or `areaX` over a `DATE` column draws nothing, and its
+      load names the mark that drew nothing.
+    rationale: |
+      Bars and cells over a `DATE` are counts per day and read correctly on a
+      band. A time scale for lines and areas is a change of its own to the
+      renderer. Until then a line over evenly spaced days is the picture Mosaic
+      draws, and a line over uneven days (weekdays only, a missing month,
+      event dates) is drawn with the gaps evened out and says so, rather than
+      misstating the intervals without a word.
+    affected_specs: []
+    conformance_layers_suppressed: [3]

@@ -1621,6 +1621,10 @@ pub enum LineAxis {
 pub struct LineRenderer {
     /// Orientation — `Y` for line and lineY, `X` for lineX.
     pub axis: LineAxis,
+    /// The continuous colour scheme a number-column stroke is painted along
+    /// (default viridis): the plot's `colorScheme`, carried by
+    /// [`configured_renderer`] as a dot's is.
+    pub scheme: SequentialScheme,
 }
 
 impl MarkRenderer for LineRenderer {
@@ -1629,7 +1633,7 @@ impl MarkRenderer for LineRenderer {
     /// Column inference types a number column `Linear`, which no colour is
     /// read from, so a line split by a number would draw its series in one
     /// ink (`line_y_splits_on_an_integer_stroke_in_one_colour_per_value`). As [`DotRenderer`] does for a number fill, the `Linear` is
-    /// replaced with a viridis `Sequential` over the rows' extent, and a
+    /// replaced with a `Sequential` in the plot's scheme over the rows' extent, and a
     /// `Sequential` already in the set has its domain widened. Any other
     /// stroke scale, such as a categorical `Colour`, is left as it is.
     fn augment_scales(
@@ -1674,7 +1678,7 @@ impl MarkRenderer for LineRenderer {
             Some(Scale::Linear { .. }) | None => Scale::Sequential {
                 domain_min: lo,
                 domain_max: hi,
-                stops: SequentialScheme::default().stops(),
+                stops: self.scheme.stops(),
             },
             Some(_) => return,
         };
@@ -1780,7 +1784,13 @@ impl MarkRenderer for LineRenderer {
                             | Scale::Quantized { .. }
                     )
                 });
-                match (on_ramp, stroke_values.as_ref().and_then(|v| v[first_row])) {
+                // A NaN or infinite value has no place on the ramp and
+                // falls back as a NULL does.
+                let value = stroke_values
+                    .as_ref()
+                    .and_then(|v| v[first_row])
+                    .filter(|v| v.is_finite());
+                match (on_ramp, value) {
                     (Some(ramp), Some(value)) => Color::new(ramp.map_continuous(value)),
                     _ => resolve_stroke_colour(scales, channel_map, batch, first_row),
                 }
@@ -5816,14 +5826,26 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
         (MarkKind::Circle, Box::new(DotRenderer::default())),
         (MarkKind::BarX, Box::new(BarRenderer { axis: BarAxis::X })),
         (MarkKind::BarY, Box::new(BarRenderer { axis: BarAxis::Y })),
-        (MarkKind::Line, Box::new(LineRenderer { axis: LineAxis::Y })),
+        (
+            MarkKind::Line,
+            Box::new(LineRenderer {
+                axis: LineAxis::Y,
+                scheme: Default::default(),
+            }),
+        ),
         (
             MarkKind::LineX,
-            Box::new(LineRenderer { axis: LineAxis::X }),
+            Box::new(LineRenderer {
+                axis: LineAxis::X,
+                scheme: Default::default(),
+            }),
         ),
         (
             MarkKind::LineY,
-            Box::new(LineRenderer { axis: LineAxis::Y }),
+            Box::new(LineRenderer {
+                axis: LineAxis::Y,
+                scheme: Default::default(),
+            }),
         ),
         (
             MarkKind::AreaY,
@@ -5924,6 +5946,14 @@ pub fn configured_renderer(
                 colour_scale: ColourScale::default(),
             }))
         }
+        MarkKind::Line | MarkKind::LineY => Some(Box::new(LineRenderer {
+            axis: LineAxis::Y,
+            scheme,
+        })),
+        MarkKind::LineX => Some(Box::new(LineRenderer {
+            axis: LineAxis::X,
+            scheme,
+        })),
         MarkKind::Raster => Some(Box::new(RasterRenderer { scheme })),
         MarkKind::Heatmap => Some(Box::new(HeatmapRenderer { scheme, bandwidth })),
         MarkKind::Cell => Some(Box::new(CellRenderer { scheme })),
@@ -6451,7 +6481,10 @@ mod tests {
         let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         let mut scene = Scene::new();
-        let renderer = LineRenderer { axis: LineAxis::Y };
+        let renderer = LineRenderer {
+            axis: LineAxis::Y,
+            scheme: Default::default(),
+        };
         renderer.render(&mut scene, &batch, &cm, &scales, None);
 
         // Line renderer should produce stroke operations for 3 line segments (4 points).
@@ -6504,7 +6537,11 @@ mod tests {
         }
         let scales = infer_scales(domain_rows, &cm, (40.0, 600.0), (450.0, 20.0));
         let mut scene = Scene::new();
-        LineRenderer { axis }.render(&mut scene, batch, &cm, &scales, None);
+        LineRenderer {
+            axis,
+            scheme: Default::default(),
+        }
+        .render(&mut scene, batch, &cm, &scales, None);
         scene
     }
 
@@ -6607,7 +6644,11 @@ mod tests {
         );
 
         let mut scene = Scene::new();
-        LineRenderer { axis: LineAxis::Y }.render(&mut scene, &batch, &cm, &scales, None);
+        LineRenderer {
+            axis: LineAxis::Y,
+            scheme: Default::default(),
+        }
+        .render(&mut scene, &batch, &cm, &scales, None);
         // Two series, two segments each; one tangled series would be five.
         assert_eq!(count_scene_paths(&scene), 4);
     }
@@ -6635,7 +6676,10 @@ mod tests {
         cm.insert(Channel::Y, "y".to_string());
         cm.insert(Channel::Stroke, "g".to_string());
         let (x_range, y_range) = ((40.0, 600.0), (450.0, 20.0));
-        let renderer = LineRenderer { axis: LineAxis::Y };
+        let renderer = LineRenderer {
+            axis: LineAxis::Y,
+            scheme: Default::default(),
+        };
         let mut scales = infer_scales(&batch, &cm, x_range, y_range);
         renderer.augment_scales(&mut scales, &batch, &cm, x_range, y_range);
 
@@ -6646,6 +6690,37 @@ mod tests {
         let colours: std::collections::HashSet<u32> =
             scene.encoding().draw_data.iter().copied().collect();
         assert_eq!(colours.len(), 2, "one colour per year: {colours:?}");
+
+        // A NaN first row falls back as a NULL does, rather than painting NaN.
+        let nan = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("x", DataType::Float64, false),
+                Field::new("y", DataType::Float64, false),
+                Field::new("g", DataType::Float64, false),
+            ])),
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0, 4.0])),
+                Arc::new(Float64Array::from(vec![f64::NAN, f64::NAN, 1.0, 1.0])),
+            ],
+        )
+        .unwrap();
+        let mut scales = infer_scales(&nan, &cm, x_range, y_range);
+        renderer.augment_scales(&mut scales, &nan, &cm, x_range, y_range);
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &nan, &cm, &scales, None);
+        let fallback = resolve_stroke_colour(&scales, &cm, &nan, 0);
+        assert!(
+            fallback.components.iter().all(|c| c.is_finite()),
+            "{fallback:?}"
+        );
+        let words: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        let rgba = fallback.premultiply().to_rgba8();
+        assert!(
+            words.contains(&u32::from_le_bytes([rgba.r, rgba.g, rgba.b, rgba.a])),
+            "the NaN series wears the fallback colour: {words:?}"
+        );
     }
 
     #[test]

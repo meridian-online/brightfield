@@ -913,6 +913,21 @@ pub enum ParseWarning {
         /// not give it.
         reason: String,
     },
+
+    /// A line placed its points on a `DATE` axis whose days are not evenly
+    /// spaced. A `DATE` axis is a band of its distinct days, one band apart
+    /// whatever the gap between them, so a weekend, a missing month or a run
+    /// of event dates is drawn as wide as one day where Mosaic's time scale
+    /// draws it to scale.
+    ///
+    /// Raised by composition, which is where the days the axis holds are
+    /// known. Days a whole number of calendar months apart count as even.
+    UnevenDays {
+        /// The mark's name (`lineY`).
+        mark: String,
+        /// The axis the days are on (`x` or `y`).
+        channel: String,
+    },
 }
 
 /// The words between the two numbers and the advice in the colours-repeat note,
@@ -1182,6 +1197,11 @@ impl fmt::Display for ParseWarning {
             Self::MarkDrewNothing { mark, reason } => {
                 write!(f, "`{mark}` drew nothing: {reason}")
             }
+            Self::UnevenDays { mark, channel } => write!(
+                f,
+                "`{mark}` puts its `{channel}` days one band apart, and these days are not \
+                 evenly spaced, so the gaps between them are not drawn to scale"
+            ),
         }
     }
 }

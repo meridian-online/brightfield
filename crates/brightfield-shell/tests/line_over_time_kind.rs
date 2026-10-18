@@ -201,3 +201,97 @@ fn an_integer_category_splits_the_line_too() {
     // With its legend it still composes without a fault.
     paths(&table, |s| s);
 }
+
+// ---------------------------------------------------------------------------
+// A DATE axis is a band of its days, so a line says when they are uneven
+// ---------------------------------------------------------------------------
+
+/// The notes the kind's spec, with no category, gives over one series at
+/// `days`.
+fn notes_over(days: &[&str]) -> Vec<String> {
+    let rows: Vec<String> = days
+        .iter()
+        .enumerate()
+        .map(|(i, d)| format!("(DATE '{d}', {i}.0)"))
+        .collect();
+    let source = format!(
+        "data:\n  {}:\n    query: \"SELECT * FROM (VALUES {}) t(day, v)\"\n{}",
+        brightfield_shell::data_file::SOURCE,
+        rows.join(", "),
+        built(&[
+            Field::new("day", FieldType::Temporal),
+            Field::new("v", FieldType::Quantitative),
+        ])
+    );
+    let c = brightfield_shell::pipeline::LiveDashboard::load_str(&source, None)
+        .unwrap_or_else(|e| panic!("loads: {e}\n{source}"))
+        .present()
+        .unwrap_or_else(|e| panic!("composes: {e}\n{source}"));
+    c.diagnostics
+        .notes()
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+fn says_uneven(notes: &[String]) -> bool {
+    notes.iter().any(|n| n.contains("not evenly spaced"))
+}
+
+#[test]
+fn a_line_over_unevenly_spaced_days_says_they_are_drawn_evenly() {
+    // Weekdays only: the weekend gap is three days, drawn as wide as one.
+    let notes = notes_over(&["2024-01-04", "2024-01-05", "2024-01-08", "2024-01-09"]);
+    assert!(says_uneven(&notes), "{notes:?}");
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains("`lineY`") && n.contains("`x`")),
+        "the note names the mark and its axis: {notes:?}"
+    );
+}
+
+#[test]
+fn a_line_over_daily_or_monthly_days_says_nothing_of_spacing() {
+    let daily = notes_over(&["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"]);
+    assert!(!says_uneven(&daily), "{daily:?}");
+    // A month apart is one band apart, whatever the month's length.
+    let monthly = notes_over(&["2024-01-01", "2024-02-01", "2024-03-01", "2024-04-01"]);
+    assert!(!says_uneven(&monthly), "{monthly:?}");
+    let month_ends = notes_over(&["2024-01-31", "2024-02-29", "2024-03-31", "2024-04-30"]);
+    assert!(!says_uneven(&month_ends), "{month_ends:?}");
+}
+
+/// The colours a `lineY` split by an integer column draws over [`table`], with
+/// `keys` written as plot attributes.
+fn stroke_colours(keys: &str) -> std::collections::HashSet<u32> {
+    let source = format!(
+        "{}plot:\n  - mark: lineY\n    data: {{ from: {} }}\n    x: day\n    y: v\n    stroke: g\n{keys}",
+        table(""),
+        brightfield_shell::data_file::SOURCE
+    );
+    let c = brightfield_shell::pipeline::LiveDashboard::load_str(&source, None)
+        .unwrap_or_else(|e| panic!("loads: {e}\n{source}"))
+        .present()
+        .unwrap_or_else(|e| panic!("composes: {e}\n{source}"));
+    assert!(c.mark_faults.is_empty(), "{:?}", c.mark_faults);
+    c.scene.encoding().draw_data.iter().copied().collect()
+}
+
+#[test]
+fn a_number_stroke_line_takes_the_plots_colour_keys() {
+    // Premultiplied little-endian RGBA8, as the scene encodes a solid colour.
+    let (red, blue) = (0xFF00_00FF_u32, 0xFFFF_0000_u32);
+    let written = stroke_colours("colorRange: [red, blue]\n");
+    assert!(
+        written.contains(&red) && written.contains(&blue),
+        "the two series wear the written colours"
+    );
+    let default = stroke_colours("");
+    assert!(!default.contains(&red) && !default.contains(&blue));
+    assert_ne!(
+        stroke_colours("colorScheme: turbo\n"),
+        default,
+        "a written scheme paints the series along it"
+    );
+}

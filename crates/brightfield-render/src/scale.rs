@@ -1452,8 +1452,9 @@ pub struct ColourOverride {
     /// ramp. A `colorRange` of two or more colours gives the steps their colours
     /// and their count, whatever this says.
     pub steps: Option<usize>,
-    /// Apply to a categorical colour scale only, leaving any ramp as it is: how
-    /// a plot with no dot reads the keys.
+    /// Apply to a categorical colour scale and a stroke ramp only, leaving a
+    /// fill ramp as it is: how a plot with no dot reads the keys. A stroke ramp
+    /// is a line's split by a number column, which the keys set.
     pub categorical_only: bool,
 }
 
@@ -1542,7 +1543,14 @@ pub fn apply_colour_override(set: &mut ScaleSet, ov: &ColourOverride) {
                     palette,
                 }
             }
-            Scale::Sequential { .. } | Scale::Diverging { .. } if ov.categorical_only => continue,
+            // A categorical-only override leaves a fill ramp alone. A stroke
+            // ramp is a line's split by a number column, and the plot's
+            // colour keys set it as they set a dot's fill ramp.
+            Scale::Sequential { .. } | Scale::Diverging { .. }
+                if ov.categorical_only && ch == Channel::Fill =>
+            {
+                continue
+            }
             Scale::Sequential {
                 domain_min,
                 domain_max,
@@ -3278,18 +3286,29 @@ mod tests {
 
     #[test]
     fn a_date_band_sorts_by_day_not_by_spelling() {
-        // Year -1 spells "-0001-..." and year 1 "0001-...": by text the
-        // negative year would come after the positive one.
-        let a = date_batch(vec![-719_000, -740_000, 19_000]);
+        // Two orders text gets wrong. Year 10000 spells "+10000-01-01", and
+        // `+` sorts before every digit and `-`, so by text it would come
+        // first. Of two years before year 0, the earlier has the larger
+        // number after its `-` ("-0069" against "-0056"), so by text it would
+        // come second.
+        let a = date_batch(vec![2_932_897, -740_000, 19_000, -745_000, -719_000]);
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "d".to_string());
         let scales = infer_scales(&a, &cm, (0.0, 100.0), (0.0, 100.0));
         let Some(Scale::Band { categories, .. }) = scales.get(Channel::X) else {
             panic!("a DATE axis is a band");
         };
-        assert!(categories[0].starts_with('-'), "{categories:?}");
-        assert_eq!(categories.last().map(String::as_str), Some("2022-01-08"));
-        assert_eq!(categories.len(), 3);
+        assert_eq!(categories.len(), 5);
+        assert!(
+            categories[0].starts_with('-') && categories[1].starts_with('-'),
+            "{categories:?}"
+        );
+        assert!(
+            categories[0] > categories[1],
+            "the earlier year first: {categories:?}"
+        );
+        assert_eq!(categories[3], "2022-01-08");
+        assert_eq!(categories[4], "+10000-01-01", "{categories:?}");
     }
 
     #[test]

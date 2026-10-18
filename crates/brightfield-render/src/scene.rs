@@ -749,6 +749,10 @@ pub fn axis_reverse_applies(scales: &ScaleSet) -> bool {
 /// one colour scale between them, and the dot's request sets the shared scale,
 /// as [`colour_reverse_applies`] says of `colorReverse`.
 ///
+/// A plot with no dot can still have `colorDomain` and `colorRange` set the
+/// categories and colours of a categorical colour scale, which
+/// [`colour_categories_apply`] judges; this judges the whole set of keys.
+///
 /// It is the judge the composition asks before it reads the keys from the plot.
 #[must_use]
 pub fn colour_override_applies(marks: &[MarkKind]) -> bool {
@@ -1968,6 +1972,7 @@ mod tests {
         }
         let renderer = LineRenderer {
             axis: crate::mark::LineAxis::Y,
+            scheme: Default::default(),
         };
         let why = |batch: &RecordBatch| {
             let entry = ChartData {
@@ -2814,6 +2819,7 @@ mod tests {
         let layout = ChartLayout::new(640.0, 480.0);
         let renderer = LineRenderer {
             axis: crate::mark::LineAxis::Y,
+            scheme: Default::default(),
         };
 
         let data = ChartData {
@@ -2937,6 +2943,7 @@ mod tests {
         let dot_renderer = DotRenderer::default();
         let line_renderer = LineRenderer {
             axis: crate::mark::LineAxis::Y,
+            scheme: Default::default(),
         };
 
         let data1 = ChartData {
