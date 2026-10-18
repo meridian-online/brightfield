@@ -2165,10 +2165,10 @@ impl MarkRenderer for TextRenderer {
 /// An integer is written exactly; a float as the shortest decimal that reads
 /// back as the same value of its own width, so a `FLOAT` 67.85 is `67.85`
 /// and not the digits of its widening to a double, and a whole one without a
-/// fractional part (`2024`, and `0` for a negative zero); a `DECIMAL` with
-/// exactly its scale's digits (`12.10`). No grouping separator and no
-/// rounding. A NaN or infinite value gets no label, and neither does a
-/// timestamp column, which is not a number to a reader.
+/// fractional part (`2024`, and `0` for a negative zero); a `DECIMAL` as
+/// arrow writes it, with exactly its scale's digits (`12.10`). No grouping
+/// separator and no rounding. A NaN or infinite value gets no label, and
+/// neither does a timestamp column, which is not a number to a reader.
 fn column_as_labels(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<String>>> {
     use arrow::array::{
         Decimal128Array, Float32Array, Int16Array, Int32Array, Int64Array, Int8Array, UInt16Array,
@@ -2226,26 +2226,16 @@ fn column_as_labels(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<St
                 }
             })
         }),
-        DataType::Decimal128(_, scale) => {
-            let scale = *scale;
-            labels!(Decimal128Array, |v: i128| Some(decimal_label(v, scale)))
+        DataType::Decimal128(..) => {
+            let arr = col.as_any().downcast_ref::<Decimal128Array>()?;
+            Some(
+                (0..arr.len())
+                    .map(|i| (!arr.is_null(i)).then(|| arr.value_as_string(i)))
+                    .collect(),
+            )
         }
         _ => None,
     }
-}
-
-/// A `DECIMAL`'s unscaled value written with exactly `scale` digits after the
-/// point: 1210 at scale 2 is `12.10`, -5 at scale 2 is `-0.05`.
-fn decimal_label(value: i128, scale: i8) -> String {
-    if scale <= 0 {
-        return (value * 10_i128.pow(u32::from(scale.unsigned_abs()))).to_string();
-    }
-    let scale = usize::from(scale.unsigned_abs());
-    let digits = value.unsigned_abs().to_string();
-    let digits = format!("{digits:0>width$}", width = scale + 1);
-    let (whole, fraction) = digits.split_at(digits.len() - scale);
-    let sign = if value < 0 { "-" } else { "" };
-    format!("{sign}{whole}.{fraction}")
 }
 
 // ---------------------------------------------------------------------------
@@ -6697,8 +6687,33 @@ mod tests {
             [Some("0".into()), Some("0.30000000000000004".into()), None]
         );
         assert_eq!(labels("dec"), some(&["12.10", "-0.05", "0.00"]));
-        assert_eq!(decimal_label(42, 0), "42");
-        assert_eq!(decimal_label(42, -2), "4200");
+
+        // A scale of zero or below, and the widest value a DECIMAL holds.
+        let wide = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("whole", DataType::Decimal128(38, 0), false),
+                Field::new("hundreds", DataType::Decimal128(10, -2), false),
+            ])),
+            vec![
+                Arc::new(
+                    Decimal128Array::from(vec![42, -(10_i128.pow(38) - 1)])
+                        .with_precision_and_scale(38, 0)
+                        .unwrap(),
+                ),
+                Arc::new(
+                    Decimal128Array::from(vec![42, 10_i128.pow(9)])
+                        .with_precision_and_scale(10, -2)
+                        .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        let wide_labels = |col| column_as_labels(&wide, col).expect("labels");
+        assert_eq!(
+            wide_labels("whole"),
+            some(&["42", "-99999999999999999999999999999999999999"])
+        );
+        assert_eq!(wide_labels("hundreds"), some(&["4200", "100000000000"]));
     }
 
     #[test]
