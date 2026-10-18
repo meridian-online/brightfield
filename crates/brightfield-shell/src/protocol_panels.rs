@@ -82,8 +82,15 @@ impl ProtocolPanels {
                     .all(|p| matches!(p, PanelProblem::Failed(_) | PanelProblem::Unsupported(_))),
             };
             if ours {
-                tile.outcome = compose_tile(&tile.source, &self.dir, &tables, viewport, mode)
-                    .map_err(|p| vec![p]);
+                let (outcome, notes) = split(compose_tile(
+                    &tile.source,
+                    &self.dir,
+                    &tables,
+                    viewport,
+                    mode,
+                ));
+                tile.outcome = outcome;
+                tile.notes = notes;
             }
         }
     }
@@ -109,6 +116,7 @@ impl ProtocolPanels {
             )));
         }
         compose_tile(source, &self.dir, self.tables.path(), viewport, mode)
+            .map(|(composed, _)| composed)
     }
 
     /// The tile at `index` as a live dashboard over the snapshot, with its
@@ -148,6 +156,11 @@ pub struct PanelTile {
     /// arc's findings for the panel, else what Brightfield refused. Never an
     /// empty list.
     pub outcome: Result<Composed, Vec<PanelProblem>>,
+    /// The notes the tile draws above its chart, read when the chart was
+    /// composed and for the box it was composed into, so the band drawn is
+    /// always the one the chart left room for, even while a resize waits for
+    /// the next composition. Empty for a tile holding its problems.
+    pub notes: NoteBand,
 }
 
 /// Why one panel did not draw.
@@ -359,17 +372,26 @@ pub fn load(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenProblem> {
             let title = serde_yaml::from_str::<Value>(&source)
                 .ok()
                 .and_then(|panel| panel.get("title")?.as_str().map(str::to_string));
-            let outcome = if findings.is_empty() {
-                compose_tile(&source, dir, tables.path(), viewport, Mode::Light)
-                    .map_err(|p| vec![p])
+            let (outcome, notes) = if findings.is_empty() {
+                split(compose_tile(
+                    &source,
+                    dir,
+                    tables.path(),
+                    viewport,
+                    Mode::Light,
+                ))
             } else {
-                Err(findings.iter().map(PanelProblem::from_finding).collect())
+                (
+                    Err(findings.iter().map(PanelProblem::from_finding).collect()),
+                    NoteBand::default(),
+                )
             };
             PanelTile {
                 file,
                 title,
                 source,
                 outcome,
+                notes,
             }
         })
         .collect();
@@ -497,10 +519,10 @@ pub const MAX_NOTE_LINES: usize = 3;
 pub const MIN_CHART_HEIGHT: f64 = 120.0;
 
 /// The notes a tile shows above its chart and the band they take, for a tile
-/// whose body is `height` tall: the one reading both the composition and the
-/// drawing take, so the chart is composed into exactly the room the tile
-/// leaves it.
-#[derive(Clone, Debug, PartialEq)]
+/// whose body is `height` tall. Read once, when the tile is composed, and kept
+/// on the tile ([`PanelTile::notes`]), so the chart is composed into exactly
+/// the room the drawn band leaves it.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct NoteBand {
     /// The lines drawn, one [`NOTE_HEIGHT`] each: notes, and, when some did
     /// not fit, a last line saying how many more there are.
@@ -544,16 +566,26 @@ impl NoteBand {
     }
 }
 
-/// Compose one panel that arc's check found nothing wrong with. A panel with
-/// notes is composed again into what is left under the notes the tile draws,
-/// so they cover none of the chart.
+/// A tile's composition as its outcome and its note band.
+fn split(
+    composed: Result<(Composed, NoteBand), PanelProblem>,
+) -> (Result<Composed, Vec<PanelProblem>>, NoteBand) {
+    match composed {
+        Ok((composed, notes)) => (Ok(composed), notes),
+        Err(problem) => (Err(vec![problem]), NoteBand::default()),
+    }
+}
+
+/// Compose one panel that arc's check found nothing wrong with, with the note
+/// band the tile draws above it. A panel with notes is composed again into
+/// what is left under the band, so the notes cover none of the chart.
 fn compose_tile(
     source: &str,
     dir: &Path,
     tables_dir: &Path,
     viewport: Rect,
     mode: Mode,
-) -> Result<Composed, PanelProblem> {
+) -> Result<(Composed, NoteBand), PanelProblem> {
     let text = with_protocol_tables(source, tables_dir).map_err(PanelProblem::Failed)?;
     let parsed = brightfield_spec::parse_spec(&text, brightfield_spec::Format::Yaml)
         .map_err(|e| PanelProblem::Failed(format!("parse error: {e}")))?;
@@ -569,16 +601,18 @@ fn compose_tile(
     }
     let composed =
         compose_spec_str_in(&text, Some(dir), viewport, mode).map_err(PanelProblem::Failed)?;
-    let band = NoteBand::of(&composed, viewport.height).height();
+    let notes = NoteBand::of(&composed, viewport.height);
+    let band = notes.height();
     if band > 0.0 {
         let below_notes = Rect {
             height: viewport.height - band,
             ..viewport
         };
-        return compose_spec_str_in(&text, Some(dir), below_notes, mode)
-            .map_err(PanelProblem::Failed);
+        let composed = compose_spec_str_in(&text, Some(dir), below_notes, mode)
+            .map_err(PanelProblem::Failed)?;
+        return Ok((composed, notes));
     }
-    Ok(composed)
+    Ok((composed, notes))
 }
 
 /// Every `panels/*.yaml` file of the Protocol in `dir`, sorted: the files arc's

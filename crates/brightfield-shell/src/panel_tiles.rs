@@ -41,7 +41,7 @@ use crate::canvas::EguiCanvasHost;
 use crate::design::Mode;
 use crate::protocol::ui_font;
 use crate::protocol_panels::{
-    load, panel_paths, NoteBand, OpenProblem, PanelProblem, ProtocolPanels, NOTE_HEIGHT,
+    load, panel_paths, OpenProblem, PanelProblem, ProtocolPanels, NOTE_HEIGHT,
 };
 
 /// The narrowest a tile is laid out: room for a bar chart's category labels,
@@ -477,9 +477,10 @@ impl PanelTiles {
                 // A chart with notes (its colours repeat, a mark sets an option
                 // nothing draws) says them above itself, in the band it was
                 // composed to leave: the lines a headless export prints.
-                // The band is read as the composition read it, from the body's
-                // height, so the chart lands in the room it was composed for.
-                let band = NoteBand::of(composed, f64::from(body.height()));
+                // The band the composition left room for, kept beside it, so the
+                // chart lands where it was composed to sit even while a resize
+                // waits for the next composition.
+                let band = &tile.notes;
                 let top = band.height() as f32;
                 let page = egui::Rect::from_min_size(body.min + egui::vec2(0.0, top), size);
                 self.drawn.last_mut().expect("pushed above").chart = Some(page);
