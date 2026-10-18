@@ -603,7 +603,8 @@ impl HistoryStore {
 /// The lines of the version log of `file`'s Protocol that name `file`, in the
 /// log's order and each version once. A file in no Protocol's folder, a
 /// Protocol with no log, and a log that cannot be read name none, as arc's
-/// own `logged_versions` reads a log.
+/// own `logged_versions` reads a log
+/// (`an_unreadable_log_lists_the_stores_versions`).
 ///
 /// The log is the one arc appends a line to as it records a version of
 /// `file`. arc keeps the rules that find it private, so they are mirrored
