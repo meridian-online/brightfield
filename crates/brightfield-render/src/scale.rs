@@ -2772,7 +2772,8 @@ fn number_categories(col: &dyn Array) -> Vec<(f64, String)> {
 /// two labels name one value (an `INTEGER` 3 and a `DECIMAL` 3.0, a `3.50` and
 /// a `3.5`), the first met names its band, and the marks find that band by the
 /// value (`crate::mark` reads a number band through
-/// `band_categories_by_value`), so every layer lands in the one slot.
+/// `band_categories_by_value`), so two layers land in the one slot
+/// (`layers_at_two_number_types_share_one_band_per_value`).
 fn sorted_number_categories(mut numbers: Vec<(f64, String)>) -> Vec<String> {
     numbers.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut out: Vec<String> = Vec::new();
