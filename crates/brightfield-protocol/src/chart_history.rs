@@ -412,6 +412,10 @@ impl Who {
 pub enum VersionChange {
     /// The oldest version kept: no version before it to compare with.
     NoPredecessor,
+    /// The version before it is listed but not on this machine: the
+    /// Protocol's log names it, and the store here holds no text of it to
+    /// compare with.
+    PredecessorNotHere,
     /// The changes since the version before, in the order the chart reads: each
     /// plot in turn, its attributes and then its marks' channels, and the
     /// edit outside them last. Empty when the two texts are the same.
@@ -473,10 +477,13 @@ impl HistoryStore {
     /// recorded when the log does not name it, as for an entry an arc from
     /// before the log recorded (`a_store_entry_missing_from_the_log_is_listed`).
     /// A version the log names and the store lacks is not on this machine: its
-    /// size is 0, and it and the version after it have nothing to compare
-    /// with, so each is [`VersionChange::NoPredecessor`]
-    /// (`a_version_only_the_log_names_is_listed_as_not_on_this_machine`). A
-    /// log line whose kind or time does not read is passed over.
+    /// size is 0 and it has nothing to compare with, so it is
+    /// [`VersionChange::NoPredecessor`]; a version of this machine listed
+    /// after it is [`VersionChange::PredecessorNotHere`]
+    /// (`a_save_here_is_listed_once_newest_first_after_the_logs_older_version`).
+    /// A log line whose kind or time does not read is passed over, and a log
+    /// that cannot be read names no version, so the store's are listed alone
+    /// (`an_unreadable_log_lists_the_stores_versions`).
     ///
     /// **What a change is.** Two versions are parsed as charts. A plot is the
     /// same plot in both when its path is the same, and a mark is the same mark
@@ -502,7 +509,7 @@ impl HistoryStore {
         let entries = history
             .entries_for_file(file)
             .map_err(|e| NotListed::new(e.to_string()))?;
-        let logged = logged_for(file)?;
+        let logged = logged_for(file);
 
         // Each version oldest first, with its text when the store holds it:
         // the store's entries, then the versions only the log names, placed
@@ -555,15 +562,18 @@ impl HistoryStore {
         }
         listed.sort_by_key(|(version, _)| version.at);
 
-        // Each version is compared with the one listed before it, when both
-        // texts are here.
+        // Each version of this machine is compared with the one listed
+        // before it, when that one's text is here too.
         let mut versions = Vec::with_capacity(listed.len());
-        let mut before: Option<String> = None;
+        let mut before: Option<Option<String>> = None;
         for (mut version, text) in listed {
             if let (Some(before), Some(text)) = (&before, &text) {
-                version.change = VersionChange::Changes(changes_between(before, text));
+                version.change = match before {
+                    Some(before) => VersionChange::Changes(changes_between(before, text)),
+                    None => VersionChange::PredecessorNotHere,
+                };
             }
-            before = text;
+            before = Some(text);
             versions.push(version);
         }
         versions.reverse();
@@ -591,26 +601,49 @@ impl HistoryStore {
 }
 
 /// The lines of the version log of `file`'s Protocol that name `file`, in the
-/// log's order and each version once. A file in no Protocol's folder, and a
-/// Protocol with no log, has none.
+/// log's order and each version once. A file in no Protocol's folder, a
+/// Protocol with no log, and a log that cannot be read name none, as arc's
+/// own `logged_versions` reads a log.
 ///
-/// The log is the one arc appends to as it records a version of `file`: the
-/// one in the nearest folder above it that holds an `arcform.yaml`, which names
-/// the file by its path inside that folder with `/` between its parts.
-fn logged_for(file: &Path) -> Result<Vec<LogLine>, NotListed> {
-    let Some(parent) = file.parent() else {
-        return Ok(Vec::new());
+/// The log is the one arc appends a line to as it records a version of
+/// `file`. arc keeps the rules that find it private, so they are mirrored
+/// here, each beside the arc function it copies, and
+/// `arc_s_own_records_are_found_under_the_same_file` in the crate's
+/// `chart_history` tests fails if they drift.
+fn logged_for(file: &Path) -> Vec<LogLine> {
+    let Some((folder, inside)) = log_place(file) else {
+        return Vec::new();
     };
-    let parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
-    let Some(name) = file.file_name() else {
-        return Ok(Vec::new());
+    let Ok(lines) = read_log(&folder) else {
+        return Vec::new();
     };
-    let file = parent.join(name);
-    let Some(folder) = parent
-        .ancestors()
-        .find(|dir| dir.join(MANIFEST_FILENAME).is_file())
-    else {
-        return Ok(Vec::new());
+    let mut seen = std::collections::HashSet::new();
+    lines
+        .into_iter()
+        .filter(|line| line.file == inside && seen.insert(line.version.clone()))
+        .collect()
+}
+
+/// The Protocol folder whose log names the versions of `file`, and the name a
+/// line gives `file` there: its path inside that folder, with `/` between its
+/// parts. `None` for a file in no Protocol's folder.
+///
+/// Mirrors arc's `LocalHistory::file_key` (the folder canonicalised, the name
+/// not), `protocol_folder` (an `arcform.yaml` belongs to its own folder; any
+/// other file to the nearest folder above it holding one) and `log_place`.
+fn log_place(file: &Path) -> Option<(PathBuf, String)> {
+    let name = file.file_name()?;
+    let parent = match file.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let dir = std::fs::canonicalize(parent).ok()?;
+    let file = dir.join(name);
+    let folder = if name == MANIFEST_FILENAME {
+        dir.as_path()
+    } else {
+        dir.ancestors()
+            .find(|dir| dir.join(MANIFEST_FILENAME).is_file())?
     };
     let inside = file
         .strip_prefix(folder)
@@ -619,18 +652,11 @@ fn logged_for(file: &Path) -> Result<Vec<LogLine>, NotListed> {
         .map(|part| part.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/");
-    let mut lines: Vec<LogLine> = read_log(folder)
-        .map_err(|e| NotListed::new(e.to_string()))?
-        .into_iter()
-        .filter(|line| line.file == inside)
-        .collect();
-    let mut seen = std::collections::HashSet::new();
-    lines.retain(|line| seen.insert(line.version.clone()));
-    Ok(lines)
+    Some((folder.to_path_buf(), inside))
 }
 
 /// The kind a log line's kind word names, or `None` for a word arc does not
-/// write.
+/// write. Mirrors arc's `HistoryKind::from_tag`.
 fn kind_of(word: &str) -> Option<HistoryKind> {
     match word {
         "save" => Some(HistoryKind::Save),

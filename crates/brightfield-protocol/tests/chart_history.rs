@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use arc::spec::{LOG_FILENAME, MANIFEST_FILENAME};
-use brightfield_protocol::chart_history::{HistoryKind, Who};
+use brightfield_protocol::chart_history::{HistoryKind, HistoryWay, LocalHistory, Who};
 use brightfield_protocol::{ChartVersions, HistoryStore, VersionChange};
 
 /// A Protocol folder with a `panels/` folder, and a store beside it, removed
@@ -119,6 +119,7 @@ fn a_version_only_the_log_names_is_listed_as_not_on_this_machine() {
     assert_eq!(version.who, Who::ArcMcp);
     assert_eq!(version.kind, HistoryKind::Save);
     assert!(!version.on_this_machine);
+    assert_eq!(version.bytes, 0, "the store holds no text of it");
     assert_eq!(version.change, VersionChange::NoPredecessor);
     assert_eq!(
         version
@@ -154,6 +155,79 @@ fn a_save_here_is_listed_once_newest_first_after_the_logs_older_version() {
         "{:#?}",
         list.versions
     );
+    let (here, elsewhere) = (&list.versions[0], &list.versions[1]);
+    assert_eq!(
+        here.change,
+        VersionChange::PredecessorNotHere,
+        "the save here has no text of the version before it to compare with"
+    );
+    assert_eq!(elsewhere.change, VersionChange::NoPredecessor);
+    assert_eq!(elsewhere.bytes, 0);
+}
+
+#[test]
+fn an_unreadable_log_lists_the_stores_versions() {
+    let protocol = Protocol::new();
+    protocol.save("plot: []\n");
+    // Not UTF-8, so the log does not read as text.
+    fs::write(protocol.log(), [0xff, 0xfe, b'\n']).expect("the log writes");
+
+    let list = protocol
+        .store
+        .versions(&protocol.panel())
+        .expect("the store's versions are listed");
+    assert_eq!(list.versions.len(), 1, "{:#?}", list.versions);
+    assert!(list.versions[0].on_this_machine);
+    assert_eq!(list.versions[0].who, Who::Brightfield);
+}
+
+/// arc itself records a version of a panel in a nested folder, of the
+/// Protocol's `arcform.yaml`, and of an `arcform.yaml` not yet written in a
+/// folder inside the Protocol's (whose log is its own folder's, not the outer
+/// Protocol's), through its own public history, into a store of its own. Brightfield finds each under the same file, from a store that
+/// lacks it and from arc's own: the guard on the rules Brightfield mirrors to
+/// find a file's log and its name there.
+#[test]
+fn arc_s_own_records_are_found_under_the_same_file() {
+    let protocol = Protocol::new();
+    let nested = protocol.dir.join("panels").join("deep").join("chart.yaml");
+    fs::create_dir_all(nested.parent().expect("a folder")).expect("the nested folder");
+    let manifest = protocol.dir.join(MANIFEST_FILENAME);
+    let unwritten = protocol.dir.join("fresh").join(MANIFEST_FILENAME);
+    fs::create_dir_all(unwritten.parent().expect("a folder")).expect("the fresh folder");
+    let arc_root = protocol.root.join("arc-store");
+    let arc = LocalHistory::at_root(&arc_root).reached_by(HistoryWay::MCP);
+
+    for (file, text) in [
+        (&nested, "plot: []\n"),
+        (&manifest, "name: p\nsteps: []\n# edited\n"),
+        (&unwritten, "name: fresh\nsteps: []\n"),
+    ] {
+        let entry = arc
+            .record_save_for_file(file, text)
+            .expect("arc records the version")
+            .expect("a new entry");
+        for (store, here) in [
+            (protocol.store.clone(), false),
+            (HistoryStore::At(arc_root.clone()), true),
+        ] {
+            let list = store.versions(file).expect("the list");
+            let found = list
+                .versions
+                .iter()
+                .find(|v| v.id == entry.id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} lists no {}: {:#?}",
+                        file.display(),
+                        entry.id,
+                        list.versions
+                    )
+                });
+            assert_eq!(found.who, Who::ArcMcp, "{}", file.display());
+            assert_eq!(found.on_this_machine, here, "{}", file.display());
+        }
+    }
 }
 
 #[test]

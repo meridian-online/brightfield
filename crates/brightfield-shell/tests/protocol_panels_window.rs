@@ -25,7 +25,9 @@ use brightfield_shell::run::Runner;
 use brightfield_shell::shelf::{RowEdit, SettingValue, TITLE_ROW};
 use brightfield_shell::starts;
 use brightfield_shell::startup::default_layout;
+use brightfield_shell::versions::{Listing, BEFORE_NOT_HERE, NOT_ON_THIS_MACHINE};
 use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_workbench::arrangement::LEDGER_RAIL;
 use brightfield_workbench::channel::ShelfChannel;
 
 const CO2: &str = "co2-per-capita";
@@ -174,6 +176,34 @@ impl Window {
             .panel_tiles()
             .and_then(|tiles| tiles.panels())
             .expect("the window holds the Protocol's panels")
+    }
+
+    /// Open the ledger rail on its Versions panel, the strip's fifth name.
+    fn show_versions(&mut self) {
+        let at = self
+            .app
+            .rail_name_rect(LEDGER_RAIL, 4)
+            .expect("the ledger strip drew a fifth name")
+            .center();
+        self.click(at);
+        assert_eq!(
+            self.app.rail_pane_title(LEDGER_RAIL).as_deref(),
+            Some("Versions")
+        );
+    }
+
+    /// The Versions panel's head line and its rows' who, what changed and
+    /// whether each is on this machine, newest first.
+    fn versions(&self) -> (String, Vec<(String, String, bool)>) {
+        match self.app.chart_doc().versions().listing() {
+            Listing::Listed { head, rows } => (
+                head.clone(),
+                rows.iter()
+                    .map(|r| (r.who.clone(), r.changed.clone(), r.on_this_machine))
+                    .collect(),
+            ),
+            other => panic!("the Versions panel lists nothing: {other:?}"),
+        }
     }
 
     fn tile_index(&self, file: &str) -> usize {
@@ -502,6 +532,64 @@ fn saving_a_tile_writes_the_panel_without_injected_tables() {
         before.ends_with('\n'),
         after.ends_with('\n'),
         "the file's last line ending changed"
+    );
+}
+
+/// The Versions panel lists the panel open from its tile, the file a Save
+/// writes: first the agent's version from the Protocol's log, not on this
+/// machine, and after a Save from the tile the Save's own rows above it.
+#[test]
+fn the_versions_panel_lists_the_open_tiles_panel_and_its_save() {
+    let ran = ran_fixture(CO2);
+    let history = tempfile::tempdir().expect("a temp store");
+    let mut win = Window::over(open(&ran.dir));
+    win.app
+        .set_history(Some(brightfield_protocol::HistoryStore::At(
+            history.path().join("history"),
+        )));
+    win.open_bar_tile();
+    win.show_versions();
+
+    let (head, rows) = win.versions();
+    assert!(head.starts_with(CHANGE), "{head}");
+    assert_eq!(
+        rows,
+        [(
+            "arc (command line)".to_string(),
+            NOT_ON_THIS_MACHINE.to_string(),
+            false
+        )]
+    );
+
+    let title = RowEdit {
+        channel: ShelfChannel::X,
+        row: TITLE_ROW,
+        value: SettingValue::Text("percent change since 1990".to_owned()),
+    };
+    assert!(win.app.chart_doc_mut().set_axis_row(0, &title));
+    win.settle();
+    win.app
+        .save_protocol(&win.ctx)
+        .expect("a tile's Save writes its panel")
+        .expect("the Save writes");
+    win.settle();
+
+    let (head, rows) = win.versions();
+    assert!(head.starts_with(CHANGE), "{head}");
+    let who: Vec<(&str, bool)> = rows.iter().map(|r| (r.0.as_str(), r.2)).collect();
+    assert_eq!(
+        who,
+        [
+            ("Brightfield", true),
+            ("Brightfield", true),
+            ("arc (command line)", false)
+        ],
+        "the Save and the text it replaced, above the agent's version: {rows:?}"
+    );
+    assert!(rows[0].1.contains("percent change since 1990"), "{rows:?}");
+    assert_eq!(
+        rows[1].1, BEFORE_NOT_HERE,
+        "the text the Save replaced has no version before it on this machine"
     );
 }
 

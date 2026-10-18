@@ -9,17 +9,38 @@
 #[path = "support/agent_protocol.rs"]
 mod agent_protocol;
 
+use std::path::Path;
+
 use agent_protocol::ran_fixture;
 use arc::spec::{read_log, LOG_FILENAME};
-use brightfield_protocol::chart_history::Who;
-use brightfield_protocol::HistoryStore;
-use brightfield_shell::app::ChartDoc;
+use brightfield_protocol::chart_history::{HistoryKind, Who};
+use brightfield_protocol::layout::Flow;
+use brightfield_protocol::{HistoryStore, VersionChange};
+use brightfield_shell::design::Mode;
+use brightfield_shell::shelf::{RowEdit, SettingValue, TITLE_ROW};
+use brightfield_shell::startup::default_layout;
 use brightfield_shell::versions::{
     Listing, Source, Versions, NOT_ON_THIS_MACHINE, NOT_ON_THIS_MACHINE_REASON,
 };
+use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_workbench::channel::ShelfChannel;
 
 const CO2: &str = "co2-per-capita";
 const SINCE: &str = "panels/co2_per_capita_since_1990.yaml";
+
+/// Run three frames of a device-free window.
+fn settle(app: &mut MeridianApp, ctx: &egui::Context) {
+    for _ in 0..3 {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 820.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |ui| app.draw(ui));
+    }
+}
 
 /// A store of the test's own, holding nothing yet.
 fn empty_store() -> (tempfile::TempDir, HistoryStore) {
@@ -53,8 +74,41 @@ fn a_save_in_brightfield_joins_the_log() {
     let panel = fixture.dir.join(SINCE);
     let lines_before = read_log(&fixture.dir).expect("the log reads").len();
 
-    let mut doc = ChartDoc::empty();
-    let not_recorded = doc
+    // The panel open from its tile, with its x title edited, as an analyst
+    // makes a change before saving.
+    let mut app = MeridianApp::headless_with_layout(
+        Boot::open(
+            &fixture.dir.join("arcform.yaml").to_string_lossy(),
+            Flow::Vertical,
+            None,
+        )
+        .expect("the Protocol opens"),
+        default_layout(),
+        Mode::Light,
+    );
+    let ctx = egui::Context::default();
+    settle(&mut app, &ctx);
+    let at = app
+        .panel_tiles()
+        .and_then(|tiles| tiles.panels())
+        .expect("the Protocol opened as tiles")
+        .tiles
+        .iter()
+        .position(|t| t.file == Path::new(SINCE))
+        .expect("a tile for the panel");
+    assert!(app.open_panel_tile(at), "the tile opens as the chart");
+    settle(&mut app, &ctx);
+    let title = RowEdit {
+        channel: ShelfChannel::X,
+        row: TITLE_ROW,
+        value: SettingValue::Text("year".to_owned()),
+    };
+    assert!(
+        app.chart_doc_mut().set_axis_row(0, &title),
+        "the edit holds"
+    );
+    let not_recorded = app
+        .chart_doc_mut()
         .save_chart_at(&panel, Some(&store))
         .expect("the panel saves");
     assert_eq!(not_recorded, None, "the Save recorded its version");
@@ -71,7 +125,17 @@ fn a_save_in_brightfield_joins_the_log() {
     let list = store.versions(&panel).expect("the versions list");
     let newest = &list.versions[0];
     assert_eq!(newest.who, Who::Brightfield, "{:#?}", list.versions);
+    assert_eq!(
+        newest.kind,
+        HistoryKind::Save,
+        "a Save, not the text it replaced"
+    );
     assert!(newest.on_this_machine);
+    assert!(
+        matches!(&newest.change, VersionChange::Changes(changes) if !changes.is_empty()),
+        "the Save names its edit: {:?}",
+        newest.change
+    );
     assert_eq!(newest.id, added.version);
     let agents = list.versions.last().expect("the agent's version");
     assert_eq!(agents.who, Who::ArcCommandLine);

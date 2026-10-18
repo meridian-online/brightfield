@@ -486,9 +486,10 @@ impl Session {
     /// galleys inside it, left to right. The *who* column is left out, so a
     /// row reads as these three.
     ///
-    /// A cell is a galley that begins at one of those three columns' origins. A confirmation toast is drawn over the foot of the window, and
-    /// a galley of its own can sit inside a row's rectangle without being one of
-    /// the row's cells.
+    /// A cell is a galley that begins at one of those three columns' origins.
+    /// A confirmation toast is drawn over the foot of the window, and a galley
+    /// of its own can sit inside a row's rectangle without being one of the
+    /// row's cells.
     fn rows(&self) -> Vec<(egui::Rect, Vec<String>)> {
         const COLUMNS: [f32; 3] = [12.0, 162.0, 462.0];
         self.app

@@ -81,6 +81,10 @@ pub const NOTHING_CHANGED: &str = "nothing changed";
 /// What a change outside the channels reads before its count of lines.
 pub const EDITED_OUTSIDE: &str = "edited outside brightfield";
 
+/// What a version reads whose version before is not on this machine, so has
+/// no text here to compare it with.
+pub const BEFORE_NOT_HERE: &str = "the version before is not on this machine";
+
 /// What a version not on this machine reads in place of what changed: the
 /// Protocol's log names it, and the store here holds no text to compare.
 pub const NOT_ON_THIS_MACHINE: &str = "not on this machine";
@@ -483,12 +487,14 @@ fn said_changes(changes: &[ChartChange]) -> Vec<(Option<&str>, String)> {
         .collect()
 }
 
-/// A version's *what changed*: [`FIRST_KEPT`] for the oldest, and
-/// [`change_words`] for any other.
+/// A version's *what changed*: [`FIRST_KEPT`] for the oldest,
+/// [`BEFORE_NOT_HERE`] for one whose version before is not on this machine,
+/// and [`change_words`] for any other.
 #[must_use]
 pub fn version_words(change: &VersionChange, tile_of: &dyn Fn(&str) -> String) -> String {
     match change {
         VersionChange::NoPredecessor => FIRST_KEPT.to_string(),
+        VersionChange::PredecessorNotHere => BEFORE_NOT_HERE.to_string(),
         VersionChange::Changes(changes) => change_words(changes, tile_of),
     }
 }
