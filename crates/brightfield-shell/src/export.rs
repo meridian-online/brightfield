@@ -277,9 +277,14 @@ fn lines(file: &Path, problems: &[PanelProblem]) -> Vec<String> {
 /// that its colours repeat, that it sets an option nothing draws, any part of
 /// it that did not draw. Warnings, not failures: the export still draws and
 /// exits 0, and an agent reading the output learns what the picture leaves out.
+///
+/// The lines are the panel tile's notes ([`LoadDiagnostics::notes`]), so the
+/// window and the exports say the same about a panel.
+///
+/// [`LoadDiagnostics::notes`]: brightfield_conformance::LoadDiagnostics::notes
 fn warn_diagnostics(file: &Path, composed: &crate::pipeline::Composed) {
-    for diagnostic in &composed.diagnostics.diagnostics {
-        eprintln!("{}: {}", file.display(), diagnostic.message);
+    for note in composed.diagnostics.notes() {
+        eprintln!("{}: {note}", file.display());
     }
 }
 

@@ -248,6 +248,21 @@ impl LoadDiagnostics {
             .find(|m| m.contains(COLOURS_REPEAT_MARK))
     }
 
+    /// What a Protocol panel says about itself: each diagnostic's sentence, in
+    /// order, once. Two marks that set the same unread option word the same
+    /// sentence, and it is said once. The one list a panel tile shows above its
+    /// chart and a headless export prints on stderr, so the two never disagree.
+    #[must_use]
+    pub fn notes(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for d in &self.diagnostics {
+            if !out.contains(&d.message.as_str()) {
+                out.push(d.message.as_str());
+            }
+        }
+        out
+    }
+
     /// One line per diagnostic, ready to render.
     #[must_use]
     pub fn lines(&self) -> Vec<String> {

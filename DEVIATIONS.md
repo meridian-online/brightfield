@@ -582,3 +582,36 @@ is left for a change of its own.
 
 **Conformance layers suppressed:** 3
 
+## DEV-0017 — marks — options read and not drawn: `dx`, `dy` and `fontSize` on `text`, `inset` on bars and cells, `opacity`, `r` on `dot`
+
+**Mosaic behaviour.** Mosaic hands these mark options to Observable Plot. `dx` and `dy` move a
+`text` mark's labels by that many pixels, and `fontSize` sets their size.
+`inset` shrinks each rectangle of a `barX`, `barY`, `rect` or `cell` by
+that many pixels on every side. `opacity` sets a mark's opacity, from 0
+to 1. `r` sets a `dot`'s radius in pixels, or maps a column to the radius
+through a square-root scale.
+
+
+**Brightfield behaviour.** The mark is drawn as the same file draws it without the option: labels at
+their data position in the default size, rectangles filling their band,
+marks opaque, dots at the default radius. Each option a mark sets is named
+in one line: "mark `<mark>` sets `<key>`, which nothing in the render path
+reads — it has no effect", and two marks of one kind that set the same
+option give that line once. A Protocol panel's tile shows the lines above
+its chart and the headless exports (`export-png`, `export-pdf`) print
+them on stderr, naming the panel file, from the same list. The export
+still writes its file and exits 0.
+
+
+**Rationale.** Agents writing charts reach for these options unprompted: a sample of ten
+agent-written Protocols sets `dx` or `dy` to pull a value label inside its
+bar or above its dot, `fontSize` to fit labels in heatmap cells, `inset`
+to separate cells, `opacity` to show overplotted dots, and `r` on many of
+its dot marks. Drawing each is a change of its own to the renderer. Until
+then the picture is the one Mosaic draws without the key, and the reader
+and the agent are told which key the picture leaves out, rather than
+reading a label on top of its dot as the chart the file describes.
+
+
+**Conformance layers suppressed:** 3
+

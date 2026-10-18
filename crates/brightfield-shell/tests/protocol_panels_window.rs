@@ -340,6 +340,63 @@ fn the_line_tile_says_its_colours_repeat_and_the_bar_tile_does_not() {
     );
 }
 
+/// A tile says what its panel's load had to say, once per sentence, and the
+/// lines are the ones `export-png` prints for the same panel: one list, so the
+/// window and the exports never disagree about a panel.
+#[test]
+fn a_tile_shows_the_notes_the_export_prints_once_each() {
+    let ran = ran_fixture(CO2);
+    std::fs::write(
+        ran.dir.join("panels/labelled.yaml"),
+        "plot:\n\
+         - mark: text\n  data: { from: co2_per_capita_change }\n  \
+         x: change_pct\n  y: country\n  text: country\n  dy: -10\n\
+         - mark: text\n  data: { from: co2_per_capita_change }\n  \
+         x: change_pct\n  y: country\n  text: change_pct\n  dy: 10\n",
+    )
+    .expect("the panel writes");
+    let win = Window::over(open(&ran.dir));
+    let note = "mark `text` sets `dy`, which nothing in the render path reads — it has no effect";
+    assert_eq!(
+        win.texts.iter().filter(|t| t.as_str() == note).count(),
+        1,
+        "the tile says the note once though two marks set `dy`: {:?}",
+        win.texts
+    );
+    let drawn = win.app.panel_tiles().expect("tiles").drawn();
+    let tile = drawn
+        .iter()
+        .find(|t| t.file == Path::new("panels/labelled.yaml"))
+        .expect("the labelled tile");
+    let at = win.text_at(note);
+    assert!(
+        at.top() >= tile.body.top() - 1.0
+            && at.bottom()
+                <= tile.body.top() + brightfield_shell::protocol_panels::NOTE_HEIGHT as f32,
+        "the note stands in the band at the top of the tile: {at:?} in {:?}",
+        tile.body
+    );
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_brightfield-shell"))
+        .args(["export-png", &ran.dir.to_string_lossy(), "labelled"])
+        .output()
+        .expect("the binary runs");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed: Vec<String> = String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .map(|l| {
+            l.strip_prefix("panels/labelled.yaml: ")
+                .unwrap_or_else(|| panic!("an export line names the panel: {l}"))
+                .to_string()
+        })
+        .collect();
+    assert_eq!(printed, [note], "the export prints what the tile shows");
+}
+
 /// In the narrowest window the note stays within its band, whatever it has to
 /// give up to do so, and the chart starts below it.
 #[test]
@@ -363,7 +420,7 @@ fn the_note_stays_in_its_band_in_a_narrow_window() {
         .find(|(t, _)| t.contains("colours repeat") || t.contains("series share"))
         .unwrap_or_else(|| panic!("no note drawn: {:?}", win.texts));
     assert!(
-        at.bottom() <= line.top() + brightfield_shell::protocol_panels::REPEAT_NOTE_HEIGHT as f32,
+        at.bottom() <= line.top() + brightfield_shell::protocol_panels::NOTE_HEIGHT as f32,
         "the note overruns its band: {at:?} in {line:?}"
     );
 }

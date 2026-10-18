@@ -41,7 +41,7 @@ use crate::canvas::EguiCanvasHost;
 use crate::design::Mode;
 use crate::protocol::ui_font;
 use crate::protocol_panels::{
-    load, panel_paths, OpenProblem, PanelProblem, ProtocolPanels, REPEAT_NOTE_HEIGHT,
+    load, notes_height, panel_paths, OpenProblem, PanelProblem, ProtocolPanels, NOTE_HEIGHT,
 };
 
 /// The narrowest a tile is laid out: room for a bar chart's category labels,
@@ -470,19 +470,16 @@ impl PanelTiles {
         match &tile.outcome {
             Ok(composed) => {
                 let size = egui::vec2(composed.width as f32, composed.height as f32);
-                // A chart whose colours repeat says so above itself, in a band
-                // it was composed to leave.
-                let note = composed.diagnostics.colours_repeat();
-                let top = if note.is_some() {
-                    REPEAT_NOTE_HEIGHT as f32
-                } else {
-                    0.0
-                };
+                // A chart with notes (its colours repeat, a mark sets an option
+                // nothing draws) says them above itself, in the band it was
+                // composed to leave: the lines a headless export prints.
+                let notes = composed.diagnostics.notes();
+                let top = notes_height(composed) as f32;
                 let page = egui::Rect::from_min_size(body.min + egui::vec2(0.0, top), size);
-                if let Some(note) = note {
-                    // At most two lines, cut with an ellipsis, so the note stays
-                    // inside the band the chart was composed to leave however
-                    // narrow the tile is.
+                for (i, note) in notes.into_iter().enumerate() {
+                    // At most two lines each, cut with an ellipsis, so a note
+                    // stays inside its share of the band however narrow the
+                    // tile is.
                     let mut job = egui::text::LayoutJob::single_section(
                         note.to_string(),
                         egui::TextFormat::simple(ui_font(), chrome::colour(sem.text.secondary)),
@@ -490,9 +487,11 @@ impl PanelTiles {
                     job.wrap.max_width = body.width();
                     job.wrap.max_rows = 2;
                     let galley = body_ui.painter().layout_job(job);
-                    body_ui
-                        .painter()
-                        .galley(body.min, galley, chrome::colour(sem.text.secondary));
+                    body_ui.painter().galley(
+                        body.min + egui::vec2(0.0, NOTE_HEIGHT as f32 * i as f32),
+                        galley,
+                        chrome::colour(sem.text.secondary),
+                    );
                 }
                 if let Some(host) = host {
                     let dev = PixelSize {

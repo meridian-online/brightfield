@@ -481,13 +481,21 @@ pub fn strip_protocol_tables(text: &str, injected: &[String]) -> String {
     serde_yaml::to_string(&doc).unwrap_or_else(|_| text.to_string())
 }
 
-/// The height a tile gives the note that its colours repeat, above the chart:
-/// two lines of the interface text in a tile at its narrowest.
-pub const REPEAT_NOTE_HEIGHT: f64 = 36.0;
+/// The height a tile gives each of its notes above the chart (that its colours
+/// repeat, that a mark sets an option nothing draws): two lines of the
+/// interface text in a tile at its narrowest.
+pub const NOTE_HEIGHT: f64 = 36.0;
 
-/// Compose one panel that arc's check found nothing wrong with. A panel whose
-/// colours repeat is composed again into what is left under the note the tile
-/// draws, so the note covers none of the chart.
+/// The band a tile leaves above its chart for `composed`'s notes, one
+/// [`NOTE_HEIGHT`] each; nothing for a panel with none.
+#[must_use]
+pub fn notes_height(composed: &Composed) -> f64 {
+    NOTE_HEIGHT * composed.diagnostics.notes().len() as f64
+}
+
+/// Compose one panel that arc's check found nothing wrong with. A panel with
+/// notes is composed again into what is left under the notes the tile draws,
+/// so they cover none of the chart.
 fn compose_tile(
     source: &str,
     dir: &Path,
@@ -510,12 +518,13 @@ fn compose_tile(
     }
     let composed =
         compose_spec_str_in(&text, Some(dir), viewport, mode).map_err(PanelProblem::Failed)?;
-    if composed.diagnostics.colours_repeat().is_some() && viewport.height > REPEAT_NOTE_HEIGHT {
-        let below_note = Rect {
-            height: viewport.height - REPEAT_NOTE_HEIGHT,
+    let band = notes_height(&composed);
+    if band > 0.0 && viewport.height > band {
+        let below_notes = Rect {
+            height: viewport.height - band,
             ..viewport
         };
-        return compose_spec_str_in(&text, Some(dir), below_note, mode)
+        return compose_spec_str_in(&text, Some(dir), below_notes, mode)
             .map_err(PanelProblem::Failed);
     }
     Ok(composed)
