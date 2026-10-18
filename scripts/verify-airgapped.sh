@@ -321,7 +321,10 @@ echo "== run 2b: a Parquet data file, jailed (a window opens briefly)"
 # fails here downloading it, where every chart-spec leg stays green.
 smoke "$TMP/parquet.png" -- "$EXAMPLES/data/california_housing.parquet"
 is_png "$TMP/parquet.png" 20000
-if find "$TMP/home" -name '*.duckdb_extension' 2>/dev/null | grep -q .; then
+# One command, not `find | grep -q`: under pipefail, grep -q exiting at its first
+# match can leave find dying of SIGPIPE, and the pipeline's 141 would read as
+# "nothing installed".
+if [ -n "$(find "$TMP/home" -name '*.duckdb_extension' 2>/dev/null)" ]; then
   echo "   FAILED: opening a Parquet installed a DuckDB extension into the sealed HOME"
   exit 1
 fi
