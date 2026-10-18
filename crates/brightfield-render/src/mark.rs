@@ -1627,8 +1627,8 @@ impl MarkRenderer for LineRenderer {
     /// Put a number `stroke` column on a sequential ramp.
     ///
     /// Column inference types a number column `Linear`, which no colour is
-    /// read from, so a line split by a number would draw every series in one
-    /// ink. As [`DotRenderer`] does for a number fill, the `Linear` is
+    /// read from, so a line split by a number would draw its series in one
+    /// ink (`line_y_splits_on_an_integer_stroke_in_one_colour_per_value`). As [`DotRenderer`] does for a number fill, the `Linear` is
     /// replaced with a viridis `Sequential` over the rows' extent, and a
     /// `Sequential` already in the set has its domain widened. Any other
     /// stroke scale, such as a categorical `Colour`, is left as it is.
