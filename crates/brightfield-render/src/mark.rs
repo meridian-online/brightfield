@@ -1624,6 +1624,63 @@ pub struct LineRenderer {
 }
 
 impl MarkRenderer for LineRenderer {
+    /// Put a number `stroke` column on a sequential ramp.
+    ///
+    /// Column inference types a number column `Linear`, which no colour is
+    /// read from, so a line split by a number would draw every series in one
+    /// ink. As [`DotRenderer`] does for a number fill, the `Linear` is
+    /// replaced with a viridis `Sequential` over the rows' extent, and a
+    /// `Sequential` already in the set has its domain widened. Any other
+    /// stroke scale, such as a categorical `Colour`, is left as it is.
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        _x_range: (f64, f64),
+        _y_range: (f64, f64),
+    ) {
+        if channel_map.colour(Channel::Stroke).is_some() {
+            return;
+        }
+        let Some(column) = channel_map.get(Channel::Stroke) else {
+            return;
+        };
+        if column_as_string(batch, column).is_some() {
+            return;
+        }
+        let Some(values) = column_as_f64(batch, column) else {
+            return;
+        };
+        let (lo, hi) = values
+            .iter()
+            .flatten()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+                (lo.min(v), hi.max(v))
+            });
+        if !(lo.is_finite() && hi.is_finite()) {
+            return;
+        }
+        let ramp = match scales.get(Channel::Stroke) {
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            }) => Scale::Sequential {
+                domain_min: domain_min.min(lo),
+                domain_max: domain_max.max(hi),
+                stops: stops.clone(),
+            },
+            Some(Scale::Linear { .. }) | None => Scale::Sequential {
+                domain_min: lo,
+                domain_max: hi,
+                stops: SequentialScheme::default().stops(),
+            },
+            Some(_) => return,
+        };
+        scales.insert(Channel::Stroke, ramp);
+    }
+
     fn render(
         &self,
         scene: &mut Scene,
@@ -1671,12 +1728,15 @@ impl MarkRenderer for LineRenderer {
         };
 
         // A stroke column splits the rows into one series per value, in the
-        // order the values first appear. Each series keeps the first row it
-        // saw, which is the row its colour is resolved from.
-        let groups = channel_map
+        // order the values first appear, whatever the column's type: a number
+        // column is keyed by its values written out, so `stroke: year` draws
+        // a line per year. Each series keeps the first row it saw, which is
+        // the row its colour is resolved from.
+        let stroke_col = channel_map
             .get(Channel::Stroke)
-            .filter(|_| channel_map.colour(Channel::Stroke).is_none())
-            .and_then(|col| column_as_string(batch, col));
+            .filter(|_| channel_map.colour(Channel::Stroke).is_none());
+        let groups = stroke_col.and_then(|col| column_as_labels(batch, col));
+        let stroke_values = stroke_col.and_then(|col| column_as_f64(batch, col));
         let mut series: Vec<(usize, Vec<(f64, f64)>)> = Vec::new();
         let mut seen: std::collections::HashMap<Option<String>, usize> =
             std::collections::HashMap::new();
@@ -1710,7 +1770,20 @@ impl MarkRenderer for LineRenderer {
 
             // Draw connected line segments.
             let colour = if groups.is_some() {
-                resolve_stroke_colour(scales, channel_map, batch, first_row)
+                // A number on the stroke ramp `augment_scales` built takes
+                // its colour by value; anything else resolves as before.
+                let on_ramp = scales.get(Channel::Stroke).filter(|scale| {
+                    matches!(
+                        scale,
+                        Scale::Sequential { .. }
+                            | Scale::Diverging { .. }
+                            | Scale::Quantized { .. }
+                    )
+                });
+                match (on_ramp, stroke_values.as_ref().and_then(|v| v[first_row])) {
+                    (Some(ramp), Some(value)) => Color::new(ramp.map_continuous(value)),
+                    _ => resolve_stroke_colour(scales, channel_map, batch, first_row),
+                }
             } else {
                 constant_ink(channel_map, scales.ink())
             };
@@ -6537,6 +6610,42 @@ mod tests {
         LineRenderer { axis: LineAxis::Y }.render(&mut scene, &batch, &cm, &scales, None);
         // Two series, two segments each; one tangled series would be five.
         assert_eq!(count_scene_paths(&scene), 4);
+    }
+
+    #[test]
+    fn line_y_splits_on_an_integer_stroke_in_one_colour_per_value() {
+        use arrow::array::Int32Array;
+        // One line per year over three months, the rows interleaved.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new("g", DataType::Int32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0])),
+                Arc::new(Float64Array::from(vec![5.0, 1.0, 6.0, 2.0, 4.0, 3.0])),
+                Arc::new(Int32Array::from(vec![2023, 2024, 2023, 2024, 2023, 2024])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.insert(Channel::Stroke, "g".to_string());
+        let (x_range, y_range) = ((40.0, 600.0), (450.0, 20.0));
+        let renderer = LineRenderer { axis: LineAxis::Y };
+        let mut scales = infer_scales(&batch, &cm, x_range, y_range);
+        renderer.augment_scales(&mut scales, &batch, &cm, x_range, y_range);
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        // Two series of two segments; one zigzag through all six rows is five.
+        assert_eq!(count_scene_paths(&scene), 4);
+        let colours: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert_eq!(colours.len(), 2, "one colour per year: {colours:?}");
     }
 
     #[test]

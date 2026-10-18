@@ -188,3 +188,16 @@ fn a_boolean_category_splits_the_line_too() {
     let one_series = paths(&table, |s| no_legend(s).replace("    stroke: 'g'\n", ""));
     assert_eq!(one_series - split, 1, "split {split}, single {one_series}");
 }
+
+#[test]
+fn an_integer_category_splits_the_line_too() {
+    // `stroke: year`, the one-line-per-year chart: a number column splits the
+    // rows as a text one does, rather than joining every year into one line.
+    let table = table("");
+    let no_legend = |s: String| s.replace("  - legend: color\n", "");
+    let split = paths(&table, no_legend);
+    let one_series = paths(&table, |s| no_legend(s).replace("    stroke: 'g'\n", ""));
+    assert_eq!(one_series - split, 1, "split {split}, single {one_series}");
+    // With its legend it still composes without a fault.
+    paths(&table, |s| s);
+}
