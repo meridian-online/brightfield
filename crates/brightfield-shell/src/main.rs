@@ -979,7 +979,7 @@ fn opened_files_name_what_their_column_means() -> i32 {
 ///
 /// The Parquet call is the one a fresh machine can fail. With a bundle beside
 /// this binary the session's connection is the relaxed one — autoinstall off,
-/// the extension repository unresolvable — so `read_parquet` can only come from
+/// the extension repository unresolvable — so `read_parquet` has to come from
 /// what the binary links. Under the empty `HOME` this sealed process runs in,
 /// there is no cached extension to stand in for it. That is the configuration
 /// a packaged build opens its first Parquet in, and no test reaches it: the
