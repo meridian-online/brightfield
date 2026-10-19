@@ -132,10 +132,10 @@ pub fn linked_duckdb_version() -> Result<String, String> {
 /// Run the engine staged beside `program` and compare the DuckDB it reports
 /// with `linked`, the one this binary carries ([`linked_duckdb_version`]).
 ///
-/// The engine is started the way nothing on the machine can help it: an empty
-/// environment, a fresh `HOME` and working directory, and an empty init file,
-/// so neither a `~/.duckdbrc` nor a variable the caller exported can change
-/// what it prints. A run that writes a Protocol and a window that reads it are
+/// The engine is started with an empty environment, a fresh `HOME` and working
+/// directory, and an empty init file, so neither a `~/.duckdbrc` nor a
+/// variable the caller exported can change what it prints
+/// (`the_staged_engine_runs_with_an_empty_environment_and_its_own_home`). A run that writes a Protocol and a window that reads it are
 /// only one engine if this matches, which is why a mismatch is a failure and
 /// not a note.
 #[must_use]

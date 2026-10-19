@@ -596,7 +596,7 @@ const SEALED_ENV_SELF_SET: &[&str] = &["__CF_USER_TEXT_ENCODING"];
 /// artefact.
 ///
 /// Asked of this binary rather than read off the artefact from outside,
-/// because two of its three answers are only here: where the runner looks
+/// because two of its three answers are known here: where the runner looks
 /// ([`brightfield_shell::run::staged_engine_beside`] from this executable's own
 /// path) and which DuckDB was linked in.
 ///
