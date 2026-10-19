@@ -478,10 +478,15 @@ elif ! grep -qF "== engine: none" "$out"; then
 	failures=$((failures + 1))
 else
 	for kind in tar.gz dmg; do
+		# Per kind, by its own path: $out carries the other kind's refusal too.
+		case "$kind" in
+		tar.gz) needle="carries no engine at engine/duckdb" ;;
+		dmg) needle="carries no engine at Brightfield.app/Contents/Helpers/duckdb" ;;
+		esac
 		if engine_in "$kind"; then
 			echo "  FAIL the ${kind} packaged with no engine passed the release's read-back"
 			failures=$((failures + 1))
-		elif ! grep -qF "carries no engine at" "$out"; then
+		elif ! grep -qF -- "$needle" "$out"; then
 			echo "  FAIL the ${kind} packaged with no engine was refused for another reason:"
 			sed 's/^/       /' "$out"
 			failures=$((failures + 1))
