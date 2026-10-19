@@ -198,6 +198,24 @@ pub static STEPS: &[Step] = &[
         run: |c| c.python_script("scripts/check-release-readback.py", &[]),
     },
     Step {
+        name: "release-tag-selftest",
+        runs: "./scripts/check-release-tag.py --self-test",
+        only_in_ci: None,
+        run: |c| c.python_script("scripts/check-release-tag.py", &["--self-test"]),
+    },
+    Step {
+        name: "release-tag-wiring",
+        runs: "./scripts/check-release-tag.py --wiring",
+        only_in_ci: None,
+        run: |c| c.python_script("scripts/check-release-tag.py", &["--wiring"]),
+    },
+    Step {
+        name: "release-tag-rehearsal",
+        runs: "./scripts/check-release-tag.py --release-rehearsal",
+        only_in_ci: None,
+        run: |c| c.python_script("scripts/check-release-tag.py", &["--release-rehearsal"]),
+    },
+    Step {
         name: "fetch-finetype-bundle-selftest",
         runs: "./scripts/fetch-finetype-bundle-selftest.sh",
         only_in_ci: None,

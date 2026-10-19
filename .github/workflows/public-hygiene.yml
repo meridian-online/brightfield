@@ -157,6 +157,23 @@ jobs:
       - name: the release reads back what it publishes
         run: cargo xtask ci --step release-readback
 
+      # A release tag is checked only when one is pushed, so these stand in for
+      # it on every pull request. The self-test proves each mutation of the
+      # guard or its wiring turns the check red; --wiring reads release.yml's
+      # tag filter, the `tag-guard` job and the release body; and the rehearsal
+      # runs the `tag-guard` job's own `run:` line against a copy of the tree,
+      # with this tree's version and with each tag it must refuse. So a change
+      # that bumps the shell crate's version without a CHANGELOG.md section for
+      # it turns red here, before anyone tags it.
+      - name: a release tag names this tree's version and changelog — self-test
+        run: cargo xtask ci --step release-tag-selftest
+
+      - name: a release tag names this tree's version and changelog — wiring
+        run: cargo xtask ci --step release-tag-wiring
+
+      - name: a release tag names this tree's version and changelog — rehearsal
+        run: cargo xtask ci --step release-tag-rehearsal
+
       # The fetch, against a loopback server holding fixture assets. Url
       # construction, curl, sidecar parse, digest comparison, unpack and
       # assembly all run; only the host differs from a release.

@@ -175,6 +175,8 @@ results onto a GitHub release; the `<tool>-<version>-<target>.tar.gz` +
 `.sha256` asset naming is the contract the `install.meridian.online`
 convention consumes.
 
+A release tag is `v` and three numbers, and it must match `version` in `crates/brightfield-shell/Cargo.toml` and have a section in [`CHANGELOG.md`](CHANGELOG.md). The release workflow's first job, `tag-guard`, refuses any other tag before anything is built, and publishes that section at the head of the release notes. `CHANGELOG.md` says how to cut a release.
+
 ## Technology Stack
 
 | Component | Technology | Rationale |
