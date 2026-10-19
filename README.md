@@ -148,7 +148,11 @@ executable: the official DuckDB v1.5.6 command-line shell (`engine/duckdb` in
 the tarball, `Contents/Helpers/duckdb` in the app), which the Run control hands
 a Protocol's SQL steps to so a run needs nothing installed.
 `scripts/fetch-duckdb-cli.sh` pins it by sha256; `scripts/package.sh` stages it
-when `BRIGHTFIELD_DUCKDB_CLI` names the directory that script wrote.
+when `BRIGHTFIELD_DUCKDB_CLI` names the directory that script wrote. A local
+build may leave it out; a release may not. The release reads it back out of
+both packaged artifacts with `scripts/check-artifact-engine.sh`, and fails the
+job when it is missing, is not the pinned bytes, or is not the DuckDB the
+binary links. On the native leg the packaged binary's `--check-engine` runs it.
 
 Each tagged release is installed with `brew install meridian-online/tap/brightfield`, and the installed binary carries the headless exports (`export-pdf`, `export-png`, `export-data`) as well as the window.
 
@@ -297,7 +301,7 @@ process. Treat every bump as potentially breaking and move deliberately.
    fresh resolve can still float its deps), pin it back with
    `cargo update <crate>@<ver> --precise <ok-ver>`.
 
-arc pins `duckdb` exactly, so a bump that moves arc's DuckDB moves the workspace `duckdb` pin and the CLI pin in `scripts/fetch-duckdb-cli.sh` with it, and the version named in the Distribution section above. The packaging scripts read the CLI version from that pin.
+arc pins `duckdb` exactly, so a bump that moves arc's DuckDB moves the workspace `duckdb` pin and the CLI pin in `scripts/fetch-duckdb-cli.sh` with it, and the version named in the Distribution section above. The packaging scripts read the CLI version from that pin, and `scripts/check-artifact-engine.sh` refuses a release whose pin and `libduckdb-sys` in `Cargo.lock` name different DuckDBs.
 
 **What tells you the pin has gone stale.** Not a person. The pin drifted three weeks behind
 arcform's operator catalog once, and the first signal was somebody opening a shipped Protocol

@@ -136,13 +136,36 @@ ENGINE_ARG="$ENGINE"
 
 STUB="$TMP/stub"
 mkdir -p "$STUB"
+# Its --check-engine runs the engine staged beside it, from the two places
+# `staged_engine_beside` looks, so the engine read-back's run leg executes the
+# real pinned CLI out of the artifact. What the real binary adds — comparing
+# that CLI with the DuckDB it links — is crates/brightfield-shell/src/run.rs's
+# to test, and this stub cannot make that claim.
 cat >"$TMP/stub-main.c" <<'C'
+#include <libgen.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 int main(int argc, char **argv) {
   if (argc > 1 && strcmp(argv[1], "--check-type-source") == 0) {
     printf("STUB-RAN-THE-PACKAGED-BINARY\n");
     return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "--check-engine") == 0) {
+    char self[4096], engine[4200];
+    snprintf(self, sizeof self, "%s", argv[0]);
+    const char *dir = dirname(self);
+    const char *beside[] = {"engine/duckdb", "../Helpers/duckdb"};
+    for (int i = 0; i < 2; i++) {
+      snprintf(engine, sizeof engine, "%s/%s", dir, beside[i]);
+      if (access(engine, X_OK) == 0) {
+        printf("STUB-RAN-THE-PACKAGED-ENGINE\n");
+        fflush(stdout);
+        execl(engine, engine, "--version", (char *)0);
+        return 1;
+      }
+    }
+    return 2;
   }
   return 64;
 }
@@ -204,53 +227,12 @@ attach_image() {
 	done
 }
 
-# engine_in KIND -> 0 when the artifact holds the pinned CLI at the path
-# `staged_engine_beside` in crates/brightfield-shell/src/run.rs reads for that
-# layout, and it runs as the pinned version; the reason it does not is appended to $out.
-LOOK="$TMP/look"
+# engine_in KIND -> the release's own engine read-back over KIND, its log
+# appended to $out: the path `staged_engine_beside` reads, the pinned bytes,
+# the pin against Cargo.lock, and the packaged binary running the engine.
 engine_in() {
-	local kind="$1" root rel status=0 version
-	rm -rf "$LOOK"
-	mkdir -p "$LOOK"
-	case "$kind" in
-	tar.gz)
-		tar -xzf "$COPY/dist/${NAME}.tar.gz" -C "$LOOK" || return 1
-		root="$LOOK/${NAME}"
-		rel="engine/duckdb"
-		;;
-	dmg)
-		attach_image "$COPY/dist/${NAME}.dmg" "$LOOK" || return 1
-		root="$LOOK/Brightfield.app"
-		rel="Contents/Helpers/duckdb"
-		;;
-	esac
-	if [ ! -f "$root/$rel" ]; then
-		echo "the ${kind} carries no engine at ${rel}" >>"$out"
-		status=1
-	elif ! "$HERE/fetch-duckdb-cli.sh" --check "$TARGET" "$(dirname "$root/$rel")" >>"$out" 2>&1; then
-		status=1
-	else
-		version="$("$root/$rel" --version 2>&1)"
-		case "$version" in
-		"${PINNED_DUCKDB} "*) ;;
-		*)
-			echo "the ${kind}'s engine answered --version with: ${version}" >>"$out"
-			status=1
-			;;
-		esac
-	fi
-	if [ "$kind" = dmg ]; then
-		local n=0
-		until hdiutil detach "$LOOK" -quiet >/dev/null 2>&1; do
-			n=$((n + 1))
-			[ "$n" -lt 5 ] || {
-				hdiutil detach "$LOOK" -force -quiet >/dev/null 2>&1 || true
-				break
-			}
-			sleep 1
-		done
-	fi
-	return "$status"
+	(cd "$COPY" && ./scripts/check-artifact-engine.sh "dist/${NAME}.${1}" "$TARGET") \
+		>>"$out" 2>&1
 }
 
 mutate() {
@@ -287,6 +269,7 @@ for kind in tar.gz dmg; do
 	fi
 done
 
+LOOK="$TMP/look"
 # extension_named_in KIND — the staged extension in KIND carries an `@rpath/`
 # install name, and the bundle matches the manifest packaging wrote beside it.
 # An absolute install name is what Homebrew rewrites on install, which changes
@@ -331,10 +314,6 @@ for kind in tar.gz dmg; do
 	fi
 done
 
-# THE STRUCTURAL PIN OF THIS FILE. Everything above is satisfied by a read-back
-# that decided not to run the binary — and then the two cases above would be
-# reading a file tree, which is the reading that already existed. The marker is
-# printed by the stub binary and by nothing else.
 for kind in tar.gz dmg; do
 	if engine_in "$kind"; then
 		echo "  ok   the ${kind} carries the pinned DuckDB CLI where the runner looks, and it runs"
@@ -345,13 +324,20 @@ for kind in tar.gz dmg; do
 	fi
 done
 
-if grep -q 'STUB-RAN-THE-PACKAGED-BINARY' "$out"; then
-	echo "  ok   the packaged binary was executed out of the artifact"
-else
-	echo "  FAIL the binary was never run, so both cases above read a file tree only:"
-	sed 's/^/       /' "$out"
-	failures=$((failures + 1))
-fi
+# THE STRUCTURAL PIN OF THIS FILE. Everything above is satisfied by read-backs
+# that decided not to run anything — and then the cases above would be reading
+# a file tree, which is the reading that already existed. The first two
+# markers are printed by the stub binary and by nothing else, and the third,
+# `v1.5.6 (<codename>) <commit>`, only by the pinned CLI's own `--version`.
+for marker in STUB-RAN-THE-PACKAGED-BINARY STUB-RAN-THE-PACKAGED-ENGINE "${PINNED_DUCKDB} ("; do
+	if grep -qF -- "$marker" "$out"; then
+		echo "  ok   the read-back's run leg printed '${marker}' out of the artifact"
+	else
+		echo "  FAIL nothing printed '${marker}', so the cases above read a file tree only:"
+		sed 's/^/       /' "$out"
+		failures=$((failures + 1))
+	fi
+done
 
 # ── the ways staging has been broken ────────────────────────────────────────
 # Each is applied to scripts/package.sh in the copy, packaging is re-run, and the
@@ -470,11 +456,41 @@ echo "== packaging with the engine dropped from one artifact"
 
 broken_engine_case "the app bundle's engine staging call is deleted" \
 	'    stage_engine "$APP/Contents/Helpers/duckdb"' \
-	dmg "carries no engine at Contents/Helpers/duckdb" tar.gz
+	dmg "carries no engine at Brightfield.app/Contents/Helpers/duckdb" tar.gz
 
 broken_engine_case "the tarball's engine staging call is deleted" \
 	'stage_engine "$STAGE/engine/duckdb"' \
 	tar.gz "carries no engine at engine/duckdb" dmg
+
+# THE RELEASE'S OWN FAILURE. release.yml without its BRIGHTFIELD_DUCKDB_CLI
+# line: package.sh prints `== engine: none` and exits 0, as it should for a
+# local build, and the read-back the release runs must refuse both artifacts.
+echo "== packaging with no engine handed to it"
+copy_checkout
+ENGINE_ARG=""
+if ! run_packaging; then
+	echo "  FAIL packaging with no engine did not complete, so nothing was read back:"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+elif ! grep -qF "== engine: none" "$out"; then
+	echo "  FAIL packaging was handed no engine and did not say so:"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+else
+	for kind in tar.gz dmg; do
+		if engine_in "$kind"; then
+			echo "  FAIL the ${kind} packaged with no engine passed the release's read-back"
+			failures=$((failures + 1))
+		elif ! grep -qF "carries no engine at" "$out"; then
+			echo "  FAIL the ${kind} packaged with no engine was refused for another reason:"
+			sed 's/^/       /' "$out"
+			failures=$((failures + 1))
+		else
+			echo "  ok   the ${kind} packaged with no engine is refused by the release's read-back"
+		fi
+	done
+fi
+ENGINE_ARG="$ENGINE"
 
 echo "== packaging handed a duckdb that is not the pin"
 copy_checkout

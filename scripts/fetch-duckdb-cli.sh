@@ -26,7 +26,8 @@
 # into this binary (Cargo.lock), so the engine that writes a run and the
 # engine that reads the result in the window are one version. Moving the
 # embedded DuckDB moves this pin with it: the version, the two assets and all
-# four hashes below.
+# four hashes below. scripts/check-artifact-engine.sh refuses a release whose
+# VERSION here and libduckdb-sys in Cargo.lock disagree.
 #
 # WHAT IS PINNED. Both hashes per target were measured on the official assets
 # at https://github.com/duckdb/duckdb/releases/tag/v1.5.6, and the zip hashes

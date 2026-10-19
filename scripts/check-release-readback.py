@@ -51,10 +51,12 @@ WHAT IS CHECKED
        every upload glob matches something, and `if-no-files-found: error`.
     C  Every uploaded artefact is matched by the release job's `files:` globs,
        every such glob matches something, and `fail_on_unmatched_files: true`.
-    D  Every published artefact that `scripts/check-artifact-type-source.sh`
-       can open is handed to it, on the leg that built it, with that leg's
-       target triple as the second argument. Which artefacts it can open is
-       asked of that script, not written down here.
+    D  Every published artefact that each read-back in READBACKS --
+       `scripts/check-artifact-type-source.sh` and
+       `scripts/check-artifact-engine.sh` -- can open is handed to it, on the
+       leg that built it, with that leg's target triple as the second argument.
+       Which artefacts it can open is asked of that script, not written down
+       here. D, E and F are checked for each read-back on its own.
     E  A read-back that fails stops the job: no `continue-on-error` on the step
        or on the job, no `if:` on the step, and -- driven, once per artefact --
        a failing check makes the step exit non-zero.
@@ -96,7 +98,20 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_REL = ".github/workflows/release.yml"
-READBACK_REL = "scripts/check-artifact-type-source.sh"
+# Each read-back the release must run over every artefact it can open: the
+# type source the window labels columns with, and the DuckDB engine the Run
+# control drives. Every contract item below is checked for each of them on its
+# own, so a step that reads back one and not the other is a broken release.
+READBACKS = (
+    "scripts/check-artifact-type-source.sh",
+    "scripts/check-artifact-engine.sh",
+)
+READBACK_REL = READBACKS[0]
+
+
+def _rel(readback: Path) -> str:
+    """The path the workflow calls a read-back by: under scripts/, by its name."""
+    return f"scripts/{readback.name}"
 
 BUILD_JOB = "build"
 RELEASE_JOB = "release"
@@ -403,7 +418,7 @@ def _artifact_names(target: str) -> list[str]:
 class Sandbox:
     """A temporary checkout-shaped tree: `dist/` with fixture artefacts, a stub `scripts/`."""
 
-    def __init__(self, root: Path, target: str) -> None:
+    def __init__(self, root: Path, target: str, readback_rel: str) -> None:
         self.root = root
         self.target = target
         self.record = root / "record.txt"
@@ -412,9 +427,13 @@ class Sandbox:
         (root / "dist").mkdir(parents=True, exist_ok=True)
         (root / "scripts").mkdir(parents=True, exist_ok=True)
         Path(self.temp).mkdir(parents=True, exist_ok=True)
-        recorder = root / READBACK_REL
-        recorder.write_text(RECORDER, encoding="utf-8")
-        recorder.chmod(0o755)
+        # The read-back under test records; the others pass silently, so a
+        # step that runs both is driven by what this one does.
+        for rel in {*READBACKS, readback_rel}:
+            stub = root / rel
+            stub.write_text(RECORDER if rel == readback_rel else "#!/bin/sh\nexit 0\n",
+                            encoding="utf-8")
+            stub.chmod(0o755)
         self.populate()
 
     def populate(self) -> None:
@@ -570,7 +589,7 @@ def check(workflow: Path, readback: Path, report: list[str] | None = None) -> li
             target = str(leg["target"])
             leg_root = Path(tmp) / target
             leg_root.mkdir(parents=True)
-            box = Sandbox(leg_root, target)
+            box = Sandbox(leg_root, target, _rel(readback))
             failures += _leg(box, leg, target, build_steps, release_steps, readback,
                              upload_globs, release_globs, report)
     return failures
@@ -641,6 +660,7 @@ def _leg(
 ) -> list[str]:
     failures: list[str] = []
     fixture = _artifact_names(target)
+    rel = _rel(readback)
 
     # ── A. the fixture, pinned against a step that would notice it shrinking ──
     sentinel: str | None = None
@@ -728,7 +748,7 @@ def _leg(
     }
     if not want:
         raise Unreadable(
-            f"[{target}] {READBACK_REL} rejects the shape of every artefact this release "
+            f"[{target}] {rel} rejects the shape of every artefact this release "
             f"publishes ({sorted(published)}), so there is nothing it could be required to read "
             "and a pass here would mean nothing"
         )
@@ -737,7 +757,7 @@ def _leg(
         f"[{target}] published: {', '.join(sorted(published))}"
     )
     report.append(
-        f"[{target}] {READBACK_REL} opens {', '.join(sorted(want))} and rejects the shape of "
+        f"[{target}] {rel} opens {', '.join(sorted(want))} and rejects the shape of "
         f"{', '.join(sorted(published - want)) or 'nothing else'}"
     )
     seen: dict[str, list[str]] = {}
@@ -770,8 +790,8 @@ def _leg(
 
     if not readback_steps:
         failures.append(
-            f"[{target}] no step in the `{BUILD_JOB}` job runs {READBACK_REL}, so a release that "
-            "packaged an artefact with no type source in it would publish green"
+            f"[{target}] no step in the `{BUILD_JOB}` job runs {rel}, so a release that "
+            "packaged an artefact with nothing in it for that check to find would publish green"
         )
         return failures
 
@@ -780,7 +800,7 @@ def _leg(
         if not argv_for:
             failures.append(
                 f"[{target}] the release publishes `{name}` and no step hands it to "
-                f"{READBACK_REL}, so nothing opens it before it ships. Read back "
+                f"{rel}, so nothing opens it before it ships. Read back "
                 f"dist/{name} in the same step as the others."
             )
             continue
@@ -788,7 +808,7 @@ def _leg(
             argv = entry.split()
             if len(argv) != 2 or argv[1] != target:
                 failures.append(
-                    f"[{target}] {READBACK_REL} is run as `{entry}`; it takes the artefact and "
+                    f"[{target}] {rel} is run as `{entry}`; it takes the artefact and "
                     f"the triple it was packaged for, so this leg must pass `{target}`"
                 )
 
@@ -817,25 +837,25 @@ def _leg(
                 continue
             if code == 0:
                 failures.append(
-                    f"[{target}] {READBACK_REL} refuses `dist/{name}` and the step "
+                    f"[{target}] {rel} refuses `dist/{name}` and the step "
                     f"`{_step_name(step, index)}` still exits 0 — the failure is swallowed. Under "
                     "this step's shell a pipe or a `|| true` does exactly that."
                 )
 
     for name in sorted(want):
         for entry in seen.get(f"dist/{name}", []):
-            report.append(f"[{target}] read back as `{READBACK_REL} {entry}`")
+            report.append(f"[{target}] read back as `{rel} {entry}`")
     for name in sorted(want):
         if f"dist/{name}" not in seen:
             continue
         if f"dist/{name}" not in stdout_seen:
             failures.append(
-                f"[{target}] what {READBACK_REL} prints about `{name}` does not reach the step's "
+                f"[{target}] what {rel} prints about `{name}` does not reach the step's "
                 "log, so a reader of the run cannot see what was checked"
             )
         if f"dist/{name}" not in summary_seen:
             failures.append(
-                f"[{target}] what {READBACK_REL} writes to $GITHUB_STEP_SUMMARY about `{name}` "
+                f"[{target}] what {rel} writes to $GITHUB_STEP_SUMMARY about `{name}` "
                 "does not reach the run summary, so which targets were load-verified is not "
                 "where a release reader meets it"
             )
@@ -870,19 +890,21 @@ def _run_cli(argv: list[str]) -> tuple[int, str]:
 def self_test() -> int:
     workflow = REPO_ROOT / WORKFLOW_REL
     readback = REPO_ROOT / READBACK_REL
+    engine = REPO_ROOT / READBACKS[1]
     original = workflow.read_text(encoding="utf-8")
 
-    try:
-        control = check(workflow, readback)
-    except Unreadable as exc:
-        print(f"  CONTROL FAILED — the real workflow could not be read: {exc}")
-        return 1
-    if control:
-        print("  CONTROL FAILED — the real release path does not satisfy the contract:")
-        for failure in control:
-            print(f"      {failure}")
-        return 1
-    print("  ok   control: the real release reads back every artefact it publishes")
+    for each in (readback, engine):
+        try:
+            control = check(workflow, each)
+        except Unreadable as exc:
+            print(f"  CONTROL FAILED — the real workflow could not be read: {exc}")
+            return 1
+        if control:
+            print(f"  CONTROL FAILED — the real release path does not satisfy the contract for {_rel(each)}:")
+            for failure in control:
+                print(f"      {failure}")
+            return 1
+        print(f"  ok   control: the real release reads back every artefact it publishes with {_rel(each)}")
 
     readback_call = '          scripts/check-artifact-type-source.sh "dist/${NAME}.dmg" "${{ matrix.target }}"\n'
     step_head = "      - name: The packaged artifacts carry a type source"
@@ -985,6 +1007,44 @@ def self_test() -> int:
         ),
     ]
 
+    # The engine read-back, under the same contract. Fewer cases because the
+    # machinery is shared: these pin that the engine's own step is held to it.
+    engine_call = '          scripts/check-artifact-engine.sh "dist/${NAME}.dmg" "${{ matrix.target }}"\n'
+    engine_head = "      - name: The packaged artifacts carry the DuckDB engine"
+    engine_cases: list[tuple[str, str, str, str]] = [
+        (
+            "the engine read-back step is marked continue-on-error",
+            engine_head,
+            "      - continue-on-error: true\n        name: The packaged artifacts carry the DuckDB engine",
+            "continue-on-error",
+        ),
+        (
+            "the .dmg argument is deleted from the engine read-back step",
+            engine_call,
+            "",
+            ".dmg` and no step hands it to scripts/check-artifact-engine.sh",
+        ),
+        (
+            "the engine read-back of the disk image is trailed with || true",
+            engine_call,
+            '          scripts/check-artifact-engine.sh "dist/${NAME}.dmg" "${{ matrix.target }}" || true\n',
+            "swallowed",
+        ),
+        (
+            "the engine read-back step is made conditional",
+            engine_head,
+            "      - if: ${{ matrix.native }}\n        name: The packaged artifacts carry the DuckDB engine",
+            "carries `if:",
+        ),
+        (
+            "the whole engine read-back is dropped",
+            '          scripts/check-artifact-engine.sh "dist/${NAME}.tar.gz" "${{ matrix.target }}"\n'
+            + engine_call,
+            '          echo "the engine is staged"\n',
+            "no step in the `build` job runs scripts/check-artifact-engine.sh",
+        ),
+    ]
+
     # Ambiguity is exit 2, not a verdict.
     refusals: list[tuple[str, str, str, str]] = [
         (
@@ -1028,8 +1088,8 @@ def self_test() -> int:
         ),
         (
             "an expression this reader cannot resolve decides which artefact is read",
-            '"dist/${NAME}.dmg" "${{ matrix.target }}"\n',
-            '"dist/${NAME}${{ inputs.suffix }}" "${{ matrix.target }}"\n',
+            'check-artifact-type-source.sh "dist/${NAME}.dmg" "${{ matrix.target }}"\n',
+            'check-artifact-type-source.sh "dist/${NAME}${{ inputs.suffix }}" "${{ matrix.target }}"\n',
             "cannot resolve",
         ),
     ]
@@ -1038,14 +1098,17 @@ def self_test() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         mutated = Path(tmpdir) / "release.yml"
 
-        for name, old, new, expected in cases:
+        for name, old, new, expected, each in [
+            *((*case, readback) for case in cases),
+            *((*case, engine) for case in engine_cases),
+        ]:
             if original.count(old) != 1:
                 print(f"  WRONG {name}: its anchor appears {original.count(old)} times, not once")
                 failed += 1
                 continue
             mutated.write_text(original.replace(old, new, 1), encoding="utf-8")
             try:
-                found = check(mutated, readback)
+                found = check(mutated, each)
             except Unreadable as exc:
                 print(f"  WRONG {name}: refused as unreadable rather than reporting: {exc}")
                 failed += 1
@@ -1086,7 +1149,7 @@ def self_test() -> int:
         print(f"\nself-test FAILED: {failed} case(s) not detected correctly")
         return 1
     print(
-        f"\nself-test passed: {len(cases)} release-path mutations detected, "
+        f"\nself-test passed: {len(cases) + len(engine_cases)} release-path mutations detected, "
         f"{len(refusals)} shapes refused, exit codes pinned"
     )
     return 0
@@ -1135,16 +1198,24 @@ def _exit_code_cases(original: str, tmpdir: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, add_help=True)
     parser.add_argument("--workflow", default=str(REPO_ROOT / WORKFLOW_REL))
-    parser.add_argument("--readback", default=str(REPO_ROOT / READBACK_REL))
+    parser.add_argument(
+        "--readback",
+        help="check one read-back script; by default every one in READBACKS is checked",
+    )
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
     if args.self_test:
         return self_test()
 
+    readbacks = (
+        [Path(args.readback)] if args.readback else [REPO_ROOT / rel for rel in READBACKS]
+    )
     report: list[str] = []
+    failures: list[str] = []
     try:
-        failures = check(Path(args.workflow), Path(args.readback), report)
+        for readback in readbacks:
+            failures += check(Path(args.workflow), readback, report)
     except Unreadable as exc:
         for line in report:
             print(f"   {line}")
@@ -1159,7 +1230,8 @@ def main() -> int:
         return 1
     print(
         "check-release-readback: every artefact this release publishes is opened by "
-        f"{READBACK_REL} on the leg that built it, and a refusal stops the job."
+        f"{' and '.join(_rel(r) for r in readbacks)} on the leg that built it, and a refusal "
+        "stops the job."
     )
     return 0
 
