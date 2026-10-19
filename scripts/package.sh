@@ -204,7 +204,9 @@ fi
 # architecture's cannot be staged. Unset, the artifact ships without an
 # engine and Run falls back to whatever duckdb the user's search path has:
 # a supported local build, as the type source's absence is. release.yml
-# fetches it and sets the variable.
+# fetches it and sets the variable, and its read-back
+# (scripts/check-artifact-engine.sh) fails the release when an artifact
+# carries none.
 # ---------------------------------------------------------------------------
 DUCKDB_CLI="${BRIGHTFIELD_DUCKDB_CLI:-}"
 if [ -z "$DUCKDB_CLI" ]; then

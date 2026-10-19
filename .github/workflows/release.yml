@@ -208,6 +208,26 @@ jobs:
           scripts/check-artifact-type-source.sh "dist/${NAME}.tar.gz" "${{ matrix.target }}"
           scripts/check-artifact-type-source.sh "dist/${NAME}.dmg" "${{ matrix.target }}"
 
+      # THE ENGINE, READ BACK OUT OF WHAT WAS PACKAGED. scripts/package.sh stages
+      # the DuckDB CLI only when BRIGHTFIELD_DUCKDB_CLI is set; unset, it prints
+      # `== engine: none` and exits 0, and the release published an app whose
+      # Run control has no engine on a machine without duckdb. This step is what
+      # turns that red. On each artefact it finds the engine where the Run
+      # control looks, matches it to its pin and the pin to Cargo.lock's DuckDB,
+      # and on the native leg has the packaged binary run it and compare it
+      # with the DuckDB the binary links. The x86_64 leg is read and not run,
+      # for the reason the step above gives, and the check records that itself.
+      #
+      # scripts/check-release-readback.py holds this step to the same contract
+      # as the one above, and scripts/package-artifact-staging-selftest.sh runs
+      # this check over a real packaging run with the engine handed to it, with
+      # each staging call deleted, and with no engine at all.
+      - name: The packaged artifacts carry the DuckDB engine (run on the native leg)
+        run: |
+          NAME="brightfield-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          scripts/check-artifact-engine.sh "dist/${NAME}.tar.gz" "${{ matrix.target }}"
+          scripts/check-artifact-engine.sh "dist/${NAME}.dmg" "${{ matrix.target }}"
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.target }}

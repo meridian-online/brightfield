@@ -95,6 +95,104 @@ pub fn staged_engine_beside(program: &Path) -> Option<PathBuf> {
     .find(|candidate| candidate.is_file())
 }
 
+/// The query both DuckDBs answer for `--check-engine`: the release and the
+/// commit it was built from, so two builds of one version string still differ.
+pub const ENGINE_VERSION_QUERY: &str = "SELECT library_version, source_id FROM pragma_version()";
+
+/// What `--check-engine` found beside a program.
+#[derive(Debug, PartialEq, Eq)]
+pub enum EngineCheck {
+    /// The staged engine ran the version query and answered with the DuckDB
+    /// this binary links.
+    Matches { engine: PathBuf, version: String },
+    /// An engine is staged and it did not run, or it is another DuckDB.
+    Broken { engine: PathBuf, reason: String },
+    /// Nothing is staged beside the program.
+    Absent,
+}
+
+/// The DuckDB this binary links, as `<library_version>,<source_id>`: the form
+/// the CLI prints for [`ENGINE_VERSION_QUERY`] under `-csv -noheader`.
+///
+/// # Errors
+///
+/// When an in-memory database cannot be opened or does not answer the query.
+pub fn linked_duckdb_version() -> Result<String, String> {
+    let conn = duckdb::Connection::open_in_memory().map_err(|e| e.to_string())?;
+    conn.query_row(ENGINE_VERSION_QUERY, [], |row| {
+        Ok(format!(
+            "{},{}",
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?
+        ))
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// Run the engine staged beside `program` and compare the DuckDB it reports
+/// with `linked`, the one this binary carries ([`linked_duckdb_version`]).
+///
+/// The engine is started with an empty environment, a fresh `HOME` and working
+/// directory, and an empty init file, which DuckDB's CLI reads in place of
+/// `~/.duckdbrc`
+/// (`the_staged_engine_runs_with_an_empty_environment_and_its_own_home`).
+/// So what it prints is the engine's answer and not the caller's settings. A run that writes a Protocol and a window that reads it are
+/// only one engine if this matches, which is why a mismatch is a failure and
+/// not a note.
+#[must_use]
+pub fn check_staged_engine(program: &Path, linked: &str) -> EngineCheck {
+    let Some(engine) = staged_engine_beside(program) else {
+        return EngineCheck::Absent;
+    };
+    let broken = |reason: String| EngineCheck::Broken {
+        engine: engine.clone(),
+        reason,
+    };
+    let sealed = match tempfile::tempdir() {
+        Ok(dir) => dir,
+        Err(e) => return broken(format!("cannot make a sealed working directory: {e}")),
+    };
+    let init = sealed.path().join("empty-init.sql");
+    if let Err(e) = std::fs::write(&init, b"") {
+        return broken(format!("cannot write an empty init file: {e}"));
+    }
+    let output = Command::new(&engine)
+        .arg("-batch")
+        .arg("-noheader")
+        .arg("-csv")
+        .arg("-init")
+        .arg(&init)
+        .arg("-c")
+        .arg(ENGINE_VERSION_QUERY)
+        .env_clear()
+        .env("HOME", sealed.path())
+        .current_dir(sealed.path())
+        .stdin(Stdio::null())
+        .output();
+    let output = match output {
+        Ok(output) => output,
+        Err(e) => return broken(format!("could not be started: {e}")),
+    };
+    if !output.status.success() {
+        return broken(format!(
+            "exited with {} running the version query: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let reported = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if reported == linked {
+        EngineCheck::Matches {
+            engine,
+            version: reported,
+        }
+    } else {
+        broken(format!(
+            "reports DuckDB `{reported}` and this binary links `{linked}`"
+        ))
+    }
+}
+
 /// Hand this process to `arc` if it was started as the runner, and return only
 /// if it was not.
 ///
@@ -450,6 +548,120 @@ mod tests {
         );
         assert_eq!(staged_engine_beside(&tmp.join("bare/brightfield")), None);
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A tarball-shaped directory whose `engine/duckdb` is `script`, and the
+    /// program path the engine is looked up from.
+    #[cfg(unix)]
+    fn staged(script: &str) -> (tempfile::TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("engine")).unwrap();
+        let engine = dir.path().join("engine/duckdb");
+        std::fs::write(&engine, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let program = dir.path().join("brightfield");
+        (dir, program)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_staged_engine_reporting_the_linked_duckdb_matches() {
+        let (_dir, program) = staged("echo 'v9.9.9,abc123'");
+        assert!(matches!(
+            check_staged_engine(&program, "v9.9.9,abc123"),
+            EngineCheck::Matches { version, .. } if version == "v9.9.9,abc123"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_staged_engine_of_another_version_or_commit_is_broken() {
+        let (_dir, program) = staged("echo 'v9.9.9,abc123'");
+        for linked in ["v9.9.8,abc123", "v9.9.9,def456"] {
+            assert!(matches!(
+                check_staged_engine(&program, linked),
+                EngineCheck::Broken { reason, .. } if reason.contains("v9.9.9,abc123")
+            ));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_staged_engine_that_fails_is_broken_and_says_why() {
+        let (_dir, program) = staged("echo 'Catalog Error' >&2; exit 1");
+        assert!(matches!(
+            check_staged_engine(&program, "v9.9.9,abc123"),
+            EngineCheck::Broken { reason, .. } if reason.contains("Catalog Error")
+        ));
+    }
+
+    /// The engine is asked with nothing inherited: the test process's `PATH`
+    /// (cargo's, longer than any shell default) does not reach it, `HOME` is
+    /// not the caller's, and the init file it is handed is empty.
+    #[cfg(unix)]
+    #[test]
+    fn the_staged_engine_runs_with_an_empty_environment_and_its_own_home() {
+        let (_dir, program) = staged(
+            r#"if [ -s "$5" ]; then init=has-content; elif [ -f "$5" ]; then init=empty; else init=missing; fi
+echo "${PATH:-unset}|${HOME}|$(pwd -P)|$1 $2 $3 $4|$5|$init""#,
+        );
+        let caller_path = std::env::var("PATH").unwrap_or_default();
+        let caller_home = std::env::var("HOME").unwrap_or_default();
+        let found = check_staged_engine(&program, "never");
+        let EngineCheck::Broken { reason, .. } = found else {
+            panic!("expected the probe's answer to differ from `never`, got {found:?}");
+        };
+        let reported = reason
+            .split('`')
+            .nth(1)
+            .expect("the reason quotes what the engine reported");
+        let fields: Vec<&str> = reported.split('|').collect();
+        // Not "unset": a `/bin/sh` started with no PATH supplies its own default.
+        assert_ne!(
+            fields[0], caller_path,
+            "the caller's PATH reached the engine"
+        );
+        assert_ne!(fields[1], caller_home, "the engine saw the caller's HOME");
+        // Compared by its last component: the directory is gone by now, and
+        // `pwd -P` resolves macOS's `/var` to `/private/var` where HOME does not.
+        let home_dir = Path::new(fields[1])
+            .file_name()
+            .expect("HOME names a directory");
+        assert_eq!(
+            Path::new(fields[2]).file_name(),
+            Some(home_dir),
+            "the engine's HOME is not its working directory"
+        );
+        assert_eq!(fields[3], "-batch -noheader -csv -init");
+        // The init file DuckDB reads in place of `~/.duckdbrc` is an empty file
+        // inside that same sealed directory.
+        assert_eq!(
+            Path::new(fields[4]).parent().and_then(Path::file_name),
+            Some(home_dir),
+            "the init file is not in the sealed directory"
+        );
+        assert_eq!(
+            fields[5], "empty",
+            "the init file the engine read is not empty"
+        );
+    }
+
+    #[test]
+    fn nothing_staged_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            check_staged_engine(&dir.path().join("brightfield"), "v9.9.9,abc123"),
+            EngineCheck::Absent
+        );
+    }
+
+    #[test]
+    fn the_linked_duckdb_reports_a_release_and_a_commit() {
+        let linked = linked_duckdb_version().unwrap();
+        let (release, commit) = linked.split_once(',').unwrap();
+        assert!(release.starts_with('v'), "{linked}");
+        assert!(!commit.is_empty(), "{linked}");
     }
 
     /// Watched redden, one mutation: the `chars.next()` that consumes the

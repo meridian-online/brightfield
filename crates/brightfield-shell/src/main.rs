@@ -107,6 +107,10 @@ enum Invocation {
     /// `--check-type-source`: bring up the bundled semantic type source and
     /// type one column with it, then exit. No window.
     CheckTypeSource,
+    /// `--check-engine`: run the DuckDB CLI staged beside this executable and
+    /// compare its version with the DuckDB this binary links, then exit. No
+    /// window.
+    CheckEngine,
     /// `export-pdf`, `export-png` or `export-data`: write a Protocol panel's
     /// picture or rows and exit. No window.
     Export(brightfield_shell::export::Export),
@@ -150,6 +154,11 @@ Options:
                                   type one column with it, and exit. Opens no
                                   window. Exit 0 typed a column, 1 a bundle is
                                   present and did not work, 2 there is none.
+  --check-engine                  Run the DuckDB engine staged beside this
+                                  executable, which Run uses, and exit. Opens no
+                                  window. Exit 0 it ran and is the DuckDB this
+                                  binary links, 1 it did not run or is another
+                                  version, 2 there is none.
   -h, --help                      Print this help and exit.
   -V, --version                   Print the version and exit.
 
@@ -211,6 +220,7 @@ fn parse_args_from(it: impl Iterator<Item = String>) -> Result<Invocation, Strin
             "--version" | "-V" => return Ok(Invocation::Version),
             "--help" | "-h" => return Ok(Invocation::Help),
             "--check-type-source" => return Ok(Invocation::CheckTypeSource),
+            "--check-engine" => return Ok(Invocation::CheckEngine),
             "--theme" => {
                 if let Some(v) = it.next() {
                     mode = if v == "dark" { Mode::Dark } else { Mode::Light };
@@ -579,6 +589,58 @@ const SEALED_ENV: &[&str] = &["PATH", "HOME", "TMPDIR", "LC_ALL", "LANG", SEALED
 /// Anything ELSE a future dependency injects will fail this check loudly rather
 /// than pass quietly, which is the direction to fail in.
 const SEALED_ENV_SELF_SET: &[&str] = &["__CF_USER_TEXT_ENCODING"];
+
+/// `--check-engine`: report whether the DuckDB CLI the Run control would hand
+/// to `arc` is staged beside this executable, runs, and is the DuckDB this
+/// binary links. `scripts/check-artifact-engine.sh` runs it out of a packaged
+/// artefact.
+///
+/// Asked of this binary rather than read off the artefact from outside,
+/// because two of its three answers are known here: where the runner looks
+/// ([`brightfield_shell::run::staged_engine_beside`] from this executable's own
+/// path) and which DuckDB was linked in.
+///
+/// Exit `0` the engine ran and matches, `1` it is staged and did not run or is
+/// another DuckDB, `2` nothing is staged — a supported local build, as the type
+/// source's absence is, and a packaging defect in a release.
+fn check_engine() -> i32 {
+    use brightfield_shell::run::{check_staged_engine, linked_duckdb_version, EngineCheck};
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("check-engine: cannot locate this executable: {e}");
+            return 1;
+        }
+    };
+    let linked = match linked_duckdb_version() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("check-engine: the DuckDB this binary links did not report its version: {e}");
+            return 1;
+        }
+    };
+    match check_staged_engine(&exe, &linked) {
+        EngineCheck::Matches { engine, version } => {
+            println!(
+                "check-engine: {} ran and is DuckDB {version}, the DuckDB this binary links",
+                engine.display()
+            );
+            0
+        }
+        EngineCheck::Broken { engine, reason } => {
+            eprintln!("check-engine: the engine at {} {reason}", engine.display());
+            1
+        }
+        EngineCheck::Absent => {
+            eprintln!(
+                "check-engine: no engine staged beside {}, so Run would use a duckdb on the \
+                 search path",
+                exe.display()
+            );
+            2
+        }
+    }
+}
 
 /// `--check-type-source`: run the bundled semantic type source and report what
 /// happened, from inside this binary, with no window.
@@ -1087,6 +1149,7 @@ fn main() -> Result<(), String> {
             return Ok(());
         }
         Invocation::CheckTypeSource => std::process::exit(check_type_source()),
+        Invocation::CheckEngine => std::process::exit(check_engine()),
         Invocation::Export(export) => {
             std::process::exit(brightfield_shell::export::run_cli(&export))
         }
@@ -1302,6 +1365,7 @@ mod tests {
             Ok(Invocation::Version) => panic!("expected Run, got Version"),
             Ok(Invocation::Help) => panic!("expected Run, got Help"),
             Ok(Invocation::CheckTypeSource) => panic!("expected Run, got CheckTypeSource"),
+            Ok(Invocation::CheckEngine) => panic!("expected Run, got CheckEngine"),
             Ok(Invocation::Export(_) | Invocation::ExportUsage(_)) => {
                 panic!("expected Run, got an export")
             }
@@ -1409,6 +1473,18 @@ mod tests {
         assert!(matches!(
             parse(&["spec.yaml", "--check-type-source", "--shot-after", "45"]),
             Ok(Invocation::CheckTypeSource)
+        ));
+    }
+
+    #[test]
+    fn check_engine_flag_short_circuits() {
+        assert!(matches!(
+            parse(&["--check-engine"]),
+            Ok(Invocation::CheckEngine)
+        ));
+        assert!(matches!(
+            parse(&["spec.yaml", "--check-engine", "--shot-after", "45"]),
+            Ok(Invocation::CheckEngine)
         ));
     }
 
