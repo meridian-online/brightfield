@@ -59,7 +59,11 @@ name: release
 
 on:
   push:
-    tags: ["v*"]
+    # `v` and three dot-separated numbers, and nothing else: GitHub's filter
+    # reads `+` as one or more of the character before it, so `v0.1.7-rc1` and
+    # `vnext` start no run. The `tag-guard` job below refuses the same shapes
+    # again, for the day this filter is loosened.
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
 permissions:
   contents: write
@@ -68,8 +72,34 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Every other job waits on this one, so a tag that does not name this tree's
+  # release fails here, in about a minute, before anything is built, published
+  # or written into the tap. scripts/check-release-tag.py refuses a tag whose
+  # number differs from the version in crates/brightfield-shell/Cargo.toml
+  # (exit 4) or has no heading in CHANGELOG.md (exit 5, or 6 when the heading
+  # is empty), and sets that heading's section as the `notes` output, which
+  # `Create release` puts at the head of the release body.
+  #
+  # This job runs only on a pushed tag. Pull requests run the script's
+  # --wiring and --release-rehearsal through `cargo xtask ci`: the second
+  # executes this job's `run:` line, read out of this file, against a copy of
+  # the tree, so the line below is exercised without a tag. Keep the call on
+  # one line; --wiring requires it.
+  tag-guard:
+    name: The tag names this tree's version and its changelog entry
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      notes: ${{ steps.guard.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag, crate version and CHANGELOG.md agree
+        id: guard
+        run: python3 scripts/check-release-tag.py --tag "${GITHUB_REF_NAME}" --github-output "${GITHUB_OUTPUT}"
+
   build:
     name: Package ${{ matrix.target }}
+    needs: tag-guard
     runs-on: macos-15
     timeout-minutes: 90
     strategy:
@@ -279,7 +309,7 @@ jobs:
 
   release:
     name: Create release
-    needs: build
+    needs: [tag-guard, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -292,12 +322,14 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          # Deliberately NOT generate_release_notes. With no previous tag to
-          # diff against, GitHub generates notes back to the first commit —
-          # every merged PR title, and a title can carry the private planning
-          # vocabulary this repository keeps out of its tracked files. From the
-          # second tag on, the diff base is the previous tag and auto-notes are
-          # safe to switch back on if hand-writing them stops earning its keep.
+          # The body opens with this release's CHANGELOG.md section, which
+          # `tag-guard` read and refused the tag without, and goes on to the
+          # install guide every release carries. Deliberately NOT
+          # generate_release_notes: its PR titles would repeat or contradict
+          # the changelog, and a title can carry private planning vocabulary
+          # this repository keeps out of its tracked files.
+          # scripts/check-release-tag.py --wiring refuses either switched on,
+          # and a body whose first line is not the notes.
           #
           # A release page is a browser-download surface, and this build is
           # unsigned: unpacked by the Finder's Archive Utility the tarball's
@@ -316,6 +348,10 @@ jobs:
           #   gh api --method POST /markdown -f mode=gfm -f text="$(...)" | grep -c '<br>'
           # must be 0. Code fences are exempt; keep them wrapped as they are.
           body: |
+            ${{ needs.tag-guard.outputs.notes }}
+
+            ---
+
             One native application for macOS. No server, no webview, no language runtime, no account — the only thing it asks of the machine is a working graphics driver. Nothing here reports anywhere; it reaches out only when a spec names a remote source, a DuckLake catalog or a spatial source. Everything under `examples/` is local and self-contained except `examples/remote/`, which is where the specs that fetch are kept — with no connection one of those does not open, it exits non-zero having named the network and the URL, and nothing else is affected.
 
             **This is an early preview**, macOS only, and it is not signed or notarized by Apple. That is the one thing to read before you open either download, because macOS treats an unsigned application downloaded through a browser as suspect and says so in language that sounds like the file is broken. It is not broken; each section below says what to do.
