@@ -216,6 +216,9 @@ def _workflow_reader(root: Path):
         raise Refused(EXIT_CANNOT_RUN, f"{READER_REL} could not be imported")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
+    # Imported, not run, so Python would cache its bytecode beside it in
+    # scripts/, an untracked directory in every checkout that runs the gate.
+    sys.dont_write_bytecode = True
     try:
         spec.loader.exec_module(module)
     except Exception as exc:  # noqa: BLE001 -- any import failure is "cannot run"
