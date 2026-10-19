@@ -97,7 +97,7 @@ pub fn staged_engine_beside(program: &Path) -> Option<PathBuf> {
 
 /// The query both DuckDBs answer for `--check-engine`: the release and the
 /// commit it was built from, so two builds of one version string still differ.
-const ENGINE_VERSION_QUERY: &str = "SELECT library_version, source_id FROM pragma_version()";
+pub const ENGINE_VERSION_QUERY: &str = "SELECT library_version, source_id FROM pragma_version()";
 
 /// What `--check-engine` found beside a program.
 #[derive(Debug, PartialEq, Eq)]
