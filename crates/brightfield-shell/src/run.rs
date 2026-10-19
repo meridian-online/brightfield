@@ -133,9 +133,10 @@ pub fn linked_duckdb_version() -> Result<String, String> {
 /// with `linked`, the one this binary carries ([`linked_duckdb_version`]).
 ///
 /// The engine is started with an empty environment, a fresh `HOME` and working
-/// directory, and an empty init file, so neither a `~/.duckdbrc` nor a
-/// variable the caller exported can change what it prints
-/// (`the_staged_engine_runs_with_an_empty_environment_and_its_own_home`). A run that writes a Protocol and a window that reads it are
+/// directory, and an empty init file, which DuckDB's CLI reads in place of
+/// `~/.duckdbrc`
+/// (`the_staged_engine_runs_with_an_empty_environment_and_its_own_home`).
+/// So what it prints is the engine's answer and not the caller's settings. A run that writes a Protocol and a window that reads it are
 /// only one engine if this matches, which is why a mismatch is a failure and
 /// not a note.
 #[must_use]
@@ -596,12 +597,15 @@ mod tests {
     }
 
     /// The engine is asked with nothing inherited: the test process's `PATH`
-    /// (cargo's, longer than any shell default) does not reach it, and `HOME` is not the caller's, so a `~/.duckdbrc`
-    /// there is never read.
+    /// (cargo's, longer than any shell default) does not reach it, `HOME` is
+    /// not the caller's, and the init file it is handed is empty.
     #[cfg(unix)]
     #[test]
     fn the_staged_engine_runs_with_an_empty_environment_and_its_own_home() {
-        let (_dir, program) = staged(r#"echo "${PATH:-unset}|${HOME}|$(pwd -P)|$1 $2 $3 $4""#);
+        let (_dir, program) = staged(
+            r#"if [ -s "$5" ]; then init=has-content; elif [ -f "$5" ]; then init=empty; else init=missing; fi
+echo "${PATH:-unset}|${HOME}|$(pwd -P)|$1 $2 $3 $4|$5|$init""#,
+        );
         let caller_path = std::env::var("PATH").unwrap_or_default();
         let caller_home = std::env::var("HOME").unwrap_or_default();
         let found = check_staged_engine(&program, "never");
@@ -630,6 +634,17 @@ mod tests {
             "the engine's HOME is not its working directory"
         );
         assert_eq!(fields[3], "-batch -noheader -csv -init");
+        // The init file DuckDB reads in place of `~/.duckdbrc` is an empty file
+        // inside that same sealed directory.
+        assert_eq!(
+            Path::new(fields[4]).parent().and_then(Path::file_name),
+            Some(home_dir),
+            "the init file is not in the sealed directory"
+        );
+        assert_eq!(
+            fields[5], "empty",
+            "the init file the engine read is not empty"
+        );
     }
 
     #[test]
