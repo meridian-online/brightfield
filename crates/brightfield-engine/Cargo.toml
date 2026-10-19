@@ -16,8 +16,16 @@ brightfield-sql = { workspace = true }
 # machine with no network and a cold extension cache does not open at all, and
 # on a machine with a network its first open reaches it. The front door ships
 # a bundled Parquet whose whole promise is that it needs neither.
+#
+# This is not the only declaration. The shell declares the same feature on its
+# own `duckdb` dependency, and features unify, so removing it here alone leaves
+# the reader linked. Measured: the packaged binary's `--check-type-source`,
+# whose sealed run opens a Parquet with a type source bundled beside it, stays
+# green with this line's feature dropped, and fails its Parquet open once the
+# shell's normal dependency drops it too. The shell's test build also gets it
+# from that crate's dev-dependency, so
 # `the_local_starts_open_with_the_network_denied_and_a_cold_extension_cache` in
-# the shell's `tests/front_door.rs` reddens when this feature is off.
+# the shell's `tests/front_door.rs` guards the starts, not this declaration.
 duckdb = { workspace = true, features = ["parquet"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

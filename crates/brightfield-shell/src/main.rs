@@ -913,7 +913,7 @@ plot:
                     return 1;
                 }
             }
-            opened_file_names_what_its_column_means()
+            opened_files_name_what_their_column_means()
         }
         other => {
             eprintln!("check-type-source: the bundle put no usable label on the column: {other:?}");
@@ -945,42 +945,70 @@ plot:
 /// on a cold `HOME` and passed on a warm one, and the checks that existed ran
 /// warm.
 ///
-/// The fixture is written here rather than shipped, because a packaged
-/// artefact carries no test data and the sealed working directory is this
-/// run's own.
-fn opened_file_names_what_its_column_means() -> i32 {
+/// The fixtures are written into the sealed temporary directory at run time,
+/// because a packaged artefact carries no data files beside the binary. The
+/// Parquet's few hundred bytes are compiled in for that reason; it is a probe
+/// of the reader, not a dataset, and nothing outside this check reads it.
+fn opened_files_name_what_their_column_means() -> i32 {
     // Two columns, and the second is not decoration: an identifying column gets
     // no tile, so a table of just that one leaves the dashboard empty and
     // `data_file::open` refuses it.
-    const CSV: &str = "reply_to,messages\n\
-                       alice.a00@example.com,3\n\
-                       bob.b01@example.org,10\n\
-                       carol.c02@example.net,17\n\
-                       dan.d03@example.edu,24\n";
+    const CSV: &[u8] = b"reply_to,messages\n\
+                         alice.a00@example.com,3\n\
+                         bob.b01@example.org,10\n\
+                         carol.c02@example.net,17\n\
+                         dan.d03@example.edu,24\n";
+    // The same four rows as a Parquet, so the one difference between the two
+    // opens is the reader. See `crates/brightfield-shell/assets/check/README.md`
+    // for how it was written.
+    const PARQUET: &[u8] = include_bytes!("../assets/check/open-probe.parquet");
+
+    let code = opened_file_names_what_its_column_means("check-type-source-open.csv", CSV);
+    if code != 0 {
+        return code;
+    }
+    let code = opened_file_names_what_its_column_means("check-type-source-open.parquet", PARQUET);
+    if code != 0 {
+        return code;
+    }
+    nothing_was_acquired_into_the_cold_home()
+}
+
+/// One open through `data_file::open`, refused unless the file's identifying
+/// column comes back with a meaning distinct from its storage type.
+///
+/// The Parquet call is the one a fresh machine can fail. With a bundle beside
+/// this binary the session's connection is the relaxed one — autoinstall off,
+/// the extension repository unresolvable — so `read_parquet` has to come from
+/// what the binary links. Under the empty `HOME` this sealed process runs in,
+/// there is no cached extension to stand in for it. That is the configuration
+/// a packaged build opens its first Parquet in, and no test reaches it: the
+/// shell's test binaries have no bundle beside them.
+fn opened_file_names_what_its_column_means(file_name: &str, bytes: &[u8]) -> i32 {
     const COLUMN: &str = "reply_to";
 
-    let path = std::env::temp_dir().join("check-type-source-open.csv");
-    if let Err(e) = std::fs::write(&path, CSV) {
-        eprintln!("check-type-source: cannot write the fixture to open: {e}");
+    let path = std::env::temp_dir().join(file_name);
+    if let Err(e) = std::fs::write(&path, bytes) {
+        eprintln!("check-type-source: cannot write {file_name} to open: {e}");
         return 1;
     }
 
     let opened = match brightfield_shell::data_file::open(&path.to_string_lossy()) {
         Ok(opened) => opened,
         Err(e) => {
-            eprintln!("check-type-source: opening a data file failed: {e}");
+            eprintln!("check-type-source: opening {file_name} failed: {e}");
             return 1;
         }
     };
     let Some(facts) = opened.protocol.columns.iter().find(|c| c.column == COLUMN) else {
-        eprintln!("check-type-source: the opened file has no {COLUMN} column");
+        eprintln!("check-type-source: the opened {file_name} has no {COLUMN} column");
         return 1;
     };
 
     let Some(label) = facts.label.as_deref() else {
         eprintln!(
-            "check-type-source: opening a file put no meaning on {COLUMN} — it is stored as \
-             {} and the grid would draw that word twice. The bundle labels this column when \
+            "check-type-source: opening {file_name} put no meaning on {COLUMN} — it is stored \
+             as {} and the grid would draw that word twice. The bundle labels this column when \
              asked directly, so what failed is the route: data_file::open passes no type \
              source, or OpenOptions::default resolves none.",
             facts.storage
@@ -989,15 +1017,53 @@ fn opened_file_names_what_its_column_means() -> i32 {
     };
     if facts.leaf == facts.storage {
         eprintln!(
-            "check-type-source: {COLUMN} is labelled {label} and the grid's header would still \
-             draw {} on both halves of its row",
+            "check-type-source: {COLUMN} in {file_name} is labelled {label} and the grid's \
+             header would still draw {} on both halves of its row",
             facts.storage
         );
         return 1;
     }
     println!(
-        "check-type-source: opening a file names {COLUMN} as {label} ({}), stored as {}",
+        "check-type-source: opening {file_name} names {COLUMN} as {label} ({}), stored as {}",
         facts.leaf, facts.storage
+    );
+    0
+}
+
+/// Refuse the artefact if the opens above left an extension in DuckDB's cache
+/// under the sealed `HOME`.
+///
+/// The relaxed connection cannot install anything, so this should hold by
+/// construction. It is asked anyway because a pass that downloaded the reader
+/// on its way would look identical from the lines above, and a packaged build
+/// with extension downloads off would then fail its first Parquet on a machine
+/// that never ran DuckDB.
+fn nothing_was_acquired_into_the_cold_home() -> i32 {
+    let Some(home) = std::env::var_os("HOME") else {
+        eprintln!("check-type-source: the sealed run has no HOME to inspect");
+        return 1;
+    };
+    let cache = PathBuf::from(home).join(".duckdb");
+    match std::fs::read_dir(&cache) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            eprintln!("check-type-source: cannot read {}: {e}", cache.display());
+            return 1;
+        }
+        Ok(mut entries) => {
+            if entries.next().is_some() {
+                eprintln!(
+                    "check-type-source: the opens left an extension cache at {} — the \
+                     sealed HOME started empty, so this build fetched what it should link",
+                    cache.display()
+                );
+                return 1;
+            }
+        }
+    }
+    println!(
+        "check-type-source: {} is still empty after the opens",
+        cache.display()
     );
     0
 }
