@@ -6,7 +6,7 @@ A release's section here is its release notes. The release workflow refuses a ta
 
 Releases before 0.1.6 predate this file; their tags and the commit history are the record of what they carried.
 
-## [Unreleased]
+## [0.1.7] - 2026-10-20
 
 ### Added
 
