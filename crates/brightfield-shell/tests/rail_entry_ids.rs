@@ -241,6 +241,13 @@ const RAIL_IDS: &[(&str, Owner, Reach)] = &[
     ("editor-saved", Owner::One("spec-editor"), Reach::Observed),
     ("editor-warning", Owner::One("spec-editor"), Reach::Observed),
     ("chart-idle", Owner::One("<window>"), Reach::Observed),
+    (
+        "chart-selected-rows",
+        Owner::One("<window>"),
+        Reach::Declared(
+            "needs a committed selection on a live session; `tests/predicate_readout.rs` reads it",
+        ),
+    ),
     ("activity", Owner::One("<window>"), Reach::Observed),
     (
         "grid-cursor",

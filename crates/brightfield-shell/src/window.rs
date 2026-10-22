@@ -86,6 +86,7 @@ use meridian_design::{radius, semantic, spacing};
 
 use crate::app::{chart_registry, ChartDoc, ChartFault, CHART, CONTROLS};
 use crate::canvas::EguiCanvasHost;
+use crate::chart_item::PREDICATE_READOUT;
 use crate::column_header::GridDensity;
 use crate::data_grid::{DATA, ROWS};
 use crate::design::Mode;
@@ -8029,7 +8030,13 @@ impl MeridianApp {
     ///   indicator composed to `None` — the test
     ///   `an_idle_chart_window_names_what_it_loaded` holds the idle line,
     ///   and `activity_reaches_the_rail_as_the_one_indicator` holds
-    ///   precedence.
+    ///   precedence;
+    /// - while a selection is held and no activity is in flight, the selected count
+    ///   [`selected_rows_status_entry`] composes, right after the predicate
+    ///   readout — the readout keeps the idle line off the band, and the
+    ///   count is the first thing an analyst checks after a brush. The test
+    ///   `a_held_selection_keeps_the_selected_count_beside_the_readout` holds
+    ///   it.
     ///
     /// Dismissal verbs the rail's entries declare are routed into the same
     /// request queue as pane requests — the rail can offer nothing a pane
@@ -8087,6 +8094,19 @@ impl MeridianApp {
         } else if entries.is_empty() && !graph_on_canvas {
             if let Some(idle) = idle_status_entry(&self.charts.doc.composed) {
                 entries.push(idle);
+            }
+        } else if !graph_on_canvas {
+            // A held selection puts its predicate on the band, which keeps the
+            // idle line off it — and the idle line was the only place the
+            // selected count was said, so it vanished exactly when it stopped
+            // equalling the total. The count goes back on beside the predicate
+            // instead, read off the same composition. Only with no activity
+            // running, as the idle line: while a query is in flight the count
+            // belongs to the picture before it.
+            if let Some(at) = entries.iter().position(|e| e.id == PREDICATE_READOUT) {
+                if let Some(count) = selected_rows_status_entry(&self.charts.doc.composed) {
+                    entries.insert(at + 1, count);
+                }
             }
         }
         // The last kept column is named after the idle line, which keeps the
@@ -10581,6 +10601,31 @@ pub const GRID_CURSOR_STATUS_ID: &str = "grid-cursor";
 /// that pins it — distinct from the rail's other declared ids, so a rail
 /// carrying this entry is unambiguous about what it is.
 const IDLE_STATUS_ID: &str = "chart-idle";
+
+/// The stable id `selected_rows_status_entry` writes — the handle a test
+/// reads the selected count by while a selection is held.
+pub const SELECTED_ROWS_STATUS_ID: &str = "chart-selected-rows";
+
+/// How many rows a held selection admits, said beside the predicate readout:
+/// `1,204 of 16,640 rows selected`. The same two figures the idle line leads
+/// with, from the same [`crate::pipeline::Composed::rows`], so the band says
+/// the count whether or not a predicate has displaced the idle line. `None`
+/// when the composition carries no row count — a spec without the ghost/subset
+/// device has no count to report.
+fn selected_rows_status_entry(composed: &Composed) -> Option<StatusEntry> {
+    let rows = composed.rows?;
+    Some(StatusEntry {
+        id: SELECTED_ROWS_STATUS_ID,
+        side: StatusSide::Leading,
+        text: format!(
+            "{} of {} rows selected",
+            brightfield_model::profile_model::thousands(rows.selected),
+            brightfield_model::profile_model::thousands(rows.total),
+        ),
+        tone: Tone::Neutral,
+        hide: HideAffordance::WithRail,
+    })
+}
 
 /// What a settled chart window says about itself when nothing is running and
 /// no pane has anything more specific to report — the answer to *"is the app
