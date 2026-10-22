@@ -8031,7 +8031,7 @@ impl MeridianApp {
     ///   `an_idle_chart_window_names_what_it_loaded` holds the idle line,
     ///   and `activity_reaches_the_rail_as_the_one_indicator` holds
     ///   precedence;
-    /// - while a selection is held and nothing is running, the selected count
+    /// - while a selection is held and no activity is in flight, the selected count
     ///   [`selected_rows_status_entry`] composes, right after the predicate
     ///   readout — the readout keeps the idle line off the band, and the
     ///   count is the first thing an analyst checks after a brush. The test
@@ -10611,7 +10611,7 @@ pub const SELECTED_ROWS_STATUS_ID: &str = "chart-selected-rows";
 /// with, from the same [`crate::pipeline::Composed::rows`], so the band says
 /// the count whether or not a predicate has displaced the idle line. `None`
 /// when the composition carries no row count — a spec without the ghost/subset
-/// device has nothing counted to say.
+/// device has no count to report.
 fn selected_rows_status_entry(composed: &Composed) -> Option<StatusEntry> {
     let rows = composed.rows?;
     Some(StatusEntry {
