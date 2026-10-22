@@ -10602,7 +10602,7 @@ pub const GRID_CURSOR_STATUS_ID: &str = "grid-cursor";
 /// carrying this entry is unambiguous about what it is.
 const IDLE_STATUS_ID: &str = "chart-idle";
 
-/// The stable id [`selected_rows_status_entry`] writes — the handle a test
+/// The stable id `selected_rows_status_entry` writes — the handle a test
 /// reads the selected count by while a selection is held.
 pub const SELECTED_ROWS_STATUS_ID: &str = "chart-selected-rows";
 
