@@ -777,6 +777,97 @@ fn the_readout_is_leading_and_dismissed_by_the_verb_that_retracts_it() {
     );
 }
 
+/// **The band still says how many rows a held selection admits.** At rest the
+/// idle line leads with `N of M rows`, but a held selection puts the readout on
+/// the band, and the idle line only stands on a band nothing else speaks on —
+/// so the count used to vanish after a brush, the moment it stopped equalling
+/// the total. It now stands beside the readout.
+///
+/// Read off the band's drawn text, not off a declared entry, and checked
+/// against a count made here from the readout's own bounds over the fixture's
+/// rows — temps 1 to 36, one row each — so the figure is not the band's own
+/// arithmetic repeated back.
+#[test]
+fn a_held_selection_keeps_the_selected_count_beside_the_readout() {
+    use brightfield_shell::window::SELECTED_ROWS_STATUS_ID;
+    use brightfield_workbench::arrangement::STATUS_BAND;
+
+    fn texts(shape: &egui::Shape, out: &mut Vec<(egui::Pos2, String)>) {
+        match shape {
+            egui::Shape::Text(text) => out.push((text.pos, text.galley.text().to_owned())),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| texts(s, out)),
+            _ => {}
+        }
+    }
+
+    let path = example("rect-bin-count-ghost.yaml");
+    let mut app = live_window(&path);
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, Vec::new());
+    frame(&mut app, &ctx, Vec::new());
+    assert!(
+        !app.rail().drawn.contains(&SELECTED_ROWS_STATUS_ID),
+        "at rest the idle line carries the count, so nothing else says it: {:?}",
+        app.rail().drawn
+    );
+
+    // Plot 0 is the brushed scatter; the ghost histogram is plot 1.
+    brush_x(&mut app, &ctx, 0, 0.3, 0.65);
+    let line = readout(app.chart_doc()).expect("a committed brush is shown");
+    let clause = clause_of(&line);
+
+    let raw = egui::RawInput {
+        screen_rect: Some(screen()),
+        ..Default::default()
+    };
+    let output = ctx.run_ui(raw, |ui| app.draw(ui));
+    let band = app.region_rect(STATUS_BAND).expect("the band drew");
+    let mut drawn = Vec::new();
+    for clipped in &output.shapes {
+        texts(&clipped.shape, &mut drawn);
+    }
+    let said: Vec<String> = drawn
+        .into_iter()
+        .filter(|(pos, _)| band.contains(*pos + egui::vec2(1.0, 1.0)))
+        .map(|(_, text)| text)
+        .collect();
+
+    // The bounds of `("temp" >= lo AND "temp" <= hi)`, read off the readout.
+    let bound = |op: &str| -> f64 {
+        let at = clause.find(op).expect("an interval bound") + op.len();
+        clause[at..]
+            .trim_start()
+            .split([' ', ')'])
+            .next()
+            .and_then(|n| n.parse().ok())
+            .expect("a numeric bound")
+    };
+    let (lo, hi) = (bound(">="), bound("<="));
+    let selected = (1..=36)
+        .filter(|t| (lo..=hi).contains(&f64::from(*t)))
+        .count();
+    assert!(
+        selected > 0 && selected < 36,
+        "fixture check: the brush must hold some but not all rows ({clause})"
+    );
+
+    let expected = format!("{selected} of 36 rows selected");
+    assert!(
+        said.contains(&expected),
+        "the band should say {expected:?} beside {line:?}; it said {said:?}"
+    );
+    let order = &app.rail().drawn;
+    let at = order
+        .iter()
+        .position(|id| *id == PREDICATE_READOUT)
+        .expect("the readout drew");
+    assert_eq!(
+        order.get(at + 1),
+        Some(&SELECTED_ROWS_STATUS_ID),
+        "the count stands right after the readout: {order:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 5. The other gesture: a point selection
 // ---------------------------------------------------------------------------
