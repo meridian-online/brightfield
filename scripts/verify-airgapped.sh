@@ -46,23 +46,26 @@
 #      exported; this script does not have to arrange that and could not do it
 #      completely if it tried.
 #
-#      THE LIMITATION, NAMED. The environment is sealed. THE FILESYSTEM IS NOT.
-#      This leg does not establish that the artifact is self-contained, and no
-#      arrangement of it can: an absolute path inside the model's own config
-#      (`config.value_embed_model`) leaves the artifact entirely and is invisible
-#      to every check here, including the manifest, which happily records
-#      whatever the config points at having been resolved elsewhere. A green run
-#      of this leg means the bundle is present and matches its manifest, the
-#      extension's ABI matches the linked DuckDB, the environment was sealed, and
-#      a column typed and validated. It does not mean nothing outside the
-#      artifact was read.
+#      THE FILESYSTEM IS JAILED TOO, on macOS. The leg runs under the read jail
+#      in scripts/airgap-jail.sh, which denies the network and refuses to read
+#      the contents of any file outside this run's temp directory (the unpacked
+#      artifact, the sealed HOME, and the sealed working directory the flag
+#      makes for itself) and the system paths dyld and DuckDB need, each granted
+#      by name from a recorded run of this leg. So a green run here also means
+#      nothing outside the artifact was read to type that column. Proving that
+#      by naming the ways out was an enumeration, wrong three times running —
+#      about a code path, an environment variable, and a working directory —
+#      and deny-by-default is right about a way out nobody has named.
 #
-#      Proving that negative by naming the ways out is an enumeration, and this
-#      one has been wrong three times running — about a code path, an environment
-#      variable, and a working directory. The bounded form is deny-by-default:
-#      extend the jail below, which already denies the network, to deny reads
-#      outside the artifact. That is not built, and until it is, this leg is a
-#      smoke test of the type source rather than a containment proof.
+#      Two things keep that claim honest. scripts/airgap-jail-selftest.sh runs
+#      on every pull request and proves the jail refuses a read outside its
+#      grant. And run 0b below plants the one route known to be open — an
+#      absolute `config.value_embed_model`, which FineType resolves against the
+#      model directory and then takes as written — in a copy of the artifact,
+#      and requires the network-only jail to let it through and the read jail
+#      to stop it. On Linux there is no read jail (`unshare -rn` is a network
+#      namespace), and the leg says so: there it is a smoke test of the type
+#      source, not a containment proof.
 #      An artifact with NO bundle skips this leg (a supported build, see
 #      scripts/package.sh); a bundle that is present and does not work is a
 #      failure.
@@ -78,7 +81,9 @@
 #
 # The jail: macOS `sandbox-exec` with `(deny network*)`; Linux `unshare -rn`
 # (a network namespace with no interfaces). Both windows open briefly on a
-# desktop machine — the runs are real, that is the point.
+# desktop machine — the runs are real, that is the point. Leg 5 runs under a
+# stricter jail on macOS, which also refuses reads outside the artifact: see
+# scripts/airgap-jail.sh. The window-opening legs do not, yet.
 #
 # The image leg runs the bundle's executable directly. It does NOT use `open`:
 # `open` was measured returning exit 0 while the application never started, and
@@ -91,15 +96,19 @@
 #
 # Every SPEC the test opens ships inside the artifact, so the render legs are
 # about the artifact rather than the artifact-plus-repo. That is a statement
-# about the specs, and it does not extend to the type-source leg: see leg 5,
-# which names precisely what it does and does not establish. Nor to the export
-# leg, 6, whose Protocol comes from this checkout: the artifact ships no
-# fixtures, and that leg's claim is about the binary given a Protocol on disk.
+# about the specs. The type-source leg's claim is about the artifact on macOS,
+# where its jail refuses reads outside it, and is not on Linux: see leg 5,
+# which names precisely what it does and does not establish. The export leg,
+# 6, takes its Protocol from this checkout: the artifact ships no fixtures, and
+# that leg's claim is about the binary given a Protocol on disk.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ARTIFACT="${1:?usage: scripts/verify-airgapped.sh dist/brightfield-<version>-<target>.(tar.gz|dmg)}"
 [ -f "$ARTIFACT" ] || { echo "no such artifact: $ARTIFACT"; exit 1; }
+
+# shellcheck source=scripts/airgap-jail.sh
+. "${HERE}/airgap-jail.sh"
 
 case "$(uname -s)" in
   Darwin) JAIL=(sandbox-exec -p '(version 1)(allow default)(deny network*)') ;;
@@ -107,13 +116,19 @@ case "$(uname -s)" in
   *) echo "no jail recipe for $(uname -s)"; exit 1 ;;
 esac
 
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/bf-airgap.XXXXXX")
+# Resolved, because the read jail grants this directory and the sandbox matches
+# real paths: mktemp's answer is behind /var -> /private/var on macOS.
+TMP=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/bf-airgap.XXXXXX")" && pwd -P)
+# Outside TMP on purpose: run 0b moves part of a model here so that reading it
+# means reading outside the artifact.
+OUTSIDE=""
 MOUNT=""
 cleanup() {
   # Detach before the temp tree goes: the mount point lives inside it, and
   # removing a directory an image is mounted on leaves the image attached.
   if [ -n "$MOUNT" ]; then hdiutil detach "$MOUNT" -quiet >/dev/null 2>&1 || true; fi
   rm -rf "$TMP"
+  if [ -n "$OUTSIDE" ]; then rm -rf "$OUTSIDE"; fi
 }
 trap cleanup EXIT
 
@@ -301,11 +316,33 @@ fi
 # `--check-type-source` opens no window: it is the one leg here that can be run
 # unattended, and the one that can be made to fail on demand by planting a
 # broken bundle in the artifact.
+# THE READ JAIL, and where the flag's sealed directory goes. --check-type-source
+# makes its sealed HOME, TMPDIR and working directory under the temp directory
+# it inherits, at a name it picks at run time, so no profile could grant that
+# directory by name. TMPDIR is therefore pointed inside TMP for these runs, and
+# TMP is what the jail grants.
+mkdir -p "$TMP/sealed-tmp"
+if [ "$(uname -s)" = "Darwin" ]; then
+  TS_JAIL=(sandbox-exec -p "$(read_jail_profile "$TMP")")
+  TS_JAIL_SAYS="reads outside the artifact refused"
+else
+  TS_JAIL=("${JAIL[@]}")
+  TS_JAIL_SAYS="NO READ JAIL on $(uname -s): network denied, filesystem open"
+fi
+
+# type_source DIR LOG JAIL... — run DIR's packaged binary's --check-type-source
+# under JAIL, stdout and stderr to LOG, and echo its exit status.
+type_source() {
+  local dir="$1" log="$2"; shift 2
+  local status=0
+  ( cd "$dir" && env HOME="$TMP/home" BRIGHTFIELD_CONFIG_DIR="$TMP/config" TMPDIR="$TMP/sealed-tmp" \
+      "$@" "$EXE" --check-type-source ) > "$log" 2>&1 || status=$?
+  echo "$status"
+}
+
 if [ "$HAS_TYPE_SOURCE" -eq 1 ]; then
-  echo "== run 0: the packaged binary types a column, jailed (no window)"
-  ts_status=0
-  ( cd "$PKG" && env HOME="$TMP/home" BRIGHTFIELD_CONFIG_DIR="$TMP/config" \
-      "${JAIL[@]}" "$EXE" --check-type-source ) > "$TMP/typesource.log" 2>&1 || ts_status=$?
+  echo "== run 0: the packaged binary types a column, jailed (no window; ${TS_JAIL_SAYS})"
+  ts_status=$(type_source "$PKG" "$TMP/typesource.log" "${TS_JAIL[@]}")
   sed 's/^/   /' "$TMP/typesource.log"
   case "$ts_status" in
     0) echo "   ok: the bundled extension and model typed a column with no network" ;;
@@ -313,8 +350,67 @@ if [ "$HAS_TYPE_SOURCE" -eq 1 ]; then
        echo "   it is staged somewhere the executable does not look. See scripts/package.sh."
        exit 1 ;;
     *) echo "   FAILED: the bundled type source did not come up (exit ${ts_status})"
+       if [ "$(uname -s)" = "Darwin" ]; then
+         echo "   If the message above names a file it could not open, the artifact reads"
+         echo "   outside itself — or the binary needs a system path scripts/airgap-jail.sh"
+         echo "   does not grant. Record a run before granting one; see that file."
+       fi
        exit 1 ;;
   esac
+fi
+
+# RUN 0b: THE KNOWN WAY OUT, PLANTED, and the read jail required to stop it.
+#
+# A copy of the unpacked artifact, with the model's value encoder moved outside
+# TMP and the model config pointed at it by absolute path — the route FineType
+# leaves open, since it resolves `value_embed_model` against the model
+# directory and then falls back to the path as written. The manifest goes from
+# the copy, because it records the config it was written over, and a bundle
+# carrying none is one the flag accepts.
+#
+# Two runs of the copy, and each one is half of the proof:
+#   - under the network-only jail it MUST PASS. That shows the copy really reads
+#     its encoder from outside the artifact; if it fails, FineType no longer
+#     honours the path, the case proves nothing, and it says so.
+#   - under the read jail it MUST FAIL. That is the jail stopping a bundle that
+#     works on the machine that built it and loses its labels on a stranger's.
+if [ "$HAS_TYPE_SOURCE" -eq 1 ] && [ "$(uname -s)" = "Darwin" ]; then
+  echo "== run 0b: a bundle whose model reads outside the artifact, jailed — it must be REFUSED"
+  command -v python3 >/dev/null || { echo "   FAILED: python3 is required to rewrite the model config"; exit 1; }
+  OUTSIDE=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/bf-airgap-outside.XXXXXX")" && pwd -P)
+  cp -R "$PKG" "$TMP/escape"
+  ESC_MODEL="$TMP/escape/${FTBUNDLE}/model"
+  ENCODER=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["value_embed_model"])' "$ESC_MODEL/config.json")
+  case "$ENCODER" in
+    /*) echo "   FAILED: the shipped model config already names an absolute encoder (${ENCODER})"; exit 1 ;;
+  esac
+  [ -d "$ESC_MODEL/$ENCODER" ] || { echo "   FAILED: no encoder at ${FTBUNDLE}/model/${ENCODER} to move"; exit 1; }
+  mv "$ESC_MODEL/$ENCODER" "$OUTSIDE/$ENCODER"
+  python3 -I -c 'import json,sys
+p, enc = sys.argv[1], sys.argv[2]
+c = json.load(open(p)); c["value_embed_model"] = enc
+json.dump(c, open(p, "w"), indent=2)' "$ESC_MODEL/config.json" "$OUTSIDE/$ENCODER"
+  rm -f "$TMP/escape/${FTBUNDLE}/bundle-manifest.sha256"
+
+  esc_open=$(type_source "$TMP/escape" "$TMP/escape-open.log" "${JAIL[@]}")
+  if [ "$esc_open" -ne 0 ]; then
+    echo "   FAILED: the planted bundle did not come up even with the filesystem open (exit ${esc_open}),"
+    echo "   so refusing it under the read jail would prove nothing. Either FineType no longer"
+    echo "   follows an absolute value_embed_model, and this case wants rewriting, or the copy"
+    echo "   is broken:"
+    sed 's/^/     /' "$TMP/escape-open.log"
+    exit 1
+  fi
+  echo "   ok: with only the network denied, it typed a column reading ${OUTSIDE}/${ENCODER}"
+  esc_jailed=$(type_source "$TMP/escape" "$TMP/escape-jailed.log" "${TS_JAIL[@]}")
+  if [ "$esc_jailed" -eq 0 ]; then
+    echo "   FAILED: the read jail let a bundle read its encoder from outside the artifact"
+    sed 's/^/     /' "$TMP/escape-jailed.log"
+    exit 1
+  fi
+  echo "   ok: refused under the read jail (exit ${esc_jailed}):"
+  sed 's/^/     /' "$TMP/escape-jailed.log"
+  rm -rf "$TMP/escape"
 fi
 
 echo "== run 1: chart spec, jailed (a window opens briefly)"

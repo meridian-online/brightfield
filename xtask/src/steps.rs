@@ -252,6 +252,12 @@ pub static STEPS: &[Step] = &[
         run: |c| c.script("scripts/drop-fetch-steps-selftest.sh", &[]),
     },
     Step {
+        name: "airgap-jail-selftest",
+        runs: "./scripts/airgap-jail-selftest.sh",
+        only_in_ci: None,
+        run: |c| c.script("scripts/airgap-jail-selftest.sh", &[]),
+    },
+    Step {
         name: "fmt",
         runs: "cargo fmt --all --check",
         only_in_ci: None,
