@@ -16,10 +16,11 @@
 //! every CI machine.
 //!
 //! What they do NOT cover: the filesystem. This process seals the environment
-//! and not the filesystem; a read outside the artefact is refused by the jail
-//! `scripts/verify-airgapped.sh` runs the flag under, which
-//! `scripts/airgap-jail-selftest.sh` proves bites. See `--check-type-source`'s
-//! own documentation.
+//! and not the filesystem. On macOS a read outside the artefact is refused by
+//! the read jail `scripts/verify-airgapped.sh` runs the flag under
+//! (`scripts/airgap-jail.sh`), which `scripts/airgap-jail-selftest.sh` proves
+//! bites; on Linux that script's jail denies only the network. See
+//! `--check-type-source`'s own documentation.
 
 use std::process::Command;
 
