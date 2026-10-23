@@ -15,9 +15,11 @@
 //! established before any of that is looked for, which is why these can run on
 //! every CI machine.
 //!
-//! What they do NOT cover: the filesystem. See `--check-type-source`'s own
-//! documentation — the environment is sealed and the filesystem is not, and no
-//! test here or anywhere in this repository closes that.
+//! What they do NOT cover: the filesystem. This process seals the environment
+//! and not the filesystem; a read outside the artefact is refused by the jail
+//! `scripts/verify-airgapped.sh` runs the flag under, which
+//! `scripts/airgap-jail-selftest.sh` proves bites. See `--check-type-source`'s
+//! own documentation.
 
 use std::process::Command;
 
