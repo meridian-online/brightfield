@@ -300,6 +300,12 @@ pub static STEPS: &[Step] = &[
         run: |c| cargo_deny(c, "advisories"),
     },
     Step {
+        name: "warm-cache",
+        runs: "cargo test --locked --workspace --no-run; the sibling-manifest and conformance builds",
+        only_in_ci: Some("a local run's test steps build what they run"),
+        run: warm_cache,
+    },
+    Step {
         name: "test-one-thread",
         runs: "cargo test --locked --workspace over the one-thread group, -- --test-threads=1",
         only_in_ci: None,
@@ -336,6 +342,26 @@ pub static STEPS: &[Step] = &[
         run: |c| c.script("scripts/package-artifact-staging-selftest.sh", &[]),
     },
 ];
+
+/// Compile what the test shards compile, so the job ahead of them can save
+/// it under the lockfile's cache key and each shard restores an exact match.
+/// Three builds, because the two steps after the suite each resolve their
+/// own feature set: `-p brightfield-protocol --test sibling_manifests` and
+/// `--bin conformance` both select a narrower graph than `--workspace`, and
+/// cargo builds `libduckdb-sys` again for each graph that differs.
+fn warm_cache(ctx: &Ctx) -> Result<(), String> {
+    ctx.run_cargo(&["test", "--locked", "--workspace", "--no-run"])?;
+    ctx.run_cargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "brightfield-protocol",
+        "--test",
+        "sibling_manifests",
+        "--no-run",
+    ])?;
+    ctx.run_cargo(&["build", "--locked", "--bin", "conformance"])
+}
 
 fn workflow_coverage(ctx: &Ctx) -> Result<(), String> {
     let files = workflows::read_all(&ctx.root)?;
@@ -660,6 +686,13 @@ fn conformance(ctx: &Ctx) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warm_cache_is_ci_only_and_runs_before_the_suite() {
+        let at = |name: &str| STEPS.iter().position(|s| s.name == name).expect(name);
+        assert!(STEPS[at("warm-cache")].only_in_ci.is_some());
+        assert!(at("warm-cache") < at("test-one-thread"));
+    }
 
     #[test]
     fn step_names_are_unique() {
