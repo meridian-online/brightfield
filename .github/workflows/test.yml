@@ -24,6 +24,92 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # THE CACHE, WARMED ONCE PER LOCKFILE, AHEAD OF THE SHARDS. rust-cache keys
+  # the cache on `Cargo.lock`, and a run whose lockfile changed restores the
+  # previous lockfile's cache as a partial match. On a partial match the action
+  # deletes every artifact in `target/` older than a week before cargo runs,
+  # and warm runs never rebuild a dependency, so nearly all of them are older
+  # than that: run 39777977727 and run 39843349418 each restored a 4.6 GB
+  # cache with "full match: false" and then compiled about 470 crates on every
+  # shard, 14 to 15.5 minutes against 4.4 warm, and three or four shards of
+  # each were cancelled at their ceiling with no test failing.
+  #
+  # This job pays that compile once. It first asks whether the exact key for
+  # this lockfile exists, without downloading it (`lookup-only`), and when it
+  # does every later step is skipped and the job ends in about a minute. When
+  # it does not, the job builds what the shards build and saves it under the
+  # exact key, and every shard after it restores a full match and compiles
+  # only the workspace's own crates, which no cache keeps.
+  #
+  # It also builds the two narrower graphs the last default shard compiles
+  # after the suite (see `cargo xtask ci --list`: the sibling-manifest test
+  # and the conformance binary each resolve their own `libduckdb-sys`). Before
+  # this job the shards all saved to one key and the first to finish won, so
+  # those builds were usually missing from the cache and that shard compiled
+  # them on warm runs as well.
+  warm-cache:
+    name: warm the build cache
+    runs-on: macos-15
+    timeout-minutes: 36
+    steps:
+      - uses: actions/checkout@v4
+
+      # The shards' pin, so the cache key, which hashes the rustc version, is
+      # the one they compute.
+      - uses: dtolnay/rust-toolchain@1.95.0
+
+      # `save-if: false` because on a miss this step would otherwise save the
+      # cache too, from whatever `target/` holds when the job ends.
+      - name: is this lockfile's cache already saved
+        id: lookup
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          lookup-only: true
+          save-if: false
+
+      # The same key as the shards' step, so what this saves is what they
+      # restore.
+      - if: steps.lookup.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+
+      # The shard's disk reclaim, for the same reason: a cold build of this
+      # graph leaves the runner within a few gigabytes of full.
+      - name: reclaim disk before this job's cargo builds
+        if: steps.lookup.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -u
+          echo "--- disk before reclaiming:"
+          df -h /
+
+          for app in /Applications/Xcode_*.app; do
+            [ -d "$app" ] || continue
+            [ "$app" = "/Applications/Xcode_16.4.app" ] && continue
+            echo "removing $app"
+            (sudo rm -rf "$app" || true) &
+          done
+
+          for path in "$HOME/Library/Android" /Library/Developer/CoreSimulator/Profiles/Runtimes; do
+            if [ -e "$path" ]; then
+              echo "removing $path"
+              (sudo rm -rf "$path" || true) &
+            else
+              echo "$path not present on this runner image"
+            fi
+          done
+
+          wait
+
+          echo "--- disk after reclaiming:"
+          df -h /
+
+      - name: build what the shards build
+        if: steps.lookup.outputs.cache-hit != 'true'
+        run: cargo xtask ci --step warm-cache
+
   # THE SUITE, IN SHARDS. The two cargo test steps used to run one after the
   # other on one runner, and a pull request waited an hour for them. Each shard
   # below runs its share of the targets on its own runner, and the job named
@@ -52,6 +138,9 @@ jobs:
     # kittest.toml — do NOT blanket-loosen the floor to make it green.
     # ---------------------------------------------------------------------
     runs-on: macos-15
+    # The shards start once `warm-cache` has saved this lockfile's cache, so
+    # each one restores a full match.
+    needs: warm-cache
     # The ceiling is the `timeout` in the matrix below, the same 36 minutes for
     # every shard, because the `target-seconds:` figures further down pack the
     # shards to within a minute of each other's test time on the runs they
@@ -64,18 +153,15 @@ jobs:
     #     ceiling 27.9 minutes after it started (one-thread-1, run
     #     38801679565), a lower bound on that shard's time.
     #     1.25 times it is 35.
-    #   - A pull request that changes `Cargo.lock` misses the cache key and
-    #     restores an older cache, so it compiles the changed crates again:
-    #     10.5 minutes against 3.5 warm on run 38775072378, whose three
-    #     cancelled shards were stopped by their ceilings and not by a test.
-    #     That puts a balanced shard near 30.
+    #   - A pull request that changed `Cargo.lock` once compiled 10.5 minutes
+    #     against 3.5 warm on run 38775072378, whose three cancelled shards
+    #     were stopped by their ceilings and not by a test. That compile is
+    #     now the `warm-cache` job's, and a shard pays the warm one.
     #   - No ceiling is lowered below the one it replaces, and the highest was
     #     36.
     #
-    # A run that restores no cache at all compiles every dependency: the one
-    # run made that way (run 37898248271, before the cache key was set) took
-    # 26.8 to 34.1 minutes on four of its shards with the shards unbalanced.
-    # When a shard is cancelled at the ceiling, measure the targets again from
+    # A run with no cache at all compiles every dependency in `warm-cache`,
+    # not here. When a shard is cancelled at the ceiling, measure the targets again from
     # recent runs and refresh the `target-seconds:` lines before raising it.
     timeout-minutes: ${{ matrix.timeout }}
 
@@ -167,7 +253,8 @@ jobs:
       # key every shard misses them and builds every dependency from nothing.
       # The first run of this job as shards did exactly that, and its
       # compile alone took 13 minutes 57 seconds on a shard. All the shards
-      # build the same dependencies, so they share one key.
+      # build the same dependencies, so they share one key, and `warm-cache`
+      # saves under it so that each shard's restore here is a full match.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
@@ -421,13 +508,14 @@ jobs:
       # Cargo to the unit graph that one target actually needs, regardless of
       # `-p` versus `--workspace` or an explicit `--features`, so this step's
       # build is a genuinely different, separately-fingerprinted compile from
-      # the workspace suite's, every time. On a warm cache both builds are
-      # already on disk and this is invisible; on a cache-key miss (any
-      # `Cargo.lock` change) the runner rebuilds both from nothing, and the
-      # workspace suite above already leaves the runner within a few
-      # gigabytes of its ceiling — so this step's rebuild, on its own only a
-      # few gigabytes, is what exhausted it with `ranlib: can't write to
-      # output file (No space left on device)`. Rather than chase Cargo's
+      # the workspace suite's, every time. `warm-cache` builds it ahead of the
+      # shards so it is in the cache this shard restores. Before that job, a
+      # cache-key miss (any `Cargo.lock` change) made the runner rebuild both
+      # from nothing here, and the workspace suite above already leaves the
+      # runner within a few gigabytes of its ceiling — so this step's
+      # rebuild, on its own only a few gigabytes, is what exhausted it with
+      # `ranlib: can't write to output file (No space left on device)`. The
+      # same can still happen when the cache is lost. Rather than chase Cargo's
       # resolver further, the runner's disk is reclaimed near the top of
       # this job, before the workspace suite runs — see "reclaim disk before
       # this job's cargo builds" above — of what neither that build, this
@@ -496,28 +584,34 @@ jobs:
 
   # THE CHECK NAMED `test`. It keeps the name of the one job that ran the whole
   # suite before the split, so whatever watches a check called `test` still
-  # reads the suite, and it is green only when every shard above is.
-  # `always()` because a job whose `needs` failed, was skipped or was cancelled
-  # is skipped itself unless told otherwise, and a skipped check reads as
-  # passing: `test` must be red then, not absent. The result of a matrix job is
-  # `success` only when every one of its shards succeeded; any other value, a
-  # skipped or cancelled shard included, is not green. It runs on a Linux
-  # runner because it does one string comparison and should not take a macOS
-  # slot from a shard.
+  # reads the suite, and it is green only when the cache job and every shard
+  # above are. `always()` because a job whose `needs` failed, was skipped or
+  # was cancelled is skipped itself unless told otherwise, and a skipped check
+  # reads as passing: `test` must be red then, not absent. A red `warm-cache`
+  # skips every shard, and the result of a matrix job is `success` only when
+  # every one of its shards succeeded; any other value, a skipped or cancelled
+  # shard included, is not green. It runs on a Linux runner because it does
+  # two string comparisons and should not take a macOS slot from a shard.
   test:
     name: test
-    needs: shard
+    needs: [warm-cache, shard]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: every test shard is green
+      - name: the cache job and every test shard are green
         shell: bash
         env:
+          WARM_RESULT: ${{ needs.warm-cache.result }}
           SHARDS_RESULT: ${{ needs.shard.result }}
         run: |
           set -eu
+          echo "the cache job finished as: ${WARM_RESULT}"
           echo "the test shards finished as: ${SHARDS_RESULT}"
+          if [ "$WARM_RESULT" != "success" ]; then
+            echo "::error title=the cache job is not green::warm-cache finished as '${WARM_RESULT}', not 'success', so the shards did not run. Open its log: the failing build names the crate."
+            exit 1
+          fi
           if [ "$SHARDS_RESULT" != "success" ]; then
             echo "::error title=a test shard is not green::the test shards finished as '${SHARDS_RESULT}', not 'success'. Open the red shard: its log names the failing test."
             exit 1
