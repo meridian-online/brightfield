@@ -47,6 +47,18 @@ jobs:
   # this job the shards all saved to one key and the first to finish won, so
   # those builds were usually missing from the cache and that shard compiled
   # them on warm runs as well.
+  #
+  # `prefix-key: v1-rust` on every cache step in this file, where the action's
+  # default is `v0-rust`, so that no cache a shard saved is ever found here:
+  # with one, the lookup below would hit and this job would never build the
+  # two narrower graphs into it. Each cache this workflow restores is one this
+  # job saved.
+  #
+  # A cancelled or failed run of this job saves nothing (the action saves only
+  # from a job that succeeded), so the next run starts again from the previous
+  # lockfile's partial match. That is deliberate: saving a half-built cache
+  # under the exact key would make every later run find it, skip this job, and
+  # leave the shards to compile what it lacks.
   warm-cache:
     name: warm the build cache
     runs-on: macos-15
@@ -65,6 +77,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
+          prefix-key: v1-rust
           lookup-only: true
           save-if: false
 
@@ -74,6 +87,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
+          prefix-key: v1-rust
 
       # The shard's disk reclaim, for the same reason: a cold build of this
       # graph leaves the runner within a few gigabytes of full.
@@ -258,6 +272,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
+          prefix-key: v1-rust
 
       # Frees disk on the macOS runner before ANY of this job's cargo builds,
       # not just the pin-staleness step below. It moved here, ahead of the

@@ -43,6 +43,8 @@ A `warm-cache` job on `macos-15` runs before the shards, which `need` it.
 
 The shards are unchanged. They restore an exact match and compile only the workspace crates, which rust-cache never caches, as warm shards do today. Once the warm job has saved the exact key, the shards' saves see an up-to-date cache and skip.
 
+A cancelled or failed warm job saves nothing, and the next run builds again from the partial match. Saving on failure would put a half-built cache under the exact key, which every later run would trust.
+
 The `test` summary job needs both jobs and is red unless both are `success`.
 
 The `target-seconds:` figures are refreshed from the first green run, because default-3 no longer compiles DuckDB on warm runs.
@@ -61,7 +63,7 @@ A run whose lockfile changed takes about an hour end to end, because the two job
 ## Verification, through CI only
 
 1. A warm run on the pull request: the warm job reports a hit and skips, and every shard is green.
-2. A cold run, forced by a temporary commit that changes `prefix-key` on every rust-cache step, then reverted. The warm job builds and saves. Every shard's log shows "full match: true" and fewer than 30 `Compiling` lines, and every job finishes under 36 minutes.
+2. A cold run: the change sets `prefix-key: v1-rust` on every rust-cache step for good, so that no shard-saved cache is ever found, and its first run is cold. The warm job builds and saves. Every shard's log shows "full match: true" and fewer than 30 `Compiling` lines, and every job finishes under 36 minutes.
 3. The test totals match a recent `main` run.
 
 If the warm job itself goes over 36 minutes when cold, its ceiling is a separate question from the shards' and is raised only with its measured time written beside it.
