@@ -64,10 +64,17 @@ else fail "followed a symlink out of the grant (exit ${status}): ${out}"; fi
 
 # --check-type-source re-execs itself to seal its environment, so the verdict
 # comes from a child of the process the jail was put around.
+# The child reads inside the grant first, because a shell that cannot start
+# under the profile would pass the refusal for the wrong reason.
 echo "== a child of the jailed process is refused too"
-status=0; out=$(jail /bin/sh -c "/bin/cat '$WORK/outside/secret.txt'" 2>&1) || status=$?
-if [ "$status" -ne 0 ] && [ "${out#*outside-$$}" = "$out" ]; then pass "refused in the child (exit ${status})"
-else fail "a child process read outside the grant (exit ${status}): ${out}"; fi
+out=$(jail /bin/sh -c "/bin/cat '$WORK/granted/inside.txt'" 2>&1)
+if [ "$out" != "inside-$$" ]; then
+  fail "a child process could not read inside the grant (${out}), so its refusal below would prove nothing"
+else
+  status=0; out=$(jail /bin/sh -c "/bin/cat '$WORK/outside/secret.txt'" 2>&1) || status=$?
+  if [ "$status" -ne 0 ] && [ "${out#*outside-$$}" = "$out" ]; then pass "read inside the grant and refused outside it, in the child (exit ${status})"
+  else fail "a child process read outside the grant (exit ${status}): ${out}"; fi
+fi
 
 echo "== the read jail still denies the network"
 if command -v curl >/dev/null; then

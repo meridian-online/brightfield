@@ -380,8 +380,15 @@ if [ "$HAS_TYPE_SOURCE" -eq 1 ] && [ "$(uname -s)" = "Darwin" ]; then
   OUTSIDE=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/bf-airgap-outside.XXXXXX")" && pwd -P)
   cp -R "$PKG" "$TMP/escape"
   ESC_MODEL="$TMP/escape/${FTBUNDLE}/model"
-  ENCODER=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["value_embed_model"])' "$ESC_MODEL/config.json")
+  ENCODER=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("value_embed_model") or "")' "$ESC_MODEL/config.json")
+  # A model with no value encoder is a valid bundle (scripts/check-bundled-extension.sh),
+  # and this case has nothing to plant in it. That is a failure rather than a skip:
+  # the route this case closes would then be untested on every release, silently.
   case "$ENCODER" in
+    "") echo "   FAILED: the shipped model config names no value_embed_model, so there is no"
+        echo "   encoder to move outside the artifact. Plant this case another way before"
+        echo "   releasing a model without one."
+        exit 1 ;;
     /*) echo "   FAILED: the shipped model config already names an absolute encoder (${ENCODER})"; exit 1 ;;
   esac
   [ -d "$ESC_MODEL/$ENCODER" ] || { echo "   FAILED: no encoder at ${FTBUNDLE}/model/${ENCODER} to move"; exit 1; }
