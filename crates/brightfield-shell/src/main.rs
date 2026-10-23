@@ -680,7 +680,7 @@ fn check_engine() -> i32 {
 /// environment variable and a working directory in turn. The sealed directory
 /// below is made under [`std::env::temp_dir`], which reads `TMPDIR`, and that
 /// is how a jail grants it: the script points `TMPDIR` inside the directory it
-/// grants, since the name this process picks is known only at run time.
+/// grants, since the name this process picks is not known until it runs.
 ///
 /// # Why it runs twice
 ///
