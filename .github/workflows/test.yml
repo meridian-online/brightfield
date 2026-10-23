@@ -62,7 +62,14 @@ jobs:
   warm-cache:
     name: warm the build cache
     runs-on: macos-15
-    timeout-minutes: 36
+    # Above the shards' 36 because a cancelled run of this job saves nothing,
+    # and so every run after it would be cancelled the same way until someone
+    # raised it. From no cache at all this job took 34.3 minutes on run
+    # 39890740575: 22.9 compiling the workspace's tests, 5.5 the sibling-
+    # manifest graph, 3.8 reclaiming disk and 1.3 saving the cache. It runs
+    # once per lockfile, so the shards' ceiling remains the one that catches
+    # a slow test.
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
 
@@ -158,10 +165,11 @@ jobs:
     # The ceiling is the `timeout` in the matrix below, the same 36 minutes for
     # every shard, because the `target-seconds:` figures further down pack the
     # shards to within a minute of each other's test time on the runs they
-    # were measured from. A shard's time is
-    # about 10 minutes the shards all pay (restoring the cache, reclaiming
-    # disk, compiling) plus its share of the tests, about 13 minutes. Three
-    # measures set the figure:
+    # were measured from. A shard's time is about 5 minutes the shards all
+    # pay (restoring the cache, reclaiming disk, compiling the workspace's own
+    # crates) plus its share of the tests, 13 to 22 minutes on run
+    # 39890740575, which packed them by the figures before those below.
+    # Three measures set the figure:
     #
     #   - The slowest warm shard measured was cancelled at its old 27-minute
     #     ceiling 27.9 minutes after it started (one-thread-1, run
@@ -430,50 +438,59 @@ jobs:
       # Every shard computes the same packing from this file and from `cargo
       # metadata`, runs only its own part, and prints all of them, so each
       # target runs on exactly one shard and a target nobody weighed still
-      # runs. A local `cargo xtask ci` runs each whole group instead. The seconds are the `target-seconds:` lines below: the length of
-      # each target's `test result:`, the longer of `main` run 38801331864 and
-      # pull request run 38775011347, rounded up, for every target of 10
-      # seconds or more, plus four stand-ins. `@lib`, `@bins` and
+      # runs. A local `cargo xtask ci` runs each whole group instead. The seconds are the `target-seconds:` lines below: the time from
+      # each target's `Running` line in the job log to the next one, the
+      # longer of `main` run 39858758378 and pull request run 39888009797,
+      # rounded up, for every target of 10 seconds or more, plus four
+      # stand-ins. Not the `finished in` of its `test result:` line: cargo
+      # prints the headers and libtest the results on different streams, and
+      # in those logs a result often lands after the next target's header. `@lib`, `@bins` and
       # `@doc` are the three groups cargo selects by flag and not by name, and
       # `@protocols` is the two steps that run after the suite on the last
       # shard. A target with no line counts as 2 seconds. A figure gone stale
       # makes one shard longer than the others and loses no target.
-      # target-seconds: @bins=19 @doc=2 @lib=44 @protocols=30
-      # target-seconds: automatic_sample=43 axis_vocabulary_inert=15
-      # target-seconds: axis_vocabulary_rows_past=30 canvas_pane_group=65
-      # target-seconds: chart_save_close_asks=29 chart_save_records_version=22
-      # target-seconds: chart_save_reopens_chart=34
+      # target-seconds: @bins=22 @doc=5 @lib=50 @protocols=14
+      # target-seconds: automatic_sample=45 axis_vocabulary_inert=14
+      # target-seconds: axis_vocabulary_rows_past=33 canvas_pane_group=70
+      # target-seconds: chart_save_close_asks=33 chart_save_records_version=20
+      # target-seconds: chart_save_reopens_chart=33
       # target-seconds: chart_save_reopens_relative=48
-      # target-seconds: chart_save_unsaved_mark=19 chart_save_writes_chart=37
-      # target-seconds: close_question_baseline=28
-      # target-seconds: close_question_keeps_unsaved=37 colour_literals=46
-      # target-seconds: colour_vocabulary_domain=18 committed_brush_move=13
-      # target-seconds: dashboard_baseline=119 data_file=12 examples_exercise=38
-      # target-seconds: frame_ink=11 front_door=93 generated_reopen=87
-      # target-seconds: generated_steps=26 ghosted_histogram=11 grid_foot=38
-      # target-seconds: grid_spot=52 hover_readout=16 interval_slider=15
-      # target-seconds: keyed_canvas=17 legend_baseline=21 legend_ring=18
-      # target-seconds: legend_ring_baseline=84 legend_short_chart=41
-      # target-seconds: legend_steps=14 legend_transform_baseline=11
-      # target-seconds: log_binned_histogram=13 navigation_extent=27
-      # target-seconds: navigator_spine=32 one_step_protocol=13
-      # target-seconds: open_materialise=71 operation_from_the_cursor=18
-      # target-seconds: operation_panel=15 outline_list=20
-      # target-seconds: protocol_degrade_channel=13 protocol_frame_crop=30
-      # target-seconds: ranked_category_bars=18 region_gate=15
-      # target-seconds: reload_data_file=12 run_control=23 sampled_export=88
-      # target-seconds: save_records_operation=42
-      # target-seconds: saved_protocol_working_directory=30 scripted_open=16
-      # target-seconds: shelf_band=17 shelf_band_window=59 shelf_column_route=80
-      # target-seconds: shelf_edit=27 shelf_fallback=124 shelf_rebind=95
-      # target-seconds: shelf_save=69 shelf_settings_axis_click=115
-      # target-seconds: shelf_settings_colour_window=285
-      # target-seconds: shelf_settings_format=36 shelf_settings_range_window=65
-      # target-seconds: shelf_settings_typed=122 shelf_settings_window=18
-      # target-seconds: shelf_settings_write=50 shelf_undo=179 sorted_bar_ink=11
-      # target-seconds: square_look=16 surfaces=128 text_ink_frame=12
-      # target-seconds: tile_scale_switch=22 versions_panel=120
-      # target-seconds: versions_step_back=179 workflow_graph_baseline=20
+      # target-seconds: chart_save_unsaved_mark=14 chart_save_writes_chart=33
+      # target-seconds: close_question_baseline=30
+      # target-seconds: close_question_keeps_unsaved=35 colour_literals=50
+      # target-seconds: colour_vocabulary_domain=13 committed_brush_move=16
+      # target-seconds: dashboard_baseline=139 data_file=11 examples_exercise=38
+      # target-seconds: export_cli=35 export_pdf=62 front_door=96
+      # target-seconds: generated_reopen=63 generated_steps=11
+      # target-seconds: ghosted_histogram=13 grid_cursor=10 grid_foot=32
+      # target-seconds: grid_spot=58 grid_transposed_layout=11
+      # target-seconds: grouped_histogram_shares=10 hover_readout=16
+      # target-seconds: interval_slider=18 keyed_canvas=19 legend_baseline=27
+      # target-seconds: legend_ring=21 legend_ring_baseline=73
+      # target-seconds: legend_short_chart=41 legend_steps=18
+      # target-seconds: log_binned_histogram=16 navigation_extent=28
+      # target-seconds: navigator_spine=30 one_step_protocol=14
+      # target-seconds: open_materialise=70 operation_from_the_cursor=17
+      # target-seconds: operation_panel=15 outline_list=21 point_map_baseline=10
+      # target-seconds: protocol_degrade_channel=12 protocol_frame_crop=35
+      # target-seconds: protocol_panels=20 protocol_panels_window=41
+      # target-seconds: ranked_category_bars=22 region_gate=13
+      # target-seconds: reload_data_file=12 run_control=17 sampled_export=100
+      # target-seconds: save_records_operation=31
+      # target-seconds: saved_protocol_working_directory=29 scripted_open=14
+      # target-seconds: shelf_band=19 shelf_band_window=59 shelf_column_route=64
+      # target-seconds: shelf_edit=22 shelf_fallback=117 shelf_rebind=88
+      # target-seconds: shelf_save=72 shelf_settings_axis_click=127
+      # target-seconds: shelf_settings_colour_window=265
+      # target-seconds: shelf_settings_format=41 shelf_settings_range_window=67
+      # target-seconds: shelf_settings_typed=84 shelf_settings_window=17
+      # target-seconds: shelf_settings_write=42 shelf_undo=165 sorted_bar_ink=10
+      # target-seconds: square_look=17 surfaces=166 text_ink_frame=13
+      # target-seconds: tile_scale_switch=23 typed_sql_baseline=26
+      # target-seconds: typed_sql_end_to_end=28 typed_sql_keep=33
+      # target-seconds: typed_sql_palette=17 typed_sql_reads=14
+      # target-seconds: typed_sql_save=35 typed_sql_where=17 versions_panel=116
+      # target-seconds: versions_step_back=165 workflow_graph_baseline=23
       #
       # `--locked` because Cargo.lock is tracked: without it CI would happily
       # re-resolve around the committed lock and go green on a dependency graph
