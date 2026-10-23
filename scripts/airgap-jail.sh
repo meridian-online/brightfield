@@ -46,6 +46,11 @@
 # CoreFoundation opens through the account's home directory rather than
 # `$HOME` and falls back from when it cannot. Nothing in it can change a label.
 #
+# Both layouts ran under this profile on macOS 26 and passed: the tarball's
+# binary and the disk image's Brightfield.app. The release's verify job runs on
+# macos-15, where this profile has not yet run the binary; a path macOS 15
+# needs and 26 did not fails that job closed, at run 0.
+#
 # A machine whose OS reads another system path fails the leg, and the kernel
 # log names the path it refused. Record a run before adding it here, rather
 # than widening a grant to make the leg pass.
