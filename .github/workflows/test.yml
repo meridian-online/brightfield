@@ -24,6 +24,113 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # THE CACHE, WARMED ONCE PER LOCKFILE, AHEAD OF THE SHARDS. rust-cache keys
+  # the cache on `Cargo.lock`, and a run whose lockfile changed restores the
+  # previous lockfile's cache as a partial match. On a partial match the action
+  # deletes every artifact in `target/` older than a week before cargo runs,
+  # and warm runs never rebuild a dependency, so nearly all of them are older
+  # than that: run 39777977727 and run 39843349418 each restored a 4.6 GB
+  # cache with "full match: false" and then compiled about 470 crates on every
+  # shard, 14 to 15.5 minutes against 4.4 warm, and three or four shards of
+  # each were cancelled at their ceiling with no test failing.
+  #
+  # This job pays that compile once. It first asks whether the exact key for
+  # this lockfile exists, without downloading it (`lookup-only`), and when it
+  # does every later step is skipped and the job ends in about a minute. When
+  # it does not, the job builds what the shards build and saves it under the
+  # exact key, and every shard after it restores a full match and compiles
+  # only the workspace's own crates, which no cache keeps.
+  #
+  # It also builds the two narrower graphs the last default shard compiles
+  # after the suite (see `cargo xtask ci --list`: the sibling-manifest test
+  # and the conformance binary each resolve their own `libduckdb-sys`). Before
+  # this job the shards all saved to one key and the first to finish won, so
+  # those builds were usually missing from the cache and that shard compiled
+  # them on warm runs as well.
+  #
+  # `prefix-key: v1-rust` on every cache step in this file, where the action's
+  # default is `v0-rust`, so that no cache a shard saved is ever found here:
+  # with one, the lookup below would hit and this job would never build the
+  # two narrower graphs into it. Each cache this workflow restores is one this
+  # job saved.
+  #
+  # A cancelled or failed run of this job saves nothing (the action saves only
+  # from a job that succeeded), so the next run starts again from the previous
+  # lockfile's partial match. That is deliberate: saving a half-built cache
+  # under the exact key would make every later run find it, skip this job, and
+  # leave the shards to compile what it lacks.
+  warm-cache:
+    name: warm the build cache
+    runs-on: macos-15
+    # Above the shards' 36 because a cancelled run of this job saves nothing,
+    # and so every run after it would be cancelled the same way until someone
+    # raised it. From no cache at all this job took 34.3 minutes on run
+    # 39890740575: 22.9 compiling the workspace's tests, 5.5 the sibling-
+    # manifest graph, 3.8 reclaiming disk and 1.3 saving the cache. It runs
+    # once per lockfile, so the shards' ceiling remains the one that catches
+    # a slow test.
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      # The shards' pin, so the cache key, which hashes the rustc version, is
+      # the one they compute.
+      - uses: dtolnay/rust-toolchain@1.95.0
+
+      # `save-if: false` because on a miss this step would otherwise save the
+      # cache too, from whatever `target/` holds when the job ends.
+      - name: is this lockfile's cache already saved
+        id: lookup
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          prefix-key: v1-rust
+          lookup-only: true
+          save-if: false
+
+      # The same key as the shards' step, so what this saves is what they
+      # restore.
+      - if: steps.lookup.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          prefix-key: v1-rust
+
+      # The shard's disk reclaim, for the same reason: a cold build of this
+      # graph leaves the runner within a few gigabytes of full.
+      - name: reclaim disk before this job's cargo builds
+        if: steps.lookup.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -u
+          echo "--- disk before reclaiming:"
+          df -h /
+
+          for app in /Applications/Xcode_*.app; do
+            [ -d "$app" ] || continue
+            [ "$app" = "/Applications/Xcode_16.4.app" ] && continue
+            echo "removing $app"
+            (sudo rm -rf "$app" || true) &
+          done
+
+          for path in "$HOME/Library/Android" /Library/Developer/CoreSimulator/Profiles/Runtimes; do
+            if [ -e "$path" ]; then
+              echo "removing $path"
+              (sudo rm -rf "$path" || true) &
+            else
+              echo "$path not present on this runner image"
+            fi
+          done
+
+          wait
+
+          echo "--- disk after reclaiming:"
+          df -h /
+
+      - name: build what the shards build
+        if: steps.lookup.outputs.cache-hit != 'true'
+        run: cargo xtask ci --step warm-cache
+
   # THE SUITE, IN SHARDS. The two cargo test steps used to run one after the
   # other on one runner, and a pull request waited an hour for them. Each shard
   # below runs its share of the targets on its own runner, and the job named
@@ -52,30 +159,31 @@ jobs:
     # kittest.toml — do NOT blanket-loosen the floor to make it green.
     # ---------------------------------------------------------------------
     runs-on: macos-15
+    # The shards start once `warm-cache` has saved this lockfile's cache, so
+    # each one restores a full match.
+    needs: warm-cache
     # The ceiling is the `timeout` in the matrix below, the same 36 minutes for
     # every shard, because the `target-seconds:` figures further down pack the
     # shards to within a minute of each other's test time on the runs they
-    # were measured from. A shard's time is
-    # about 10 minutes the shards all pay (restoring the cache, reclaiming
-    # disk, compiling) plus its share of the tests, about 13 minutes. Three
-    # measures set the figure:
+    # were measured from. A shard's time is about 5 minutes the shards all
+    # pay (restoring the cache, reclaiming disk, compiling the workspace's own
+    # crates) plus its share of the tests, 13 to 22 minutes on run
+    # 39890740575, which packed them by the figures before those below.
+    # Three measures set the figure:
     #
     #   - The slowest warm shard measured was cancelled at its old 27-minute
     #     ceiling 27.9 minutes after it started (one-thread-1, run
     #     38801679565), a lower bound on that shard's time.
     #     1.25 times it is 35.
-    #   - A pull request that changes `Cargo.lock` misses the cache key and
-    #     restores an older cache, so it compiles the changed crates again:
-    #     10.5 minutes against 3.5 warm on run 38775072378, whose three
-    #     cancelled shards were stopped by their ceilings and not by a test.
-    #     That puts a balanced shard near 30.
+    #   - A pull request that changed `Cargo.lock` once compiled 10.5 minutes
+    #     against 3.5 warm on run 38775072378, whose three cancelled shards
+    #     were stopped by their ceilings and not by a test. That compile is
+    #     now the `warm-cache` job's, and a shard pays the warm one.
     #   - No ceiling is lowered below the one it replaces, and the highest was
     #     36.
     #
-    # A run that restores no cache at all compiles every dependency: the one
-    # run made that way (run 37898248271, before the cache key was set) took
-    # 26.8 to 34.1 minutes on four of its shards with the shards unbalanced.
-    # When a shard is cancelled at the ceiling, measure the targets again from
+    # A run with no cache at all compiles every dependency in `warm-cache`,
+    # not here. When a shard is cancelled at the ceiling, measure the targets again from
     # recent runs and refresh the `target-seconds:` lines before raising it.
     timeout-minutes: ${{ matrix.timeout }}
 
@@ -167,10 +275,12 @@ jobs:
       # key every shard misses them and builds every dependency from nothing.
       # The first run of this job as shards did exactly that, and its
       # compile alone took 13 minutes 57 seconds on a shard. All the shards
-      # build the same dependencies, so they share one key.
+      # build the same dependencies, so they share one key, and `warm-cache`
+      # saves under it so that each shard's restore here is a full match.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
+          prefix-key: v1-rust
 
       # Frees disk on the macOS runner before ANY of this job's cargo builds,
       # not just the pin-staleness step below. It moved here, ahead of the
@@ -328,50 +438,59 @@ jobs:
       # Every shard computes the same packing from this file and from `cargo
       # metadata`, runs only its own part, and prints all of them, so each
       # target runs on exactly one shard and a target nobody weighed still
-      # runs. A local `cargo xtask ci` runs each whole group instead. The seconds are the `target-seconds:` lines below: the length of
-      # each target's `test result:`, the longer of `main` run 38801331864 and
-      # pull request run 38775011347, rounded up, for every target of 10
-      # seconds or more, plus four stand-ins. `@lib`, `@bins` and
+      # runs. A local `cargo xtask ci` runs each whole group instead. The seconds are the `target-seconds:` lines below: the time from
+      # each target's `Running` line in the job log to the next one, the
+      # longer of `main` run 39858758378 and pull request run 39888009797,
+      # rounded up, for every target of 10 seconds or more, plus four
+      # stand-ins. Not the `finished in` of its `test result:` line: cargo
+      # prints the headers and libtest the results on different streams, and
+      # in those logs a result often lands after the next target's header. `@lib`, `@bins` and
       # `@doc` are the three groups cargo selects by flag and not by name, and
       # `@protocols` is the two steps that run after the suite on the last
       # shard. A target with no line counts as 2 seconds. A figure gone stale
       # makes one shard longer than the others and loses no target.
-      # target-seconds: @bins=19 @doc=2 @lib=44 @protocols=30
-      # target-seconds: automatic_sample=43 axis_vocabulary_inert=15
-      # target-seconds: axis_vocabulary_rows_past=30 canvas_pane_group=65
-      # target-seconds: chart_save_close_asks=29 chart_save_records_version=22
-      # target-seconds: chart_save_reopens_chart=34
+      # target-seconds: @bins=22 @doc=5 @lib=50 @protocols=14
+      # target-seconds: automatic_sample=45 axis_vocabulary_inert=14
+      # target-seconds: axis_vocabulary_rows_past=33 canvas_pane_group=70
+      # target-seconds: chart_save_close_asks=33 chart_save_records_version=20
+      # target-seconds: chart_save_reopens_chart=33
       # target-seconds: chart_save_reopens_relative=48
-      # target-seconds: chart_save_unsaved_mark=19 chart_save_writes_chart=37
-      # target-seconds: close_question_baseline=28
-      # target-seconds: close_question_keeps_unsaved=37 colour_literals=46
-      # target-seconds: colour_vocabulary_domain=18 committed_brush_move=13
-      # target-seconds: dashboard_baseline=119 data_file=12 examples_exercise=38
-      # target-seconds: frame_ink=11 front_door=93 generated_reopen=87
-      # target-seconds: generated_steps=26 ghosted_histogram=11 grid_foot=38
-      # target-seconds: grid_spot=52 hover_readout=16 interval_slider=15
-      # target-seconds: keyed_canvas=17 legend_baseline=21 legend_ring=18
-      # target-seconds: legend_ring_baseline=84 legend_short_chart=41
-      # target-seconds: legend_steps=14 legend_transform_baseline=11
-      # target-seconds: log_binned_histogram=13 navigation_extent=27
-      # target-seconds: navigator_spine=32 one_step_protocol=13
-      # target-seconds: open_materialise=71 operation_from_the_cursor=18
-      # target-seconds: operation_panel=15 outline_list=20
-      # target-seconds: protocol_degrade_channel=13 protocol_frame_crop=30
-      # target-seconds: ranked_category_bars=18 region_gate=15
-      # target-seconds: reload_data_file=12 run_control=23 sampled_export=88
-      # target-seconds: save_records_operation=42
-      # target-seconds: saved_protocol_working_directory=30 scripted_open=16
-      # target-seconds: shelf_band=17 shelf_band_window=59 shelf_column_route=80
-      # target-seconds: shelf_edit=27 shelf_fallback=124 shelf_rebind=95
-      # target-seconds: shelf_save=69 shelf_settings_axis_click=115
-      # target-seconds: shelf_settings_colour_window=285
-      # target-seconds: shelf_settings_format=36 shelf_settings_range_window=65
-      # target-seconds: shelf_settings_typed=122 shelf_settings_window=18
-      # target-seconds: shelf_settings_write=50 shelf_undo=179 sorted_bar_ink=11
-      # target-seconds: square_look=16 surfaces=128 text_ink_frame=12
-      # target-seconds: tile_scale_switch=22 versions_panel=120
-      # target-seconds: versions_step_back=179 workflow_graph_baseline=20
+      # target-seconds: chart_save_unsaved_mark=14 chart_save_writes_chart=33
+      # target-seconds: close_question_baseline=30
+      # target-seconds: close_question_keeps_unsaved=35 colour_literals=50
+      # target-seconds: colour_vocabulary_domain=13 committed_brush_move=16
+      # target-seconds: dashboard_baseline=139 data_file=11 examples_exercise=38
+      # target-seconds: export_cli=35 export_pdf=62 front_door=96
+      # target-seconds: generated_reopen=63 generated_steps=11
+      # target-seconds: ghosted_histogram=13 grid_cursor=10 grid_foot=32
+      # target-seconds: grid_spot=58 grid_transposed_layout=11
+      # target-seconds: grouped_histogram_shares=10 hover_readout=16
+      # target-seconds: interval_slider=18 keyed_canvas=19 legend_baseline=27
+      # target-seconds: legend_ring=21 legend_ring_baseline=73
+      # target-seconds: legend_short_chart=41 legend_steps=18
+      # target-seconds: log_binned_histogram=16 navigation_extent=28
+      # target-seconds: navigator_spine=30 one_step_protocol=14
+      # target-seconds: open_materialise=70 operation_from_the_cursor=17
+      # target-seconds: operation_panel=15 outline_list=21 point_map_baseline=10
+      # target-seconds: protocol_degrade_channel=12 protocol_frame_crop=35
+      # target-seconds: protocol_panels=20 protocol_panels_window=41
+      # target-seconds: ranked_category_bars=22 region_gate=13
+      # target-seconds: reload_data_file=12 run_control=17 sampled_export=100
+      # target-seconds: save_records_operation=31
+      # target-seconds: saved_protocol_working_directory=29 scripted_open=14
+      # target-seconds: shelf_band=19 shelf_band_window=59 shelf_column_route=64
+      # target-seconds: shelf_edit=22 shelf_fallback=117 shelf_rebind=88
+      # target-seconds: shelf_save=72 shelf_settings_axis_click=127
+      # target-seconds: shelf_settings_colour_window=265
+      # target-seconds: shelf_settings_format=41 shelf_settings_range_window=67
+      # target-seconds: shelf_settings_typed=84 shelf_settings_window=17
+      # target-seconds: shelf_settings_write=42 shelf_undo=165 sorted_bar_ink=10
+      # target-seconds: square_look=17 surfaces=166 text_ink_frame=13
+      # target-seconds: tile_scale_switch=23 typed_sql_baseline=26
+      # target-seconds: typed_sql_end_to_end=28 typed_sql_keep=33
+      # target-seconds: typed_sql_palette=17 typed_sql_reads=14
+      # target-seconds: typed_sql_save=35 typed_sql_where=17 versions_panel=116
+      # target-seconds: versions_step_back=165 workflow_graph_baseline=23
       #
       # `--locked` because Cargo.lock is tracked: without it CI would happily
       # re-resolve around the committed lock and go green on a dependency graph
@@ -421,13 +540,14 @@ jobs:
       # Cargo to the unit graph that one target actually needs, regardless of
       # `-p` versus `--workspace` or an explicit `--features`, so this step's
       # build is a genuinely different, separately-fingerprinted compile from
-      # the workspace suite's, every time. On a warm cache both builds are
-      # already on disk and this is invisible; on a cache-key miss (any
-      # `Cargo.lock` change) the runner rebuilds both from nothing, and the
-      # workspace suite above already leaves the runner within a few
-      # gigabytes of its ceiling — so this step's rebuild, on its own only a
-      # few gigabytes, is what exhausted it with `ranlib: can't write to
-      # output file (No space left on device)`. Rather than chase Cargo's
+      # the workspace suite's, every time. `warm-cache` builds it ahead of the
+      # shards so it is in the cache this shard restores. Before that job, a
+      # cache-key miss (any `Cargo.lock` change) made the runner rebuild both
+      # from nothing here, and the workspace suite above already leaves the
+      # runner within a few gigabytes of its ceiling — so this step's
+      # rebuild, on its own only a few gigabytes, is what exhausted it with
+      # `ranlib: can't write to output file (No space left on device)`. The
+      # same can still happen when the cache is lost. Rather than chase Cargo's
       # resolver further, the runner's disk is reclaimed near the top of
       # this job, before the workspace suite runs — see "reclaim disk before
       # this job's cargo builds" above — of what neither that build, this
@@ -496,28 +616,34 @@ jobs:
 
   # THE CHECK NAMED `test`. It keeps the name of the one job that ran the whole
   # suite before the split, so whatever watches a check called `test` still
-  # reads the suite, and it is green only when every shard above is.
-  # `always()` because a job whose `needs` failed, was skipped or was cancelled
-  # is skipped itself unless told otherwise, and a skipped check reads as
-  # passing: `test` must be red then, not absent. The result of a matrix job is
-  # `success` only when every one of its shards succeeded; any other value, a
-  # skipped or cancelled shard included, is not green. It runs on a Linux
-  # runner because it does one string comparison and should not take a macOS
-  # slot from a shard.
+  # reads the suite, and it is green only when the cache job and every shard
+  # above are. `always()` because a job whose `needs` failed, was skipped or
+  # was cancelled is skipped itself unless told otherwise, and a skipped check
+  # reads as passing: `test` must be red then, not absent. A red `warm-cache`
+  # skips every shard, and the result of a matrix job is `success` only when
+  # every one of its shards succeeded; any other value, a skipped or cancelled
+  # shard included, is not green. It runs on a Linux runner because it does
+  # two string comparisons and should not take a macOS slot from a shard.
   test:
     name: test
-    needs: shard
+    needs: [warm-cache, shard]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: every test shard is green
+      - name: the cache job and every test shard are green
         shell: bash
         env:
+          WARM_RESULT: ${{ needs.warm-cache.result }}
           SHARDS_RESULT: ${{ needs.shard.result }}
         run: |
           set -eu
+          echo "the cache job finished as: ${WARM_RESULT}"
           echo "the test shards finished as: ${SHARDS_RESULT}"
+          if [ "$WARM_RESULT" != "success" ]; then
+            echo "::error title=the cache job is not green::warm-cache finished as '${WARM_RESULT}', not 'success', so the shards did not run. Open its log: the failing build names the crate."
+            exit 1
+          fi
           if [ "$SHARDS_RESULT" != "success" ]; then
             echo "::error title=a test shard is not green::the test shards finished as '${SHARDS_RESULT}', not 'success'. Open the red shard: its log names the failing test."
             exit 1
