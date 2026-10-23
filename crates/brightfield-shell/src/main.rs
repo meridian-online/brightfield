@@ -663,22 +663,24 @@ fn check_engine() -> i32 {
 /// - the environment was sealed to [`SEALED_ENV`] and [`SEALED_ENV_SELF_SET`];
 /// - a column was typed and its values validated against that label.
 ///
-/// **It does not say the artefact is self-contained, and cannot.** The
-/// environment is sealed; THE FILESYSTEM IS NOT. Two routes out of the bundle
-/// are known and neither is visible here: `config.value_embed_model` in the
+/// **On its own it does not say the artefact is self-contained.** This process
+/// seals the environment and the working directory, not the filesystem. Two
+/// routes out of the bundle are known: `config.value_embed_model` in the
 /// model's own config is resolved as a path and an absolute one leaves the
 /// artefact entirely, and FineType's Model2Vec loader falls back to a
 /// cwd-relative `models/model2vec`. The working directory is sealed below,
 /// which closes the second; the first is inside FineType's path resolution and
-/// nothing in this repository can see it.
+/// nothing in this process can see it.
 ///
-/// That is a limitation of the approach, not an omission. Proving "no file
-/// outside the artefact was read" by naming the ways out is an enumeration, and
-/// an enumeration is only ever as good as its last revision — this one has been
-/// wrong about a code path, an environment variable and a working directory in
-/// turn. The bounded form is deny-by-default: a jail that refuses reads outside
-/// the artefact, the way `scripts/verify-airgapped.sh` already refuses the
-/// network. That is not built.
+/// So containment is the caller's jail, not this function's.
+/// `scripts/verify-airgapped.sh` runs this flag under a macOS sandbox that
+/// refuses to read any file outside the unpacked artefact and a named list of
+/// system paths (`scripts/airgap-jail.sh`), deny-by-default rather than an
+/// enumeration of the ways out, which has been wrong about a code path, an
+/// environment variable and a working directory in turn. The sealed directory
+/// below is made under [`std::env::temp_dir`], which reads `TMPDIR`, and that
+/// is how a jail grants it: the script points `TMPDIR` inside the directory it
+/// grants, since the name this process picks is not known until it runs.
 ///
 /// # Why it runs twice
 ///

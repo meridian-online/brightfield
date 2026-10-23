@@ -681,6 +681,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.95.0
       - run: cargo xtask ci --step artifact-type-source-selftest
 
+  # The read jail scripts/verify-airgapped.sh runs the type-source leg under,
+  # proved to refuse a read outside its grant. The release runs that leg; this
+  # runs the jail's own cases on every pull request, with no artefact, so a
+  # profile that stopped refusing reads would be caught here rather than read
+  # as a clean release. macOS because the jail is sandbox-exec.
+  airgap-jail:
+    name: The air-gap read jail refuses reads outside its grant
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - run: cargo xtask ci --step airgap-jail-selftest
+
   # The other half, and the expensive one: a real scripts/package.sh run, read
   # back with the real check.
   #
