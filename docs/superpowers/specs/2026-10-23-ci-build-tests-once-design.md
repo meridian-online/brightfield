@@ -41,7 +41,7 @@ The job runs the doctests itself, because they cannot be prebuilt. It uploads th
 - the working directory set to the package root;
 - `CARGO_MANIFEST_DIR` and the `CARGO_PKG_*` variables set;
 - `--test-threads=1` for the one-thread group;
-- every executable run even after one fails, and the step fails at the end if any did, matching `cargo test --no-fail-fast`. This needs checking: today's step stops at the first failing target. Whichever behaviour applies today is the one kept.
+- the step stops at the first failing executable, as today's `cargo test` (run without `--no-fail-fast`) stops at the first failing target.
 
 When the manifest is absent, as on a person's machine, they call `cargo test` exactly as now. `sibling-manifests` and `conformance` follow the same rule and run their prebuilt executables on the last default shard.
 
