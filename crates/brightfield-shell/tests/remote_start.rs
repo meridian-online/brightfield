@@ -715,6 +715,7 @@ fn housing_from(url: String, file_name: &'static str) -> &'static starts::Fetche
     Box::leak(Box::new(starts::FetchedData {
         file_name,
         url: Box::leak(url.into_boxed_str()),
+        revision: shipped.revision,
         prepare: shipped.prepare,
         descriptor: shipped.descriptor,
     }))

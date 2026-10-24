@@ -183,6 +183,12 @@ pub const fn kept_window_geometry(outcome: LoadOutcome) -> bool {
 /// start this one does not, and refusing to open a window over that would turn
 /// a stale line in a config file into a product that will not start.
 ///
+/// A remembered data start whose file is not on this machine opens the door
+/// rather than fetching it here, before there is a window to show the wait
+/// in; its card on the door fetches it.
+/// `a_launch_restoring_the_data_file_start_with_no_file_opens_the_door` in
+/// `tests/front_door.rs` holds that.
+///
 /// # Nothing here chooses what the window looks at
 ///
 /// A start used to name the view it filled, and a *restored* start had to be
@@ -212,6 +218,20 @@ pub fn opening_boot(
     let Some(id) = opened else {
         return Ok(crate::window::Boot::empty());
     };
+    // A data start whose file is not on this machine would fetch here, before
+    // the window exists: no window, no readout, and on a stalled connection no
+    // end. The door opens instead, with the start's card on it, and a click
+    // fetches on the window's worker with the readout on the card. A machine
+    // whose file an older build wrote somewhere else lands here once.
+    if let Some(data) = crate::starts::find(id).and_then(|start| start.data.as_ref()) {
+        if !crate::starts::dataset_path(data).is_file() {
+            eprintln!(
+                "{id} is not on this machine yet; its card on the door fetches it from {}",
+                data.url
+            );
+            return Ok(crate::window::Boot::empty());
+        }
+    }
     Ok(crate::window::Boot::start(id, flow).unwrap_or_else(|e| {
         eprintln!("could not reopen {id}: {e}");
         crate::window::Boot::empty()

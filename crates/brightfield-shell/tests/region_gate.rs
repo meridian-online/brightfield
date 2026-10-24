@@ -389,6 +389,18 @@ fn every_window_this_build_can_open() -> Vec<(String, Boot)> {
         ),
     ];
     datasets_into_scratch();
+    // The data start's file, written from the committed copy of its source
+    // so that its boot below opens it rather than fetching it.
+    for start in starts::STARTS {
+        if let Some(data) = &start.data {
+            let source =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/houses.zip");
+            let fetched = brightfield_shell::remote::Fetched::stand_in(&[(data.url, &source)])
+                .unwrap_or_else(|e| panic!("{}: {e}", start.id));
+            starts::load_with(start.id, fetched)
+                .unwrap_or_else(|e| panic!("{} does not write its file: {e}", start.id));
+        }
+    }
     for start in starts::STARTS {
         let boot = Boot::start(start.id, Flow::Vertical)
             .unwrap_or_else(|e| panic!("the {} start ships with this build: {e}", start.id));
@@ -701,13 +713,12 @@ fn every_regions_drawn_extent_is_the_one_it_declares() {
 ///
 /// A simpler twin of `datasets_into_scratch` in `tests/front_door.rs`, which
 /// gives each test a directory of its own in turn. Two tests here share this
-/// fixed path, through [`every_window_this_build_can_open`], and both load the
-/// data start. Once the file holds this build's bytes a load reads it and
-/// writes nothing, so the two can only collide while the file is missing or
-/// holds an older build's bytes, when both may write it at once. CI runs this
-/// target in its one-thread group. If it flakes under cargo's default threads,
-/// take front_door's approach. An integration test target cannot import a
-/// sibling's helper.
+/// fixed path, through [`every_window_this_build_can_open`], and both write
+/// the data start's file into it from the committed copy of its source. Each
+/// write stages under a name of its own and renames onto the path, so two at
+/// once each land a whole file. CI runs this target in its one-thread group.
+/// If it flakes under cargo's default threads, take front_door's approach. An
+/// integration test target cannot import a sibling's helper.
 fn datasets_into_scratch() {
     std::env::set_var(
         brightfield_shell::startup::CONFIG_DIR_VAR,

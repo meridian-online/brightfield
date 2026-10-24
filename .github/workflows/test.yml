@@ -422,15 +422,14 @@ jobs:
       # serial-targets: versions_step_back workflow_graph_baseline
       # Second group, the targets that open none and need one thread anyway:
       # serial-targets: grid_spot region_gate
-      # `region_gate` is here because of the shard split: its tests write the
-      # bundled dataset to `target/tmp/config/datasets`, and `materialise`
-      # (crates/brightfield-shell/src/starts.rs) names the staging file by
-      # process id alone, so two of its tests at once share one staging name
-      # and the second rename finds no file. In the one job a one-thread
-      # target had already written the dataset by the time this one ran; on
-      # the first run as shards, `region_gate` was the first target to write
-      # it on its shard, at default threads, and failed that way (run
-      # 37898248271, shard default-1).
+      # `region_gate` came here because of the shard split: two of its tests
+      # write the California Housing start's data file into one shared
+      # `target/tmp/config/datasets`, and the staging file that write renames
+      # from was named by process id alone, so two at once shared it and the
+      # second rename found no file (run 37898248271, shard default-1).
+      # `starts::write_fetched` (crates/brightfield-shell/src/starts.rs) now
+      # names it per write, which removes that collision; the target stays in
+      # this group until a sharded run at default threads shows it can leave.
       #
       # THE PARTITION. The command packs the one-thread targets onto the
       # one-thread shards and every other target onto the other shards, the

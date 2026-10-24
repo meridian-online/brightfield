@@ -1103,6 +1103,51 @@ fn a_launch_restoring_the_data_file_start_lands_on_its_own_document() {
     );
 }
 
+/// **A launch that remembers the data-file start, on a machine without its
+/// file, opens the door rather than fetching before there is a window.**
+///
+/// The machine this describes is common: every install that opened California
+/// Housing under a build that shipped it has the start remembered and its
+/// file somewhere this build does not look. Fetching there would put a
+/// download, with no window and no readout, between the launch and the first
+/// frame. The door has the start's card on it, and the click fetches on the
+/// window's worker.
+///
+/// A fetch here would write the file, so its absence afterwards is the
+/// evidence that none happened — on a machine with a network, where one
+/// could have.
+///
+/// Watched redden, one mutation: `opening_boot`'s data-start check deleted,
+/// which sends the restore through `starts::load` and fetches from StatLib —
+/// it fails at "the restored launch did not open the door".
+#[test]
+fn a_launch_restoring_the_data_file_start_with_no_file_opens_the_door() {
+    let _config =
+        datasets_into_scratch("a_launch_restoring_the_data_file_start_with_no_file_opens_the_door");
+    let start = the_data_file_start();
+    let data = start.data.as_ref().expect("filtered on `data`");
+    let boot = opening_boot(None, Some(start.id), Flow::Vertical, None)
+        .expect("a launch restoring the data-file start");
+    assert!(
+        boot.is_empty(),
+        "the restored launch did not open the door: it loaded a document for \
+         a start whose file was not on this machine"
+    );
+    assert!(
+        !starts::dataset_path(data).exists(),
+        "the restored launch wrote {}, so it fetched before the window existed",
+        starts::dataset_path(data).display()
+    );
+    let mut win = Window::open(boot);
+    win.settle();
+    assert!(
+        win.app.front_door_card_rect(start.id).is_some(),
+        "the door the restore opened has no card for {}, so nothing on it \
+         fetches the file",
+        start.id
+    );
+}
+
 /// **The Datasets row fits the door's column** — every card the door draws is
 /// inside the window, and they are all on one row.
 ///

@@ -244,6 +244,11 @@ pub struct FetchedData {
     pub file_name: &'static str,
     /// Where the source is fetched from.
     pub url: &'static str,
+    /// Which shape of file [`Self::prepare`] writes, as part of
+    /// [`dataset_path`]: raised when a change to `prepare` changes its output,
+    /// so a file an earlier build wrote is fetched again rather than reopened
+    /// as this build's.
+    pub revision: u32,
     /// Turns the fetched file, its first argument, into the data file at its
     /// second.
     pub prepare: fn(&std::path::Path, &std::path::Path) -> Result<(), String>,
@@ -529,6 +534,7 @@ pub const STARTS: &[Start] = &[
         data: Some(FetchedData {
             file_name: HOUSING_FILE,
             url: crate::housing::URL,
+            revision: 1,
             prepare: crate::housing::unpack,
             descriptor: HOUSING_DESCRIPTOR,
         }),
@@ -900,7 +906,8 @@ pub fn datasets_dir() -> std::path::PathBuf {
 pub const FETCHED_DIR: &str = "fetched";
 
 /// Where `data`'s file is written on this machine, and where [`load`] looks
-/// for it before fetching.
+/// for it before fetching: `fetched/v{revision}/{file_name}` under
+/// [`datasets_dir`].
 ///
 /// **A stable path, not a temporary one**: the locator band names a real
 /// file, Save writes the Protocol beside it, and the next launch — which
@@ -909,7 +916,10 @@ pub const FETCHED_DIR: &str = "fetched";
 /// — finds the file already there and opens it with no network.
 #[must_use]
 pub fn dataset_path(data: &FetchedData) -> std::path::PathBuf {
-    datasets_dir().join(FETCHED_DIR).join(data.file_name)
+    datasets_dir()
+        .join(FETCHED_DIR)
+        .join(format!("v{}", data.revision))
+        .join(data.file_name)
 }
 
 /// Make `data`'s file at [`dataset_path`] from what `fetched` brought back
@@ -944,9 +954,18 @@ pub fn write_fetched(
     let path = dataset_path(data);
     let dir = path
         .parent()
-        .expect("dataset_path is a file inside FETCHED_DIR");
+        .expect("dataset_path is a file inside a revision directory");
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let staging = dir.join(format!("{}.{}.part", data.file_name, std::process::id()));
+    // Named per write, not per process: two writes in one process — two
+    // tests on two threads, or a click while a restore is writing — would
+    // otherwise share a staging file, and the second rename would find none.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let staging = dir.join(format!(
+        "{}.{}-{}.part",
+        data.file_name,
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     // A staging file nothing will ever finish is litter in a directory the
     // reader can see, so every failure from here removes it. Removing it
     // cannot fail the call it is reporting.
