@@ -8605,7 +8605,7 @@ impl MeridianApp {
     /// file is written from it and opened when it lands. Answers whether it
     /// took the start.
     ///
-    /// `false`, and nothing latched, when the file is already at
+    /// `false`, with no fetch latched, when the file is already at
     /// [`crate::starts::dataset_path`]: the caller's next move is
     /// `starts::load`, which opens that file with no fetch, as a restored
     /// launch does.

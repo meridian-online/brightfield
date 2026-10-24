@@ -45,7 +45,7 @@
 //!   comes from varies — the generated starts declare it in SQL,
 //!   [`CROSSWALK_CHART`] reads a published Parquet, and
 //!   [`CALIFORNIA_HOUSING`] fetches its authors' own file — but what the
-//!   chart draws is a query result either way, never a literal.
+//!   chart draws is a query result either way, not a literal.
 //!
 //! # Why an id rather than a path
 //!
@@ -230,8 +230,8 @@ pub const CALIFORNIA_HOUSING: &str = "california-housing";
 /// A data file a start **fetches**, and the name the click writes it under.
 ///
 /// One struct rather than four fields on [`Start`], because they are one
-/// fact: a URL with no name has nowhere to land, a name with no way to make
-/// its file from what was fetched has nothing to write, and a descriptor
+/// fact: a URL with no name has no place to land, a name with no way to make
+/// its file from what was fetched cannot be written, and a descriptor
 /// belonging to another source misdescribes the one beside it. An
 /// `Option<FetchedData>` therefore has two states.
 pub struct FetchedData {
@@ -813,8 +813,9 @@ pub fn load(id: &str) -> Result<Opened, String> {
 /// [`write_fetched`], the same functions a click and [`load`] end at, so what
 /// differs from a live open is which bytes were read.
 ///
-/// A data start **always writes** here, over whatever an earlier open left at
-/// [`dataset_path`]: what was handed in is what the caller asked to open.
+/// A data start writes here even when an earlier open left a file at
+/// [`dataset_path`], and replaces it: what was handed in is what the caller
+/// asked to open.
 ///
 /// # Errors
 ///
@@ -895,7 +896,7 @@ pub fn datasets_dir() -> std::path::PathBuf {
 /// one wrote a different copy of California Housing to
 /// `datasets_dir()/california_housing.parquet`. [`load`] opens a file it finds
 /// at [`dataset_path`] without fetching, so sharing that path would have
-/// reopened the old copy on every machine that had one.
+/// reopened the old copy on a machine that had one.
 pub const FETCHED_DIR: &str = "fetched";
 
 /// Where `data`'s file is written on this machine, and where [`load`] looks
@@ -921,9 +922,11 @@ pub fn dataset_path(data: &FetchedData) -> std::path::PathBuf {
 /// name in the same directory (so the rename is within one filesystem and is
 /// atomic), which is renamed onto the path. A reader that opened the window
 /// twice in quick succession therefore sees either the previous file or the
-/// whole new one, never a Parquet with no footer — which DuckDB reports as a
-/// corrupt file rather than as a file that is not finished being written —
-/// and a failed prepare leaves no file for [`load`] to find and trust.
+/// whole new one, rather than a Parquet with no footer — which DuckDB reports
+/// as a corrupt file rather than as a file that is not finished being
+/// written. A failed prepare leaves no file for [`load`] to find and trust,
+/// which `an_archive_that_is_not_the_authors_file_is_refused_and_leaves_nothing`
+/// in `tests/remote_start.rs` holds.
 ///
 /// # Errors
 ///

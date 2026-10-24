@@ -104,7 +104,7 @@ fn the_data_file_start() -> &'static starts::Start {
 /// Write the data start's file where a click looks for it, from the committed
 /// copy of its source rather than over the network, and answer where it is.
 ///
-/// A click on the data start's card with nothing at [`starts::dataset_path`]
+/// A click on the data start's card with no file at [`starts::dataset_path`]
 /// fetches; with the file there it opens it, as a second launch does. The
 /// tests that click the card are about what the click opens, not about the
 /// fetch, so they start from the second case: the first is
@@ -891,7 +891,7 @@ fn the_card_and_the_picker_land_on_one_window() {
 ///
 /// Three claims, and the third is the one that keeps a restored launch off
 /// the network: the file is written under the configured directory rather
-/// than under `std::env::temp_dir()`, nothing half-written is left beside it,
+/// than under `std::env::temp_dir()`, no half-written file is left beside it,
 /// and a later `starts::load` — the entry a restored launch takes — lands on
 /// the same path and leaves the file as it was rather than fetching and
 /// writing it again.

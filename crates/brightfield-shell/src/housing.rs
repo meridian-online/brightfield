@@ -54,7 +54,7 @@ pub const ROWS: usize = 20_640;
 /// # Errors
 ///
 /// If the archive will not open or has no [`MEMBER`], if a row after the
-/// header is not nine numbers, if there are no rows at all, or if DuckDB
+/// header is not nine numbers, if there are no rows, or if DuckDB
 /// cannot write the Parquet. Each names the file it was reading or writing.
 pub fn unpack(zip: &Path, out: &Path) -> Result<(), String> {
     let text = read_member(zip)?;
@@ -115,7 +115,7 @@ pub fn parse(text: &str) -> Result<Vec<[f64; 9]>, String> {
     Ok(rows)
 }
 
-/// `line` as nine numbers, or `None` if it is anything else.
+/// `line` as nine numbers, or `None` otherwise.
 fn row_of(line: &str) -> Option<[f64; 9]> {
     let mut row = [0.0; 9];
     let mut fields = line.split_whitespace();
@@ -125,7 +125,7 @@ fn row_of(line: &str) -> Option<[f64; 9]> {
     fields.next().is_none().then_some(row)
 }
 
-/// Write `rows` under [`COLUMNS`] as a Parquet at `out`, every column a
+/// Write `rows` under [`COLUMNS`] as a Parquet at `out`, each column a
 /// `DOUBLE`.
 fn write_parquet(rows: &[[f64; 9]], out: &Path) -> Result<(), String> {
     let failed = |e: duckdb::Error| format!("writing {}: {e}", out.display());
