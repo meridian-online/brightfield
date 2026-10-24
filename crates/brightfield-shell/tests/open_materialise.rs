@@ -35,6 +35,7 @@ fn fixture(name: &str) -> PathBuf {
     if path.exists() {
         return path;
     }
+    let writing = writing_path(&path);
     let conn = duckdb::Connection::open_in_memory().expect("duckdb");
     conn.execute_batch(&format!(
         "COPY (SELECT (hash(i * 11 + 7) % 12)::DOUBLE AS bounded, \
@@ -42,10 +43,30 @@ fn fixture(name: &str) -> PathBuf {
          ('label_' || (hash(i * 13 + 5) % 6))::VARCHAR AS label, \
          (TIMESTAMP '2020-01-01' + INTERVAL (i) SECOND) AS at \
          FROM range(240) AS r(i)) TO '{}' (FORMAT CSV, HEADER)",
-        path.display()
+        writing.display()
     ))
     .expect("write fixture");
+    std::fs::rename(&writing, &path).expect("the fixture moves into place");
     path
+}
+
+/// A name beside `path` that no other writer in this process uses, for a
+/// fixture to be written under before it is renamed onto `path`.
+///
+/// Tests that run at once share these fixtures. Each one that finds a fixture
+/// missing writes it, and DuckDB 2.0's `COPY ... TO` refuses a file another
+/// writer has just created, or leaves it missing for a moment while it is
+/// replaced. Writing under a private name and renaming it into place means a
+/// reader only ever finds the whole file, whichever writer put it there.
+fn writing_path(path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let name = path.file_name().expect("a fixture names a file");
+    path.with_file_name(format!(
+        "writing-{}-{}",
+        NEXT.fetch_add(1, Ordering::Relaxed),
+        name.to_string_lossy()
+    ))
 }
 
 /// A Parquet of the same rows, written by the same DuckDB the engine reads it
@@ -56,13 +77,15 @@ fn parquet_fixture() -> PathBuf {
     if path.exists() {
         return path;
     }
+    let writing = writing_path(&path);
     let conn = duckdb::Connection::open_in_memory().expect("duckdb");
     conn.execute_batch(&format!(
         "COPY (SELECT * FROM read_csv('{}')) TO '{}' (FORMAT PARQUET)",
         csv.display(),
-        path.display()
+        writing.display()
     ))
     .expect("write parquet");
+    std::fs::rename(&writing, &path).expect("the fixture moves into place");
     path
 }
 
@@ -220,14 +243,16 @@ fn sized_csv(name: &str, rows: u64) -> PathBuf {
     if path.exists() {
         return path;
     }
+    let writing = writing_path(&path);
     let conn = duckdb::Connection::open_in_memory().expect("duckdb");
     conn.execute_batch(&format!(
         "COPY (SELECT lpad(('x' || (i % 7))::VARCHAR, 200, 'y') AS label, \
          lpad((i % 97)::VARCHAR, 3, '0') AS value FROM range({rows}) AS r(i)) \
          TO '{}' (FORMAT CSV, HEADER)",
-        path.display()
+        writing.display()
     ))
     .expect("write fixture");
+    std::fs::rename(&writing, &path).expect("the fixture moves into place");
     path
 }
 
@@ -312,15 +337,17 @@ fn widening_parquet() -> PathBuf {
     if path.exists() {
         return path;
     }
+    let writing = writing_path(&path);
     let conn = duckdb::Connection::open_in_memory().expect("duckdb");
     conn.execute_batch(&format!(
         "COPY (SELECT ('cat_' || (i % 8))::VARCHAR AS label, \
          ('grp_' || (i % 5))::VARCHAR AS kind, (i % 97)::BIGINT AS value, \
          (i % 13)::BIGINT AS other FROM range(500000) AS r(i)) \
          TO '{}' (FORMAT PARQUET, COMPRESSION ZSTD)",
-        path.display()
+        writing.display()
     ))
     .expect("write parquet");
+    std::fs::rename(&writing, &path).expect("the fixture moves into place");
     path
 }
 
@@ -529,15 +556,17 @@ fn widening_parquet_over_the_budget() -> PathBuf {
     if path.exists() {
         return path;
     }
+    let writing = writing_path(&path);
     let conn = duckdb::Connection::open_in_memory().expect("duckdb");
     conn.execute_batch(&format!(
         "COPY (SELECT ('cat_' || (i % 8))::VARCHAR AS label, \
          ('grp_' || (i % 5))::VARCHAR AS kind, (i % 97)::BIGINT AS value, \
          (i % 13)::BIGINT AS other FROM range(16000000) AS r(i)) \
          TO '{}' (FORMAT PARQUET, COMPRESSION ZSTD)",
-        path.display()
+        writing.display()
     ))
     .expect("write parquet");
+    std::fs::rename(&writing, &path).expect("the fixture moves into place");
     path
 }
 

@@ -39,24 +39,21 @@
 //! folder is not touched. The change is data, a [`ChartChange`], and the words for it are
 //! the window's.
 //!
-//! # The debounce, and why a Save can be recorded as a checkpoint
+//! # Why a Save is recorded with the merge off
 //!
-//! arcform merges a save into the newest entry when that entry is itself a
-//! save no older than [`HISTORY_MERGE_WINDOW`]: rapid saves debounce to one
-//! entry. Two Saves of a chart within that window would then fold the first
-//! Save's text away, because the first Save's text is both the newest entry (a
-//! save) and the text the second Save replaces (a checkpoint arcform skips as a
-//! duplicate of it). arcform's own roads record their after-image with the
-//! merge off for exactly this reason, and its file-keyed calls offer no such
-//! switch. So when the replaced text is held by a save the next save would
-//! merge over, [`ChartVersions::finish`] records the written text as a
-//! checkpoint, which does not merge. A Save's text is then a version in that case
-//! too, under a different kind.
+//! arcform's plain save merges into the newest entry when that entry is itself
+//! a save no older than its merge window: rapid saves debounce to one entry.
+//! Two Saves of a chart within that window would then fold the first Save's
+//! text away, because the first Save's text is both the newest entry (a save)
+//! and the text the second Save replaces (a checkpoint arcform skips as a
+//! duplicate of it). So [`ChartVersions::finish`] records the written text
+//! with arcform's unmerged save, as arcform's own roads record their
+//! after-image, and each Save's text stays a version of its own.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use arc::spec::{read_log, LogLine, HISTORY_MAX_ENTRIES, HISTORY_MERGE_WINDOW, MANIFEST_FILENAME};
+use arc::spec::{read_log, LogLine, HISTORY_MAX_ENTRIES, MANIFEST_FILENAME};
 use brightfield_spec::layout::collect_plot_nodes;
 use brightfield_spec::{
     parse_spec, serialise_value, Component, Format, Mark, PlotNode, Spec, SpecValue,
@@ -174,8 +171,6 @@ pub struct ChartVersions {
     history: Option<LocalHistory>,
     /// The first thing that went wrong, if anything has.
     failure: Option<NotRecorded>,
-    /// The replaced text is held by a save a merging save would fold it into.
-    fold_risk: bool,
 }
 
 impl ChartVersions {
@@ -192,7 +187,6 @@ impl ChartVersions {
             file: file.to_path_buf(),
             history: None,
             failure: None,
-            fold_risk: false,
         };
         match store.open() {
             Ok(history) => versions.history = Some(history),
@@ -211,19 +205,10 @@ impl ChartVersions {
         let Some(history) = &self.history else {
             return;
         };
-        match history.record_checkpoint_for_file(&self.file, text) {
-            Ok(Some(_)) => {}
-            // The newest entry already holds this text. If that entry is a
-            // save the next save would merge over, the text would go with it.
-            Ok(None) => match history.entries_for_file(&self.file) {
-                Ok(entries) => {
-                    self.fold_risk = entries
-                        .last()
-                        .is_some_and(|newest| would_merge_over(newest.kind, newest.at));
-                }
-                Err(e) => self.fail(&e),
-            },
-            Err(e) => self.fail(&e),
+        // `Ok(None)` is the newest entry already holding this text, which the
+        // unmerged save in `finish` leaves where it is.
+        if let Err(e) = history.record_checkpoint_for_file(&self.file, text) {
+            self.fail(&e);
         }
     }
 
@@ -236,12 +221,7 @@ impl ChartVersions {
     /// opened or an entry that could not be written.
     pub fn finish(mut self, written: &str) -> Result<(), NotRecorded> {
         if let Some(history) = &self.history {
-            let recorded = if self.fold_risk {
-                history.record_checkpoint_for_file(&self.file, written)
-            } else {
-                history.record_save_for_file(&self.file, written)
-            };
-            if let Err(e) = recorded {
+            if let Err(e) = history.record_save_unmerged_for_file(&self.file, written) {
                 self.fail(&e);
             }
         }
@@ -300,19 +280,6 @@ pub fn record_unsaved(store: &HistoryStore, file: &Path, text: &str) -> Result<(
             Err(NotRecorded::new(e.to_string()))
         }
     }
-}
-
-/// Whether a save recorded now would merge into an entry of `kind` recorded at
-/// `at`: arcform's rule, which merges a save into a save no older than its
-/// window.
-///
-/// A clock that went backwards reads as inside the window, the safe side: the
-/// text is then recorded as a checkpoint, which only costs the entry its kind.
-fn would_merge_over(kind: HistoryKind, at: SystemTime) -> bool {
-    kind == HistoryKind::Save
-        && SystemTime::now()
-            .duration_since(at)
-            .map_or(true, |gap| gap <= HISTORY_MERGE_WINDOW)
 }
 
 // ------------------------------------------------------------ listing a file's versions

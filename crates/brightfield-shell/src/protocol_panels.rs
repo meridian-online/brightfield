@@ -799,7 +799,10 @@ fn database_problem(db: &Path, error: &str) -> OpenProblem {
         OpenProblem::Locked {
             db: db.to_path_buf(),
         }
-    } else if storage_versions(error).is_some() || error.contains("database file with version") {
+    } else if storage_versions(error).is_some()
+        || error.contains("database file with version")
+        || error.contains("database file with storage version")
+    {
         OpenProblem::EngineMismatch {
             db: db.to_path_buf(),
             detail: error.to_string(),
@@ -815,12 +818,14 @@ fn database_problem(db: &Path, error: &str) -> OpenProblem {
 
 /// The file's storage version and the versions this DuckDB reads, from
 /// DuckDB's "Trying to read a database file with version number N, but we can
-/// only read version M" (or "versions between A and B").
+/// only read version M" (or "versions between A and B"). DuckDB 2.0 says
+/// "storage version number" and "storage versions" in the same sentence.
 fn storage_versions(error: &str) -> Option<(String, String)> {
     let rest = error.split_once("version number ")?.1;
     let (file, rest) = rest.split_once(',')?;
     let readable = rest.split_once("can only read ")?.1;
     let readable = readable.split(['.', '\n']).next()?.trim();
+    let readable = readable.strip_prefix("storage ").unwrap_or(readable);
     let readable = readable
         .strip_prefix("versions between ")
         .map(|span| span.replacen(" and ", " to ", 1))
@@ -836,7 +841,8 @@ fn first_line(text: &str) -> &str {
 mod tests {
     use super::*;
 
-    /// DuckDB 1.5's wording for a file from a later DuckDB reads as both versions.
+    /// DuckDB 1.5's and 2.0's wordings for a file from a later DuckDB read as
+    /// both versions.
     #[test]
     fn a_storage_version_error_names_both_versions() {
         let error = "IO Error: Trying to read a database file with version number 69, but we \
@@ -845,6 +851,13 @@ mod tests {
         assert_eq!(
             storage_versions(error),
             Some(("69".to_string(), "64 to 68".to_string()))
+        );
+        let two = "IO Error: Trying to read a database file with storage version number 99, but \
+                   we can only read storage versions between 64 and 69.";
+        assert_eq!(
+            storage_versions(two),
+            Some(("99".to_string(), "64 to 69".to_string())),
+            "DuckDB 2.0's wording"
         );
         let older = "Trying to read a database file with version number 51, but we can only read version 64.";
         assert_eq!(

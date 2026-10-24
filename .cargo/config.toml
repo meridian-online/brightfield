@@ -5,3 +5,16 @@
 # locked; the command that runs them should not re-resolve on its way in.
 [alias]
 xtask = "run --locked --quiet --package xtask --"
+
+# The DuckDB release the bundled build names itself. libduckdb-sys 1.20000.0
+# vendors DuckDB 2.0.0 with its version compiled in as `v2.0.0-dev88614`
+# (duckdb/duckdb-rs#917, fixed upstream and not yet released), so without this
+# the linked DuckDB fetches extensions from a path nothing is published under and
+# reports a different DuckDB from the CLI `scripts/fetch-duckdb-cli.sh` pins.
+# DuckDB reads `DUCKDB_VERSION` from the compiler's command line before its own.
+# The value moves with VERSION in that script, and the whole entry goes once a
+# libduckdb-sys release carries the fix. A CXXFLAGS already in the environment
+# wins over this one, and `the_linked_duckdb_is_the_release_the_cli_is_pinned_to`
+# then fails.
+[env]
+CXXFLAGS = '-DDUCKDB_VERSION="v2.0.0"'

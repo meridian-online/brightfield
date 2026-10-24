@@ -3441,15 +3441,44 @@ impl Session {
 
     /// DuckDB's `EXPLAIN (FORMAT json)` text for `sql`, or `None` where it
     /// declined.
+    ///
+    /// **Planned with statistics propagation off, and only this plan.** From
+    /// DuckDB 2.0 a `count(*)` over a table is answered from the table's
+    /// statistics when it is planned, and its plan is one `COLUMN_DATA_SCAN`
+    /// that names nothing: the same leaf a `DESCRIBE` of a `read_csv` view plans
+    /// to, which does read the file. With the optimizer off the `count(*)`
+    /// plans as the `SEQ_SCAN` it stands for, naming its `Table`, so
+    /// [`profile::plan_file_reads`] can say what it reads. That counts a scan of
+    /// a table the run itself answers from statistics, which is the side the
+    /// counters are meant to err on. The setting is put back as it was before
+    /// this returns, so the statement that runs is planned as it always is.
     fn explain_json(&self, sql: &str) -> Option<String> {
-        let mut stmt = self
+        let before: String = self
             .conn
-            .prepare(&format!("EXPLAIN (FORMAT json) {sql}"))
+            .query_row("SELECT current_setting('disabled_optimizers')", [], |row| {
+                row.get(0)
+            })
             .ok()?;
-        let batches: Vec<RecordBatch> = stmt.query_arrow(duckdb::params![]).ok()?.collect();
-        let batch = batches.into_iter().find(|b| b.num_rows() > 0)?;
-        let column = batch.num_columns().checked_sub(1)?;
-        profile::read_text(&batch, column)
+        self.conn
+            .execute_batch("SET disabled_optimizers = 'statistics_propagation'")
+            .ok()?;
+        let explained = (|| {
+            let mut stmt = self
+                .conn
+                .prepare(&format!("EXPLAIN (FORMAT json) {sql}"))
+                .ok()?;
+            let batches: Vec<RecordBatch> = stmt.query_arrow(duckdb::params![]).ok()?.collect();
+            let batch = batches.into_iter().find(|b| b.num_rows() > 0)?;
+            let column = batch.num_columns().checked_sub(1)?;
+            profile::read_text(&batch, column)
+        })();
+        self.conn
+            .execute_batch(&format!(
+                "SET disabled_optimizers = '{}'",
+                before.replace('\'', "''")
+            ))
+            .ok()?;
+        explained
     }
 
     /// DESCRIBE + one aggregate pass for a single queryable view. Any DuckDB

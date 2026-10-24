@@ -50,12 +50,12 @@ brightfield-sql = { path = "crates/brightfield-sql" }
 # two moves in lockstep: this `rev` and Cargo.lock. See README §"The arcform
 # dependency". The package is named `arcform` upstream; `package =` keeps the
 # crate `arc` in this workspace's source.
-arc = { package = "arcform", git = "https://github.com/meridian-online/arcform", rev = "01bc1c01b8fca1276af6d7e74ad207ae350a5512", default-features = false, features = ["http-fetch"] }
-arrow = { version = "58", default-features = false }
+arc = { package = "arcform", git = "https://github.com/meridian-online/arcform", rev = "cd47c406ddbf3c462d4b0cd22548b38edb0b56ad", default-features = false, features = ["http-fetch"] }
+arrow = { version = "60", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # `bundled` builds DuckDB from source, so no member needs a system libduckdb. One
 # spec here is one `duckdb` build in the graph.
-duckdb = { version = "=1.10506.0", features = ["bundled"] }
+duckdb = { version = "=1.20000.0", features = ["bundled"] }
 # VERSION LOCK — egui 0.35 rides wgpu 29, the same wgpu major Vello 0.9 uses, so
 # `egui_wgpu`'s wgpu and `vello::wgpu` resolve to ONE crate instance and therefore
 # one `wgpu::Device`. That is what lets a Vello scene rasterise onto a texture egui

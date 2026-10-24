@@ -99,6 +99,12 @@ pub fn staged_engine_beside(program: &Path) -> Option<PathBuf> {
 /// commit it was built from, so two builds of one version string still differ.
 pub const ENGINE_VERSION_QUERY: &str = "SELECT library_version, source_id FROM pragma_version()";
 
+/// The variable DuckDB's 2.0 CLI reads to decide whether to answer in its agent
+/// output mode (markdown results, JSON errors), which it otherwise switches on
+/// by itself when an agent's variable is set and stdout is not a terminal. `0`
+/// keeps the output the probe parses, as arc sets it for its own steps.
+const AGENT_MODE_ENV: &str = "DUCKDB_AGENT_MODE";
+
 /// What `--check-engine` found beside a program.
 #[derive(Debug, PartialEq, Eq)]
 pub enum EngineCheck {
@@ -166,6 +172,7 @@ pub fn check_staged_engine(program: &Path, linked: &str) -> EngineCheck {
         .arg(ENGINE_VERSION_QUERY)
         .env_clear()
         .env("HOME", sealed.path())
+        .env(AGENT_MODE_ENV, "0")
         .current_dir(sealed.path())
         .stdin(Stdio::null())
         .output();
@@ -604,7 +611,7 @@ mod tests {
     fn the_staged_engine_runs_with_an_empty_environment_and_its_own_home() {
         let (_dir, program) = staged(
             r#"if [ -s "$5" ]; then init=has-content; elif [ -f "$5" ]; then init=empty; else init=missing; fi
-echo "${PATH:-unset}|${HOME}|$(pwd -P)|$1 $2 $3 $4|$5|$init""#,
+echo "${PATH:-unset}|${HOME}|$(pwd -P)|$1 $2 $3 $4|$5|$init|${DUCKDB_AGENT_MODE:-unset}""#,
         );
         let caller_path = std::env::var("PATH").unwrap_or_default();
         let caller_home = std::env::var("HOME").unwrap_or_default();
@@ -645,6 +652,7 @@ echo "${PATH:-unset}|${HOME}|$(pwd -P)|$1 $2 $3 $4|$5|$init""#,
             fields[5], "empty",
             "the init file the engine read is not empty"
         );
+        assert_eq!(fields[6], "0", "the engine's agent output mode is not off");
     }
 
     #[test]
@@ -662,6 +670,24 @@ echo "${PATH:-unset}|${HOME}|$(pwd -P)|$1 $2 $3 $4|$5|$init""#,
         let (release, commit) = linked.split_once(',').unwrap();
         assert!(release.starts_with('v'), "{linked}");
         assert!(!commit.is_empty(), "{linked}");
+    }
+
+    /// The linked DuckDB names the release the staged CLI is pinned to, and not
+    /// a development build of it. libduckdb-sys 1.20000.0 compiles DuckDB 2.0.0
+    /// under the version `v2.0.0-dev88614`, which would fetch extensions from a
+    /// path nothing is published under; `.cargo/config.toml` defines the
+    /// release's version for that build.
+    #[test]
+    fn the_linked_duckdb_is_the_release_the_cli_is_pinned_to() {
+        let script = include_str!("../../../scripts/fetch-duckdb-cli.sh");
+        let pinned = script
+            .lines()
+            .find_map(|line| line.strip_prefix("VERSION=\""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .expect("scripts/fetch-duckdb-cli.sh has a VERSION= line");
+        let linked = linked_duckdb_version().unwrap();
+        let (release, _) = linked.split_once(',').unwrap();
+        assert_eq!(release, pinned, "{linked}");
     }
 
     /// Watched redden, one mutation: the `chars.next()` that consumes the
