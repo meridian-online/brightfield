@@ -14,8 +14,9 @@ brightfield-sql = { workspace = true }
 # `read_parquet` is an extension DuckDB autoinstalls on first use — downloaded
 # from extensions.duckdb.org into ~/.duckdb — so a local Parquet opened on a
 # machine with no network and a cold extension cache does not open at all, and
-# on a machine with a network its first open reaches it. The front door ships
-# a bundled Parquet whose whole promise is that it needs neither.
+# on a machine with a network its first open reaches it. A Parquet the front
+# door's California Housing start has already fetched is reopened with no
+# network, and so is any Parquet a reader opens from disk.
 #
 # This is not the only declaration. The shell declares the same feature on its
 # own `duckdb` dependency, and features unify, so removing it here alone leaves

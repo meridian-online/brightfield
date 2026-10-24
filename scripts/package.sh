@@ -347,13 +347,14 @@ cp LICENSE "$STAGE/LICENSE"
 cp examples/*.yaml "$STAGE/examples/"
 cp -R examples/protocol "$STAGE/examples/protocol"
 cp -R examples/remote "$STAGE/examples/remote"
-# The front door's bundled dataset, as a file too: the binary carries the same
-# bytes, and this copy is what verify-airgapped.sh opens through the file route
-# with the network denied — the proof that the packaged binary reads Parquet
-# with DuckDB's reader linked in rather than downloaded. Its descriptor goes
-# with it: a third-party dataset carries its provenance.
+# A Parquet to open, which is what verify-airgapped.sh opens through the file
+# route with the network denied — the proof that the packaged binary reads
+# Parquet with DuckDB's reader linked in rather than downloaded. It is the
+# reduced copy of Meridian's own published EDGAR-GLEIF crosswalk, with the
+# provenance file that says what it keeps; no third-party dataset ships in the
+# package.
 mkdir -p "$STAGE/examples/data"
-cp crates/brightfield-shell/assets/starts/california_housing.parquet crates/brightfield-shell/assets/starts/california_housing.datapackage.json "$STAGE/examples/data/"
+cp crates/brightfield-shell/tests/data/edgar_gleif_reduced.parquet crates/brightfield-shell/tests/data/edgar_gleif_reduced.json "$STAGE/examples/data/"
 stage_finetype "$STAGE/finetype"
 stage_engine "$STAGE/engine/duckdb"
 cat > "$STAGE/README.txt" <<EOF
@@ -362,7 +363,8 @@ brightfield ${VERSION} (${TARGET})
 One native application. No server, no webview, no language runtime, and no network
 needed to run — the only thing it asks of the machine is a working graphics
 driver. Nothing here reports anywhere; it reaches out only when a spec names a
-remote source, a DuckLake catalog or a spatial source.
+remote source, a DuckLake catalog or a spatial source, or when you open a
+gallery card that says "over the network".
 
 Everything under examples/ is local and self-contained EXCEPT examples/remote/,
 which is where the specs that fetch are kept, so that "does this need a
@@ -385,7 +387,7 @@ Open a Protocol manifest (rendered from the manifest alone, no run):
 
 Open a data file — a Parquet or a CSV — as a table and a chart for its columns:
 
-  ./brightfield examples/data/california_housing.parquet
+  ./brightfield examples/data/edgar_gleif_reduced.parquet
 
 Chart the published EDGAR-GLEIF crosswalk (this one needs a connection):
 
@@ -463,7 +465,7 @@ case "$TARGET" in
     cp -R examples/protocol "$APP/Contents/Resources/examples/protocol"
     cp -R examples/remote "$APP/Contents/Resources/examples/remote"
     mkdir -p "$APP/Contents/Resources/examples/data"
-    cp crates/brightfield-shell/assets/starts/california_housing.parquet crates/brightfield-shell/assets/starts/california_housing.datapackage.json \
+    cp crates/brightfield-shell/tests/data/edgar_gleif_reduced.parquet crates/brightfield-shell/tests/data/edgar_gleif_reduced.json \
       "$APP/Contents/Resources/examples/data/"
     # Resources/, not MacOS/: an app launched from /Applications has no sibling
     # directory, and `semantic::bundle_beside` looks in both places for exactly

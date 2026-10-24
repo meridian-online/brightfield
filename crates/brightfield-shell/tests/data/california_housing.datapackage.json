@@ -1,0 +1,136 @@
+{
+  "$schema": "https://datapackage.org/profiles/2.0/datapackage.json",
+  "created": "2026-09-02T04:43:37Z",
+  "description": "16,640 California block groups from the 1990 Census, with median income, housing age, room and occupancy averages, population, position and median house value. A test fixture: the train split of the gvlassis/california_housing re-upload on Hugging Face, which derives per-household averages from R. Kelley Pace and Ronald Barry's data as published through StatLib (20,640 block groups). Brightfield's tests read it; the shipped binary does not carry it.",
+  "licenses": [
+    {
+      "path": "https://lib.stat.cmu.edu/datasets/",
+      "title": "No licence declared at source. The data is R. Kelley Pace and Ronald Barry's, issued through StatLib, whose submission terms provide for free distribution and non-commercial use and say nothing on commercial use."
+    }
+  ],
+  "name": "california-housing",
+  "resources": [
+    {
+      "bytes": 481832,
+      "format": "parquet",
+      "hash": "sha256:43b5fbc7a7df863ad8e79e5be23963ece9109f178fa46616b68fccd3625807c8",
+      "mediatype": "application/vnd.apache.parquet",
+      "name": "california_housing",
+      "path": "california_housing.parquet",
+      "schema": {
+        "fields": [
+          {
+            "description": "Median household income for the district, in tens of thousands of 1990 US dollars.",
+            "name": "median_income",
+            "type": "number",
+            "x-finetype-confidence": 0.6,
+            "x-finetype-label": "representation.numeric.decimal_number",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+            }
+          },
+          {
+            "description": "Median age of the district's houses, in years.",
+            "name": "house_age",
+            "type": "number",
+            "x-finetype-confidence": 1.0,
+            "x-finetype-label": "representation.numeric.decimal_number",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+            }
+          },
+          {
+            "description": "Mean rooms per household. A district average, so values above ten are small households in large houses rather than errors.",
+            "name": "avg_rooms",
+            "type": "number",
+            "x-finetype-confidence": 0.6,
+            "x-finetype-label": "representation.numeric.decimal_number",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+            }
+          },
+          {
+            "description": "Mean bedrooms per household, on the same district-average basis.",
+            "name": "avg_bedrooms",
+            "type": "number",
+            "x-finetype-confidence": 0.5418,
+            "x-finetype-label": "representation.numeric.decimal_number",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+            }
+          },
+          {
+            "description": "Number of people resident in the district.",
+            "name": "population",
+            "type": "number",
+            "x-finetype-confidence": 1.0,
+            "x-finetype-label": "representation.numeric.decimal_number",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+            }
+          },
+          {
+            "description": "Mean household members per household.",
+            "name": "avg_occupancy",
+            "type": "number",
+            "x-finetype-confidence": 0.6,
+            "x-finetype-label": "representation.numeric.decimal_number",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+            }
+          },
+          {
+            "constraints": {
+              "maximum": 90.0,
+              "minimum": -90.0
+            },
+            "description": "District centroid latitude. With longitude, this is a map that needs no embedding behind it.",
+            "name": "latitude",
+            "type": "number",
+            "x-finetype-confidence": 0.9994,
+            "x-finetype-label": "geography.coordinate.latitude",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?([0-8]?\\d(\\.\\d+)?|90(\\.0+)?)$"
+            }
+          },
+          {
+            "constraints": {
+              "maximum": 180.0,
+              "minimum": -180.0
+            },
+            "description": "District centroid longitude.",
+            "name": "longitude",
+            "type": "number",
+            "x-finetype-confidence": 1.0,
+            "x-finetype-label": "geography.coordinate.longitude"
+          },
+          {
+            "description": "Median house value for the district, in hundreds of thousands of 1990 US dollars. Capped at 5.00001 in the source, which is a ceiling rather than a measurement.",
+            "name": "median_house_value",
+            "type": "number",
+            "x-finetype-confidence": 0.6,
+            "x-finetype-label": "representation.numeric.decimal_number",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "sources": [
+    {
+      "path": "https://lib.stat.cmu.edu/datasets/houses.zip",
+      "title": "houses.zip on StatLib, the archive R. Kelley Pace and Ronald Barry deposited there"
+    },
+    {
+      "title": "Pace, R. Kelley and Ronald Barry, \"Sparse Spatial Autoregressions\", Statistics and Probability Letters, 33 (1997) 291-297"
+    },
+    {
+      "path": "https://huggingface.co/datasets/gvlassis/california_housing",
+      "title": "gvlassis/california_housing on Hugging Face, revision 17110e60, the copy this fixture was exported from"
+    }
+  ],
+  "title": "California Housing — test fixture from a re-upload",
+  "x-finetype-version": "0.6.58"
+}

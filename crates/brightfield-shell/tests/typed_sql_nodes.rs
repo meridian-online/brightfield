@@ -59,7 +59,8 @@ impl Drop for TempDir {
 fn source() -> OneStepProtocol {
     let dir = TempDir::new();
     let data = dir.path().join(starts::HOUSING_FILE);
-    std::fs::write(&data, starts::HOUSING_PARQUET).expect("the housing file writes");
+    std::fs::write(&data, include_bytes!("data/california_housing.parquet"))
+        .expect("the housing file writes");
     let boot = Boot::data_file(&data.to_string_lossy()).expect("the housing file opens");
     let app = MeridianApp::headless(boot, Mode::Light);
     // The folder goes when this returns. A folder with no manifest is read as
@@ -82,7 +83,7 @@ fn typed(name: &str, statement: &str, reads: &[&str]) -> TypedStep {
 /// The rows the last step of `chain` makes, previewed from the housing file.
 fn rows_of(chain: &[(String, PreviewOp)]) -> u64 {
     let data =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/starts/california_housing.parquet");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/california_housing.parquet");
     preview_row_count_stoppable(
         &data,
         FileReader::Parquet,
@@ -289,7 +290,8 @@ fn a_statement_typed_over_a_folder_reads_each_branch_as_made() {
 fn a_run_record_leaves_the_typed_step_in_the_sheet() {
     let dir = TempDir::new();
     let data = dir.path().join(starts::HOUSING_FILE);
-    std::fs::write(&data, starts::HOUSING_PARQUET).expect("the housing file writes");
+    std::fs::write(&data, include_bytes!("data/california_housing.parquet"))
+        .expect("the housing file writes");
     let boot = Boot::data_file(&data.to_string_lossy()).expect("the housing file opens");
     let source = MeridianApp::headless(boot, Mode::Light)
         .protocol_model()

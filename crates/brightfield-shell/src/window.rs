@@ -433,16 +433,25 @@ pub struct DoorRow {
 pub struct PendingStart {
     /// The start this fetch is for.
     id: &'static str,
-    /// The spec whose sources are being fetched, and which will be composed
-    /// against the local files when they land.
-    spec: String,
-    /// The sources that spec declared, in declaration order — derived from
-    /// `spec` by `crate::remote::remote_sources` at the one site that builds
-    /// this struct.
+    /// What is done with the files when they land.
+    then: Landing,
+    /// The sources being fetched, in declaration order — derived from the
+    /// spec by `crate::remote::remote_sources` for a chart, and the one URL
+    /// a data start names for a data file.
     sources: Vec<String>,
     /// The worker moving them — `None` on the frame the click landed on, and
     /// `Some` from the next frame until the bytes land.
     fetch: Option<crate::remote::Fetch>,
+}
+
+/// What a [`PendingStart`]'s fetched files become.
+enum Landing {
+    /// A chart spec, composed against the local files: the sources are the
+    /// ones it declares.
+    Compose(String),
+    /// A data start's file, written from the one source it fetches by
+    /// `crate::starts::write_fetched` and opened as a data file.
+    Write(&'static crate::starts::FetchedData),
 }
 
 /// A count of a kept statement's rows under way on a worker: the step it
@@ -8534,6 +8543,12 @@ impl MeridianApp {
                 return;
             }
         }
+        // A data start fetches the same way, the first time on this machine.
+        if let Some(data) = crate::starts::find(id).and_then(|start| start.data.as_ref()) {
+            if self.open_fetched_start(ctx, id, data) {
+                return;
+            }
+        }
         let opened = match crate::starts::load(id) {
             Ok(opened) => opened,
             Err(e) => {
@@ -8581,19 +8596,61 @@ impl MeridianApp {
         if sources.is_empty() {
             return false;
         }
+        self.latch_fetch(ctx, id, Landing::Compose(spec.to_string()), sources);
+        true
+    }
+
+    /// Open a data start whose file is not on this machine yet **without
+    /// blocking the frame**: the worker fetches [`FetchedData::url`], and the
+    /// file is written from it and opened when it lands. Answers whether it
+    /// took the start.
+    ///
+    /// `false`, and nothing latched, when the file is already at
+    /// [`crate::starts::dataset_path`]: the caller's next move is
+    /// `starts::load`, which opens that file with no fetch, as a restored
+    /// launch does.
+    ///
+    /// **Public, and taking the data rather than reading it off `id`**, for
+    /// the reason [`Self::open_remote_start`] takes the spec: a test aims the
+    /// whole path at a server on localhost by handing in data that names it,
+    /// and what is fetched and what is written both come off that one value.
+    ///
+    /// [`FetchedData::url`]: crate::starts::FetchedData::url
+    pub fn open_fetched_start(
+        &mut self,
+        ctx: &egui::Context,
+        id: &'static str,
+        data: &'static crate::starts::FetchedData,
+    ) -> bool {
+        if crate::starts::dataset_path(data).is_file() {
+            return false;
+        }
+        self.latch_fetch(ctx, id, Landing::Write(data), vec![data.url.to_string()]);
+        true
+    }
+
+    /// Latch a fetch of `sources` for the start `id`, to land as `then` —
+    /// the one site that builds a [`PendingStart`]. The worker starts on the
+    /// next frame, in `poll_fetch`.
+    fn latch_fetch(
+        &mut self,
+        ctx: &egui::Context,
+        id: &'static str,
+        then: Landing,
+        sources: Vec<String>,
+    ) {
         // A second click on a card already fetching is not a second fetch. It
         // is the same click, and the readout is already saying so.
         if self.fetching.as_ref().is_some_and(|p| p.id == id) {
-            return true;
+            return;
         }
         self.fetching = Some(PendingStart {
             id,
-            spec: spec.to_string(),
+            then,
             sources,
             fetch: None,
         });
         ctx.request_repaint();
-        true
     }
 
     /// The sources this window is fetching, or is about to.
@@ -8756,14 +8813,25 @@ impl MeridianApp {
             return;
         };
         let id = pending.id;
-        // **The spec the fetch was of**, taken off the latch rather than read
-        // back out of the id. Reading it back is what let the tests fetch a
-        // stub and compose the published lake: the fetched map is keyed on the
-        // URLs the fetch was given, so composing a spec that names a different
-        // one repoints nothing and the engine binds the network.
-        let spec = std::mem::take(&mut pending.spec);
-        self.fetching = None;
-        match result.and_then(|files| crate::starts::compose(&spec, Some(files))) {
+        // **What the fetch was for**, taken off the latch rather than read
+        // back out of the id. Reading the spec back is what let the tests
+        // fetch a stub and compose the published lake: the fetched map is
+        // keyed on the URLs the fetch was given, so composing a spec that
+        // names a different one repoints nothing and the engine binds the
+        // network.
+        let Some(PendingStart { then, .. }) = self.fetching.take() else {
+            return;
+        };
+        let opened = result.and_then(|files| match then {
+            Landing::Compose(spec) => crate::starts::compose(&spec, Some(files)),
+            // The archive is unpacked here, on the UI thread, over the file
+            // the worker wrote; the fetched copy is dropped, directory and
+            // all, once the data file is written.
+            Landing::Write(data) => {
+                crate::starts::write_fetched(data, &files).map(crate::starts::Opened::File)
+            }
+        });
+        match opened {
             Ok(opened) => self.land_start(ctx, id, opened),
             Err(e) => self.refuse_start(ctx, id, &e),
         }

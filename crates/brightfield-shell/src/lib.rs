@@ -101,6 +101,7 @@ pub mod export;
 pub mod gallery;
 pub mod generated;
 pub mod grid_foot;
+pub mod housing;
 pub mod inspector;
 pub mod interval_drag;
 pub mod legend;

@@ -129,6 +129,12 @@ rfd = "0.17"
 # that a source served with `Content-Encoding: gzip` arrives usable rather than
 # as a compressed file DuckDB cannot read.
 ureq = "2"
+# Opens the archive the California Housing start fetches — `crate::housing`,
+# which reads the one text file inside it. NOT a new crate in this binary's
+# graph: `arc` already resolves zip 6 with exactly these features, for its
+# archive-extract operator, so this declaration adds a direct edge and no
+# build.
+zip = { version = "6", default-features = false, features = ["deflate-flate2"] }
 # The snapshot an opened agent Protocol's panels read — `crate::protocol_panels`
 # attaches the Protocol's database read-only, copies the tables the panels read
 # into memory, detaches, and writes each to Parquet. Neither crate is new to the

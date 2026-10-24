@@ -23,7 +23,7 @@ fn housing_source() -> TypedSource {
     use_own_preview_gate_on_this_thread();
     TypedSource {
         data: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("assets/starts/california_housing.parquet"),
+            .join("tests/data/california_housing.parquet"),
         reader: FileReader::Parquet,
         root_table: "california_housing".into(),
         steps: Vec::new(),

@@ -84,7 +84,8 @@ impl Window {
         let folder = root.0.join("data");
         std::fs::create_dir_all(&folder).expect("the data file's folder");
         let data = folder.join(starts::HOUSING_FILE);
-        std::fs::write(&data, starts::HOUSING_PARQUET).expect("the housing file writes");
+        std::fs::write(&data, include_bytes!("data/california_housing.parquet"))
+            .expect("the housing file writes");
         let boot = Boot::data_file(&data.to_string_lossy()).expect("the housing file opens");
         let history: &Path = &root.0.join("history");
         let app = MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light)

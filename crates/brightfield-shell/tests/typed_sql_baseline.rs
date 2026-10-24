@@ -110,7 +110,8 @@ struct Seen {
 fn capture(mode: Mode, name: &str, keep: bool) -> (image::RgbaImage, Seen) {
     let root = TempDir::new(name);
     let data = root.0.join(starts::HOUSING_FILE);
-    std::fs::write(&data, starts::HOUSING_PARQUET).expect("the housing file writes");
+    std::fs::write(&data, include_bytes!("data/california_housing.parquet"))
+        .expect("the housing file writes");
     let boot = Boot::data_file(data.to_str().expect("utf-8 path"))
         .unwrap_or_else(|e| panic!("open {}: {e}", data.display()));
 

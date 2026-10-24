@@ -103,7 +103,8 @@ impl Window {
         let folder = root.0.join("data");
         std::fs::create_dir_all(&folder).expect("the data file's folder");
         let data = folder.join(starts::HOUSING_FILE);
-        std::fs::write(&data, starts::HOUSING_PARQUET).expect("the housing file writes");
+        std::fs::write(&data, include_bytes!("data/california_housing.parquet"))
+            .expect("the housing file writes");
         let boot = Boot::data_file(&data.to_string_lossy()).expect("the housing file opens");
         let history: &Path = &root.0.join("history");
         let app = MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light)
@@ -500,7 +501,8 @@ fn opening_another_document_closes_the_form_and_drops_what_was_typed() {
     let other = root.0.join("other");
     std::fs::create_dir_all(&other).expect("the other file's folder");
     let data = other.join(starts::HOUSING_FILE);
-    std::fs::write(&data, starts::HOUSING_PARQUET).expect("the other file writes");
+    std::fs::write(&data, include_bytes!("data/california_housing.parquet"))
+        .expect("the other file writes");
     let ctx = win.ctx.clone();
     win.app.open_data_file(&ctx, &data.to_string_lossy());
     win.settle();

@@ -30,7 +30,7 @@
 //!   a blank surface has moved the blank canvas rather than removed it, so
 //!   [`load`] returns a *composed* dashboard or a *built* asset graph rather
 //!   than an editor buffer. It returns a **path** for exactly one kind of
-//!   start — one that ships a data file ([`Start::data`]) — and that is not
+//!   start — one that opens a data file ([`Start::data`]) — and that is not
 //!   the exception this bullet is guarding against: the caller's very next
 //!   call opens the path through [`crate::data_file::open`], which is where a
 //!   composed dashboard and a built graph both come from for a file the reader
@@ -42,9 +42,10 @@
 //!   a YAML file of inline numbers: inline rows are a testing affordance under
 //!   the emitter's 1000-row cap, and several of the starts deliberately query
 //!   tables past that cap to keep the distinction honest. Where the table
-//!   comes from varies — the generated starts declare it in SQL, and
-//!   [`CROSSWALK_CHART`] reads a published Parquet — but what the chart draws
-//!   is a query result either way, never a literal.
+//!   comes from varies — the generated starts declare it in SQL,
+//!   [`CROSSWALK_CHART`] reads a published Parquet, and
+//!   [`CALIFORNIA_HOUSING`] fetches its authors' own file — but what the
+//!   chart draws is a query result either way, never a literal.
 //!
 //! # Why an id rather than a path
 //!
@@ -94,8 +95,8 @@
 //!
 //! The **chart** is what that Protocol produces, once someone has run it and
 //! published the Parquet: the whole crosswalk, read live over httpfs and drawn
-//! as two aggregating marks. It is the only start whose data is not inside the
-//! binary, which is what [`Start::remote`] exists to say out loud. It is here
+//! as two aggregating marks. Its data is not inside the binary, which is what
+//! [`Start::remote`] exists to say out loud. It is here
 //! because a lineage graph cannot be filtered, panned or brushed, and a
 //! product whose gallery offers only the declaration has nothing on it to
 //! demonstrate the verbs with.
@@ -144,8 +145,8 @@
 //!
 //! # The one thing the crosswalk CHART has to say out loud
 //!
-//! It needs the network, and every start beside it opens without one — a
-//! difference a user meets at the click, so it is disclosed at the click:
+//! It needs the network, and the starts that are not remote open without one
+//! — a difference a user meets at the click, so it is disclosed at the click:
 //! [`Start::remote`] is the property, [`REMOTE_MARK`] is the words, and
 //! `a_start_that_reaches_the_network_says_so_on_its_own_button` is what keeps
 //! the flag and the label from drifting apart — exactly the strut
@@ -187,7 +188,10 @@
 //! copy keeping those three draws the same bins and the same counts at a
 //! fortieth of the size. `scripts/cut-crosswalk-fixture.sh` cuts it and says
 //! why; the nightly network run checks the published table has not moved
-//! since.
+//! since. [`CALIFORNIA_HOUSING`]'s are drawn the same way, through
+//! [`load_with`], from a committed copy of the archive its authors gave
+//! StatLib, which `crates/brightfield-shell/tests/data/houses.json`
+//! accounts for.
 
 use brightfield_workbench::ItemId;
 
@@ -215,42 +219,43 @@ pub const DASHBOARD: &str = "signals-dashboard";
 pub const DISTRIBUTION: &str = "reading-distribution";
 /// The ranked bar chart: generated events, aggregated in-engine.
 pub const BREAKDOWN: &str = "activity-breakdown";
-/// California Housing: a real Parquet, shipped inside the binary, opened as
-/// the one-step Protocol a file picked through the dialog opens as.
+/// California Housing: its authors' own file, fetched from StatLib and
+/// opened as the one-step Protocol a file picked through the dialog opens as.
 ///
-/// The first start that is a **data file** rather than a spec or a manifest —
-/// see [`Start::data`] for what that changes and [`load`]'s third arm for how
-/// it opens.
+/// The start that is a **data file** rather than a spec or a manifest — see
+/// [`Start::data`] for what that changes and [`load`]'s data arm for how it
+/// opens. Its data is not in the binary: see [`crate::housing`] for why.
 pub const CALIFORNIA_HOUSING: &str = "california-housing";
 
-/// A data file a start ships **inside the binary**, and the name the click
-/// writes it under.
+/// A data file a start **fetches**, and the name the click writes it under.
 ///
-/// One struct rather than three fields on [`Start`], because they are one
-/// fact: bytes with no name have nowhere to go, a name with no bytes has no
-/// bytes to write, and a descriptor belonging to different bytes misdescribes
-/// the ones it sits beside. An `Option<BundledData>` therefore has two states
-/// and not eight.
-pub struct BundledData {
-    /// The name the bytes are written under — and therefore what the locator
+/// One struct rather than four fields on [`Start`], because they are one
+/// fact: a URL with no name has nowhere to land, a name with no way to make
+/// its file from what was fetched has nothing to write, and a descriptor
+/// belonging to another source misdescribes the one beside it. An
+/// `Option<FetchedData>` therefore has two states.
+pub struct FetchedData {
+    /// The name the file is written under — and therefore what the locator
     /// band says, what the one SQL step reads, and (as its stem) what the
     /// table the Protocol produces is called. See [`crate::one_step`].
     ///
-    /// A **name**, not a path: [`materialise`] decides the directory, so a
+    /// A **name**, not a path: [`dataset_path`] decides the directory, so a
     /// start cannot name somewhere outside it.
     pub file_name: &'static str,
-    /// The file itself.
-    pub bytes: &'static [u8],
-    /// The Frictionless descriptor these bytes were exported with — where
-    /// they came from, at which upstream revision, under which licence, and
-    /// their own size and SHA-256.
+    /// Where the source is fetched from.
+    pub url: &'static str,
+    /// Turns the fetched file, its first argument, into the data file at its
+    /// second.
+    pub prepare: fn(&std::path::Path, &std::path::Path) -> Result<(), String>,
+    /// The Frictionless descriptor of what [`Self::prepare`] writes: its
+    /// columns, where they came from, and the terms the source states.
     ///
-    /// Shipped beside the bytes because a third-party dataset in a public
-    /// repository has to carry its provenance with it rather than leave it
-    /// in the repository that built it, and read by
-    /// `the_bundled_dataset_is_the_bytes_its_descriptor_declares` so it is a
-    /// gate rather than a note: the descriptor's `bytes` and `hash` are held
-    /// against [`Self::bytes`], and its `path` against [`Self::file_name`].
+    /// Shipped beside the start because a third-party dataset has to carry
+    /// its provenance with it, and read by
+    /// `the_fetched_dataset_is_described_by_its_own_descriptor` so it is a
+    /// gate rather than a note: its `path` is held against
+    /// [`Self::file_name`], its source against [`Self::url`], and its columns
+    /// against the file [`Self::prepare`] writes.
     pub descriptor: &'static str,
 }
 
@@ -297,8 +302,8 @@ pub struct Start {
     /// the exemption is made once at the pick and then remembered, and
     /// `run_less_manifest_refusal` is where that is stated in full.
     pub run_less: bool,
-    /// Whether opening this reaches the **network** — its spec reads a source
-    /// this binary does not carry.
+    /// Whether opening this reaches the **network** — its spec, or its
+    /// [`data`](Self::data), reads a source this binary does not carry.
     ///
     /// The bullet at the top of this module says a start's spec and thumbnail
     /// ship inside the binary. They do, for every start. What does not
@@ -358,8 +363,8 @@ pub struct Start {
     /// with, and the claims its own header comment makes about them, are read
     /// off these bytes by `crates/brightfield-shell/tests/start_interaction.rs`.
     pub spec: Option<&'static str>,
-    /// The **data file** this start opens, or `None` for a start that opens a
-    /// chart spec or a Protocol manifest.
+    /// The **data file** this start fetches and opens, or `None` for a start
+    /// that opens a chart spec or a Protocol manifest.
     ///
     /// Exclusive with [`spec`](Self::spec), and
     /// `a_start_declares_a_spec_or_a_data_file_and_never_both` is what holds
@@ -368,14 +373,14 @@ pub struct Start {
     /// **What it buys is one route into a data file rather than two** —
     /// `the_card_and_the_picker_land_on_one_window` is what reads that back.
     ///
-    /// [`load`] writes these bytes to disk and hands back the path; the caller
-    /// then opens that path the way it opens a path the reader picked out of
-    /// the dialog — [`crate::window::Boot::data_file`], over
+    /// [`load`] fetches the file, writes it to disk and hands back the path;
+    /// the caller then opens that path the way it opens a path the reader
+    /// picked out of the dialog — [`crate::window::Boot::data_file`], over
     /// [`crate::data_file::open`]. So the click and the picker cannot land on
     /// two different windows, because after the write they are the same call
     /// with the same argument. `the_card_and_the_picker_land_on_one_window` is
     /// what reads that back off two real opens.
-    pub data: Option<BundledData>,
+    pub data: Option<FetchedData>,
 }
 
 impl Start {
@@ -500,9 +505,9 @@ pub const STARTS: &[Start] = &[
     // not one this start was added to make.
     Start {
         id: CALIFORNIA_HOUSING,
-        label: "Open California Housing",
-        summary: "Californian census districts, as a Parquet on this machine: \
-                  nine measures, and a map from the two that are coordinates.",
+        label: "Open California Housing (over the network)",
+        summary: "Californian census districts from StatLib: nine measures, \
+                  and a map from their coordinates.",
         fills: crate::app::CHART,
         thumbnail: include_bytes!("../assets/starts/california-housing.png"),
         thumbnail_dark: include_bytes!("../assets/starts/california-housing-dark.png"),
@@ -513,20 +518,18 @@ pub const STARTS: &[Start] = &[
         // manifest, and `crate::protocol::run_less_manifest_refusal` is where
         // the distinction is written out.
         run_less: false,
-        // The bytes are in the binary, and so is the reader DuckDB needs for
-        // them — the engine's `duckdb` dependency declares the `parquet`
-        // feature — so the click reaches no network, which is the whole
-        // argument for bundling rather than publishing.
-        // `the_local_starts_open_with_the_network_denied_and_a_cold_extension_cache`
-        // in `tests/front_door.rs` opens it in a jail that denies one.
-        remote: false,
+        // The first open fetches the authors' archive from StatLib, so the
+        // label says so. Later opens find the file already written and reach
+        // no network — see `dataset_path`.
+        remote: true,
         on_door: true,
         // A data file, not a chart spec and not a manifest — see `load`'s
-        // third arm and `Start::data`.
+        // data arm and `Start::data`.
         spec: None,
-        data: Some(BundledData {
+        data: Some(FetchedData {
             file_name: HOUSING_FILE,
-            bytes: HOUSING_PARQUET,
+            url: crate::housing::URL,
+            prepare: crate::housing::unpack,
             descriptor: HOUSING_DESCRIPTOR,
         }),
     },
@@ -644,7 +647,7 @@ pub enum Opened {
     File(std::path::PathBuf),
 }
 
-/// The name [`CALIFORNIA_HOUSING`]'s bytes are written under.
+/// The name [`CALIFORNIA_HOUSING`]'s file is written under.
 ///
 /// Underscored rather than hyphenated like the start's id, because this is the
 /// name a **reader** meets — in the locator band, in the one SQL step, and as
@@ -653,16 +656,8 @@ pub enum Opened {
 /// the table read differently for no gain.
 pub const HOUSING_FILE: &str = "california_housing.parquet";
 
-/// The bundled California Housing Parquet.
-///
-/// Public so a test can compare what a click put on disk with the bytes the
-/// binary carries and say *one file*, which is what AC4 of this start's card
-/// asks and what `every_shipped_start_loads_into_a_document_with_something_in_it`
-/// reads back.
-pub const HOUSING_PARQUET: &[u8] = include_bytes!("../assets/starts/california_housing.parquet");
-
-/// The descriptor [`HOUSING_PARQUET`] was exported with — see
-/// [`BundledData::descriptor`].
+/// The descriptor of the file [`CALIFORNIA_HOUSING`] writes — see
+/// [`FetchedData::descriptor`].
 pub const HOUSING_DESCRIPTOR: &str =
     include_str!("../assets/starts/california_housing.datapackage.json");
 
@@ -730,9 +725,10 @@ const CROSSWALK_MODELS: &[(&str, &str)] = &[
 /// is derived from its declared steps, so it touches no file and no network
 /// either.
 ///
-/// [`CROSSWALK_CHART`] is the exception, and the only one: its `file:` source
-/// is an `https://` URL, so composing it fetches. That is what
-/// [`Start::remote`] declares and what the label discloses.
+/// [`CROSSWALK_CHART`] and [`CALIFORNIA_HOUSING`] are the exceptions: the
+/// first's `file:` source is an `https://` URL, so composing it fetches, and
+/// the second fetches its data file the first time it is opened on a machine.
+/// That is what [`Start::remote`] declares and what the label discloses.
 ///
 /// **This entry point waits for that fetch**, and the window does not call it
 /// for a start that has one. `open_start` in
@@ -746,24 +742,33 @@ const CROSSWALK_MODELS: &[(&str, &str)] = &[
 /// # Errors
 ///
 /// If `id` is not a start this build ships, or if the embedded fixture fails
-/// to compose. For every start but [`CROSSWALK_CHART`] the second is a
+/// to compose. For a start that is not [`Start::remote`] the second is a
 /// build-time defect rather than a user's circumstance —
 /// `every_shipped_start_loads_into_a_document_with_something_in_it` and the
 /// thumbnail regeneration test in `tests/front_door.rs` are what keep it from
-/// reaching a user. For [`CROSSWALK_CHART`] it is *also* the ordinary offline
-/// answer: a structured engine error naming the network and the URL, which the
-/// caller raises as a banner rather than swallowing.
+/// reaching a user. For a remote start it is *also* the ordinary offline
+/// answer: an error naming the network and the URL, which the caller raises
+/// as a banner rather than swallowing.
 pub fn load(id: &str) -> Result<Opened, String> {
     let Some(start) = find(id) else {
         return Err(format!("no shipped starting point named {id:?}"));
     };
     // The data-file arm, and it is first because it is the one arm that puts
     // something on disk: a start declaring both a `data:` and a `spec:` would
-    // otherwise materialise nothing and compose the spec, which is a silent
-    // wrong answer rather than a loud one. The two are exclusive and
+    // otherwise fetch nothing and compose the spec, which is a silent wrong
+    // answer rather than a loud one. The two are exclusive and
     // `a_start_declares_a_spec_or_a_data_file_and_never_both` is what holds it.
+    //
+    // A file an earlier open wrote is opened as it is, with no fetch: this is
+    // also the path a launch restoring the start takes, and a restore should
+    // not need the network the first open did.
     if let Some(data) = &start.data {
-        return materialise(data).map(Opened::File);
+        let path = dataset_path(data);
+        if path.is_file() {
+            return Ok(Opened::File(path));
+        }
+        let fetched = crate::remote::Fetch::begin(vec![data.url.to_string()], || {}).wait()?;
+        return write_fetched(data, &fetched).map(Opened::File);
     }
     // The chart arm reads the start's own [`Start::spec`] rather than a second
     // table keyed by id, so the bytes a check reads off the entry are the bytes
@@ -797,24 +802,32 @@ pub fn load(id: &str) -> Result<Opened, String> {
     }
 }
 
-/// Load the chart start with this id over sources already on disk, rather
-/// than fetching them — [`load`]'s chart arm with the fetch handed in.
+/// Load the start with this id over sources already on disk, rather than
+/// fetching them — [`load`]'s chart and data arms with the fetch handed in.
 ///
 /// For the per-push thumbnail tests, which render [`CROSSWALK_CHART`] from a
 /// committed reduced copy of the published table (see
-/// `scripts/cut-crosswalk-fixture.sh` for what the copy keeps and why). The
-/// composition is [`compose`], the same function a click and [`load`] end at,
-/// so what differs from a live open is which bytes were read.
+/// `scripts/cut-crosswalk-fixture.sh` for what the copy keeps and why) and
+/// [`CALIFORNIA_HOUSING`] from a committed copy of its authors' archive. The
+/// composition is [`compose`], and the data file is written by
+/// [`write_fetched`], the same functions a click and [`load`] end at, so what
+/// differs from a live open is which bytes were read.
+///
+/// A data start **always writes** here, over whatever an earlier open left at
+/// [`dataset_path`]: what was handed in is what the caller asked to open.
 ///
 /// # Errors
 ///
-/// If `id` is not a chart start this build ships, its spec does not parse, or
-/// `fetched` does not stand in for every source the spec reads over the
+/// If `id` is not a chart or data start this build ships, its spec does not
+/// parse, or `fetched` does not stand in for every source it reads over the
 /// network — composing with one left over would reach the network after all.
 pub fn load_with(id: &str, fetched: crate::remote::Fetched) -> Result<Opened, String> {
     let Some(start) = find(id) else {
         return Err(format!("no shipped starting point named {id:?}"));
     };
+    if let Some(data) = &start.data {
+        return write_fetched(data, &fetched).map(Opened::File);
+    }
     let Some(spec) = start.spec else {
         return Err(format!("the shipped starting point {id:?} is not a chart"));
     };
@@ -876,48 +889,70 @@ pub fn datasets_dir() -> std::path::PathBuf {
     })
 }
 
-/// Put `data`'s bytes on disk under [`datasets_dir`] and hand back where they
-/// are.
+/// The subdirectory of [`datasets_dir`] a fetched data file is written into.
 ///
-/// **A stable path, not a temporary one**, which is the whole of what this
-/// buys over writing into `std::env::temp_dir()`: the locator band names a
-/// real file, Save writes the Protocol beside it, and the next launch — which
+/// Its own directory, not [`datasets_dir`] itself, because builds before this
+/// one wrote a different copy of California Housing to
+/// `datasets_dir()/california_housing.parquet`. [`load`] opens a file it finds
+/// at [`dataset_path`] without fetching, so sharing that path would have
+/// reopened the old copy on every machine that had one.
+pub const FETCHED_DIR: &str = "fetched";
+
+/// Where `data`'s file is written on this machine, and where [`load`] looks
+/// for it before fetching.
+///
+/// **A stable path, not a temporary one**: the locator band names a real
+/// file, Save writes the Protocol beside it, and the next launch — which
 /// restores this start through
 /// [`SavedLayout::opened`](brightfield_workbench::persist::SavedLayout::opened)
-/// and reaches this same function — finds the file already there.
+/// — finds the file already there and opens it with no network.
+#[must_use]
+pub fn dataset_path(data: &FetchedData) -> std::path::PathBuf {
+    datasets_dir().join(FETCHED_DIR).join(data.file_name)
+}
+
+/// Make `data`'s file at [`dataset_path`] from what `fetched` brought back
+/// from [`FetchedData::url`], and hand back where it is.
 ///
-/// **Idempotent, and it re-reads rather than trusting the path.** A file
-/// already at the path whose bytes are these bytes is left alone, so the
-/// second launch writes nothing; a file that is there and is something else —
-/// an older build's copy, a truncated write, a reader's own edit — is
-/// replaced, because what this start opens is the bytes the binary carries and
-/// not whatever happens to be sitting at the name.
+/// Called with the fetch already done: by [`load`] after waiting for it, by
+/// the window when its worker finishes, and by [`load_with`] with a stand-in.
 ///
-/// **The write lands by rename.** The bytes go to a staging name in the same
-/// directory (so the rename is within one filesystem and is atomic) and are
-/// renamed onto the path. A reader that opened the window twice in quick
-/// succession therefore sees either the previous file or the whole new one,
-/// never a Parquet with no footer — which DuckDB reports as a corrupt file
-/// rather than as a file that is not finished being written.
+/// **The write lands by rename.** [`FetchedData::prepare`] writes to a staging
+/// name in the same directory (so the rename is within one filesystem and is
+/// atomic), which is renamed onto the path. A reader that opened the window
+/// twice in quick succession therefore sees either the previous file or the
+/// whole new one, never a Parquet with no footer — which DuckDB reports as a
+/// corrupt file rather than as a file that is not finished being written —
+/// and a failed prepare leaves no file for [`load`] to find and trust.
 ///
 /// # Errors
 ///
-/// If the directory cannot be created, or either the write or the rename
-/// fails — each carrying the path and the operating system's own words. The
-/// caller raises it as the banner a start that will not open gets.
-pub fn materialise(data: &BundledData) -> Result<std::path::PathBuf, String> {
-    let dir = datasets_dir();
-    let path = dir.join(data.file_name);
-    if std::fs::read(&path).is_ok_and(|on_disk| on_disk == data.bytes) {
-        return Ok(path);
-    }
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+/// If `fetched` holds nothing for the URL, the directory cannot be created,
+/// the prepare fails, or the rename fails — each carrying the path or the URL
+/// and the underlying words. The caller raises it as the banner a start that
+/// will not open gets.
+pub fn write_fetched(
+    data: &FetchedData,
+    fetched: &crate::remote::Fetched,
+) -> Result<std::path::PathBuf, String> {
+    let Some(source) = fetched.local_path(data.url) else {
+        return Err(format!("nothing was fetched from {}", data.url));
+    };
+    let path = dataset_path(data);
+    let dir = path
+        .parent()
+        .expect("dataset_path is a file inside FETCHED_DIR");
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let staging = dir.join(format!("{}.{}.part", data.file_name, std::process::id()));
-    std::fs::write(&staging, data.bytes).map_err(|e| format!("{}: {e}", staging.display()))?;
+    // A staging file nothing will ever finish is litter in a directory the
+    // reader can see, so every failure from here removes it. Removing it
+    // cannot fail the call it is reporting.
+    let _ = std::fs::remove_file(&staging);
+    if let Err(e) = (data.prepare)(source, &staging) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(format!("the file fetched from {}: {e}", data.url));
+    }
     std::fs::rename(&staging, &path).map_err(|e| {
-        // A failed rename leaves the staging file behind, and a staging file
-        // nothing will ever finish is litter in a directory the reader can
-        // see. Removing it cannot fail the call it is reporting.
         let _ = std::fs::remove_file(&staging);
         format!("{} -> {}: {e}", staging.display(), path.display())
     })?;

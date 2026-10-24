@@ -1,130 +1,86 @@
 {
   "$schema": "https://datapackage.org/profiles/2.0/datapackage.json",
-  "created": "2026-09-02T04:43:37Z",
-  "description": "16,640 California census-block-group districts with median income, housing age, room and occupancy averages, population, position and median house value. This is the source's train split; the full dataset has 20,640 districts. Demo data: referenced by pinned URL and revision and built locally. Meridian does not host or publish this dataset.",
+  "name": "california-housing",
+  "title": "California Housing — 1990 Census block groups",
+  "description": "20,640 California block groups from the 1990 Census, with median house value, median income, median housing age, total rooms and bedrooms, population, households and centroid position, as R. Kelley Pace and Ronald Barry published them through StatLib. Brightfield does not carry this data: the start fetches the authors' archive and writes its rows to a Parquet on the reader's machine, in the source's order and units, with no column derived.",
   "licenses": [
     {
-      "name": "MIT",
-      "path": "https://huggingface.co/datasets/gvlassis/california_housing",
-      "title": "MIT License"
+      "path": "https://lib.stat.cmu.edu/datasets/",
+      "title": "No licence declared at source. The data is R. Kelley Pace and Ronald Barry's, issued through StatLib, whose submission terms provide for free distribution and non-commercial use and say nothing on commercial use."
     }
   ],
-  "name": "california-housing",
+  "sources": [
+    {
+      "path": "https://lib.stat.cmu.edu/datasets/houses.zip",
+      "title": "houses.zip on StatLib, the archive R. Kelley Pace and Ronald Barry deposited there"
+    },
+    {
+      "title": "Pace, R. Kelley and Ronald Barry, \"Sparse Spatial Autoregressions\", Statistics and Probability Letters, 33 (1997) 291-297"
+    }
+  ],
   "resources": [
     {
-      "bytes": 481832,
-      "format": "parquet",
-      "hash": "sha256:43b5fbc7a7df863ad8e79e5be23963ece9109f178fa46616b68fccd3625807c8",
-      "mediatype": "application/vnd.apache.parquet",
       "name": "california_housing",
       "path": "california_housing.parquet",
+      "format": "parquet",
+      "mediatype": "application/vnd.apache.parquet",
       "schema": {
         "fields": [
           {
-            "description": "Median household income for the district, in tens of thousands of 1990 US dollars.",
-            "name": "median_income",
-            "type": "number",
-            "x-finetype-confidence": 0.6,
-            "x-finetype-label": "representation.numeric.decimal_number",
-            "x-finetype-unsupported-constraints": {
-              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
-            }
-          },
-          {
-            "description": "Median age of the district's houses, in years.",
-            "name": "house_age",
-            "type": "number",
-            "x-finetype-confidence": 1.0,
-            "x-finetype-label": "representation.numeric.decimal_number",
-            "x-finetype-unsupported-constraints": {
-              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
-            }
-          },
-          {
-            "description": "Mean rooms per household. A district average, so values above ten are small households in large houses rather than errors.",
-            "name": "avg_rooms",
-            "type": "number",
-            "x-finetype-confidence": 0.6,
-            "x-finetype-label": "representation.numeric.decimal_number",
-            "x-finetype-unsupported-constraints": {
-              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
-            }
-          },
-          {
-            "description": "Mean bedrooms per household, on the same district-average basis.",
-            "name": "avg_bedrooms",
-            "type": "number",
-            "x-finetype-confidence": 0.5418,
-            "x-finetype-label": "representation.numeric.decimal_number",
-            "x-finetype-unsupported-constraints": {
-              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
-            }
-          },
-          {
-            "description": "Number of people resident in the district.",
-            "name": "population",
-            "type": "number",
-            "x-finetype-confidence": 1.0,
-            "x-finetype-label": "representation.numeric.decimal_number",
-            "x-finetype-unsupported-constraints": {
-              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
-            }
-          },
-          {
-            "description": "Mean household members per household.",
-            "name": "avg_occupancy",
-            "type": "number",
-            "x-finetype-confidence": 0.6,
-            "x-finetype-label": "representation.numeric.decimal_number",
-            "x-finetype-unsupported-constraints": {
-              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
-            }
-          },
-          {
-            "constraints": {
-              "maximum": 90.0,
-              "minimum": -90.0
-            },
-            "description": "District centroid latitude. With longitude, this is a map that needs no embedding behind it.",
-            "name": "latitude",
-            "type": "number",
-            "x-finetype-confidence": 0.9994,
-            "x-finetype-label": "geography.coordinate.latitude",
-            "x-finetype-unsupported-constraints": {
-              "pattern": "^-?([0-8]?\\d(\\.\\d+)?|90(\\.0+)?)$"
-            }
-          },
-          {
-            "constraints": {
-              "maximum": 180.0,
-              "minimum": -180.0
-            },
-            "description": "District centroid longitude.",
-            "name": "longitude",
-            "type": "number",
-            "x-finetype-confidence": 1.0,
-            "x-finetype-label": "geography.coordinate.longitude"
-          },
-          {
-            "description": "Median house value for the district, in hundreds of thousands of 1990 US dollars. Capped at 5.00001 in the source, which is a ceiling rather than a measurement.",
             "name": "median_house_value",
             "type": "number",
-            "x-finetype-confidence": 0.6,
-            "x-finetype-label": "representation.numeric.decimal_number",
-            "x-finetype-unsupported-constraints": {
-              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+            "description": "Median house value in the block group, in 1990 US dollars. The source tops out at 500,001, which is a ceiling rather than a measurement."
+          },
+          {
+            "name": "median_income",
+            "type": "number",
+            "description": "Median household income in the block group, as the source records it: values run from about 0.5 to 15, in tens of thousands of 1990 US dollars."
+          },
+          {
+            "name": "housing_median_age",
+            "type": "number",
+            "description": "Median age of the block group's houses, in years. The source tops out at 52."
+          },
+          {
+            "name": "total_rooms",
+            "type": "number",
+            "description": "Rooms in the block group, in total."
+          },
+          {
+            "name": "total_bedrooms",
+            "type": "number",
+            "description": "Bedrooms in the block group, in total."
+          },
+          {
+            "name": "population",
+            "type": "number",
+            "description": "People resident in the block group."
+          },
+          {
+            "name": "households",
+            "type": "number",
+            "description": "Households in the block group."
+          },
+          {
+            "name": "latitude",
+            "type": "number",
+            "description": "Block-group centroid latitude. With longitude, this is a map that needs no embedding behind it.",
+            "constraints": {
+              "minimum": -90.0,
+              "maximum": 90.0
+            }
+          },
+          {
+            "name": "longitude",
+            "type": "number",
+            "description": "Block-group centroid longitude.",
+            "constraints": {
+              "minimum": -180.0,
+              "maximum": 180.0
             }
           }
         ]
       }
     }
-  ],
-  "sources": [
-    {
-      "path": "https://huggingface.co/datasets/gvlassis/california_housing",
-      "title": "gvlassis/california_housing on Hugging Face, revision 17110e60"
-    }
-  ],
-  "title": "California Housing — district-level census aggregates",
-  "x-finetype-version": "0.6.58"
+  ]
 }

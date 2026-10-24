@@ -1,0 +1,14 @@
+{
+  "source": {
+    "url": "https://lib.stat.cmu.edu/datasets/houses.zip",
+    "bytes": 536977,
+    "sha256": "8b18f0a01cf9c99a65174d18fa582aa31971dfe55a26ad794f3299937c3708d7",
+    "rows": 20640
+  },
+  "fixture": {
+    "path": "houses.zip",
+    "sha256": "8b18f0a01cf9c99a65174d18fa582aa31971dfe55a26ad794f3299937c3708d7",
+    "copy": "the archive as StatLib serves it, unaltered, with the authors' own header naming them and the paper",
+    "terms": "no licence declared at source; StatLib's submission terms provide for free distribution and non-commercial use"
+  }
+}

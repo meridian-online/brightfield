@@ -106,7 +106,7 @@ pub fn layout_path() -> Option<PathBuf> {
 /// filed next to a JSON that has nothing to do with it.
 pub const DATASETS_DIR: &str = "datasets";
 
-/// Where this machine keeps the data files bundled starts write, or `None` if
+/// Where this machine keeps the data files starts write, or `None` if
 /// it has nowhere to put them.
 ///
 /// The same policy [`layout_path`] takes and the same override —

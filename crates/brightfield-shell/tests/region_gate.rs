@@ -696,7 +696,7 @@ fn every_regions_drawn_extent_is_the_one_it_declares() {
 }
 
 /// Point brightfield's config directory at this target's scratch, so loading a
-/// start that ships a data file writes that file there and not into the
+/// start that opens a data file writes that file there and not into the
 /// developer's own `~/Library/Application Support/Brightfield`.
 ///
 /// A simpler twin of `datasets_into_scratch` in `tests/front_door.rs`, which

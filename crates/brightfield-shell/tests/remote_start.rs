@@ -696,26 +696,195 @@ fn a_fetch_that_fails_raises_a_banner_naming_the_network_and_the_url() {
 }
 
 // ---------------------------------------------------------------------------
+// The data start: a fetched archive, written to a data file
+// ---------------------------------------------------------------------------
+
+/// The committed copy of the archive California Housing fetches.
+const HOUSES_ZIP: &[u8] = include_bytes!("data/houses.zip");
+
+/// California Housing's data, with its source moved to `url` and its file to
+/// `file_name` — what a test hands [`MeridianApp::open_fetched_start`] in
+/// place of the shipped start's own, so the fetch goes to the loopback stub
+/// and the write lands beside, not on, the file a click on the real card
+/// would find. Leaked, because the window holds a data start's data for the
+/// life of the fetch.
+fn housing_from(url: String, file_name: &'static str) -> &'static starts::FetchedData {
+    let shipped = starts::find(starts::CALIFORNIA_HOUSING)
+        .and_then(|start| start.data.as_ref())
+        .expect("California Housing is a data start");
+    Box::leak(Box::new(starts::FetchedData {
+        file_name,
+        url: Box::leak(url.into_boxed_str()),
+        prepare: shipped.prepare,
+        descriptor: shipped.descriptor,
+    }))
+}
+
+/// Taking California Housing's card with nothing on disk latches a fetch of
+/// the archive its authors gave StatLib, and leaves the window on the door.
+///
+/// The card half of the data start's fetch, read without a connection for
+/// the reason `taking_the_remote_card_records_the_url_its_spec_names` gives:
+/// the click latches, the next frame would start the worker, and no next
+/// frame is drawn.
+///
+/// Watched redden, one mutation: `open_start`'s data arm deleted, so the
+/// click falls through to the blocking `starts::load`. `fetching_start()` is
+/// then `None` and the first assertion fails — that mutation does reach
+/// StatLib while it is applied, which is why it is not the one kept.
+#[test]
+fn taking_the_housing_card_with_nothing_on_disk_records_the_statlib_archive() {
+    datasets_into_scratch();
+    let data = starts::find(starts::CALIFORNIA_HOUSING)
+        .and_then(|start| start.data.as_ref())
+        .expect("California Housing is a data start");
+    let _ = std::fs::remove_file(starts::dataset_path(data));
+    let mut win = Window::open();
+    win.frame();
+    win.take_the_card(starts::CALIFORNIA_HOUSING);
+    assert_eq!(
+        win.app.fetching_start(),
+        Some(starts::CALIFORNIA_HOUSING),
+        "the card click did not start a fetch — the window either opened the \
+         start synchronously or did nothing"
+    );
+    assert_eq!(
+        win.app.fetching_sources(),
+        [brightfield_shell::housing::URL.to_string()],
+        "the click fetches something other than the authors' archive"
+    );
+    assert!(
+        win.app.front_door_is_live(),
+        "the window left the door while the fetch was still only latched"
+    );
+}
+
+/// A data start's fetch lands as its data file: the archive is fetched once,
+/// written to the data file under the configured directory, and the window
+/// opens that file with the columns the authors' header names.
+///
+/// Watched redden, one mutation: `poll_fetch`'s `Landing::Write` arm handing
+/// `Opened::File` the fetched archive's own path rather than writing the data
+/// file — the window then fails to open a zip as a table and stays on the
+/// door, failing at "the fetch landed and the window stayed on the door".
+#[test]
+fn a_fetched_data_start_lands_as_the_file_it_writes() {
+    datasets_into_scratch();
+    let stub = Stub::declaring_length(HOUSES_ZIP.to_vec());
+    let data = housing_from(stub.url(), "stub_housing.parquet");
+    let _ = std::fs::remove_file(starts::dataset_path(data));
+    let mut win = Window::open();
+    win.frame();
+    let ctx = win.ctx.clone();
+    assert!(
+        win.app
+            .open_fetched_start(&ctx, starts::CALIFORNIA_HOUSING, data),
+        "nothing was on disk and no fetch was latched"
+    );
+    win.drive_until_fetched();
+    win.frame();
+
+    assert!(
+        !win.app.front_door_is_live(),
+        "the fetch landed and the window stayed on the door: {:?}",
+        win.app
+            .notifications()
+            .iter()
+            .map(|n| n.body.clone().unwrap_or_default())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        starts::dataset_path(data).is_file(),
+        "the window opened something, and {} is not on disk",
+        starts::dataset_path(data).display()
+    );
+    let columns: Vec<String> = win
+        .app
+        .protocol_model()
+        .columns()
+        .iter()
+        .map(|c| c.column.clone())
+        .collect();
+    assert_eq!(
+        columns,
+        brightfield_shell::housing::COLUMNS,
+        "the opened table's columns are not the ones the authors' header names"
+    );
+    assert_eq!(
+        stub.hits(),
+        1,
+        "the stub was connected to {} times, where the one fetch is once",
+        stub.hits()
+    );
+}
+
+/// An archive that is not the authors' file is refused with a banner, the
+/// window stays on the door, and nothing is left where a later open would
+/// find it and trust it.
+///
+/// Watched redden, one mutation: `starts::write_fetched` renaming the staging
+/// file onto the path before checking `prepare`'s answer leaves a file there,
+/// failing at "a refused archive left".
+#[test]
+fn an_archive_that_is_not_the_authors_file_is_refused_and_leaves_nothing() {
+    datasets_into_scratch();
+    let stub = Stub::declaring_length(b"not a zip archive".repeat(200));
+    let data = housing_from(stub.url(), "refused_housing.parquet");
+    let _ = std::fs::remove_file(starts::dataset_path(data));
+    let mut win = Window::open();
+    win.frame();
+    let ctx = win.ctx.clone();
+    assert!(win
+        .app
+        .open_fetched_start(&ctx, starts::CALIFORNIA_HOUSING, data));
+    win.drive_until_fetched();
+    win.frame();
+
+    let raised: Vec<String> = win
+        .app
+        .notifications()
+        .iter()
+        .map(|n| format!("{} {}", n.title, n.body.clone().unwrap_or_default()))
+        .collect();
+    assert_eq!(raised.len(), 1, "expected one banner: {raised:?}");
+    assert!(
+        raised[0].contains(&stub.url()),
+        "the banner does not name what was fetched: {}",
+        raised[0]
+    );
+    assert!(
+        win.app.front_door_is_live(),
+        "the window did not stay on the door through the refusal"
+    );
+    assert!(
+        !starts::dataset_path(data).exists(),
+        "a refused archive left {} for the next open to find",
+        starts::dataset_path(data).display()
+    );
+}
+
+// ---------------------------------------------------------------------------
 // AC4 — the local starts are untouched
 // ---------------------------------------------------------------------------
 
-/// No start but the remote one has anything to fetch, and the one that does
-/// names exactly the URL its shipped spec names.
+/// No start but the remote ones has anything to fetch, and the crosswalk
+/// chart names exactly the URL its shipped spec names.
 ///
 /// The decision `MeridianApp::open_start` makes, read where it is made. It is
 /// pure — no engine, no window, no connection — because the input is the
-/// start's own `spec:` bytes.
+/// start's own `spec:` bytes, or the URL its `data:` names.
 ///
 /// Watched redden, one mutation: `remote::https_sources` matching on
 /// `path.starts_with("http")` rather than [`remote::HTTPS`] — harmless here;
 /// and the real one, `https_sources` returning `Ok(Vec::new())` unconditionally,
 /// which empties the crosswalk chart's list and fails the last assertion.
 #[test]
-fn only_the_remote_start_has_anything_to_fetch() {
+fn only_the_remote_starts_have_anything_to_fetch() {
     for start in starts::STARTS {
-        let sources = start.spec.map_or_else(Vec::new, |spec| {
+        let mut sources = start.spec.map_or_else(Vec::new, |spec| {
             remote::remote_sources(spec).expect("a shipped spec parses")
         });
+        sources.extend(start.data.as_ref().map(|data| data.url.to_string()));
         assert_eq!(
             start.remote,
             !sources.is_empty(),
@@ -1075,7 +1244,7 @@ fn the_fetched_file_outlives_the_open_and_a_re_query_still_answers() {
 }
 
 /// Point brightfield's config directory at this target's scratch, so a start
-/// that ships a data file writes that file there and not into the developer's
+/// that opens a data file writes that file there and not into the developer's
 /// own `~/Library/Application Support/Brightfield`.
 ///
 /// A simpler twin of `datasets_into_scratch` in `tests/front_door.rs`: one test

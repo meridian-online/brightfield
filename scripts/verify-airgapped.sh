@@ -433,7 +433,7 @@ echo "== run 2b: a Parquet data file, jailed (a window opens briefly)"
 # the reader is linked into the binary. HOME is sealed above, so the extension
 # cache is cold, and the jail denies the network: a build without the reader
 # fails here downloading it, where every chart-spec leg stays green.
-smoke "$TMP/parquet.png" -- "$EXAMPLES/data/california_housing.parquet"
+smoke "$TMP/parquet.png" -- "$EXAMPLES/data/edgar_gleif_reduced.parquet"
 is_png "$TMP/parquet.png" 20000
 # One command, not `find | grep -q`: under pipefail, grep -q exiting at its first
 # match can leave find dying of SIGPIPE, and the pipeline's 141 would read as
