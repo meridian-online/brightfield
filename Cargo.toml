@@ -50,7 +50,7 @@ brightfield-sql = { path = "crates/brightfield-sql" }
 # two moves in lockstep: this `rev` and Cargo.lock. See README §"The arcform
 # dependency". The package is named `arcform` upstream; `package =` keeps the
 # crate `arc` in this workspace's source.
-arc = { package = "arcform", git = "https://github.com/meridian-online/arcform", rev = "cd47c406ddbf3c462d4b0cd22548b38edb0b56ad", default-features = false, features = ["http-fetch"] }
+arc = { package = "arcform", git = "https://github.com/meridian-online/arcform", rev = "631c587cb24f30f796b801d904fef7fb678a1a65", default-features = false, features = ["http-fetch"] }
 arrow = { version = "60", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # `bundled` builds DuckDB from source, so no member needs a system libduckdb. One
