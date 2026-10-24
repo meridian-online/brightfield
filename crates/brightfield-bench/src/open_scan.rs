@@ -255,8 +255,10 @@ pub fn ensure_csv(conn: &duckdb::Connection, dir: &Path, shape: &Shape) -> Resul
         shape.rows,
         writing.display()
     );
-    conn.execute_batch(&sql)
-        .map_err(|e| format!("generate {}: {e}", path.display()))?;
+    conn.execute_batch(&sql).map_err(|e| {
+        let _ = std::fs::remove_file(&writing);
+        format!("generate {}: {e}", path.display())
+    })?;
     crate::data::put_in_place(&writing, &path)?;
     Ok(path)
 }

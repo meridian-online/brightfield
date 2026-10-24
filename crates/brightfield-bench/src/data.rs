@@ -42,13 +42,15 @@ pub fn ensure_dataset(
         ) TO '{}' (FORMAT PARQUET)",
         writing.display()
     );
-    conn.execute_batch(&sql)
-        .map_err(|e| format!("generate {}: {e}", path.display()))?;
+    conn.execute_batch(&sql).map_err(|e| {
+        let _ = std::fs::remove_file(&writing);
+        format!("generate {}: {e}", path.display())
+    })?;
     put_in_place(&writing, &path)?;
     Ok(path)
 }
 
-/// A name beside `path` that no other writer in this process uses, for a
+/// A name beside `path` that no other writer uses, for a
 /// generated file to be written under before [`put_in_place`] renames it onto
 /// `path`.
 ///
@@ -65,7 +67,8 @@ pub fn writing_path(path: &Path) -> PathBuf {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     path.with_file_name(format!(
-        "writing-{}-{name}",
+        "writing-{}-{}-{name}",
+        std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ))
 }
