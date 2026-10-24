@@ -77,10 +77,12 @@ pub fn writing_path(path: &Path) -> PathBuf {
 ///
 /// # Errors
 ///
-/// When the rename fails, with both paths.
+/// When the rename fails, with both paths; `writing` is removed first.
 pub fn put_in_place(writing: &Path, path: &Path) -> Result<(), String> {
-    std::fs::rename(writing, path)
-        .map_err(|e| format!("move {} to {}: {e}", writing.display(), path.display()))
+    std::fs::rename(writing, path).map_err(|e| {
+        let _ = std::fs::remove_file(writing);
+        format!("move {} to {}: {e}", writing.display(), path.display())
+    })
 }
 
 /// The DuckDB library version, for the machine profile.
