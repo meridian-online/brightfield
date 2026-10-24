@@ -3445,8 +3445,8 @@ impl Session {
     /// **Planned with statistics propagation off.** From
     /// DuckDB 2.0 a `count(*)` over a table is answered from the table's
     /// statistics when it is planned, and its plan is one `COLUMN_DATA_SCAN`
-    /// that names nothing: the same leaf a `DESCRIBE` of a `read_csv` view plans
-    /// to, which does read the file. With the optimizer off the `count(*)`
+    /// that does not say what it reads: the same leaf a `DESCRIBE` of a
+    /// `read_csv` view plans to, which does read the file. With the optimizer off the `count(*)`
     /// plans as the `SEQ_SCAN` it stands for, naming its `Table`, so
     /// [`profile::plan_file_reads`] can say what it reads. That counts a scan of
     /// a table the run itself answers from statistics, which is the side the
