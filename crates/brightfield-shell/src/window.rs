@@ -9502,7 +9502,14 @@ impl MeridianApp {
     /// they were drawn from, looked at on [`crate::panel_tiles::RUN_CHECK_EVERY`]'s
     /// cadence. Not while a tile is open as the chart: its session reads the
     /// snapshot a reload would replace, so the reload waits for the way back.
+    /// Not while this window's own run of the Protocol is going either: a
+    /// reload opens the database the run is writing, and a lock it holds
+    /// between two of the run's steps fails the next one. `poll_run` reloads
+    /// the tiles when the run lands.
     fn poll_panel_tiles(&mut self, ctx: &egui::Context) {
+        if self.run_in_progress() {
+            return;
+        }
         // While a tile is open nothing is checked, so nothing is scheduled.
         let Some(tiles) = self.tiles.as_mut().filter(|t| t.selected().is_none()) else {
             return;
