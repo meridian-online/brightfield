@@ -29,6 +29,7 @@ pub fn ensure_dataset(
     if path.exists() {
         return Ok(path);
     }
+    let writing = writing_path(&path);
     let sql = format!(
         "COPY (
             SELECT
@@ -39,11 +40,49 @@ pub fn ensure_dataset(
                 ('c' || (hash(i * 7 + 5) % 10))::VARCHAR AS category
             FROM range({rows}) AS r(i)
         ) TO '{}' (FORMAT PARQUET)",
-        path.display()
+        writing.display()
     );
-    conn.execute_batch(&sql)
-        .map_err(|e| format!("generate {}: {e}", path.display()))?;
+    conn.execute_batch(&sql).map_err(|e| {
+        let _ = std::fs::remove_file(&writing);
+        format!("generate {}: {e}", path.display())
+    })?;
+    put_in_place(&writing, &path)?;
     Ok(path)
+}
+
+/// A name beside `path` that no other writer uses, for a
+/// generated file to be written under before [`put_in_place`] renames it onto
+/// `path`.
+///
+/// Tests that run at once share these files, and each one that finds a file
+/// missing writes it. DuckDB 2.0's `COPY ... TO` refuses a file another writer
+/// has just created, and leaves it missing for a moment while it is replaced,
+/// so a writer writes under its own name and a reader only ever finds the
+/// whole file, whichever writer put it there.
+pub fn writing_path(path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    path.with_file_name(format!(
+        "writing-{}-{}-{name}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+/// Rename `writing`, a file [`writing_path`] named, onto `path`.
+///
+/// # Errors
+///
+/// When the rename fails, with both paths; `writing` is removed first.
+pub fn put_in_place(writing: &Path, path: &Path) -> Result<(), String> {
+    std::fs::rename(writing, path).map_err(|e| {
+        let _ = std::fs::remove_file(writing);
+        format!("move {} to {}: {e}", writing.display(), path.display())
+    })
 }
 
 /// The DuckDB library version, for the machine profile.

@@ -3,8 +3,8 @@
 # steps with, at the one version this workspace pins, for one Rust target.
 #
 #   scripts/fetch-duckdb-cli.sh RUST_TARGET DEST_DIR
-#       downloads the official release zip, checks its sha256 against the pin
-#       below BEFORE unpacking it, unpacks `duckdb` into DEST_DIR, checks the
+#       downloads the official release archive, checks its sha256 against the
+#       pin below BEFORE unpacking it, unpacks `duckdb` into DEST_DIR, checks the
 #       unpacked executable's sha256 too, and prints its path.
 #
 #   scripts/fetch-duckdb-cli.sh --check RUST_TARGET DIR
@@ -22,7 +22,7 @@
 # it — and the shell's Run control names it to the child in ARC_DUCKDB_BIN
 # (crates/brightfield-shell/src/run.rs, `staged_engine_beside`).
 #
-# WHY THIS VERSION. v1.5.6 is the DuckDB that `libduckdb-sys` 1.10506.0 links
+# WHY THIS VERSION. v2.0.0 is the DuckDB that `libduckdb-sys` 1.20000.0 links
 # into this binary (Cargo.lock), so the engine that writes a run and the
 # engine that reads the result in the window are one version. Moving the
 # embedded DuckDB moves this pin with it: the version, the two assets and all
@@ -30,10 +30,12 @@
 # VERSION here and libduckdb-sys in Cargo.lock disagree.
 #
 # WHAT IS PINNED. Both hashes per target were measured on the official assets
-# at https://github.com/duckdb/duckdb/releases/tag/v1.5.6, and the zip hashes
-# agree with the digests GitHub publishes for those assets. The per-architecture
-# zips are used rather than `duckdb_cli-osx-universal.zip`, which carries both
-# slices: 34.8 MB to download against 16.3 MB (arm64) and 18.5 MB (x86_64).
+# at https://github.com/duckdb/duckdb/releases/tag/v2.0.0, and the archive hashes
+# agree with the digests GitHub publishes for those assets. From 2.0 DuckDB
+# publishes the CLI as a `.tar.gz` named `duckdb-cli-<platform>` (1.5 published
+# `duckdb_cli-<platform>.zip`). The per-architecture archives are used rather than
+# `duckdb-cli-osx-universal.tar.gz`, which carries both slices: 40.6 MB to
+# download against 19.2 MB (arm64) and 21.5 MB (x86_64).
 # The executables are signed by the DuckDB Foundation with the hardened runtime
 # and a timestamp; nothing here re-signs them, so the signature a user can
 # check is the upstream one.
@@ -50,17 +52,17 @@ fi
 TARGET="${1:?$usage}"
 DIR="${2:?$usage}"
 
-VERSION="v1.5.6"
+VERSION="v2.0.0"
 case "$TARGET" in
   aarch64-apple-darwin)
-    ASSET="duckdb_cli-osx-arm64.zip"
-    ZIP_SHA256="8e0f6825653f8d057922e6147db920bebf072cb41f4b041fd35521c18d7d126e"
-    BIN_SHA256="7d15b2aaf6be05212ada5f99fe79e0b83e63b7ed91e7e422c0b925278e9e0c39"
+    ASSET="duckdb-cli-osx-arm64.tar.gz"
+    ARCHIVE_SHA256="188a36fe8883ef52e69165a0cbb6031ef679c8e6c448a1ce22951964149b7f96"
+    BIN_SHA256="432e9c8012d0259e7c4630fa2136bf59fb832769ca7e0f6e374b8af2d2cebed9"
     ;;
   x86_64-apple-darwin)
-    ASSET="duckdb_cli-osx-amd64.zip"
-    ZIP_SHA256="ae74c8cd74304bde1d92d941aca37bc72084ee8daa5660913819d8a9e9d29331"
-    BIN_SHA256="ad4eda7e81a9f3c2de218c00232dc08a78b819c1c98c0d6d847cf1b42e76c6e8"
+    ASSET="duckdb-cli-osx-amd64.tar.gz"
+    ARCHIVE_SHA256="fbc7013ba09d117396dabf16783281c2add47fc01cdac4855464a03526dc96ee"
+    BIN_SHA256="3abb2f746efe011979290d40448b8ac011b7fd7c55094ac00e7beeb8482c5ac0"
     ;;
   *)
     fail "no pinned DuckDB CLI for target ${TARGET}. The two darwin targets
@@ -97,10 +99,10 @@ trap 'rm -rf "$WORK"' EXIT
 curl -sSfL --retry 3 --retry-delay 2 -o "${WORK}/${ASSET}" "$URL" \
   || fail "could not download ${URL}"
 got=$(sha256_of "${WORK}/${ASSET}")
-[ "$got" = "$ZIP_SHA256" ] || fail "${ASSET} does not match its pin; refusing to unpack it
-  sha256 wanted ${ZIP_SHA256}
+[ "$got" = "$ARCHIVE_SHA256" ] || fail "${ASSET} does not match its pin; refusing to unpack it
+  sha256 wanted ${ARCHIVE_SHA256}
   sha256 found  ${got}"
-unzip -o -q "${WORK}/${ASSET}" duckdb -d "$DIR" || fail "${ASSET} holds no 'duckdb' entry"
+tar -xzf "${WORK}/${ASSET}" -C "$DIR" duckdb || fail "${ASSET} holds no 'duckdb' entry"
 chmod 755 "${DIR}/duckdb"
 check_binary "$DIR"
 echo "${DIR}/duckdb"

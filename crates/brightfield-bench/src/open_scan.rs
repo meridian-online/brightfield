@@ -222,6 +222,7 @@ pub fn ensure_csv(conn: &duckdb::Connection, dir: &Path, shape: &Shape) -> Resul
     if path.exists() {
         return Ok(path);
     }
+    let writing = crate::data::writing_path(&path);
     let mut selects: Vec<String> = Vec::with_capacity(shape.columns());
     for c in 0..shape.numeric {
         if c == 0 {
@@ -252,10 +253,13 @@ pub fn ensure_csv(conn: &duckdb::Connection, dir: &Path, shape: &Shape) -> Resul
         "COPY (SELECT {} FROM range({}) AS r(i)) TO '{}' (FORMAT CSV, HEADER)",
         selects.join(", "),
         shape.rows,
-        path.display()
+        writing.display()
     );
-    conn.execute_batch(&sql)
-        .map_err(|e| format!("generate {}: {e}", path.display()))?;
+    conn.execute_batch(&sql).map_err(|e| {
+        let _ = std::fs::remove_file(&writing);
+        format!("generate {}: {e}", path.display())
+    })?;
+    crate::data::put_in_place(&writing, &path)?;
     Ok(path)
 }
 

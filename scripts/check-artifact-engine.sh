@@ -135,7 +135,7 @@ echo "== engine: ${ENGINE_REL}"
 "${HERE}/fetch-duckdb-cli.sh" --check "$TARGET" "$(dirname "$PKG/$ENGINE_REL")" | sed 's/^/   /'
 
 # The version the pin names, against the one Cargo.lock links. libduckdb-sys
-# spells DuckDB 1.5.6 as 1.10506.0: the major, then the minor and patch as two
+# spells DuckDB 2.0.0 as 1.20000.0: the major, then the minor and patch as two
 # digits each.
 PINNED=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$HERE/fetch-duckdb-cli.sh")
 [ -n "$PINNED" ] || fail "scripts/fetch-duckdb-cli.sh has no VERSION= line"

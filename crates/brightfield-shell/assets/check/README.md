@@ -2,7 +2,7 @@
 
 `open-probe.parquet` is the input the sealed read-back opens to prove a packaged build can read a Parquet on a machine that has never run DuckDB. It holds the same four rows as the CSV that check writes inline, so the only difference between the two opens is the reader. It is not a dataset and nothing else reads it; the starter datasets can change without touching it.
 
-It was written with the pinned DuckDB CLI (v1.5.6):
+It was written with the DuckDB CLI pinned at the time (v1.5.6):
 
 ```sh
 target/duckdb-cli/duckdb -c "COPY (SELECT * FROM (VALUES

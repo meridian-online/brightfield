@@ -328,7 +328,7 @@ done
 # that decided not to run anything — and then the cases above would be reading
 # a file tree, which is the reading that already existed. The first two
 # markers are printed by the stub binary and by nothing else, and the third,
-# `v1.5.6 (<codename>) <commit>`, only by the pinned CLI's own `--version`.
+# `v2.0.0 (<codename>) <commit>`, only by the pinned CLI's own `--version`.
 for marker in STUB-RAN-THE-PACKAGED-BINARY STUB-RAN-THE-PACKAGED-ENGINE "${PINNED_DUCKDB} ("; do
 	if grep -qF -- "$marker" "$out"; then
 		echo "  ok   the read-back's run leg printed '${marker}' out of the artifact"

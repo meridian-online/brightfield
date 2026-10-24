@@ -144,7 +144,7 @@ Each chart file Brightfield saves, including each panel file, is recorded in arc
 One native binary, no runtime dependencies beyond the OS graphics stack — no
 server, no webview, no language runtime, and no network required to start,
 render, or open a local protocol. A release artifact carries one more
-executable: the official DuckDB v1.5.6 command-line shell (`engine/duckdb` in
+executable: the official DuckDB v2.0.0 command-line shell (`engine/duckdb` in
 the tarball, `Contents/Helpers/duckdb` in the app), which the Run control hands
 a Protocol's SQL steps to so a run needs nothing installed.
 `scripts/fetch-duckdb-cli.sh` pins it by sha256; `scripts/package.sh` stages it
@@ -303,7 +303,7 @@ process. Treat every bump as potentially breaking and move deliberately.
    fresh resolve can still float its deps), pin it back with
    `cargo update <crate>@<ver> --precise <ok-ver>`.
 
-arc pins `duckdb` exactly, so a bump that moves arc's DuckDB moves the workspace `duckdb` pin and the CLI pin in `scripts/fetch-duckdb-cli.sh` with it, and the version named in the Distribution section above. The packaging scripts read the CLI version from that pin, and `scripts/check-artifact-engine.sh` refuses a release whose pin and `libduckdb-sys` in `Cargo.lock` name different DuckDBs.
+arc pins `duckdb` exactly, so a bump that moves arc's DuckDB moves the workspace `duckdb` pin and the CLI pin in `scripts/fetch-duckdb-cli.sh` with it, and the version named in the Distribution section above. While `.cargo/config.toml` defines `DUCKDB_VERSION` for the bundled build (libduckdb-sys 1.20000.0 otherwise names DuckDB 2.0.0 a development build), that value moves with them, and the entry goes once a libduckdb-sys release names its DuckDB correctly; `the_linked_duckdb_is_the_release_the_cli_is_pinned_to` fails while the two disagree. The packaging scripts read the CLI version from that pin, and `scripts/check-artifact-engine.sh` refuses a release whose pin and `libduckdb-sys` in `Cargo.lock` name different DuckDBs.
 
 **What tells you the pin has gone stale.** Not a person. The pin drifted three weeks behind
 arcform's operator catalog once, and the first signal was somebody opening a shipped Protocol

@@ -103,7 +103,8 @@ pub const DISPLAY_BINS: usize = 24;
 /// is the wrong place to keep one true.
 ///
 /// A *read* here is a leaf of DuckDB's physical plan: an operator with no
-/// children, which is where rows enter a query. Counting leaves rather than
+/// children, which is where rows enter a query, other than a scan of a CTE the
+/// statement read in itself. Counting leaves rather than
 /// statements is deliberate, because the shape most likely to be reached for
 /// — a `UNION ALL` branch per column — is one statement that reads the table
 /// once per branch, and a statement count would call that free.
@@ -456,25 +457,32 @@ impl ScanTally {
 /// enter it — a `READ_CSV`, a `READ_PARQUET`, a `SEQ_SCAN` over a table, the
 /// `COLUMN_DATA_SCAN` a DESCRIBE reads its answer out of.
 ///
-/// **Every leaf counts, and no operator name is enumerated here.** An
-/// inclusion list would have to name each spelling DuckDB gives a scan, and
-/// the one it gains next release is the one that would go uncounted — which is
-/// the direction that fails silently. Counting leaves has the opposite bias: a
-/// leaf this code has never seen makes the number go up, and a bound that
-/// reddens is a bound somebody reads.
+/// **Every leaf counts but one the plan says reads a CTE, and no operator
+/// name is enumerated here.** An inclusion list would have to name each
+/// spelling DuckDB gives a scan, and the one it gains next release is the one
+/// that would go uncounted — which is the direction that fails silently.
+/// Counting leaves has the opposite bias: a leaf this code has never seen makes
+/// the number go up, and a bound that reddens is a bound somebody reads.
+///
+/// A leaf whose `extra_info` carries `CTE Index` reads rows the same statement
+/// has already read in once, under the CTE's own leaves, which are counted. From
+/// DuckDB 2.0 an aggregate SELECT with several `DISTINCT` aggregates reads its
+/// source once into a CTE and scans that CTE once per aggregate; counting
+/// those scans would call one read of the table a read per column.
 pub(crate) fn plan_scans(explained: &str) -> Option<u32> {
     let plan: serde_json::Value = serde_json::from_str(explained).ok()?;
     let roots = plan.as_array()?;
     let mut total = 0u32;
     for root in roots {
-        total = total.saturating_add(count_leaves(root)?);
+        total = total.saturating_add(count_matching_leaves(root, &|leaf| !reads_a_cte(leaf))?);
     }
     Some(total)
 }
 
-/// Leaves under `node`, counting `node` itself when it has none.
-fn count_leaves(node: &serde_json::Value) -> Option<u32> {
-    count_matching_leaves(node, &|_| true)
+/// Whether the plan says `leaf` reads a CTE materialised inside its statement.
+fn reads_a_cte(leaf: &serde_json::Value) -> bool {
+    leaf.get("extra_info")
+        .is_some_and(|info| info.get("CTE Index").is_some())
 }
 
 /// How many of the plan's leaves read a **file** rather than a relation held
@@ -519,10 +527,10 @@ pub(crate) fn plan_file_reads(explained: &str) -> Option<u32> {
     let mut total = 0u32;
     for root in roots {
         total = total.saturating_add(count_matching_leaves(root, &|leaf| {
-            let named = leaf
+            let table = leaf
                 .get("extra_info")
-                .is_some_and(|info| info.get("Table").is_some() || info.get("CTE Index").is_some());
-            !named
+                .is_some_and(|info| info.get("Table").is_some());
+            !table && !reads_a_cte(leaf)
         })?);
     }
     Some(total)
@@ -655,6 +663,24 @@ mod tests {
       ] }
     ]"#;
 
+    /// DuckDB 2.0's plan for an aggregate SELECT with several `DISTINCT`
+    /// aggregates over a `read_csv` view: the file is read once into an
+    /// `__aggregate_cte`, and each aggregate scans the CTE. Taken from a real
+    /// `EXPLAIN (FORMAT json)` on 2.0.0, trimmed to the keys read here. **One
+    /// read of the file, four leaves.**
+    const PLAN_AGGREGATE_CTE: &str = r#"[
+      { "name": "CTE", "extra_info": { "CTE Name": "__aggregate_cte_13" }, "children": [
+        { "name": "READ_CSV", "extra_info": { "Function": "READ_CSV" }, "children": [] },
+        { "name": "PROJECTION", "children": [
+          { "name": "CROSS_PRODUCT", "children": [
+            { "name": "CTE_SCAN", "extra_info": { "CTE Index": "13" }, "children": [] },
+            { "name": "CTE_SCAN", "extra_info": { "CTE Index": "13" }, "children": [] }
+          ] },
+          { "name": "CTE_SCAN", "extra_info": { "CTE Index": "13" }, "children": [] }
+        ] }
+      ] }
+    ]"#;
+
     /// A file read beside a table read under one root — the shape a
     /// half-materialised session would produce, and the one a rule that
     /// answered per *statement* rather than per *leaf* would get wrong.
@@ -700,8 +726,19 @@ mod tests {
         );
         assert_eq!(
             plan_scans(PLAN_MATERIALISED_HISTOGRAM),
-            Some(4),
-            "the leaves are still there — the composition still issues the              statement, and only what it reads has changed. A leaf count that              fell to zero here would mean the walk had stopped walking"
+            Some(2),
+            "the table's leaves are still there — the composition still issues              the statement, and only what it reads has changed. A leaf count that              fell to zero here would mean the walk had stopped walking; the two              reads of the in-statement CTE are not reads of a source"
+        );
+
+        assert_eq!(
+            plan_scans(PLAN_AGGREGATE_CTE),
+            Some(1),
+            "the file is read once into the CTE, and the CTE's three scans are              not three more reads of it"
+        );
+        assert_eq!(
+            plan_file_reads(PLAN_AGGREGATE_CTE),
+            Some(1),
+            "the CTE's own leaf is a read of the file"
         );
 
         assert_eq!(

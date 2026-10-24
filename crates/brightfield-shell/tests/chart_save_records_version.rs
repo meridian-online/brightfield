@@ -331,6 +331,54 @@ fn after_two_saves_the_chart_files_history_lists_the_text_the_second_save_replac
     );
 }
 
+/// **Each Save is a save of its own, in the store and in the folder's log**,
+/// two Saves inside arcform's merge window included: the written text is
+/// recorded with arcform's unmerged save, so neither Save's entry is merged
+/// into the other's or recorded under another kind, and each appends its own
+/// save line for the chart file to `arcform-log.txt`.
+#[test]
+fn two_saves_inside_the_merge_window_are_two_saves_and_two_lines_in_the_log() {
+    let mut session = Session::open("unmerged");
+    session.transpose();
+    session.throw("population", ScaleType::Log);
+    session.save();
+    let first = session.chart_text();
+    session.throw("house_age", ScaleType::Log);
+    session.save();
+    let second = session.chart_text();
+
+    let saves: Vec<String> = session
+        .chart_versions()
+        .into_iter()
+        .filter(|(kind, _)| *kind == HistoryKind::Save)
+        .map(|(_, text)| text)
+        .collect();
+    assert_eq!(
+        saves,
+        vec![first, second],
+        "each Save is not its own save entry"
+    );
+
+    let logged: Vec<String> = arc::spec::read_log(&session.folder)
+        .expect("the log reads")
+        .into_iter()
+        .filter(|line| line.file == format!("panels/{CHART_FILE}") && line.kind == "save")
+        .map(|line| line.version)
+        .collect();
+    let recorded: Vec<String> = session
+        .history()
+        .entries_for_file(&session.chart_file())
+        .expect("the chart file's history lists")
+        .into_iter()
+        .filter(|entry| entry.kind == HistoryKind::Save)
+        .map(|entry| entry.id)
+        .collect();
+    assert_eq!(
+        logged, recorded,
+        "the log's save lines are not the store's saves"
+    );
+}
+
 /// **A chart file the analyst changed by hand between two Saves is kept as a
 /// checkpoint**, before the second Save writes over it, and the text written is
 /// kept as a save.
