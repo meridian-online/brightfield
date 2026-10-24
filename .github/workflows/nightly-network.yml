@@ -111,7 +111,7 @@ jobs:
 
       # Shares the cache `test` and `lint` populate on `main`. Worth having on
       # a nightly specifically: without it every run is a full cold build of
-      # the git dependencies plus wgpu/vello, to execute five tests.
+      # the git dependencies plus wgpu/vello, to execute six tests.
       - uses: Swatinem/rust-cache@v2
 
       # ------------------------------------------------------------------
@@ -133,6 +133,13 @@ jobs:
       #         network question left is whether the copy still matches what
       #         is published. Red here means re-cut it with
       #         scripts/cut-crosswalk-fixture.sh and re-shoot the thumbnails.
+      #     statlib_still_serves_the_housing_archive_the_fixture_is
+      #       - StatLib still serves California Housing's archive with the
+      #         size and sha256 recorded beside the committed copy
+      #         (tests/data/houses.json), which the per-push suite draws that
+      #         start's thumbnails from and checks its descriptor against.
+      #         Red here means replace the copy, update the provenance file
+      #         and re-shoot the thumbnails.
       #
       #   crates/brightfield-shell/tests/crosswalk_chart.rs
       #     the_published_crosswalk_is_still_past_the_drawn_primitive_ceiling
@@ -189,13 +196,13 @@ jobs:
 
           # label | cargo target selector | how many ignored tests must run
           targets=(
-            "front_door|-p brightfield-shell --test front_door|1"
+            "front_door|-p brightfield-shell --test front_door|2"
             "crosswalk_chart|-p brightfield-shell --test crosswalk_chart|2"
             "engine_httpfs|-p brightfield-engine --lib|2"
           )
           # The sum of the floors above, stated once as a number so a reader
           # and the log both see what this job expects to have executed.
-          expected_total=5
+          expected_total=6
 
           failed=0
           total=0

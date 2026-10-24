@@ -643,10 +643,11 @@ fn a_start_that_reaches_the_network_says_so_on_its_own_button() {
     }
     assert_eq!(
         starts::STARTS.iter().filter(|s| s.remote).count(),
-        1,
-        "the shipped set is meant to hold exactly one start that needs a \
-         connection; if that changed deliberately, change this number and the \
-         front door's skip-count assertions with it"
+        2,
+        "the shipped set is meant to hold exactly two starts that need a \
+         connection, the crosswalk chart and California Housing; if that \
+         changed deliberately, change this number and the front door's \
+         skip-count assertions with it"
     );
 }
 
@@ -849,7 +850,7 @@ fn ceiling_as_rows() -> f64 {
 }
 
 /// Point brightfield's config directory at this target's scratch, so loading a
-/// start that ships a data file writes that file there and not into the
+/// start that opens a data file writes that file there and not into the
 /// developer's own `~/Library/Application Support/Brightfield`.
 ///
 /// A simpler twin of `datasets_into_scratch` in `tests/front_door.rs`: one test

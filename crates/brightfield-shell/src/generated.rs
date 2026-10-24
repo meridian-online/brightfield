@@ -779,7 +779,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a temp directory for the fixture");
         let data = dir.join(crate::starts::HOUSING_FILE);
-        std::fs::write(&data, crate::starts::HOUSING_PARQUET).expect("the housing file writes");
+        std::fs::write(
+            &data,
+            include_bytes!("../tests/data/california_housing.parquet"),
+        )
+        .expect("the housing file writes");
         let opened = crate::data_file::open(&data.to_string_lossy()).expect("the file opens");
         opened.protocol.save_to(&dir).expect("the Protocol saves");
         let manifest_path = dir.join("arcform.yaml");

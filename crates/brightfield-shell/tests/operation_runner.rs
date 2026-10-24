@@ -47,7 +47,8 @@ impl Drop for TempDir {
 fn saved_housing(name: &str) -> TempDir {
     let dir = TempDir::new(name);
     let data = dir.path().join(starts::HOUSING_FILE);
-    std::fs::write(&data, starts::HOUSING_PARQUET).expect("the housing file writes");
+    std::fs::write(&data, include_bytes!("data/california_housing.parquet"))
+        .expect("the housing file writes");
     let opened = data_file::open(&data.to_string_lossy()).expect("the housing file opens");
     opened
         .protocol
@@ -227,7 +228,8 @@ fn record_into_a_relative_directory_lands_in_that_directory() {
     let abs = TempDir(here.join(&name));
     std::fs::create_dir_all(abs.path()).expect("the folder");
     let data = abs.path().join(starts::HOUSING_FILE);
-    std::fs::write(&data, starts::HOUSING_PARQUET).expect("the housing file writes");
+    std::fs::write(&data, include_bytes!("data/california_housing.parquet"))
+        .expect("the housing file writes");
     let opened = data_file::open(&data.to_string_lossy()).expect("the housing file opens");
     opened
         .protocol

@@ -40,7 +40,8 @@ fn a_recorded_step_is_logged_as_brightfield() {
         std::fs::create_dir_all(d).expect("a fixture directory");
     }
     let data = folder.join(starts::HOUSING_FILE);
-    std::fs::write(&data, starts::HOUSING_PARQUET).expect("the housing file writes");
+    std::fs::write(&data, include_bytes!("data/california_housing.parquet"))
+        .expect("the housing file writes");
     data_file::open(&data.to_string_lossy())
         .expect("the housing file opens")
         .protocol

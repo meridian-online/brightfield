@@ -554,7 +554,7 @@ fn a_brightfield_protocol_opens_as_before() {
     let folder = tmp.path().join("data");
     std::fs::create_dir_all(&folder).unwrap();
     let data = folder.join(starts::HOUSING_FILE);
-    std::fs::write(&data, starts::HOUSING_PARQUET).unwrap();
+    std::fs::write(&data, include_bytes!("data/california_housing.parquet")).unwrap();
     {
         let boot = Boot::data_file(&data.to_string_lossy()).expect("the housing file opens");
         let mut win = Window::over(boot);

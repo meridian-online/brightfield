@@ -1364,7 +1364,7 @@ fn the_spec_a_start_carries_is_the_spec_its_click_opens() {
 }
 
 /// Point brightfield's config directory at this target's scratch, so a start
-/// that ships a data file writes that file there and not into the developer's
+/// that opens a data file writes that file there and not into the developer's
 /// own `~/Library/Application Support/Brightfield`.
 ///
 /// A simpler twin of `datasets_into_scratch` in `tests/front_door.rs`: one test

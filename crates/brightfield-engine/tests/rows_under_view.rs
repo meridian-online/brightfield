@@ -19,7 +19,7 @@ use std::collections::HashSet;
 /// The housing file the shell's first start opens.
 const HOUSING: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../brightfield-shell/assets/starts/california_housing.parquet"
+    "/../brightfield-shell/tests/data/california_housing.parquet"
 );
 
 const ALL_ROWS: u64 = 16_640;

@@ -20,7 +20,7 @@ use duckdb::arrow::array::{Array, Float64Array};
 /// The housing file the shell's first start opens.
 const HOUSING: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../brightfield-shell/assets/starts/california_housing.parquet"
+    "/../brightfield-shell/tests/data/california_housing.parquet"
 );
 
 /// The table the housing file's load makes.

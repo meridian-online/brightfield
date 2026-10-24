@@ -292,7 +292,8 @@ fn saved_folder(root: &TempDir, condition: Option<&str>, order: Option<&str>) ->
     let folder = root.0.join("data");
     std::fs::create_dir_all(&folder).expect("the data file's folder");
     let data = folder.join(starts::HOUSING_FILE);
-    std::fs::write(&data, starts::HOUSING_PARQUET).expect("the housing file writes");
+    std::fs::write(&data, include_bytes!("data/california_housing.parquet"))
+        .expect("the housing file writes");
     let boot = Boot::data_file(&data.to_string_lossy()).expect("the housing file opens");
     let mut win = Window::over(boot);
     win.app.chart_doc_mut().apply_grid_view(RowsView {
@@ -450,7 +451,8 @@ fn a_name_with_capitals_previews_and_is_selected_after_save() {
     let folder = root.0.join("data");
     std::fs::create_dir_all(&folder).expect("the data file's folder");
     let data = folder.join("Housing.parquet");
-    std::fs::write(&data, starts::HOUSING_PARQUET).expect("the housing file writes");
+    std::fs::write(&data, include_bytes!("data/california_housing.parquet"))
+        .expect("the housing file writes");
     let boot = Boot::data_file(&data.to_string_lossy()).expect("the housing file opens");
     let mut win = Window::over(boot);
     win.app.chart_doc_mut().apply_grid_view(RowsView {

@@ -46,7 +46,7 @@ const CHART_PANE: PaneKey = PaneKey::new(CHART);
 const CANVAS_PANE: PaneKey = PaneKey::new(CANVAS);
 
 /// Point brightfield's config directory at a fresh directory of `test`'s own,
-/// so a start that ships a data file writes that file there and not into the
+/// so a start that opens a data file writes that file there and not into the
 /// developer's own `~/Library/Application Support/Brightfield`, and hold it
 /// there until the returned guard drops.
 ///
@@ -99,6 +99,25 @@ fn the_data_file_start() -> &'static starts::Start {
          for `the` one are asserting about whichever comes first"
     );
     start
+}
+
+/// Write the data start's file where a click looks for it, from the committed
+/// copy of its source rather than over the network, and answer where it is.
+///
+/// A click on the data start's card with no file at [`starts::dataset_path`]
+/// fetches; with the file there it opens it, as a second launch does. The
+/// tests that click the card are about what the click opens, not about the
+/// fetch, so they start from the second case: the first is
+/// `remote_start.rs`'s, against a server on localhost.
+fn seed_the_data_file(start: &starts::Start) -> PathBuf {
+    match starts::load_with(start.id, remote_stand_in(start)) {
+        Ok(Opened::File(path)) => path,
+        Ok(_) => panic!("{} did not open a data file", start.id),
+        Err(e) => panic!(
+            "{} does not write its file from the committed copy: {e}",
+            start.id
+        ),
+    }
 }
 
 /// A window under test: the app, and **one** `egui::Context` for its whole
@@ -392,11 +411,10 @@ fn canvas_subject(doc: &ProtocolDoc) -> Subject {
 /// the set, and the same assertions are made over them by the `#[ignore]`d
 /// `the_crosswalk_chart_start_opens_over_the_network_drawing_every_row` in
 /// `tests/crosswalk_chart.rs`. The trade is stated rather than hidden: that
-/// start's load gate runs on demand, not on every push.
-/// Watched redden, one mutation for the arm a data-file start takes:
-/// `Start::data`'s `bytes:` pointed at `HOUSING_DESCRIPTOR` instead of the
-/// Parquet — bytes that are written but are not a data file — fails at
-/// "california-housing wrote a file that will not open".
+/// start's load gate runs on demand, not on every push. The data start is
+/// remote too, and its open is held here offline by
+/// `the_fetched_dataset_is_described_by_its_own_descriptor` and the tests
+/// after it, over the committed copy of its source.
 #[test]
 fn every_shipped_start_loads_into_a_document_with_something_in_it() {
     // The recorded size is the **gallery's**, which is what a stranger
@@ -430,15 +448,6 @@ fn every_shipped_start_loads_into_a_document_with_something_in_it() {
          been hollowed out by the `remote` exemption rather than narrowed by it",
         local.len()
     );
-    // A data-file start is in this loop and not exempt from it, which is what
-    // AC3 of its card asks: it is not `remote`, so the filter above keeps it,
-    // and the `File` arm below drives the whole open rather than stopping at
-    // the path. An exemption added here would be the hole that AC checks for.
-    assert!(
-        local.iter().any(|s| s.data.is_some()),
-        "no start this gate walks ships a data file, so the `File` arm below \
-         is dead code and the bundled-dataset route is unasserted"
-    );
     for start in local {
         let opened = starts::load(start.id)
             .unwrap_or_else(|e| panic!("the shipped start {} does not load: {e}", start.id));
@@ -470,14 +479,9 @@ fn every_shipped_start_loads_into_a_document_with_something_in_it() {
             // can read would otherwise pass this gate on the strength of
             // having written something.
             Opened::File(path) => {
-                let data = start
-                    .data
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("{} opened a file it does not declare", start.id));
-                assert_eq!(
-                    std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())),
-                    data.bytes,
-                    "{} wrote something other than the bytes it carries to {}",
+                assert!(
+                    start.data.is_some(),
+                    "{} opened a file it does not declare: {}",
                     start.id,
                     path.display()
                 );
@@ -538,19 +542,21 @@ const NETWORK_DENIED: &str = "(version 1)(allow default)(deny network*)";
 const JAILED_CHILD_VAR: &str = "BRIGHTFIELD_TEST_JAILED_LOOPBACK_PORT";
 
 /// **Every local start opens with the network denied and a cold extension
-/// cache — observed, not declared.**
+/// cache, and so does the data start once its file is on disk — observed,
+/// not declared.**
 ///
-/// AC3 of the card that cut the California Housing start says it opens with
-/// the network off. The checks that stood for that read it off the
-/// declaration: `Start::remote` is false, the label carries no `REMOTE_MARK`,
-/// and `every_shipped_start_loads_into_a_document_with_something_in_it` loads
-/// it — with the network on, over whatever `~/.duckdb` this machine has
-/// cached. They were all green over a start that did not open offline: DuckDB
-/// reads Parquet through an extension it autoinstalls on first use, so on a
-/// machine with a cold cache the click downloaded it from
-/// extensions.duckdb.org, and with no network the click raised a banner and
-/// the door stayed up. What makes it true now is the `parquet` feature on the
-/// engine's `duckdb` dependency, which links the reader into the binary.
+/// The California Housing start used to ship its Parquet and claim to open
+/// with the network off. The checks that stood for that read it off the
+/// declaration and loaded it with the network on, over whatever `~/.duckdb`
+/// this machine had cached, and they were all green over a start that did not
+/// open offline: DuckDB reads Parquet through an extension it autoinstalls on
+/// first use, so on a machine with a cold cache the click downloaded it from
+/// extensions.duckdb.org. What makes Parquet work offline is the `parquet`
+/// feature on the engine's `duckdb` dependency, which links the reader into
+/// the binary. The start now fetches its source the first time, but its
+/// later opens — the ones a restored launch makes — read the file it wrote
+/// and must still need no network, and writing that file is a Parquet write
+/// through the same linked extension.
 ///
 /// So this opens the starts rather than reading them. The test re-runs itself
 /// under `sandbox-exec` with the network denied, `HOME` pointed at an empty
@@ -562,8 +568,9 @@ const JAILED_CHILD_VAR: &str = "BRIGHTFIELD_TEST_JAILED_LOOPBACK_PORT";
 ///   about running without one;
 /// - then loads each start in `starts::STARTS` that does not declare
 ///   `remote` through `Boot::start`, the boot path's own entry;
-/// - then clicks the California Housing card on a real door and requires the
-///   window to have left the door.
+/// - then writes the California Housing file from the committed copy of its
+///   source, clicks its card on a real door, and requires the window to have
+///   left the door: with the file there, the click reads no network.
 ///
 /// The parent then requires the child to have run exactly this test and passed
 /// — a test filter matching nothing exits 0 — and the extension cache to still
@@ -572,9 +579,10 @@ const JAILED_CHILD_VAR: &str = "BRIGHTFIELD_TEST_JAILED_LOOPBACK_PORT";
 /// macOS only, because the jail is macOS's; CI's `test` job runs on macOS.
 ///
 /// Watched redden, two mutations. The engine's `duckdb` dependency without
-/// the `parquet` feature fails the child at "california-housing no longer
-/// opens with the network denied: … Failed to download extension
-/// \"parquet\" … Could not establish connection". The jail's profile reduced
+/// the `parquet` feature failed the child, when the start still shipped its
+/// Parquet, at "california-housing no longer opens with the network denied:
+/// … Failed to download extension \"parquet\" … Could not establish
+/// connection". The jail's profile reduced
 /// to `(allow default)` fails the child at "the jail let a loopback connection
 /// through" — so a pass here is a pass with the network denied.
 #[cfg(target_os = "macos")]
@@ -604,13 +612,15 @@ fn the_local_starts_open_with_the_network_denied_and_a_cold_extension_cache() {
             );
         }
         let start = the_data_file_start();
+        seed_the_data_file(start);
         let mut win = Window::open(Boot::empty());
         win.settle();
         win.take_the_card(start.id);
         win.settle();
         assert!(
             !win.app.front_door_is_live(),
-            "clicking {} with the network denied left the window on the door",
+            "clicking {} with its file on disk and the network denied left \
+             the window on the door",
             start.id
         );
         return;
@@ -696,26 +706,28 @@ fn a_start_declares_a_spec_or_a_data_file_and_never_both() {
     }
 }
 
-/// **The bundled dataset is the bytes its own descriptor declares.**
+/// **The fetched dataset is described by its own descriptor.**
 ///
-/// The ruling that let a third-party dataset into this repository at all asked
-/// for the provenance to travel with the bytes rather than be left behind in
-/// the repository that built them. A descriptor sitting beside a Parquet is a
-/// note; a descriptor a test reads back against the Parquet is a gate — so a
-/// later rebuild that changes the data and not the descriptor, or copies a
-/// descriptor next to the wrong file, fails here instead of shipping a
-/// licence and a source URL that describe something else.
+/// A third-party dataset carries its provenance with it, and a descriptor a
+/// test reads back against the file is a gate rather than a note — so a
+/// change to what the start writes that leaves the descriptor behind, or a
+/// descriptor naming some other source, fails here instead of shipping
+/// columns, a source and terms that describe something else.
 ///
-/// Three facts, because they fail differently: the declared **size**, the
-/// declared **SHA-256**, and the declared **path**, which is the name the
-/// start writes the file under and therefore the name the locator band says
-/// and the stem the table is called after.
+/// Four facts, because they fail differently: the declared **path**, which
+/// is the name the start writes the file under and therefore the name the
+/// locator band says and the stem the table is called after; the declared
+/// **source**, which must be the URL the start fetches; the declared
+/// **columns**, read back off the file the start wrote from the committed
+/// copy of that source; and the **rows**, all of them, as the authors' own
+/// header counts them.
 ///
 /// Watched redden, one mutation: `HOUSING_FILE` spelled `housing.parquet`
-/// fails at "california-housing writes its bytes under a name its own
+/// fails at "california-housing writes its file under a name its own
 /// descriptor does not use".
 #[test]
-fn the_bundled_dataset_is_the_bytes_its_descriptor_declares() {
+fn the_fetched_dataset_is_described_by_its_own_descriptor() {
+    let _config = datasets_into_scratch("the_fetched_dataset_is_described_by_its_own_descriptor");
     let start = the_data_file_start();
     let data = start.data.as_ref().expect("filtered on `data`");
     let descriptor: serde_json::Value =
@@ -726,42 +738,56 @@ fn the_bundled_dataset_is_the_bytes_its_descriptor_declares() {
         .expect("the descriptor declares a resource");
 
     assert_eq!(
-        resource["bytes"].as_u64(),
-        Some(data.bytes.len() as u64),
-        "{} carries {} byte(s) and its descriptor declares {}",
-        start.id,
-        data.bytes.len(),
-        resource["bytes"]
-    );
-    let digest = {
-        use sha2::{Digest, Sha256};
-        format!("sha256:{:x}", Sha256::digest(data.bytes))
-    };
-    assert_eq!(
-        resource["hash"].as_str(),
-        Some(digest.as_str()),
-        "{}'s bytes do not hash to what its descriptor declares — the \
-         descriptor describes some other export",
-        start.id
-    );
-    assert_eq!(
         resource["path"].as_str(),
         Some(data.file_name),
-        "{} writes its bytes under a name its own descriptor does not use",
+        "{} writes its file under a name its own descriptor does not use",
         start.id
     );
-    // The mitigation the ruling actually asked for: a reader holding these
-    // bytes can say where they came from and under what terms.
-    for named in ["licenses", "sources"] {
-        assert!(
-            descriptor[named]
-                .as_array()
-                .is_some_and(|entries| !entries.is_empty()),
-            "{}'s descriptor declares no {named}, so the bytes are anonymous \
-             in a public repository",
-            start.id
-        );
-    }
+    assert!(
+        descriptor["sources"]
+            .as_array()
+            .is_some_and(|sources| sources.iter().any(|s| s["path"] == data.url)),
+        "{}'s descriptor does not name {}, the source it fetches",
+        start.id,
+        data.url
+    );
+    assert!(
+        descriptor["licenses"]
+            .as_array()
+            .is_some_and(|entries| !entries.is_empty()),
+        "{}'s descriptor states no terms, so the data is anonymous about \
+         what it may be used for",
+        start.id
+    );
+
+    let path = seed_the_data_file(start);
+    let conn = duckdb::Connection::open_in_memory().expect("open DuckDB");
+    let mut statement = conn
+        .prepare("SELECT name FROM parquet_schema(?) WHERE num_children IS NULL")
+        .expect("prepare the schema read");
+    let written: Vec<String> = statement
+        .query_map([path.display().to_string()], |row| row.get(0))
+        .and_then(Iterator::collect)
+        .unwrap_or_else(|e| panic!("read {}'s columns: {e}", path.display()));
+    let declared: Vec<&str> = resource["schema"]["fields"]
+        .as_array()
+        .expect("the resource declares its fields")
+        .iter()
+        .map(|field| field["name"].as_str().expect("a field has a name"))
+        .collect();
+    assert_eq!(
+        written, declared,
+        "{} wrote columns its descriptor does not declare, or in another order",
+        start.id
+    );
+    assert_eq!(
+        parquet_rows(&path),
+        housing_provenance()["source"]["rows"]
+            .as_u64()
+            .expect("source.rows"),
+        "{} wrote a different number of rows from the source it was fetched from",
+        start.id
+    );
 }
 
 /// **The click and the picker land on one window.**
@@ -787,6 +813,9 @@ fn the_card_and_the_picker_land_on_one_window() {
     let _config = datasets_into_scratch("the_card_and_the_picker_land_on_one_window");
     let start = the_data_file_start();
     let data = start.data.as_ref().expect("filtered on `data`");
+    // The path the click will open, written before the click so it reads no
+    // network.
+    let path = seed_the_data_file(start);
 
     let mut clicked = Window::open(Boot::empty());
     clicked.settle();
@@ -798,8 +827,7 @@ fn the_card_and_the_picker_land_on_one_window() {
     clicked.take_the_card(start.id);
     clicked.settle();
 
-    // The path the click put on disk, opened the way the dialog opens one.
-    let path = starts::datasets_dir().join(data.file_name);
+    // The same path, opened the way the dialog opens one.
     let mut picked = Window::open(Boot::empty());
     picked.settle();
     picked
@@ -858,40 +886,30 @@ fn the_card_and_the_picker_land_on_one_window() {
     );
 }
 
-/// **The bytes the click puts on disk are the committed file, at a path a
-/// second launch finds.**
+/// **The file a fetch writes lands where a second launch finds it, and the
+/// second launch opens it without fetching.**
 ///
-/// AC4. Three claims, and the third is the one a temporary directory fails:
-/// the file is written under the configured directory rather than under
-/// `std::env::temp_dir()`, its bytes are the bundled bytes, and a second load
-/// lands on the same path rather than on a second copy beside the first.
+/// Three claims, and the third is the one that keeps a restored launch off
+/// the network: the file is written under the configured directory rather
+/// than under `std::env::temp_dir()`, no half-written file is left beside it,
+/// and a later `starts::load` — the entry a restored launch takes — lands on
+/// the same path and leaves the file as it was rather than fetching and
+/// writing it again.
 ///
-/// Watched redden, two mutations: `starts::materialise` writing into
-/// `std::env::temp_dir()` rather than `datasets_dir()` fails at "wrote outside
-/// the configured directory"; writing `&data.bytes[..1000]` fails at "is not
-/// the bytes the binary carries".
+/// Watched redden, one mutation: `starts::dataset_path` joining
+/// `std::env::temp_dir()` rather than `datasets_dir()` fails at "wrote
+/// outside the configured directory".
 #[test]
-fn a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_them() {
+fn a_fetched_data_start_writes_where_a_second_launch_opens_it_without_fetching() {
     let _config = datasets_into_scratch(
-        "a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_them",
+        "a_fetched_data_start_writes_where_a_second_launch_opens_it_without_fetching",
     );
     let start = the_data_file_start();
     let data = start.data.as_ref().expect("filtered on `data`");
     let configured = brightfield_shell::startup::datasets_dir()
         .expect("the override above gives this machine a config directory");
 
-    // **Start cold.** `materialise` leaves a file already holding these bytes
-    // alone, which is the behaviour the second half of this test is about —
-    // and it is also what makes the first half assert nothing when a previous
-    // run left the right file at the path. Measured while writing this: a
-    // mutation truncating the write to its first 1,000 bytes left every
-    // assertion below green, because the write it broke never ran. Removing
-    // the file first is what makes the first load a write.
-    let _ = std::fs::remove_file(configured.join(data.file_name));
-
-    let Opened::File(first) = starts::load(start.id).expect("the start loads") else {
-        panic!("{} did not open a data file", start.id);
-    };
+    let first = seed_the_data_file(start);
     assert!(
         first.starts_with(&configured),
         "{} wrote outside the configured directory: {} is not under {}",
@@ -902,19 +920,17 @@ fn a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_t
     assert_eq!(
         first.file_name().and_then(|n| n.to_str()),
         Some(data.file_name),
-        "{} wrote its bytes under a name it does not declare",
+        "{} wrote its file under a name it does not declare",
         start.id
     );
-    assert_eq!(
-        std::fs::read(&first).unwrap_or_else(|e| panic!("{}: {e}", first.display())),
-        data.bytes,
-        "{} is not the bytes the binary carries",
-        first.display()
-    );
+    let written = std::fs::read(&first).unwrap_or_else(|e| panic!("{}: {e}", first.display()));
+    let modified = std::fs::metadata(&first)
+        .and_then(|m| m.modified())
+        .expect("the written file has a modification time");
 
     // The second launch. Not a fresh process, but the same question a fresh
-    // process asks: load the start again and see whether it lands back on the
-    // file it wrote, or writes a second one beside it.
+    // process asks. A fetch here would reach StatLib, and this suite has no
+    // network to give it: what keeps it hermetic is the claim under test.
     let Opened::File(second) = starts::load(start.id).expect("the start loads again") else {
         panic!("{} did not open a data file the second time", start.id);
     };
@@ -923,22 +939,21 @@ fn a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_t
         "a second open landed on a different path, so nothing a launch \
          remembers can reopen the first"
     );
-    // …and a file that is there but is something ELSE is replaced rather than
-    // adopted, which is what makes the path safe to reuse across builds.
-    std::fs::write(&second, b"not a parquet").expect("overwrite the materialised file");
-    let Opened::File(third) = starts::load(start.id).expect("the start loads a third time") else {
-        panic!("{} did not open a data file the third time", start.id);
-    };
     assert_eq!(
-        std::fs::read(&third).unwrap_or_else(|e| panic!("{}: {e}", third.display())),
-        data.bytes,
-        "a file at the path that was not these bytes was left in place, so the \
-         start opens whatever happens to be sitting at the name"
+        std::fs::read(&second).unwrap_or_else(|e| panic!("{}: {e}", second.display())),
+        written,
+        "the second open rewrote the file it found"
+    );
+    assert_eq!(
+        std::fs::metadata(&second).and_then(|m| m.modified()).ok(),
+        Some(modified),
+        "the second open rewrote the file it found"
     );
     // Nothing half-written left behind: the write stages under a `.part` name
     // in the same directory and renames onto the path.
-    let leftovers: Vec<String> = std::fs::read_dir(&configured)
-        .expect("read the configured directory")
+    let dir = first.parent().expect("the file is in a directory");
+    let leftovers: Vec<String> = std::fs::read_dir(dir)
+        .expect("read the directory the file is in")
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|name| name.ends_with(".part"))
@@ -946,7 +961,7 @@ fn a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_t
     assert!(
         leftovers.is_empty(),
         "staging files were left in {}: {leftovers:?}",
-        configured.display()
+        dir.display()
     );
 }
 
@@ -975,6 +990,7 @@ fn a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_t
 fn the_card_records_what_the_next_launch_restores() {
     let _config = datasets_into_scratch("the_card_records_what_the_next_launch_restores");
     let start = the_data_file_start();
+    seed_the_data_file(start);
 
     let mut first = Window::open(Boot::empty());
     first.settle();
@@ -1055,6 +1071,8 @@ fn a_launch_restoring_the_data_file_start_lands_on_its_own_document() {
     let _config =
         datasets_into_scratch("a_launch_restoring_the_data_file_start_lands_on_its_own_document");
     let start = the_data_file_start();
+    // What the first open left on disk; the restore reads it with no network.
+    seed_the_data_file(start);
     let boot = opening_boot(None, Some(start.id), Flow::Vertical, None)
         .expect("a launch restoring the data-file start");
     assert_eq!(
@@ -1082,6 +1100,51 @@ fn a_launch_restoring_the_data_file_start_lands_on_its_own_document() {
     assert!(
         !win.app.front_door_is_live(),
         "the restored launch drew the front door"
+    );
+}
+
+/// **A launch that remembers the data-file start, on a machine without its
+/// file, opens the door rather than fetching before there is a window.**
+///
+/// The machine this describes is common: every install that opened California
+/// Housing under a build that shipped it has the start remembered and its
+/// file somewhere this build does not look. Fetching there would put a
+/// download, with no window and no readout, between the launch and the first
+/// frame. The door has the start's card on it, and the click fetches on the
+/// window's worker.
+///
+/// A fetch here would write the file, so its absence afterwards is the
+/// evidence that none happened — on a machine with a network, where one
+/// could have.
+///
+/// Watched redden, one mutation: `opening_boot`'s data-start check deleted,
+/// which sends the restore through `starts::load` and fetches from StatLib —
+/// it fails at "the restored launch did not open the door".
+#[test]
+fn a_launch_restoring_the_data_file_start_with_no_file_opens_the_door() {
+    let _config =
+        datasets_into_scratch("a_launch_restoring_the_data_file_start_with_no_file_opens_the_door");
+    let start = the_data_file_start();
+    let data = start.data.as_ref().expect("filtered on `data`");
+    let boot = opening_boot(None, Some(start.id), Flow::Vertical, None)
+        .expect("a launch restoring the data-file start");
+    assert!(
+        boot.is_empty(),
+        "the restored launch did not open the door: it loaded a document for \
+         a start whose file was not on this machine"
+    );
+    assert!(
+        !starts::dataset_path(data).exists(),
+        "the restored launch wrote {}, so it fetched before the window existed",
+        starts::dataset_path(data).display()
+    );
+    let mut win = Window::open(boot);
+    win.settle();
+    assert!(
+        win.app.front_door_card_rect(start.id).is_some(),
+        "the door the restore opened has no card for {}, so nothing on it \
+         fetches the file",
+        start.id
     );
 }
 
@@ -1983,14 +2046,16 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 /// It walks the door's own set rather than one hand-picked start, because a
 /// route that diverges for one document kind and not the other is the
 /// divergence a single-case test would survive. **Today that walk is three
-/// starts** — the crosswalk manifest, a run of it, and California Housing: the
-/// Datasets section offers four, and the fourth reads over the network. So the count is
+/// starts** — the crosswalk manifest, a run of it, and California Housing,
+/// whose file is written first from the committed copy of its source so
+/// neither route fetches: the Datasets section offers four, and the fourth
+/// composes over the network. So the count is
 /// asserted rather than left implicit — a door that lost its last local card
 /// would otherwise pass this by walking an empty set, which is the failure
 /// this file has already had once in a different loop.
 ///
-/// The remote start is skipped, for the reason its siblings in this file skip
-/// it: taking its card composes its spec, and that spec reads an `https://`
+/// The crosswalk chart is skipped, for the reason its siblings in this file
+/// skip it: taking its card composes its spec, and that spec reads an `https://`
 /// source, which would put a fetch of someone else's server inside a hermetic
 /// suite. Walking the Datasets set rather than the shipped set changes which
 /// starts are in scope and not that one: the generated chart starts have no
@@ -2005,9 +2070,10 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 #[test]
 fn either_route_to_the_same_subject_leaves_the_same_window() {
     let _config = datasets_into_scratch("either_route_to_the_same_subject_leaves_the_same_window");
+    seed_the_data_file(the_data_file_start());
     let mut walked = 0;
     for start in starts::on_door() {
-        if start.remote {
+        if start.remote && start.data.is_none() {
             continue;
         }
         walked += 1;
@@ -2780,14 +2846,22 @@ fn every_shipped_start_still_renders_and_its_dark_thumbnail_is_current() {
 /// The committed stand-ins for the tables a [`starts::Start::remote`] start
 /// reads over the network: `(url, file under this crate)`.
 ///
-/// Each is a reduced copy cut by `scripts/cut-crosswalk-fixture.sh`, which
-/// says what it keeps and why, and writes the provenance file beside it that
-/// the two tests below read. A remote start whose source is missing here
-/// fails [`remote_stand_in`] by name rather than reaching the network.
-const REMOTE_FIXTURES: &[(&str, &str)] = &[(
-    "https://openlake.meridian.online/edgar_gleif.parquet",
-    "tests/data/edgar_gleif_reduced.parquet",
-)];
+/// The crosswalk's is a reduced copy cut by `scripts/cut-crosswalk-fixture.sh`,
+/// which says what it keeps and why, and writes the provenance file beside it
+/// that the two tests below read. California Housing's is the authors'
+/// archive as StatLib serves it, unaltered, with `tests/data/houses.json`
+/// beside it. A remote start whose source is missing here fails
+/// [`remote_stand_in`] by name rather than reaching the network.
+const REMOTE_FIXTURES: &[(&str, &str)] = &[
+    (
+        "https://openlake.meridian.online/edgar_gleif.parquet",
+        "tests/data/edgar_gleif_reduced.parquet",
+    ),
+    (
+        "https://lib.stat.cmu.edu/datasets/houses.zip",
+        "tests/data/houses.zip",
+    ),
+];
 
 /// The provenance file `scripts/cut-crosswalk-fixture.sh` writes beside the
 /// crosswalk's reduced copy.
@@ -2796,11 +2870,12 @@ const CROSSWALK_PROVENANCE: &str = "tests/data/edgar_gleif_reduced.json";
 /// What `start`'s network sources are replaced with when its thumbnail is
 /// drawn: the committed copies in [`REMOTE_FIXTURES`].
 fn remote_stand_in(start: &starts::Start) -> brightfield_shell::remote::Fetched {
-    let spec = start
-        .spec
-        .unwrap_or_else(|| panic!("{} is remote and has no chart spec", start.id));
-    let urls = brightfield_shell::remote::remote_sources(spec)
-        .unwrap_or_else(|e| panic!("{}: {e}", start.id));
+    let urls = match (start.spec, &start.data) {
+        (Some(spec), _) => brightfield_shell::remote::remote_sources(spec)
+            .unwrap_or_else(|e| panic!("{}: {e}", start.id)),
+        (None, Some(data)) => vec![data.url.to_string()],
+        (None, None) => panic!("{} is remote and reads nothing", start.id),
+    };
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let pairs: Vec<(String, PathBuf)> = urls
         .into_iter()
@@ -2826,9 +2901,23 @@ fn remote_stand_in(start: &starts::Start) -> brightfield_shell::remote::Fetched 
         .unwrap_or_else(|e| panic!("{}: {e}", start.id))
 }
 
-/// The provenance file, parsed.
+/// The provenance file beside the committed copy of California Housing's
+/// source.
+const HOUSING_PROVENANCE: &str = "tests/data/houses.json";
+
+/// The crosswalk's provenance file, parsed.
 fn crosswalk_provenance() -> serde_json::Value {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(CROSSWALK_PROVENANCE);
+    provenance(CROSSWALK_PROVENANCE)
+}
+
+/// California Housing's provenance file, parsed.
+fn housing_provenance() -> serde_json::Value {
+    provenance(HOUSING_PROVENANCE)
+}
+
+/// The provenance file at `file`, under this crate, parsed.
+fn provenance(file: &str) -> serde_json::Value {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(file);
     let text =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
@@ -2926,6 +3015,93 @@ fn the_published_crosswalk_is_still_the_table_its_fixture_was_cut_from() {
     );
 }
 
+/// The committed copy of California Housing's source is the archive its
+/// provenance file describes, byte for byte, and holds the rows the authors'
+/// header counts.
+///
+/// Offline, for the reason its crosswalk sibling above is: a copy replaced by
+/// hand fails on the push that replaces it, rather than leaving the nightly
+/// comparing StatLib's archive with numbers that describe some other file.
+#[test]
+fn the_housing_fixture_is_the_archive_its_provenance_describes() {
+    let provenance = housing_provenance();
+    let (url, file) = REMOTE_FIXTURES[1];
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(file);
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    assert_eq!(
+        provenance["source"]["url"].as_str(),
+        Some(url),
+        "the provenance file describes a copy of some other archive"
+    );
+    assert_eq!(
+        provenance["fixture"]["sha256"].as_str(),
+        Some(sha256_hex(&bytes).as_str()),
+        "{} is not the archive its provenance file records",
+        path.display()
+    );
+    assert_eq!(
+        provenance["source"]["sha256"], provenance["fixture"]["sha256"],
+        "the fixture is meant to be StatLib's archive unaltered, and its \
+         provenance file records a different one"
+    );
+    let text = {
+        use std::io::Read;
+        let mut archive =
+            zip::ZipArchive::new(std::fs::File::open(&path).expect("open the archive"))
+                .expect("the fixture is a zip archive");
+        let mut member = archive
+            .by_name(brightfield_shell::housing::MEMBER)
+            .expect("the archive holds the data file");
+        let mut bytes = Vec::new();
+        member.read_to_end(&mut bytes).expect("read the data file");
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    let rows = brightfield_shell::housing::parse(&text).expect("the data file parses");
+    assert_eq!(
+        Some(rows.len() as u64),
+        provenance["source"]["rows"].as_u64(),
+        "the archive does not hold the rows its provenance file records"
+    );
+    assert_eq!(rows.len(), brightfield_shell::housing::ROWS);
+}
+
+/// StatLib still serves the archive the committed copy is: the same size and
+/// the same sha256 as `tests/data/houses.json` records.
+///
+/// California Housing's thumbnails are drawn offline from the copy on every
+/// push, and its descriptor's row count is held against it; what the copy
+/// cannot tell by itself is whether StatLib's file has changed since. When it
+/// has, this reddens: replace the copy with the new archive, update the
+/// provenance file, and re-shoot the thumbnails with `UPDATE_SNAPSHOTS=1`.
+///
+/// `cargo +1.95.0 test -p brightfield-shell --test front_door -- --ignored`.
+/// The nightly network workflow runs it.
+#[test]
+#[ignore = "network: reads California Housing's archive from StatLib over https"]
+fn statlib_still_serves_the_housing_archive_the_fixture_is() {
+    let provenance = housing_provenance();
+    let url = REMOTE_FIXTURES[1].0;
+    let fetched = brightfield_shell::remote::Fetch::begin(vec![url.to_string()], || {})
+        .wait()
+        .unwrap_or_else(|e| panic!("{e}"));
+    let path = fetched.local_path(url).expect("the fetch wrote the source");
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let recorded = &provenance["source"];
+    assert_eq!(
+        (bytes.len() as u64, sha256_hex(&bytes)),
+        (
+            recorded["bytes"].as_u64().expect("source.bytes"),
+            recorded["sha256"]
+                .as_str()
+                .expect("source.sha256")
+                .to_string()
+        ),
+        "{url} has changed since tests/data/houses.zip was copied from it \
+         (bytes, sha256). Replace the copy, update tests/data/houses.json and \
+         re-shoot the thumbnails with UPDATE_SNAPSHOTS=1"
+    );
+}
+
 /// Render each start at the window it asks for, thumbnail it, and diff against
 /// the committed PNG for `mode` — `{id}.png` for [`Mode::Light`], `{id}-dark.png`
 /// for [`Mode::Dark`], so the two halves of the set stay apart by name.
@@ -2935,7 +3111,7 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) {
     // Hermetic capture: keep `BRIGHTFIELD_DEVTOOLS` from baking the top-bar
     // renderer string into a regenerated thumbnail (see `door_surface`).
     std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
-    // …and hermetic on the other axis: a start that ships a data file writes
+    // …and hermetic on the other axis: a start that opens a data file writes
     // it before it composes, and a thumbnail of this developer's home
     // directory is a thumbnail of one machine. `MeridianApp::document_source`
     // already draws the file's NAME rather than its path, which is what keeps

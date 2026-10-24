@@ -6,6 +6,12 @@ A release's section here is its release notes. The release workflow refuses a ta
 
 Releases before 0.1.6 predate this file; their tags and the commit history are the record of what they carried.
 
+## [Unreleased]
+
+### Changed
+
+- The California Housing card fetches the dataset from StatLib, where its authors published it, the first time it is opened, and says on the card that it needs the network. Brightfield no longer ships a copy, and the release's `examples/data/` holds a reduced copy of the EDGAR↔GLEIF crosswalk instead. The table now has all 20,640 block groups and the source's own nine columns, with rooms, bedrooms and households as totals rather than per-household averages.
+
 ## [0.1.7] - 2026-10-20
 
 ### Added

@@ -25,7 +25,7 @@ use duckdb::arrow::array::{Array, Float64Array, Int64Array};
 /// The housing file the shell's first start opens.
 const HOUSING: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../brightfield-shell/assets/starts/california_housing.parquet"
+    "/../brightfield-shell/tests/data/california_housing.parquet"
 );
 
 /// The rows [`HOUSING`] holds, counted with the DuckDB CLI.

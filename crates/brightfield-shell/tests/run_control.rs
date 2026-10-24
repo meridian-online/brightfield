@@ -71,7 +71,8 @@ impl TempDir {
     /// The housing start's own bytes, under the start's own file name.
     fn housing(&self) -> PathBuf {
         let path = self.0.join(starts::HOUSING_FILE);
-        std::fs::write(&path, starts::HOUSING_PARQUET).expect("the housing file writes");
+        std::fs::write(&path, include_bytes!("data/california_housing.parquet"))
+            .expect("the housing file writes");
         path
     }
 }
