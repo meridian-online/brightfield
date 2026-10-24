@@ -108,3 +108,14 @@ pedantic = { level = "allow", priority = -1 }
 # this card asks that a lever which does not pay be written down as one.
 [profile.dev]
 debug = "line-tables-only"
+
+# DuckDB's C++ is built without debug info in a dev build, and so as DuckDB's
+# release build is. From 1.20000.0, libduckdb-sys defines DuckDB's `DEBUG` when
+# the profile has any debug info, which compiles in DuckDB's debug-only
+# verification paths; 1.10506.0 defined neither. Under `DEBUG` each test binary,
+# which links DuckDB statically, was about a quarter larger, and a cold build of
+# the test suite filled the CI runner's disk. `debug = false` here gives DuckDB
+# `NDEBUG`, as a release build does, and drops its C++ line tables; the
+# workspace's own crates keep theirs.
+[profile.dev.package.libduckdb-sys]
+debug = false
