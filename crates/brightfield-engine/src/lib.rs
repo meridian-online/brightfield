@@ -3442,7 +3442,7 @@ impl Session {
     /// DuckDB's `EXPLAIN (FORMAT json)` text for `sql`, or `None` where it
     /// declined.
     ///
-    /// **Planned with statistics propagation off, and only this plan.** From
+    /// **Planned with statistics propagation off.** From
     /// DuckDB 2.0 a `count(*)` over a table is answered from the table's
     /// statistics when it is planned, and its plan is one `COLUMN_DATA_SCAN`
     /// that names nothing: the same leaf a `DESCRIBE` of a `read_csv` view plans
@@ -3450,8 +3450,11 @@ impl Session {
     /// plans as the `SEQ_SCAN` it stands for, naming its `Table`, so
     /// [`profile::plan_file_reads`] can say what it reads. That counts a scan of
     /// a table the run itself answers from statistics, which is the side the
-    /// counters are meant to err on. The setting is put back as it was before
-    /// this returns, so the statement that runs is planned as it always is.
+    /// counters are meant to err on, and
+    /// `composing_a_wide_dashboard_reads_the_file_no_more_often_than_a_narrow_one`
+    /// in the open-scan harness is what reddens without it. The setting is put
+    /// back as it was before this returns, so the statement that runs is
+    /// planned as it always is.
     fn explain_json(&self, sql: &str) -> Option<String> {
         let before: String = self
             .conn
