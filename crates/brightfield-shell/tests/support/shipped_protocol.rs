@@ -12,7 +12,9 @@
 //! written where the step would have put the file, the way
 //! `support/agent_protocol.rs` keeps the CO2 fixture off the network. Every
 //! other file is the start's own, so what the variant draws is what the start
-//! draws over the copy.
+//! draws over the copy. Where a copy of the fetched file cannot be committed,
+//! a copy of the table its load step makes stands in for that step and the
+//! ones before it instead ([`stand_in_with_loads`]).
 
 #![allow(dead_code)]
 
@@ -133,6 +135,24 @@ fn fetch_steps(manifest: &serde_yaml::Value) -> Vec<(String, String)> {
 /// A fetch with no copy in `copies` fails here by URL, rather than leaving a
 /// step that would reach the network.
 pub fn stand_in(protocol: &ShippedProtocol, copies: &[(&str, &Path)]) -> &'static ShippedProtocol {
+    stand_in_with_loads(protocol, copies, &[])
+}
+
+/// [`stand_in`], where some copies stand in for the **table** a load step
+/// makes rather than for the file a fetch writes: `loads` is
+/// `(url, step, copy)`.
+///
+/// For each whose URL the Protocol fetches, the steps before `step` (the
+/// fetch, and whatever unpacks it) are dropped, the copy is written under
+/// `data/`, and `step`'s model becomes a read of it, so every step after
+/// `step` runs as it is shipped. That is for a source a hermetic test cannot
+/// read as it arrives, such as a zipped workbook, or whose load step drops
+/// columns the committed copy must not hold.
+pub fn stand_in_with_loads(
+    protocol: &ShippedProtocol,
+    copies: &[(&str, &Path)],
+    loads: &[(&str, &str, &Path)],
+) -> &'static ShippedProtocol {
     let mut files = files_of(protocol);
     let manifest_at = files
         .iter()
@@ -141,6 +161,48 @@ pub fn stand_in(protocol: &ShippedProtocol, copies: &[(&str, &Path)]) -> &'stati
     let mut manifest: serde_yaml::Value =
         serde_yaml::from_slice(&files[manifest_at].1).expect("the manifest parses");
     let mut written = Vec::new();
+    let fetched: Vec<String> = fetch_steps(&manifest)
+        .into_iter()
+        .map(|(url, _)| url)
+        .collect();
+    for (url, step, copy) in loads {
+        if !fetched.iter().any(|u| u == url) {
+            continue;
+        }
+        let steps = manifest
+            .get_mut("steps")
+            .and_then(serde_yaml::Value::as_sequence_mut)
+            .expect("a Protocol that fetches has steps");
+        let at = steps
+            .iter()
+            .position(|s| s.get("name").and_then(serde_yaml::Value::as_str) == Some(step))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} has no step {step} to stand a copy in for",
+                    protocol.dir_name
+                )
+            });
+        let model = steps[at]
+            .get("sql")
+            .and_then(serde_yaml::Value::as_str)
+            .unwrap_or_else(|| panic!("{step} in {} is not a SQL step", protocol.dir_name))
+            .to_string();
+        steps.drain(..at);
+        let name = copy
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("a copy has a file name");
+        let data = format!("data/{name}");
+        let bytes = std::fs::read(copy).unwrap_or_else(|e| panic!("{}: {e}", copy.display()));
+        written.push((data.clone(), bytes));
+        written.push((
+            model,
+            format!(
+                "CREATE OR REPLACE TABLE \"{step}\" AS\nSELECT * FROM read_parquet('{data}')\n"
+            )
+            .into_bytes(),
+        ));
+    }
     for (url, out) in fetch_steps(&manifest) {
         let (_, copy) = copies.iter().find(|(u, _)| *u == url).unwrap_or_else(|| {
             panic!(
@@ -177,7 +239,29 @@ pub fn stand_in(protocol: &ShippedProtocol, copies: &[(&str, &Path)]) -> &'stati
 /// `(url, file under this crate)`: what [`boot_offline`] runs a Protocol
 /// start's stand-in over. A Protocol start fetching a URL missing here fails
 /// [`stand_in`] by that URL rather than reaching the network.
-pub const PROTOCOL_FETCH_COPIES: &[(&str, &str)] = &[];
+pub const PROTOCOL_FETCH_COPIES: &[(&str, &str)] = &[(
+    "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2026-01.parquet",
+    "tests/data/nyc-yellow-taxi-reduced.parquet",
+)];
+
+/// The committed copies that stand in for the table a shipped Protocol's
+/// load step makes, as `(url fetched, load step, file under this crate)`: see
+/// [`stand_in_with_loads`]. Online Retail's source is a zipped workbook, and
+/// Epoch AI's load step drops columns its copy must not hold, so neither
+/// copy can stand in for the fetched file itself. `scripts/cut-start-fixtures.sh`
+/// cuts each by running the start's own load step.
+pub const PROTOCOL_LOAD_COPIES: &[(&str, &str, &str)] = &[
+    (
+        "https://archive.ics.uci.edu/static/public/502/online+retail+ii.zip",
+        "retail_lines",
+        "tests/data/online-retail-ii-reduced.parquet",
+    ),
+    (
+        "https://epoch.ai/data/notable_ai_models.csv",
+        "raw_models",
+        "tests/data/epoch-ai-models-reduced.parquet",
+    ),
+];
 
 /// The runner a Protocol start is run by in a test: the `brightfield-shell`
 /// binary cargo built, never the test harness, which reads `run` as a filter.
@@ -208,7 +292,15 @@ pub fn boot_offline(
         .iter()
         .map(|(url, path)| (*url, path.as_path()))
         .collect();
-    let offline = stand_in(protocol, &borrowed);
+    let loads: Vec<(&str, &str, PathBuf)> = PROTOCOL_LOAD_COPIES
+        .iter()
+        .map(|(url, step, file)| (*url, *step, crate_dir.join(file)))
+        .collect();
+    let loads: Vec<(&str, &str, &Path)> = loads
+        .iter()
+        .map(|(url, step, path)| (*url, *step, path.as_path()))
+        .collect();
+    let offline = stand_in_with_loads(protocol, &borrowed, &loads);
     brightfield_shell::window::Boot::shipped_protocol(
         start.id,
         offline,

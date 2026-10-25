@@ -49,7 +49,11 @@
 //!
 //! [`PALMER_PENGUINS`] and [`USGS_EARTHQUAKES`] are shipped Protocols
 //! ([`Start::protocol`]) over well-known data bundled in their folders, so
-//! their first run reads no network. Each folder under `examples/starts/` is
+//! their first run reads no network. [`NYC_YELLOW_TAXI`], [`ONLINE_RETAIL`] and
+//! [`EPOCH_AI_MODELS`] are shipped Protocols whose first step fetches the
+//! data from its issuer's own URL, so they are [`Start::remote`]: the taxi
+//! month and the retail workbook are tens of megabytes, and Epoch AI's file
+//! grows as models are released. Each folder under `examples/starts/` is
 //! the Protocol a run of the `dashboard-from-data` skill wrote for its dataset,
 //! with a Frictionless `datapackage.json` naming the source and its terms.
 //!
@@ -239,6 +243,18 @@ pub const PALMER_PENGUINS: &str = "palmer-penguins";
 /// Protocol over a bundled Parquet cut by `scripts/cut-usgs-earthquakes.sh`,
 /// whose panel is a map of where they struck beside their weeks.
 pub const USGS_EARTHQUAKES: &str = "usgs-earthquakes-2025";
+/// The NYC Taxi and Limousine Commission's yellow taxi trips of January 2026:
+/// a shipped Protocol that fetches the TLC's own month of trips, whose panel
+/// lays the trips out by hour and day of the week.
+pub const NYC_YELLOW_TAXI: &str = "nyc-yellow-taxi";
+/// UCI's Online Retail II: a shipped Protocol that fetches the UCI Machine
+/// Learning Repository's own archive, whose panel shows each month's orders by
+/// whether the customer was new or returning.
+pub const ONLINE_RETAIL: &str = "online-retail-ii";
+/// Epoch AI's notable AI models: a shipped Protocol that fetches Epoch AI's
+/// own file, whose panel lays training compute against the date each model
+/// was published.
+pub const EPOCH_AI_MODELS: &str = "epoch-ai-models";
 
 /// A data file a start **fetches**, and the name the click writes it under.
 ///
@@ -607,6 +623,67 @@ pub const STARTS: &[Start] = &[
             files: USGS_EARTHQUAKES_FILES,
         }),
     },
+    // Three shipped Protocols that fetch their data from its issuer's own URL
+    // on the first run, so each says so on its button. Each folder is the
+    // Protocol the `dashboard-from-data` skill wrote for its dataset, with its
+    // Frictionless descriptor naming the issuer, the terms and the credit.
+    Start {
+        id: NYC_YELLOW_TAXI,
+        label: "Open NYC yellow taxi trips (over the network)",
+        summary: "January 2026's yellow cab trips from the TLC: the weekday \
+                  rush and the weekend night, hour by hour.",
+        fills: crate::app::CHART,
+        thumbnail: include_bytes!("../assets/starts/nyc-yellow-taxi.png"),
+        thumbnail_dark: include_bytes!("../assets/starts/nyc-yellow-taxi-dark.png"),
+        run_less: false,
+        remote: true,
+        on_door: false,
+        spec: None,
+        data: None,
+        protocol: Some(ShippedProtocol {
+            dir_name: NYC_YELLOW_TAXI,
+            revision: 1,
+            files: NYC_YELLOW_TAXI_FILES,
+        }),
+    },
+    Start {
+        id: ONLINE_RETAIL,
+        label: "Open Online Retail II (over the network)",
+        summary: "Two years of a UK online shop's orders from UCI: who \
+                  comes back, month by month.",
+        fills: crate::app::CHART,
+        thumbnail: include_bytes!("../assets/starts/online-retail-ii.png"),
+        thumbnail_dark: include_bytes!("../assets/starts/online-retail-ii-dark.png"),
+        run_less: false,
+        remote: true,
+        on_door: false,
+        spec: None,
+        data: None,
+        protocol: Some(ShippedProtocol {
+            dir_name: ONLINE_RETAIL,
+            revision: 1,
+            files: ONLINE_RETAIL_FILES,
+        }),
+    },
+    Start {
+        id: EPOCH_AI_MODELS,
+        label: "Open Epoch AI's notable models (over the network)",
+        summary: "Notable AI models from Epoch AI: training compute against \
+                  the year each was published.",
+        fills: crate::app::CHART,
+        thumbnail: include_bytes!("../assets/starts/epoch-ai-models.png"),
+        thumbnail_dark: include_bytes!("../assets/starts/epoch-ai-models-dark.png"),
+        run_less: false,
+        remote: true,
+        on_door: false,
+        spec: None,
+        data: None,
+        protocol: Some(ShippedProtocol {
+            dir_name: EPOCH_AI_MODELS,
+            revision: 1,
+            files: EPOCH_AI_MODELS_FILES,
+        }),
+    },
     // Placed after the generated chart starts rather than beside the
     // crosswalks, and the position is `for_pane`'s rather than the door's.
     // The door draws `on_door()` in this order, so on the first screen this
@@ -780,6 +857,93 @@ pub const HOUSING_FILE: &str = "california_housing.parquet";
 /// [`FetchedData::descriptor`].
 pub const HOUSING_DESCRIPTOR: &str =
     include_str!("../assets/starts/california_housing.datapackage.json");
+
+/// The files of the [`NYC_YELLOW_TAXI`] Protocol folder under `examples/starts/`, as its
+/// start writes them. Its data is not among them: the first run fetches it.
+const NYC_YELLOW_TAXI_FILES: &[(&str, &[u8])] = &[
+    (
+        "arcform.yaml",
+        include_bytes!("../../../examples/starts/nyc-yellow-taxi/arcform.yaml"),
+    ),
+    (
+        "models/01_raw_trips.sql",
+        include_bytes!("../../../examples/starts/nyc-yellow-taxi/models/01_raw_trips.sql"),
+    ),
+    (
+        "models/02_trips.sql",
+        include_bytes!("../../../examples/starts/nyc-yellow-taxi/models/02_trips.sql"),
+    ),
+    (
+        "schemas/raw_trips.json",
+        include_bytes!("../../../examples/starts/nyc-yellow-taxi/schemas/raw_trips.json"),
+    ),
+    (
+        "panels/dashboard.yaml",
+        include_bytes!("../../../examples/starts/nyc-yellow-taxi/panels/dashboard.yaml"),
+    ),
+    (
+        "datapackage.json",
+        include_bytes!("../../../examples/starts/nyc-yellow-taxi/datapackage.json"),
+    ),
+];
+
+/// The files of the [`ONLINE_RETAIL`] Protocol folder under `examples/starts/`, as its
+/// start writes them. Its data is not among them: the first run fetches it.
+const ONLINE_RETAIL_FILES: &[(&str, &[u8])] = &[
+    (
+        "arcform.yaml",
+        include_bytes!("../../../examples/starts/online-retail-ii/arcform.yaml"),
+    ),
+    (
+        "models/01_retail_lines.sql",
+        include_bytes!("../../../examples/starts/online-retail-ii/models/01_retail_lines.sql"),
+    ),
+    (
+        "models/02_retail_orders.sql",
+        include_bytes!("../../../examples/starts/online-retail-ii/models/02_retail_orders.sql"),
+    ),
+    (
+        "schemas/retail_lines.json",
+        include_bytes!("../../../examples/starts/online-retail-ii/schemas/retail_lines.json"),
+    ),
+    (
+        "panels/dashboard.yaml",
+        include_bytes!("../../../examples/starts/online-retail-ii/panels/dashboard.yaml"),
+    ),
+    (
+        "datapackage.json",
+        include_bytes!("../../../examples/starts/online-retail-ii/datapackage.json"),
+    ),
+];
+
+/// The files of the [`EPOCH_AI_MODELS`] Protocol folder under `examples/starts/`, as its
+/// start writes them. Its data is not among them: the first run fetches it.
+const EPOCH_AI_MODELS_FILES: &[(&str, &[u8])] = &[
+    (
+        "arcform.yaml",
+        include_bytes!("../../../examples/starts/epoch-ai-models/arcform.yaml"),
+    ),
+    (
+        "models/01_raw_models.sql",
+        include_bytes!("../../../examples/starts/epoch-ai-models/models/01_raw_models.sql"),
+    ),
+    (
+        "models/02_models.sql",
+        include_bytes!("../../../examples/starts/epoch-ai-models/models/02_models.sql"),
+    ),
+    (
+        "schemas/raw_models.json",
+        include_bytes!("../../../examples/starts/epoch-ai-models/schemas/raw_models.json"),
+    ),
+    (
+        "panels/dashboard.yaml",
+        include_bytes!("../../../examples/starts/epoch-ai-models/panels/dashboard.yaml"),
+    ),
+    (
+        "datapackage.json",
+        include_bytes!("../../../examples/starts/epoch-ai-models/datapackage.json"),
+    ),
+];
 
 /// The files of the [`PALMER_PENGUINS`] Protocol folder under `examples/starts/`, as its
 /// start writes them.

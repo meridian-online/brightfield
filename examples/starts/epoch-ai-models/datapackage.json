@@ -1,0 +1,39 @@
+{
+  "$schema": "https://datapackage.org/profiles/2.0/datapackage.json",
+  "name": "epoch-ai-models",
+  "title": "Epoch AI — notable AI models",
+  "description": "Epoch AI's database of notable AI models: when each was published, by whom, its domain, its training compute and how that compute is known, and how the model can be reached. The file grows as models are released, and the start reads it from Epoch AI's own URL each time it is first opened, so what it draws is the file as Epoch AI publishes it that day. The Authors and Abstract columns are left out of every table the Protocol makes.",
+  "licenses": [
+    {
+      "name": "CC-BY-4.0",
+      "path": "https://creativecommons.org/licenses/by/4.0/",
+      "title": "Creative Commons Attribution 4.0 International, as Epoch AI publishes its data"
+    }
+  ],
+  "sources": [
+    {
+      "path": "https://epoch.ai/data/notable_ai_models.csv",
+      "title": "Epoch AI, 'Data on AI models'. Published online at epoch.ai. Retrieved from https://epoch.ai/data/ai-models"
+    }
+  ],
+  "resources": [
+    {
+      "name": "notable_ai_models",
+      "path": "https://epoch.ai/data/notable_ai_models.csv",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "fields": [
+          { "name": "Model", "type": "string", "description": "The model's name." },
+          { "name": "Organization", "type": "string", "description": "The organisations that built it." },
+          { "name": "Publication date", "type": "date", "description": "When it was published or announced." },
+          { "name": "Training compute (FLOP)", "type": "number", "description": "Floating-point operations spent training it, where Epoch AI recorded or estimated them." },
+          { "name": "Domain", "type": "string", "description": "Its domains, comma-separated; the dashboard reads the first listed." },
+          { "name": "Organization categorization", "type": "string", "description": "Industry, Academia, Government or Research collective, comma-separated." },
+          { "name": "Model accessibility", "type": "string", "description": "Open weights, API or hosted access, or unreleased." },
+          { "name": "Confidence", "type": "string", "description": "Confident, Likely, Speculative or Unknown: how sure Epoch AI is of the training compute." }
+        ]
+      }
+    }
+  ]
+}

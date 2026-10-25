@@ -1,0 +1,18 @@
+{
+  "issuer": "UCI Machine Learning Repository",
+  "terms": {
+    "title": "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+    "url": "https://creativecommons.org/licenses/by/4.0/"
+  },
+  "credit": "Chen, D. (2012). Online Retail II [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C5CG6D",
+  "source": {
+    "url": "https://archive.ics.uci.edu/static/public/502/online+retail+ii.zip",
+    "cut_on": "2026-10-25"
+  },
+  "fixture": {
+    "path": "online-retail-ii-reduced.parquet",
+    "rows": 40077,
+    "sha256": "74b38f39365b43133c34262a178b4ce7c8c2a3f5ac23b747f1bf9108df01da19",
+    "keeps": "One row per purchase, its lines summed into one, from the start's own retail_lines step; no Customer ID, product code or description"
+  }
+}

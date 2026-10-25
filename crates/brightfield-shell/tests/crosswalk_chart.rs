@@ -643,11 +643,11 @@ fn a_start_that_reaches_the_network_says_so_on_its_own_button() {
     }
     assert_eq!(
         starts::STARTS.iter().filter(|s| s.remote).count(),
-        2,
-        "the shipped set is meant to hold exactly two starts that need a \
-         connection, the crosswalk chart and California Housing; if that \
-         changed deliberately, change this number and the front door's \
-         skip-count assertions with it"
+        5,
+        "the shipped set is meant to hold exactly five starts that need a \
+         connection: the crosswalk chart, California Housing, and the taxi, \
+         Online Retail and Epoch AI Protocols; if that changed deliberately, \
+         change this number and the front door's skip-count assertions with it"
     );
 }
 

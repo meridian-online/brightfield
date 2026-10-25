@@ -1,0 +1,18 @@
+{
+  "issuer": "NYC Taxi and Limousine Commission",
+  "terms": {
+    "title": "Published as open data under the City of New York's terms of use",
+    "url": "https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page"
+  },
+  "credit": "Data: NYC Taxi and Limousine Commission, TLC Trip Record Data",
+  "source": {
+    "url": "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2026-01.parquet",
+    "cut_on": "2026-10-25"
+  },
+  "fixture": {
+    "path": "nyc-yellow-taxi-reduced.parquet",
+    "rows": 100000,
+    "sha256": "c8a31630deee29d716cbc182dab602e18b61b0f69b02a5c763047414a9aadcf1",
+    "keeps": "100,000 trips sampled at random (fixed seed) from the month's file, with the five columns the start's trips step reads"
+  }
+}

@@ -1,0 +1,26 @@
+name: epoch-ai-models
+engine: duckdb
+engine_version: '>=1.0'
+params: {}
+dotenv: []
+timeout_sec: null
+defaults: null
+hooks:
+  on_init: null
+  on_success: null
+  on_failure: null
+  on_exit: null
+steps:
+  - name: fetch_models
+    op: http_fetch
+    with:
+      out: data/notable_ai_models.csv
+      url: https://epoch.ai/data/notable_ai_models.csv
+    description: Fetch Epoch AI's notable AI models
+  - name: raw_models
+    sql: models/01_raw_models.sql
+    description: Load Epoch AI's notable models as they arrive, leaving out the Authors and Abstract columns
+  - name: models
+    sql: models/02_models.sql
+    description: 'The models the dashboard reads: when each was published, its training compute, its first-listed domain, the kind of organisation behind it, how it can be reached, and how its compute is known'
+assets: {}

@@ -1,0 +1,85 @@
+title: "New York's yellow cabs keep two clocks: weekdays build to a 6 pm rush, weekends run late, with three times the weekday trips at 1 am"
+params:
+  sel: { select: crossfilter }
+hconcat:
+  - vconcat:
+    - plot:
+      - mark: cell
+        data: { from: trips, filterBy: $sel }
+        x: pickup_hour
+        y: weekday
+        fill: { count: }
+      - legend: color
+      title: "New York's yellow cabs keep two clocks: weekdays build to a 6 pm rush, weekends run late, with three times the weekday trips at 1 am. Trips picked up in January 2026, by hour and day"
+      colorScheme: viridis
+      xLabel: "hour of pickup (January 2026 has five Thursdays, Fridays and Saturdays)"
+      yLabel: day of the week
+      width: 700
+      height: 360
+    - plot:
+      - mark: barY
+        data: { from: trips }
+        x: pickup_date
+        y: { count: }
+      - select: toggleX
+        as: $sel
+      - select: highlight
+        by: $sel
+      title: Trips per day, January 2026
+      xLabel: day
+      yLabel: trips
+      width: 700
+      height: 220
+  - vconcat:
+    - plot:
+      - mark: rectY
+        data: { from: trips }
+        x: { bin: trip_miles }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: trips, filterBy: $sel }
+        x: { bin: trip_miles }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      title: "Trip distance: 85% of the trips of 16 to 19 miles start or end at an airport"
+      xDomain: Fixed
+      xLabel: miles (30 or more drawn at 30)
+      yLabel: trips (log scale)
+      yScale: log
+      width: 400
+      height: 220
+      marginLeft: 80
+    - plot:
+      - mark: barX
+        data: { from: trips }
+        x: { count: }
+        y: pickup_place
+        sort: { y: -x, limit: 10 }
+        label: count
+      - select: toggleY
+        as: $sel
+      - select: highlight
+        by: $sel
+      title: Where the trip began
+      yLabel: pickup
+      width: 400
+      height: 150
+      marginLeft: 130
+    - plot:
+      - mark: barX
+        data: { from: trips }
+        x: { count: }
+        y: trip_record
+        fill: "#b7b3ae"
+      - mark: barX
+        data: { from: trips, filterBy: $sel }
+        x: { count: }
+        y: trip_record
+        label: count
+      title: How complete each trip record is, among the days, distances and pickups selected
+      yLabel: record
+      width: 400
+      height: 170
+      marginLeft: 130

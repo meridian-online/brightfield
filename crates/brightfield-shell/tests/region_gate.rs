@@ -386,6 +386,14 @@ fn a_protocol_and_a_chart() -> Boot {
 /// The both-documents boot rides along because it is the one window where
 /// each rail draws content instead of an empty state.
 fn every_window_this_build_can_open() -> Vec<(String, Boot)> {
+    // The tests in this file run in parallel and share one datasets
+    // directory, so two of them booting a Protocol start at once would run
+    // the same folder twice, and one run would find the other's database
+    // locked. One at a time, the second finds the first's run and opens it.
+    static BOOTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _booting = BOOTING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut boots = vec![
         ("no document — the front door".to_owned(), Boot::empty()),
         (

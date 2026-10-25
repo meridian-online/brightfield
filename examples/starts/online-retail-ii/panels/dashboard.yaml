@@ -1,0 +1,76 @@
+title: "The regulars carry this shop: in every month of 2011, returning customers placed 77% to 91% of orders, November's peak included"
+params:
+  sel: { select: crossfilter }
+hconcat:
+  - vconcat:
+    - plot:
+      - mark: rectY
+        data: { from: retail_orders }
+        x: { bin: month_number, steps: 25 }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: retail_orders, filterBy: $sel }
+        x: { bin: month_number, steps: 25 }
+        y: { count: }
+        fill: customer
+      - select: intervalX
+        as: $sel
+      - legend: color
+      title: "The regulars carry this shop: in every month of 2011, returning customers placed 77% to 91% of orders, November's peak included. Data: Chen (2012), UCI Machine Learning Repository, CC BY 4.0"
+      colorDomain: [returning, new this month, no customer ID]
+      colorRange: ["#0083c4", "#cca124", "#31aa8c"]
+      xDomain: Fixed
+      xLabel: "month: 0 is December 2009, 12 December 2010, 24 December 2011 (to the 9th)"
+      yLabel: orders (purchases, not cancellations)
+      width: 680
+      height: 600
+  - vconcat:
+    - plot:
+      - mark: barX
+        data: { from: retail_orders }
+        x: { count: }
+        y: customer
+        sort: { y: -x, limit: 10 }
+        label: count
+      - select: toggleY
+        as: $sel
+      - select: highlight
+        by: $sel
+      title: Orders, by customer
+      yLabel: customer
+      width: 380
+      height: 150
+      marginLeft: 130
+    - plot:
+      - mark: barX
+        data: { from: retail_orders }
+        x: { count: }
+        y: country
+        sort: { y: -x, limit: 8 }
+        label: count
+      - select: toggleY
+        as: $sel
+      - select: highlight
+        by: $sel
+      title: Orders, by country (top eight)
+      yLabel: country
+      width: 380
+      height: 230
+      marginLeft: 130
+    - plot:
+      - mark: barX
+        data: { from: retail_orders }
+        x: { count: }
+        y: customer_record
+        fill: "#b7b3ae"
+      - mark: barX
+        data: { from: retail_orders, filterBy: $sel }
+        x: { count: }
+        y: customer_record
+        label: count
+      title: "How sure 'new' and 'returning' are, among the months and countries clicked: the data starts in December 2009"
+      yLabel: customer record
+      width: 380
+      height: 190
+      marginLeft: 190

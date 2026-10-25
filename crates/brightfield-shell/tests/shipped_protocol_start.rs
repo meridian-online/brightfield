@@ -646,3 +646,219 @@ fn a_click_while_the_tiles_own_run_is_going_lands_on_the_panel() {
         "the run did not land on the first panel through the start's landing"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The three fetched gallery starts
+// ---------------------------------------------------------------------------
+
+/// The columns of `table` in the database the Protocol in `dir` made, in order.
+fn columns_of(dir: &Path, table: &str) -> Vec<String> {
+    let db = arc::spec::protocol_db_path(dir).expect("the Protocol names its database");
+    let conn = duckdb::Connection::open_with_flags(
+        &db,
+        duckdb::Config::default()
+            .access_mode(duckdb::AccessMode::ReadOnly)
+            .expect("a read-only config"),
+    )
+    .unwrap_or_else(|e| panic!("open {}: {e}", db.display()));
+    let mut stmt = conn
+        .prepare("SELECT column_name FROM information_schema.columns WHERE table_name = ? ORDER BY ordinal_position")
+        .expect("prepare the column query");
+    let names = stmt
+        .query_map([table], |row| row.get::<_, String>(0))
+        .expect("query the columns")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("read the columns");
+    names
+}
+
+/// How many rows `table` holds in the database the Protocol in `dir` made.
+fn rows_of(dir: &Path, table: &str) -> i64 {
+    let db = arc::spec::protocol_db_path(dir).expect("the Protocol names its database");
+    let conn = duckdb::Connection::open_with_flags(
+        &db,
+        duckdb::Config::default()
+            .access_mode(duckdb::AccessMode::ReadOnly)
+            .expect("a read-only config"),
+    )
+    .unwrap_or_else(|e| panic!("open {}: {e}", db.display()));
+    conn.query_row(&format!("SELECT count(*) FROM \"{table}\""), [], |row| {
+        row.get(0)
+    })
+    .unwrap_or_else(|e| panic!("count {table}: {e}"))
+}
+
+/// Take the shipped start `id` over the network, as a click does, and return
+/// the folder its run wrote once the run has landed on its panel.
+fn land_fetched_start(id: &str) -> PathBuf {
+    let start = starts::find(id).expect("the shipped set has it");
+    assert!(start.remote, "{id} is meant to reach the network");
+    let protocol = start.protocol.as_ref().expect("it is a Protocol start");
+    let mut win = Window::open(runner());
+    win.take_and_land(protocol);
+    assert!(win.banners().is_empty(), "{id}: {:?}", win.banners());
+    assert_eq!(
+        win.app.panel_tiles().and_then(|t| t.selected()),
+        Some(0),
+        "{id}'s run did not land on its panel"
+    );
+    drop(win);
+    starts::protocol_path(protocol)
+}
+
+/// The taxi start fetches the TLC's month and makes the `trips` table its
+/// panel reads, with rows in it. Columns and shape only: the TLC may revise
+/// the month.
+///
+/// `cargo test -p brightfield-shell --test shipped_protocol_start -- --ignored`.
+#[test]
+#[ignore = "network: fetches January 2026's yellow taxi trips from the TLC, about 64 MB"]
+fn the_nyc_yellow_taxi_protocol_fetches_and_produces_the_columns_its_panel_reads() {
+    let _config = datasets_into_scratch("network_taxi");
+    let dir = land_fetched_start(starts::NYC_YELLOW_TAXI);
+    assert_eq!(
+        columns_of(&dir, "trips"),
+        [
+            "pickup_time",
+            "pickup_date",
+            "pickup_hour",
+            "weekday",
+            "trip_miles",
+            "pickup_place",
+            "trip_record"
+        ],
+        "the trips table no longer has the columns the panel reads"
+    );
+    assert!(rows_of(&dir, "trips") > 0, "the month made no trips");
+}
+
+/// The Online Retail start fetches UCI's archive, reads both sheets of the
+/// workbook inside it, and makes the `retail_orders` table its panel reads.
+/// No table it makes holds the Customer ID.
+///
+/// `cargo test -p brightfield-shell --test shipped_protocol_start -- --ignored`.
+#[test]
+#[ignore = "network: fetches Online Retail II from the UCI Machine Learning Repository, about 45 MB"]
+fn the_online_retail_ii_protocol_fetches_and_produces_the_columns_its_panel_reads() {
+    let _config = datasets_into_scratch("network_retail");
+    let dir = land_fetched_start(starts::ONLINE_RETAIL);
+    assert_eq!(
+        columns_of(&dir, "retail_orders"),
+        [
+            "invoice",
+            "invoice_time",
+            "month",
+            "month_number",
+            "country",
+            "lines",
+            "order_value",
+            "customer",
+            "customer_order_number",
+            "customer_record"
+        ],
+        "the retail_orders table no longer has the columns the panel reads"
+    );
+    assert!(
+        rows_of(&dir, "retail_orders") > 0,
+        "the archive made no orders"
+    );
+    for table in ["retail_lines", "retail_orders"] {
+        assert!(
+            !columns_of(&dir, table).iter().any(|c| c == "Customer ID"),
+            "{table} holds the Customer ID, which no table may"
+        );
+    }
+}
+
+/// The Epoch AI start fetches Epoch AI's file and makes the `models` table its
+/// panel reads. No table it makes holds the Authors or Abstract columns.
+/// Columns and shape only: the file grows as models are released.
+///
+/// `cargo test -p brightfield-shell --test shipped_protocol_start -- --ignored`.
+#[test]
+#[ignore = "network: fetches Epoch AI's notable models, about 2 MB"]
+fn the_epoch_ai_models_protocol_fetches_and_produces_the_columns_its_panel_reads() {
+    let _config = datasets_into_scratch("network_epoch");
+    let dir = land_fetched_start(starts::EPOCH_AI_MODELS);
+    assert_eq!(
+        columns_of(&dir, "models"),
+        [
+            "model",
+            "organization",
+            "publication_date",
+            "publication_year",
+            "training_compute_flop",
+            "training_compute_log10",
+            "domain",
+            "organization_type",
+            "access",
+            "compute_record"
+        ],
+        "the models table no longer has the columns the panel reads"
+    );
+    assert!(rows_of(&dir, "models") > 0, "the file made no models");
+    for table in ["raw_models", "models"] {
+        let columns = columns_of(&dir, table);
+        assert!(
+            !columns.iter().any(|c| c == "Authors" || c == "Abstract"),
+            "{table} holds Authors or Abstract, which no table may: {columns:?}"
+        );
+    }
+}
+
+/// The reduced copies the three fetched starts are drawn from offline hold
+/// none of the columns those starts may not show, and each is the copy its
+/// provenance file records, which names the issuer, terms and credit.
+#[test]
+fn the_fetched_starts_reduced_copies_hold_no_forbidden_column_and_match_their_provenance() {
+    use sha2::{Digest, Sha256};
+    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    for id in [
+        starts::NYC_YELLOW_TAXI,
+        starts::ONLINE_RETAIL,
+        starts::EPOCH_AI_MODELS,
+    ] {
+        let copy = data.join(format!("{id}-reduced.parquet"));
+        let conn = duckdb::Connection::open_in_memory().expect("open DuckDB");
+        let mut stmt = conn
+            .prepare("SELECT name FROM parquet_schema(?) WHERE num_children IS NULL")
+            .expect("prepare the schema query");
+        let columns = stmt
+            .query_map([copy.display().to_string()], |row| row.get::<_, String>(0))
+            .expect("read the schema")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read the column names");
+        for forbidden in ["Authors", "Abstract", "Customer ID"] {
+            assert!(
+                !columns.iter().any(|c| c == forbidden),
+                "{} holds {forbidden}: {columns:?}",
+                copy.display()
+            );
+        }
+        let provenance: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(data.join(format!("{id}-reduced.json")))
+                .unwrap_or_else(|e| panic!("{id}'s provenance file: {e}")),
+        )
+        .expect("the provenance file parses");
+        let bytes = std::fs::read(&copy).expect("read the copy");
+        assert_eq!(
+            provenance["fixture"]["sha256"].as_str(),
+            Some(format!("{:x}", Sha256::digest(&bytes)).as_str()),
+            "{} is not the copy its provenance file records: re-cut it with \
+             scripts/cut-start-fixtures.sh, which writes both",
+            copy.display()
+        );
+        for key in ["issuer", "credit"] {
+            assert!(
+                provenance[key].as_str().is_some_and(|s| !s.is_empty()),
+                "{id}'s provenance file names no {key}"
+            );
+        }
+        assert!(
+            provenance["terms"]["title"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty()),
+            "{id}'s provenance file names no terms"
+        );
+    }
+}
