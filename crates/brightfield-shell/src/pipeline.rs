@@ -2974,8 +2974,8 @@ fn compose_from_results(
 }
 
 /// The note a plot owes when its categorical colour scale has more categories
-/// than the palette has colours: the scale starts the palette again, so two
-/// categories wear one colour. A plot that writes its own `colorRange` chose its
+/// than the palette has colours: the categories past the palette's next-to-last
+/// colour share its last one, under one "Other". A plot that writes its own `colorRange` chose its
 /// colours and gets no note (`an_explicit_colour_range_carries_no_note`). Fill and stroke are judged alike, and a plot that
 /// colours both over the same categories gets the one note, as the caller keeps
 /// a warning once.

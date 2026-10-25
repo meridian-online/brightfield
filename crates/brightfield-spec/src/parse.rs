@@ -886,8 +886,8 @@ pub enum ParseWarning {
     },
 
     /// A plot's categorical colour scale has more categories than the palette
-    /// has colours, so the scale starts the palette again and two categories
-    /// wear one colour; only the legend tells them apart.
+    /// has colours, so the categories past the palette's next-to-last colour
+    /// share its last one and the legend names them together as "Other".
     ///
     /// Raised by composition, which is where the categories the data holds are
     /// known. Not raised when the plot writes its own `colorRange`: those colours
@@ -931,9 +931,9 @@ pub enum ParseWarning {
     },
 }
 
-/// The words between the two numbers and the advice in the colours-repeat note,
-/// which a reader of diagnostics finds the note by.
-pub const COLOURS_REPEAT_MARK: &str = " colours, so colours repeat; ";
+/// The words after the palette's size in the colours-repeat note, which a
+/// reader of diagnostics finds the note by.
+pub const COLOURS_REPEAT_MARK: &str = " colours, so the last ";
 
 impl fmt::Display for ParseWarning {
     /// One honest line per warning — what was seen and what it cost.
@@ -1192,8 +1192,9 @@ impl fmt::Display for ParseWarning {
                 palette,
             } => write!(
                 f,
-                "{categories} series share {palette}{COLOURS_REPEAT_MARK}highlight the series \
-                 that matter, fold the rest into \"Other\", or split the chart"
+                "{categories} series share {palette}{COLOURS_REPEAT_MARK}{} are drawn as one \
+                 \"Other\"; highlight the series that matter or split the chart",
+                categories + 1 - palette
             ),
             Self::MarkDrewNothing { mark, reason } => {
                 write!(f, "`{mark}` drew nothing: {reason}")

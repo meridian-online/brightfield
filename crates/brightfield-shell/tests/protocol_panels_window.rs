@@ -302,12 +302,12 @@ fn the_co2_protocol_opens_as_two_tiles() {
 fn the_line_tile_says_its_colours_repeat_and_the_bar_tile_does_not() {
     let ran = ran_fixture(CO2);
     let win = Window::over(open(&ran.dir));
-    let note = "9 series share 8 colours, so colours repeat";
+    let note = "9 series share 8 colours, so the last 2 are drawn as one";
     assert!(win.drew(note), "no note in {:?}", win.texts);
     assert_eq!(
         win.texts
             .iter()
-            .filter(|t| t.contains("colours repeat"))
+            .filter(|t| t.contains("drawn as one"))
             .count(),
         1,
         "the bar tile draws no note: {:?}",
@@ -321,7 +321,7 @@ fn the_line_tile_says_its_colours_repeat_and_the_bar_tile_does_not() {
     let at = win.text_at(
         win.texts
             .iter()
-            .find(|t| t.contains("colours repeat"))
+            .find(|t| t.contains("drawn as one"))
             .expect("the note"),
     );
     assert!(
@@ -464,7 +464,7 @@ fn the_note_stays_in_its_band_in_a_narrow_window() {
     let (_, at) = win
         .text_rects
         .iter()
-        .find(|(t, _)| t.contains("colours repeat") || t.contains("series share"))
+        .find(|(t, _)| t.contains("drawn as one") || t.contains("series share"))
         .unwrap_or_else(|| panic!("no note drawn: {:?}", win.texts));
     assert!(
         at.bottom() <= line.top() + brightfield_shell::protocol_panels::NOTE_HEIGHT as f32,

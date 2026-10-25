@@ -102,7 +102,9 @@ pub enum LegendSpec {
 /// One categorical legend entry: the category and the ink its marks wear.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LegendEntry {
-    /// The category label, exactly as the scale spells it.
+    /// The category label, exactly as the scale spells it, except on the
+    /// row a Harbour scale folds its overflow into: that one is "Other" (or
+    /// "Other (2)" beside a real "Other") and stands for several categories.
     pub label: String,
     /// The mark colour, straight-alpha RGBA — the palette value itself, so
     /// the swatch cannot drift from the raster.
@@ -121,20 +123,17 @@ impl LegendSpec {
             .get(Channel::Fill)
             .or_else(|| scales.get(Channel::Stroke))?
         {
-            Scale::Colour {
-                categories,
-                palette,
-            } => Some(Self::Categorical {
-                // The palette cycles, as the marks take it
-                // (`Scale::map_colour`): a category past the palette's end
-                // wears the colour the marks give it and keeps its row
-                // (`a_legend_lists_every_category_in_the_colour_its_marks_wear`).
-                entries: categories
-                    .iter()
-                    .zip(palette.iter().cycle())
+            colour @ Scale::Colour { .. } => Some(Self::Categorical {
+                // The scale's own rows, so each wears what its marks wear: past
+                // Harbour's hues the rest share one "Other" row, and a palette
+                // the plot writes cycles with a row for every category
+                // (`a_legend_folds_the_categories_past_the_seventh_into_other`).
+                entries: colour
+                    .colour_entries()
+                    .into_iter()
                     .map(|(label, colour)| LegendEntry {
-                        label: label.clone(),
-                        colour: *colour,
+                        label: label.into_owned(),
+                        colour,
                     })
                     .collect(),
             }),
@@ -1223,10 +1222,10 @@ mod tests {
     use super::*;
 
     /// A line plot of more categories than the palette has colours: its legend
-    /// lists every category, each in the colour the plot's own scale gives
-    /// that category's marks.
+    /// names the first seven and folds the rest into one "Other", each row in
+    /// the colour the plot's own scale gives its marks.
     #[test]
-    fn a_legend_lists_every_category_in_the_colour_its_marks_wear() {
+    fn a_legend_folds_the_categories_past_the_seventh_into_other() {
         let dir = tempfile::tempdir().expect("a temp directory");
         let mut csv = String::from("k,x,y\n");
         let names: Vec<String> = (0..9).map(|i| format!("c{i}")).collect();
@@ -1246,8 +1245,10 @@ mod tests {
         let Some(LegendSpec::Categorical { entries }) = LegendSpec::of_plot(plot) else {
             panic!("no categorical legend");
         };
-        assert_eq!(entries.len(), 9, "{:?}", LegendSpec::of_plot(plot));
-        for entry in &entries {
+        assert_eq!(entries.len(), 8, "{:?}", LegendSpec::of_plot(plot));
+        let (other, named) = entries.split_last().expect("rows");
+        assert_eq!(other.label, brightfield_render::scale::OTHER_CATEGORY);
+        for entry in named {
             assert_eq!(
                 Some(entry.colour),
                 scale.map_colour(&entry.label),
@@ -1255,7 +1256,14 @@ mod tests {
                 entry.label
             );
         }
-        let mut labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
+        let Scale::Colour { categories, .. } = scale else {
+            panic!("not a colour scale");
+        };
+        for folded in &categories[7..] {
+            assert_eq!(scale.map_colour(folded), Some(other.colour), "{folded}");
+        }
+        let mut labels: Vec<&str> = named.iter().map(|e| e.label.as_str()).collect();
+        labels.extend(categories[7..].iter().map(String::as_str));
         labels.sort_unstable();
         assert_eq!(labels, names.iter().map(String::as_str).collect::<Vec<_>>());
     }
