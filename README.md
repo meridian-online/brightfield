@@ -129,6 +129,18 @@ The headless exports read the same snapshot. `export-png` draws one panel as the
 
 **`brightfield-report`** typesets that Markdown to PDF through Typst, offline, with the fonts bundled with the design system: A4 portrait, numbered pages, tables with numbers kept whole, and each listed chart drawn in its item's place under its title and never split across pages. It knows Markdown, Typst and PNG bytes and nothing of panels, databases or the GPU; the shell renders the charts and passes the pictures in.
 
+### The front door's starts
+
+With nothing open, the window shows the front door. Its Datasets row offers six starts that ship inside the binary, each card drawn from the screen a click lands on:
+
+- **Palmer Penguins** and **the USGS earthquakes of 2025** carry their data in their folders, so their first run reads no network.
+- **NYC yellow taxi trips** (January 2026, from the TLC), **Online Retail II** (from the UCI Machine Learning Repository) and **Epoch AI's notable models** fetch their data from the publisher's own URL on their first run, and their cards say "over the network". With no network, a banner names the URL the run could not reach, and the window stays up.
+- **A run of the EDGAR↔GLEIF crosswalk** opens a Protocol with a recorded run, and reads no network.
+
+The first five are shipped Protocols: the arc Protocol folders under [`examples/starts/`](examples/starts/), each holding a manifest, a load step, a saved schema, one panel, and a `datapackage.json` naming the source and its terms, compiled into the binary. Taking one writes its folder to `datasets/protocols/v<revision>/<id>` beside Brightfield's layout file, runs it with Brightfield's own arc runner when it has no successful run there yet, and opens its panel beside its grid, where an analyst's own run of the same Protocol would land. While the run is going the canvas says so, naming what it fetches and from where. A later click, or a relaunch that remembers the start, opens the run already there with no network. A failed run leaves no database, so the next click runs the Protocol again. A build that changes a folder raises its revision and writes the new folder beside the old one, which stays, since the reader may have saved edits there.
+
+**A filter typed in the grid reaches the charts.** A dashboard's grid takes part in its crossfilter both ways: a brush narrows the grid, and a condition typed in the grid narrows every chart that reads the selection, while a grey layer that shows the whole table stays whole.
+
 ### Chart versions
 
 Each chart file Brightfield saves, including each panel file, is recorded in arcform's local history (`~/.arcform/history`, or `$ARCFORM_HISTORY_DIR`): the text a Save replaces, the text it writes, and the text a window closes without saving. A panel's Versions list joins that store with `arcform-log.txt`, the log arc keeps in the Protocol's folder, which names each version, when it was made and by which route. The WHO column shows that route: Brightfield, arc (command line), or arc (agent tool) for arc's MCP server. The log travels with the folder and the store's text does not, and the store keeps only a file's newest versions, so a version the log names whose text the store does not hold is listed with its text marked as not kept on this machine, dimmed, and cannot be shown or stepped back to.

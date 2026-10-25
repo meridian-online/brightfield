@@ -8,6 +8,11 @@ Releases before 0.1.6 predate this file; their tags and the commit history are t
 
 ## [Unreleased]
 
+### Added
+
+- The front door offers six starts: Palmer Penguins, the USGS earthquakes of 2025, NYC yellow taxi trips, Online Retail II, Epoch AI's notable models, and a run of the EDGAR↔GLEIF crosswalk. The first five are arc Protocols that run on the first click and open their dashboard beside its grid; the taxi, retail and Epoch AI cards fetch their data over the network on that first run and say so.
+- A filter typed in a dashboard's grid narrows its charts, as a brush on a chart narrows the grid.
+
 ### Changed
 
 - The California Housing card fetches the dataset from StatLib, where its authors published it, the first time it is opened, and says on the card that it needs the network. Brightfield no longer ships a copy, and the release's `examples/data/` holds a reduced copy of the EDGAR↔GLEIF crosswalk instead. The table now has all 20,640 block groups and the source's own nine columns, with rooms, bedrooms and households as totals rather than per-household averages.
