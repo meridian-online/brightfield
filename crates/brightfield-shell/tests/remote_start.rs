@@ -50,7 +50,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
-use brightfield_protocol::layout::Flow;
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::spec_data_files;
 use brightfield_shell::remote;
@@ -386,6 +385,11 @@ struct Window {
 /// A fetched start the door draws a card for, which the readout tests latch
 /// their stub fetch under: `open_remote_start` takes any id, and the card the
 /// readout is drawn on is the id's.
+///
+/// The app never latches a spec fetch under this id: Taxi is a shipped
+/// Protocol start, whose run does its own fetching. The readout tests
+/// exercise the spec-start fetch path, which no door card takes now, through
+/// a card that is on the door.
 const FETCHED_CARD: &str = starts::NYC_YELLOW_TAXI;
 
 impl Window {
@@ -1056,14 +1060,8 @@ fn a_start_that_declares_no_network_never_enters_the_fetch_path() {
     // and forgot to declare it reaches for a socket here.
     datasets_into_scratch();
     for start in starts::STARTS.iter().filter(|s| !s.remote) {
-        // A Protocol start runs its folder first, by the cargo-built runner
-        // and over its stand-in: `Boot::start` has no runner to hand a run to.
-        let boot = if start.protocol.is_some() {
-            shipped_protocol::boot_offline(start)
-        } else {
-            Boot::start(start.id, Flow::Vertical)
-        }
-        .unwrap_or_else(|e| panic!("{} no longer opens: {e}", start.id));
+        let boot = shipped_protocol::boot_start(start)
+            .unwrap_or_else(|e| panic!("{} no longer opens: {e}", start.id));
         assert!(
             boot.has_chart() || !boot.protocol.graph_full.nodes.is_empty(),
             "{} opened onto nothing",

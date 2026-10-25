@@ -471,7 +471,7 @@ fn reads_table(answer: &TypedAnswer, name: &str) -> bool {
         .any(|table| table.eq_ignore_ascii_case(name))
 }
 
-/// A run of the open Protocol, started from this window and not yet finished.
+/// A run of a Protocol, started from this window and not yet finished.
 ///
 /// **Which Protocol it is for is part of the latch**, and it is read every time
 /// the latch is: the ledger strip's control reads *running* only over the
@@ -481,12 +481,20 @@ fn reads_table(answer: &TypedAnswer, name: &str) -> bool {
 /// gives about the fetch latch — and unlike a fetch, a run that is not landed
 /// is not lost: `arc` wrote its record beside the spec, and the next open of
 /// that file reads it.
+///
+/// The window keeps one per folder it is running, not one in all: a reader
+/// who takes a second shipped start while the first runs leaves the first's
+/// run going, and coming back to the first finds it rather than starting a
+/// second `arc` over the folder it is writing.
 struct PendingRun {
     /// The worker waiting on the runner.
     run: crate::run::Run,
     /// The name of the Protocol being run. With [`crate::run::Run::dir`], the
     /// identity a document is compared against.
     protocol: String,
+    /// The URLs the Protocol's `http_fetch` steps fetch, read when the run
+    /// began: what the panel tiles name while it runs.
+    fetching: Vec<String>,
     /// Whether this is a shipped Protocol start's run, the only kind whose
     /// failure removes the database it left: a shipped folder is the
     /// binary's own and runs again from nothing, where a reader's Protocol
@@ -524,13 +532,14 @@ pub const RUN_PROTOCOL: &str = "run-protocol";
 /// One gallery card's outer width.
 ///
 /// Sized so the door's six cards and their five gaps lie on one row of the
-/// door's content column at the default 1280-point window. That column is not
-/// the window: the navigator rail and the panel margins come off it, and
-/// `ui.available_width()` measured inside the door's scroll area at the default
-/// size is 1024. `6 × 156 + 5 × 16 = 1016` fits it with 8 points spare;
-/// 157 would be the widest whole width, and 158 and up wrap the sixth card to a
-/// second row. `the_doors_datasets_row_is_one_row_and_all_of_it_is_on_screen` is
-/// what holds it.
+/// door's content column at the default 1280-point window. That column is
+/// not the window: the navigator rail and the panel margins come off it, and
+/// `ui.available_width()` measured inside the door's scroll area at the
+/// default size is 1024. `6 × 156 + 5 × 16 = 1016` fits it with 8 points
+/// spare; 157 would be the widest whole width, and 158 and up wrap the sixth
+/// card to a second row.
+/// `the_doors_datasets_row_is_one_row_and_all_of_it_is_on_screen` is what
+/// holds it.
 const CARD_WIDTH: f32 = 156.0;
 
 /// The thumbnail's drawn height: the card's width less its two insets, at the
@@ -703,6 +712,15 @@ fn boot_tile_body(count: usize) -> egui::Vec2 {
         + band_extent(plan.expect_region(arrangement::LOCATOR_BAND))
         + rail_collapsed(plan.expect_region(arrangement::LEDGER_RAIL));
     crate::panel_tiles::body_for_canvas(egui::vec2(w - across, h - down), count)
+}
+
+/// The URLs the `http_fetch` steps of the Protocol in `dir` fetch, read off
+/// its manifest: none for a folder with no manifest or no fetch.
+fn fetch_urls_in(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join(arc::spec::MANIFEST_FILENAME)).map_or_else(
+        |_| Vec::new(),
+        |manifest| crate::starts::fetch_urls(&manifest),
+    )
 }
 
 /// The Protocol in `dir` as its rails read it: its steps and the tables they
@@ -1242,6 +1260,11 @@ pub struct Boot {
     /// panels, with why: one that has not run, whose tiles offer a Run, and
     /// one whose database a run holds, which opens when the run ends.
     pub panels_problem: Option<(PathBuf, OpenProblem)>,
+    /// The panel of [`Self::panels`] to open beside its grid once the window
+    /// holds the tiles, as a click on a shipped Protocol start does: set by
+    /// the boot of such a start, so a relaunch that remembers it, and the
+    /// card thumbnail drawn through it, show the screen the click lands on.
+    pub open_panel: Option<usize>,
 }
 
 impl Boot {
@@ -1261,6 +1284,7 @@ impl Boot {
             opened_id: None,
             panels: None,
             panels_problem: None,
+            open_panel: None,
         }
     }
 
@@ -1280,6 +1304,7 @@ impl Boot {
             opened_id: None,
             panels: None,
             panels_problem: None,
+            open_panel: None,
         }
     }
 
@@ -1324,6 +1349,7 @@ impl Boot {
             opened_id: None,
             panels: None,
             panels_problem: None,
+            open_panel: None,
         }
     }
 
@@ -1458,7 +1484,10 @@ impl Boot {
                 None => format!("{} did not open for its panels", dir.display()),
             });
         }
-        Ok(boot)
+        Ok(Self {
+            open_panel: Some(0),
+            ..boot
+        })
     }
 
     /// Whether the canvas of a window over these documents holds the asset
@@ -2662,11 +2691,13 @@ pub struct MeridianApp {
     /// once a frame — see [`MeridianApp::open_start`] for why the fetch is not
     /// simply done inside the click.
     fetching: Option<PendingStart>,
-    /// The run of the open Protocol this window started and has not landed —
-    /// see [`PendingRun`] and [`MeridianApp::run_protocol`].
-    running: Option<PendingRun>,
-    /// The shipped Protocol start waiting on [`Self::running`] to open its
-    /// first panel — see [`PendingLanding`].
+    /// The runs this window started and has not landed, at most one per
+    /// Protocol folder — see [`PendingRun`] and [`MeridianApp::run_protocol`].
+    running: Vec<PendingRun>,
+    /// The shipped Protocol start waiting on its run in [`Self::running`] to
+    /// open its first panel — see [`PendingLanding`]. Only the start on
+    /// screen waits: a run whose start the reader left is settled when it
+    /// finishes, and lands on nothing.
     landing: Option<PendingLanding>,
     /// The program a run is handed to. `None` until [`MeridianApp::running_with`]
     /// gives one — see [`crate::run::Runner`] for why a window does not assume
@@ -2876,6 +2907,7 @@ impl MeridianApp {
         mode: Mode,
     ) -> Self {
         let opened_id = boot.opened_id.clone();
+        let open_panel = boot.open_panel;
         let tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         let mut doc = ChartDoc::new(boot.composed, chart_host);
         if let Some(live) = boot.live {
@@ -2888,7 +2920,7 @@ impl MeridianApp {
         }
         doc.set_stacked_tiles(boot.stacked_tiles);
         let model = ProtocolModel::new(boot.protocol, boot.flow);
-        Self::assemble(
+        let mut app = Self::assemble(
             boot.focus,
             opened_id,
             layout,
@@ -2896,7 +2928,11 @@ impl MeridianApp {
             ProtocolDoc::new(model, protocol_host),
             tiles,
             mode,
-        )
+        );
+        if let Some(index) = open_panel {
+            app.open_panel_with_grid(index);
+        }
+        app
     }
 
     /// The same window over documents with no device behind them.
@@ -2923,6 +2959,7 @@ impl MeridianApp {
     #[must_use]
     pub fn headless_with_layout(boot: Boot, layout: SavedLayout, mode: Mode) -> Self {
         let opened_id = boot.opened_id.clone();
+        let open_panel = boot.open_panel;
         let tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         let mut doc = ChartDoc::headless(boot.composed);
         if let Some(live) = boot.live {
@@ -2935,7 +2972,7 @@ impl MeridianApp {
         }
         doc.set_stacked_tiles(boot.stacked_tiles);
         let model = ProtocolModel::new(boot.protocol, boot.flow);
-        Self::assemble(
+        let mut app = Self::assemble(
             boot.focus,
             opened_id,
             layout,
@@ -2943,7 +2980,11 @@ impl MeridianApp {
             ProtocolDoc::headless(model),
             tiles,
             mode,
-        )
+        );
+        if let Some(index) = open_panel {
+            app.open_panel_with_grid(index);
+        }
+        app
     }
 
     /// Assemble a window from its parts. `opened_id` is
@@ -3122,7 +3163,7 @@ impl MeridianApp {
             door_rows: Vec::new(),
             door_help: None,
             fetching: None,
-            running: None,
+            running: Vec::new(),
             landing: None,
             runner: None,
             descriptions: None,
@@ -5305,6 +5346,10 @@ impl MeridianApp {
             });
             let mut tile_action: Option<TilesAction> = None;
             let mut tile_back = false;
+            // What the tiles say while this window runs their Protocol: the
+            // URLs its run fetches, for a tiles view that has no panels yet.
+            let tiles_running: Option<Vec<String>> =
+                self.running_here().map(|pending| pending.fetching.clone());
             let (ws, charts, protocol, affordances, tiles) = (
                 self.layout.workspace_mut(),
                 &mut self.charts,
@@ -5650,7 +5695,13 @@ impl MeridianApp {
                         charts.doc.grid_density = None;
                         canvas_scroll = 0.0;
                         let area = ui.max_rect();
-                        tile_action = tiles.ui(ui, area, charts.doc.canvas_host(), mode);
+                        tile_action = tiles.ui(
+                            ui,
+                            area,
+                            charts.doc.canvas_host(),
+                            tiles_running.as_deref(),
+                            mode,
+                        );
                     } else if graph_on_canvas {
                         // No grid is drawn on this branch, and a density left
                         // standing from a previous frame is what a stale one
@@ -8933,8 +8984,8 @@ impl MeridianApp {
         // is now a shipped start's run.
         if let Some(pending) = self
             .running
-            .as_mut()
-            .filter(|pending| pending.run.dir() == dir)
+            .iter_mut()
+            .find(|pending| pending.run.dir() == dir)
         {
             pending.shipped = true;
             let flow = self.protocol.doc.model.flow();
@@ -8998,7 +9049,11 @@ impl MeridianApp {
             self.back_to_the_door();
             return false;
         }
-        if let Some(pending) = self.running.as_mut() {
+        if let Some(pending) = self
+            .running
+            .iter_mut()
+            .find(|pending| pending.run.dir() == tiles_dir)
+        {
             pending.shipped = true;
         }
         self.landing = Some(PendingLanding { id, dir: tiles_dir });
@@ -9138,6 +9193,7 @@ impl MeridianApp {
     /// has to be put back **after** it rather than before.
     fn adopt_boot(&mut self, boot: Boot) {
         self.landing = None;
+        let open_panel = boot.open_panel;
         self.tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         self.open_chart(boot.composed);
         if let Some(live) = boot.live {
@@ -9173,6 +9229,9 @@ impl MeridianApp {
             &self.protocol.doc.model,
             &self.charts.inspector_table,
         );
+        if let Some(index) = open_panel {
+            self.open_panel_with_grid(index);
+        }
     }
 
     /// Open the data file at `chosen` into the chart document: the file as a
@@ -9926,7 +9985,7 @@ impl MeridianApp {
             ctx.request_repaint();
             return false;
         };
-        if self.run_in_progress() {
+        if self.run_in_progress() || self.runs_folder(&dir) {
             return true;
         }
         let Some(runner) = self.runner.as_ref() else {
@@ -9939,9 +9998,11 @@ impl MeridianApp {
         };
         self.notifications.dismiss(banner);
         let wake = ctx.clone();
-        self.running = Some(PendingRun {
+        let fetching = fetch_urls_in(&dir);
+        self.running.push(PendingRun {
             run: crate::run::Run::begin(runner, &dir, move || wake.request_repaint()),
             protocol: name,
+            fetching,
             shipped: false,
         });
         ctx.request_repaint();
@@ -9976,7 +10037,7 @@ impl MeridianApp {
         let Some(source) = self.protocol.doc.model.source().cloned() else {
             return self.run_panel_protocol(ctx);
         };
-        if self.run_in_progress() {
+        if self.run_in_progress() || self.runs_folder(&source.dir) {
             return true;
         }
         let banner = NotificationId::new("run-protocol");
@@ -10008,9 +10069,11 @@ impl MeridianApp {
         };
         self.notifications.dismiss(banner);
         let wake = ctx.clone();
-        self.running = Some(PendingRun {
+        let fetching = fetch_urls_in(&source.dir);
+        self.running.push(PendingRun {
             run: crate::run::Run::begin(runner, &source.dir, move || wake.request_repaint()),
             protocol: source.name,
+            fetching,
             shipped: false,
         });
         ctx.request_repaint();
@@ -10024,18 +10087,30 @@ impl MeridianApp {
     /// not this document's, and the control over this document can be taken.
     #[must_use]
     pub fn run_in_progress(&self) -> bool {
-        self.running
-            .as_ref()
-            .is_some_and(|pending| self.holds_protocol(pending.run.dir(), &pending.protocol))
+        self.running_here().is_some()
     }
 
-    /// Whether a run this window started has yet to land, whichever document
-    /// it was started over. [`Self::run_in_progress`] answers for the document
-    /// open now; this one stays `true` after the reader opens something else,
-    /// until the private `poll_run` takes the finished run.
+    /// The run under way for the document this window holds now, if one is.
+    fn running_here(&self) -> Option<&PendingRun> {
+        self.running
+            .iter()
+            .find(|pending| self.holds_protocol(pending.run.dir(), &pending.protocol))
+    }
+
+    /// Whether a run this window started of the Protocol folder `dir` is
+    /// still going, whichever document is open: a second run of a folder
+    /// would write the database the first is writing.
+    fn runs_folder(&self, dir: &std::path::Path) -> bool {
+        self.running.iter().any(|pending| pending.run.dir() == dir)
+    }
+
+    /// Whether any run this window started has yet to land, whichever
+    /// document it was started over. [`Self::run_in_progress`] answers for the
+    /// document open now; this one stays `true` after the reader opens
+    /// something else, until the private `poll_run` takes every finished run.
     #[must_use]
     pub fn run_outstanding(&self) -> bool {
-        self.running.is_some()
+        !self.running.is_empty()
     }
 
     /// Whether the document open now is the Protocol named `protocol` whose
@@ -10052,7 +10127,7 @@ impl MeridianApp {
                 .is_some_and(|tiles| tiles.dir() == dir && tiles.name() == protocol)
     }
 
-    /// Land a run that has finished, if one has.
+    /// Land each run that has finished.
     ///
     /// Called at the head of [`Self::draw`], once a frame — the shape
     /// `poll_fetch` has. A run of a Protocol the window no longer holds lands
@@ -10066,16 +10141,30 @@ impl MeridianApp {
     /// the grid's spot are the reader's and stay where they were — and the
     /// run's log is kept on the new model for the session.
     fn poll_run(&mut self, ctx: &egui::Context) {
-        let Some(pending) = self.running.as_mut() else {
-            return;
-        };
-        let Some(finished) = pending.run.take() else {
-            return;
-        };
+        let mut at = 0;
+        while at < self.running.len() {
+            match self.running[at].run.take() {
+                Some(finished) => {
+                    let pending = self.running.remove(at);
+                    self.land_run(ctx, pending, finished);
+                }
+                None => at += 1,
+            }
+        }
+    }
+
+    /// Land one finished run, of whichever Protocol it was: on the document
+    /// open now when it is that Protocol, and otherwise on nothing, settled
+    /// when it was a shipped start's.
+    fn land_run(
+        &mut self,
+        ctx: &egui::Context,
+        pending: PendingRun,
+        finished: crate::run::Finished,
+    ) {
         let dir = pending.run.dir().to_path_buf();
-        let protocol = std::mem::take(&mut pending.protocol);
+        let protocol = pending.protocol;
         let shipped = pending.shipped;
-        self.running = None;
         let landing = self.landing.take_if(|landing| landing.dir == dir);
         if !self.holds_protocol(&dir, &protocol) {
             // Gone to another document: a start that was waiting on this run

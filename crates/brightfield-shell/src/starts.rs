@@ -1332,16 +1332,7 @@ pub fn write_fetched(
         .parent()
         .expect("dataset_path is a file inside a revision directory");
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    // Named per write, not per process: two writes in one process — two
-    // tests on two threads, or a click while a restore is writing — would
-    // otherwise share a staging file, and the second rename would find none.
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let staging = dir.join(format!(
-        "{}.{}-{}.part",
-        data.file_name,
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
+    let staging = staging_path(dir, data.file_name);
     // A staging file nothing will ever finish is litter in a directory the
     // reader can see, so every failure from here removes it. Removing it
     // cannot fail the call it is reporting.
@@ -1357,6 +1348,21 @@ pub fn write_fetched(
     Ok(path)
 }
 
+/// A staging name for `name` in `dir`, unique to this write:
+/// `{name}.{pid}-{n}.part`, the shape [`is_staging_of`] matches.
+///
+/// Named per write, not per process: two writes in one process — two tests on
+/// two threads, or a click while a restore is writing — would otherwise share
+/// a staging name, and the second rename would find nothing to rename.
+fn staging_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    dir.join(format!(
+        "{name}.{}-{}.part",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
+}
+
 /// The subdirectory of [`datasets_dir`] a shipped Protocol folder is written
 /// into, beside [`FETCHED_DIR`].
 pub const PROTOCOLS_DIR: &str = "protocols";
@@ -1366,6 +1372,13 @@ pub const PROTOCOLS_DIR: &str = "protocols";
 ///
 /// A stable path, so the next launch finds the folder and the run it made,
 /// and reopens it with no run and no network.
+///
+/// **A revision bump leaves the older folder in place.** Raising
+/// [`ShippedProtocol::revision`] writes `protocols/v{new}/{dir_name}` beside
+/// `protocols/v{old}/{dir_name}`, and nothing removes the older one: the
+/// folder is an ordinary Protocol on the reader's disk once it is written, and
+/// a reader may have saved edits to its panels or steps there. Deleting it
+/// would delete their work along with the build's.
 #[must_use]
 pub fn protocol_path(protocol: &ShippedProtocol) -> std::path::PathBuf {
     datasets_dir()
@@ -1396,13 +1409,7 @@ pub fn write_protocol(protocol: &ShippedProtocol) -> Result<std::path::PathBuf, 
         .expect("protocol_path is a folder inside a revision directory");
     std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     sweep_stale_staging(parent, protocol.dir_name);
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let staging = parent.join(format!(
-        "{}.{}-{}.part",
-        protocol.dir_name,
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
+    let staging = staging_path(parent, protocol.dir_name);
     let _ = std::fs::remove_dir_all(&staging);
     // Made once, here, and never again: if a sweep removes it mid-write, the
     // writes below fail rather than making it again around part of a folder.
@@ -1531,10 +1538,20 @@ fn sweep_stale_staging(parent: &std::path::Path, dir_name: &str) {
     }
 }
 
-/// The URLs the `http_fetch` steps of the Protocol in `manifest` fetch, in
-/// step order: what a run of it reads over the network.
+/// One `http_fetch` step of a Protocol: the URL it fetches, and the path in
+/// the folder it writes, when the step names one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchStep {
+    /// The step's `with: url:`.
+    pub url: String,
+    /// The step's `with: out:`.
+    pub out: Option<String>,
+}
+
+/// The `http_fetch` steps of the Protocol in `manifest`, in step order: what
+/// a run of it reads over the network, and where each lands.
 #[must_use]
-pub fn fetch_urls(manifest: &str) -> Vec<String> {
+pub fn fetch_steps(manifest: &str) -> Vec<FetchStep> {
     let Ok(parsed) = serde_yaml::from_str::<serde_yaml::Value>(manifest) else {
         return Vec::new();
     };
@@ -1548,7 +1565,26 @@ pub fn fetch_urls(manifest: &str) -> Vec<String> {
                 .and_then(serde_yaml::Value::as_str)
                 .is_some_and(is_fetch_op)
         })
-        .filter_map(|step| step.get("with")?.get("url")?.as_str().map(str::to_string))
+        .filter_map(|step| {
+            let with = step.get("with")?;
+            Some(FetchStep {
+                url: with.get("url")?.as_str()?.to_string(),
+                out: with
+                    .get("out")
+                    .and_then(serde_yaml::Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect()
+}
+
+/// The URLs the `http_fetch` steps of the Protocol in `manifest` fetch, in
+/// step order: [`fetch_steps`]' URLs.
+#[must_use]
+pub fn fetch_urls(manifest: &str) -> Vec<String> {
+    fetch_steps(manifest)
+        .into_iter()
+        .map(|step| step.url)
         .collect()
 }
 

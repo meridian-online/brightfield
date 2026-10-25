@@ -439,8 +439,9 @@ fn the_run_start_draws_the_contract_it_ships() {
 /// set that could ever exercise it. It has now.
 ///
 /// Watched redden, one mutation: `CROSSWALK_RUN`'s label given the
-/// `(no run)` mark — this test's last assertion fails, and so does the
-/// front-door gate it is about.
+/// `(no run)` mark — this test fails in its loop over the manifest starts,
+/// where the label and the flag disagree, and so does the front-door gate it
+/// is about.
 #[test]
 fn the_manifest_starts_include_one_run_less_and_one_run_and_only_the_run_less_one_says_so() {
     let protocols: Vec<&starts::Start> = starts::STARTS

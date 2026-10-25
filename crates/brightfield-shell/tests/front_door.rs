@@ -78,7 +78,8 @@ const CANVAS_PANE: PaneKey = PaneKey::new(CANVAS);
 fn datasets_into_scratch(test: &str) -> MutexGuard<'static, ()> {
     let held = CONFIG.lock().unwrap_or_else(PoisonError::into_inner);
     // Arc's database and history stores go to a temp root rather than the
-    // developer's own, and its engine is pinned.
+    // developer's own, its fetch cache is off, and its engine is the pinned
+    // CLI when the environment names none and one has been fetched.
     agent_protocol::arc_stores();
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join("front_door")
@@ -230,7 +231,7 @@ impl Window {
             .rect;
         assert!(
             self.screen.contains_rect(target),
-            "the {id} row drew at {target:?}, outside the window — nothing              could click it"
+            "the {id} row drew at {target:?}, outside the window — nothing could click it"
         );
         self.run(vec![click_at(target.center()), Vec::new()]);
     }
@@ -861,11 +862,13 @@ fn the_fetched_dataset_is_described_by_its_own_descriptor() {
 
 /// **The click and the picker land on one window.**
 ///
-/// AC2 of the card that cut this start. The two routes are the start's
-/// Protocols row on the front door and `MeridianApp::open_data_file`, which is
-/// the entry point the file dialog reaches through — and what is compared is
-/// what a reader looks at: the locator band's line, the columns the rails list, and the
-/// window's own title.
+/// A data start is a shortcut to a file, so taking it must leave the window
+/// exactly as opening that file by hand would; a reader who later opens the
+/// same file must not find a different document. The two routes are the
+/// start's Protocols row on the front door and `MeridianApp::open_data_file`,
+/// which is the entry point the file dialog reaches through — and what is
+/// compared is what a reader looks at: the locator band's line, the columns
+/// the rails list, and the window's own title.
 ///
 /// It is worth a test even though the routes share a call, because sharing it
 /// is the thing that could be undone: a later change composing the start's
@@ -2996,13 +2999,10 @@ const CROSSWALK_PROVENANCE: &str = "tests/data/edgar_gleif_reduced.json";
 /// `support/shipped_protocol.rs`), run to completion by the cargo-built
 /// runner first, and a start that reads nothing remote as it is.
 fn boot_offline(start: &'static starts::Start) -> Result<Boot, String> {
-    if start.protocol.is_some() {
-        return shipped_protocol::boot_offline(start);
-    }
-    if start.remote {
+    if start.remote && start.protocol.is_none() {
         Boot::start_with(start.id, remote_stand_in(start), Flow::Vertical)
     } else {
-        Boot::start(start.id, Flow::Vertical)
+        shipped_protocol::boot_start(start)
     }
 }
 
@@ -3271,8 +3271,16 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) {
     let options = egui_kittest::SnapshotOptions::default().output_path(&assets);
     let mut failures = Vec::new();
     for start in starts {
-        let boot =
+        let mut boot =
             boot_offline(start).unwrap_or_else(|e| panic!("{} no longer loads: {e}", start.id));
+        // A shipped Protocol start's run happened just now, and arc names a
+        // run by the time it started, which the run panes print. A fixed name
+        // keeps the thumbnail the same on every run of this test.
+        if start.protocol.is_some() {
+            if let Some(run) = boot.protocol.run.as_mut() {
+                run.run_id = "first-run".to_string();
+            }
+        }
         // The window the start itself asks for — its content's own natural
         // size, the same answer the live click gives.
         let size = boot.window_size();

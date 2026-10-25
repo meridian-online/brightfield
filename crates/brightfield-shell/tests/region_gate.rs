@@ -364,6 +364,7 @@ fn a_protocol_and_a_chart() -> Boot {
         opened_id: None,
         panels: None,
         panels_problem: None,
+        open_panel: None,
     }
 }
 
@@ -415,14 +416,8 @@ fn every_window_this_build_can_open() -> Vec<(String, Boot)> {
         }
     }
     for start in starts::STARTS {
-        // A Protocol start runs its folder first, by the cargo-built runner
-        // and over its stand-in: `Boot::start` has no runner to hand a run to.
-        let boot = if start.protocol.is_some() {
-            shipped_protocol::boot_offline(start)
-        } else {
-            Boot::start(start.id, Flow::Vertical)
-        }
-        .unwrap_or_else(|e| panic!("the {} start ships with this build: {e}", start.id));
+        let boot = shipped_protocol::boot_start(start)
+            .unwrap_or_else(|e| panic!("the {} start ships with this build: {e}", start.id));
         boots.push((format!("the {} start", start.id), boot));
     }
     boots

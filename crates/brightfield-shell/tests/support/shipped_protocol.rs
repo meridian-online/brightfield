@@ -21,6 +21,7 @@
 use std::path::{Path, PathBuf};
 
 use brightfield_shell::starts::{is_fetch_op, ShippedProtocol};
+use brightfield_shell::window::Boot;
 
 /// The committed fixture folder: one bundled CSV, one SQL step, one panel.
 pub fn fixture_dir() -> PathBuf {
@@ -107,25 +108,13 @@ pub fn fetching_fixture(dir_name: &str, url: &str) -> &'static ShippedProtocol {
     shipped(dir_name, 1, files)
 }
 
-/// The URL and output path of each `http_fetch` step in `manifest`.
+/// The URL and output path of each `http_fetch` step in `manifest` that
+/// names both, read through the start's own [`brightfield_shell::starts::fetch_steps`].
 fn fetch_steps(manifest: &serde_yaml::Value) -> Vec<(String, String)> {
-    manifest
-        .get("steps")
-        .and_then(serde_yaml::Value::as_sequence)
+    let text = serde_yaml::to_string(manifest).expect("the manifest serialises");
+    brightfield_shell::starts::fetch_steps(&text)
         .into_iter()
-        .flatten()
-        .filter(|step| {
-            step.get("op")
-                .and_then(serde_yaml::Value::as_str)
-                .is_some_and(is_fetch_op)
-        })
-        .filter_map(|step| {
-            let with = step.get("with")?;
-            Some((
-                with.get("url")?.as_str()?.to_string(),
-                with.get("out")?.as_str()?.to_string(),
-            ))
-        })
+        .filter_map(|step| Some((step.url, step.out?)))
         .collect()
 }
 
@@ -289,15 +278,25 @@ pub fn runner() -> brightfield_shell::run::Runner {
     brightfield_shell::run::Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))
 }
 
+/// Boot `start` as a test with no network does: a Protocol start through
+/// [`boot_offline`], run first by the cargo-built runner over its stand-in
+/// (`Boot::start` has no runner to hand a run to), and any other start
+/// through `Boot::start`.
+pub fn boot_start(start: &'static brightfield_shell::starts::Start) -> Result<Boot, String> {
+    if start.protocol.is_some() {
+        boot_offline(start)
+    } else {
+        Boot::start(start.id, brightfield_protocol::layout::Flow::Vertical)
+    }
+}
+
 /// Boot the Protocol start `start` with no network: its stand-in over
 /// [`PROTOCOL_FETCH_COPIES`], run to completion by [`runner`] first.
 ///
 /// # Panics
 ///
 /// If `start` is not a Protocol start.
-pub fn boot_offline(
-    start: &'static brightfield_shell::starts::Start,
-) -> Result<brightfield_shell::window::Boot, String> {
+pub fn boot_offline(start: &'static brightfield_shell::starts::Start) -> Result<Boot, String> {
     let protocol = start
         .protocol
         .as_ref()
@@ -320,7 +319,7 @@ pub fn boot_offline(
         .map(|(url, step, path)| (*url, *step, path.as_path()))
         .collect();
     let offline = stand_in_with_loads(protocol, &borrowed, &loads);
-    brightfield_shell::window::Boot::shipped_protocol(
+    Boot::shipped_protocol(
         start.id,
         offline,
         brightfield_protocol::layout::Flow::Vertical,

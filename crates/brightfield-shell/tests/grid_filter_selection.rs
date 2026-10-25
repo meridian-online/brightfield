@@ -11,6 +11,11 @@
 //! source the way `tests/region_gate.rs` writes it, so nothing here reaches
 //! the network.
 
+#[path = "support/agent_protocol.rs"]
+mod agent_protocol;
+#[path = "support/shipped_protocol.rs"]
+mod shipped_protocol;
+
 use brightfield_engine::coordinator::Interaction;
 use brightfield_engine::RowsView;
 use brightfield_engine::SqlPredicate;
@@ -259,5 +264,132 @@ fn a_good_pick_with_no_grid_filter_clears_the_last_refusal() {
     assert!(
         doc.chart_fault().is_none(),
         "the old refusal is still over the new page"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The Palmer Penguins panel
+// ---------------------------------------------------------------------------
+
+/// The rows mark `mark` of `doc` draws at the current selection state, at the
+/// plot's audience: points for a dot mark, bins for a binned bar.
+fn mark_rows(doc: &mut brightfield_shell::app::ChartDoc, mark: usize) -> u64 {
+    doc.live_coordinator()
+        .expect("a live document")
+        .session()
+        .step_rows_count(mark, brightfield_sql::emit::RowsAudience::Plot)
+        .expect("the mark counts")
+}
+
+/// The sum of the count column mark `mark` of `doc` draws: how many rows a
+/// binned `count` mark stacks up across its bins.
+fn counted(doc: &mut brightfield_shell::app::ChartDoc, mark: usize) -> f64 {
+    use arrow::array::{Array, Float64Array};
+    doc.live_coordinator()
+        .expect("a live document")
+        .chart_rows(mark)
+        .expect("the mark queries")
+        .iter()
+        .map(|batch| {
+            let column = batch
+                .column_by_name("__bf_count")
+                .expect("a count mark draws a count column");
+            let counts = column
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .expect("the count is a double");
+            (0..counts.len())
+                .filter(|&i| counts.is_valid(i))
+                .map(|i| counts.value(i))
+                .sum::<f64>()
+        })
+        .sum()
+}
+
+/// **A filter typed in the Palmer Penguins panel's grid narrows its scatter
+/// and its histogram, and leaves their grey ghost layers whole.** The panel's
+/// story rests on comparing the penguins picked against all of them, so a
+/// typed `species = 'Gentoo'` must take the coloured points and the coloured
+/// bars down to the Gentoo rows while the grey layers behind them keep every
+/// penguin.
+///
+/// Booted through the start's own boot, which runs its bundled Protocol and
+/// opens its panel beside its grid, as a click on its card does.
+#[test]
+fn a_typed_grid_filter_narrows_the_penguins_panel_and_keeps_its_ghosts_whole() {
+    std::env::set_var(
+        brightfield_shell::startup::CONFIG_DIR_VAR,
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("config"),
+    );
+    let csv = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/starts/palmer-penguins/data/penguins.csv"),
+    )
+    .expect("the bundled penguins");
+    let every = u64::try_from(csv.lines().skip(1).count()).expect("a count");
+    let gentoo = u64::try_from(
+        csv.lines()
+            .skip(1)
+            .filter(|line| line.split(',').next() == Some("Gentoo"))
+            .count(),
+    )
+    .expect("a count");
+    assert!(0 < gentoo && gentoo < every, "the condition must narrow");
+
+    let start = starts::find(starts::PALMER_PENGUINS).expect("Palmer Penguins ships");
+    let boot = shipped_protocol::boot_offline(start).expect("the Penguins start boots");
+    let mut app = brightfield_shell::window::MeridianApp::headless_with_layout(
+        boot,
+        brightfield_shell::startup::default_layout(),
+        brightfield_shell::design::Mode::Light,
+    );
+    let doc = app.chart_doc_mut();
+    // The panel's marks in spec order: the scatter's grey layer and its
+    // filtered layer, then the histogram's.
+    let (scatter_ghost, scatter, histogram_ghost, histogram) = (0, 1, 2, 3);
+    for mark in [scatter_ghost, scatter, histogram_ghost, histogram] {
+        assert_eq!(mark_rows(doc, mark), every, "mark {mark} opens narrowed");
+    }
+    let ghost_bars = counted(doc, histogram_ghost);
+    assert_eq!(
+        counted(doc, histogram),
+        ghost_bars,
+        "the histogram opens narrowed"
+    );
+
+    doc.apply_grid_view(view("species = 'Gentoo'"));
+
+    assert!(
+        doc.chart_fault().is_none(),
+        "a filter that binds is no fault"
+    );
+    assert_eq!(
+        mark_rows(doc, scatter),
+        gentoo,
+        "the scatter still draws penguins the grid filtered out"
+    );
+    assert_eq!(
+        mark_rows(doc, histogram),
+        gentoo,
+        "the histogram still counts penguins the grid filtered out"
+    );
+    assert!(
+        counted(doc, histogram) < ghost_bars,
+        "the histogram's bars did not come down"
+    );
+    assert_eq!(
+        mark_rows(doc, scatter_ghost),
+        every,
+        "the scatter's grey layer narrowed with the filter"
+    );
+    assert_eq!(
+        mark_rows(doc, histogram_ghost),
+        every,
+        "the histogram's grey layer narrowed with the filter"
+    );
+    assert_eq!(
+        counted(doc, histogram_ghost),
+        ghost_bars,
+        "the histogram's grey bars moved with the filter"
     );
 }
