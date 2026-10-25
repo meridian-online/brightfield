@@ -10303,8 +10303,8 @@ impl MeridianApp {
             );
             return;
         }
-        // Recorded only when the panel opened, for the reason `land_panels`
-        // gives.
+        // Recorded when the panel opened, and not otherwise
+        // (`a_start_whose_panel_does_not_open_is_not_recorded_as_landed`).
         if self.tiles.as_ref().and_then(PanelTiles::panels).is_some()
             && self.open_panel_with_grid(0)
         {
