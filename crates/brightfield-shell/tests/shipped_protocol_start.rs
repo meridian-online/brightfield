@@ -869,8 +869,7 @@ fn the_fetched_starts_reduced_copies_hold_no_forbidden_column_and_match_their_pr
 /// Epoch AI's shipped load step leaves out `Authors` and `Abstract`, checked
 /// with no network: the start's Protocol runs over the synthetic CSV in
 /// `PROTOCOL_FETCH_COPIES`, which has the file's real columns with those two
-/// as placeholders, so the step's own `EXCLUDE` runs rather than a copy that
-/// never had them.
+/// as placeholders, so the step's own `EXCLUDE` is what removes them.
 #[test]
 fn the_epoch_ai_models_load_step_leaves_out_authors_and_abstract_offline() {
     let _config = datasets_into_scratch("epoch_load_step");

@@ -264,9 +264,11 @@ pub const PROTOCOL_FETCH_COPIES: &[(&str, &str)] = &[
 /// cuts each by running the start's own load step.
 ///
 /// So the load step a copy stands in for does not run offline. Epoch AI's
-/// does elsewhere, over a synthetic CSV in [`PROTOCOL_FETCH_COPIES`]; Online
-/// Retail's `read_xlsx` load is checked only by the `#[ignore]`d network test
-/// and by a re-cut, which runs it on UCI's workbook.
+/// runs in `the_epoch_ai_models_load_step_leaves_out_authors_and_abstract_offline`,
+/// over a synthetic CSV in [`PROTOCOL_FETCH_COPIES`]. Online Retail's
+/// `read_xlsx` load runs in the `#[ignore]`d network test
+/// `the_online_retail_ii_protocol_fetches_and_produces_the_columns_its_panel_reads`
+/// and in a re-cut, which runs it on UCI's workbook, and in no per-push test.
 pub const PROTOCOL_LOAD_COPIES: &[(&str, &str, &str)] = &[
     (
         "https://archive.ics.uci.edu/static/public/502/online+retail+ii.zip",
