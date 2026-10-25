@@ -102,7 +102,9 @@ pub enum LegendSpec {
 /// One categorical legend entry: the category and the ink its marks wear.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LegendEntry {
-    /// The category label, exactly as the scale spells it.
+    /// The category label, exactly as the scale spells it, except on the
+    /// row a Harbour scale folds its overflow into: that one is "Other" (or
+    /// "Other (2)" beside a real "Other") and stands for several categories.
     pub label: String,
     /// The mark colour, straight-alpha RGBA — the palette value itself, so
     /// the swatch cannot drift from the raster.
