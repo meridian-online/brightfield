@@ -8968,9 +8968,10 @@ impl MeridianApp {
 
     /// Install the tiles of the shipped Protocol folder `dir` and open its
     /// first panel beside its grid, running it first when it has not run.
-    /// Answers whether the start has landed now; `false` both when it was
-    /// refused, with its banner up, and when its run is under way, which
-    /// `poll_run` lands through [`Self::landing`].
+    /// Answers whether the start has landed now; `false` when it was
+    /// refused, with its banner up, when its run is under way, which
+    /// `poll_run` lands through [`Self::landing`], and when its panel did not
+    /// open, which leaves the tiles saying why.
     fn land_panels(
         &mut self,
         ctx: &egui::Context,
@@ -9030,8 +9031,10 @@ impl MeridianApp {
             return false;
         };
         if tiles.panels().is_some() {
-            self.open_panel_with_grid(0);
-            return true;
+            // Landed only when the panel opened: a panel that cannot draw
+            // leaves the tiles saying why, and a start recorded as opened
+            // would be restored on a panel that never opened.
+            return self.open_panel_with_grid(0);
         }
         let not_run = matches!(
             tiles.problem(),
@@ -10300,10 +10303,13 @@ impl MeridianApp {
             );
             return;
         }
-        if self.tiles.as_ref().and_then(PanelTiles::panels).is_some() {
-            self.open_panel_with_grid(0);
+        // Recorded only when the panel opened, for the reason `land_panels`
+        // gives.
+        if self.tiles.as_ref().and_then(PanelTiles::panels).is_some()
+            && self.open_panel_with_grid(0)
+        {
+            self.record_landed(ctx, landing.id);
         }
-        self.record_landed(ctx, landing.id);
     }
 
     /// Open the Protocol saved at `path` — the route a front door row for a

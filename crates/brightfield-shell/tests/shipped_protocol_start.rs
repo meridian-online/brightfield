@@ -799,6 +799,56 @@ fn a_running_start_says_what_it_fetches_and_offers_no_run() {
     drop(config);
 }
 
+/// **A start whose panel does not open is not recorded as landed**, on
+/// either route: the click that runs it, and a later click that finds its
+/// run. Its panel reads a column the table does not have, so the tile holds
+/// that problem rather than a chart, and the next launch must not restore a
+/// start as opened on a panel that never opened.
+#[test]
+fn a_start_whose_panel_does_not_open_is_not_recorded_as_landed() {
+    let _config = datasets_into_scratch("panel_does_not_open");
+    let mut files = shipped_protocol::files_of(shipped_protocol::fixture("shipped-unopened", 1));
+    for (path, bytes) in &mut files {
+        if path == "panels/overview.yaml" {
+            let text = String::from_utf8(bytes.clone()).unwrap();
+            assert!(
+                text.contains("y: mass_g"),
+                "the fixture's panel reads mass_g"
+            );
+            *bytes = text.replace("y: mass_g", "y: no_such_column").into_bytes();
+        }
+    }
+    let protocol = shipped_protocol::shipped("shipped-unopened", 1, files);
+
+    let mut win = Window::open(runner());
+    win.take_and_land(protocol);
+    assert!(
+        win.app
+            .panel_tiles()
+            .is_some_and(|t| t.selected().is_none()),
+        "a panel that cannot draw was opened"
+    );
+    assert_ne!(
+        win.app.layout().opened.as_deref(),
+        Some(ID),
+        "the run's landing recorded a start whose panel did not open"
+    );
+
+    let mut again = Window::open(runner());
+    let ctx = again.ctx.clone();
+    again.app.open_shipped_protocol(&ctx, ID, protocol);
+    assert!(
+        !again.app.run_outstanding(),
+        "a folder that has run was run again"
+    );
+    again.settle();
+    assert_ne!(
+        again.app.layout().opened.as_deref(),
+        Some(ID),
+        "a click on a run folder recorded a start whose panel did not open"
+    );
+}
+
 /// **A second shipped start does not orphan the first's run.** Taking start B
 /// while start A runs leaves A's run tracked: coming back to A finds that run
 /// rather than deleting the database it is writing and starting a second run

@@ -271,8 +271,9 @@ fn a_good_pick_with_no_grid_filter_clears_the_last_refusal() {
 // The Palmer Penguins panel
 // ---------------------------------------------------------------------------
 
-/// The rows mark `mark` of `doc` draws at the current selection state, at the
-/// plot's audience: points for a dot mark, bins for a binned bar.
+/// The rows of mark `mark`'s step at the current selection state, at the
+/// plot's audience: counted before any aggregation, so a binned bar counts
+/// the rows it bins, not its bins.
 fn mark_rows(doc: &mut brightfield_shell::app::ChartDoc, mark: usize) -> u64 {
     doc.live_coordinator()
         .expect("a live document")
