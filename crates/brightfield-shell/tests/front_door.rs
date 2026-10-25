@@ -2328,7 +2328,7 @@ fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
 /// name and at the state rather than at the order.
 ///
 /// The run state the Protocol arm records is `RunState::Fresh`, because the
-/// crosswalk run carries a run contract whose steps all report a success; the
+/// crosswalk run carries a run contract whose steps report recorded successes; the
 /// chart arm records `RunState::NeverRun`, because a chart composes without a
 /// run. So both halves are asserted against the window's own fold rather than
 /// against a literal alone. What that fold *is* is
