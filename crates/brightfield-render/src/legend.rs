@@ -211,8 +211,8 @@ fn hover_emphasis(colour: Color) -> Color {
 /// legends have no discrete entries and ignore `selected`.
 ///
 /// `selected` and `hovered` index legend rows ([`Scale::colour_entries`]),
-/// not categories: past Harbour's seventh hue one "Other" row stands for
-/// every category after it.
+/// not categories: past Harbour's seventh hue one "Other" row stands for the
+/// categories after it.
 pub fn render_colour_legend_at_selected(
     scene: &mut Scene,
     box_x: f64,
