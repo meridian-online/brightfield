@@ -842,7 +842,7 @@ fn a_chart_on_the_same_step_follows_the_grids_applied_view_and_not_its_preview()
     assert!(shown < 240);
     assert_eq!(
         chart_rows(&mut win),
-        shown as u64,
+        shown,
         "the applied view did not narrow the chart to the rows the grid shows"
     );
 }

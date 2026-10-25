@@ -1309,6 +1309,21 @@ impl std::error::Error for ChartSaveError {}
 /// brush: the clause filters every chart, and only the grid retracts it.
 pub const GRID_CONTRIBUTOR: &str = "grid";
 
+/// The names of the selections `spec` declares with `select: crossfilter`.
+fn crossfilter_names(spec: &brightfield_spec::ast::Spec) -> Vec<String> {
+    use brightfield_spec::ast::ParamNode;
+    use brightfield_spec::vocab::SelectionResolution;
+    spec.params
+        .iter()
+        .filter_map(|(name, node)| match node {
+            ParamNode::Selection(sel) if sel.select == SelectionResolution::Crossfilter => {
+                Some(name.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 impl ChartDoc {
     /// A document over `composed`, rastering through `host`.
     #[must_use]
@@ -1768,29 +1783,11 @@ impl ChartDoc {
     /// The grid is not a plot, so no chart's own-clause exclusion matches its
     /// path: its clause narrows every chart, and only the grid retracts it.
     fn publish_grid_condition(&mut self) {
-        use brightfield_spec::ast::ParamNode;
-        use brightfield_spec::vocab::SelectionResolution;
         let Some(live) = self.live.as_ref() else {
             return;
         };
-        let names: Vec<String> = live
-            .spec()
-            .params
-            .iter()
-            .filter_map(|(name, node)| match node {
-                ParamNode::Selection(sel) if sel.select == SelectionResolution::Crossfilter => {
-                    Some(name.clone())
-                }
-                _ => None,
-            })
-            .collect();
-        let condition = self
-            .grid_view
-            .condition
-            .as_deref()
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-            .map(str::to_owned);
+        let names = crossfilter_names(live.spec());
+        let condition = self.grid_condition();
         for name in names {
             let contributor = ComponentPath(GRID_CONTRIBUTOR.to_string());
             // What the session holds is the record of what was published, so
@@ -1816,6 +1813,16 @@ impl ChartDoc {
             };
             self.apply_interaction(interaction);
         }
+    }
+
+    /// The condition the grid shows, trimmed; nothing when it is blank.
+    fn grid_condition(&self) -> Option<String> {
+        self.grid_view
+            .condition
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_owned)
     }
 
     /// Whether some part of the applied grid view is in no file: the grid
@@ -2414,10 +2421,26 @@ impl ChartDoc {
         // then looked for underneath it, and the switch replaced the picture
         // with the engine's refusal to query a file that is not there.
         let dir = live.base_dir().map(std::path::Path::to_path_buf);
+        // The grid's clause goes onto the fresh session before its first
+        // composite, so a rebuild under a grid filter composes once.
+        let seed: Vec<Interaction> = match self.grid_condition() {
+            Some(c) => crossfilter_names(&spec)
+                .into_iter()
+                .map(|name| Interaction::Select {
+                    name,
+                    contributor: ComponentPath(GRID_CONTRIBUTOR.to_string()),
+                    predicate: brightfield_engine::SqlPredicate::Expr(c.clone()),
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         self.activity.begin(Activity::EngineQuery);
         let rebuilt = LiveDashboard::load(spec, dir.as_deref()).and_then(|mut live| {
             live.set_viewport(viewport);
             live.set_mode(mode);
+            for interaction in seed {
+                let _ = live.coordinator().apply(interaction);
+            }
             live.present().map(|composed| (live, composed))
         });
         self.activity.end(Activity::EngineQuery);
@@ -3209,9 +3232,9 @@ impl ChartDoc {
                     kind,
                     kept,
                 });
-                self.publish_grid_condition();
                 // A refusal named the version drawn before this one.
                 self.interaction_fault = None;
+                self.publish_grid_condition();
                 self.canvas.invalidate();
                 true
             }
