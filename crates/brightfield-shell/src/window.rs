@@ -4055,8 +4055,8 @@ impl MeridianApp {
         self.grid_layout = layout;
     }
 
-    /// **The layout the grid is drawn in**, which is not always the one chosen
-    /// ([`Self::grid_layout`]). The transposed layout reads the page's column
+    /// **The layout the grid is drawn in**, which can differ from the one
+    /// chosen ([`Self::grid_layout`]). The transposed layout reads the page's column
     /// of tiles as rows, so any document with no tile column draws its grid as
     /// a table whichever layout is chosen; the choice is kept for the next
     /// document that has one. The foot row, the keys that open it and the
