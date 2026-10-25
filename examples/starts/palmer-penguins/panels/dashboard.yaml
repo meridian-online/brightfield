@@ -1,4 +1,4 @@
-title: "Longer bills are shallower across all penguins (r = −0.24) but deeper within each species (r = 0.39 to 0.65): the overall trend is the species mix"
+title: "Longer bills are shallower across all penguins (r = −0.24), but deeper within each species (r = 0.39 to 0.65): the overall trend is the species mix"
 params:
   sel: { select: crossfilter }
 hconcat:
@@ -17,7 +17,7 @@ hconcat:
       - select: intervalXY
         as: $sel
       - legend: color
-      title: "Longer bills are shallower across all penguins (r = −0.24), but deeper within each species (r = 0.39 to 0.65)"
+      title: "Longer bills are shallower across all penguins (r = −0.24), but deeper within each species (r = 0.39 to 0.65): the overall trend is the species mix"
       colorDomain: [Adelie, Chinstrap, Gentoo]
       colorRange: ["#0083c4", "#cca124", "#31aa8c"]
       xDomain: Fixed

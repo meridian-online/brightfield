@@ -18,8 +18,9 @@ hconcat:
       - select: intervalXY
         as: $sel
       - legend: color
-      title: "A fifth of 2025's M4.5+ earthquakes (1,794 of 8,502) struck off Kamchatka, 1,607 of them from the M8.8 of 29 July on"
-      colorScheme: turbo
+      title: "A fifth of 2025's M4.5+ earthquakes (1,794 of 8,502) struck off Kamchatka, 1,607 of them from the M8.8 of 29 July on (colour capped at 110 a hexagon)"
+      colorScheme: viridis
+      colorDomain: [1, 110]
       xDomain: Fixed
       yDomain: Fixed
       xLabel: longitude
@@ -35,7 +36,7 @@ hconcat:
         as: $sel
       - select: highlight
         by: $sel
-      title: Earthquakes per week
+      title: Earthquakes per week (first and last weeks partial)
       xLabel: week
       yLabel: earthquakes
       width: 760
