@@ -4,6 +4,7 @@
 //! Scale inference examines Arrow column types to determine the appropriate
 //! scale type for each encoding channel.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use arrow::array::{Array, Decimal128Array, Float64Array, StringArray, TimestampMicrosecondArray};
@@ -590,10 +591,13 @@ impl Scale {
     /// order and never cycles them, because the order is what keeps adjacent
     /// hues apart for colour-blind readers. So when a column has more
     /// categories than Harbour has hues, the first seven keep their own and
-    /// the rest share the eighth under one [`OTHER_CATEGORY`] row. A palette
-    /// the plot writes itself cycles and lists every category.
+    /// the rest share the eighth under one [`OTHER_CATEGORY`] row. When one of
+    /// the seven is itself called "Other", the folded row is named with how
+    /// many it holds, "Other (2)", so the two rows read apart; the real one
+    /// keeps its slot, since moving it would repaint every category after it.
+    /// A palette the plot writes itself cycles and lists every category.
     #[must_use]
-    pub fn colour_entries(&self) -> Vec<(&str, [f32; 4])> {
+    pub fn colour_entries(&self) -> Vec<(Cow<'_, str>, [f32; 4])> {
         let Self::Colour {
             categories,
             palette,
@@ -606,16 +610,21 @@ impl Scale {
         }
         if folds_into_other(categories, palette) {
             let named = palette.len() - 1;
+            let other = if categories[..named].iter().any(|c| c == OTHER_CATEGORY) {
+                Cow::Owned(format!("{OTHER_CATEGORY} ({})", categories.len() - named))
+            } else {
+                Cow::Borrowed(OTHER_CATEGORY)
+            };
             categories[..named]
                 .iter()
-                .map(String::as_str)
+                .map(|c| Cow::Borrowed(c.as_str()))
                 .zip(palette.iter().copied())
-                .chain(std::iter::once((OTHER_CATEGORY, palette[named])))
+                .chain(std::iter::once((other, palette[named])))
                 .collect()
         } else {
             categories
                 .iter()
-                .map(String::as_str)
+                .map(|c| Cow::Borrowed(c.as_str()))
                 .zip(palette.iter().copied().cycle())
                 .collect()
         }
@@ -3917,6 +3926,33 @@ mod tests {
                 "{c} folds into Other in slot 8"
             );
         }
+    }
+
+    /// A column that has its own "Other" keeps it apart from the folded row:
+    /// named among the first seven, it keeps its slot and the folded row says
+    /// how many it holds; in the tail, it is one of those the row holds.
+    #[test]
+    fn a_real_other_category_reads_apart_from_the_folded_row() {
+        let harbour = ChartInk::LIGHT.categorical;
+        let labels = |categories: &[&str]| -> Vec<(String, [f32; 4])> {
+            Scale::Colour {
+                categories: categories.iter().map(|c| (*c).to_string()).collect(),
+                palette: harbour.to_vec(),
+            }
+            .colour_entries()
+            .into_iter()
+            .map(|(label, colour)| (label.into_owned(), colour))
+            .collect()
+        };
+
+        let named = labels(&["a", "b", "Other", "d", "e", "f", "g", "h", "i"]);
+        assert_eq!(named.len(), 8);
+        assert_eq!(named[2], ("Other".to_string(), harbour[2]));
+        assert_eq!(named[7], ("Other (2)".to_string(), harbour[7]));
+
+        let folded = labels(&["a", "b", "c", "d", "e", "f", "g", "Other", "i"]);
+        assert_eq!(folded.len(), 8);
+        assert_eq!(folded[7], (OTHER_CATEGORY.to_string(), harbour[7]));
     }
 
     #[test]

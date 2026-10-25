@@ -130,7 +130,7 @@ impl LegendSpec {
                     .colour_entries()
                     .into_iter()
                     .map(|(label, colour)| LegendEntry {
-                        label: label.to_string(),
+                        label: label.into_owned(),
                         colour,
                     })
                     .collect(),

@@ -76,8 +76,9 @@ fn swatch_legend_size(colour_scale: &Scale) -> Option<(f64, f64)> {
 
 /// The clickable entry rects of a categorical swatch legend whose panel
 /// top-left is at `(box_x, box_y)` — one rect per legend row, in the scale's
-/// order ([`Scale::colour_entries`]). Row `i` sits at `LEGEND_PADDING + i * ENTRY_SPACING` below the
-/// panel top, is `SWATCH_SIZE` tall, and spans the swatch plus the gap and
+/// order ([`Scale::colour_entries`]). A row is not a category: past Harbour's
+/// seventh hue one "Other" row stands for the rest. Row `i` sits at
+/// `LEGEND_PADDING + i * ENTRY_SPACING` below the panel top, is `SWATCH_SIZE` tall, and spans the swatch plus the gap and
 /// the label's measured extent, so clicking the category text also hits.
 ///
 /// Pure geometry mirroring `render_swatch_legend_at`'s layout from the
@@ -93,7 +94,7 @@ pub fn swatch_entry_rects(box_x: f64, box_y: f64, colour_scale: &Scale) -> Vec<R
         .enumerate()
         .map(|(i, (cat, _))| {
             let y = legend_y_start + i as f64 * ENTRY_SPACING;
-            let label_w = measure_width(cat, LABEL_SIZE);
+            let label_w = measure_width(&cat, LABEL_SIZE);
             Rect::new(
                 legend_x,
                 y,
@@ -208,6 +209,10 @@ fn hover_emphasis(colour: Color) -> Color {
 /// path multiplies no alpha. Panel geometry, entry rects, and sizes are
 /// untouched (selected state is colour/alpha only). Sequential (gradient)
 /// legends have no discrete entries and ignore `selected`.
+///
+/// `selected` and `hovered` index legend rows ([`Scale::colour_entries`]),
+/// not categories: past Harbour's seventh hue one "Other" row stands for
+/// every category after it.
 pub fn render_colour_legend_at_selected(
     scene: &mut Scene,
     box_x: f64,
@@ -311,7 +316,7 @@ fn render_swatch_legend_at(
         // Entry label, vertically centred on the swatch.
         draw_text(
             scene,
-            cat,
+            &cat,
             legend_x + SWATCH_SIZE + LEGEND_LABEL_GAP,
             y + SWATCH_SIZE * 0.5 + f64::from(LABEL_SIZE) / 3.0,
             LABEL_SIZE,
