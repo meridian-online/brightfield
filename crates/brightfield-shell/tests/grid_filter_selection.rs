@@ -20,6 +20,7 @@ use brightfield_shell::pipeline::RowCount;
 use brightfield_shell::starts::{self, Opened};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::layout::{PlotAxis, ScaleType};
+use brightfield_workbench::channel::ShelfChannel;
 
 const WHOLE_TABLE: u64 = 20_640;
 
@@ -225,5 +226,22 @@ fn the_brush_and_the_grid_filter_are_cleared_each_by_its_own_owner() {
         charts_hold(&doc),
         rows_meeting(&path, BRUSH),
         "clearing the grid took the brush with it"
+    );
+}
+
+/// A refused gesture, then a good pick under a grid filter: the page drawn is
+/// new and the fault belonged to the last one.
+#[test]
+fn a_good_pick_under_a_grid_filter_clears_the_last_refusal() {
+    let (_path, mut doc) = open();
+    doc.apply_grid_view(view("housing_median_age > 28"));
+    assert!(!doc.preview_shelf_column(0, ShelfChannel::X, "no_such_column", &[]));
+    assert!(doc.chart_fault().is_some(), "the refusal left no fault");
+
+    assert!(doc.set_plot_scale(0, PlotAxis::Y, ScaleType::Log));
+
+    assert!(
+        doc.chart_fault().is_none(),
+        "the old refusal is still over the new page"
     );
 }

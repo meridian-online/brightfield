@@ -2421,29 +2421,17 @@ impl ChartDoc {
         // then looked for underneath it, and the switch replaced the picture
         // with the engine's refusal to query a file that is not there.
         let dir = live.base_dir().map(std::path::Path::to_path_buf);
-        // The grid's clause goes onto the fresh session before its first
-        // composite, so a rebuild under a grid filter composes once.
-        let seed: Vec<Interaction> = match self.grid_condition() {
-            Some(c) => crossfilter_names(&spec)
-                .into_iter()
-                .map(|name| Interaction::Select {
-                    name,
-                    contributor: ComponentPath(GRID_CONTRIBUTOR.to_string()),
-                    predicate: brightfield_engine::SqlPredicate::Expr(c.clone()),
-                })
-                .collect(),
-            None => Vec::new(),
-        };
         self.activity.begin(Activity::EngineQuery);
         let rebuilt = LiveDashboard::load(spec, dir.as_deref()).and_then(|mut live| {
             live.set_viewport(viewport);
             live.set_mode(mode);
-            for interaction in seed {
-                let _ = live.coordinator().apply(interaction);
-            }
             live.present().map(|composed| (live, composed))
         });
         self.activity.end(Activity::EngineQuery);
+        // A page that drew is a new picture, and the fault described the last.
+        if rebuilt.is_ok() {
+            self.interaction_fault = None;
+        }
         rebuilt.map_err(|e| e.to_string())
     }
 
