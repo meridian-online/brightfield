@@ -68,15 +68,15 @@ fn the_co2_report_exports() {
     );
     for wanted in [
         "Every G7 country emits less CO2 per person than it did in 1990",
-        "9 series share 8 colours, so colours repeat",
+        "9 series share 8 colours, so the last 2 are drawn as one",
         "Change in per-capita CO2, 1990 to 2024 (percent)",
         "Per-capita CO2 since 1990, G7 countries vs China and India (tonnes per person)",
     ] {
         assert!(text.contains(wanted), "{wanted} is missing:\n{text}");
     }
     assert!(!text.contains("changed since the run"), "{text}");
-    // The line chart's nine series repeat the palette: a warning, not a failure.
-    assert!(stderr(&out).contains("colours repeat"), "{}", stderr(&out));
+    // The line chart's nine series fold two into "Other": a warning, not a failure.
+    assert!(stderr(&out).contains("drawn as one"), "{}", stderr(&out));
 
     let report = prepare_report(&ran.dir).expect("the report prepares");
     let pages = brightfield_report::preview_pages(&report.input(), 110.0).expect("the pages draw");

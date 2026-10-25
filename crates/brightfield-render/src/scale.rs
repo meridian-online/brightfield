@@ -560,6 +560,11 @@ impl Scale {
     }
 
     /// Look up the colour for a category.
+    ///
+    /// On the Harbour palette a category past its seventh slot wears the
+    /// eighth, the colour of the "Other" the legend folds them into
+    /// ([`Self::colour_entries`]). A palette the plot writes itself starts again
+    /// from its first colour, as Mosaic does.
     pub fn map_colour(&self, category: &str) -> Option<[f32; 4]> {
         match self {
             Self::Colour {
@@ -567,9 +572,52 @@ impl Scale {
                 palette,
             } => {
                 let idx = categories.iter().position(|c| c == category)?;
-                Some(palette[idx % palette.len()])
+                let slot = if folds_into_other(categories, palette) {
+                    idx.min(palette.len() - 1)
+                } else {
+                    idx % palette.len()
+                };
+                Some(palette[slot])
             }
             _ => None,
+        }
+    }
+
+    /// A categorical colour scale's legend rows: each label and the colour
+    /// its marks wear, in the scale's order. Empty for any other scale.
+    ///
+    /// The design system's colour guideline assigns the Harbour hues in fixed
+    /// order and never cycles them, because the order is what keeps adjacent
+    /// hues apart for colour-blind readers. So when a column has more
+    /// categories than Harbour has hues, the first seven keep their own and
+    /// the rest share the eighth under one [`OTHER_CATEGORY`] row. A palette
+    /// the plot writes itself cycles and lists every category.
+    #[must_use]
+    pub fn colour_entries(&self) -> Vec<(&str, [f32; 4])> {
+        let Self::Colour {
+            categories,
+            palette,
+        } = self
+        else {
+            return Vec::new();
+        };
+        if palette.is_empty() {
+            return Vec::new();
+        }
+        if folds_into_other(categories, palette) {
+            let named = palette.len() - 1;
+            categories[..named]
+                .iter()
+                .map(String::as_str)
+                .zip(palette.iter().copied())
+                .chain(std::iter::once((OTHER_CATEGORY, palette[named])))
+                .collect()
+        } else {
+            categories
+                .iter()
+                .map(String::as_str)
+                .zip(palette.iter().copied().cycle())
+                .collect()
         }
     }
 
@@ -1901,8 +1949,20 @@ pub fn diverging_scale(
 // categorical10 — is [`ChartInk::categorical`], one table per mode. The ORDER is
 // the colourblind-safety mechanism (chosen for maximum adjacent CVD distance
 // jointly across BOTH modes) and is therefore data, never cosmetic — eight
-// slots either side; `map_colour` cycles by index beyond them (see
-// deviations.yaml DEV-0004).
+// slots either side; beyond them `map_colour` folds the rest into the eighth,
+// as "Other" (see deviations.yaml DEV-0004).
+
+/// The legend label of the categories a Harbour colour scale has no hue left
+/// for ([`Scale::colour_entries`]).
+pub const OTHER_CATEGORY: &str = "Other";
+
+/// Whether a categorical scale over `categories` folds its overflow into
+/// "Other" rather than starting `palette` again: it does when the palette is
+/// Harbour, in either mode, and there are more categories than it has hues.
+fn folds_into_other(categories: &[String], palette: &[[f32; 4]]) -> bool {
+    categories.len() > palette.len()
+        && (palette == ChartInk::LIGHT.categorical || palette == ChartInk::DARK.categorical)
+}
 
 /// Infer scales from a RecordBatch and ChannelMap.
 ///
@@ -3844,16 +3904,19 @@ mod tests {
                 "Harbour slot {i} equals the design token (order is load-bearing)"
             );
         }
-        // A 9th category cycles back to slot 1 (index % len).
+        // A 9th category never wraps to slot 1: the 8th and 9th fold into
+        // "Other", in slot 8.
         let scale = Scale::Colour {
             categories: (0..9).map(|i| format!("c{i}")).collect(),
             palette: ChartInk::LIGHT.categorical.to_vec(),
         };
-        assert_eq!(
-            scale.map_colour("c8"),
-            Some(ChartInk::LIGHT.categorical[0]),
-            "9th category wraps to slot 1"
-        );
+        for c in ["c7", "c8"] {
+            assert_eq!(
+                scale.map_colour(c),
+                Some(ChartInk::LIGHT.categorical[7]),
+                "{c} folds into Other in slot 8"
+            );
+        }
     }
 
     #[test]

@@ -130,7 +130,8 @@ fn legend_swatches(dir: &Path, name: &str, png: &Path, scale: f32) -> (Vec<[u8; 
 #[test]
 fn png_of_a_panel_draws_its_legend_where_the_window_does() {
     let ran = ran_fixture("co2-per-capita");
-    for (name, count) in [(LINE, 9), (CHANGE, 3)] {
+    // The line's nine countries are seven names and one "Other".
+    for (name, count) in [(LINE, 8), (CHANGE, 3)] {
         let out = export(&["export-png", path_arg(&ran.dir), name]);
         assert_eq!(code(&out), 0, "{}", stderr(&out));
         let png = ran.dir.join("exports").join(format!("{name}.png"));
@@ -150,7 +151,7 @@ fn png_of_a_panel_whose_colours_repeat_warns_and_still_succeeds() {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert!(
         stderr(&out).contains(&format!(
-            "panels/{LINE}.yaml: 9 series share 8 colours, so colours repeat; "
+            "panels/{LINE}.yaml: 9 series share 8 colours, so the last 2 are drawn as one "
         )),
         "{}",
         stderr(&out)
