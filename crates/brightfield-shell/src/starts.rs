@@ -1123,8 +1123,9 @@ pub fn write_protocol(protocol: &ShippedProtocol) -> Result<std::path::PathBuf, 
 /// last, and check each landed whole.
 ///
 /// No directory is made with `create_dir_all`: each one under `staging` is
-/// made a level at a time, so a staging folder a sweep removed makes every
-/// later write fail instead of being made again. The manifest goes last, so
+/// made a level at a time, so a staging folder a sweep removed makes the
+/// writes after it fail instead of being made again
+/// (`a_swept_staging_folder_fails_its_writer`). The manifest goes last, so
 /// a folder missing any of its files has no manifest and is written again by
 /// the next open, and a read-back of each file's length catches a file a
 /// sweep removed after it was written.
