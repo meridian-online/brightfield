@@ -1754,7 +1754,9 @@ impl LiveDashboard {
         else {
             return false;
         };
-        self.selection_clauses()
+        // The grid's own clause is a filter the grid already shows, not a
+        // selection somebody made.
+        self.clauses_apart_from(Some(crate::app::GRID_CONTRIBUTOR))
             .iter()
             .any(|(name, _)| *name == by.0)
     }
@@ -1809,6 +1811,12 @@ impl LiveDashboard {
     /// skipped, as it is at emit.
     #[must_use]
     pub fn selection_clauses(&self) -> Vec<(String, Predicate)> {
+        self.clauses_apart_from(None)
+    }
+
+    /// [`Self::selection_clauses`] without the clause of the contributor at
+    /// `skip`, when one is named.
+    fn clauses_apart_from(&self, skip: Option<&str>) -> Vec<(String, Predicate)> {
         let as_bound = as_bound_selection_default();
         let mut held: Vec<(String, Predicate)> = self
             .coordinator
@@ -1823,6 +1831,7 @@ impl LiveDashboard {
                 };
                 let by_source: Vec<(String, Predicate)> = contributors
                     .iter()
+                    .filter(|(path, _)| skip != Some(path.0.as_str()))
                     .map(|(path, predicate)| (path.0.clone(), predicate.clone()))
                     .collect();
                 let clause = compile_selection(node, NO_SELF_EXCLUDE, &by_source);

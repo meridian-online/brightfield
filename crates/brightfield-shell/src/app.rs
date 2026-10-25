@@ -1793,6 +1793,19 @@ impl ChartDoc {
             .map(str::to_owned);
         for name in names {
             let contributor = ComponentPath(GRID_CONTRIBUTOR.to_string());
+            // What the session holds is the record of what was published, so
+            // a rebuilt session (which holds nothing) is brought up to date
+            // and an unchanged condition costs no re-composite.
+            let held = self
+                .live
+                .as_ref()
+                .and_then(|l| l.held_clause(&name, &contributor));
+            let wanted = condition
+                .as_ref()
+                .map(|c| brightfield_engine::SqlPredicate::Expr(c.clone()));
+            if held == wanted.as_ref() {
+                continue;
+            }
             let interaction = match &condition {
                 Some(c) => Interaction::Select {
                     name,
@@ -1851,6 +1864,9 @@ impl ChartDoc {
         self.grid_view = brightfield_engine::RowsView::default();
         self.grid_condition_held = None;
         self.pending_settled = true;
+        // The charts follow what the grid's where field shows, which is
+        // nothing now.
+        self.publish_grid_condition();
     }
 
     /// Whether the applied view became fully recorded, or a kept statement
@@ -2356,6 +2372,7 @@ impl ChartDoc {
             Ok((live, composed)) => {
                 self.live = Some(live);
                 self.composed = composed;
+                self.publish_grid_condition();
                 if changed {
                     self.pending_edits.push(edit);
                     // The shelf's snapshots are whole specs, so one older than
@@ -2515,6 +2532,7 @@ impl ChartDoc {
                     edits,
                     kept,
                 });
+                self.publish_grid_condition();
                 self.canvas.invalidate();
                 true
             }
@@ -2631,6 +2649,7 @@ impl ChartDoc {
                 let now = Self::setting_text(live.spec(), &after, edit.channel, edit.row);
                 self.live = Some(live);
                 self.composed = composed;
+                self.publish_grid_condition();
                 self.shelf_undo.push(
                     before,
                     KeptShelfEdit {
@@ -3032,6 +3051,7 @@ impl ChartDoc {
             Ok((live, composed)) => {
                 self.live = Some(live);
                 self.composed = composed;
+                self.publish_grid_condition();
                 let KeptShelfEdit {
                     words,
                     added,
@@ -3108,6 +3128,7 @@ impl ChartDoc {
         }
         self.live = Some(live);
         self.composed = composed;
+        self.publish_grid_condition();
         self.canvas.invalidate();
     }
 
@@ -3188,6 +3209,7 @@ impl ChartDoc {
                     kind,
                     kept,
                 });
+                self.publish_grid_condition();
                 // A refusal named the version drawn before this one.
                 self.interaction_fault = None;
                 self.canvas.invalidate();

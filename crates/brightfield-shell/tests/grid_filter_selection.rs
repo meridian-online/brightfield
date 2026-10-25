@@ -11,12 +11,24 @@
 //! source the way `tests/region_gate.rs` writes it, so nothing here reaches
 //! the network.
 
+use brightfield_engine::coordinator::Interaction;
 use brightfield_engine::RowsView;
+use brightfield_engine::SqlPredicate;
+use brightfield_shell::app::GRID_CONTRIBUTOR;
 use brightfield_shell::data_file;
 use brightfield_shell::pipeline::RowCount;
 use brightfield_shell::starts::{self, Opened};
+use brightfield_spec::analysis::ComponentPath;
+use brightfield_spec::layout::{PlotAxis, ScaleType};
 
 const WHOLE_TABLE: u64 = 20_640;
+
+/// The generated dashboard's one selection.
+const SEL: &str = brightfield_shell::dashboard::SELECTION;
+
+fn grid() -> ComponentPath {
+    ComponentPath(GRID_CONTRIBUTOR.to_string())
+}
 
 /// The data file the California Housing start writes, as a path.
 fn housing_file() -> std::path::PathBuf {
@@ -86,7 +98,10 @@ fn a_typed_filter_in_the_grid_filters_the_dashboards_charts() {
         want,
         "the map still counts the rows the grid filtered out"
     );
-    assert!(doc.chart_fault().is_none(), "a filter that binds is no fault");
+    assert!(
+        doc.chart_fault().is_none(),
+        "a filter that binds is no fault"
+    );
 }
 
 #[test]
@@ -96,7 +111,11 @@ fn a_typed_filter_that_matches_nothing_draws_the_charts_empty_not_an_error() {
 
     doc.apply_grid_view(view("housing_median_age > 280"));
 
-    assert_eq!(charts_hold(&doc), 0, "no row matches, so the map holds none");
+    assert_eq!(
+        charts_hold(&doc),
+        0,
+        "no row matches, so the map holds none"
+    );
     assert!(
         doc.chart_fault().is_none(),
         "an empty match raised a banner: {:?}",
@@ -113,5 +132,98 @@ fn clearing_the_typed_filter_restores_the_charts() {
     doc.apply_grid_view(RowsView::default());
 
     assert_eq!(charts_hold(&doc), WHOLE_TABLE);
-    assert!(!doc.selection_active(), "the grid's clause was not retracted");
+    assert!(
+        doc.held_clause(SEL, &grid()).is_none(),
+        "the grid's clause is still held after its condition was cleared"
+    );
+}
+
+/// Recording the grid's condition as a step empties the grid's where field,
+/// and the charts follow it.
+#[test]
+fn recording_the_grid_condition_lets_the_charts_follow_the_empty_where_field() {
+    let (_path, mut doc) = open();
+    doc.apply_grid_view(view("housing_median_age > 28"));
+    assert!(charts_hold(&doc) < WHOLE_TABLE);
+
+    doc.mark_grid_condition_recorded("kept_step".to_string());
+
+    assert_eq!(charts_hold(&doc), WHOLE_TABLE, "the charts stayed filtered");
+    assert!(doc.held_clause(SEL, &grid()).is_none());
+}
+
+/// A rebuilt page starts with an empty session; the grid still shows its
+/// condition, so the charts must still be narrowed.
+#[test]
+fn a_rebuilt_page_keeps_the_charts_narrowed_to_what_the_grid_shows() {
+    let (path, mut doc) = open();
+    let want = rows_meeting(&path, "housing_median_age > 28");
+    doc.apply_grid_view(view("housing_median_age > 28"));
+
+    assert!(
+        doc.set_plot_scale(0, PlotAxis::Y, ScaleType::Log),
+        "the rebuild-triggering change was refused"
+    );
+
+    assert_eq!(
+        charts_hold(&doc),
+        want,
+        "the rebuild dropped the grid's clause"
+    );
+}
+
+/// A grid-only filter is not a selection somebody made, so the grid's foot
+/// does not say the rows are under one.
+#[test]
+fn a_grid_only_filter_is_not_counted_as_a_selection() {
+    let (_path, mut doc) = open();
+    doc.apply_grid_view(view("housing_median_age > 28"));
+    assert!(
+        !doc.live_dashboard().expect("live").rows_narrowed(),
+        "the grid's own clause was counted as a selection"
+    );
+}
+
+fn brush_hero(doc: &mut brightfield_shell::app::ChartDoc) {
+    let hero = ComponentPath(doc.composed.plots[0].path.clone());
+    assert!(doc.apply_interaction(Interaction::Select {
+        name: SEL.to_string(),
+        contributor: hero,
+        predicate: SqlPredicate::Interval {
+            column: "median_income".to_string(),
+            lo: brightfield_sql::ir::ScalarValue::Float(2.0),
+            hi: brightfield_sql::ir::ScalarValue::Float(4.0),
+            meta: None,
+        },
+    }));
+}
+
+const BRUSH: &str = "median_income >= 2.0 AND median_income <= 4.0";
+
+/// Clear-selection retracts the brush and leaves the grid's filter; clearing
+/// the grid leaves the brush.
+#[test]
+fn the_brush_and_the_grid_filter_are_cleared_each_by_its_own_owner() {
+    let (path, mut doc) = open();
+    brush_hero(&mut doc);
+    doc.apply_grid_view(view("housing_median_age > 28"));
+    assert_eq!(
+        charts_hold(&doc),
+        rows_meeting(&path, &format!("({BRUSH}) AND housing_median_age > 28"))
+    );
+
+    doc.clear_selection();
+    assert_eq!(
+        charts_hold(&doc),
+        rows_meeting(&path, "housing_median_age > 28"),
+        "clear-selection took the grid's filter with the brush"
+    );
+
+    brush_hero(&mut doc);
+    doc.apply_grid_view(RowsView::default());
+    assert_eq!(
+        charts_hold(&doc),
+        rows_meeting(&path, BRUSH),
+        "clearing the grid took the brush with it"
+    );
 }
