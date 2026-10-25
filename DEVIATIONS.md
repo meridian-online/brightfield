@@ -98,7 +98,11 @@ steel blue; there is no "meridian" scheme name.
 
 **Brightfield behaviour.** brightfield's default categorical palette is the Meridian design
 system's "Harbour" order (8 slots, first slot blue #0083c4) and the
-default single-mark colour is Harbour slot 1. `colorScheme: meridian`
+default single-mark colour is Harbour slot 1. Where Plot starts its
+scheme again past the tenth category, Harbour is never cycled: with
+more categories than its eight hues, the first seven keep their own
+and the rest share the eighth, which the legend names "Other". A
+plot's own `colorRange` cycles as Plot's does. `colorScheme: meridian`
 is Brightfield-local sugar for the Meridian sequential ramp (13
 blue-240 stops); the sequential DEFAULT remains viridis (DEV-0003).
 Explicit `colorDomain`/`colorRange` literals are honoured, and
