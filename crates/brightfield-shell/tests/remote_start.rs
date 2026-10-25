@@ -39,6 +39,11 @@
 //! with the server standing there and never connect to it, and a landed remote
 //! document does not go back to it.
 
+#[path = "support/agent_protocol.rs"]
+mod agent_protocol;
+#[path = "support/shipped_protocol.rs"]
+mod shipped_protocol;
+
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -886,6 +891,12 @@ fn only_the_remote_starts_have_anything_to_fetch() {
             remote::remote_sources(spec).expect("a shipped spec parses")
         });
         sources.extend(start.data.as_ref().map(|data| data.url.to_string()));
+        sources.extend(
+            start
+                .protocol
+                .as_ref()
+                .map_or_else(Vec::new, starts::ShippedProtocol::fetch_urls),
+        );
         assert_eq!(
             start.remote,
             !sources.is_empty(),
@@ -990,8 +1001,14 @@ fn a_start_that_declares_no_network_never_enters_the_fetch_path() {
     // and forgot to declare it reaches for a socket here.
     datasets_into_scratch();
     for start in starts::STARTS.iter().filter(|s| !s.remote) {
-        let boot = Boot::start(start.id, Flow::Vertical)
-            .unwrap_or_else(|e| panic!("{} no longer opens: {e}", start.id));
+        // A Protocol start runs its folder first, by the cargo-built runner
+        // and over its stand-in: `Boot::start` has no runner to hand a run to.
+        let boot = if start.protocol.is_some() {
+            shipped_protocol::boot_offline(start)
+        } else {
+            Boot::start(start.id, Flow::Vertical)
+        }
+        .unwrap_or_else(|e| panic!("{} no longer opens: {e}", start.id));
         assert!(
             boot.has_chart() || !boot.protocol.graph_full.nodes.is_empty(),
             "{} opened onto nothing",

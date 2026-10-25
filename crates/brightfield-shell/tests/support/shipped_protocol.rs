@@ -172,3 +172,47 @@ pub fn stand_in(protocol: &ShippedProtocol, copies: &[(&str, &Path)]) -> &'stati
     }
     shipped(protocol.dir_name, protocol.revision, files)
 }
+
+/// The committed copies of what the shipped Protocol starts fetch, as
+/// `(url, file under this crate)`: what [`boot_offline`] runs a Protocol
+/// start's stand-in over. A Protocol start fetching a URL missing here fails
+/// [`stand_in`] by that URL rather than reaching the network.
+pub const PROTOCOL_FETCH_COPIES: &[(&str, &str)] = &[];
+
+/// The runner a Protocol start is run by in a test: the `brightfield-shell`
+/// binary cargo built, never the test harness, which reads `run` as a filter.
+pub fn runner() -> brightfield_shell::run::Runner {
+    crate::agent_protocol::arc_stores();
+    brightfield_shell::run::Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))
+}
+
+/// Boot the Protocol start `start` with no network: its stand-in over
+/// [`PROTOCOL_FETCH_COPIES`], run to completion by [`runner`] first.
+///
+/// # Panics
+///
+/// If `start` is not a Protocol start.
+pub fn boot_offline(
+    start: &'static brightfield_shell::starts::Start,
+) -> Result<brightfield_shell::window::Boot, String> {
+    let protocol = start
+        .protocol
+        .as_ref()
+        .unwrap_or_else(|| panic!("{} is not a Protocol start", start.id));
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let copies: Vec<(&str, PathBuf)> = PROTOCOL_FETCH_COPIES
+        .iter()
+        .map(|(url, file)| (*url, crate_dir.join(file)))
+        .collect();
+    let borrowed: Vec<(&str, &Path)> = copies
+        .iter()
+        .map(|(url, path)| (*url, path.as_path()))
+        .collect();
+    let offline = stand_in(protocol, &borrowed);
+    brightfield_shell::window::Boot::shipped_protocol(
+        start.id,
+        offline,
+        brightfield_protocol::layout::Flow::Vertical,
+        Some(&runner()),
+    )
+}

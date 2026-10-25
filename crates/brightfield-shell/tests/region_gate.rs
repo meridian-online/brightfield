@@ -81,6 +81,11 @@
 //! `a_rail_reopens_at_the_extent_it_was_dragged_to`, and
 //! `a_rail_dragged_past_its_floor_stops_at_the_floor_it_declares`.
 
+#[path = "support/agent_protocol.rs"]
+mod agent_protocol;
+#[path = "support/shipped_protocol.rs"]
+mod shipped_protocol;
+
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::compose_spec;
@@ -402,8 +407,14 @@ fn every_window_this_build_can_open() -> Vec<(String, Boot)> {
         }
     }
     for start in starts::STARTS {
-        let boot = Boot::start(start.id, Flow::Vertical)
-            .unwrap_or_else(|e| panic!("the {} start ships with this build: {e}", start.id));
+        // A Protocol start runs its folder first, by the cargo-built runner
+        // and over its stand-in: `Boot::start` has no runner to hand a run to.
+        let boot = if start.protocol.is_some() {
+            shipped_protocol::boot_offline(start)
+        } else {
+            Boot::start(start.id, Flow::Vertical)
+        }
+        .unwrap_or_else(|e| panic!("the {} start ships with this build: {e}", start.id));
         boots.push((format!("the {} start", start.id), boot));
     }
     boots

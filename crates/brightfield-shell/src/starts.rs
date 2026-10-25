@@ -350,7 +350,8 @@ pub struct Start {
     /// [`STARTS`].
     pub on_door: bool,
     /// The chart spec this start opens — the bytes [`load`] composes — and
-    /// `None` for a start that opens a Protocol manifest instead.
+    /// `None` for a data-file, Protocol-manifest, run-record or shipped
+    /// Protocol start.
     ///
     /// **The single declaration.** [`load`] composes this field rather than
     /// dispatching to a second table of `include_str!`s keyed by id, so a
@@ -368,10 +369,10 @@ pub struct Start {
     /// with, and the claims its own header comment makes about them, are read
     /// off these bytes by `crates/brightfield-shell/tests/start_interaction.rs`.
     pub spec: Option<&'static str>,
-    /// The **data file** this start fetches and opens, or `None` for a start
-    /// that opens a chart spec or a Protocol manifest.
+    /// The **data file** this start fetches and opens, or `None` for a chart,
+    /// Protocol-manifest, run-record or shipped Protocol start.
     ///
-    /// Exclusive with [`spec`](Self::spec), and
+    /// Exclusive with [`spec`](Self::spec) and [`protocol`](Self::protocol), and
     /// `a_start_declares_a_spec_or_a_data_file_and_never_both` is what holds
     /// that rather than [`load`]'s arm order quietly picking a winner.
     ///
@@ -387,7 +388,8 @@ pub struct Start {
     /// what reads that back off two real opens.
     pub data: Option<FetchedData>,
     /// The **Protocol folder** this start writes, runs and opens on its
-    /// panel, or `None` for a chart, data-file or manifest start.
+    /// panel, or `None` for a chart, data-file, Protocol-manifest or
+    /// run-record start.
     ///
     /// Exclusive with [`spec`](Self::spec) and [`data`](Self::data), which
     /// `a_start_declares_a_spec_or_a_data_file_and_never_both` holds.
@@ -415,6 +417,24 @@ pub struct ShippedProtocol {
     pub revision: u32,
     /// Each file of the folder, as `(path relative to the folder, bytes)`.
     pub files: &'static [(&'static str, &'static [u8])],
+}
+
+impl ShippedProtocol {
+    /// The folder's `arcform.yaml`, when it ships one as text.
+    #[must_use]
+    pub fn manifest(&self) -> Option<&'static str> {
+        self.files
+            .iter()
+            .find(|(path, _)| *path == arc::spec::MANIFEST_FILENAME)
+            .and_then(|(_, bytes)| std::str::from_utf8(bytes).ok())
+    }
+
+    /// The URLs this Protocol's `http_fetch` steps fetch: what its first run
+    /// reads over the network, and what makes its start [`Start::remote`].
+    #[must_use]
+    pub fn fetch_urls(&self) -> Vec<String> {
+        self.manifest().map_or_else(Vec::new, fetch_urls)
+    }
 }
 
 impl Start {
@@ -1065,6 +1085,7 @@ pub fn write_protocol(protocol: &ShippedProtocol) -> Result<std::path::PathBuf, 
         .parent()
         .expect("protocol_path is a folder inside a revision directory");
     std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    sweep_stale_staging(parent, protocol.dir_name);
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let staging = parent.join(format!(
         "{}.{}-{}.part",
@@ -1098,6 +1119,12 @@ pub fn write_protocol(protocol: &ShippedProtocol) -> Result<std::path::PathBuf, 
         let _ = std::fs::remove_dir_all(&staging);
         return Err(e);
     }
+    // A folder there with no manifest is not this revision's folder: a write
+    // from before the staging rename, or one a person emptied. It is
+    // replaced, or every later open would fail renaming onto it.
+    if path.exists() && !path.join(arc::spec::MANIFEST_FILENAME).is_file() {
+        let _ = std::fs::remove_dir_all(&path);
+    }
     if let Err(e) = std::fs::rename(&staging, &path) {
         let _ = std::fs::remove_dir_all(&staging);
         // Another writer got there first with the same revision's folder.
@@ -1107,6 +1134,26 @@ pub fn write_protocol(protocol: &ShippedProtocol) -> Result<std::path::PathBuf, 
         return Err(format!("{} -> {}: {e}", staging.display(), path.display()));
     }
     Ok(path)
+}
+
+/// Remove the staging folders for `dir_name` in `parent` that another
+/// process left: a write that was stopped before its rename. This process's
+/// own are left alone, since another of its threads may be writing one.
+fn sweep_stale_staging(parent: &std::path::Path, dir_name: &str) {
+    let prefix = format!("{dir_name}.");
+    let ours = format!(".{}-", std::process::id());
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(&prefix)
+            && name.ends_with(".part")
+            && !name[dir_name.len()..].starts_with(&ours)
+        {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 /// The URLs the `http_fetch` steps of the Protocol in `manifest` fetch, in
@@ -1154,18 +1201,31 @@ fn protocol_db_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 /// Whether the shipped Protocol in `dir` needs a run before its panels can
-/// open: it has no database, or a database no finished run accounts for.
+/// open: it has no database, or its newest run record does not say the run
+/// succeeded.
 ///
-/// A database with no run record behind it is one a run left when it was
-/// stopped part way, and it is removed here, so the run that follows starts
-/// from nothing rather than from tables nobody finished.
+/// A database whose newest record failed, or that has no record behind it
+/// (a run stopped part way), holds tables nobody finished, and it is removed
+/// here, so the run that follows starts from nothing. The window does not
+/// ask this while a run of the folder is under way, since that run's
+/// database has no record yet.
 #[must_use]
 pub fn needs_run(dir: &std::path::Path) -> bool {
     let files = protocol_db_files(dir);
     let Some(db) = files.first() else {
         return true;
     };
-    if db.is_file() && arc::spec::run_tables(dir, None).is_ok() {
+    let succeeded = arc::spec::Manifest::load(dir).is_ok_and(|manifest| {
+        crate::run::records_newest_first(dir, &manifest.name)
+            .next()
+            .is_some_and(|view| {
+                matches!(
+                    view.run.outcome,
+                    brightfield_protocol::contract::Outcome::Success
+                )
+            })
+    });
+    if db.is_file() && succeeded {
         return false;
     }
     for file in &files {

@@ -56,6 +56,7 @@ fn runner() -> Runner {
     Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))
 }
 
+#[cfg(unix)]
 /// A runner that can find no DuckDB CLI: the `brightfield-shell` binary
 /// started with `ARC_DUCKDB_BIN` unset and an empty directory as its search
 /// path.
@@ -326,6 +327,7 @@ fn a_fetched_protocol_start_with_no_network_raises_a_banner_naming_the_url_and_l
 
 /// **The runner cannot find a DuckDB CLI**: the start fails with a banner that
 /// says so, over the door, rather than leaving a Protocol at *not run*.
+#[cfg(unix)]
 #[test]
 fn a_shipped_protocol_start_with_no_duckdb_cli_says_so() {
     let _config = datasets_into_scratch("no_duckdb");
@@ -338,8 +340,9 @@ fn a_shipped_protocol_start_with_no_duckdb_cli_says_so() {
 
     let banners = win.banners();
     assert_eq!(banners.len(), 1, "{banners:?}");
+    // arc's own words for an engine the search path cannot find.
     assert!(
-        banners[0].to_lowercase().contains("duckdb"),
+        banners[0].contains("engine 'duckdb' not found"),
         "the banner does not say DuckDB could not be found: {}",
         banners[0]
     );
@@ -383,4 +386,189 @@ fn a_boot_of_a_protocol_whose_run_fails_says_why() {
     };
     assert!(e.contains(&url) && e.contains("network"), "{e}");
     assert!(!has_database(&starts::protocol_path(protocol)));
+}
+
+/// The fixture with `step` (a name) and its SQL added as the last step.
+fn with_step(dir_name: &str, step: &str, sql: &str) -> &'static starts::ShippedProtocol {
+    let mut files = shipped_protocol::files_of(shipped_protocol::fixture(dir_name, 1));
+    for (path, bytes) in &mut files {
+        if path == "arcform.yaml" {
+            let mut text = String::from_utf8(bytes.clone()).unwrap();
+            text.push_str(&format!("  - name: {step}\n    sql: models/{step}.sql\n"));
+            *bytes = text.into_bytes();
+        }
+    }
+    files.push((format!("models/{step}.sql"), sql.as_bytes().to_vec()));
+    shipped_protocol::shipped(dir_name, 1, files)
+}
+
+/// **A folder whose newest run failed is run again from nothing**: its record
+/// does not say `success`, so the tables in its database are not a finished run's, and
+/// the database is removed rather than reopened.
+#[test]
+fn a_shipped_protocol_whose_last_run_failed_is_run_again_from_nothing() {
+    let _config = datasets_into_scratch("last_run_failed");
+    let protocol = with_step(
+        "shipped-broken",
+        "broken",
+        "CREATE OR REPLACE TABLE \"broken\" AS SELECT * FROM no_such_table\n",
+    );
+    let dir = starts::write_protocol(protocol).expect("the folder writes");
+    let out = brightfield_shell::run::arc_with_args(&runner(), &dir, &["run"]);
+    assert!(!out.succeeded, "the broken step ran");
+    assert!(has_database(&dir), "the failed run made no database");
+    let newest = brightfield_shell::run::records_newest_first(&dir, "shipped-sample")
+        .next()
+        .expect("the failed run wrote a record");
+    // arc records a run with one good step and one failed one as partial.
+    assert_ne!(
+        newest.run.outcome,
+        brightfield_protocol::contract::Outcome::Success,
+        "the broken step ran, so this test proves nothing"
+    );
+
+    assert!(
+        starts::needs_run(&dir),
+        "a folder whose newest run failed reads as run"
+    );
+    assert!(
+        !has_database(&dir),
+        "the failed run's database was kept for the next open"
+    );
+}
+
+/// **A second click while the first click's run is going lands on the panel**:
+/// it does not remove the database that run is writing, and when the run
+/// lands the window opens its first panel.
+#[test]
+fn a_second_click_while_the_run_is_going_lands_on_the_panel() {
+    let _config = datasets_into_scratch("second_click");
+    // A step slow enough for the second click to come while it runs.
+    let protocol = with_step(
+        "shipped-slow",
+        "slow",
+        "CREATE OR REPLACE TABLE \"slow\" AS SELECT sum(i) AS s FROM range(3000000000) t(i)\n",
+    );
+    let dir = starts::protocol_path(protocol);
+    let mut win = Window::open(runner());
+    let ctx = win.ctx.clone();
+    win.app.open_shipped_protocol(&ctx, ID, protocol);
+    assert!(win.app.run_outstanding());
+    // Wait, drawing no frame so the run cannot land, until the run has made
+    // its database and not yet written its record.
+    let deadline = Instant::now() + PATIENCE;
+    while !has_database(&dir) {
+        assert!(Instant::now() < deadline, "the run never made its database");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        brightfield_shell::run::record_paths_newest_first(&dir).is_empty(),
+        "the run finished before the second click, so this test proves nothing"
+    );
+    win.app.open_shipped_protocol(&ctx, ID, protocol);
+    assert!(
+        has_database(&dir),
+        "the second click removed the database the run is writing"
+    );
+    let deadline = Instant::now() + PATIENCE;
+    while win.app.run_outstanding() {
+        assert!(Instant::now() < deadline, "the run never landed");
+        std::thread::sleep(Duration::from_millis(50));
+        win.frame();
+    }
+    win.settle();
+    assert!(win.banners().is_empty(), "{:?}", win.banners());
+    assert_eq!(
+        win.app.panel_tiles().and_then(|t| t.selected()),
+        Some(0),
+        "the run landed somewhere other than the first panel"
+    );
+}
+
+/// **A landing does not open the panel over unsaved edits**: a grid order the
+/// reader applied while the run was going is still there when it lands, the
+/// tiles stay, and the panel-unsaved warning says why.
+#[test]
+fn a_landing_over_unsaved_edits_keeps_them_and_says_so() {
+    let _config = datasets_into_scratch("unsaved");
+    let protocol = shipped_protocol::fixture("shipped-sample", 1);
+    let mut win = Window::open(runner());
+    let ctx = win.ctx.clone();
+    win.app.open_shipped_protocol(&ctx, ID, protocol);
+    assert!(win.app.run_outstanding());
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: None,
+            order: Some("mass_g".into()),
+        });
+    assert!(win.app.chart_doc().has_unsaved_work());
+    let deadline = Instant::now() + PATIENCE;
+    while win.app.run_outstanding() {
+        assert!(Instant::now() < deadline, "the run never landed");
+        std::thread::sleep(Duration::from_millis(50));
+        win.frame();
+    }
+    win.settle();
+    assert!(
+        win.app.chart_doc().has_unsaved_work(),
+        "the landing dropped the reader's edits"
+    );
+    assert_eq!(win.app.panel_tiles().and_then(|t| t.selected()), None);
+    assert!(
+        win.app
+            .notifications()
+            .iter()
+            .any(|n| n.title.contains("unsaved edits")),
+        "no banner says why the panel did not open: {:?}",
+        win.banners()
+    );
+    assert_ne!(
+        win.app.layout().opened.as_deref(),
+        Some(ID),
+        "the start was recorded as landed on a panel it did not open"
+    );
+}
+
+/// **A folder an earlier write left part-made is written again**: a target
+/// with no manifest is replaced rather than failing every later open, and a
+/// staging folder a stopped write left behind is swept.
+#[test]
+fn a_folder_left_without_its_manifest_is_written_again() {
+    let _config = datasets_into_scratch("part_made");
+    let protocol = shipped_protocol::fixture("shipped-sample", 1);
+    let dir = starts::protocol_path(protocol);
+    std::fs::create_dir_all(dir.join("panels")).unwrap();
+    std::fs::write(dir.join("panels/stray.yaml"), "title: stray\n").unwrap();
+    let stale = dir.with_file_name("shipped-sample.123-0.part");
+    std::fs::create_dir_all(&stale).unwrap();
+
+    assert_eq!(
+        starts::write_protocol(protocol).expect("the folder writes"),
+        dir
+    );
+    assert!(dir.join("arcform.yaml").is_file());
+    assert!(
+        !dir.join("panels/stray.yaml").exists(),
+        "the part-made folder's files were kept"
+    );
+    assert!(!stale.exists(), "the stale staging folder was left");
+}
+
+/// **`Boot` with no runner refuses a Protocol that has not run**, rather than
+/// running it: the runner `Boot::start` hands a run to is none, so a test
+/// harness that boots every start is never started as `arc`.
+#[test]
+fn a_boot_with_no_runner_refuses_a_protocol_that_has_not_run() {
+    let _config = datasets_into_scratch("no_runner");
+    let protocol = shipped_protocol::fixture("shipped-sample", 1);
+    let Err(e) = Boot::shipped_protocol(ID, protocol, Flow::Vertical, None) else {
+        panic!("a Protocol that has not run booted with no runner");
+    };
+    assert!(e.contains("no runner"), "{e}");
+    let dir = starts::protocol_path(protocol);
+    assert!(
+        brightfield_shell::run::record_paths_newest_first(&dir).is_empty(),
+        "a run was made with no runner given"
+    );
 }

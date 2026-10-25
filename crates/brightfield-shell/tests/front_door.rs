@@ -626,10 +626,9 @@ fn the_local_starts_open_with_the_network_denied_and_a_cold_extension_cache() {
              network and proves nothing about running without one"
         );
         for start in starts::STARTS.iter().filter(|s| !s.remote) {
-            let boot = Boot::start_running(start.id, Flow::Vertical, Some(&protocol_runner()))
-                .unwrap_or_else(|e| {
-                    panic!("{} no longer opens with the network denied: {e}", start.id)
-                });
+            let boot = boot_offline(start).unwrap_or_else(|e| {
+                panic!("{} no longer opens with the network denied: {e}", start.id)
+            });
             assert!(
                 boot.has_chart() || !boot.protocol.graph_full.nodes.is_empty(),
                 "{} opened onto nothing with the network denied",
@@ -2902,36 +2901,18 @@ const REMOTE_FIXTURES: &[(&str, &str)] = &[
 /// crosswalk's reduced copy.
 const CROSSWALK_PROVENANCE: &str = "tests/data/edgar_gleif_reduced.json";
 
-/// The runner a Protocol start is run by in these tests: the
-/// `brightfield-shell` binary cargo built, not this harness.
-fn protocol_runner() -> brightfield_shell::run::Runner {
-    agent_protocol::arc_stores();
-    brightfield_shell::run::Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))
-}
-
 /// Boot `start` with no network: a chart or data start over
-/// [`remote_stand_in`], a Protocol start over its stand-in — its folder with
-/// each `http_fetch` step replaced by the committed copy in
-/// [`REMOTE_FIXTURES`] — run to completion first, and a start that reads
-/// nothing remote as it is.
+/// [`remote_stand_in`], a Protocol start over its stand-in (see
+/// `support/shipped_protocol.rs`), run to completion by the cargo-built
+/// runner first, and a start that reads nothing remote as it is.
 fn boot_offline(start: &'static starts::Start) -> Result<Boot, String> {
-    if let Some(protocol) = &start.protocol {
-        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let copies: Vec<(&str, PathBuf)> = REMOTE_FIXTURES
-            .iter()
-            .map(|(url, file)| (*url, crate_dir.join(file)))
-            .collect();
-        let borrowed: Vec<(&str, &std::path::Path)> = copies
-            .iter()
-            .map(|(url, path)| (*url, path.as_path()))
-            .collect();
-        let offline = shipped_protocol::stand_in(protocol, &borrowed);
-        return Boot::shipped_protocol(start.id, offline, Flow::Vertical, Some(&protocol_runner()));
+    if start.protocol.is_some() {
+        return shipped_protocol::boot_offline(start);
     }
     if start.remote {
         Boot::start_with(start.id, remote_stand_in(start), Flow::Vertical)
     } else {
-        Boot::start_running(start.id, Flow::Vertical, Some(&protocol_runner()))
+        Boot::start(start.id, Flow::Vertical)
     }
 }
 

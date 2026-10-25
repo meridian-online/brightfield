@@ -487,6 +487,11 @@ struct PendingRun {
     /// The name of the Protocol being run. With [`crate::run::Run::dir`], the
     /// identity a document is compared against.
     protocol: String,
+    /// Whether this is a shipped Protocol start's run, the only kind whose
+    /// failure removes the database it left: a shipped folder is the
+    /// binary's own and runs again from nothing, where a reader's Protocol
+    /// keeps the tables its earlier runs made.
+    shipped: bool,
 }
 
 /// A shipped Protocol start whose run is under way, to open on its first
@@ -1325,12 +1330,15 @@ impl Boot {
     /// If `id` is not a start this build ships, or the embedded fixture fails
     /// to load.
     ///
-    /// A [`crate::starts::Start::protocol`] start that has not run is run
-    /// here, to completion, by [`crate::run::Runner::this_binary`]: the live
-    /// binary is its own runner. A test harness is not one, so a test boots
-    /// such a start through [`Boot::start_running`] instead.
+    /// A [`crate::starts::Start::protocol`] start opens here only once its
+    /// folder has run: this hands a run to no runner, and refuses a folder
+    /// that has not run. The process this is called in may be a test harness,
+    /// which reads `run` as a test-name filter (see [`crate::run::Runner`]),
+    /// so it is never started as one. Startup reopens a remembered Protocol
+    /// start only once its folder has run, and a caller that has a runner to
+    /// give boots through [`Boot::start_running`].
     pub fn start(id: &str, flow: Flow) -> Result<Self, String> {
-        Self::start_running(id, flow, crate::run::Runner::this_binary().as_ref())
+        Self::start_running(id, flow, None)
     }
 
     /// [`Boot::start`] with the runner a Protocol start that has not run is
@@ -8906,6 +8914,33 @@ impl MeridianApp {
         id: &'static str,
         dir: &std::path::Path,
     ) -> bool {
+        // A second click on a start whose run this window is still making:
+        // the database is that run's, so it is neither checked nor opened.
+        // The tiles say the folder has not run, and the landing waits on the
+        // run already going.
+        if self
+            .running
+            .as_ref()
+            .is_some_and(|pending| pending.shipped && pending.run.dir() == dir)
+        {
+            let flow = self.protocol.doc.model.flow();
+            self.adopt_boot(Boot {
+                panels_problem: Some((
+                    dir.to_path_buf(),
+                    crate::protocol_panels::OpenProblem::NotRun {
+                        dir: dir.to_path_buf(),
+                    },
+                )),
+                protocol: agent_protocol_inputs(dir),
+                flow,
+                ..Boot::empty()
+            });
+            self.landing = Some(PendingLanding {
+                id,
+                dir: dir.to_path_buf(),
+            });
+            return false;
+        }
         let needs_run = crate::starts::needs_run(dir);
         let manifest = dir.join(arc::spec::MANIFEST_FILENAME);
         let boot = match Boot::open(
@@ -8948,6 +8983,9 @@ impl MeridianApp {
             // stays up over the door.
             self.back_to_the_door();
             return false;
+        }
+        if let Some(pending) = self.running.as_mut() {
+            pending.shipped = true;
         }
         self.landing = Some(PendingLanding { id, dir: tiles_dir });
         false
@@ -9868,7 +9906,7 @@ impl MeridianApp {
         else {
             eprintln!("could not run the Protocol: none is open");
             self.notifications.raise(
-                Notification::new(banner, Severity::Error, "Could not run this Protocol")
+                Notification::new(banner, Severity::Warning, "Could not run this Protocol")
                     .body("this window holds no Protocol to run"),
             );
             ctx.request_repaint();
@@ -9890,6 +9928,7 @@ impl MeridianApp {
         self.running = Some(PendingRun {
             run: crate::run::Run::begin(runner, &dir, move || wake.request_repaint()),
             protocol: name,
+            shipped: false,
         });
         ctx.request_repaint();
         true
@@ -9958,6 +9997,7 @@ impl MeridianApp {
         self.running = Some(PendingRun {
             run: crate::run::Run::begin(runner, &source.dir, move || wake.request_repaint()),
             protocol: source.name,
+            shipped: false,
         });
         ctx.request_repaint();
         true
@@ -10020,13 +10060,15 @@ impl MeridianApp {
         };
         let dir = pending.run.dir().to_path_buf();
         let protocol = std::mem::take(&mut pending.protocol);
+        let shipped = pending.shipped;
         self.running = None;
         let landing = self.landing.take_if(|landing| landing.dir == dir);
         if !self.holds_protocol(&dir, &protocol) {
             // Gone to another document: a start that was waiting on this run
-            // has nothing to land on, and its folder's next open runs it again
-            // if this run failed.
-            if !(finished.succeeded && finished.record.is_some()) {
+            // has nothing to land on. A shipped start's failed run still
+            // leaves no database, so its folder's next open runs it again; a
+            // reader's own Protocol keeps its database whatever this run did.
+            if shipped && !(finished.succeeded && finished.record.is_some()) {
                 let _ = crate::starts::settle_run(&dir, &finished);
             }
             return;
@@ -10120,12 +10162,9 @@ impl MeridianApp {
         landing: PendingLanding,
         finished: &crate::run::Finished,
     ) {
-        if let Some(tiles) = self.tiles.as_mut() {
-            if tiles.selected().is_none() {
-                tiles.reload();
-            }
-        }
-        self.refresh_agent_protocol();
+        // Settled first, so a failure's database is gone before anything
+        // reads the folder, and the tiles are drawn again only from a run
+        // that succeeded.
         if let Err(why) = crate::starts::settle_run(&landing.dir, finished) {
             eprintln!(
                 "the run of {} did not finish:\n{}",
@@ -10138,6 +10177,14 @@ impl MeridianApp {
             self.refuse_start(ctx, landing.id, &why);
             return;
         }
+        if let Some(tiles) = self.tiles.as_mut() {
+            if tiles.selected().is_none() {
+                tiles.reload();
+            }
+        }
+        self.refresh_agent_protocol();
+        // Not recorded as landed: the start did not open what it opens, and
+        // the next launch restoring it would claim it had.
         if self.charts.doc.has_unsaved_work() {
             self.notifications.raise(
                 Notification::new(
@@ -10147,7 +10194,9 @@ impl MeridianApp {
                 )
                 .body("Save the chart, or undo its edits, then open the panel from its tile."),
             );
-        } else if self.tiles.as_ref().and_then(PanelTiles::panels).is_some() {
+            return;
+        }
+        if self.tiles.as_ref().and_then(PanelTiles::panels).is_some() {
             self.open_panel_with_grid(0);
         }
         self.record_landed(ctx, landing.id);

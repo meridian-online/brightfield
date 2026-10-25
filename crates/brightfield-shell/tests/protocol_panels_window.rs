@@ -1298,3 +1298,43 @@ fn a_typed_grid_filter_narrows_a_protocol_panels_charts() {
             .map(|f| (f.title, f.detail))
     );
 }
+
+/// **A failed run of the reader's own Protocol keeps its database after the
+/// window moves on.** Only a shipped start's run removes what a failed run
+/// left; a Protocol the reader wrote keeps its tables from earlier runs.
+#[test]
+fn a_failed_run_of_a_users_protocol_keeps_its_database_after_the_window_moves_on() {
+    let ran = ran_fixture(CO2);
+    let db = arc::spec::protocol_db_path(&ran.dir).expect("the Protocol names a database");
+    assert!(db.is_file(), "the first run made no database");
+    std::fs::write(
+        ran.dir.join("models/04_china_overtakes_g7.sql"),
+        "CREATE OR REPLACE TABLE \"china_overtakes_g7\" AS SELECT * FROM no_such_table\n",
+    )
+    .unwrap();
+    let mut win = Window::over(open(&ran.dir));
+    let ctx = win.ctx.clone();
+    assert!(win.app.run_protocol(&ctx), "the run started");
+    // The reader opens something else while the run goes.
+    let csv = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/site_readings_sample.csv");
+    win.app.open_data_file(&ctx, &csv.to_string_lossy());
+    let deadline = Instant::now() + Duration::from_secs(180);
+    while win.app.run_outstanding() {
+        assert!(Instant::now() < deadline, "the run never finished");
+        std::thread::sleep(Duration::from_millis(50));
+        win.run(Vec::new());
+    }
+    win.settle();
+    let newest = brightfield_shell::run::records_newest_first(&ran.dir, CO2)
+        .next()
+        .expect("the failed run wrote a record");
+    assert_ne!(
+        newest.run.outcome,
+        brightfield_protocol::contract::Outcome::Success,
+        "the broken step ran, so this test proves nothing"
+    );
+    assert!(
+        db.is_file(),
+        "a failed run of the reader's own Protocol removed its database"
+    );
+}
