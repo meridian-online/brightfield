@@ -386,7 +386,8 @@ impl PanelTiles {
     /// `running` is `Some` while the window runs this Protocol, holding the
     /// URLs the run fetches: a Protocol with no tables yet then says it is
     /// running, and what it is fetching from where, in place of saying it
-    /// has not run and offering a Run that would do nothing.
+    /// has not run and offering a Run
+    /// (`a_running_start_says_what_it_fetches_and_offers_no_run`).
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -664,7 +665,7 @@ impl PanelTiles {
 pub const RUNNING_TITLE: &str = "Running this Protocol\u{2026}";
 
 /// The line under [`RUNNING_TITLE`]: what the run fetches and from where, or,
-/// for a Protocol that fetches nothing, what it is making.
+/// for a Protocol with no `http_fetch` step, what it is making.
 #[must_use]
 pub fn running_body(fetching: &[String]) -> String {
     if fetching.is_empty() {

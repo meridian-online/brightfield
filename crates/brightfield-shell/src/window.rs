@@ -715,7 +715,7 @@ fn boot_tile_body(count: usize) -> egui::Vec2 {
 }
 
 /// The URLs the `http_fetch` steps of the Protocol in `dir` fetch, read off
-/// its manifest: none for a folder with no manifest or no fetch.
+/// its manifest, or an empty list for a folder whose manifest will not read.
 fn fetch_urls_in(dir: &std::path::Path) -> Vec<String> {
     std::fs::read_to_string(dir.join(arc::spec::MANIFEST_FILENAME)).map_or_else(
         |_| Vec::new(),
@@ -10107,7 +10107,8 @@ impl MeridianApp {
     /// Whether any run this window started has yet to land, whichever
     /// document it was started over. [`Self::run_in_progress`] answers for the
     /// document open now; this one stays `true` after the reader opens
-    /// something else, until the private `poll_run` takes every finished run.
+    /// something else, until the private `poll_run` has taken the runs that
+    /// finished (`coming_back_to_a_start_whose_run_another_start_interrupted_keeps_its_run`).
     #[must_use]
     pub fn run_outstanding(&self) -> bool {
         !self.running.is_empty()

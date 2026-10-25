@@ -1375,7 +1375,7 @@ pub const PROTOCOLS_DIR: &str = "protocols";
 ///
 /// **A revision bump leaves the older folder in place.** Raising
 /// [`ShippedProtocol::revision`] writes `protocols/v{new}/{dir_name}` beside
-/// `protocols/v{old}/{dir_name}`, and nothing removes the older one: the
+/// `protocols/v{old}/{dir_name}`, and the write leaves the older one: the
 /// folder is an ordinary Protocol on the reader's disk once it is written, and
 /// a reader may have saved edits to its panels or steps there. Deleting it
 /// would delete their work along with the build's.
