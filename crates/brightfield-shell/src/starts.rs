@@ -139,8 +139,8 @@
 //! view's empty canvas offers the crosswalk manifest — [`for_pane`] hands a
 //! pane the FIRST start that fills it, and the manifest is still first.
 //! Neither switches the view out from under the click, and neither empty pane
-//! offers a start that needs the network. The front door's Datasets section offers the starts
-//! that declare [`Start::on_door`], which are the six above.
+//! offers a start that needs the network. The front door's Datasets section
+//! offers the starts that declare [`Start::on_door`], which are the six above.
 //!
 //! # The one thing the crosswalk MANIFEST has to say out loud
 //!
@@ -710,8 +710,9 @@ pub const STARTS: &[Start] = &[
     // crosswalks, and the position is `for_pane`'s rather than the door's.
     // It is off the door, but still loads and reopens. `for_pane` hands an
     // empty pane the FIRST start that fills it, and the chart pane's empty
-    // state is not this card's question: changing which button that pane offers is a decision about that empty state, and it is
-    // not one this start was added to make.
+    // state is not this card's question: changing which button that pane
+    // offers is a decision about that empty state, and it is not one this
+    // start was added to make.
     Start {
         id: CALIFORNIA_HOUSING,
         label: "Open California Housing (over the network)",

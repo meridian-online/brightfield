@@ -428,8 +428,8 @@ fn the_run_start_draws_the_contract_it_ships() {
 // AC4 — the run-less start is unchanged
 // ---------------------------------------------------------------------------
 
-/// The set holds a manifest start of **each** kind (the declaration, which is off the
-/// door, and the run, which is on it), which is what makes the
+/// The set holds a manifest start of **each** kind (the declaration, which is
+/// off the door, and the run, which is on it), which is what makes the
 /// run-less disclosure gate a two-sided check rather than a tautology.
 ///
 /// `a_start_that_opens_a_run_less_manifest_says_so_on_its_own_button` in
@@ -442,7 +442,7 @@ fn the_run_start_draws_the_contract_it_ships() {
 /// `(no run)` mark — this test's last assertion fails, and so does the
 /// front-door gate it is about.
 #[test]
-fn the_door_offers_a_protocol_of_each_kind_and_only_the_run_less_one_says_so() {
+fn the_manifest_starts_include_one_run_less_and_one_run_and_only_the_run_less_one_says_so() {
     let protocols: Vec<&starts::Start> = starts::STARTS
         .iter()
         .filter(|s| s.spec.is_none() && s.data.is_none() && s.protocol.is_none())
@@ -467,4 +467,14 @@ fn the_door_offers_a_protocol_of_each_kind_and_only_the_run_less_one_says_so() {
             start.run_less
         );
     }
+    // The door decision: a run is on the door, and the run-less declaration
+    // is not.
+    assert!(
+        protocols.iter().any(|s| !s.run_less && s.on_door),
+        "no run start is on the door"
+    );
+    assert!(
+        protocols.iter().all(|s| !s.run_less || !s.on_door),
+        "a run-less start is on the door"
+    );
 }

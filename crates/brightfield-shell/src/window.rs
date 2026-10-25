@@ -529,8 +529,8 @@ pub const RUN_PROTOCOL: &str = "run-protocol";
 /// `ui.available_width()` measured inside the door's scroll area at the default
 /// size is 1024. `6 × 156 + 5 × 16 = 1016` fits it with 8 points spare;
 /// 157 would be the widest whole width, and 158 and up wrap the sixth card to a
-/// second row. `the_six_cards_lie_on_one_row_at_the_default_window_size` is what
-/// holds it.
+/// second row. `the_doors_datasets_row_is_one_row_and_all_of_it_is_on_screen` is
+/// what holds it.
 const CARD_WIDTH: f32 = 156.0;
 
 /// The thumbnail's drawn height: the card's width less its two insets, at the
@@ -540,8 +540,9 @@ const CARD_IMAGE_HEIGHT: f32 = (CARD_WIDTH - 2.0 * spacing::SPACE_2) / 1.6;
 
 /// One gallery card's outer height: the image and its insets, room for a
 /// three-line label and a five-line summary, and two grid rows at the foot for
-/// [`DOOR_ENTRY_PROMISE`], which wraps to two lines at the card's measure. A label that wraps past that is clipped by the
-/// card's own rect rather than pushing the gallery apart.
+/// [`DOOR_ENTRY_PROMISE`], which wraps to two lines at the card's measure. A
+/// label that wraps past that is clipped by the card's own rect rather than
+/// pushing the gallery apart.
 const CARD_HEIGHT: f32 = 220.0 + 2.0 * spacing::ROW_GRID;
 
 /// The natural window size in logical points for a composed dashboard: exactly
@@ -8670,8 +8671,9 @@ impl MeridianApp {
         // published data was the one click that stopped the window answering.
         // `crate::remote` moves the bytes on a worker; the door keeps drawing,
         // the card the click landed on, where the door draws one, wears the
-        // readout, and `draw` composes when they land — over a local file, which is the engine doing
-        // exactly what it did before at local-file speed.
+        // readout, and `draw` composes when they land — over a local file,
+        // which is the engine doing exactly what it did before at local-file
+        // speed.
         //
         // The start's own `spec:` is the whole of what is handed over:
         // `open_remote_start` derives the sources from it and `poll_fetch`

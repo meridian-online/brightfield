@@ -77,6 +77,9 @@ const CANVAS_PANE: PaneKey = PaneKey::new(CANVAS);
 #[must_use = "the directory is only this test's while the guard is held"]
 fn datasets_into_scratch(test: &str) -> MutexGuard<'static, ()> {
     let held = CONFIG.lock().unwrap_or_else(PoisonError::into_inner);
+    // Arc's database and history stores go to a temp root rather than the
+    // developer's own, and its engine is pinned.
+    agent_protocol::arc_stores();
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join("front_door")
         .join(test)
@@ -85,6 +88,19 @@ fn datasets_into_scratch(test: &str) -> MutexGuard<'static, ()> {
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("make {}: {e}", dir.display()));
     std::env::set_var(brightfield_shell::startup::CONFIG_DIR_VAR, &dir);
     held
+}
+
+/// Point the config directory at a fresh, empty `route` directory under the
+/// test's own. For a test already holding [`datasets_into_scratch`]'s guard
+/// that needs more than one cold directory.
+fn scratch_config(test: &str, route: &str) {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("front_door")
+        .join(test)
+        .join(route);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("make {}: {e}", dir.display()));
+    std::env::set_var(brightfield_shell::startup::CONFIG_DIR_VAR, &dir);
 }
 
 /// Held by [`datasets_into_scratch`] for the whole of any test that points the
@@ -615,8 +631,8 @@ const JAILED_CHILD_VAR: &str = "BRIGHTFIELD_TEST_JAILED_LOOPBACK_PORT";
 /// - then loads each start in `starts::STARTS` that does not declare
 ///   `remote` through `Boot::start`, the boot path's own entry;
 /// - then writes the California Housing file from the committed copy of its
-///   source, takes its Protocols row on a real door, and requires the window to have
-///   left the door: with the file there, the click reads no network.
+///   source, takes its Protocols row on a real door, and requires the window
+///   to have left the door: with the file there, the click reads no network.
 ///
 /// The parent then requires the child to have run exactly this test and passed
 /// — a test filter matching nothing exits 0 — and the extension cache to still
@@ -847,8 +863,8 @@ fn the_fetched_dataset_is_described_by_its_own_descriptor() {
 ///
 /// AC2 of the card that cut this start. The two routes are the start's
 /// Protocols row on the front door and `MeridianApp::open_data_file`, which is
-/// the entry point the file dialog reaches through — and what is compared is what a reader
-/// looks at: the locator band's line, the columns the rails list, and the
+/// the entry point the file dialog reaches through — and what is compared is
+/// what a reader looks at: the locator band's line, the columns the rails list, and the
 /// window's own title.
 ///
 /// It is worth a test even though the routes share a call, because sharing it
@@ -2168,6 +2184,13 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
         walked += 1;
         let recents = [(start.id, "remembered", RunState::NeverRun, 60)];
 
+        // Each route runs the start in its own scratch config directory, so
+        // both begin cold: the second would otherwise open a folder the first
+        // had already run.
+        scratch_config(
+            "either_route_to_the_same_subject_leaves_the_same_window",
+            "row",
+        );
         let mut by_row = Window {
             app: MeridianApp::headless_with_layout(
                 Boot::empty(),
@@ -2182,6 +2205,10 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
         by_row.take_the_row(start.id);
         by_row.land_the_run();
 
+        scratch_config(
+            "either_route_to_the_same_subject_leaves_the_same_window",
+            "card",
+        );
         let mut by_card = Window {
             app: MeridianApp::headless_with_layout(Boot::empty(), default_layout(), Mode::Light)
                 .running_with(Some(shell_runner())),
