@@ -722,7 +722,7 @@ mod tests {
         );
     }
 
-    /// A colour scale that starts the palette again is known only to a
+    /// A colour scale that folds categories into "Other" is known only to a
     /// composition. It reads as an advisory in the words the reader is given,
     /// and a tile finds it by `colours_repeat`.
     #[test]
@@ -737,8 +737,8 @@ mod tests {
         assert_eq!(advisory.len(), 1, "{:?}", found.lines());
         assert_eq!(
             advisory[0].message,
-            "9 series share 8 colours, so colours repeat; highlight the series that matter, \
-             fold the rest into \"Other\", or split the chart"
+            "9 series share 8 colours, so the last 2 are drawn as one \"Other\"; highlight the \
+             series that matter or split the chart"
         );
         assert_eq!(found.colours_repeat(), Some(advisory[0].message.as_str()));
     }

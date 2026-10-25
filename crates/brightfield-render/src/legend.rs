@@ -60,24 +60,25 @@ pub fn colour_legend_size(colour_scale: &Scale) -> Option<(f64, f64)> {
 
 /// The pixel size of the swatch column for a categorical [`Scale::Colour`].
 fn swatch_legend_size(colour_scale: &Scale) -> Option<(f64, f64)> {
-    let categories = match colour_scale {
-        Scale::Colour { categories, .. } if !categories.is_empty() => categories,
-        _ => return None,
-    };
-    let max_label = categories
+    let entries = colour_scale.colour_entries();
+    if entries.is_empty() {
+        return None;
+    }
+    let max_label = entries
         .iter()
-        .map(|c| measure_width(c, LABEL_SIZE))
+        .map(|(label, _)| measure_width(label, LABEL_SIZE))
         .fold(0.0_f64, f64::max);
-    let n = categories.len() as f64;
+    let n = entries.len() as f64;
     let width = LEGEND_PADDING * 2.0 + SWATCH_SIZE + LEGEND_LABEL_GAP + max_label;
     let height = LEGEND_PADDING * 2.0 + (n - 1.0) * ENTRY_SPACING + SWATCH_SIZE;
     Some((width, height))
 }
 
 /// The clickable entry rects of a categorical swatch legend whose panel
-/// top-left is at `(box_x, box_y)` — one rect per category, in category
-/// order. Row `i` sits at `LEGEND_PADDING + i * ENTRY_SPACING` below the
-/// panel top, is `SWATCH_SIZE` tall, and spans the swatch plus the gap and
+/// top-left is at `(box_x, box_y)` — one rect per legend row, in the scale's
+/// order ([`Scale::colour_entries`]). A row is not a category: past Harbour's
+/// seventh hue one "Other" row stands for the rest. Row `i` sits at
+/// `LEGEND_PADDING + i * ENTRY_SPACING` below the panel top, is `SWATCH_SIZE` tall, and spans the swatch plus the gap and
 /// the label's measured extent, so clicking the category text also hits.
 ///
 /// Pure geometry mirroring `render_swatch_legend_at`'s layout from the
@@ -85,18 +86,15 @@ fn swatch_legend_size(colour_scale: &Scale) -> Option<(f64, f64)> {
 /// Empty for a non-`Colour` (or empty) scale.
 #[must_use]
 pub fn swatch_entry_rects(box_x: f64, box_y: f64, colour_scale: &Scale) -> Vec<Rect> {
-    let categories = match colour_scale {
-        Scale::Colour { categories, .. } => categories,
-        _ => return Vec::new(),
-    };
     let legend_x = box_x + LEGEND_PADDING;
     let legend_y_start = box_y + LEGEND_PADDING;
-    categories
-        .iter()
+    colour_scale
+        .colour_entries()
+        .into_iter()
         .enumerate()
-        .map(|(i, cat)| {
+        .map(|(i, (cat, _))| {
             let y = legend_y_start + i as f64 * ENTRY_SPACING;
-            let label_w = measure_width(cat, LABEL_SIZE);
+            let label_w = measure_width(&cat, LABEL_SIZE);
             Rect::new(
                 legend_x,
                 y,
@@ -211,6 +209,10 @@ fn hover_emphasis(colour: Color) -> Color {
 /// path multiplies no alpha. Panel geometry, entry rects, and sizes are
 /// untouched (selected state is colour/alpha only). Sequential (gradient)
 /// legends have no discrete entries and ignore `selected`.
+///
+/// `selected` and `hovered` index legend rows ([`Scale::colour_entries`]),
+/// not categories: past Harbour's seventh hue one "Other" row stands for the
+/// categories after it.
 pub fn render_colour_legend_at_selected(
     scene: &mut Scene,
     box_x: f64,
@@ -246,15 +248,8 @@ fn render_swatch_legend_at(
     hovered: Option<usize>,
     ink: ChartInk,
 ) {
-    let (categories, palette) = match colour_scale {
-        Scale::Colour {
-            categories,
-            palette,
-        } => (categories, palette),
-        _ => return,
-    };
-
-    if categories.is_empty() {
+    let entries = colour_scale.colour_entries();
+    if entries.is_empty() {
         return;
     }
 
@@ -282,7 +277,7 @@ fn render_swatch_legend_at(
     let legend_x = box_x + LEGEND_PADDING;
     let legend_y_start = box_y + LEGEND_PADDING;
 
-    for (i, (cat, colour)) in categories.iter().zip(palette.iter().cycle()).enumerate() {
+    for (i, (cat, colour)) in entries.into_iter().enumerate() {
         let y = legend_y_start + i as f64 * ENTRY_SPACING;
 
         // Emphasis precedence, colour/alpha only (no geometry change): the
@@ -294,11 +289,11 @@ fn render_swatch_legend_at(
         let dim = !selected.is_empty() && !selected.contains(&i);
         let hot = hovered == Some(i);
         let swatch_colour = if hot {
-            hover_emphasis(Color::new(*colour))
+            hover_emphasis(Color::new(colour))
         } else if dim {
-            Color::new(*colour).multiply_alpha(UNSELECTED_ENTRY_ALPHA)
+            Color::new(colour).multiply_alpha(UNSELECTED_ENTRY_ALPHA)
         } else {
-            Color::new(*colour)
+            Color::new(colour)
         };
         let label_colour = if hot {
             hover_emphasis(ink.label)
@@ -321,7 +316,7 @@ fn render_swatch_legend_at(
         // Entry label, vertically centred on the swatch.
         draw_text(
             scene,
-            cat,
+            &cat,
             legend_x + SWATCH_SIZE + LEGEND_LABEL_GAP,
             y + SWATCH_SIZE * 0.5 + f64::from(LABEL_SIZE) / 3.0,
             LABEL_SIZE,

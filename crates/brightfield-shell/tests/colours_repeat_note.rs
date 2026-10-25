@@ -45,7 +45,7 @@ fn nine_series_note_that_colours_repeat() {
     let notes: Vec<&str> = advisory
         .iter()
         .map(|d| d.message.as_str())
-        .filter(|m| m.contains("colours repeat"))
+        .filter(|m| m.contains("drawn as one \"Other\""))
         .collect();
     assert_eq!(notes.len(), 1, "{:?}", composed.diagnostics.lines());
     let p = palette_size(&composed);
@@ -53,8 +53,8 @@ fn nine_series_note_that_colours_repeat() {
     assert_eq!(
         notes[0],
         format!(
-            "9 series share {p} colours, so colours repeat; highlight the series that matter, \
-             fold the rest into \"Other\", or split the chart"
+            "9 series share {p} colours, so the last 2 are drawn as one \"Other\"; highlight \
+             the series that matter or split the chart"
         )
     );
     assert_eq!(composed.diagnostics.colours_repeat(), Some(notes[0]));
