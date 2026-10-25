@@ -1,0 +1,40 @@
+{
+  "$schema": "https://datapackage.org/profiles/2.0/datapackage.json",
+  "name": "online-retail-ii",
+  "title": "Online Retail II — a UK online retailer's invoices, December 2009 to December 2011",
+  "description": "Every invoice line of a UK-based online retailer of giftware, many of whose customers are wholesalers, from 1 December 2009 to 9 December 2011, in two workbook sheets that both hold 1 to 9 December 2010. The start reads UCI's own archive each time it is first opened. The Customer ID column is replaced, as the workbook is read, by each customer's first month and the number of each of their orders, so no table the Protocol makes holds it. The workbook is read with DuckDB's excel extension, which DuckDB downloads from extensions.duckdb.org on the first run if it is not installed already, so that run reaches a second host besides UCI.",
+  "licenses": [
+    {
+      "name": "CC-BY-4.0",
+      "path": "https://creativecommons.org/licenses/by/4.0/",
+      "title": "Creative Commons Attribution 4.0 International, as the UCI Machine Learning Repository publishes the dataset"
+    }
+  ],
+  "sources": [
+    {
+      "path": "https://archive.ics.uci.edu/dataset/502/online+retail+ii",
+      "title": "Chen, D. (2012). Online Retail II [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C5CG6D"
+    }
+  ],
+  "resources": [
+    {
+      "name": "online_retail_ii",
+      "path": "https://archive.ics.uci.edu/static/public/502/online+retail+ii.zip",
+      "format": "xlsx",
+      "mediatype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "description": "online_retail_II.xlsx, inside the zip archive, with the sheets 'Year 2009-2010' and 'Year 2010-2011'.",
+      "schema": {
+        "fields": [
+          { "name": "Invoice", "type": "string", "description": "Six digits; a C in front marks a cancellation." },
+          { "name": "StockCode", "type": "string", "description": "The product's code." },
+          { "name": "Description", "type": "string", "description": "The product's name." },
+          { "name": "Quantity", "type": "integer", "description": "Units on the line." },
+          { "name": "InvoiceDate", "type": "datetime", "description": "When the invoice was made, stored as an Excel serial date." },
+          { "name": "Price", "type": "number", "description": "Unit price, in pounds sterling." },
+          { "name": "Customer ID", "type": "string", "description": "The customer's number, where recorded. Read only to derive each customer's first month and order numbers; never kept in a table, drawn or shipped." },
+          { "name": "Country", "type": "string", "description": "The customer's country." }
+        ]
+      }
+    }
+  ]
+}

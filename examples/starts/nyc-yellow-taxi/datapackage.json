@@ -1,0 +1,35 @@
+{
+  "$schema": "https://datapackage.org/profiles/2.0/datapackage.json",
+  "name": "nyc-yellow-taxi",
+  "title": "NYC TLC yellow taxi trips, January 2026",
+  "description": "Every yellow taxi trip the New York City Taxi and Limousine Commission recorded for January 2026, as the TLC publishes the month: when and where each trip began and ended, its distance and passengers, and its fare. The start reads the TLC's own file each time it is first opened, about 64 MB.",
+  "licenses": [
+    {
+      "path": "https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page",
+      "title": "Published by the NYC Taxi and Limousine Commission as open data, under the City of New York's terms of use"
+    }
+  ],
+  "sources": [
+    {
+      "path": "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2026-01.parquet",
+      "title": "NYC Taxi and Limousine Commission, TLC Trip Record Data, yellow taxi trips, January 2026"
+    }
+  ],
+  "resources": [
+    {
+      "name": "yellow_tripdata_2026_01",
+      "path": "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2026-01.parquet",
+      "format": "parquet",
+      "mediatype": "application/vnd.apache.parquet",
+      "schema": {
+        "fields": [
+          { "name": "tpep_pickup_datetime", "type": "datetime", "description": "When the meter was engaged, New York local time." },
+          { "name": "trip_distance", "type": "number", "description": "Miles, as the taximeter reported them." },
+          { "name": "PULocationID", "type": "integer", "description": "The TLC taxi zone the trip began in: 132 is JFK Airport, 138 LaGuardia Airport and 1 Newark Airport in the TLC's zone lookup." },
+          { "name": "passenger_count", "type": "integer", "description": "Passengers, as the driver entered them; missing on the trips with payment type 0." },
+          { "name": "total_amount", "type": "number", "description": "The total charged, in dollars; negative on refunds and voids." }
+        ]
+      }
+    }
+  ]
+}

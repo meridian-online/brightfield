@@ -1265,28 +1265,46 @@ fn the_prose_rules_separate_the_shipped_corpus() {
 #[test]
 fn the_spec_a_start_carries_is_the_spec_its_click_opens() {
     for start in starts::STARTS {
-        // **A chart start opens from authored bytes or from data, and the
-        // pair is exhaustive.** This is the pin that stood here before, said
-        // over three values rather than two, because a third kind of start
-        // arrived: `Start::data` opens a chart the generator drew over a file
-        // this binary ships, and there is no spec for the enumeration below to
-        // read because nobody wrote one. What holds that kind is
+        // **A chart start opens from authored bytes, from data or from a
+        // shipped Protocol, and the three are exhaustive.** This is the pin
+        // that stood here before, said over three values rather than two,
+        // because a third and then a fourth kind of start arrived.
+        // `Start::data` opens a chart the generator drew over a file this
+        // binary ships, and `Start::protocol` runs a folder this binary ships
+        // and lands on its first panel as the chart document; there is no
+        // spec for the enumeration below to read in either, because nobody
+        // wrote one. What holds the data kind is
         // `the_door_promises_what_the_generator_draws` in
-        // `tests/scripted_open.rs`, which runs the generator over a real table
-        // and compares the picture to the promise the door makes about it.
+        // `tests/scripted_open.rs`, which runs the generator over a real
+        // table and compares the picture to the promise the door makes about
+        // it. What holds the protocol kind is
+        // `every_shipped_start_loads_into_a_document_with_something_in_it` in
+        // `tests/front_door.rs`, which runs each LOCAL shipped Protocol
+        // offline through its stand-in and requires its first panel to draw.
+        // The remote Protocol starts are outside that test; they are booted
+        // through their stand-ins, run to completion, and drawn by
+        // `every_shipped_start_still_renders_and_its_thumbnail_is_current` in
+        // the same file, and the ignored network tests in
+        // `tests/shipped_protocol_start.rs` fetch the real data and check the
+        // columns their panels read. The folder itself is held, every file,
+        // hashed per revision, by
+        // `every_shipped_protocol_folder_ships_whole_and_bumps_its_revision_when_it_changes`
+        // in that second file, so the bytes a click opens are the bytes
+        // reviewed.
         //
         // Both directions are still asserted and the hole this guards is still
-        // shut: a chart start declaring neither a spec nor a data file fails at
-        // the first assertion, and a NON-chart start declaring a spec fails at
-        // the second. What is no longer said is that a chart start must carry
-        // a spec — because that is now false, not because it is inconvenient.
+        // shut: a chart start declaring none of a spec, a data file or a
+        // Protocol fails at the first assertion, and a NON-chart start
+        // declaring a spec fails at the second. What is no longer said is that
+        // a chart start must carry a spec — because that is now false, not
+        // because it is inconvenient.
         if start.fills == brightfield_shell::app::CHART {
             assert!(
-                start.spec.is_some() || start.data.is_some(),
-                "{}: it fills the {} pane and declares neither a chart spec \
-                 nor a data file, so it opens from bytes nothing in this file \
-                 reads — no producer of its is enumerated and no claim of its \
-                 prose is decided.",
+                start.spec.is_some() || start.data.is_some() || start.protocol.is_some(),
+                "{}: it fills the {} pane and declares no chart spec, no data \
+                 file and no shipped Protocol, so it opens from bytes nothing \
+                 in this file reads — no producer of its is enumerated and no \
+                 claim of its prose is decided.",
                 start.id,
                 start.fills
             );
@@ -1314,8 +1332,27 @@ fn the_spec_a_start_carries_is_the_spec_its_click_opens() {
          dead and this partition has stopped describing the shipped set"
     );
 
+    assert!(
+        starts::STARTS.iter().any(|s| s.protocol.is_some()),
+        "no shipped start is a Protocol, so the arm admitting one is dead and \
+         this partition has stopped describing the shipped set"
+    );
+
     datasets_into_scratch();
     for start in starts::STARTS.iter().filter(|s| !s.remote) {
+        // A shipped Protocol start has no spec to compare: its bytes are a
+        // folder, opened by running it. It is skipped here, not passed — the
+        // tests named in the pin above hold it — and it must not carry a spec
+        // as well, or two sets of bytes would claim to be what its click opens.
+        if start.protocol.is_some() {
+            assert!(
+                start.spec.is_none(),
+                "{}: it is a shipped Protocol and carries a chart spec as well, \
+                 so two sets of bytes claim to be what its click opens",
+                start.id
+            );
+            continue;
+        }
         let opened = starts::load(start.id).unwrap_or_else(|e| panic!("{}: {e}", start.id));
         let starts::Opened::Charts(chart) = opened else {
             assert!(

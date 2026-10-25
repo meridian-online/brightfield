@@ -1,0 +1,34 @@
+name: online-retail-ii
+engine: duckdb
+engine_version: '>=1.0'
+params: {}
+dotenv: []
+timeout_sec: null
+defaults: null
+hooks:
+  on_init: null
+  on_success: null
+  on_failure: null
+  on_exit: null
+steps:
+  - name: fetch_archive
+    op: http_fetch
+    with:
+      out: data/online_retail_ii.zip
+      url: https://archive.ics.uci.edu/static/public/502/online+retail+ii.zip
+    description: Fetch Online Retail II from the UCI Machine Learning Repository
+  - name: extract_workbook
+    op: archive_extract
+    with:
+      archive: data/online_retail_ii.zip
+      dest: data
+      members:
+      - online_retail_II.xlsx
+    description: Extract the workbook from UCI's archive
+  - name: retail_lines
+    sql: models/01_retail_lines.sql
+    description: Read both of UCI's sheets, taking each line once where the first sheet repeats the second's opening days, and replace the Customer ID with the customer's first month and the number of each of their orders, so no table holds the ID
+  - name: retail_orders
+    sql: models/02_retail_orders.sql
+    description: 'The purchases the dashboard reads, one row per invoice that is not a cancellation and has a positive value: its month, country and value, whether its customer was new that month or returning, and how much history that label rests on'
+assets: {}

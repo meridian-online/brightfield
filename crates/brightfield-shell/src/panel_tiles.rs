@@ -13,7 +13,9 @@
 //! A tile that drew opens as the chart document when it is clicked
 //! ([`TilesAction::Open`]); the window draws [`back_band`] above it, the way
 //! back to the tiles. A Protocol that has not run has no tables to draw, and
-//! says so across the canvas with a Run ([`TilesAction::Run`]).
+//! says so across the canvas with a Run ([`TilesAction::Run`]). While the
+//! window's own run of it is under way, it says that instead, naming what
+//! the run fetches and from where ([`running_body`]), with no Run.
 //!
 //! **A new run reloads the tiles.** [`PanelTiles::reload_due`] looks at the
 //! Protocol's run records at most once per [`RUN_CHECK_EVERY`]: a listing of one
@@ -380,11 +382,18 @@ impl PanelTiles {
     /// `host` rasters each chart into a slot of its own; a window with no
     /// device behind it lays the tiles out and draws their words, and leaves
     /// the charts' boxes empty.
+    ///
+    /// `running` is `Some` while the window runs this Protocol, holding the
+    /// URLs the run fetches: a Protocol with no tables yet then says it is
+    /// running, and what it is fetching from where, in place of saying it
+    /// has not run and offering a Run
+    /// (`a_running_start_says_what_it_fetches_and_offers_no_run`).
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
         area: egui::Rect,
         host: Option<&mut EguiCanvasHost>,
+        running: Option<&[String]>,
         mode: Mode,
     ) -> Option<TilesAction> {
         self.drawn.clear();
@@ -395,7 +404,7 @@ impl PanelTiles {
         );
         child.shrink_clip_rect(area);
         if self.state.is_err() {
-            return self.problem_ui(&mut child, mode);
+            return self.problem_ui(&mut child, running, mode);
         }
         let count = self.panels().map_or(0, |p| p.tiles.len());
         let width = area.width() - scrollbar_room();
@@ -612,9 +621,24 @@ impl PanelTiles {
     }
 
     /// The canvas-wide state of a Protocol that did not open: what is wrong,
-    /// and a Run when what is wrong is that it has not run.
-    fn problem_ui(&self, ui: &mut egui::Ui, mode: Mode) -> Option<TilesAction> {
+    /// and a Run when what is wrong is that it has not run. While `running`,
+    /// the run the window has under way, with no Run: whatever kept the
+    /// panels from opening is the run's to answer.
+    fn problem_ui(
+        &self,
+        ui: &mut egui::Ui,
+        running: Option<&[String]>,
+        mode: Mode,
+    ) -> Option<TilesAction> {
         let problem = self.problem()?;
+        if let Some(fetching) = running {
+            chrome::empty_state(
+                ui,
+                &EmptyState::new(Icon("chart-bar"), RUNNING_TITLE, running_body(fetching)),
+                mode,
+            );
+            return None;
+        }
         let not_run = matches!(problem, OpenProblem::NotRun { .. });
         let mut empty = EmptyState::new(
             Icon("chart-bar"),
@@ -633,6 +657,21 @@ impl PanelTiles {
             Some(brightfield_workbench::subject::Action::Verb(_)) => Some(TilesAction::Run),
             _ => None,
         }
+    }
+}
+
+/// What the tiles of a Protocol say while the window's run of it is under
+/// way and it has no tables yet.
+pub const RUNNING_TITLE: &str = "Running this Protocol\u{2026}";
+
+/// The line under [`RUNNING_TITLE`]: what the run fetches and from where, or,
+/// for a Protocol with no `http_fetch` step, what it is making.
+#[must_use]
+pub fn running_body(fetching: &[String]) -> String {
+    if fetching.is_empty() {
+        "Making the tables its panels draw\u{2026}".to_string()
+    } else {
+        format!("Fetching {} over the network\u{2026}", fetching.join(", "))
     }
 }
 

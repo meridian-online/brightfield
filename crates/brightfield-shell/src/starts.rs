@@ -47,6 +47,16 @@
 //!   [`CALIFORNIA_HOUSING`] fetches its authors' own file — but what the
 //!   chart draws is a query result either way, not a literal.
 //!
+//! [`PALMER_PENGUINS`] and [`USGS_EARTHQUAKES`] are shipped Protocols
+//! ([`Start::protocol`]) over well-known data bundled in their folders, so
+//! their first run reads no network. [`NYC_YELLOW_TAXI`], [`ONLINE_RETAIL`] and
+//! [`EPOCH_AI_MODELS`] are shipped Protocols whose first step fetches the
+//! data from its issuer's own URL, so they are [`Start::remote`]: the taxi
+//! month and the retail workbook are tens of megabytes, and Epoch AI's file
+//! grows as models are released. Each folder under `examples/starts/` is
+//! the Protocol a run of the `dashboard-from-data` skill wrote for its dataset,
+//! with a Frictionless `datapackage.json` naming the source and its terms.
+//!
 //! # Why an id rather than a path
 //!
 //! The id is what [`SavedLayout::opened`](brightfield_workbench::SavedLayout)
@@ -55,19 +65,34 @@
 //! design; and an id this build does not recognise resolves to `None`, which
 //! means the same thing as never having opened anything.
 //!
-//! # Why these six, and why the door offers three of them
+//! # Why the door shows these six
 //!
-//! The crosswalk is the anchor, and it appears three times — as the
-//! declaration, as a run of it, and as the result. Those three are the Datasets
-//! section: see [`Start::on_door`], and [`on_door`] for the iterator the door
-//! reads.
+//! The door offers six cards, and each draws a different picture, so a reader
+//! choosing between them is choosing a kind of answer rather than a dataset:
 //!
-//! The other three are still here and still load; what they no longer do is
-//! stand on the first screen. They are generated data with nothing to do to
-//! it, and Hugh's look of 2026-09-05 was that a catalogue mostly made of
-//! those argues against the product rather than for it. The paragraphs below
-//! about the size of the set describe the set the binary carries, which has
-//! not changed.
+//! - **Palmer Penguins** draws measures by species: bill shape in each of
+//!   three groups, and the trend that reverses inside every one of them.
+//! - **USGS earthquakes** draw a map: where a year's tremors struck, beside
+//!   the weeks they came in.
+//! - **NYC yellow taxi** draws the trips' rhythms: the weekday rush and the
+//!   weekend night, hour by hour.
+//! - **Online Retail II** draws customers over time: who comes back, month by
+//!   month.
+//! - **Epoch AI's notable models** draw training compute over time, against the
+//!   year each model was published.
+//! - **The crosswalk run** draws one Protocol as the run it records: every
+//!   step's state, and the run it came from.
+//!
+//! California Housing, the crosswalk declaration and the crosswalk chart leave
+//! the door but stay in the binary: they still sit in [`STARTS`], still
+//! resolve through [`find`] and still load, and the crosswalk declaration is
+//! still the first start to fill the protocol view, so that view's empty
+//! pane offers it as before. What they lose is a card on the first screen,
+//! which [`Start::on_door`] decides and [`on_door`] iterates. The generated
+//! chart starts left the door earlier for the reason that remains true of
+//! them: they are generated data with nothing to do to it. The paragraphs
+//! below describe the set the binary carries, all twelve starts, not the six
+//! the door shows.
 //!
 //! The **manifest** is the vendored EDGAR ↔ GLEIF Protocol under
 //! `examples/protocol/`, and it is the most legible thing this product
@@ -88,33 +113,34 @@
 //! binary could open was a declaration, so every surface that exists to report
 //! a run reported the same nothing on every screen a stranger could reach.
 //!
-//! It does not retire the run-less start: the declaration and the result are
-//! the pair the door is built around, and a Protocol with no run behind it is a
-//! real state an analyst meets on their own first manifest — the state the
-//! `(no run)` disclosure exists for.
+//! It does not retire the run-less start: the door shows the run and leaves the
+//! declaration to the protocol view's empty pane, but a Protocol with no run
+//! behind it is a real state an analyst meets on their own first manifest — the
+//! state the `(no run)` disclosure exists for.
 //!
 //! The **chart** is what that Protocol produces, once someone has run it and
 //! published the Parquet: the whole crosswalk, read live over httpfs and drawn
 //! as two aggregating marks. Its data is not inside the binary, which is what
 //! [`Start::remote`] exists to say out loud. It is here
 //! because a lineage graph cannot be filtered, panned or brushed, and a
-//! product whose gallery offers only the declaration has nothing on it to
-//! demonstrate the verbs with.
+//! product whose binary carries only the declaration and the run has nothing
+//! on it to demonstrate the verbs with. It is not on the door, which draws the
+//! run and the five real-data starts.
 //!
 //! The three generated chart starts each land on a different drawn answer — a
 //! two-plot dashboard, a histogram, a ranked bar chart — and each is a
 //! self-contained proof of the same architecture: the spec declares queries,
-//! the engine holds the tables, the chart reads the result. Between two and
-//! five is the deliberate size of the **gallery** — few enough to choose from
-//! at a glance, enough that it reads as a gallery — and the gallery is what
+//! the engine holds the tables, the chart reads the result. The
+//! deliberate size of the **gallery** is six — few enough to choose from at a
+//! glance, enough that it reads as a gallery — and the gallery is what
 //! [`Start::on_door`] answers, not the length of [`STARTS`].
 //!
 //! The chart view's empty pane offers the first chart start; the protocol
 //! view's empty canvas offers the crosswalk manifest — [`for_pane`] hands a
-//! pane the FIRST start that fills it, and the manifest is still first. Neither switches the
-//! view out from under the click, and neither empty pane offers a start that
-//! needs the network. The front door's Datasets section offers the starts
-//! that declare [`Start::on_door`], which is the crosswalk pair.
+//! pane the FIRST start that fills it, and the manifest is still first.
+//! Neither switches the view out from under the click, and neither empty pane
+//! offers a start that needs the network. The front door's Datasets section
+//! offers the starts that declare [`Start::on_door`], which are the six above.
 //!
 //! # The one thing the crosswalk MANIFEST has to say out loud
 //!
@@ -226,6 +252,29 @@ pub const BREAKDOWN: &str = "activity-breakdown";
 /// [`Start::data`] for what that changes and [`load`]'s data arm for how it
 /// opens. Its data is not in the binary: see [`crate::housing`] for why.
 pub const CALIFORNIA_HOUSING: &str = "california-housing";
+/// Palmer Penguins: a shipped Protocol over the palmerpenguins package's own
+/// CSV, bundled, whose panel lays bill length against bill depth by species.
+pub const PALMER_PENGUINS: &str = "palmer-penguins";
+/// The USGS's own earthquakes of magnitude 4.5 and up in 2025: a shipped
+/// Protocol over a bundled Parquet cut by `scripts/cut-usgs-earthquakes.sh`,
+/// whose panel is a map of where they struck beside their weeks.
+pub const USGS_EARTHQUAKES: &str = "usgs-earthquakes-2025";
+/// The NYC Taxi and Limousine Commission's yellow taxi trips of January 2026:
+/// a shipped Protocol that fetches the TLC's own month of trips, whose panel
+/// lays the trips out by hour and day of the week.
+pub const NYC_YELLOW_TAXI: &str = "nyc-yellow-taxi";
+/// UCI's Online Retail II: a shipped Protocol that fetches the UCI Machine
+/// Learning Repository's own archive, whose panel shows each month's orders by
+/// whether the customer was new or returning.
+///
+/// Its first run reaches a second host as well: the workbook is read with
+/// DuckDB's `excel` extension, which DuckDB downloads from
+/// extensions.duckdb.org when it is not installed already.
+pub const ONLINE_RETAIL: &str = "online-retail-ii";
+/// Epoch AI's notable AI models: a shipped Protocol that fetches Epoch AI's
+/// own file, whose panel lays training compute against the date each model
+/// was published.
+pub const EPOCH_AI_MODELS: &str = "epoch-ai-models";
 
 /// A data file a start **fetches**, and the name the click writes it under.
 ///
@@ -340,17 +389,18 @@ pub struct Start {
     /// no analyst has a reason to care about, and a first screen whose
     /// catalogue is mostly those is a first screen that argues against the
     /// product. The Datasets section is therefore the real subject — the
-    /// crosswalk, in its two forms — and the generated starts stay in the
-    /// binary for the job they are actually good at: giving the chart pane's
-    /// empty state a button that works with no network, and giving the tests
-    /// a chart to compose without one.
+    /// five real-data starts and the crosswalk run — and the generated starts
+    /// stay in the binary for the job they are actually good at: giving the
+    /// chart pane's empty state a button that works with no network, and
+    /// giving the tests a chart to compose without one.
     ///
     /// `the_door_offers_only_starts_that_declare_themselves_for_it` is what
     /// holds the section to this field rather than to the length of
     /// [`STARTS`].
     pub on_door: bool,
     /// The chart spec this start opens — the bytes [`load`] composes — and
-    /// `None` for a start that opens a Protocol manifest instead.
+    /// `None` for a data-file, Protocol-manifest, run-record or shipped
+    /// Protocol start.
     ///
     /// **The single declaration.** [`load`] composes this field rather than
     /// dispatching to a second table of `include_str!`s keyed by id, so a
@@ -368,10 +418,10 @@ pub struct Start {
     /// with, and the claims its own header comment makes about them, are read
     /// off these bytes by `crates/brightfield-shell/tests/start_interaction.rs`.
     pub spec: Option<&'static str>,
-    /// The **data file** this start fetches and opens, or `None` for a start
-    /// that opens a chart spec or a Protocol manifest.
+    /// The **data file** this start fetches and opens, or `None` for a chart,
+    /// Protocol-manifest, run-record or shipped Protocol start.
     ///
-    /// Exclusive with [`spec`](Self::spec), and
+    /// Exclusive with [`spec`](Self::spec) and [`protocol`](Self::protocol), and
     /// `a_start_declares_a_spec_or_a_data_file_and_never_both` is what holds
     /// that rather than [`load`]'s arm order quietly picking a winner.
     ///
@@ -386,6 +436,54 @@ pub struct Start {
     /// with the same argument. `the_card_and_the_picker_land_on_one_window` is
     /// what reads that back off two real opens.
     pub data: Option<FetchedData>,
+    /// The **Protocol folder** this start writes, runs and opens on its
+    /// panel, or `None` for a chart, data-file, Protocol-manifest or
+    /// run-record start.
+    ///
+    /// Exclusive with [`spec`](Self::spec) and [`data`](Self::data), which
+    /// `a_start_declares_a_spec_or_a_data_file_and_never_both` holds.
+    ///
+    /// [`load`] writes the folder to [`protocol_path`] and hands back where it
+    /// is; the window then runs it with the embedded arc runner when it has
+    /// not run, and opens its first panel beside its grid, so a click lands
+    /// where an analyst's own run of the same Protocol would. A Protocol whose
+    /// steps include an `http_fetch` reaches the network on its first run, and
+    /// its start says so with [`REMOTE_MARK`] like any other remote start.
+    pub protocol: Option<ShippedProtocol>,
+}
+
+/// A Protocol folder a start ships inside the binary: every file of it, by
+/// its path relative to the folder.
+///
+/// The folder is written whole to [`protocol_path`], which names the
+/// revision, so a build that changes the folder raises [`Self::revision`]
+/// and writes it afresh beside the older one rather than reopening the older
+/// one's files or the database its run made.
+pub struct ShippedProtocol {
+    /// The folder's name under its revision's directory.
+    pub dir_name: &'static str,
+    /// Which shape of folder this build ships, as part of [`protocol_path`].
+    pub revision: u32,
+    /// Each file of the folder, as `(path relative to the folder, bytes)`.
+    pub files: &'static [(&'static str, &'static [u8])],
+}
+
+impl ShippedProtocol {
+    /// The folder's `arcform.yaml`, when it ships one as text.
+    #[must_use]
+    pub fn manifest(&self) -> Option<&'static str> {
+        self.files
+            .iter()
+            .find(|(path, _)| *path == arc::spec::MANIFEST_FILENAME)
+            .and_then(|(_, bytes)| std::str::from_utf8(bytes).ok())
+    }
+
+    /// The URLs this Protocol's `http_fetch` steps fetch: what its first run
+    /// reads over the network, and what makes its start [`Start::remote`].
+    #[must_use]
+    pub fn fetch_urls(&self) -> Vec<String> {
+        self.manifest().map_or_else(Vec::new, fetch_urls)
+    }
 }
 
 impl Start {
@@ -413,7 +511,8 @@ pub const RUN_LESS_MARK: &str = "(no run)";
 pub const REMOTE_MARK: &str = "over the network";
 
 /// Every shipped starting point, in the order the front door's gallery shows
-/// them — the crosswalk anchors, so it comes first.
+/// them: the crosswalk declaration first, because the protocol view's empty pane
+/// offers the first start that fills it, then the door's own order.
 ///
 /// The one declaration: the empty states and the front door read their
 /// affordances' labels and ids from here, [`load`] composes the
@@ -433,11 +532,159 @@ pub const STARTS: &[Start] = &[
         thumbnail_dark: include_bytes!("../assets/starts/edgar-gleif-crosswalk-dark.png"),
         run_less: true,
         remote: false,
-        on_door: true,
+        on_door: false,
         // A Protocol manifest, not a chart spec — see `load`.
         spec: None,
         data: None,
+        protocol: None,
     },
+    Start {
+        id: DASHBOARD,
+        label: "Open the signals dashboard",
+        summary: "A year of generated daily readings beside their weekday \
+                  profile.",
+        fills: crate::app::CHART,
+        thumbnail: include_bytes!("../assets/starts/signals-dashboard.png"),
+        thumbnail_dark: include_bytes!("../assets/starts/signals-dashboard-dark.png"),
+        run_less: false,
+        remote: false,
+        on_door: false,
+        spec: Some(DASHBOARD_SPEC),
+        data: None,
+        protocol: None,
+    },
+    Start {
+        id: DISTRIBUTION,
+        label: "Open the reading distribution",
+        summary: "Five thousand generated samples, binned into a histogram \
+                  in-engine.",
+        fills: crate::app::CHART,
+        thumbnail: include_bytes!("../assets/starts/reading-distribution.png"),
+        thumbnail_dark: include_bytes!("../assets/starts/reading-distribution-dark.png"),
+        run_less: false,
+        remote: false,
+        on_door: false,
+        spec: Some(DISTRIBUTION_SPEC),
+        data: None,
+        protocol: None,
+    },
+    Start {
+        id: BREAKDOWN,
+        label: "Open the activity breakdown",
+        summary: "Generated events, aggregated and ranked by the engine.",
+        fills: crate::app::CHART,
+        thumbnail: include_bytes!("../assets/starts/activity-breakdown.png"),
+        thumbnail_dark: include_bytes!("../assets/starts/activity-breakdown-dark.png"),
+        run_less: false,
+        remote: false,
+        on_door: false,
+        spec: Some(BREAKDOWN_SPEC),
+        data: None,
+        protocol: None,
+    },
+    // Two shipped Protocols whose data is in the folder, so their first run
+    // reads no network. Each folder is the Protocol the `dashboard-from-data`
+    // skill wrote for its dataset, with its Frictionless descriptor beside it.
+    Start {
+        id: PALMER_PENGUINS,
+        label: "Open Palmer Penguins",
+        summary: "344 Antarctic penguins: bill shape by species, and the \
+                  trend that reverses inside each.",
+        fills: crate::app::CHART,
+        thumbnail: include_bytes!("../assets/starts/palmer-penguins.png"),
+        thumbnail_dark: include_bytes!("../assets/starts/palmer-penguins-dark.png"),
+        run_less: false,
+        remote: false,
+        on_door: true,
+        spec: None,
+        data: None,
+        protocol: Some(ShippedProtocol {
+            dir_name: PALMER_PENGUINS,
+            revision: 1,
+            files: PALMER_PENGUINS_FILES,
+        }),
+    },
+    Start {
+        id: USGS_EARTHQUAKES,
+        label: "Open the USGS earthquakes of 2025",
+        summary: "8,502 earthquakes of magnitude 4.5 and up, on a map beside \
+                  the weeks they struck.",
+        fills: crate::app::CHART,
+        thumbnail: include_bytes!("../assets/starts/usgs-earthquakes-2025.png"),
+        thumbnail_dark: include_bytes!("../assets/starts/usgs-earthquakes-2025-dark.png"),
+        run_less: false,
+        remote: false,
+        on_door: true,
+        spec: None,
+        data: None,
+        protocol: Some(ShippedProtocol {
+            dir_name: USGS_EARTHQUAKES,
+            revision: 1,
+            files: USGS_EARTHQUAKES_FILES,
+        }),
+    },
+    // Three shipped Protocols that fetch their data from its issuer's own URL
+    // on the first run, so each says so on its button. Each folder is the
+    // Protocol the `dashboard-from-data` skill wrote for its dataset, with its
+    // Frictionless descriptor naming the issuer, the terms and the credit.
+    Start {
+        id: NYC_YELLOW_TAXI,
+        label: "Open NYC yellow taxi trips (over the network)",
+        summary: "January 2026's yellow cab trips from the TLC: the weekday \
+                  rush and the weekend night, hour by hour.",
+        fills: crate::app::CHART,
+        thumbnail: include_bytes!("../assets/starts/nyc-yellow-taxi.png"),
+        thumbnail_dark: include_bytes!("../assets/starts/nyc-yellow-taxi-dark.png"),
+        run_less: false,
+        remote: true,
+        on_door: true,
+        spec: None,
+        data: None,
+        protocol: Some(ShippedProtocol {
+            dir_name: NYC_YELLOW_TAXI,
+            revision: 1,
+            files: NYC_YELLOW_TAXI_FILES,
+        }),
+    },
+    Start {
+        id: ONLINE_RETAIL,
+        label: "Open Online Retail II (over the network)",
+        summary: "Two years of a UK online shop's orders from UCI: who \
+                  comes back, month by month.",
+        fills: crate::app::CHART,
+        thumbnail: include_bytes!("../assets/starts/online-retail-ii.png"),
+        thumbnail_dark: include_bytes!("../assets/starts/online-retail-ii-dark.png"),
+        run_less: false,
+        remote: true,
+        on_door: true,
+        spec: None,
+        data: None,
+        protocol: Some(ShippedProtocol {
+            dir_name: ONLINE_RETAIL,
+            revision: 1,
+            files: ONLINE_RETAIL_FILES,
+        }),
+    },
+    Start {
+        id: EPOCH_AI_MODELS,
+        label: "Open Epoch AI's notable models (over the network)",
+        summary: "Notable AI models from Epoch AI: training compute against \
+                  the year each was published.",
+        fills: crate::app::CHART,
+        thumbnail: include_bytes!("../assets/starts/epoch-ai-models.png"),
+        thumbnail_dark: include_bytes!("../assets/starts/epoch-ai-models-dark.png"),
+        run_less: false,
+        remote: true,
+        on_door: true,
+        spec: None,
+        data: None,
+        protocol: Some(ShippedProtocol {
+            dir_name: EPOCH_AI_MODELS,
+            revision: 1,
+            files: EPOCH_AI_MODELS_FILES,
+        }),
+    },
+    // The door's last card: the one Protocol shown as the run it records.
     Start {
         id: CROSSWALK_RUN,
         label: "Open a run of the EDGAR ↔ GLEIF crosswalk",
@@ -457,57 +704,15 @@ pub const STARTS: &[Start] = &[
         // A Protocol+Run contract, not a chart spec — see `load`.
         spec: None,
         data: None,
-    },
-    Start {
-        id: DASHBOARD,
-        label: "Open the signals dashboard",
-        summary: "A year of generated daily readings beside their weekday \
-                  profile.",
-        fills: crate::app::CHART,
-        thumbnail: include_bytes!("../assets/starts/signals-dashboard.png"),
-        thumbnail_dark: include_bytes!("../assets/starts/signals-dashboard-dark.png"),
-        run_less: false,
-        remote: false,
-        on_door: false,
-        spec: Some(DASHBOARD_SPEC),
-        data: None,
-    },
-    Start {
-        id: DISTRIBUTION,
-        label: "Open the reading distribution",
-        summary: "Five thousand generated samples, binned into a histogram \
-                  in-engine.",
-        fills: crate::app::CHART,
-        thumbnail: include_bytes!("../assets/starts/reading-distribution.png"),
-        thumbnail_dark: include_bytes!("../assets/starts/reading-distribution-dark.png"),
-        run_less: false,
-        remote: false,
-        on_door: false,
-        spec: Some(DISTRIBUTION_SPEC),
-        data: None,
-    },
-    Start {
-        id: BREAKDOWN,
-        label: "Open the activity breakdown",
-        summary: "Generated events, aggregated and ranked by the engine.",
-        fills: crate::app::CHART,
-        thumbnail: include_bytes!("../assets/starts/activity-breakdown.png"),
-        thumbnail_dark: include_bytes!("../assets/starts/activity-breakdown-dark.png"),
-        run_less: false,
-        remote: false,
-        on_door: false,
-        spec: Some(BREAKDOWN_SPEC),
-        data: None,
+        protocol: None,
     },
     // Placed after the generated chart starts rather than beside the
     // crosswalks, and the position is `for_pane`'s rather than the door's.
-    // The door draws `on_door()` in this order, so on the first screen this
-    // card sits third, between the two crosswalk declarations and the remote
-    // chart — which is where a reader looking for real data should find it.
-    // `for_pane` hands an empty pane the FIRST start that fills it, and the
-    // chart pane's empty state is not this card's question: changing which
-    // button that pane offers is a decision about that empty state, and it is
-    // not one this start was added to make.
+    // It is off the door, but still loads and reopens. `for_pane` hands an
+    // empty pane the FIRST start that fills it, and the chart pane's empty
+    // state is not this card's question: changing which button that pane
+    // offers is a decision about that empty state, and it is not one this
+    // start was added to make.
     Start {
         id: CALIFORNIA_HOUSING,
         label: "Open California Housing (over the network)",
@@ -527,7 +732,7 @@ pub const STARTS: &[Start] = &[
         // label says so. Later opens find the file already written and reach
         // no network — see `dataset_path`.
         remote: true,
-        on_door: true,
+        on_door: false,
         // A data file, not a chart spec and not a manifest — see `load`'s
         // data arm and `Start::data`.
         spec: None,
@@ -538,6 +743,7 @@ pub const STARTS: &[Start] = &[
             prepare: crate::housing::unpack,
             descriptor: HOUSING_DESCRIPTOR,
         }),
+        protocol: None,
     },
     // Last on purpose. `for_pane` hands an empty pane the FIRST start that
     // fills it, and an empty state whose one button can fail for want of a
@@ -553,9 +759,10 @@ pub const STARTS: &[Start] = &[
         thumbnail_dark: include_bytes!("../assets/starts/edgar-gleif-crosswalk-chart-dark.png"),
         run_less: false,
         remote: true,
-        on_door: true,
+        on_door: false,
         spec: Some(CROSSWALK_CHART_SPEC),
         data: None,
+        protocol: None,
     },
 ];
 
@@ -651,6 +858,10 @@ pub enum Opened {
     /// it. What the two routes then share is not an agreement; it is the same
     /// function called with the same argument.
     File(std::path::PathBuf),
+    /// A **Protocol folder**, written at this path by a [`Start::protocol`]
+    /// start, for the caller to run when it has not run and open on its
+    /// panels.
+    Panels(std::path::PathBuf),
 }
 
 /// The name [`CALIFORNIA_HOUSING`]'s file is written under.
@@ -666,6 +877,165 @@ pub const HOUSING_FILE: &str = "california_housing.parquet";
 /// [`FetchedData::descriptor`].
 pub const HOUSING_DESCRIPTOR: &str =
     include_str!("../assets/starts/california_housing.datapackage.json");
+
+/// The files of the [`NYC_YELLOW_TAXI`] Protocol folder under `examples/starts/`, as its
+/// start writes them. Its data is not among them: the first run fetches it.
+const NYC_YELLOW_TAXI_FILES: &[(&str, &[u8])] = &[
+    (
+        "arcform.yaml",
+        include_bytes!("../../../examples/starts/nyc-yellow-taxi/arcform.yaml"),
+    ),
+    (
+        "models/01_raw_trips.sql",
+        include_bytes!("../../../examples/starts/nyc-yellow-taxi/models/01_raw_trips.sql"),
+    ),
+    (
+        "models/02_trips.sql",
+        include_bytes!("../../../examples/starts/nyc-yellow-taxi/models/02_trips.sql"),
+    ),
+    (
+        "schemas/raw_trips.json",
+        include_bytes!("../../../examples/starts/nyc-yellow-taxi/schemas/raw_trips.json"),
+    ),
+    (
+        "panels/dashboard.yaml",
+        include_bytes!("../../../examples/starts/nyc-yellow-taxi/panels/dashboard.yaml"),
+    ),
+    (
+        "datapackage.json",
+        include_bytes!("../../../examples/starts/nyc-yellow-taxi/datapackage.json"),
+    ),
+];
+
+/// The files of the [`ONLINE_RETAIL`] Protocol folder under `examples/starts/`, as its
+/// start writes them. Its data is not among them: the first run fetches it.
+const ONLINE_RETAIL_FILES: &[(&str, &[u8])] = &[
+    (
+        "arcform.yaml",
+        include_bytes!("../../../examples/starts/online-retail-ii/arcform.yaml"),
+    ),
+    (
+        "models/01_retail_lines.sql",
+        include_bytes!("../../../examples/starts/online-retail-ii/models/01_retail_lines.sql"),
+    ),
+    (
+        "models/02_retail_orders.sql",
+        include_bytes!("../../../examples/starts/online-retail-ii/models/02_retail_orders.sql"),
+    ),
+    (
+        "schemas/retail_lines.json",
+        include_bytes!("../../../examples/starts/online-retail-ii/schemas/retail_lines.json"),
+    ),
+    (
+        "panels/dashboard.yaml",
+        include_bytes!("../../../examples/starts/online-retail-ii/panels/dashboard.yaml"),
+    ),
+    (
+        "datapackage.json",
+        include_bytes!("../../../examples/starts/online-retail-ii/datapackage.json"),
+    ),
+];
+
+/// The files of the [`EPOCH_AI_MODELS`] Protocol folder under `examples/starts/`, as its
+/// start writes them. Its data is not among them: the first run fetches it.
+const EPOCH_AI_MODELS_FILES: &[(&str, &[u8])] = &[
+    (
+        "arcform.yaml",
+        include_bytes!("../../../examples/starts/epoch-ai-models/arcform.yaml"),
+    ),
+    (
+        "models/01_raw_models.sql",
+        include_bytes!("../../../examples/starts/epoch-ai-models/models/01_raw_models.sql"),
+    ),
+    (
+        "models/02_models.sql",
+        include_bytes!("../../../examples/starts/epoch-ai-models/models/02_models.sql"),
+    ),
+    (
+        "schemas/raw_models.json",
+        include_bytes!("../../../examples/starts/epoch-ai-models/schemas/raw_models.json"),
+    ),
+    (
+        "panels/dashboard.yaml",
+        include_bytes!("../../../examples/starts/epoch-ai-models/panels/dashboard.yaml"),
+    ),
+    (
+        "datapackage.json",
+        include_bytes!("../../../examples/starts/epoch-ai-models/datapackage.json"),
+    ),
+];
+
+/// The files of the [`PALMER_PENGUINS`] Protocol folder under `examples/starts/`, as its
+/// start writes them.
+const PALMER_PENGUINS_FILES: &[(&str, &[u8])] = &[
+    (
+        "arcform.yaml",
+        include_bytes!("../../../examples/starts/palmer-penguins/arcform.yaml"),
+    ),
+    (
+        "models/01_raw_penguins.sql",
+        include_bytes!("../../../examples/starts/palmer-penguins/models/01_raw_penguins.sql"),
+    ),
+    (
+        "models/02_penguins.sql",
+        include_bytes!("../../../examples/starts/palmer-penguins/models/02_penguins.sql"),
+    ),
+    (
+        "schemas/raw_penguins.json",
+        include_bytes!("../../../examples/starts/palmer-penguins/schemas/raw_penguins.json"),
+    ),
+    (
+        "panels/dashboard.yaml",
+        include_bytes!("../../../examples/starts/palmer-penguins/panels/dashboard.yaml"),
+    ),
+    (
+        "datapackage.json",
+        include_bytes!("../../../examples/starts/palmer-penguins/datapackage.json"),
+    ),
+    (
+        "data/penguins.csv",
+        include_bytes!("../../../examples/starts/palmer-penguins/data/penguins.csv"),
+    ),
+];
+
+/// The files of the [`USGS_EARTHQUAKES`] Protocol folder under `examples/starts/`, as its
+/// start writes them.
+const USGS_EARTHQUAKES_FILES: &[(&str, &[u8])] = &[
+    (
+        "arcform.yaml",
+        include_bytes!("../../../examples/starts/usgs-earthquakes-2025/arcform.yaml"),
+    ),
+    (
+        "models/01_raw_earthquakes.sql",
+        include_bytes!(
+            "../../../examples/starts/usgs-earthquakes-2025/models/01_raw_earthquakes.sql"
+        ),
+    ),
+    (
+        "models/02_earthquakes.sql",
+        include_bytes!("../../../examples/starts/usgs-earthquakes-2025/models/02_earthquakes.sql"),
+    ),
+    (
+        "schemas/raw_earthquakes.json",
+        include_bytes!(
+            "../../../examples/starts/usgs-earthquakes-2025/schemas/raw_earthquakes.json"
+        ),
+    ),
+    (
+        "panels/dashboard.yaml",
+        include_bytes!("../../../examples/starts/usgs-earthquakes-2025/panels/dashboard.yaml"),
+    ),
+    (
+        "datapackage.json",
+        include_bytes!("../../../examples/starts/usgs-earthquakes-2025/datapackage.json"),
+    ),
+    (
+        "data/earthquakes_2025.parquet",
+        include_bytes!(
+            "../../../examples/starts/usgs-earthquakes-2025/data/earthquakes_2025.parquet"
+        ),
+    ),
+];
 
 const DASHBOARD_SPEC: &str = include_str!("../assets/starts/signals-dashboard.yaml");
 const DISTRIBUTION_SPEC: &str = include_str!("../assets/starts/reading-distribution.yaml");
@@ -775,6 +1145,12 @@ pub fn load(id: &str) -> Result<Opened, String> {
         }
         let fetched = crate::remote::Fetch::begin(vec![data.url.to_string()], || {}).wait()?;
         return write_fetched(data, &fetched).map(Opened::File);
+    }
+    // The Protocol arm writes the folder and hands back where it is. Running
+    // it is the caller's: the window runs it on a worker and keeps drawing,
+    // and `Boot` runs it to completion before it composes.
+    if let Some(protocol) = &start.protocol {
+        return write_protocol(protocol).map(Opened::Panels);
     }
     // The chart arm reads the start's own [`Start::spec`] rather than a second
     // table keyed by id, so the bytes a check reads off the entry are the bytes
@@ -956,16 +1332,7 @@ pub fn write_fetched(
         .parent()
         .expect("dataset_path is a file inside a revision directory");
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    // Named per write, not per process: two writes in one process — two
-    // tests on two threads, or a click while a restore is writing — would
-    // otherwise share a staging file, and the second rename would find none.
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let staging = dir.join(format!(
-        "{}.{}-{}.part",
-        data.file_name,
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
+    let staging = staging_path(dir, data.file_name);
     // A staging file nothing will ever finish is litter in a directory the
     // reader can see, so every failure from here removes it. Removing it
     // cannot fail the call it is reporting.
@@ -979,4 +1346,376 @@ pub fn write_fetched(
         format!("{} -> {}: {e}", staging.display(), path.display())
     })?;
     Ok(path)
+}
+
+/// A staging name for `name` in `dir`, unique to this write:
+/// `{name}.{pid}-{n}.part`, the shape [`is_staging_of`] matches.
+///
+/// Named per write, not per process: two writes in one process — two tests on
+/// two threads, or a click while a restore is writing — would otherwise share
+/// a staging name, and the second rename would find nothing to rename.
+fn staging_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    dir.join(format!(
+        "{name}.{}-{}.part",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
+}
+
+/// The subdirectory of [`datasets_dir`] a shipped Protocol folder is written
+/// into, beside [`FETCHED_DIR`].
+pub const PROTOCOLS_DIR: &str = "protocols";
+
+/// Where `protocol`'s folder is written on this machine:
+/// `protocols/v{revision}/{dir_name}` under [`datasets_dir`].
+///
+/// A stable path, so the next launch finds the folder and the run it made,
+/// and reopens it with no run and no network.
+///
+/// **A revision bump leaves the older folder in place.** Raising
+/// [`ShippedProtocol::revision`] writes `protocols/v{new}/{dir_name}` beside
+/// `protocols/v{old}/{dir_name}`, and the write leaves the older one: the
+/// folder is an ordinary Protocol on the reader's disk once it is written, and
+/// a reader may have saved edits to its panels or steps there. Deleting it
+/// would delete their work along with the build's.
+#[must_use]
+pub fn protocol_path(protocol: &ShippedProtocol) -> std::path::PathBuf {
+    datasets_dir()
+        .join(PROTOCOLS_DIR)
+        .join(format!("v{}", protocol.revision))
+        .join(protocol.dir_name)
+}
+
+/// Write `protocol`'s folder at [`protocol_path`], and hand back where it is.
+///
+/// A folder already there for the same revision is left alone: it may hold a
+/// run, and it is this build's folder. Otherwise every file is written into a
+/// staging folder beside it, which is renamed into place, so a folder is
+/// either whole or absent, and a write that fails part way leaves nothing for
+/// the next open to find and trust.
+///
+/// # Errors
+///
+/// A file path that leaves the folder, or a directory, file or rename that
+/// fails, each naming the path.
+pub fn write_protocol(protocol: &ShippedProtocol) -> Result<std::path::PathBuf, String> {
+    let path = protocol_path(protocol);
+    if path.join(arc::spec::MANIFEST_FILENAME).is_file() {
+        return Ok(path);
+    }
+    let parent = path
+        .parent()
+        .expect("protocol_path is a folder inside a revision directory");
+    std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    sweep_stale_staging(parent, protocol.dir_name);
+    let staging = staging_path(parent, protocol.dir_name);
+    let _ = std::fs::remove_dir_all(&staging);
+    // Made once, here, and never again: if a sweep removes it mid-write, the
+    // writes below fail rather than making it again around part of a folder.
+    std::fs::create_dir(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
+    let written = write_staged(&staging, protocol.files, protocol.dir_name);
+    if let Err(e) = written {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    // A folder there with no manifest is not this revision's folder: a write
+    // from before the staging rename, or one a person emptied. It is
+    // replaced, or every later open would fail renaming onto it.
+    if path.exists() && !path.join(arc::spec::MANIFEST_FILENAME).is_file() {
+        let _ = std::fs::remove_dir_all(&path);
+    }
+    if let Err(e) = std::fs::rename(&staging, &path) {
+        let _ = std::fs::remove_dir_all(&staging);
+        // Another writer got there first with the same revision's folder.
+        if path.join(arc::spec::MANIFEST_FILENAME).is_file() {
+            return Ok(path);
+        }
+        return Err(format!("{} -> {}: {e}", staging.display(), path.display()));
+    }
+    Ok(path)
+}
+
+/// Write `files` into the existing staging folder `staging`, the manifest
+/// last, and check each landed whole.
+///
+/// No directory is made with `create_dir_all`: each one under `staging` is
+/// made a level at a time, so a staging folder a sweep removed makes the
+/// writes after it fail instead of being made again
+/// (`a_swept_staging_folder_fails_its_writer`). The manifest goes last, so
+/// a folder missing any of its files has no manifest and is written again by
+/// the next open, and a read-back of each file's length catches a file a
+/// sweep removed after it was written.
+fn write_staged(
+    staging: &std::path::Path,
+    files: &[(&str, &[u8])],
+    dir_name: &str,
+) -> Result<(), String> {
+    let mut ordered: Vec<&(&str, &[u8])> = files.iter().collect();
+    ordered.sort_by_key(|(file, _)| *file == arc::spec::MANIFEST_FILENAME);
+    for (file, bytes) in &ordered {
+        let relative = std::path::Path::new(file);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return Err(format!(
+                "{dir_name}: the file {file:?} is not inside the folder"
+            ));
+        }
+        if let Some(dir) = relative.parent() {
+            let mut made = staging.to_path_buf();
+            for part in dir.components() {
+                made.push(part);
+                match std::fs::create_dir(&made) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(e) => return Err(format!("{}: {e}", made.display())),
+                }
+            }
+        }
+        let target = staging.join(relative);
+        std::fs::write(&target, bytes).map_err(|e| format!("{}: {e}", target.display()))?;
+    }
+    for (file, bytes) in &ordered {
+        let target = staging.join(file);
+        let len = std::fs::metadata(&target).map_or(None, |m| Some(m.len()));
+        if len != Some(bytes.len() as u64) {
+            return Err(format!(
+                "{}: the staged file did not land whole",
+                target.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// How old another process's staging folder has to be before a write sweeps
+/// it: long past any write of a shipped folder, so a folder another process
+/// is writing now is never taken for one it left.
+const STALE_STAGING: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Whether `name` is the shape [`write_protocol`] stages `dir_name` under:
+/// `{dir_name}.{pid}-{n}.part`, with a digit run either side of the dash.
+fn is_staging_of(name: &str, dir_name: &str) -> bool {
+    let Some(middle) = name
+        .strip_prefix(dir_name)
+        .and_then(|rest| rest.strip_prefix('.'))
+        .and_then(|rest| rest.strip_suffix(".part"))
+    else {
+        return false;
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    middle
+        .split_once('-')
+        .is_some_and(|(pid, n)| digits(pid) && digits(n))
+}
+
+/// Remove the staging folders for `dir_name` in `parent` that another
+/// process left: a write stopped before its rename, older than
+/// [`STALE_STAGING`]. This process's own are left alone, since another of its
+/// threads may be writing one.
+fn sweep_stale_staging(parent: &std::path::Path, dir_name: &str) {
+    let ours = format!("{dir_name}.{}-", std::process::id());
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !is_staging_of(&name, dir_name) || name.starts_with(&ours) {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age >= STALE_STAGING);
+        if old {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// One `http_fetch` step of a Protocol: the URL it fetches, and the path in
+/// the folder it writes, when the step names one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchStep {
+    /// The step's `with: url:`.
+    pub url: String,
+    /// The step's `with: out:`.
+    pub out: Option<String>,
+}
+
+/// The `http_fetch` steps of the Protocol in `manifest`, in step order: what
+/// a run of it reads over the network, and where each lands.
+#[must_use]
+pub fn fetch_steps(manifest: &str) -> Vec<FetchStep> {
+    let Ok(parsed) = serde_yaml::from_str::<serde_yaml::Value>(manifest) else {
+        return Vec::new();
+    };
+    parsed
+        .get("steps")
+        .and_then(serde_yaml::Value::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter(|step| {
+            step.get("op")
+                .and_then(serde_yaml::Value::as_str)
+                .is_some_and(is_fetch_op)
+        })
+        .filter_map(|step| {
+            let with = step.get("with")?;
+            Some(FetchStep {
+                url: with.get("url")?.as_str()?.to_string(),
+                out: with
+                    .get("out")
+                    .and_then(serde_yaml::Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect()
+}
+
+/// The URLs the `http_fetch` steps of the Protocol in `manifest` fetch, in
+/// step order: [`fetch_steps`]' URLs.
+#[must_use]
+pub fn fetch_urls(manifest: &str) -> Vec<String> {
+    fetch_steps(manifest)
+        .into_iter()
+        .map(|step| step.url)
+        .collect()
+}
+
+/// Whether a step's `op:` names arc's `http_fetch`, with or without a
+/// version (`http_fetch@1`).
+#[must_use]
+pub fn is_fetch_op(op: &str) -> bool {
+    op.strip_prefix("http_fetch").is_some_and(|rest| {
+        rest.is_empty()
+            || rest
+                .strip_prefix('@')
+                .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
+/// The database a run of the Protocol in `dir` writes, and its write-ahead
+/// log beside it.
+fn protocol_db_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(db) = arc::spec::protocol_db_path(dir) else {
+        return Vec::new();
+    };
+    let mut wal = db.clone().into_os_string();
+    wal.push(".wal");
+    vec![db, std::path::PathBuf::from(wal)]
+}
+
+/// Whether the shipped Protocol in `dir` needs a run before its panels can
+/// open: it has no database, or its newest run record does not say the run
+/// succeeded.
+///
+/// A database whose newest record failed, or that has no record behind it
+/// (a run stopped part way), holds tables nobody finished, and it is removed
+/// here, so the run that follows starts from nothing. The window does not
+/// ask this while a run of the folder is under way, since that run's
+/// database has no record yet.
+#[must_use]
+pub fn needs_run(dir: &std::path::Path) -> bool {
+    let files = protocol_db_files(dir);
+    let Some(db) = files.first() else {
+        return true;
+    };
+    let succeeded = arc::spec::Manifest::load(dir).is_ok_and(|manifest| {
+        crate::run::records_newest_first(dir, &manifest.name)
+            .next()
+            .is_some_and(|view| {
+                matches!(
+                    view.run.outcome,
+                    brightfield_protocol::contract::Outcome::Success
+                )
+            })
+    });
+    if db.is_file() && succeeded {
+        return false;
+    }
+    for file in &files {
+        let _ = std::fs::remove_file(file);
+    }
+    true
+}
+
+/// What a finished run of the shipped Protocol in `dir` means for its start:
+/// `Ok` when it ran to a record, and otherwise the words its banner carries.
+///
+/// A failed run's database is removed first, so the next open runs the
+/// Protocol again rather than trusting tables a failed run left. A run that
+/// could not fetch one of the Protocol's `http_fetch` URLs says it could not
+/// reach that URL over the network; any other failure says the run did not
+/// finish. Either way the run's own log follows, so a missing DuckDB CLI is
+/// named in arc's own words.
+///
+/// # Errors
+///
+/// The banner's words, when the run did not succeed.
+pub fn settle_run(dir: &std::path::Path, finished: &crate::run::Finished) -> Result<(), String> {
+    if finished.succeeded && finished.record.is_some() {
+        return Ok(());
+    }
+    for file in protocol_db_files(dir) {
+        let _ = std::fs::remove_file(file);
+    }
+    let manifest =
+        std::fs::read_to_string(dir.join(arc::spec::MANIFEST_FILENAME)).unwrap_or_default();
+    let urls = fetch_urls(&manifest);
+    let log = finished.log.trim();
+    let mut named: Vec<&String> = urls
+        .iter()
+        .filter(|url| log.contains(url.as_str()))
+        .collect();
+    if named.is_empty() && log.contains("http_fetch") {
+        named = urls.iter().collect();
+    }
+    if named.is_empty() {
+        Err(format!("the Protocol's run did not finish:\n{log}"))
+    } else {
+        let urls: Vec<&str> = named.iter().map(|u| u.as_str()).collect();
+        Err(format!(
+            "could not reach {} over the network, so the Protocol did not run:\n{log}",
+            urls.join(", ")
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A writer whose staging folder is swept out from under it fails,
+    /// rather than making the folder again and renaming a part of it into
+    /// place.
+    #[test]
+    fn a_swept_staging_folder_fails_its_writer() {
+        let root = std::env::temp_dir().join(format!("bf-staging-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let staging = root.join("shipped.1-0.part");
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::remove_dir_all(&staging).unwrap();
+        let files: &[(&str, &[u8])] =
+            &[("models/a.sql", b"select 1"), ("arcform.yaml", b"name: x")];
+        assert!(write_staged(&staging, files, "shipped").is_err());
+        assert!(!staging.exists(), "the swept staging folder was made again");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The sweep matches only `{dir_name}.{pid}-{n}.part`.
+    #[test]
+    fn the_sweep_matches_only_its_own_folders_staging_names() {
+        assert!(is_staging_of("foo.12-3.part", "foo"));
+        assert!(!is_staging_of("foo.bar.12-3.part", "foo"));
+        assert!(!is_staging_of("foo.12.part", "foo"));
+        assert!(!is_staging_of("foo.12-x.part", "foo"));
+        assert!(!is_staging_of("foobar.12-3.part", "foo"));
+    }
 }

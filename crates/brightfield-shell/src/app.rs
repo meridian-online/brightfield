@@ -1303,6 +1303,27 @@ impl std::fmt::Display for ChartSaveError {
 
 impl std::error::Error for ChartSaveError {}
 
+/// The component path the data grid contributes its condition under.
+///
+/// It names no plot, so a chart never takes the grid's clause for its own
+/// brush: the clause filters every chart, and only the grid retracts it.
+pub const GRID_CONTRIBUTOR: &str = "grid";
+
+/// The names of the selections `spec` declares with `select: crossfilter`.
+fn crossfilter_names(spec: &brightfield_spec::ast::Spec) -> Vec<String> {
+    use brightfield_spec::ast::ParamNode;
+    use brightfield_spec::vocab::SelectionResolution;
+    spec.params
+        .iter()
+        .filter_map(|(name, node)| match node {
+            ParamNode::Selection(sel) if sel.select == SelectionResolution::Crossfilter => {
+                Some(name.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 impl ChartDoc {
     /// A document over `composed`, rastering through `host`.
     #[must_use]
@@ -1750,6 +1771,58 @@ impl ChartDoc {
         }
         self.grid_view = view;
         self.grid_view_stamp = self.take_stamp();
+        self.publish_grid_condition();
+    }
+
+    /// Hand the applied grid condition to the charts: for each selection the
+    /// document declares with `select: crossfilter`, publish it as a clause
+    /// under [`GRID_CONTRIBUTOR`], or retract it when the grid has no
+    /// condition. A document that declares no such selection keeps the grid's
+    /// view to the grid alone.
+    ///
+    /// The grid is not a plot, so no chart's own-clause exclusion matches its
+    /// path: its clause narrows every chart, and only the grid retracts it.
+    fn publish_grid_condition(&mut self) {
+        let Some(live) = self.live.as_ref() else {
+            return;
+        };
+        let names = crossfilter_names(live.spec());
+        let condition = self.grid_condition();
+        for name in names {
+            let contributor = ComponentPath(GRID_CONTRIBUTOR.to_string());
+            // What the session holds is the record of what was published, so
+            // a rebuilt session (which holds nothing) is brought up to date
+            // and an unchanged condition costs no re-composite.
+            let held = self
+                .live
+                .as_ref()
+                .and_then(|l| l.held_clause(&name, &contributor));
+            let wanted = condition
+                .as_ref()
+                .map(|c| brightfield_engine::SqlPredicate::Expr(c.clone()));
+            if held == wanted.as_ref() {
+                continue;
+            }
+            let interaction = match &condition {
+                Some(c) => Interaction::Select {
+                    name,
+                    contributor,
+                    predicate: brightfield_engine::SqlPredicate::Expr(c.clone()),
+                },
+                None => Interaction::ClearSelect { name, contributor },
+            };
+            self.apply_interaction(interaction);
+        }
+    }
+
+    /// The condition the grid shows, trimmed; nothing when it is blank.
+    fn grid_condition(&self) -> Option<String> {
+        self.grid_view
+            .condition
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_owned)
     }
 
     /// Whether some part of the applied grid view is in no file: the grid
@@ -1798,6 +1871,9 @@ impl ChartDoc {
         self.grid_view = brightfield_engine::RowsView::default();
         self.grid_condition_held = None;
         self.pending_settled = true;
+        // The charts follow what the grid's where field shows, which is
+        // nothing now.
+        self.publish_grid_condition();
     }
 
     /// Whether the applied view became fully recorded, or a kept statement
@@ -2303,6 +2379,7 @@ impl ChartDoc {
             Ok((live, composed)) => {
                 self.live = Some(live);
                 self.composed = composed;
+                self.publish_grid_condition();
                 if changed {
                     self.pending_edits.push(edit);
                     // The shelf's snapshots are whole specs, so one older than
@@ -2351,6 +2428,10 @@ impl ChartDoc {
             live.present().map(|composed| (live, composed))
         });
         self.activity.end(Activity::EngineQuery);
+        // A page that drew is a new picture, and the fault described the last.
+        if rebuilt.is_ok() {
+            self.interaction_fault = None;
+        }
         rebuilt.map_err(|e| e.to_string())
     }
 
@@ -2462,6 +2543,7 @@ impl ChartDoc {
                     edits,
                     kept,
                 });
+                self.publish_grid_condition();
                 self.canvas.invalidate();
                 true
             }
@@ -2578,6 +2660,7 @@ impl ChartDoc {
                 let now = Self::setting_text(live.spec(), &after, edit.channel, edit.row);
                 self.live = Some(live);
                 self.composed = composed;
+                self.publish_grid_condition();
                 self.shelf_undo.push(
                     before,
                     KeptShelfEdit {
@@ -2979,6 +3062,7 @@ impl ChartDoc {
             Ok((live, composed)) => {
                 self.live = Some(live);
                 self.composed = composed;
+                self.publish_grid_condition();
                 let KeptShelfEdit {
                     words,
                     added,
@@ -3055,6 +3139,7 @@ impl ChartDoc {
         }
         self.live = Some(live);
         self.composed = composed;
+        self.publish_grid_condition();
         self.canvas.invalidate();
     }
 
@@ -3137,6 +3222,7 @@ impl ChartDoc {
                 });
                 // A refusal named the version drawn before this one.
                 self.interaction_fault = None;
+                self.publish_grid_condition();
                 self.canvas.invalidate();
                 true
             }
@@ -3362,7 +3448,9 @@ impl ChartDoc {
     /// Whether any selection currently holds a committed gesture.
     #[must_use]
     pub fn selection_active(&self) -> bool {
-        !self.active_selections.is_empty()
+        self.active_selections
+            .iter()
+            .any(|(_, c)| c.0 != GRID_CONTRIBUTOR)
     }
 
     /// The clause `contributor` is currently holding in the selection `name`,
@@ -3533,7 +3621,13 @@ impl ChartDoc {
     /// Retract every committed gesture — the `clear-selection` verb's chart
     /// arm. A no-op on a document with nothing committed.
     pub fn clear_selection(&mut self) {
-        for (name, contributor) in std::mem::take(&mut self.active_selections) {
+        // The grid's clause is the grid's to retract: it follows the
+        // condition the grid shows, and a verb aimed at gestures leaves it.
+        let (grid, gestures): (Vec<_>, Vec<_>) = std::mem::take(&mut self.active_selections)
+            .into_iter()
+            .partition(|(_, c)| c.0 == GRID_CONTRIBUTOR);
+        self.active_selections = grid;
+        for (name, contributor) in gestures {
             self.apply_interaction(Interaction::ClearSelect { name, contributor });
         }
     }
@@ -3875,7 +3969,8 @@ impl ChartDoc {
     ///
     /// Set by the open-a-data-file path from
     /// [`Dashboard::hero_index`](crate::dashboard::Dashboard::hero_index),
-    /// which is where the layout is decided.
+    /// which is where the layout is decided, and to `Some(0)` by opening a
+    /// Protocol's panel, which is drawn beside its grid with no column.
     pub fn set_stacked_tiles(&mut self, tiles: Option<usize>) {
         self.stacked_tiles = tiles;
     }

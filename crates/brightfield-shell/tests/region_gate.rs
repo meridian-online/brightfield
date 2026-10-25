@@ -81,6 +81,11 @@
 //! `a_rail_reopens_at_the_extent_it_was_dragged_to`, and
 //! `a_rail_dragged_past_its_floor_stops_at_the_floor_it_declares`.
 
+#[path = "support/agent_protocol.rs"]
+mod agent_protocol;
+#[path = "support/shipped_protocol.rs"]
+mod shipped_protocol;
+
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::compose_spec;
@@ -359,6 +364,7 @@ fn a_protocol_and_a_chart() -> Boot {
         opened_id: None,
         panels: None,
         panels_problem: None,
+        open_panel: None,
     }
 }
 
@@ -381,6 +387,14 @@ fn a_protocol_and_a_chart() -> Boot {
 /// The both-documents boot rides along because it is the one window where
 /// each rail draws content instead of an empty state.
 fn every_window_this_build_can_open() -> Vec<(String, Boot)> {
+    // The tests in this file run in parallel and share one datasets
+    // directory, so two of them booting a Protocol start at once would run
+    // the same folder twice, and one run would find the other's database
+    // locked. One at a time, the second finds the first's run and opens it.
+    static BOOTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _booting = BOOTING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut boots = vec![
         ("no document — the front door".to_owned(), Boot::empty()),
         (
@@ -402,7 +416,7 @@ fn every_window_this_build_can_open() -> Vec<(String, Boot)> {
         }
     }
     for start in starts::STARTS {
-        let boot = Boot::start(start.id, Flow::Vertical)
+        let boot = shipped_protocol::boot_start(start)
             .unwrap_or_else(|e| panic!("the {} start ships with this build: {e}", start.id));
         boots.push((format!("the {} start", start.id), boot));
     }

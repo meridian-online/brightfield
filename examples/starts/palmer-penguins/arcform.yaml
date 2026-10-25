@@ -1,0 +1,20 @@
+name: palmer-penguins
+engine: duckdb
+engine_version: '>=1.0'
+params: {}
+dotenv: []
+timeout_sec: null
+defaults: null
+hooks:
+  on_init: null
+  on_success: null
+  on_failure: null
+  on_exit: null
+steps:
+  - name: raw_penguins
+    sql: models/01_raw_penguins.sql
+    description: Load the Palmer penguins as they arrive
+  - name: penguins
+    sql: models/02_penguins.sql
+    description: 'The penguins the dashboard reads: the source''s NA read as missing, each measure typed, and whether each penguin''s record is complete'
+assets: {}

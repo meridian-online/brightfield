@@ -1,0 +1,101 @@
+{
+  "$id": "finetype://raw_penguins",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bill_depth_mm": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "bill_length_mm": {
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.decimal_number",
+      "x-finetype-pii": false
+    },
+    "body_mass_g": {
+      "pattern": "^-?[0-9]+$",
+      "type": "string",
+      "x-finetype-label": "representation.numeric.integer_number",
+      "x-finetype-pii": false
+    },
+    "flipper_length_mm": {
+      "type": "string",
+      "x-finetype-label": "unknown",
+      "x-finetype-unknown-reason": "validation rejected 'compact_dmy': only 0% of values matched its format"
+    },
+    "island": {
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9\\-_]*[a-zA-Z0-9])?$",
+      "type": "string",
+      "x-finetype-enum": {
+        "cohesion": 1.0,
+        "distinct": 3,
+        "domain": [
+          "Biscoe",
+          "Dream",
+          "Torgersen"
+        ],
+        "open": true,
+        "rows": 344
+      },
+      "x-finetype-label": "representation.text.word",
+      "x-finetype-pii": false
+    },
+    "sex": {
+      "enum": [
+        "male",
+        "female",
+        "other",
+        "unknown"
+      ],
+      "type": "string",
+      "x-finetype-enum": {
+        "cohesion": 1.0,
+        "distinct": 2,
+        "domain": [
+          "female",
+          "male"
+        ],
+        "open": true,
+        "rows": 333
+      },
+      "x-finetype-label": "identity.person.gender",
+      "x-finetype-pii": false
+    },
+    "species": {
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9\\-_]*[a-zA-Z0-9])?$",
+      "type": "string",
+      "x-finetype-enum": {
+        "cohesion": 1.0,
+        "distinct": 3,
+        "domain": [
+          "Adelie",
+          "Chinstrap",
+          "Gentoo"
+        ],
+        "open": true,
+        "rows": 344
+      },
+      "x-finetype-label": "representation.text.word",
+      "x-finetype-pii": false
+    },
+    "year": {
+      "pattern": "^\\d{4}(\\.0+)?$",
+      "type": "string",
+      "x-finetype-label": "datetime.component.year",
+      "x-finetype-pii": false
+    }
+  },
+  "required": [
+    "island",
+    "species",
+    "year"
+  ],
+  "title": "table",
+  "type": "object"
+}

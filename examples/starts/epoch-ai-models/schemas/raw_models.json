@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "Model": {"type": "string", "minLength": 1},
+    "Publication date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+    "Training compute (FLOP)": {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"},
+    "Domain": {"type": "string", "minLength": 1},
+    "Organization categorization": {"type": "string", "pattern": "^(Industry|Academia|Government|Research collective)(,(Industry|Academia|Government|Research collective))*$"},
+    "Model accessibility": {"type": "string", "enum": ["Open weights (unrestricted)", "Open weights (non-commercial)", "Open weights (restricted use)", "API access", "Hosted access (no API)", "Limited access", "Unreleased"]},
+    "Confidence": {"type": "string", "enum": ["Confident", "Likely", "Speculative", "Unknown"]}
+  },
+  "required": ["Model", "Publication date"]
+}

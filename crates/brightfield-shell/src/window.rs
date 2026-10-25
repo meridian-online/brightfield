@@ -285,7 +285,7 @@ const TITLE_MARK_SIDE: f32 = spacing::ROW_GRID;
 /// carries its name here rather than relying on the picture.
 pub const HOME_CONTROL_NAME: &str = "Home";
 
-/// The curated section's heading: the datasets that ship with this build.
+/// The curated section's heading: the datasets chosen for this build.
 ///
 /// One of the door's two section names. The pair replaces the door's earlier
 /// *Explore* and *Continue*, and the argument those had — verbs invite,
@@ -299,7 +299,7 @@ pub const DATASETS_SECTION: &str = "Datasets";
 pub const PROTOCOLS_SECTION: &str = "Protocols";
 
 /// What the Datasets heading says about itself, beside it.
-pub const DATASETS_NOTE: &str = "curated, and they ship with this build";
+pub const DATASETS_NOTE: &str = "curated for this build";
 
 /// What the Protocols heading says about itself on a **first run**, when the
 /// section below it is empty and has to state what it will hold rather than
@@ -471,7 +471,7 @@ fn reads_table(answer: &TypedAnswer, name: &str) -> bool {
         .any(|table| table.eq_ignore_ascii_case(name))
 }
 
-/// A run of the open Protocol, started from this window and not yet finished.
+/// A run of a Protocol, started from this window and not yet finished.
 ///
 /// **Which Protocol it is for is part of the latch**, and it is read every time
 /// the latch is: the ledger strip's control reads *running* only over the
@@ -481,12 +481,40 @@ fn reads_table(answer: &TypedAnswer, name: &str) -> bool {
 /// gives about the fetch latch — and unlike a fetch, a run that is not landed
 /// is not lost: `arc` wrote its record beside the spec, and the next open of
 /// that file reads it.
+///
+/// The window keeps one per folder it is running, not one in all: a reader
+/// who takes a second shipped start while the first runs leaves the first's
+/// run going, and coming back to the first finds it rather than starting a
+/// second `arc` over the folder it is writing.
 struct PendingRun {
     /// The worker waiting on the runner.
     run: crate::run::Run,
     /// The name of the Protocol being run. With [`crate::run::Run::dir`], the
     /// identity a document is compared against.
     protocol: String,
+    /// The URLs the Protocol's `http_fetch` steps fetch, read when the run
+    /// began: what the panel tiles name while it runs.
+    fetching: Vec<String>,
+    /// Whether this is a shipped Protocol start's run, the only kind whose
+    /// failure removes the database it left: a shipped folder is the
+    /// binary's own and runs again from nothing, where a reader's Protocol
+    /// keeps the tables its earlier runs made.
+    shipped: bool,
+}
+
+/// A shipped Protocol start whose run is under way, to open on its first
+/// panel when the run lands.
+///
+/// Set by [`MeridianApp::land_start`] once the start's tiles are installed and
+/// its run has begun, and taken by `poll_run` when a run of the same folder
+/// finishes: a success opens the first panel beside its grid and records the
+/// start, and a failure raises the start's banner and goes back to the door.
+/// A window that opens anything else in the meantime drops it.
+struct PendingLanding {
+    /// The start the click took.
+    id: &'static str,
+    /// The Protocol folder the run is of.
+    dir: PathBuf,
 }
 
 /// The words on the ledger strip's Run control while it can be taken.
@@ -502,18 +530,29 @@ pub const RUNNING_LABEL: &str = "Running\u{2026}";
 pub const RUN_PROTOCOL: &str = "run-protocol";
 
 /// One gallery card's outer width.
-const CARD_WIDTH: f32 = 216.0;
+///
+/// Sized so the door's six cards and their five gaps lie on one row of the
+/// door's content column at the default 1280-point window. That column is
+/// not the window: the navigator rail and the panel margins come off it, and
+/// `ui.available_width()` measured inside the door's scroll area at the
+/// default size is 1024. `6 × 156 + 5 × 16 = 1016` fits it with 8 points
+/// spare; 157 would be the widest whole width, and 158 and up wrap the sixth
+/// card to a second row.
+/// `the_doors_datasets_row_is_one_row_and_all_of_it_is_on_screen` is what
+/// holds it.
+const CARD_WIDTH: f32 = 156.0;
 
 /// The thumbnail's drawn height: the card's width less its two insets, at the
-/// shipped thumbnails' own 16:10 — `(216 − 8) / 1.6`. Stated as the number the
-/// arithmetic produces so a drift in either term is a visible edit here.
-const CARD_IMAGE_HEIGHT: f32 = 130.0;
+/// shipped thumbnails' own 16:10. Derived from [`CARD_WIDTH`] so the ratio
+/// holds whenever the width changes.
+const CARD_IMAGE_HEIGHT: f32 = (CARD_WIDTH - 2.0 * spacing::SPACE_2) / 1.6;
 
 /// One gallery card's outer height: the image and its insets, room for a
-/// two-line label and a three-line summary, and one grid row at the foot for
-/// [`DOOR_ENTRY_PROMISE`]. A label that wraps past that is clipped by the
-/// card's own rect rather than pushing the gallery apart.
-const CARD_HEIGHT: f32 = 220.0 + spacing::ROW_GRID;
+/// three-line label and a five-line summary, and two grid rows at the foot for
+/// [`DOOR_ENTRY_PROMISE`], which wraps to two lines at the card's measure. A
+/// label that wraps past that is clipped by the card's own rect rather than
+/// pushing the gallery apart.
+const CARD_HEIGHT: f32 = 220.0 + 2.0 * spacing::ROW_GRID;
 
 /// The natural window size in logical points for a composed dashboard: exactly
 /// big enough that the chart pane's content box fits the dashboard's raster,
@@ -673,6 +712,15 @@ fn boot_tile_body(count: usize) -> egui::Vec2 {
         + band_extent(plan.expect_region(arrangement::LOCATOR_BAND))
         + rail_collapsed(plan.expect_region(arrangement::LEDGER_RAIL));
     crate::panel_tiles::body_for_canvas(egui::vec2(w - across, h - down), count)
+}
+
+/// The URLs the `http_fetch` steps of the Protocol in `dir` fetch, read off
+/// its manifest, or an empty list for a folder whose manifest will not read.
+fn fetch_urls_in(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join(arc::spec::MANIFEST_FILENAME)).map_or_else(
+        |_| Vec::new(),
+        |manifest| crate::starts::fetch_urls(&manifest),
+    )
 }
 
 /// The Protocol in `dir` as its rails read it: its steps and the tables they
@@ -1212,6 +1260,11 @@ pub struct Boot {
     /// panels, with why: one that has not run, whose tiles offer a Run, and
     /// one whose database a run holds, which opens when the run ends.
     pub panels_problem: Option<(PathBuf, OpenProblem)>,
+    /// The panel of [`Self::panels`] to open beside its grid once the window
+    /// holds the tiles, as a click on a shipped Protocol start does: set by
+    /// the boot of such a start, so a relaunch that remembers it, and the
+    /// card thumbnail drawn through it, show the screen the click lands on.
+    pub open_panel: Option<usize>,
 }
 
 impl Boot {
@@ -1231,6 +1284,7 @@ impl Boot {
             opened_id: None,
             panels: None,
             panels_problem: None,
+            open_panel: None,
         }
     }
 
@@ -1250,6 +1304,7 @@ impl Boot {
             opened_id: None,
             panels: None,
             panels_problem: None,
+            open_panel: None,
         }
     }
 
@@ -1294,6 +1349,7 @@ impl Boot {
             opened_id: None,
             panels: None,
             panels_problem: None,
+            open_panel: None,
         }
     }
 
@@ -1309,8 +1365,51 @@ impl Boot {
     ///
     /// If `id` is not a start this build ships, or the embedded fixture fails
     /// to load.
+    ///
+    /// A [`crate::starts::Start::protocol`] start whose folder has not run is
+    /// refused here, because this hands a run to no runner. The
+    /// process this is called in may be a test harness, which reads `run` as a
+    /// test-name filter (see [`crate::run::Runner`]), so this never starts the
+    /// process as a runner
+    /// (`a_boot_with_no_runner_refuses_a_protocol_that_has_not_run`). Startup
+    /// reopens a remembered Protocol start once its folder has run, and a
+    /// caller with a runner to give boots through [`Boot::start_running`].
     pub fn start(id: &str, flow: Flow) -> Result<Self, String> {
-        Self::from_start(id, crate::starts::load(id)?, flow)
+        Self::start_running(id, flow, None)
+    }
+
+    /// [`Boot::start`] with the runner a Protocol start that has not run is
+    /// handed to. With `None`, such a start is refused.
+    ///
+    /// # Errors
+    ///
+    /// As [`Boot::start`], plus a Protocol start whose run fails, carrying
+    /// the words its banner would.
+    pub fn start_running(
+        id: &str,
+        flow: Flow,
+        runner: Option<&crate::run::Runner>,
+    ) -> Result<Self, String> {
+        Self::from_start(id, crate::starts::load(id)?, flow, runner)
+    }
+
+    /// [`Boot::start`] over `protocol` in place of the start's own: its folder
+    /// written, run to completion by `runner` when it has not run, and opened
+    /// on its panels. For a test that boots a variant of a Protocol start,
+    /// such as one whose `http_fetch` steps are replaced by committed copies
+    /// of what they fetch, so it draws with no network.
+    ///
+    /// # Errors
+    ///
+    /// The folder will not write, the run fails, or the panels do not open.
+    pub fn shipped_protocol(
+        id: &str,
+        protocol: &crate::starts::ShippedProtocol,
+        flow: Flow,
+        runner: Option<&crate::run::Runner>,
+    ) -> Result<Self, String> {
+        let dir = crate::starts::write_protocol(protocol)?;
+        Self::from_start(id, crate::starts::Opened::Panels(dir), flow, runner)
     }
 
     /// [`Boot::start`] over sources already on disk: the chart start `id`,
@@ -1325,11 +1424,16 @@ impl Boot {
         fetched: crate::remote::Fetched,
         flow: Flow,
     ) -> Result<Self, String> {
-        Self::from_start(id, crate::starts::load_with(id, fetched)?, flow)
+        Self::from_start(id, crate::starts::load_with(id, fetched)?, flow, None)
     }
 
     /// The boot over what a start opened, remembered under `id`.
-    fn from_start(id: &str, opened: crate::starts::Opened, flow: Flow) -> Result<Self, String> {
+    fn from_start(
+        id: &str,
+        opened: crate::starts::Opened,
+        flow: Flow,
+        runner: Option<&crate::run::Runner>,
+    ) -> Result<Self, String> {
         let boot = match opened {
             // The session comes with it, so the pane can re-composite into the
             // box the dock gives it. See [`crate::starts::OpenedChart`].
@@ -1344,9 +1448,44 @@ impl Boot {
             // line makes. See [`crate::starts::Opened::File`] for why the
             // route is shared rather than duplicated.
             crate::starts::Opened::File(path) => Self::data_file(&path.to_string_lossy())?,
+            // A Protocol folder is run to completion before it composes, so a
+            // boot of a start that has not run draws its panels rather than
+            // the not-run state; a run that fails is this boot's error.
+            crate::starts::Opened::Panels(dir) => Self::ran_panels(&dir, flow, runner)?,
         };
         Ok(Self {
             opened_id: Some(id.to_string()),
+            ..boot
+        })
+    }
+
+    /// The shipped Protocol folder `dir`, run by `runner` first when it has
+    /// not run, opened on its panels.
+    fn ran_panels(
+        dir: &std::path::Path,
+        flow: Flow,
+        runner: Option<&crate::run::Runner>,
+    ) -> Result<Self, String> {
+        if crate::starts::needs_run(dir) {
+            let Some(runner) = runner else {
+                return Err(format!(
+                    "{} has not run, and there is no runner to hand the run to",
+                    dir.display()
+                ));
+            };
+            let finished = crate::run::Run::begin(runner, dir, || {}).wait();
+            crate::starts::settle_run(dir, &finished)?;
+        }
+        let manifest = dir.join(arc::spec::MANIFEST_FILENAME);
+        let boot = Self::open(&manifest.to_string_lossy(), flow, None)?;
+        if boot.panels.is_none() {
+            return Err(match &boot.panels_problem {
+                Some((_, problem)) => problem.message(),
+                None => format!("{} did not open for its panels", dir.display()),
+            });
+        }
+        Ok(Self {
+            open_panel: Some(0),
             ..boot
         })
     }
@@ -2552,9 +2691,14 @@ pub struct MeridianApp {
     /// once a frame — see [`MeridianApp::open_start`] for why the fetch is not
     /// simply done inside the click.
     fetching: Option<PendingStart>,
-    /// The run of the open Protocol this window started and has not landed —
-    /// see [`PendingRun`] and [`MeridianApp::run_protocol`].
-    running: Option<PendingRun>,
+    /// The runs this window started and has not landed, at most one per
+    /// Protocol folder — see [`PendingRun`] and [`MeridianApp::run_protocol`].
+    running: Vec<PendingRun>,
+    /// The shipped Protocol start waiting on its run in [`Self::running`] to
+    /// open its first panel — see [`PendingLanding`]. Only the start on
+    /// screen waits: a run whose start the reader left is settled when it
+    /// finishes, and lands on nothing.
+    landing: Option<PendingLanding>,
     /// The program a run is handed to. `None` until [`MeridianApp::running_with`]
     /// gives one — see [`crate::run::Runner`] for why a window does not assume
     /// the process it is in.
@@ -2763,6 +2907,7 @@ impl MeridianApp {
         mode: Mode,
     ) -> Self {
         let opened_id = boot.opened_id.clone();
+        let open_panel = boot.open_panel;
         let tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         let mut doc = ChartDoc::new(boot.composed, chart_host);
         if let Some(live) = boot.live {
@@ -2775,7 +2920,7 @@ impl MeridianApp {
         }
         doc.set_stacked_tiles(boot.stacked_tiles);
         let model = ProtocolModel::new(boot.protocol, boot.flow);
-        Self::assemble(
+        let mut app = Self::assemble(
             boot.focus,
             opened_id,
             layout,
@@ -2783,7 +2928,11 @@ impl MeridianApp {
             ProtocolDoc::new(model, protocol_host),
             tiles,
             mode,
-        )
+        );
+        if let Some(index) = open_panel {
+            app.open_panel_with_grid(index);
+        }
+        app
     }
 
     /// The same window over documents with no device behind them.
@@ -2810,6 +2959,7 @@ impl MeridianApp {
     #[must_use]
     pub fn headless_with_layout(boot: Boot, layout: SavedLayout, mode: Mode) -> Self {
         let opened_id = boot.opened_id.clone();
+        let open_panel = boot.open_panel;
         let tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         let mut doc = ChartDoc::headless(boot.composed);
         if let Some(live) = boot.live {
@@ -2822,7 +2972,7 @@ impl MeridianApp {
         }
         doc.set_stacked_tiles(boot.stacked_tiles);
         let model = ProtocolModel::new(boot.protocol, boot.flow);
-        Self::assemble(
+        let mut app = Self::assemble(
             boot.focus,
             opened_id,
             layout,
@@ -2830,7 +2980,11 @@ impl MeridianApp {
             ProtocolDoc::headless(model),
             tiles,
             mode,
-        )
+        );
+        if let Some(index) = open_panel {
+            app.open_panel_with_grid(index);
+        }
+        app
     }
 
     /// Assemble a window from its parts. `opened_id` is
@@ -3009,7 +3163,8 @@ impl MeridianApp {
             door_rows: Vec::new(),
             door_help: None,
             fetching: None,
-            running: None,
+            running: Vec::new(),
+            landing: None,
             runner: None,
             descriptions: None,
             rail_before_ask: None,
@@ -4024,8 +4179,9 @@ impl MeridianApp {
         self.canvas_split
     }
 
-    /// **Which way the grid pane drew the file** in the last frame — the state
-    /// the switch on its header band is in.
+    /// **Which way the reader chose to lay the grid out** — the state the
+    /// switch on its header band is in. The layout the grid is drawn in can
+    /// differ from it; [`Self::drawn_grid_layout`] answers that.
     #[must_use]
     pub const fn grid_layout(&self) -> crate::app::GridLayout {
         self.grid_layout
@@ -4044,13 +4200,35 @@ impl MeridianApp {
     /// where no band draws it. `ctx`, when there is one, takes the keyboard
     /// back from the field.
     fn take_grid_layout(&mut self, layout: crate::app::GridLayout, ctx: Option<&egui::Context>) {
-        if layout != crate::app::GridLayout::Rows && self.charts.doc.foot_asking().is_some() {
+        if self.drawn_as(layout) != crate::app::GridLayout::Rows
+            && self.charts.doc.foot_asking().is_some()
+        {
             if let (Some(field), Some(ctx)) = (self.charts.doc.foot_cancel(), ctx) {
                 ctx.memory_mut(|m| m.surrender_focus(field.id()));
             }
             self.restore_rail_after_ask();
         }
         self.grid_layout = layout;
+    }
+
+    /// **The layout the grid is drawn in**, which can differ from the one
+    /// chosen ([`Self::grid_layout`]). The transposed layout reads the page's column
+    /// of tiles as rows, so any document with no tile column draws its grid as
+    /// a table whichever layout is chosen; the choice is kept for the next
+    /// document that has one. The foot row, the keys that open it and the
+    /// ledger's opening height all follow this, not the choice.
+    #[must_use]
+    pub fn drawn_grid_layout(&self) -> crate::app::GridLayout {
+        self.drawn_as(self.grid_layout)
+    }
+
+    /// The layout the grid would be drawn in were `layout` chosen.
+    fn drawn_as(&self, layout: crate::app::GridLayout) -> crate::app::GridLayout {
+        if self.charts.doc.tile_columns().is_empty() {
+            crate::app::GridLayout::Rows
+        } else {
+            layout
+        }
     }
 
     /// **Where the table's one grid sits** — the canvas or the ledger. The
@@ -5141,6 +5319,9 @@ impl MeridianApp {
             let mut canvas_panes = CanvasPanes::default();
             let mut canvas_scroll = self.canvas_scroll;
             let mut grid_layout = self.grid_layout;
+            // Any document with no tile column draws its grid as a table
+            // whichever layout is chosen (see `drawn_grid_layout`).
+            let drawn_layout = self.drawn_grid_layout();
             let mut canvas_split = self.canvas_split;
             let mut picks = RegionPicks::default();
             // **Where the one grid draws this frame**, decided before either of
@@ -5165,6 +5346,10 @@ impl MeridianApp {
             });
             let mut tile_action: Option<TilesAction> = None;
             let mut tile_back = false;
+            // What the tiles say while this window runs their Protocol: the
+            // URLs its run fetches, for a tiles view that has no panels yet.
+            let tiles_running: Option<Vec<String>> =
+                self.running_here().map(|pending| pending.fetching.clone());
             let (ws, charts, protocol, affordances, tiles) = (
                 self.layout.workspace_mut(),
                 &mut self.charts,
@@ -5226,7 +5411,7 @@ impl MeridianApp {
                     .exact_size(rail_collapsed(ledger))
             } else {
                 Panel::bottom(panel_id(ledger, false).with(ledger_holds))
-                    .default_size(ledger_open_extent(ledger, ledger_holds, grid_layout, mode))
+                    .default_size(ledger_open_extent(ledger, ledger_holds, drawn_layout, mode))
                     .min_size(rail_min(ledger))
                     .resizable(true)
             };
@@ -5298,7 +5483,7 @@ impl MeridianApp {
                             focused,
                             &mut requests,
                             affordances,
-                            grid_layout,
+                            drawn_layout,
                         ));
                     } else if protocol.items.contains_key(&PaneKey::new(item)) {
                         draw_protocol_pane(
@@ -5510,7 +5695,13 @@ impl MeridianApp {
                         charts.doc.grid_density = None;
                         canvas_scroll = 0.0;
                         let area = ui.max_rect();
-                        tile_action = tiles.ui(ui, area, charts.doc.canvas_host(), mode);
+                        tile_action = tiles.ui(
+                            ui,
+                            area,
+                            charts.doc.canvas_host(),
+                            tiles_running.as_deref(),
+                            mode,
+                        );
                     } else if graph_on_canvas {
                         // No grid is drawn on this branch, and a density left
                         // standing from a previous frame is what a stale one
@@ -5601,14 +5792,14 @@ impl MeridianApp {
                         // canvas to itself, whichever way the grid reads.
                         let grid_here = canvas_draws_grid;
                         let transposed =
-                            grid_here && grid_layout == crate::app::GridLayout::Columns;
+                            grid_here && drawn_layout == crate::app::GridLayout::Columns;
                         // With the grid in the ledger and its saved layout
                         // columns, `draw_ledger_grid_pane` has already drawn
                         // the transposed rows into `ledger_grid_body`, and the
                         // page below is composed with that rect as its second
                         // view.
                         let ledger_transposed = !grid_here
-                            && grid_layout == crate::app::GridLayout::Columns
+                            && drawn_layout == crate::app::GridLayout::Columns
                             && ledger_grid_body.is_some();
                         if grid_here {
                             charts.doc.grid_density =
@@ -5713,7 +5904,7 @@ impl MeridianApp {
                                     mode,
                                     focused,
                                     split,
-                                    grid_layout,
+                                    drawn_layout,
                                     grid_here,
                                     ledger_grid_body,
                                     &mut requests,
@@ -5813,7 +6004,7 @@ impl MeridianApp {
             }
             match tile_action {
                 Some(TilesAction::Open(index)) => {
-                    self.open_panel_tile(index);
+                    self.open_panel_with_grid(index);
                 }
                 Some(TilesAction::Run) => {
                     self.run_protocol(&ctx);
@@ -6707,7 +6898,7 @@ impl MeridianApp {
         {
             return;
         }
-        let band_drawn = self.grid_layout == crate::app::GridLayout::Rows;
+        let band_drawn = self.drawn_grid_layout() == crate::app::GridLayout::Rows;
         for (token, longname) in self.grid_bindings.clone() {
             let asked = match longname {
                 "filter-rows-at-cursor" => {
@@ -8530,9 +8721,10 @@ impl MeridianApp {
         // inside one frame: the click that opens the only start reading real
         // published data was the one click that stopped the window answering.
         // `crate::remote` moves the bytes on a worker; the door keeps drawing,
-        // the card the click landed on wears the readout, and `draw` composes
-        // when they land — over a local file, which is the engine doing
-        // exactly what it did before at local-file speed.
+        // the card the click landed on, where the door draws one, wears the
+        // readout, and `draw` composes when they land — over a local file,
+        // which is the engine doing exactly what it did before at local-file
+        // speed.
         //
         // The start's own `spec:` is the whole of what is handed over:
         // `open_remote_start` derives the sources from it and `poll_fetch`
@@ -8549,6 +8741,12 @@ impl MeridianApp {
                 return;
             }
         }
+        // A Protocol start writes its folder and lands on it, running it on a
+        // worker when it has not run.
+        if let Some(protocol) = crate::starts::find(id).and_then(|start| start.protocol.as_ref()) {
+            self.open_shipped_protocol(ctx, id, protocol);
+            return;
+        }
         let opened = match crate::starts::load(id) {
             Ok(opened) => opened,
             Err(e) => {
@@ -8557,6 +8755,30 @@ impl MeridianApp {
             }
         };
         self.land_start(ctx, id, opened);
+    }
+
+    /// Open a shipped Protocol as the start `id`: write its folder to
+    /// [`crate::starts::protocol_path`], and land on it. A folder that has run
+    /// opens on its first panel beside its grid at once; one that has not is
+    /// shown as its tiles while the embedded runner runs it on a worker, and
+    /// opens on that panel when the run lands. A run that fails raises the
+    /// start's banner, naming the network and the URL when a fetch failed,
+    /// over the door, and leaves no database for the next open to trust.
+    ///
+    /// **Public, and taking the Protocol rather than reading it off `id`**,
+    /// for the reason [`Self::open_fetched_start`] takes its data: a test
+    /// hands in a Protocol of its own, such as one whose fetch points at a
+    /// port on localhost with nothing listening.
+    pub fn open_shipped_protocol(
+        &mut self,
+        ctx: &egui::Context,
+        id: &'static str,
+        protocol: &crate::starts::ShippedProtocol,
+    ) {
+        match crate::starts::write_protocol(protocol) {
+            Ok(dir) => self.land_start(ctx, id, crate::starts::Opened::Panels(dir)),
+            Err(e) => self.refuse_start(ctx, id, &e),
+        }
     }
 
     /// Open a start whose `spec` reads a source over the network **without
@@ -8685,10 +8907,10 @@ impl MeridianApp {
     /// `either_route_to_the_same_subject_leaves_the_same_window` is the claim
     /// that would quietly stop being true if there were two tails.
     fn land_start(&mut self, ctx: &egui::Context, id: &'static str, opened: crate::starts::Opened) {
-        let banner = NotificationId::composite("open-start", id);
         // A start is a new document, and a Protocol's panel tiles are the
-        // outgoing one's.
+        // outgoing one's, as is any start still waiting on its run.
         self.tiles = None;
+        self.landing = None;
         match opened {
             // A new chart document is a new set of things to say, and a
             // reason to stop saying the last one's.
@@ -8735,8 +8957,139 @@ impl MeridianApp {
                 };
                 self.adopt_boot(boot);
             }
+            crate::starts::Opened::Panels(dir) => {
+                if !self.land_panels(ctx, id, &dir) {
+                    return;
+                }
+            }
         }
-        self.notifications.dismiss(banner);
+        self.record_landed(ctx, id);
+    }
+
+    /// Install the tiles of the shipped Protocol folder `dir` and open its
+    /// first panel beside its grid, running it first when it has not run.
+    /// Answers whether the start has landed now; `false` when it was
+    /// refused, with its banner up, when its run is under way, which
+    /// `poll_run` lands through [`Self::landing`], and when its panel did not
+    /// open, which leaves the tiles saying why.
+    fn land_panels(
+        &mut self,
+        ctx: &egui::Context,
+        id: &'static str,
+        dir: &std::path::Path,
+    ) -> bool {
+        // A click on a start whose folder this window is still running, by
+        // an earlier click or by the tiles' own Run: the database is that
+        // run's, so it is neither checked nor opened. The tiles say the folder
+        // has not run, and the landing waits on the run already going, which
+        // is now a shipped start's run.
+        if let Some(pending) = self
+            .running
+            .iter_mut()
+            .find(|pending| pending.run.dir() == dir)
+        {
+            pending.shipped = true;
+            let flow = self.protocol.doc.model.flow();
+            self.adopt_boot(Boot {
+                panels_problem: Some((
+                    dir.to_path_buf(),
+                    crate::protocol_panels::OpenProblem::NotRun {
+                        dir: dir.to_path_buf(),
+                    },
+                )),
+                protocol: agent_protocol_inputs(dir),
+                flow,
+                ..Boot::empty()
+            });
+            self.landing = Some(PendingLanding {
+                id,
+                dir: dir.to_path_buf(),
+            });
+            return false;
+        }
+        let needs_run = crate::starts::needs_run(dir);
+        let manifest = dir.join(arc::spec::MANIFEST_FILENAME);
+        let boot = match Boot::open(
+            &manifest.to_string_lossy(),
+            self.protocol.doc.model.flow(),
+            None,
+        ) {
+            Ok(boot) => boot,
+            Err(e) => {
+                self.refuse_start(ctx, id, &e);
+                return false;
+            }
+        };
+        self.adopt_boot(boot);
+        let Some(tiles) = self.tiles.as_ref() else {
+            self.back_to_the_door();
+            self.refuse_start(
+                ctx,
+                id,
+                &format!("{} did not open for its panels", dir.display()),
+            );
+            return false;
+        };
+        if tiles.panels().is_some() {
+            self.dismiss_start_banner(id);
+            // Landed only when the panel opened: a panel that cannot draw
+            // leaves the tiles saying why, and a start recorded as opened
+            // would be restored on a panel that never opened.
+            return self.open_panel_with_grid(0);
+        }
+        let not_run = matches!(
+            tiles.problem(),
+            Some(crate::protocol_panels::OpenProblem::NotRun { .. })
+        );
+        if !(needs_run || not_run) {
+            // A problem a run would not answer, such as a database another
+            // process holds: the tiles say it, and retry when it can clear.
+            return true;
+        }
+        let tiles_dir = tiles.dir().to_path_buf();
+        if !self.run_panel_protocol(ctx) {
+            // `run_panel_protocol` raised its own banner saying why, and it
+            // stays up over the door.
+            self.back_to_the_door();
+            return false;
+        }
+        if let Some(pending) = self
+            .running
+            .iter_mut()
+            .find(|pending| pending.run.dir() == tiles_dir)
+        {
+            pending.shipped = true;
+        }
+        self.landing = Some(PendingLanding { id, dir: tiles_dir });
+        false
+    }
+
+    /// Empty both documents and the tiles, which is the front door: where a
+    /// shipped Protocol start that could not run leaves the window.
+    fn back_to_the_door(&mut self) {
+        self.tiles = None;
+        self.landing = None;
+        self.open_chart(Composed::empty());
+        self.protocol.doc.open(ProtocolInputs::empty());
+        self.remote_files = None;
+        self.documents_changed();
+    }
+
+    /// Take down the banner an earlier failed attempt at the start `id`
+    /// raised. Called once the start's folder has opened or its run has
+    /// settled, whether or not its panel then opens, since what the banner
+    /// said went wrong did not happen this time.
+    fn dismiss_start_banner(&mut self, id: &'static str) {
+        self.notifications
+            .dismiss(NotificationId::composite("open-start", id));
+    }
+
+    /// Record a start that has landed: its banner dismissed, the layout's
+    /// `opened` and the door's row for it, the toast and the window's title.
+    /// The tail of [`Self::land_start`], and of `poll_run` for a Protocol start
+    /// whose run landed later.
+    fn record_landed(&mut self, ctx: &egui::Context, id: &'static str) {
+        self.dismiss_start_banner(id);
         self.layout.live_mut().opened = Some(id.to_string());
         // …and remembered as a Protocol, which is the other half: `opened` is
         // what the next launch restores, and this is what the door lists. The
@@ -8851,6 +9204,8 @@ impl MeridianApp {
     /// everything else that belonged to the outgoing document, so each of them
     /// has to be put back **after** it rather than before.
     fn adopt_boot(&mut self, boot: Boot) {
+        self.landing = None;
+        let open_panel = boot.open_panel;
         self.tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         self.open_chart(boot.composed);
         if let Some(live) = boot.live {
@@ -8886,6 +9241,9 @@ impl MeridianApp {
             &self.protocol.doc.model,
             &self.charts.inspector_table,
         );
+        if let Some(index) = open_panel {
+            self.open_panel_with_grid(index);
+        }
     }
 
     /// Open the data file at `chosen` into the chart document: the file as a
@@ -9491,14 +9849,24 @@ impl MeridianApp {
         self.tiles.as_ref()
     }
 
-    /// **Open the tile at `index` as the chart document**: its panel as a live
-    /// dashboard over the snapshot the tiles were drawn from, so it answers a
-    /// brush, a click and an axis edit as any chart does, and Save writes the
-    /// panel's own file. A tile that holds problems has no chart to open.
+    /// **Open the tile at `index` as the chart document, beside its grid**:
+    /// its panel as a live dashboard over the snapshot the tiles were drawn
+    /// from, so it answers a brush, a click and an axis edit as any chart
+    /// does, and Save writes the panel's own file. A tile that holds problems
+    /// has no chart to open.
+    ///
+    /// The canvas draws it as the pane group a data file's dashboard gets: the
+    /// panel in the hero pane and the Data pane beside it. The grid lists the
+    /// rows of the panel's first mark, the first table the panel's marks read,
+    /// so a filter typed in the grid is checked against a table the charts
+    /// read and reaches them through the panel's crossfilter selections.
+    ///
+    /// Callable whether or not a tile is open, and after the tiles reload: it
+    /// reads only the tiles the window holds now.
     ///
     /// Answers whether the tile opened. A panel that will not load live says
     /// why in a banner, and the tiles stay.
-    pub fn open_panel_tile(&mut self, index: usize) -> bool {
+    pub fn open_panel_with_grid(&mut self, index: usize) -> bool {
         let opened = {
             let Some(panels) = self.tiles.as_ref().and_then(PanelTiles::panels) else {
                 return false;
@@ -9522,6 +9890,10 @@ impl MeridianApp {
                 self.charts.doc.spec_path = Some(file);
                 self.charts.doc.protocol_tables = tables;
                 self.charts.doc.wire_watch();
+                // The hero-and-grid pane group, as `adopt_boot` sets it for a
+                // data file's dashboard. A panel is one picture with no column
+                // of tiles beside it, so the column holds none.
+                self.charts.doc.set_stacked_tiles(Some(0));
                 if let Some(tiles) = self.tiles.as_mut() {
                     tiles.select(Some(index));
                 }
@@ -9611,17 +9983,23 @@ impl MeridianApp {
     /// the folder and the window does not write its spec first, as it does
     /// for one of its own. The tiles reload when the run lands.
     fn run_panel_protocol(&mut self, ctx: &egui::Context) -> bool {
+        let banner = NotificationId::new("run-protocol");
         let Some((dir, name)) = self
             .tiles
             .as_ref()
             .map(|t| (t.dir().to_path_buf(), t.name().to_string()))
         else {
+            eprintln!("could not run the Protocol: none is open");
+            self.notifications.raise(
+                Notification::new(banner, Severity::Warning, "Could not run this Protocol")
+                    .body("this window holds no Protocol to run"),
+            );
+            ctx.request_repaint();
             return false;
         };
-        if self.run_in_progress() {
+        if self.run_in_progress() || self.runs_folder(&dir) {
             return true;
         }
-        let banner = NotificationId::new("run-protocol");
         let Some(runner) = self.runner.as_ref() else {
             eprintln!("could not run the Protocol: no runner");
             self.notifications.raise(
@@ -9632,9 +10010,12 @@ impl MeridianApp {
         };
         self.notifications.dismiss(banner);
         let wake = ctx.clone();
-        self.running = Some(PendingRun {
+        let fetching = fetch_urls_in(&dir);
+        self.running.push(PendingRun {
             run: crate::run::Run::begin(runner, &dir, move || wake.request_repaint()),
             protocol: name,
+            fetching,
+            shipped: false,
         });
         ctx.request_repaint();
         true
@@ -9661,14 +10042,14 @@ impl MeridianApp {
     /// Answers whether a run of this document is under way when it returns:
     /// `false` for a window with no Protocol source to run (a chart spec, a
     /// shipped start, the front door), for a spec that would not write, and for
-    /// a window given no runner, the last two with a banner; `true` when it
+    /// a window given no runner, each with a banner; `true` when it
     /// started one, and when one was already running for this document — a
     /// second press while it runs is the same press.
     pub fn run_protocol(&mut self, ctx: &egui::Context) -> bool {
         let Some(source) = self.protocol.doc.model.source().cloned() else {
             return self.run_panel_protocol(ctx);
         };
-        if self.run_in_progress() {
+        if self.run_in_progress() || self.runs_folder(&source.dir) {
             return true;
         }
         let banner = NotificationId::new("run-protocol");
@@ -9700,9 +10081,12 @@ impl MeridianApp {
         };
         self.notifications.dismiss(banner);
         let wake = ctx.clone();
-        self.running = Some(PendingRun {
+        let fetching = fetch_urls_in(&source.dir);
+        self.running.push(PendingRun {
             run: crate::run::Run::begin(runner, &source.dir, move || wake.request_repaint()),
             protocol: source.name,
+            fetching,
+            shipped: false,
         });
         ctx.request_repaint();
         true
@@ -9715,18 +10099,31 @@ impl MeridianApp {
     /// not this document's, and the control over this document can be taken.
     #[must_use]
     pub fn run_in_progress(&self) -> bool {
-        self.running
-            .as_ref()
-            .is_some_and(|pending| self.holds_protocol(pending.run.dir(), &pending.protocol))
+        self.running_here().is_some()
     }
 
-    /// Whether a run this window started has yet to land, whichever document
-    /// it was started over. [`Self::run_in_progress`] answers for the document
-    /// open now; this one stays `true` after the reader opens something else,
-    /// until the private `poll_run` takes the finished run.
+    /// The run under way for the document this window holds now, if one is.
+    fn running_here(&self) -> Option<&PendingRun> {
+        self.running
+            .iter()
+            .find(|pending| self.holds_protocol(pending.run.dir(), &pending.protocol))
+    }
+
+    /// Whether a run this window started of the Protocol folder `dir` is
+    /// still going, whichever document is open: a second run of a folder
+    /// would write the database the first is writing.
+    fn runs_folder(&self, dir: &std::path::Path) -> bool {
+        self.running.iter().any(|pending| pending.run.dir() == dir)
+    }
+
+    /// Whether any run this window started has yet to land, whichever
+    /// document it was started over. [`Self::run_in_progress`] answers for the
+    /// document open now; this one stays `true` after the reader opens
+    /// something else, until the private `poll_run` has taken the runs that
+    /// finished (`coming_back_to_a_start_whose_run_another_start_interrupted_keeps_its_run`).
     #[must_use]
     pub fn run_outstanding(&self) -> bool {
-        self.running.is_some()
+        !self.running.is_empty()
     }
 
     /// Whether the document open now is the Protocol named `protocol` whose
@@ -9743,7 +10140,7 @@ impl MeridianApp {
                 .is_some_and(|tiles| tiles.dir() == dir && tiles.name() == protocol)
     }
 
-    /// Land a run that has finished, if one has.
+    /// Land each run that has finished.
     ///
     /// Called at the head of [`Self::draw`], once a frame — the shape
     /// `poll_fetch` has. A run of a Protocol the window no longer holds lands
@@ -9757,16 +10154,44 @@ impl MeridianApp {
     /// the grid's spot are the reader's and stay where they were — and the
     /// run's log is kept on the new model for the session.
     fn poll_run(&mut self, ctx: &egui::Context) {
-        let Some(pending) = self.running.as_mut() else {
-            return;
-        };
-        let Some(finished) = pending.run.take() else {
-            return;
-        };
+        let mut at = 0;
+        while at < self.running.len() {
+            match self.running[at].run.take() {
+                Some(finished) => {
+                    let pending = self.running.remove(at);
+                    self.land_run(ctx, pending, finished);
+                }
+                None => at += 1,
+            }
+        }
+    }
+
+    /// Land one finished run, of whichever Protocol it was: on the document
+    /// open now when it is that Protocol, and otherwise on nothing, settled
+    /// when it was a shipped start's.
+    fn land_run(
+        &mut self,
+        ctx: &egui::Context,
+        pending: PendingRun,
+        finished: crate::run::Finished,
+    ) {
         let dir = pending.run.dir().to_path_buf();
-        let protocol = std::mem::take(&mut pending.protocol);
-        self.running = None;
+        let protocol = pending.protocol;
+        let shipped = pending.shipped;
+        let landing = self.landing.take_if(|landing| landing.dir == dir);
         if !self.holds_protocol(&dir, &protocol) {
+            // Gone to another document: a start that was waiting on this run
+            // has nothing to land on. A shipped start's failed run still
+            // leaves no database, so its folder's next open runs it again; a
+            // reader's own Protocol keeps its database whatever this run did.
+            if shipped && !(finished.succeeded && finished.record.is_some()) {
+                let _ = crate::starts::settle_run(&dir, &finished);
+            }
+            return;
+        }
+        if let Some(landing) = landing {
+            self.land_shipped_run(ctx, landing, &finished);
+            ctx.request_repaint();
             return;
         }
         if let Some(tiles) = self.tiles.as_mut() {
@@ -9834,6 +10259,67 @@ impl MeridianApp {
         }
         self.protocol.doc.model.set_run_log(finished.log);
         ctx.request_repaint();
+    }
+
+    /// Land a shipped Protocol start whose run has finished: on a success, its
+    /// tiles drawn again from the run and its first panel opened beside its
+    /// grid; on a failure, its database removed and its banner raised over
+    /// the door.
+    ///
+    /// **Unsaved work is kept.** Opening the panel replaces the chart
+    /// document, so when the chart open now has edits no file holds, the panel
+    /// is not opened: the tiles stay, with the banner
+    /// [`Self::back_to_panel_tiles`] raises for the same reason, and the
+    /// reader opens the panel from its tile once the edits are saved or
+    /// undone. A failure leaves such a window as it is, with the banner.
+    fn land_shipped_run(
+        &mut self,
+        ctx: &egui::Context,
+        landing: PendingLanding,
+        finished: &crate::run::Finished,
+    ) {
+        // Settled first, so a failure's database is gone before anything
+        // reads the folder, and the tiles are drawn again only from a run
+        // that succeeded.
+        if let Err(why) = crate::starts::settle_run(&landing.dir, finished) {
+            eprintln!(
+                "the run of {} did not finish:\n{}",
+                landing.dir.display(),
+                finished.log
+            );
+            if !self.charts.doc.has_unsaved_work() {
+                self.back_to_the_door();
+            }
+            self.refuse_start(ctx, landing.id, &why);
+            return;
+        }
+        self.dismiss_start_banner(landing.id);
+        if let Some(tiles) = self.tiles.as_mut() {
+            if tiles.selected().is_none() {
+                tiles.reload();
+            }
+        }
+        self.refresh_agent_protocol();
+        // Not recorded as landed: the start did not open what it opens, and
+        // the next launch restoring it would claim it had.
+        if self.charts.doc.has_unsaved_work() {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new("panel-unsaved"),
+                    Severity::Warning,
+                    "The panel was not opened over unsaved edits",
+                )
+                .body("Save the chart, or undo its edits, then open the panel from its tile."),
+            );
+            return;
+        }
+        // Recorded when the panel opened, and not otherwise
+        // (`a_start_whose_panel_does_not_open_is_not_recorded_as_landed`).
+        if self.tiles.as_ref().and_then(PanelTiles::panels).is_some()
+            && self.open_panel_with_grid(0)
+        {
+            self.record_landed(ctx, landing.id);
+        }
     }
 
     /// Open the Protocol saved at `path` — the route a front door row for a
@@ -10319,8 +10805,8 @@ impl MeridianApp {
         // what has arrived, which is the one line on this surface that is
         // about the window rather than about the start. It replaces the
         // promise rather than being added under it: the card's height is
-        // `CARD_HEIGHT`, one grid row of which is this line, so a second line
-        // here would draw over the card below it — and
+        // `CARD_HEIGHT`, two grid rows of which are this line wrapped, so a
+        // third line here would draw over the card's summary — and
         // `no_two_texts_are_drawn_into_one_place` is what would say so.
         let foot = self
             .fetching
@@ -10337,10 +10823,14 @@ impl MeridianApp {
         // [`MeridianApp::front_door_card_foot`] with the text it put on the
         // screen, and a galley built inside the branch would leave that answer
         // to whichever string the push below happened to name.
-        let promise = ui.painter().layout_no_wrap(
+        // Wrapped to the card's text measure, not laid out on one line: at six
+        // cards to a row the measure is narrower than the promise, and an
+        // unwrapped line is clipped mid-word by the card's own rect.
+        let promise = ui.painter().layout(
             foot,
             egui::FontId::monospace(meridian_design::typography::CHART_LABEL_SIZE),
             chrome::colour(sem.text.muted),
+            CARD_WIDTH - 2.0 * spacing::SPACE_4,
         );
         // Off the galley's glyphs rather than off `foot`, for the reason
         // `door_row` records its three fields that way: what is answered is
@@ -11914,7 +12404,13 @@ fn draw_canvas_pane_group(
     );
     // The layout switch, at the trailing end of that pane's own band…
     let grid_header = pane_header_of(grid_rect, grid_body);
-    let picked = record_layout_switch(ui, charts, grid_header, layout, mode);
+    // A document with no tile column has no other layout to switch to, so
+    // the switch is not drawn (see `MeridianApp::drawn_grid_layout`).
+    let picked = if charts.doc.tile_columns().is_empty() {
+        None
+    } else {
+        record_layout_switch(ui, charts, grid_header, layout, mode)
+    };
     // …the spot switch beside it, in what that control leaves of the band…
     let spot_band = band_less_switch(
         grid_header,

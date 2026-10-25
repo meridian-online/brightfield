@@ -1,0 +1,79 @@
+title: "A fifth of 2025's M4.5+ earthquakes (1,794 of 8,502) struck off Kamchatka, 1,607 of them from the M8.8 of 29 July on"
+params:
+  sel: { select: crossfilter }
+hconcat:
+  - vconcat:
+    - plot:
+      - mark: dot
+        data: { from: earthquakes }
+        x: longitude
+        y: latitude
+        fill: "#b7b3ae"
+      - mark: hexbin
+        data: { from: earthquakes, filterBy: $sel }
+        x: longitude
+        y: latitude
+        fill: { count: }
+        binWidth: 14
+      - select: intervalXY
+        as: $sel
+      - legend: color
+      title: "A fifth of 2025's M4.5+ earthquakes (1,794 of 8,502) struck off Kamchatka, 1,607 of them from the M8.8 of 29 July on (colour capped at 110 a hexagon)"
+      colorScheme: viridis
+      colorDomain: [1, 110]
+      xDomain: Fixed
+      yDomain: Fixed
+      xLabel: longitude
+      yLabel: latitude
+      width: 760
+      height: 400
+    - plot:
+      - mark: barY
+        data: { from: earthquakes }
+        x: week
+        y: { count: }
+      - select: toggleX
+        as: $sel
+      - select: highlight
+        by: $sel
+      title: Earthquakes per week (first and last weeks partial)
+      xLabel: week
+      yLabel: earthquakes
+      width: 760
+      height: 200
+  - vconcat:
+    - plot:
+      - mark: rectY
+        data: { from: earthquakes }
+        x: { bin: depth }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: earthquakes, filterBy: $sel }
+        x: { bin: depth }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      title: Depth, of the quakes selected
+      xDomain: Fixed
+      xLabel: depth (km)
+      yLabel: earthquakes (log scale)
+      yScale: log
+      width: 360
+      height: 260
+    - plot:
+      - mark: barX
+        data: { from: earthquakes }
+        x: { count: }
+        y: magnitude_scale
+        fill: "#b7b3ae"
+      - mark: barX
+        data: { from: earthquakes, filterBy: $sel }
+        x: { count: }
+        y: magnitude_scale
+        label: count
+      title: "Magnitude scale of the quakes selected: the 4.5 floor is read on mixed scales"
+      yLabel: scale
+      width: 360
+      height: 200
+      marginLeft: 120

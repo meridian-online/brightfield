@@ -1,0 +1,26 @@
+name: nyc-yellow-taxi
+engine: duckdb
+engine_version: '>=1.0'
+params: {}
+dotenv: []
+timeout_sec: null
+defaults: null
+hooks:
+  on_init: null
+  on_success: null
+  on_failure: null
+  on_exit: null
+steps:
+  - name: fetch_trips
+    op: http_fetch
+    with:
+      out: data/yellow_tripdata_2026-01.parquet
+      url: https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2026-01.parquet
+    description: Fetch January 2026's yellow taxi trips from the NYC Taxi and Limousine Commission
+  - name: raw_trips
+    sql: models/01_raw_trips.sql
+    description: Load January 2026's yellow taxi trips as the TLC publishes them
+  - name: trips
+    sql: models/02_trips.sql
+    description: 'The trips the dashboard reads: those picked up in January 2026, with the hour and day of the week, the distance capped at 30 miles, whether the pickup was at one of the three airports, and whether the record is complete'
+assets: {}

@@ -51,6 +51,7 @@ fn both() -> Boot {
         opened_id: None,
         panels: None,
         panels_problem: None,
+        open_panel: None,
     }
 }
 

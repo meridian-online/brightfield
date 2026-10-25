@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "invoice": {"type": "string", "pattern": "^[CA]?[0-9]{6}$"},
+    "stock_code": {"type": "string", "minLength": 1},
+    "quantity": {"type": "string", "pattern": "^-?[0-9]+$"},
+    "invoice_time": {"type": "string", "pattern": "^20(09|10|11)-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}"},
+    "price": {"type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"},
+    "country": {"type": "string", "minLength": 1},
+    "customer_id_recorded": {"type": "string", "enum": ["true", "false"]},
+    "customer_first_month": {"type": "string", "pattern": "^20(09|10|11)-[0-9]{2}-01$"},
+    "customer_order_number": {"type": "string", "pattern": "^[1-9][0-9]*$"}
+  },
+  "required": ["invoice", "stock_code", "quantity", "invoice_time", "price", "country", "customer_id_recorded"]
+}

@@ -1,0 +1,106 @@
+title: "Training compute bends upward around 2010: since then it doubles in months, not years"
+params:
+  sel: { select: crossfilter }
+vconcat:
+  - plot:
+    - mark: dot
+      data: { from: models }
+      x: publication_year
+      y: training_compute_log10
+      fill: "#b7b3ae"
+    - mark: dot
+      data: { from: models, filterBy: $sel }
+      x: publication_year
+      y: training_compute_log10
+    - select: intervalXY
+      as: $sel
+    title: "Training compute bends upward around 2010: since then it doubles in months, not years. Data: Epoch AI, CC BY 4.0"
+    xDomain: Fixed
+    xLabel: year published
+    yLabel: "training compute, log10 FLOP (24 means 10^24)"
+    width: 1180
+    height: 420
+  - hconcat:
+    - plot:
+      - mark: rectY
+        data: { from: models }
+        x: { bin: publication_year }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: models, filterBy: $sel }
+        x: { bin: publication_year }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      title: Notable models published per year, compute recorded or not
+      xDomain: Fixed
+      xLabel: year published
+      yLabel: models
+      width: 560
+      height: 220
+    - plot:
+      - mark: barX
+        data: { from: models }
+        x: { count: }
+        y: compute_record
+        fill: "#b7b3ae"
+      - mark: barX
+        data: { from: models, filterBy: $sel }
+        x: { count: }
+        y: compute_record
+        label: count
+      title: How the compute is known, among the years, organisations and access clicked
+      yLabel: compute
+      width: 560
+      height: 220
+      marginLeft: 150
+  - hconcat:
+    - plot:
+      - mark: barX
+        data: { from: models }
+        x: { count: }
+        y: organization_type
+        sort: { y: -x, limit: 10 }
+        label: count
+      - select: toggleY
+        as: $sel
+      - select: highlight
+        by: $sel
+      title: Who built it
+      yLabel: organisation
+      width: 380
+      height: 190
+      marginLeft: 150
+    - plot:
+      - mark: barX
+        data: { from: models }
+        x: { count: }
+        y: access
+        sort: { y: -x, limit: 10 }
+        label: count
+      - select: toggleY
+        as: $sel
+      - select: highlight
+        by: $sel
+      title: How it can be reached
+      yLabel: access
+      width: 380
+      height: 190
+      marginLeft: 150
+    - plot:
+      - mark: barX
+        data: { from: models }
+        x: { count: }
+        y: domain
+        sort: { y: -x, limit: 8 }
+        label: count
+      - select: toggleY
+        as: $sel
+      - select: highlight
+        by: $sel
+      title: First-listed domain (top eight)
+      yLabel: domain
+      width: 380
+      height: 220
+      marginLeft: 150

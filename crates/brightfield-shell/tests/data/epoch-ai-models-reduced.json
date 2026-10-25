@@ -1,0 +1,18 @@
+{
+  "issuer": "Epoch AI",
+  "terms": {
+    "title": "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+    "url": "https://creativecommons.org/licenses/by/4.0/"
+  },
+  "credit": "Epoch AI, 'Data on AI models'. Published online at epoch.ai. Retrieved from https://epoch.ai/data/ai-models",
+  "source": {
+    "url": "https://epoch.ai/data/notable_ai_models.csv",
+    "cut_on": "2026-10-25"
+  },
+  "fixture": {
+    "path": "epoch-ai-models-reduced.parquet",
+    "rows": 1079,
+    "sha256": "c569f9a81271e58b438b9e82299a5737ed06abe81802d8549c6ba95f8e37b5fe",
+    "keeps": "Every model, with the eight columns the start's models step reads, from its own raw_models step; no Authors or Abstract"
+  }
+}

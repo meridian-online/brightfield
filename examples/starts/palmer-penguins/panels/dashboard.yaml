@@ -1,0 +1,93 @@
+title: "Longer bills are shallower across all penguins (r = −0.24), but deeper within each species (r = 0.39 to 0.65): the overall trend is the species mix"
+params:
+  sel: { select: crossfilter }
+hconcat:
+  - vconcat:
+    - plot:
+      - mark: dot
+        data: { from: penguins }
+        x: bill_length_mm
+        y: bill_depth_mm
+        fill: "#b7b3ae"
+      - mark: dot
+        data: { from: penguins, filterBy: $sel }
+        x: bill_length_mm
+        y: bill_depth_mm
+        fill: species
+      - select: intervalXY
+        as: $sel
+      - legend: color
+      title: "Longer bills are shallower across all penguins (r = −0.24), but deeper within each species (r = 0.39 to 0.65): the overall trend is the species mix"
+      colorDomain: [Adelie, Chinstrap, Gentoo]
+      colorRange: ["#0083c4", "#cca124", "#31aa8c"]
+      xDomain: Fixed
+      yDomain: Fixed
+      xLabel: bill length (mm)
+      yLabel: bill depth (mm)
+      width: 560
+      height: 400
+    - plot:
+      - mark: rectY
+        data: { from: penguins }
+        x: { bin: flipper_length_mm }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: penguins, filterBy: $sel }
+        x: { bin: flipper_length_mm }
+        y: { count: }
+      title: Flipper length, of the penguins selected
+      xDomain: Fixed
+      xLabel: flipper length (mm)
+      yLabel: penguins
+      width: 560
+      height: 180
+  - vconcat:
+    - plot:
+      - mark: barX
+        data: { from: penguins }
+        x: { count: }
+        y: species
+        sort: { y: -x, limit: 10 }
+        label: count
+      - select: toggleY
+        as: $sel
+      - select: highlight
+        by: $sel
+      title: Species
+      yLabel: species
+      width: 320
+      height: 180
+      marginLeft: 90
+    - plot:
+      - mark: barX
+        data: { from: penguins }
+        x: { count: }
+        y: island
+        sort: { y: -x, limit: 10 }
+        label: count
+      - select: toggleY
+        as: $sel
+      - select: highlight
+        by: $sel
+      title: Island
+      yLabel: island
+      width: 320
+      height: 180
+      marginLeft: 90
+    - plot:
+      - mark: barX
+        data: { from: penguins }
+        x: { count: }
+        y: record_status
+        fill: "#b7b3ae"
+      - mark: barX
+        data: { from: penguins, filterBy: $sel }
+        x: { count: }
+        y: record_status
+        label: count
+      title: Records complete, among the species and islands clicked
+      yLabel: record
+      width: 320
+      height: 200
+      marginLeft: 140

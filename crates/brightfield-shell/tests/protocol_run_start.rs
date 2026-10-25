@@ -49,6 +49,10 @@ fn run_model() -> ProtocolModel {
         Opened::Protocol(inputs) => ProtocolModel::new(*inputs, Flow::Vertical),
         Opened::Charts(_) => panic!("the run start opened a chart, not a Protocol"),
         Opened::File(path) => panic!("the run start opened a data file: {}", path.display()),
+        Opened::Panels(dir) => panic!(
+            "the run start opened a Protocol's panels: {}",
+            dir.display()
+        ),
     }
 }
 
@@ -186,6 +190,10 @@ fn the_run_less_start_still_reports_every_step_as_never_run() {
         Opened::Protocol(inputs) => ProtocolModel::new(*inputs, Flow::Vertical),
         Opened::Charts(_) => panic!("the manifest start opened a chart"),
         Opened::File(path) => panic!("the manifest start opened a data file: {}", path.display()),
+        Opened::Panels(dir) => panic!(
+            "the manifest start opened a Protocol's panels: {}",
+            dir.display()
+        ),
     };
     let states = model.step_states();
     assert!(
@@ -420,7 +428,8 @@ fn the_run_start_draws_the_contract_it_ships() {
 // AC4 — the run-less start is unchanged
 // ---------------------------------------------------------------------------
 
-/// The set now holds a Protocol start of **each** kind, which is what makes the
+/// The set holds a manifest start of **each** kind (the declaration, which is
+/// off the door, and the run, which is on it), which is what makes the
 /// run-less disclosure gate a two-sided check rather than a tautology.
 ///
 /// `a_start_that_opens_a_run_less_manifest_says_so_on_its_own_button` in
@@ -430,22 +439,23 @@ fn the_run_start_draws_the_contract_it_ships() {
 /// set that could ever exercise it. It has now.
 ///
 /// Watched redden, one mutation: `CROSSWALK_RUN`'s label given the
-/// `(no run)` mark — this test's last assertion fails, and so does the
-/// front-door gate it is about.
+/// `(no run)` mark — this test fails in its loop over the manifest starts,
+/// where the label and the flag disagree, and so does the front-door gate it
+/// is about.
 #[test]
-fn the_door_offers_a_protocol_of_each_kind_and_only_the_run_less_one_says_so() {
+fn the_manifest_starts_include_one_run_less_and_one_run_and_only_the_run_less_one_says_so() {
     let protocols: Vec<&starts::Start> = starts::STARTS
         .iter()
-        .filter(|s| s.on_door && s.spec.is_none())
+        .filter(|s| s.spec.is_none() && s.data.is_none() && s.protocol.is_none())
         .collect();
     assert!(
         protocols.iter().any(|s| s.run_less),
-        "no Protocol start on the door is run-less, so the `(no run)` \
+        "no manifest start is run-less, so the `(no run)` \
          disclosure has nothing to disclose"
     );
     assert!(
         protocols.iter().any(|s| !s.run_less),
-        "every Protocol start on the door is run-less, so the disclosure gate \
+        "every manifest start is run-less, so the disclosure gate \
          is checking one side of a question with one answer in it"
     );
     for start in &protocols {
@@ -458,4 +468,14 @@ fn the_door_offers_a_protocol_of_each_kind_and_only_the_run_less_one_says_so() {
             start.run_less
         );
     }
+    // The door decision: a run is on the door, and the run-less declaration
+    // is not.
+    assert!(
+        protocols.iter().any(|s| !s.run_less && s.on_door),
+        "no run start is on the door"
+    );
+    assert!(
+        protocols.iter().all(|s| !s.run_less || !s.on_door),
+        "a run-less start is on the door"
+    );
 }

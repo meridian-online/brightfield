@@ -49,8 +49,16 @@ pub fn fixture_dir(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// Point arc's database and history stores at this binary's temp root, and its
-/// engine at the pinned CLI when the environment names none.
+/// Point arc's database and history stores at this binary's temp root, turn
+/// its fetch cache off, and point its engine at the pinned CLI when the
+/// environment names none.
+///
+/// The cache is off rather than moved under the temp root: the root lives in a
+/// static and is never removed, so a cache there would leave every fetched
+/// file behind in the system's temp directory, and a cache in the
+/// developer's own `~/.arcform` would take a network test's ~110 MB of
+/// downloads. arc reads `off` as no cache, and a run with no cache fetches
+/// as it would with a cold one.
 ///
 /// The variables are set before the first test that copies a fixture reads
 /// them, and never again; every later caller waits on the one initialisation.
@@ -68,6 +76,7 @@ pub fn arc_stores() -> &'static Path {
         }
         std::env::set_var("ARCFORM_DB_DIR", &db);
         std::env::set_var("ARCFORM_HISTORY_DIR", &history);
+        std::env::set_var("ARCFORM_FETCH_CACHE", "off");
         if std::env::var_os(run::ENGINE_ENV).is_none() {
             let pinned =
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/duckdb-cli/duckdb");

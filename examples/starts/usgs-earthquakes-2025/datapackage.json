@@ -1,0 +1,37 @@
+{
+  "$schema": "https://datapackage.org/profiles/2.0/datapackage.json",
+  "name": "usgs-earthquakes-2025",
+  "title": "USGS earthquakes of magnitude 4.5 and up, 2025",
+  "description": "The 8,502 earthquakes of magnitude 4.5 and up in 2025 that the US Geological Survey's own network (net = us) reported, from the USGS's earthquake catalogue: when and where each struck, its depth, its magnitude and the scale that magnitude was measured on, and the USGS's description of the place. Events located by the other networks that contribute to the catalogue, and events of other types such as quarry blasts, are left out. scripts/cut-usgs-earthquakes.sh makes the file from the query below and says why.",
+  "licenses": [
+    {
+      "path": "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits",
+      "title": "Public domain: a work of the US federal government. The USGS asks that it be credited as the source."
+    }
+  ],
+  "sources": [
+    {
+      "path": "https://earthquake.usgs.gov/fdsnws/event/1/query?format=csv&starttime=2025-01-01&endtime=2026-01-01&minmagnitude=4.5",
+      "title": "U.S. Geological Survey, Earthquake Hazards Program, ANSS Comprehensive Earthquake Catalog (ComCat), queried through the USGS FDSN event service"
+    }
+  ],
+  "resources": [
+    {
+      "name": "earthquakes_2025",
+      "path": "data/earthquakes_2025.parquet",
+      "format": "parquet",
+      "mediatype": "application/vnd.apache.parquet",
+      "schema": {
+        "fields": [
+          { "name": "time", "type": "datetime", "description": "When the earthquake struck, in UTC." },
+          { "name": "latitude", "type": "number", "description": "Epicentre latitude, in decimal degrees.", "constraints": { "minimum": -90.0, "maximum": 90.0 } },
+          { "name": "longitude", "type": "number", "description": "Epicentre longitude, in decimal degrees.", "constraints": { "minimum": -180.0, "maximum": 180.0 } },
+          { "name": "depth", "type": "number", "description": "Depth of the event, in kilometres." },
+          { "name": "mag", "type": "number", "description": "Magnitude, on the scale magType names." },
+          { "name": "magType", "type": "string", "description": "The magnitude scale: mb (body wave) for most, mww, mwr or mwb (moment) for most of the larger ones." },
+          { "name": "place", "type": "string", "description": "The USGS's description of the region, such as a distance and bearing from a named place." }
+        ]
+      }
+    }
+  ]
+}

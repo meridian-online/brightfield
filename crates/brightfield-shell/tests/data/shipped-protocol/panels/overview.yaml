@@ -1,0 +1,13 @@
+title: Body mass against flipper length
+params:
+  sel: { select: crossfilter }
+plot:
+  - mark: dot
+    data: { from: measures, filterBy: $sel }
+    x: flipper_mm
+    y: mass_g
+    fill: species
+  - select: intervalX
+    as: $sel
+xLabel: flipper length (mm)
+yLabel: body mass (g)

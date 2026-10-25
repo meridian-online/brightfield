@@ -376,6 +376,24 @@ impl Run {
         &self.dir
     }
 
+    /// Wait for the run to finish, and say what it left: for a caller with no
+    /// frames to keep drawing, such as a boot that composes once the run has
+    /// made its tables.
+    #[must_use]
+    pub fn wait(mut self) -> Finished {
+        if let Some(finished) = self.take() {
+            return finished;
+        }
+        self.outcome.recv().unwrap_or_else(|_| Finished {
+            record: None,
+            log: format!(
+                "the run of {} stopped without an answer",
+                self.dir.display()
+            ),
+            succeeded: false,
+        })
+    }
+
     /// The run's result, once there is one — `None` while the child is still
     /// running.
     ///

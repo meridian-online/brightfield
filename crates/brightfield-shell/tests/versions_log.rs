@@ -96,7 +96,7 @@ fn a_save_in_brightfield_joins_the_log() {
         .iter()
         .position(|t| t.file == Path::new(SINCE))
         .expect("a tile for the panel");
-    assert!(app.open_panel_tile(at), "the tile opens as the chart");
+    assert!(app.open_panel_with_grid(at), "the tile opens as the chart");
     settle(&mut app, &ctx);
     let title = RowEdit {
         channel: ShelfChannel::X,

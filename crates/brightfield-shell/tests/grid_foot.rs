@@ -806,10 +806,12 @@ fn esc_is_the_windows_until_the_field_has_held_the_keys() {
     assert_eq!(win.asking(), None, "the drawn field did not take the Esc");
 }
 
-/// **A view changes the grid only**: the chart on the same step reads every
-/// row it read before, while a condition is previewed and once it is applied.
+/// **A previewed view changes the grid only; an applied one filters the chart
+/// too**: the chart on the same step reads every row it read before while a
+/// condition is only previewed, and exactly the rows the grid shows once it is
+/// applied.
 #[test]
-fn a_chart_on_the_same_step_keeps_its_rows_under_the_grids_view() {
+fn a_chart_on_the_same_step_follows_the_grids_applied_view_and_not_its_preview() {
     let mut win = Window::housing();
     let chart_rows = |win: &mut Window| -> u64 {
         let doc = win.app.chart_doc_mut();
@@ -836,11 +838,12 @@ fn a_chart_on_the_same_step_keeps_its_rows_under_the_grids_view() {
     );
 
     win.key(egui::Key::Enter);
-    assert!(win.drawn().rows < 240);
+    let shown = win.drawn().rows;
+    assert!(shown < 240);
     assert_eq!(
         chart_rows(&mut win),
-        before,
-        "the applied view narrowed the chart"
+        shown,
+        "the applied view did not narrow the chart to the rows the grid shows"
     );
 }
 
