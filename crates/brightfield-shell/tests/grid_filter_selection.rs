@@ -245,3 +245,19 @@ fn a_good_pick_under_a_grid_filter_clears_the_last_refusal() {
         "the old refusal is still over the new page"
     );
 }
+
+/// The same with no grid filter: nothing is published after the rebuild, so
+/// the rebuild itself must clear the refusal.
+#[test]
+fn a_good_pick_with_no_grid_filter_clears_the_last_refusal() {
+    let (_path, mut doc) = open();
+    assert!(!doc.preview_shelf_column(0, ShelfChannel::X, "no_such_column", &[]));
+    assert!(doc.chart_fault().is_some(), "the refusal left no fault");
+
+    assert!(doc.set_plot_scale(0, PlotAxis::Y, ScaleType::Log));
+
+    assert!(
+        doc.chart_fault().is_none(),
+        "the old refusal is still over the new page"
+    );
+}
