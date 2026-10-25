@@ -1331,8 +1331,7 @@ impl Boot {
     /// to load.
     ///
     /// A [`crate::starts::Start::protocol`] start whose folder has not run is
-    /// refused here, because this hands a run to no runner
-    /// (`a_boot_with_no_runner_refuses_a_protocol_that_has_not_run`). The
+    /// refused here, because this hands a run to no runner. The
     /// process this is called in may be a test harness, which reads `run` as a
     /// test-name filter (see [`crate::run::Runner`]), so this never starts the
     /// process as a runner

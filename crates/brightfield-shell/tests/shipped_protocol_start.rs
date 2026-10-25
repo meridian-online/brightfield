@@ -96,8 +96,13 @@ struct Window {
 
 impl Window {
     fn open(runner: Runner) -> Self {
+        Self::over(Boot::empty(), runner)
+    }
+
+    /// A window over `boot`, with a runner.
+    fn over(boot: Boot, runner: Runner) -> Self {
         let mut win = Self {
-            app: MeridianApp::headless_with_layout(Boot::empty(), default_layout(), Mode::Light)
+            app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light)
                 .running_with(Some(runner)),
             ctx: egui::Context::default(),
         };
@@ -591,5 +596,53 @@ fn a_boot_with_no_runner_refuses_a_protocol_that_has_not_run() {
     assert!(
         brightfield_shell::run::record_paths_newest_first(&dir).is_empty(),
         "a run was made with no runner given"
+    );
+}
+
+/// **A click on the start while the tiles' own Run is going lands on the
+/// panel**: the run the reader started from the tiles is not a start's run,
+/// and the click still keeps the database it is writing, takes that run as
+/// the start's, and opens the first panel when it lands.
+#[test]
+fn a_click_while_the_tiles_own_run_is_going_lands_on_the_panel() {
+    let _config = datasets_into_scratch("tiles_run_then_click");
+    let protocol = with_step(
+        "shipped-slow",
+        "slow",
+        "CREATE OR REPLACE TABLE \"slow\" AS SELECT sum(i) AS s FROM range(3000000000) t(i)\n",
+    );
+    let dir = starts::write_protocol(protocol).expect("the folder writes");
+    let manifest = dir.join("arcform.yaml");
+    let boot = Boot::open(&manifest.to_string_lossy(), Flow::Vertical, None)
+        .expect("the folder opens as its tiles");
+    let mut win = Window::over(boot, runner());
+    let ctx = win.ctx.clone();
+    assert!(win.app.run_protocol(&ctx), "the tiles' Run did not start");
+    let deadline = Instant::now() + PATIENCE;
+    while !has_database(&dir) {
+        assert!(Instant::now() < deadline, "the run never made its database");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        brightfield_shell::run::record_paths_newest_first(&dir).is_empty(),
+        "the run finished before the click, so this test proves nothing"
+    );
+    win.app.open_shipped_protocol(&ctx, ID, protocol);
+    assert!(
+        has_database(&dir),
+        "the click removed the database the tiles' run is writing"
+    );
+    let deadline = Instant::now() + PATIENCE;
+    while win.app.run_outstanding() {
+        assert!(Instant::now() < deadline, "the run never landed");
+        std::thread::sleep(Duration::from_millis(50));
+        win.frame();
+    }
+    win.settle();
+    assert!(win.banners().is_empty(), "{:?}", win.banners());
+    assert_eq!(
+        win.app.panel_tiles().and_then(|t| t.selected()),
+        Some(0),
+        "the run did not land on the first panel through the start's landing"
     );
 }
