@@ -1,0 +1,43 @@
+{
+  "$schema": "https://datapackage.org/profiles/2.0/datapackage.json",
+  "name": "palmer-penguins",
+  "title": "Palmer Penguins — 344 penguins of three species, Palmer Archipelago, Antarctica, 2007 to 2009",
+  "description": "Bill length and depth, flipper length, body mass and sex for 344 Adélie, Chinstrap and Gentoo penguins on three islands near Palmer Station, Antarctica, collected by Dr. Kristen Gorman with the Palmer Station Long Term Ecological Research program and published in the palmerpenguins R package by Allison Horst, Alison Hill and Kristen Gorman. Brightfield ships the package's penguins.csv unchanged; the source writes a missing value as NA.",
+  "licenses": [
+    {
+      "name": "CC0-1.0",
+      "path": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "title": "CC0 1.0 Universal, as the palmerpenguins package declares it"
+    }
+  ],
+  "sources": [
+    {
+      "path": "https://github.com/allisonhorst/palmerpenguins/blob/main/inst/extdata/penguins.csv",
+      "title": "inst/extdata/penguins.csv in the palmerpenguins R package"
+    },
+    {
+      "title": "Gorman, K. B., Williams, T. D. and Fraser, W. R. (2014). Ecological sexual dimorphism and environmental variability within a community of Antarctic penguins (genus Pygoscelis). PLoS ONE 9(3): e90081. https://doi.org/10.1371/journal.pone.0090081"
+    }
+  ],
+  "resources": [
+    {
+      "name": "penguins",
+      "path": "data/penguins.csv",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "schema": {
+        "missingValues": ["NA"],
+        "fields": [
+          { "name": "species", "type": "string", "description": "Adelie, Chinstrap or Gentoo." },
+          { "name": "island", "type": "string", "description": "Biscoe, Dream or Torgersen." },
+          { "name": "bill_length_mm", "type": "number", "description": "Culmen (bill) length, in millimetres." },
+          { "name": "bill_depth_mm", "type": "number", "description": "Culmen (bill) depth, in millimetres." },
+          { "name": "flipper_length_mm", "type": "integer", "description": "Flipper length, in millimetres." },
+          { "name": "body_mass_g", "type": "integer", "description": "Body mass, in grams." },
+          { "name": "sex", "type": "string", "description": "female or male, where it was recorded." },
+          { "name": "year", "type": "integer", "description": "The year the penguin was studied, 2007 to 2009." }
+        ]
+      }
+    }
+  ]
+}

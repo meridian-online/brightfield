@@ -47,6 +47,12 @@
 //!   [`CALIFORNIA_HOUSING`] fetches its authors' own file — but what the
 //!   chart draws is a query result either way, not a literal.
 //!
+//! [`PALMER_PENGUINS`] and [`USGS_EARTHQUAKES`] are shipped Protocols
+//! ([`Start::protocol`]) over well-known data bundled in their folders, so
+//! their first run reads no network. Each folder under `examples/starts/` is
+//! the Protocol a run of the `dashboard-from-data` skill wrote for its dataset,
+//! with a Frictionless `datapackage.json` naming the source and its terms.
+//!
 //! # Why an id rather than a path
 //!
 //! The id is what [`SavedLayout::opened`](brightfield_workbench::SavedLayout)
@@ -226,6 +232,13 @@ pub const BREAKDOWN: &str = "activity-breakdown";
 /// [`Start::data`] for what that changes and [`load`]'s data arm for how it
 /// opens. Its data is not in the binary: see [`crate::housing`] for why.
 pub const CALIFORNIA_HOUSING: &str = "california-housing";
+/// Palmer Penguins: a shipped Protocol over the palmerpenguins package's own
+/// CSV, bundled, whose panel lays bill length against bill depth by species.
+pub const PALMER_PENGUINS: &str = "palmer-penguins";
+/// The USGS's own earthquakes of magnitude 4.5 and up in 2025: a shipped
+/// Protocol over a bundled Parquet cut by `scripts/cut-usgs-earthquakes.sh`,
+/// whose panel is a map of where they struck beside their weeks.
+pub const USGS_EARTHQUAKES: &str = "usgs-earthquakes-2025";
 
 /// A data file a start **fetches**, and the name the click writes it under.
 ///
@@ -553,6 +566,47 @@ pub const STARTS: &[Start] = &[
         data: None,
         protocol: None,
     },
+    // Two shipped Protocols whose data is in the folder, so their first run
+    // reads no network. Each folder is the Protocol the `dashboard-from-data`
+    // skill wrote for its dataset, with its Frictionless descriptor beside it.
+    Start {
+        id: PALMER_PENGUINS,
+        label: "Open Palmer Penguins",
+        summary: "344 Antarctic penguins: bill shape by species, and the \
+                  trend that reverses inside each.",
+        fills: crate::app::CHART,
+        thumbnail: include_bytes!("../assets/starts/palmer-penguins.png"),
+        thumbnail_dark: include_bytes!("../assets/starts/palmer-penguins-dark.png"),
+        run_less: false,
+        remote: false,
+        on_door: false,
+        spec: None,
+        data: None,
+        protocol: Some(ShippedProtocol {
+            dir_name: PALMER_PENGUINS,
+            revision: 1,
+            files: PALMER_PENGUINS_FILES,
+        }),
+    },
+    Start {
+        id: USGS_EARTHQUAKES,
+        label: "Open the USGS earthquakes of 2025",
+        summary: "8,502 earthquakes of magnitude 4.5 and up, on a map beside \
+                  the weeks they struck.",
+        fills: crate::app::CHART,
+        thumbnail: include_bytes!("../assets/starts/usgs-earthquakes-2025.png"),
+        thumbnail_dark: include_bytes!("../assets/starts/usgs-earthquakes-2025-dark.png"),
+        run_less: false,
+        remote: false,
+        on_door: false,
+        spec: None,
+        data: None,
+        protocol: Some(ShippedProtocol {
+            dir_name: USGS_EARTHQUAKES,
+            revision: 1,
+            files: USGS_EARTHQUAKES_FILES,
+        }),
+    },
     // Placed after the generated chart starts rather than beside the
     // crosswalks, and the position is `for_pane`'s rather than the door's.
     // The door draws `on_door()` in this order, so on the first screen this
@@ -726,6 +780,76 @@ pub const HOUSING_FILE: &str = "california_housing.parquet";
 /// [`FetchedData::descriptor`].
 pub const HOUSING_DESCRIPTOR: &str =
     include_str!("../assets/starts/california_housing.datapackage.json");
+
+/// Every file of the [`PALMER_PENGUINS`] Protocol folder under `examples/starts/`.
+const PALMER_PENGUINS_FILES: &[(&str, &[u8])] = &[
+    (
+        "arcform.yaml",
+        include_bytes!("../../../examples/starts/palmer-penguins/arcform.yaml"),
+    ),
+    (
+        "models/01_raw_penguins.sql",
+        include_bytes!("../../../examples/starts/palmer-penguins/models/01_raw_penguins.sql"),
+    ),
+    (
+        "models/02_penguins.sql",
+        include_bytes!("../../../examples/starts/palmer-penguins/models/02_penguins.sql"),
+    ),
+    (
+        "schemas/raw_penguins.json",
+        include_bytes!("../../../examples/starts/palmer-penguins/schemas/raw_penguins.json"),
+    ),
+    (
+        "panels/dashboard.yaml",
+        include_bytes!("../../../examples/starts/palmer-penguins/panels/dashboard.yaml"),
+    ),
+    (
+        "datapackage.json",
+        include_bytes!("../../../examples/starts/palmer-penguins/datapackage.json"),
+    ),
+    (
+        "data/penguins.csv",
+        include_bytes!("../../../examples/starts/palmer-penguins/data/penguins.csv"),
+    ),
+];
+
+/// Every file of the [`USGS_EARTHQUAKES`] Protocol folder under `examples/starts/`.
+const USGS_EARTHQUAKES_FILES: &[(&str, &[u8])] = &[
+    (
+        "arcform.yaml",
+        include_bytes!("../../../examples/starts/usgs-earthquakes-2025/arcform.yaml"),
+    ),
+    (
+        "models/01_raw_earthquakes.sql",
+        include_bytes!(
+            "../../../examples/starts/usgs-earthquakes-2025/models/01_raw_earthquakes.sql"
+        ),
+    ),
+    (
+        "models/02_earthquakes.sql",
+        include_bytes!("../../../examples/starts/usgs-earthquakes-2025/models/02_earthquakes.sql"),
+    ),
+    (
+        "schemas/raw_earthquakes.json",
+        include_bytes!(
+            "../../../examples/starts/usgs-earthquakes-2025/schemas/raw_earthquakes.json"
+        ),
+    ),
+    (
+        "panels/dashboard.yaml",
+        include_bytes!("../../../examples/starts/usgs-earthquakes-2025/panels/dashboard.yaml"),
+    ),
+    (
+        "datapackage.json",
+        include_bytes!("../../../examples/starts/usgs-earthquakes-2025/datapackage.json"),
+    ),
+    (
+        "data/earthquakes_2025.parquet",
+        include_bytes!(
+            "../../../examples/starts/usgs-earthquakes-2025/data/earthquakes_2025.parquet"
+        ),
+    ),
+];
 
 const DASHBOARD_SPEC: &str = include_str!("../assets/starts/signals-dashboard.yaml");
 const DISTRIBUTION_SPEC: &str = include_str!("../assets/starts/reading-distribution.yaml");

@@ -1,0 +1,2 @@
+CREATE OR REPLACE TABLE "penguins" AS
+SELECT species, island, CAST(NULLIF(bill_length_mm, 'NA') AS DOUBLE) AS bill_length_mm, CAST(NULLIF(bill_depth_mm, 'NA') AS DOUBLE) AS bill_depth_mm, CAST(NULLIF(flipper_length_mm, 'NA') AS INTEGER) AS flipper_length_mm, CAST(NULLIF(body_mass_g, 'NA') AS INTEGER) AS body_mass_g, NULLIF(sex, 'NA') AS sex, CAST(year AS INTEGER) AS year, CASE WHEN bill_length_mm = 'NA' OR bill_depth_mm = 'NA' THEN 'bill not measured' WHEN sex = 'NA' THEN 'sex not recorded' ELSE 'complete' END AS record_status FROM raw_penguins

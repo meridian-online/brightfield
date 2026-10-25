@@ -1,0 +1,20 @@
+name: usgs-earthquakes-2025
+engine: duckdb
+engine_version: '>=1.0'
+params: {}
+dotenv: []
+timeout_sec: null
+defaults: null
+hooks:
+  on_init: null
+  on_success: null
+  on_failure: null
+  on_exit: null
+steps:
+  - name: raw_earthquakes
+    sql: models/01_raw_earthquakes.sql
+    description: Load the USGS's 2025 earthquakes of magnitude 4.5 and up as they arrive
+  - name: earthquakes
+    sql: models/02_earthquakes.sql
+    description: 'The earthquakes the dashboard reads: the week each struck, and the scale its magnitude was measured on'
+assets: {}
