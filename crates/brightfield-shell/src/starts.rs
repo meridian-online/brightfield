@@ -1094,27 +1094,10 @@ pub fn write_protocol(protocol: &ShippedProtocol) -> Result<std::path::PathBuf, 
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let _ = std::fs::remove_dir_all(&staging);
-    let written = (|| {
-        for (file, bytes) in protocol.files {
-            let relative = std::path::Path::new(file);
-            if relative.is_absolute()
-                || relative
-                    .components()
-                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
-            {
-                return Err(format!(
-                    "{}: the file {file:?} is not inside the folder",
-                    protocol.dir_name
-                ));
-            }
-            let target = staging.join(relative);
-            if let Some(dir) = target.parent() {
-                std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-            }
-            std::fs::write(&target, bytes).map_err(|e| format!("{}: {e}", target.display()))?;
-        }
-        Ok(())
-    })();
+    // Made once, here, and never again: if a sweep removes it mid-write, the
+    // writes below fail rather than making it again around part of a folder.
+    std::fs::create_dir(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
+    let written = write_staged(&staging, protocol.files, protocol.dir_name);
     if let Err(e) = written {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(e);
@@ -1136,21 +1119,102 @@ pub fn write_protocol(protocol: &ShippedProtocol) -> Result<std::path::PathBuf, 
     Ok(path)
 }
 
+/// Write `files` into the existing staging folder `staging`, the manifest
+/// last, and check each landed whole.
+///
+/// No directory is made with `create_dir_all`: each one under `staging` is
+/// made a level at a time, so a staging folder a sweep removed makes every
+/// later write fail instead of being made again. The manifest goes last, so
+/// a folder missing any of its files has no manifest and is written again by
+/// the next open, and a read-back of each file's length catches a file a
+/// sweep removed after it was written.
+fn write_staged(
+    staging: &std::path::Path,
+    files: &[(&str, &[u8])],
+    dir_name: &str,
+) -> Result<(), String> {
+    let mut ordered: Vec<&(&str, &[u8])> = files.iter().collect();
+    ordered.sort_by_key(|(file, _)| *file == arc::spec::MANIFEST_FILENAME);
+    for (file, bytes) in &ordered {
+        let relative = std::path::Path::new(file);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return Err(format!(
+                "{dir_name}: the file {file:?} is not inside the folder"
+            ));
+        }
+        if let Some(dir) = relative.parent() {
+            let mut made = staging.to_path_buf();
+            for part in dir.components() {
+                made.push(part);
+                match std::fs::create_dir(&made) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(e) => return Err(format!("{}: {e}", made.display())),
+                }
+            }
+        }
+        let target = staging.join(relative);
+        std::fs::write(&target, bytes).map_err(|e| format!("{}: {e}", target.display()))?;
+    }
+    for (file, bytes) in &ordered {
+        let target = staging.join(file);
+        let len = std::fs::metadata(&target).map_or(None, |m| Some(m.len()));
+        if len != Some(bytes.len() as u64) {
+            return Err(format!(
+                "{}: the staged file did not land whole",
+                target.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// How old another process's staging folder has to be before a write sweeps
+/// it: long past any write of a shipped folder, so a folder another process
+/// is writing now is never taken for one it left.
+const STALE_STAGING: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Whether `name` is the shape [`write_protocol`] stages `dir_name` under:
+/// `{dir_name}.{pid}-{n}.part`, with a digit run either side of the dash.
+fn is_staging_of(name: &str, dir_name: &str) -> bool {
+    let Some(middle) = name
+        .strip_prefix(dir_name)
+        .and_then(|rest| rest.strip_prefix('.'))
+        .and_then(|rest| rest.strip_suffix(".part"))
+    else {
+        return false;
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    middle
+        .split_once('-')
+        .is_some_and(|(pid, n)| digits(pid) && digits(n))
+}
+
 /// Remove the staging folders for `dir_name` in `parent` that another
-/// process left: a write that was stopped before its rename. This process's
-/// own are left alone, since another of its threads may be writing one.
+/// process left: a write stopped before its rename, older than
+/// [`STALE_STAGING`]. This process's own are left alone, since another of its
+/// threads may be writing one.
 fn sweep_stale_staging(parent: &std::path::Path, dir_name: &str) {
-    let prefix = format!("{dir_name}.");
-    let ours = format!(".{}-", std::process::id());
+    let ours = format!("{dir_name}.{}-", std::process::id());
     let Ok(entries) = std::fs::read_dir(parent) else {
         return;
     };
     for entry in entries.filter_map(Result::ok) {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with(&prefix)
-            && name.ends_with(".part")
-            && !name[dir_name.len()..].starts_with(&ours)
-        {
+        if !is_staging_of(&name, dir_name) || name.starts_with(&ours) {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age >= STALE_STAGING);
+        if old {
             let _ = std::fs::remove_dir_all(entry.path());
         }
     }
@@ -1273,5 +1337,38 @@ pub fn settle_run(dir: &std::path::Path, finished: &crate::run::Finished) -> Res
             "could not reach {} over the network, so the Protocol did not run:\n{log}",
             urls.join(", ")
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A writer whose staging folder is swept out from under it fails,
+    /// rather than making the folder again and renaming a part of it into
+    /// place.
+    #[test]
+    fn a_swept_staging_folder_fails_its_writer() {
+        let root = std::env::temp_dir().join(format!("bf-staging-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let staging = root.join("shipped.1-0.part");
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::remove_dir_all(&staging).unwrap();
+        let files: &[(&str, &[u8])] =
+            &[("models/a.sql", b"select 1"), ("arcform.yaml", b"name: x")];
+        assert!(write_staged(&staging, files, "shipped").is_err());
+        assert!(!staging.exists(), "the swept staging folder was made again");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The sweep matches only `{dir_name}.{pid}-{n}.part`.
+    #[test]
+    fn the_sweep_matches_only_its_own_folders_staging_names() {
+        assert!(is_staging_of("foo.12-3.part", "foo"));
+        assert!(!is_staging_of("foo.bar.12-3.part", "foo"));
+        assert!(!is_staging_of("foo.12.part", "foo"));
+        assert!(!is_staging_of("foo.12-x.part", "foo"));
+        assert!(!is_staging_of("foobar.12-3.part", "foo"));
     }
 }

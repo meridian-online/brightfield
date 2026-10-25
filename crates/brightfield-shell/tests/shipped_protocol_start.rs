@@ -540,8 +540,21 @@ fn a_folder_left_without_its_manifest_is_written_again() {
     let dir = starts::protocol_path(protocol);
     std::fs::create_dir_all(dir.join("panels")).unwrap();
     std::fs::write(dir.join("panels/stray.yaml"), "title: stray\n").unwrap();
+    // A staging folder another process left an hour ago, one another
+    // process is writing now, and an old one of a different folder whose
+    // name starts with this one's.
     let stale = dir.with_file_name("shipped-sample.123-0.part");
-    std::fs::create_dir_all(&stale).unwrap();
+    let in_flight = dir.with_file_name("shipped-sample.124-0.part");
+    let other = dir.with_file_name("shipped-sample.bar.125-0.part");
+    for folder in [&stale, &in_flight, &other] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    let an_hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+    for folder in [&stale, &other] {
+        std::fs::File::open(folder)
+            .and_then(|f| f.set_modified(an_hour_ago))
+            .unwrap_or_else(|e| panic!("age {}: {e}", folder.display()));
+    }
 
     assert_eq!(
         starts::write_protocol(protocol).expect("the folder writes"),
@@ -553,6 +566,14 @@ fn a_folder_left_without_its_manifest_is_written_again() {
         "the part-made folder's files were kept"
     );
     assert!(!stale.exists(), "the stale staging folder was left");
+    assert!(
+        in_flight.exists(),
+        "a staging folder another process is writing now was swept"
+    );
+    assert!(
+        other.exists(),
+        "another folder's staging folder was swept as this one's"
+    );
 }
 
 /// **`Boot` with no runner refuses a Protocol that has not run**, rather than

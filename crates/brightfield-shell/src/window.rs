@@ -1334,9 +1334,11 @@ impl Boot {
     /// refused here, because this hands a run to no runner
     /// (`a_boot_with_no_runner_refuses_a_protocol_that_has_not_run`). The
     /// process this is called in may be a test harness, which reads `run` as a
-    /// test-name filter (see [`crate::run::Runner`]). Startup reopens a
-    /// remembered Protocol start once its folder has run, and a caller with a
-    /// runner to give boots through [`Boot::start_running`].
+    /// test-name filter (see [`crate::run::Runner`]), so this never starts the
+    /// process as a runner
+    /// (`a_boot_with_no_runner_refuses_a_protocol_that_has_not_run`). Startup
+    /// reopens a remembered Protocol start once its folder has run, and a
+    /// caller with a runner to give boots through [`Boot::start_running`].
     pub fn start(id: &str, flow: Flow) -> Result<Self, String> {
         Self::start_running(id, flow, None)
     }
@@ -8914,15 +8916,17 @@ impl MeridianApp {
         id: &'static str,
         dir: &std::path::Path,
     ) -> bool {
-        // A second click on a start whose run this window is still making:
-        // the database is that run's, so it is neither checked nor opened.
-        // The tiles say the folder has not run, and the landing waits on the
-        // run already going.
-        if self
+        // A click on a start whose folder this window is still running, by
+        // an earlier click or by the tiles' own Run: the database is that
+        // run's, so it is neither checked nor opened. The tiles say the folder
+        // has not run, and the landing waits on the run already going, which
+        // is now a shipped start's run.
+        if let Some(pending) = self
             .running
-            .as_ref()
-            .is_some_and(|pending| pending.shipped && pending.run.dir() == dir)
+            .as_mut()
+            .filter(|pending| pending.run.dir() == dir)
         {
+            pending.shipped = true;
             let flow = self.protocol.doc.model.flow();
             self.adopt_boot(Boot {
                 panels_problem: Some((
