@@ -707,7 +707,7 @@ fn the_local_starts_open_with_the_network_denied_and_a_cold_extension_cache() {
 /// only one of them.**
 ///
 /// `starts::load` takes the data arm first and the Protocol arm next, so a
-/// start carrying two would open one and never the other — a silent wrong
+/// start carrying two would open the first and skip the other — a silent wrong
 /// answer where a refusal was wanted. The arm order is a decision about which
 /// of two mistakes to make; this is what says the situation does not arise.
 ///

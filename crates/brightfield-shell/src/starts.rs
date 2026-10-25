@@ -387,7 +387,7 @@ pub struct Start {
     /// what reads that back off two real opens.
     pub data: Option<FetchedData>,
     /// The **Protocol folder** this start writes, runs and opens on its
-    /// panel, or `None` for a start that opens anything else.
+    /// panel, or `None` for a chart, data-file or manifest start.
     ///
     /// Exclusive with [`spec`](Self::spec) and [`data`](Self::data), which
     /// `a_start_declares_a_spec_or_a_data_file_and_never_both` holds.

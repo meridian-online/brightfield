@@ -57,7 +57,8 @@ fn runner() -> Runner {
 }
 
 /// A runner that can find no DuckDB CLI: the `brightfield-shell` binary
-/// started with no `ARC_DUCKDB_BIN` and a search path holding nothing.
+/// started with `ARC_DUCKDB_BIN` unset and an empty directory as its search
+/// path.
 fn runner_without_duckdb(scratch: &Path) -> Runner {
     use std::os::unix::fs::PermissionsExt;
     let empty = scratch.join("empty-path");
@@ -352,7 +353,7 @@ fn a_shipped_protocol_start_with_no_duckdb_cli_says_so() {
 
 /// **A fetched Protocol start boots offline from its stand-in**: `Boot` runs
 /// the variant whose `http_fetch` steps are replaced by committed copies to
-/// completion, and draws its panels, with nothing listening at the URL.
+/// completion, and draws its panels, while the URL's port is closed.
 #[test]
 fn a_fetched_protocol_start_boots_from_its_stand_in_with_no_network() {
     let _config = datasets_into_scratch("stand_in");

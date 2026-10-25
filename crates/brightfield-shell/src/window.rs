@@ -1334,7 +1334,7 @@ impl Boot {
     }
 
     /// [`Boot::start`] with the runner a Protocol start that has not run is
-    /// handed to, or none, which refuses such a start.
+    /// handed to. With `None`, such a start is refused.
     ///
     /// # Errors
     ///
@@ -10108,7 +10108,7 @@ impl MeridianApp {
     /// grid; on a failure, its database removed and its banner raised over
     /// the door.
     ///
-    /// **Unsaved work is never dropped.** Opening the panel replaces the chart
+    /// **Unsaved work is kept.** Opening the panel replaces the chart
     /// document, so when the chart open now has edits no file holds, the panel
     /// is not opened: the tiles stay, with the banner
     /// [`Self::back_to_panel_tiles`] raises for the same reason, and the
