@@ -1210,6 +1210,41 @@ fn a_protocol_panel_opens_beside_the_grid_of_the_table_it_reads() {
         (countries as u64, 9),
         "under the transposed layout the panel's grid drew no table"
     );
+    // …and its foot row takes a filter there, as it does in the rows layout:
+    // an ask opened under the transposed layout outlives the frame.
+    win.app.chart_doc_mut().foot_offer(
+        brightfield_shell::grid_foot::FootField::Where,
+        "grouping = 'G7'".into(),
+    );
+    win.settle();
+    assert!(
+        win.app.chart_doc().foot_asking().is_some(),
+        "the frame put back the filter being typed in the panel's grid"
+    );
+    assert!(
+        win.app.chart_doc().grid_layout_switch.is_none(),
+        "a panel with no column to read as rows drew the layout switch"
+    );
+
+    // The committed panel declares no crossfilter selection: a typed filter
+    // narrows its grid, leaves its chart whole, and raises no fault.
+    win.app.chart_doc_mut().foot_cancel();
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("grouping = 'G7'".into()),
+            ..Default::default()
+        });
+    win.settle();
+    assert_eq!(grid_drew(&win).0, 7, "the grid did not take the filter");
+    assert!(
+        win.app.chart_doc().chart_fault().is_none(),
+        "a filter on a panel with no crossfilter raised a fault: {:?}",
+        win.app
+            .chart_doc()
+            .chart_fault()
+            .map(|f| (f.title, f.detail))
+    );
 }
 
 /// A filter typed in a Protocol panel's grid narrows the panel's charts when

@@ -4044,13 +4044,35 @@ impl MeridianApp {
     /// where no band draws it. `ctx`, when there is one, takes the keyboard
     /// back from the field.
     fn take_grid_layout(&mut self, layout: crate::app::GridLayout, ctx: Option<&egui::Context>) {
-        if layout != crate::app::GridLayout::Rows && self.charts.doc.foot_asking().is_some() {
+        if self.drawn_as(layout) != crate::app::GridLayout::Rows
+            && self.charts.doc.foot_asking().is_some()
+        {
             if let (Some(field), Some(ctx)) = (self.charts.doc.foot_cancel(), ctx) {
                 ctx.memory_mut(|m| m.surrender_focus(field.id()));
             }
             self.restore_rail_after_ask();
         }
         self.grid_layout = layout;
+    }
+
+    /// **The layout the grid is drawn in**, which is not always the one chosen
+    /// ([`Self::grid_layout`]). The transposed layout reads the page's column
+    /// of tiles as rows, so any document with no tile column draws its grid as
+    /// a table whichever layout is chosen; the choice is kept for the next
+    /// document that has one. The foot row, the keys that open it and the
+    /// ledger's opening height all follow this, not the choice.
+    #[must_use]
+    pub fn drawn_grid_layout(&self) -> crate::app::GridLayout {
+        self.drawn_as(self.grid_layout)
+    }
+
+    /// The layout the grid would be drawn in were `layout` chosen.
+    fn drawn_as(&self, layout: crate::app::GridLayout) -> crate::app::GridLayout {
+        if self.charts.doc.tile_columns().is_empty() {
+            crate::app::GridLayout::Rows
+        } else {
+            layout
+        }
     }
 
     /// **Where the table's one grid sits** — the canvas or the ledger. The
@@ -5141,15 +5163,9 @@ impl MeridianApp {
             let mut canvas_panes = CanvasPanes::default();
             let mut canvas_scroll = self.canvas_scroll;
             let mut grid_layout = self.grid_layout;
-            // The transposed layout reads the page's column of tiles as rows. A
-            // document with no such column, such as a Protocol's panel, has none
-            // to read, so its grid is drawn as a table whichever layout is chosen.
-            // The chosen layout is kept, for the next document that has a column.
-            let drawn_layout = if self.charts.doc.tile_columns().is_empty() {
-                crate::app::GridLayout::Rows
-            } else {
-                grid_layout
-            };
+            // Any document with no tile column draws its grid as a table
+            // whichever layout is chosen (see `drawn_grid_layout`).
+            let drawn_layout = self.drawn_grid_layout();
             let mut canvas_split = self.canvas_split;
             let mut picks = RegionPicks::default();
             // **Where the one grid draws this frame**, decided before either of
@@ -5235,7 +5251,7 @@ impl MeridianApp {
                     .exact_size(rail_collapsed(ledger))
             } else {
                 Panel::bottom(panel_id(ledger, false).with(ledger_holds))
-                    .default_size(ledger_open_extent(ledger, ledger_holds, grid_layout, mode))
+                    .default_size(ledger_open_extent(ledger, ledger_holds, drawn_layout, mode))
                     .min_size(rail_min(ledger))
                     .resizable(true)
             };
@@ -6716,7 +6732,7 @@ impl MeridianApp {
         {
             return;
         }
-        let band_drawn = self.grid_layout == crate::app::GridLayout::Rows;
+        let band_drawn = self.drawn_grid_layout() == crate::app::GridLayout::Rows;
         for (token, longname) in self.grid_bindings.clone() {
             let asked = match longname {
                 "filter-rows-at-cursor" => {
@@ -11937,7 +11953,13 @@ fn draw_canvas_pane_group(
     );
     // The layout switch, at the trailing end of that pane's own band…
     let grid_header = pane_header_of(grid_rect, grid_body);
-    let picked = record_layout_switch(ui, charts, grid_header, layout, mode);
+    // A document with no tile column has no other layout to switch to, so
+    // the switch is not drawn (see `MeridianApp::drawn_grid_layout`).
+    let picked = if charts.doc.tile_columns().is_empty() {
+        None
+    } else {
+        record_layout_switch(ui, charts, grid_header, layout, mode)
+    };
     // …the spot switch beside it, in what that control leaves of the band…
     let spot_band = band_less_switch(
         grid_header,
