@@ -162,23 +162,6 @@ impl Window {
         self.run(vec![Vec::new(), Vec::new()]);
     }
 
-    /// Click the button the empty **pane** offered, aimed at the rect the
-    /// last frame recorded rather than at a coordinate typed here. On a door
-    /// frame that rect is the gallery card of the start that fills the pane —
-    /// the same affordance, drawn in the door's arrangement.
-    fn take_the_way_in(&mut self, pane: PaneKey) {
-        let target = self
-            .app
-            .affordance_rect(pane)
-            .unwrap_or_else(|| panic!("{pane} drew no way in for a user to take"));
-        assert!(
-            self.screen.contains_rect(target),
-            "{pane} drew its way in at {target:?}, outside the window — \
-             nothing could click it"
-        );
-        self.run(vec![click_at(target.center()), Vec::new()]);
-    }
-
     /// Click the front door's gallery card for the start `id`, where the last
     /// frame actually drew it.
     fn take_the_card(&mut self, id: &str) {
@@ -229,6 +212,25 @@ impl Window {
             "the {id} row drew at {target:?}, outside the window — nothing              could click it"
         );
         self.run(vec![click_at(target.center()), Vec::new()]);
+    }
+
+    /// A window over the empty boot whose layout remembers the start `id`,
+    /// with that start taken through its Protocols row. For a start the door
+    /// draws no card for: the row calls the same `open_start` a card does.
+    fn opened_by_row(id: &'static str) -> Self {
+        let mut win = Self {
+            app: MeridianApp::headless_with_layout(
+                Boot::empty(),
+                layout_remembering(&[(id, "remembered", RunState::NeverRun, 60)]),
+                Mode::Light,
+            ),
+            ctx: egui::Context::default(),
+            screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+        };
+        win.settle();
+        win.take_the_row(id);
+        win.settle();
+        win
     }
 
     /// Press the registry's `open-home` keystroke — the way back to the door
@@ -429,7 +431,7 @@ fn every_shipped_start_loads_into_a_document_with_something_in_it() {
     // off it, and this assertion went on reading the wrong one until the door
     // grew a third card and the shipped set a sixth entry.
     assert!(
-        (2..=5).contains(&starts::on_door_count()),
+        (2..=7).contains(&starts::on_door_count()),
         "the door offers {} card(s) — few enough to choose from at a glance, \
          enough to read as a gallery, is the recorded size",
         starts::on_door_count()
@@ -637,13 +639,10 @@ fn the_local_starts_open_with_the_network_denied_and_a_cold_extension_cache() {
         }
         let start = the_data_file_start();
         seed_the_data_file(start);
-        let mut win = Window::open(Boot::empty());
-        win.settle();
-        win.take_the_card(start.id);
-        win.settle();
+        let win = Window::opened_by_row(start.id);
         assert!(
             !win.app.front_door_is_live(),
-            "clicking {} with its file on disk and the network denied left \
+            "taking {} with its file on disk and the network denied left \
              the window on the door",
             start.id
         );
@@ -851,15 +850,9 @@ fn the_card_and_the_picker_land_on_one_window() {
     // network.
     let path = seed_the_data_file(start);
 
-    let mut clicked = Window::open(Boot::empty());
-    clicked.settle();
-    assert!(
-        clicked.app.front_door_is_live(),
-        "the window this test clicks on is not the door: sections {:?}",
-        clicked.app.front_door_sections()
-    );
-    clicked.take_the_card(start.id);
-    clicked.settle();
+    // The door draws no card for this start any more, so the click is the
+    // Protocols row's, which raises the same open.
+    let mut clicked = Window::opened_by_row(start.id);
 
     // The same path, opened the way the dialog opens one.
     let mut picked = Window::open(Boot::empty());
@@ -1026,10 +1019,7 @@ fn the_card_records_what_the_next_launch_restores() {
     let start = the_data_file_start();
     seed_the_data_file(start);
 
-    let mut first = Window::open(Boot::empty());
-    first.settle();
-    first.take_the_card(start.id);
-    first.settle();
+    let first = Window::opened_by_row(start.id);
     assert!(
         !first.app.front_door_is_live(),
         "clicking {} left the window on the door",
@@ -1174,10 +1164,16 @@ fn a_launch_restoring_the_data_file_start_with_no_file_opens_the_door() {
     );
     let mut win = Window::open(boot);
     win.settle();
+    // The door no longer carries a card for this start, so the click that
+    // fetches is the Protocols row's; the start itself is still in the
+    // binary for a later launch or a row to open.
     assert!(
-        win.app.front_door_card_rect(start.id).is_some(),
-        "the door the restore opened has no card for {}, so nothing on it \
-         fetches the file",
+        win.app.front_door_is_live(),
+        "the window the restore opened is not the door"
+    );
+    assert!(
+        starts::find(start.id).is_some(),
+        "{} is no longer a shipped start, so a remembered one resolves to nothing",
         start.id
     );
 }
@@ -1491,7 +1487,7 @@ fn the_door_offers_only_starts_that_declare_themselves_for_it() {
     // control that moves the canvas between the two: the protocol is the
     // navigator rail rather than a peer view, and the pair of
     // `selectable_label`s that used to switch between them is gone.
-    win.take_the_card(starts::CROSSWALK);
+    win.take_the_card(starts::CROSSWALK_RUN);
     win.settle();
     assert!(
         win.app.graph_on_canvas(),
@@ -1513,44 +1509,53 @@ fn the_door_offers_only_starts_that_declare_themselves_for_it() {
     }
 }
 
-/// On a door frame, the pane's recorded way in *is* the gallery card of the
-/// start that fills it — and where that start has no card, the pane records no
-/// way in either. One answer to "where is the way in" across both arrangements
-/// of the same affordance, and one answer to "and when there is not one".
+/// On a door frame, a pane's recorded way in is the gallery card of the FIRST
+/// start that fills it, and where that start has no card the pane records no
+/// way in. One answer to "where is the way in" across both arrangements of the
+/// same affordance, and one answer to "and when there is not one".
 ///
-/// Both arms are here because the door's way-in register is keyed on the card
-/// rather than on the pane: a build that registered the pane whether or not it
-/// drew a card would hand a caller a rectangle with no control under it, and
-/// the helper this file clicks with would land on empty background and then
-/// assert about a window no click reached.
-///
-/// This is the compatibility `layout_wiring.rs` leans on — that file clicks a
-/// pane's affordance on an empty boot and expects the start behind it. It
-/// clicks the **canvas** pane, which is the arm below that still resolves; it
-/// used to click the chart pane's, which is now the arm that resolves to
-/// `None`.
+/// The door shows six starts and neither pane's first start is among them, so
+/// both arms here are the "no way in" answer: the chart pane's start and the
+/// canvas pane's are off the door, and the run of the crosswalk, which fills
+/// the canvas pane but is not the first to, draws a card that is not that
+/// pane's way in. The register is keyed on the card rather than on the pane: a
+/// build that registered the pane whether or not it drew a card would hand a
+/// caller a rectangle with no control under it.
 ///
 /// Watched redden, one mutation: registering a way in for the pane of each
 /// shipped start after `datasets_section` draws its cards, rather than
-/// registering inside `door_card` for the card actually drawn. The chart
-/// pane's entry comes back and the second arm fails at "the door recorded a
-/// way in for the chart pane over a start it drew no card for".
+/// registering inside `door_card` for the card actually drawn. The pane's
+/// entry comes back and the assertions fail at "the door recorded a way in for
+/// the chart pane over a start it drew no card for".
 #[test]
 fn the_pane_way_in_is_the_doors_card_for_the_start_that_fills_it() {
     let mut win = Window::open(Boot::empty());
     win.settle();
 
+    // Neither pane's first start is on the door now, so neither pane records
+    // a way in. The run of the crosswalk is on the door and fills the canvas
+    // pane, but it is not the FIRST start that fills it, so its card is not
+    // that pane's way in either.
     let canvas_start = starts::for_pane(CANVAS).expect("a start fills the canvas pane");
     assert!(
-        canvas_start.on_door,
-        "the canvas pane's start does not declare itself for the door, so the \
-         arm below is not the case this test names"
+        !canvas_start.on_door,
+        "the canvas pane's start is on the door, so the arm below asserts the \
+         wrong half of the partition"
     );
-    assert_eq!(
-        win.app.affordance_rect(CANVAS_PANE),
-        win.app.front_door_card_rect(canvas_start.id),
-        "the canvas pane's way in and the crosswalk card disagree about where \
-         the same affordance is"
+    assert!(
+        win.app.front_door_card_rect(canvas_start.id).is_none(),
+        "{} draws a card after all",
+        canvas_start.id
+    );
+    let run = starts::find(starts::CROSSWALK_RUN).expect("the run start ships");
+    assert!(
+        win.app.front_door_card_rect(run.id).is_some(),
+        "the run of the crosswalk drew no card"
+    );
+    assert!(
+        win.app.affordance_rect(CANVAS_PANE).is_none(),
+        "the door recorded a way in for the canvas pane, over a card that is \
+         not the first start to fill it — a rectangle with no control under it"
     );
 
     // The complementary arm. The chart pane's start is still what that pane's
@@ -1574,17 +1579,6 @@ fn the_pane_way_in_is_the_doors_card_for_the_start_that_fills_it() {
         "the door recorded a way in for the chart pane over a start it drew no \
          card for — a rectangle with no control under it"
     );
-
-    // And the recorded way in is not merely the same rectangle — taking it
-    // does what taking the card does, which is the interaction the other
-    // suites replay.
-    win.take_the_way_in(CANVAS_PANE);
-    win.settle();
-    assert!(
-        win.app.graph_on_canvas(),
-        "the pane's recorded way in opened nothing"
-    );
-    assert_eq!(win.app.layout().opened.as_deref(), Some(canvas_start.id));
 }
 
 /// The crosswalk's card, taken from the **charts** view, lands on a **built
@@ -1617,7 +1611,7 @@ fn the_crosswalk_card_lands_on_a_rendered_graph() {
     let mut win = Window::open(Boot::empty());
     win.settle();
     assert!(!win.app.graph_on_canvas());
-    win.take_the_card(starts::CROSSWALK);
+    win.take_the_card(starts::CROSSWALK_RUN);
     win.settle();
 
     let model = win.app.protocol_model();
@@ -1653,7 +1647,7 @@ fn the_crosswalk_card_lands_on_a_rendered_graph() {
     );
     assert_eq!(
         win.app.layout().opened.as_deref(),
-        Some(starts::CROSSWALK),
+        Some(starts::CROSSWALK_RUN),
         "nothing recorded what was opened, so the next launch cannot restore it"
     );
 }
@@ -1810,6 +1804,40 @@ fn the_door_heads_two_sections_and_says_neither_of_the_names_it_replaced() {
 /// short by one. The assertion stays because the width the set needs is a
 /// decision about the door: a set that outgrows one row of the default window
 /// comes up for that decision here rather than wrapping quietly.
+#[test]
+fn the_six_cards_lie_on_one_row_at_the_default_window_size() {
+    let mut win = Window::open(Boot::empty());
+    win.settle();
+
+    let rects: Vec<egui::Rect> = starts::on_door()
+        .map(|s| {
+            win.app
+                .front_door_card_rect(s.id)
+                .unwrap_or_else(|| panic!("no card drawn for {}", s.id))
+        })
+        .collect();
+    assert_eq!(rects.len(), 6, "the door shows six starts");
+    let top = rects[0].top();
+    for (n, r) in rects.iter().enumerate() {
+        assert_eq!(
+            r.top(),
+            top,
+            "card {n} drew at {r:?}, not on the first card's row at y = {top}: the gallery wrapped"
+        );
+        assert!(
+            win.screen.contains_rect(*r),
+            "card {n} drew at {r:?}, outside the {:?} window",
+            win.screen.size()
+        );
+        if n > 0 {
+            assert!(
+                r.left() > rects[n - 1].right(),
+                "card {n} overlaps its neighbour"
+            );
+        }
+    }
+}
+
 #[test]
 fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
     let mut win = Window::open(Boot::empty());
@@ -2107,7 +2135,10 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
     seed_the_data_file(the_data_file_start());
     let mut walked = 0;
     for start in starts::on_door() {
-        if start.remote && start.data.is_none() {
+        // A fetched start reads the network, and a shipped Protocol start
+        // that has not run needs a runner this window does not have; both
+        // have their own suites (`remote_start.rs`, `shipped_protocol_start.rs`).
+        if (start.remote && start.data.is_none()) || start.protocol.is_some() {
             continue;
         }
         walked += 1;
@@ -2167,16 +2198,19 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
             start.id
         );
     }
-    // Four starts declare themselves for the door and one of the four reads
-    // over the network, so three are what a hermetic run can compare. Written
-    // as the number rather than as the same filter the loop is built from,
-    // because a filter compared against itself agrees whatever it yields.
+    // Six starts declare themselves for the door. Three read over the network
+    // and two are shipped Protocols that need a runner to open, so the run of
+    // the crosswalk is what a hermetic run can compare by both routes.
+    // Written as the number rather than as the same filter the loop is built
+    // from, because a filter compared against itself agrees whatever it
+    // yields.
     assert_eq!(
-        walked, 3,
+        walked, 1,
         "{walked} start(s) were compared, where the Datasets section offers \
-         three a hermetic run can take — a walk of nothing here would leave \
-         both routes unasserted and this test green, and a walk of a different \
-         number means the section changed without this one being looked at"
+         one a hermetic run can take by both routes — a walk of nothing here \
+         would leave both routes unasserted and this test green, and a walk of \
+         a different number means the section changed without this one being \
+         looked at"
     );
 }
 
@@ -2232,7 +2266,7 @@ fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
          below for the open to keep or lose"
     );
 
-    win.take_the_card(starts::CROSSWALK);
+    win.take_the_card(starts::CROSSWALK_RUN);
     win.settle();
     assert_eq!(
         win.app
@@ -2241,14 +2275,14 @@ fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
             .iter()
             .map(|r| r.id.as_str())
             .collect::<Vec<_>>(),
-        vec![starts::CROSSWALK, starts::DASHBOARD],
+        vec![starts::CROSSWALK_RUN, starts::DASHBOARD],
         "the open recorded nothing for the door to list, or it replaced what \
          was remembered instead of joining it"
     );
     // What each record is *named* after, which the ids above cannot see: the
     // document that was opened, not the start it was reached through. The
-    // start's own label is a verb — "Open the EDGAR ↔ GLEIF crosswalk (no
-    // run)" — and a build that recorded that, or a constant, or nothing at
+    // start's own label is a verb — "Open a run of the EDGAR ↔ GLEIF
+    // crosswalk" — and a build that recorded that, or a constant, or nothing at
     // all, keeps every assertion above green.
     assert_eq!(
         win.app
@@ -2293,10 +2327,10 @@ fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
 /// fixture back and pass — what the seeded pair does is make that fail at the
 /// name and at the state rather than at the order.
 ///
-/// The run state a *shipped* start records is `RunState::NeverRun` in this
-/// build, because no shipped start carries a run contract at all — the
-/// crosswalk manifest is loaded with no run, and a chart composes without one.
-/// So both halves are asserted against the window's own fold rather than
+/// The run state the Protocol arm records is `RunState::Fresh`, because the
+/// crosswalk run carries a run contract whose steps all report a success; the
+/// chart arm records `RunState::NeverRun`, because a chart composes without a
+/// run. So both halves are asserted against the window's own fold rather than
 /// against a literal alone. What that fold *is* is
 /// `a_recent_carries_the_windows_own_run_state_whatever_opened_it`'s claim,
 /// and the fold's precedence is
@@ -2313,7 +2347,7 @@ fn what_open_start_records_is_what_the_opened_document_says() {
     // The Protocol arm.
     let mut by_protocol = Window::open(Boot::empty());
     by_protocol.settle();
-    by_protocol.take_the_card(starts::CROSSWALK);
+    by_protocol.take_the_card(starts::CROSSWALK_RUN);
     by_protocol.settle();
 
     let protocol_name = by_protocol.app.protocol_model().protocol.clone();
@@ -2334,9 +2368,9 @@ fn what_open_start_records_is_what_the_opened_document_says() {
     );
     assert_eq!(
         recorded.run,
-        RunState::NeverRun,
-        "the crosswalk manifest is loaded with no run behind it, so never run \
-         is what there is to record"
+        RunState::Fresh,
+        "the crosswalk run's steps all report a recorded success, so fresh is \
+         what there is to record"
     );
 
     // The Charts arm, in a window of its own, reached by the row route: the
@@ -2409,9 +2443,9 @@ fn what_open_start_records_is_what_the_opened_document_says() {
 
     // And what the analyst reads off the row is that same recorded name, taken
     // off the galley the row painted rather than off the record behind it.
-    for (win, expected) in [
-        (&mut by_protocol, protocol_name.as_str()),
-        (&mut by_chart, chart_title.as_str()),
+    for (win, expected, state) in [
+        (&mut by_protocol, protocol_name.as_str(), RunState::Fresh),
+        (&mut by_chart, chart_title.as_str(), RunState::NeverRun),
     ] {
         win.run(vec![press_home(), Vec::new()]);
         win.settle();
@@ -2424,8 +2458,9 @@ fn what_open_start_records_is_what_the_opened_document_says() {
         );
         assert_eq!(
             rows[0].state,
-            RunState::NeverRun.label(),
-            "the row states a run this build never recorded"
+            state.label(),
+            "the row states a run other than the one the opened document \
+             recorded"
         );
     }
 }
@@ -2447,7 +2482,7 @@ fn opening_a_data_file_over_an_open_protocol_retitles_for_the_file() {
 
     let mut win = Window::open(Boot::empty());
     win.settle();
-    win.take_the_card(starts::CROSSWALK);
+    win.take_the_card(starts::CROSSWALK_RUN);
     win.settle();
     assert!(
         win.app.graph_on_canvas(),
@@ -2712,7 +2747,7 @@ fn going_home_returns_to_the_door_but_keeps_the_session() {
 
     // Take the crosswalk from the door, come Home again, and the row for it is
     // there: `open_start` records and `open_home` does not un-record.
-    win.take_the_card(starts::CROSSWALK);
+    win.take_the_card(starts::CROSSWALK_RUN);
     win.settle();
     win.run(vec![press_home(), Vec::new()]);
     win.settle();
@@ -2722,12 +2757,12 @@ fn going_home_returns_to_the_door_but_keeps_the_session() {
             .iter()
             .map(|r| r.id.as_str())
             .collect::<Vec<_>>(),
-        vec![starts::CROSSWALK],
+        vec![starts::CROSSWALK_RUN],
         "the door forgot the session — the Protocols section has nothing to reopen"
     );
 
     // And the row still reopens exactly what was left.
-    win.take_the_row(starts::CROSSWALK);
+    win.take_the_row(starts::CROSSWALK_RUN);
     win.settle();
     assert!(
         win.app.protocol_model().has_assets(),
@@ -3262,11 +3297,12 @@ const TOLERANCE: i32 = 20;
 /// The image sub-rect `door_card` draws each thumbnail into — see the test
 /// above for why this, and not the whole card, is what gets scanned.
 fn card_image_rect(card: egui::Rect) -> egui::Rect {
-    const CARD_IMAGE_HEIGHT: f32 = 130.0;
     let pad = meridian_design::spacing::SPACE_2;
+    // The thumbnails' own 16:10, as the window derives the drawn height.
+    let width = card.width() - 2.0 * pad;
     egui::Rect::from_min_size(
         card.min + egui::vec2(pad, pad),
-        egui::vec2(card.width() - 2.0 * pad, CARD_IMAGE_HEIGHT),
+        egui::vec2(width, width / 1.6),
     )
 }
 

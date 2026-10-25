@@ -522,12 +522,21 @@ pub const RUNNING_LABEL: &str = "Running\u{2026}";
 pub const RUN_PROTOCOL: &str = "run-protocol";
 
 /// One gallery card's outer width.
-const CARD_WIDTH: f32 = 216.0;
+///
+/// Sized so the door's six cards and their five gaps lie on one row of the
+/// door's content column at the default 1280-point window. That column is not
+/// the window: the navigator rail and the panel margins come off it, and
+/// `ui.available_width()` measured inside the door's scroll area at the default
+/// size is 1024. `6 × 156 + 5 × 16 = 1016` fits it with 8 points spare;
+/// 157 would be the widest whole width, and 158 and up wrap the sixth card to a
+/// second row. `the_six_cards_lie_on_one_row_at_the_default_window_size` is what
+/// holds it.
+const CARD_WIDTH: f32 = 156.0;
 
 /// The thumbnail's drawn height: the card's width less its two insets, at the
-/// shipped thumbnails' own 16:10 — `(216 − 8) / 1.6`. Stated as the number the
-/// arithmetic produces so a drift in either term is a visible edit here.
-const CARD_IMAGE_HEIGHT: f32 = 130.0;
+/// shipped thumbnails' own 16:10. Derived from [`CARD_WIDTH`] so the ratio
+/// holds whenever the width changes.
+const CARD_IMAGE_HEIGHT: f32 = (CARD_WIDTH - 2.0 * spacing::SPACE_2) / 1.6;
 
 /// One gallery card's outer height: the image and its insets, room for a
 /// two-line label and a three-line summary, and one grid row at the foot for
@@ -10706,10 +10715,14 @@ impl MeridianApp {
         // [`MeridianApp::front_door_card_foot`] with the text it put on the
         // screen, and a galley built inside the branch would leave that answer
         // to whichever string the push below happened to name.
-        let promise = ui.painter().layout_no_wrap(
+        // Wrapped to the card's text measure, not laid out on one line: at six
+        // cards to a row the measure is narrower than the promise, and an
+        // unwrapped line is clipped mid-word by the card's own rect.
+        let promise = ui.painter().layout(
             foot,
             egui::FontId::monospace(meridian_design::typography::CHART_LABEL_SIZE),
             chrome::colour(sem.text.muted),
+            CARD_WIDTH - 2.0 * spacing::SPACE_4,
         );
         // Off the galley's glyphs rather than off `foot`, for the reason
         // `door_row` records its three fields that way: what is answered is

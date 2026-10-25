@@ -65,19 +65,34 @@
 //! design; and an id this build does not recognise resolves to `None`, which
 //! means the same thing as never having opened anything.
 //!
-//! # Why these six, and why the door offers three of them
+//! # Why the door shows these six
 //!
-//! The crosswalk is the anchor, and it appears three times — as the
-//! declaration, as a run of it, and as the result. Those three are the Datasets
-//! section: see [`Start::on_door`], and [`on_door`] for the iterator the door
-//! reads.
+//! The door offers six cards, and each draws a different picture, so a reader
+//! choosing between them is choosing a kind of answer rather than a dataset:
 //!
-//! The other three are still here and still load; what they no longer do is
-//! stand on the first screen. They are generated data with nothing to do to
-//! it, and Hugh's look of 2026-09-05 was that a catalogue mostly made of
-//! those argues against the product rather than for it. The paragraphs below
-//! about the size of the set describe the set the binary carries, which has
-//! not changed.
+//! - **Palmer Penguins** draws measures by species: bill shape in each of
+//!   three groups, and the trend that reverses inside every one of them.
+//! - **USGS earthquakes** draw a map: where a year's tremors struck, beside
+//!   the weeks they came in.
+//! - **NYC yellow taxi** draws the trips' rhythms: the weekday rush and the
+//!   weekend night, hour by hour.
+//! - **Online Retail II** draws customers over time: who comes back, month by
+//!   month.
+//! - **Epoch AI's notable models** draw training compute over time, against the
+//!   year each model was published.
+//! - **The crosswalk run** draws one Protocol as the run it records: every
+//!   step's state, and the run it came from.
+//!
+//! California Housing, the crosswalk declaration and the crosswalk chart leave
+//! the door but stay in the binary: they still sit in [`STARTS`], still
+//! resolve through [`find`] and still load, and the crosswalk declaration is
+//! still the first start to fill the protocol view, so that view's empty
+//! pane offers it as before. What they lose is a card on the first screen,
+//! which [`Start::on_door`] decides and [`on_door`] iterates. The generated
+//! chart starts left the door earlier for the reason that remains true of
+//! them: they are generated data with nothing to do to it. The paragraphs
+//! below describe the set the binary carries, all eleven starts, not the six
+//! the door shows.
 //!
 //! The **manifest** is the vendored EDGAR ↔ GLEIF Protocol under
 //! `examples/protocol/`, and it is the most legible thing this product
@@ -114,9 +129,9 @@
 //! The three generated chart starts each land on a different drawn answer — a
 //! two-plot dashboard, a histogram, a ranked bar chart — and each is a
 //! self-contained proof of the same architecture: the spec declares queries,
-//! the engine holds the tables, the chart reads the result. Between two and
-//! five is the deliberate size of the **gallery** — few enough to choose from
-//! at a glance, enough that it reads as a gallery — and the gallery is what
+//! the engine holds the tables, the chart reads the result. The
+//! deliberate size of the **gallery** is six — few enough to choose from at a
+//! glance, enough that it reads as a gallery — and the gallery is what
 //! [`Start::on_door`] answers, not the length of [`STARTS`].
 //!
 //! The chart view's empty pane offers the first chart start; the protocol
@@ -124,7 +139,7 @@
 //! pane the FIRST start that fills it, and the manifest is still first. Neither switches the
 //! view out from under the click, and neither empty pane offers a start that
 //! needs the network. The front door's Datasets section offers the starts
-//! that declare [`Start::on_door`], which is the crosswalk pair.
+//! that declare [`Start::on_door`], which are the six above.
 //!
 //! # The one thing the crosswalk MANIFEST has to say out loud
 //!
@@ -373,8 +388,8 @@ pub struct Start {
     /// no analyst has a reason to care about, and a first screen whose
     /// catalogue is mostly those is a first screen that argues against the
     /// product. The Datasets section is therefore the real subject — the
-    /// crosswalk, in its two forms — and the generated starts stay in the
-    /// binary for the job they are actually good at: giving the chart pane's
+    /// five real-data starts and the crosswalk run — and the generated starts
+    /// stay in the binary for the job they are actually good at: giving the chart pane's
     /// empty state a button that works with no network, and giving the tests
     /// a chart to compose without one.
     ///
@@ -495,7 +510,8 @@ pub const RUN_LESS_MARK: &str = "(no run)";
 pub const REMOTE_MARK: &str = "over the network";
 
 /// Every shipped starting point, in the order the front door's gallery shows
-/// them — the crosswalk anchors, so it comes first.
+/// them: the crosswalk declaration first, because the protocol view's empty pane
+/// offers the first start that fills it, then the door's own order.
 ///
 /// The one declaration: the empty states and the front door read their
 /// affordances' labels and ids from here, [`load`] composes the
@@ -515,29 +531,8 @@ pub const STARTS: &[Start] = &[
         thumbnail_dark: include_bytes!("../assets/starts/edgar-gleif-crosswalk-dark.png"),
         run_less: true,
         remote: false,
-        on_door: true,
+        on_door: false,
         // A Protocol manifest, not a chart spec — see `load`.
-        spec: None,
-        data: None,
-        protocol: None,
-    },
-    Start {
-        id: CROSSWALK_RUN,
-        label: "Open a run of the EDGAR ↔ GLEIF crosswalk",
-        summary: "The same protocol on the far side of a run: every step's \
-                  recorded state, and the run it came from.",
-        fills: crate::protocol::CANVAS,
-        thumbnail: include_bytes!("../assets/starts/edgar-gleif-crosswalk-run.png"),
-        thumbnail_dark: include_bytes!("../assets/starts/edgar-gleif-crosswalk-run-dark.png"),
-        // **Not run-less**, which is the whole of what this start adds: its
-        // graph carries the states a run recorded, so nothing about it needs
-        // the disclosure [`RUN_LESS_MARK`] makes, and
-        // `a_start_that_opens_a_run_less_manifest_says_so_on_its_own_button`
-        // would fail if the label carried it anyway.
-        run_less: false,
-        remote: false,
-        on_door: true,
-        // A Protocol+Run contract, not a chart spec — see `load`.
         spec: None,
         data: None,
         protocol: None,
@@ -599,7 +594,7 @@ pub const STARTS: &[Start] = &[
         thumbnail_dark: include_bytes!("../assets/starts/palmer-penguins-dark.png"),
         run_less: false,
         remote: false,
-        on_door: false,
+        on_door: true,
         spec: None,
         data: None,
         protocol: Some(ShippedProtocol {
@@ -618,7 +613,7 @@ pub const STARTS: &[Start] = &[
         thumbnail_dark: include_bytes!("../assets/starts/usgs-earthquakes-2025-dark.png"),
         run_less: false,
         remote: false,
-        on_door: false,
+        on_door: true,
         spec: None,
         data: None,
         protocol: Some(ShippedProtocol {
@@ -641,7 +636,7 @@ pub const STARTS: &[Start] = &[
         thumbnail_dark: include_bytes!("../assets/starts/nyc-yellow-taxi-dark.png"),
         run_less: false,
         remote: true,
-        on_door: false,
+        on_door: true,
         spec: None,
         data: None,
         protocol: Some(ShippedProtocol {
@@ -660,7 +655,7 @@ pub const STARTS: &[Start] = &[
         thumbnail_dark: include_bytes!("../assets/starts/online-retail-ii-dark.png"),
         run_less: false,
         remote: true,
-        on_door: false,
+        on_door: true,
         spec: None,
         data: None,
         protocol: Some(ShippedProtocol {
@@ -679,7 +674,7 @@ pub const STARTS: &[Start] = &[
         thumbnail_dark: include_bytes!("../assets/starts/epoch-ai-models-dark.png"),
         run_less: false,
         remote: true,
-        on_door: false,
+        on_door: true,
         spec: None,
         data: None,
         protocol: Some(ShippedProtocol {
@@ -688,12 +683,31 @@ pub const STARTS: &[Start] = &[
             files: EPOCH_AI_MODELS_FILES,
         }),
     },
+    // The door's last card: the one Protocol shown as the run it records.
+    Start {
+        id: CROSSWALK_RUN,
+        label: "Open a run of the EDGAR ↔ GLEIF crosswalk",
+        summary: "The same protocol on the far side of a run: every step's \
+                  recorded state, and the run it came from.",
+        fills: crate::protocol::CANVAS,
+        thumbnail: include_bytes!("../assets/starts/edgar-gleif-crosswalk-run.png"),
+        thumbnail_dark: include_bytes!("../assets/starts/edgar-gleif-crosswalk-run-dark.png"),
+        // **Not run-less**, which is the whole of what this start adds: its
+        // graph carries the states a run recorded, so nothing about it needs
+        // the disclosure [`RUN_LESS_MARK`] makes, and
+        // `a_start_that_opens_a_run_less_manifest_says_so_on_its_own_button`
+        // would fail if the label carried it anyway.
+        run_less: false,
+        remote: false,
+        on_door: true,
+        // A Protocol+Run contract, not a chart spec — see `load`.
+        spec: None,
+        data: None,
+        protocol: None,
+    },
     // Placed after the generated chart starts rather than beside the
     // crosswalks, and the position is `for_pane`'s rather than the door's.
-    // The door draws `on_door()` in this order, so on the first screen this
-    // card sits third, between the two crosswalk declarations and the remote
-    // chart — which is where a reader looking for real data should find it.
-    // `for_pane` hands an empty pane the FIRST start that fills it, and the
+    // It is off the door, but still loads and reopens. `for_pane` hands an empty pane the FIRST start that fills it, and the
     // chart pane's empty state is not this card's question: changing which
     // button that pane offers is a decision about that empty state, and it is
     // not one this start was added to make.
@@ -716,7 +730,7 @@ pub const STARTS: &[Start] = &[
         // label says so. Later opens find the file already written and reach
         // no network — see `dataset_path`.
         remote: true,
-        on_door: true,
+        on_door: false,
         // A data file, not a chart spec and not a manifest — see `load`'s
         // data arm and `Start::data`.
         spec: None,
@@ -743,7 +757,7 @@ pub const STARTS: &[Start] = &[
         thumbnail_dark: include_bytes!("../assets/starts/edgar-gleif-crosswalk-chart-dark.png"),
         run_less: false,
         remote: true,
-        on_door: true,
+        on_door: false,
         spec: Some(CROSSWALK_CHART_SPEC),
         data: None,
         protocol: None,

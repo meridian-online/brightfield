@@ -341,15 +341,13 @@ fn a_layout_that_moved_is_written_and_reads_back() {
     // A change a user makes, made the way a user makes it: the front door's
     // own button, clicked where the last frame recorded it.
     //
-    // The canvas pane's, not the chart pane's. What the door records a way in
-    // for is a pane whose start it drew a card for, and the chart pane's start
-    // is off the Datasets section — see
-    // `the_pane_way_in_is_the_doors_card_for_the_start_that_fills_it`. Which
-    // document this opens is incidental here; that it is a change reaching the
-    // file is the claim.
+    // The run of the crosswalk's card: neither pane's own empty-state start
+    // is on the door, so the door records no pane way in. Which document this
+    // opens is incidental here; that it is a change reaching the file is the
+    // claim.
     let target = app
-        .affordance_rect(PaneKey::new(CANVAS))
-        .expect("the front door drew a way in for the canvas pane");
+        .front_door_card_rect(brightfield_shell::starts::CROSSWALK_RUN)
+        .expect("the front door drew a card for the run of the crosswalk");
     run(&mut app, &ctx, vec![click_at(target.center())]);
     settle(&mut app, &ctx, 2);
     assert!(app.graph_on_canvas());
@@ -378,7 +376,7 @@ fn a_layout_that_moved_is_written_and_reads_back() {
     assert_eq!(outcome, LoadOutcome::Restored, "{}", outcome.reason());
     assert_eq!(
         restored.opened.as_deref(),
-        Some(brightfield_shell::starts::CROSSWALK),
+        Some(brightfield_shell::starts::CROSSWALK_RUN),
         "the file did not record what was open, so the next launch restores an \
          arrangement around panes that are all still empty"
     );

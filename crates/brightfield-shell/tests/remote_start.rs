@@ -383,6 +383,11 @@ struct Window {
     screen: egui::Rect,
 }
 
+/// A fetched start the door draws a card for, which the readout tests latch
+/// their stub fetch under: `open_remote_start` takes any id, and the card the
+/// readout is drawn on is the id's.
+const FETCHED_CARD: &str = starts::NYC_YELLOW_TAXI;
+
 impl Window {
     fn open() -> Self {
         Self {
@@ -390,6 +395,62 @@ impl Window {
             ctx: egui::Context::default(),
             screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
         }
+    }
+
+    /// A window whose layout remembers the start `id`, for a start the door
+    /// draws no card for: its Protocols row raises the same `open_start`.
+    fn remembering(id: &str) -> Self {
+        let mut layout = default_layout();
+        layout.recents = vec![brightfield_workbench::Recent {
+            id: id.to_string(),
+            name: "remembered".to_string(),
+            run: brightfield_workbench::RunState::NeverRun,
+            grid_layout: brightfield_workbench::GridLayout::default(),
+            grid_spot: brightfield_workbench::GridSpot::default(),
+            opened_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("a clock after 1970")
+                .as_secs()
+                - 60,
+        }];
+        Self {
+            app: MeridianApp::headless_with_layout(Boot::empty(), layout, Mode::Light),
+            ctx: egui::Context::default(),
+            screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+        }
+    }
+
+    /// Click the Protocols row for `id`, where the last frame drew it, with
+    /// one frame and no settling frame, as [`Self::take_the_card`] does.
+    fn take_the_row(&mut self, id: &str) {
+        let target = self
+            .app
+            .front_door_rows()
+            .iter()
+            .find(|row| row.id == id)
+            .unwrap_or_else(|| panic!("the door drew no Protocols row for {id}"))
+            .rect;
+        let click = vec![
+            egui::Event::PointerMoved(target.center()),
+            egui::Event::PointerButton {
+                pos: target.center(),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: target.center(),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ];
+        let raw = egui::RawInput {
+            screen_rect: Some(self.screen),
+            events: click,
+            ..Default::default()
+        };
+        let _ = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
     }
 
     /// Begin a remote start's fetch of `spec` — the arm
@@ -498,7 +559,7 @@ fn the_window_keeps_drawing_while_a_remote_start_is_fetching() {
     let stub = Stub::held(parquet_body(40_000));
     let mut win = Window::open();
     win.frame();
-    win.take_remote(starts::CROSSWALK_CHART, &spec_reading(&stub.url()));
+    win.take_remote(FETCHED_CARD, &spec_reading(&stub.url()));
 
     let mut door_drawn = 0;
     let deadline = std::time::Instant::now() + PATIENCE;
@@ -511,9 +572,7 @@ fn the_window_keeps_drawing_while_a_remote_start_is_fetching() {
         if win.app.fetching_start().is_some() {
             door_drawn += 1;
             assert!(
-                win.app
-                    .front_door_card_rect(starts::CROSSWALK_CHART)
-                    .is_some(),
+                win.app.front_door_card_rect(FETCHED_CARD).is_some(),
                 "the window drew a frame with the fetch outstanding, but the \
                  door's card was not on it — the frame is not the door"
             );
@@ -555,14 +614,14 @@ fn the_card_reads_what_has_arrived_against_the_declared_length() {
     let stub = Stub::declaring_length(served);
     let mut win = Window::open();
     win.frame();
-    win.take_remote(starts::CROSSWALK_CHART, &spec_reading(&stub.url()));
+    win.take_remote(FETCHED_CARD, &spec_reading(&stub.url()));
 
     let mut readouts = Vec::new();
     let deadline = std::time::Instant::now() + PATIENCE;
     while win.app.fetching_start().is_some() {
         assert!(std::time::Instant::now() < deadline, "the fetch hung");
         win.frame();
-        if let Some(foot) = win.app.front_door_card_foot(starts::CROSSWALK_CHART) {
+        if let Some(foot) = win.app.front_door_card_foot(FETCHED_CARD) {
             if win.app.fetching_start().is_some() {
                 readouts.push(foot.to_string());
             }
@@ -612,7 +671,7 @@ fn the_card_reads_the_count_alone_when_no_length_was_declared() {
     let stub = Stub::silent_about_length(parquet_body(40_000));
     let mut win = Window::open();
     win.frame();
-    win.take_remote(starts::CROSSWALK_CHART, &spec_reading(&stub.url()));
+    win.take_remote(FETCHED_CARD, &spec_reading(&stub.url()));
 
     let mut readouts = Vec::new();
     let deadline = std::time::Instant::now() + PATIENCE;
@@ -620,7 +679,7 @@ fn the_card_reads_the_count_alone_when_no_length_was_declared() {
         assert!(std::time::Instant::now() < deadline, "the fetch hung");
         win.frame();
         if win.app.fetching_start().is_some() {
-            if let Some(foot) = win.app.front_door_card_foot(starts::CROSSWALK_CHART) {
+            if let Some(foot) = win.app.front_door_card_foot(FETCHED_CARD) {
                 readouts.push(foot.to_string());
             }
         }
@@ -662,7 +721,7 @@ fn a_fetch_that_fails_raises_a_banner_naming_the_network_and_the_url() {
     let url = format!("http://{}/table.parquet", Stub::nothing_listening());
     let mut win = Window::open();
     win.frame();
-    win.take_remote(starts::CROSSWALK_CHART, &spec_reading(&url));
+    win.take_remote(FETCHED_CARD, &spec_reading(&url));
     win.drive_until_fetched();
     // One more frame, so the refusal is drawn rather than merely raised.
     win.frame();
@@ -693,9 +752,7 @@ fn a_fetch_that_fails_raises_a_banner_naming_the_network_and_the_url() {
         "the window did not stay on the door through the refusal"
     );
     assert!(
-        win.app
-            .front_door_card_rect(starts::CROSSWALK_CHART)
-            .is_some(),
+        win.app.front_door_card_rect(FETCHED_CARD).is_some(),
         "the door drew no card after the refusal — the window did not stay up"
     );
 }
@@ -745,9 +802,11 @@ fn taking_the_housing_card_with_nothing_on_disk_records_the_statlib_archive() {
         .and_then(|start| start.data.as_ref())
         .expect("California Housing is a data start");
     let _ = std::fs::remove_file(starts::dataset_path(data));
-    let mut win = Window::open();
+    // The door draws no card for this start, so the click is its Protocols
+    // row's, which raises the same open.
+    let mut win = Window::remembering(starts::CALIFORNIA_HOUSING);
     win.frame();
-    win.take_the_card(starts::CALIFORNIA_HOUSING);
+    win.take_the_row(starts::CALIFORNIA_HOUSING);
     assert_eq!(
         win.app.fetching_start(),
         Some(starts::CALIFORNIA_HOUSING),
@@ -936,9 +995,11 @@ fn only_the_remote_starts_have_anything_to_fetch() {
 /// is why it is not the mutation kept in the file.
 #[test]
 fn taking_the_remote_card_records_the_url_its_spec_names() {
-    let mut win = Window::open();
+    // The door draws no card for this start, so the click is its Protocols
+    // row's, which raises the same open.
+    let mut win = Window::remembering(starts::CROSSWALK_CHART);
     win.frame();
-    win.take_the_card(starts::CROSSWALK_CHART);
+    win.take_the_row(starts::CROSSWALK_CHART);
     assert_eq!(
         win.app.fetching_start(),
         Some(starts::CROSSWALK_CHART),
@@ -954,12 +1015,6 @@ fn taking_the_remote_card_records_the_url_its_spec_names() {
         win.app.front_door_is_live(),
         "the window left the door while the fetch was still only latched"
     );
-    assert_eq!(
-        win.app.front_door_card_foot(starts::CROSSWALK_CHART),
-        Some(DOOR_ENTRY_PROMISE),
-        "the frame the click landed on drew its card before the click was \
-         resolved, so its foot is still the resting promise"
-    );
 }
 
 /// Opening a start that declares no network leaves the fetch path unused,
@@ -969,7 +1024,7 @@ fn taking_the_remote_card_records_the_url_its_spec_names() {
 /// would also pass over a start that fetched something *else*. A counter on a
 /// socket answers the question a flag cannot.
 ///
-/// The **click** is the other half. `starts::CROSSWALK` is the local start the
+/// The **click** is the other half. `starts::CROSSWALK_RUN` is the local start the
 /// door offers, so this drives the real `MeridianApp::open_start` through the
 /// real card rather than calling the fetch entry point directly — which is the
 /// arm the mutation below moves.
@@ -983,17 +1038,17 @@ fn a_start_that_declares_no_network_never_enters_the_fetch_path() {
     let stub = Stub::declaring_length(parquet_body(1_000));
     let mut win = Window::open();
     win.frame();
-    win.take_the_card(starts::CROSSWALK);
+    win.take_the_card(starts::CROSSWALK_RUN);
     assert!(
         win.app.fetching_start().is_none(),
         "{} left a fetch outstanding",
-        starts::CROSSWALK
+        starts::CROSSWALK_RUN
     );
     assert!(
         !win.app.front_door_is_live(),
         "{} did not open — the window is still on the door, so this test never \
          reached the state it is about",
-        starts::CROSSWALK
+        starts::CROSSWALK_RUN
     );
 
     // …and the rest of the local set through `starts::load`, which is the
@@ -1152,7 +1207,7 @@ fn a_fetch_the_reader_gave_up_on_does_not_arrive_and_take_the_window() {
     );
 
     // …and the reader changes their mind, through the door's own card.
-    win.take_the_card(starts::CROSSWALK);
+    win.take_the_card(starts::CROSSWALK_RUN);
     assert!(
         win.app.fetching_start().is_none(),
         "opening a document left the abandoned fetch latched"
@@ -1165,7 +1220,7 @@ fn a_fetch_the_reader_gave_up_on_does_not_arrive_and_take_the_window() {
         .expect("the local start recorded itself");
     assert_eq!(
         opened,
-        starts::CROSSWALK,
+        starts::CROSSWALK_RUN,
         "the local start did not open, so this test never reached the state it \
          is about"
     );
@@ -1193,7 +1248,7 @@ fn a_fetch_the_reader_gave_up_on_does_not_arrive_and_take_the_window() {
     );
     assert_eq!(
         win.app.layout().opened.as_deref(),
-        Some(starts::CROSSWALK),
+        Some(starts::CROSSWALK_RUN),
         "the abandoned fetch rewrote what the next launch restores"
     );
     assert_eq!(
