@@ -1279,12 +1279,18 @@ fn the_spec_a_start_carries_is_the_spec_its_click_opens() {
         // table and compares the picture to the promise the door makes about
         // it. What holds the protocol kind is
         // `every_shipped_start_loads_into_a_document_with_something_in_it` in
-        // `tests/front_door.rs`, which runs each shipped Protocol offline
-        // through its stand-in and requires its first panel to draw, and
+        // `tests/front_door.rs`, which runs each LOCAL shipped Protocol
+        // offline through its stand-in and requires its first panel to draw.
+        // The remote Protocol starts are outside that test; they are booted
+        // through their stand-ins, run to completion, and drawn by
+        // `every_shipped_start_still_renders_and_its_thumbnail_is_current` in
+        // the same file, and the ignored network tests in
+        // `tests/shipped_protocol_start.rs` fetch the real data and check the
+        // columns their panels read. The folder itself is held, every file,
+        // hashed per revision, by
         // `every_shipped_protocol_folder_ships_whole_and_bumps_its_revision_when_it_changes`
-        // in `tests/shipped_protocol_start.rs`, which holds every file of the
-        // folder, hashed per revision, so the bytes that click opens are the
-        // bytes reviewed.
+        // in that second file, so the bytes a click opens are the bytes
+        // reviewed.
         //
         // Both directions are still asserted and the hole this guards is still
         // shut: a chart start declaring none of a spec, a data file or a
