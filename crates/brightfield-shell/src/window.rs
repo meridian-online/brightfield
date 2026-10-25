@@ -1330,13 +1330,13 @@ impl Boot {
     /// If `id` is not a start this build ships, or the embedded fixture fails
     /// to load.
     ///
-    /// A [`crate::starts::Start::protocol`] start opens here only once its
-    /// folder has run: this hands a run to no runner, and refuses a folder
-    /// that has not run. The process this is called in may be a test harness,
-    /// which reads `run` as a test-name filter (see [`crate::run::Runner`]),
-    /// so it is never started as one. Startup reopens a remembered Protocol
-    /// start only once its folder has run, and a caller that has a runner to
-    /// give boots through [`Boot::start_running`].
+    /// A [`crate::starts::Start::protocol`] start whose folder has not run is
+    /// refused here, because this hands a run to no runner
+    /// (`a_boot_with_no_runner_refuses_a_protocol_that_has_not_run`). The
+    /// process this is called in may be a test harness, which reads `run` as a
+    /// test-name filter (see [`crate::run::Runner`]). Startup reopens a
+    /// remembered Protocol start once its folder has run, and a caller with a
+    /// runner to give boots through [`Boot::start_running`].
     pub fn start(id: &str, flow: Flow) -> Result<Self, String> {
         Self::start_running(id, flow, None)
     }
