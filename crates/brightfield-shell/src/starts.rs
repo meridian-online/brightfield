@@ -250,6 +250,10 @@ pub const NYC_YELLOW_TAXI: &str = "nyc-yellow-taxi";
 /// UCI's Online Retail II: a shipped Protocol that fetches the UCI Machine
 /// Learning Repository's own archive, whose panel shows each month's orders by
 /// whether the customer was new or returning.
+///
+/// Its first run reaches a second host as well: the workbook is read with
+/// DuckDB's `excel` extension, which DuckDB downloads from
+/// extensions.duckdb.org when it is not installed already.
 pub const ONLINE_RETAIL: &str = "online-retail-ii";
 /// Epoch AI's notable AI models: a shipped Protocol that fetches Epoch AI's
 /// own file, whose panel lays training compute against the date each model

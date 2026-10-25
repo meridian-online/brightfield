@@ -239,10 +239,22 @@ pub fn stand_in_with_loads(
 /// `(url, file under this crate)`: what [`boot_offline`] runs a Protocol
 /// start's stand-in over. A Protocol start fetching a URL missing here fails
 /// [`stand_in`] by that URL rather than reaching the network.
-pub const PROTOCOL_FETCH_COPIES: &[(&str, &str)] = &[(
-    "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2026-01.parquet",
-    "tests/data/nyc-yellow-taxi-reduced.parquet",
-)];
+///
+/// Epoch AI's entry is a synthetic CSV of six made-up models with the file's
+/// real columns, `Authors` and `Abstract` among them as placeholders. A start
+/// [`boot_offline`] boots reads its reduced copy in [`PROTOCOL_LOAD_COPIES`]
+/// instead; the synthetic file is there so a test can run the shipped load
+/// step, which leaves those two columns out, with no network.
+pub const PROTOCOL_FETCH_COPIES: &[(&str, &str)] = &[
+    (
+        "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2026-01.parquet",
+        "tests/data/nyc-yellow-taxi-reduced.parquet",
+    ),
+    (
+        "https://epoch.ai/data/notable_ai_models.csv",
+        "tests/data/epoch-ai-models-synthetic.csv",
+    ),
+];
 
 /// The committed copies that stand in for the table a shipped Protocol's
 /// load step makes, as `(url fetched, load step, file under this crate)`: see
@@ -250,6 +262,11 @@ pub const PROTOCOL_FETCH_COPIES: &[(&str, &str)] = &[(
 /// Epoch AI's load step drops columns its copy must not hold, so neither
 /// copy can stand in for the fetched file itself. `scripts/cut-start-fixtures.sh`
 /// cuts each by running the start's own load step.
+///
+/// So the load step a copy stands in for does not run offline. Epoch AI's
+/// does elsewhere, over a synthetic CSV in [`PROTOCOL_FETCH_COPIES`]; Online
+/// Retail's `read_xlsx` load is checked only by the `#[ignore]`d network test
+/// and by a re-cut, which runs it on UCI's workbook.
 pub const PROTOCOL_LOAD_COPIES: &[(&str, &str, &str)] = &[
     (
         "https://archive.ics.uci.edu/static/public/502/online+retail+ii.zip",

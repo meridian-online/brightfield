@@ -1,4 +1,4 @@
-title: "The regulars carry this shop: in every month of 2011, returning customers placed 77% to 91% of orders, November's peak included"
+title: "The regulars carry this shop: in every full month of 2011, returning customers placed 77% to 87% of orders, November's peak included"
 params:
   sel: { select: crossfilter }
 hconcat:
@@ -17,7 +17,7 @@ hconcat:
       - select: intervalX
         as: $sel
       - legend: color
-      title: "The regulars carry this shop: in every month of 2011, returning customers placed 77% to 91% of orders, November's peak included. Data: Chen (2012), UCI Machine Learning Repository, CC BY 4.0"
+      title: "The regulars carry this shop: in every full month of 2011, returning customers placed 77% to 87% of orders, November's peak included. Data: Chen (2012), UCI Machine Learning Repository, CC BY 4.0"
       colorDomain: [returning, new this month, no customer ID]
       colorRange: ["#0083c4", "#cca124", "#31aa8c"]
       xDomain: Fixed

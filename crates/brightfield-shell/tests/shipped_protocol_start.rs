@@ -688,6 +688,20 @@ fn rows_of(dir: &Path, table: &str) -> i64 {
     .unwrap_or_else(|e| panic!("count {table}: {e}"))
 }
 
+/// The columns of Epoch AI's `models` table, which its panel reads.
+const EPOCH_MODELS_COLUMNS: [&str; 10] = [
+    "model",
+    "organization",
+    "publication_date",
+    "publication_year",
+    "training_compute_flop",
+    "training_compute_log10",
+    "domain",
+    "organization_type",
+    "access",
+    "compute_record",
+];
+
 /// Take the shipped start `id` over the network, as a click does, and return
 /// the folder its run wrote once the run has landed on its panel.
 fn land_fetched_start(id: &str) -> PathBuf {
@@ -782,18 +796,7 @@ fn the_epoch_ai_models_protocol_fetches_and_produces_the_columns_its_panel_reads
     let dir = land_fetched_start(starts::EPOCH_AI_MODELS);
     assert_eq!(
         columns_of(&dir, "models"),
-        [
-            "model",
-            "organization",
-            "publication_date",
-            "publication_year",
-            "training_compute_flop",
-            "training_compute_log10",
-            "domain",
-            "organization_type",
-            "access",
-            "compute_record"
-        ],
+        EPOCH_MODELS_COLUMNS,
         "the models table no longer has the columns the panel reads"
     );
     assert!(rows_of(&dir, "models") > 0, "the file made no models");
@@ -861,4 +864,58 @@ fn the_fetched_starts_reduced_copies_hold_no_forbidden_column_and_match_their_pr
             "{id}'s provenance file names no terms"
         );
     }
+}
+
+/// Epoch AI's shipped load step leaves out `Authors` and `Abstract`, checked
+/// with no network: the start's Protocol runs over the synthetic CSV in
+/// `PROTOCOL_FETCH_COPIES`, which has the file's real columns with those two
+/// as placeholders, so the step's own `EXCLUDE` runs rather than a copy that
+/// never had them.
+#[test]
+fn the_epoch_ai_models_load_step_leaves_out_authors_and_abstract_offline() {
+    let _config = datasets_into_scratch("epoch_load_step");
+    let start = starts::find(starts::EPOCH_AI_MODELS).expect("the shipped set has it");
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let copies: Vec<(&str, PathBuf)> = shipped_protocol::PROTOCOL_FETCH_COPIES
+        .iter()
+        .map(|(url, file)| (*url, crate_dir.join(file)))
+        .collect();
+    let synthetic = &copies
+        .iter()
+        .find(|(url, _)| url.starts_with("https://epoch.ai/"))
+        .expect("Epoch AI's URL has a fetch copy")
+        .1;
+    let header = std::fs::read_to_string(synthetic).expect("read the synthetic CSV");
+    let header = header.lines().next().expect("the CSV has a header");
+    assert!(
+        header.contains("Authors") && header.contains("Abstract"),
+        "the synthetic CSV lacks the columns the load step must leave out, so \
+         this test would pass without the step doing anything"
+    );
+    let borrowed: Vec<(&str, &Path)> = copies
+        .iter()
+        .map(|(url, path)| (*url, path.as_path()))
+        .collect();
+    let offline = shipped_protocol::stand_in(
+        start.protocol.as_ref().expect("it is a Protocol start"),
+        &borrowed,
+    );
+    let mut win = Window::open(runner());
+    win.take_and_land(offline);
+    assert!(win.banners().is_empty(), "{:?}", win.banners());
+    drop(win);
+    let dir = starts::protocol_path(offline);
+    for table in ["raw_models", "models"] {
+        let columns = columns_of(&dir, table);
+        assert!(
+            !columns.iter().any(|c| c == "Authors" || c == "Abstract"),
+            "{table} holds Authors or Abstract: {columns:?}"
+        );
+    }
+    assert!(
+        columns_of(&dir, "raw_models").iter().any(|c| c == "Model"),
+        "the load step made no raw_models table to check"
+    );
+    assert_eq!(columns_of(&dir, "models"), EPOCH_MODELS_COLUMNS);
+    assert_eq!(rows_of(&dir, "models"), 6, "the six synthetic models");
 }

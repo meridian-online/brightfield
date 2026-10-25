@@ -2,7 +2,7 @@
   "$schema": "https://datapackage.org/profiles/2.0/datapackage.json",
   "name": "online-retail-ii",
   "title": "Online Retail II — a UK online retailer's invoices, December 2009 to December 2011",
-  "description": "Every invoice line of a UK-based online retailer of giftware, many of whose customers are wholesalers, from 1 December 2009 to 9 December 2011, in two workbook sheets that both hold 1 to 9 December 2010. The start reads UCI's own archive each time it is first opened. The Customer ID column is replaced, as the workbook is read, by each customer's first month and the number of each of their orders, so no table the Protocol makes holds it.",
+  "description": "Every invoice line of a UK-based online retailer of giftware, many of whose customers are wholesalers, from 1 December 2009 to 9 December 2011, in two workbook sheets that both hold 1 to 9 December 2010. The start reads UCI's own archive each time it is first opened. The Customer ID column is replaced, as the workbook is read, by each customer's first month and the number of each of their orders, so no table the Protocol makes holds it. The workbook is read with DuckDB's excel extension, which DuckDB downloads from extensions.duckdb.org on the first run if it is not installed already, so that run reaches a second host besides UCI.",
   "licenses": [
     {
       "name": "CC-BY-4.0",

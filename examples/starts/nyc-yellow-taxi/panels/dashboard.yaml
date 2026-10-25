@@ -43,7 +43,7 @@ hconcat:
         y: { count: }
       - select: intervalX
         as: $sel
-      title: "Trip distance: 85% of the trips of 16 to 19 miles start or end at an airport"
+      title: "Trip distance: 68% of the trips of 16 to 19 miles begin at an airport"
       xDomain: Fixed
       xLabel: miles (30 or more drawn at 30)
       yLabel: trips (log scale)

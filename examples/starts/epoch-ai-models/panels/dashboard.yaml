@@ -1,4 +1,4 @@
-title: "Notable AI models' training compute bends upward around 2010: since then it has doubled in months, not years"
+title: "Training compute bends upward around 2010: since then it doubles in months, not years"
 params:
   sel: { select: crossfilter }
 vconcat:
