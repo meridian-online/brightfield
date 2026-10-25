@@ -5141,6 +5141,15 @@ impl MeridianApp {
             let mut canvas_panes = CanvasPanes::default();
             let mut canvas_scroll = self.canvas_scroll;
             let mut grid_layout = self.grid_layout;
+            // The transposed layout reads the page's column of tiles as rows. A
+            // document with no such column, such as a Protocol's panel, has none
+            // to read, so its grid is drawn as a table whichever layout is chosen.
+            // The chosen layout is kept, for the next document that has a column.
+            let drawn_layout = if self.charts.doc.tile_columns().is_empty() {
+                crate::app::GridLayout::Rows
+            } else {
+                grid_layout
+            };
             let mut canvas_split = self.canvas_split;
             let mut picks = RegionPicks::default();
             // **Where the one grid draws this frame**, decided before either of
@@ -5298,7 +5307,7 @@ impl MeridianApp {
                             focused,
                             &mut requests,
                             affordances,
-                            grid_layout,
+                            drawn_layout,
                         ));
                     } else if protocol.items.contains_key(&PaneKey::new(item)) {
                         draw_protocol_pane(
@@ -5601,14 +5610,14 @@ impl MeridianApp {
                         // canvas to itself, whichever way the grid reads.
                         let grid_here = canvas_draws_grid;
                         let transposed =
-                            grid_here && grid_layout == crate::app::GridLayout::Columns;
+                            grid_here && drawn_layout == crate::app::GridLayout::Columns;
                         // With the grid in the ledger and its saved layout
                         // columns, `draw_ledger_grid_pane` has already drawn
                         // the transposed rows into `ledger_grid_body`, and the
                         // page below is composed with that rect as its second
                         // view.
                         let ledger_transposed = !grid_here
-                            && grid_layout == crate::app::GridLayout::Columns
+                            && drawn_layout == crate::app::GridLayout::Columns
                             && ledger_grid_body.is_some();
                         if grid_here {
                             charts.doc.grid_density =
@@ -5713,7 +5722,7 @@ impl MeridianApp {
                                     mode,
                                     focused,
                                     split,
-                                    grid_layout,
+                                    drawn_layout,
                                     grid_here,
                                     ledger_grid_body,
                                     &mut requests,
@@ -5813,7 +5822,7 @@ impl MeridianApp {
             }
             match tile_action {
                 Some(TilesAction::Open(index)) => {
-                    self.open_panel_tile(index);
+                    self.open_panel_with_grid(index);
                 }
                 Some(TilesAction::Run) => {
                     self.run_protocol(&ctx);
@@ -9491,14 +9500,24 @@ impl MeridianApp {
         self.tiles.as_ref()
     }
 
-    /// **Open the tile at `index` as the chart document**: its panel as a live
-    /// dashboard over the snapshot the tiles were drawn from, so it answers a
-    /// brush, a click and an axis edit as any chart does, and Save writes the
-    /// panel's own file. A tile that holds problems has no chart to open.
+    /// **Open the tile at `index` as the chart document, beside its grid**:
+    /// its panel as a live dashboard over the snapshot the tiles were drawn
+    /// from, so it answers a brush, a click and an axis edit as any chart
+    /// does, and Save writes the panel's own file. A tile that holds problems
+    /// has no chart to open.
+    ///
+    /// The canvas draws it as the pane group a data file's dashboard gets: the
+    /// panel in the hero pane and the Data pane beside it. The grid lists the
+    /// rows of the panel's first mark, the first table the panel's marks read,
+    /// so a filter typed in the grid is checked against a table the charts
+    /// read and reaches them through the panel's crossfilter selections.
+    ///
+    /// Callable whether or not a tile is open, and after the tiles reload: it
+    /// reads only the tiles the window holds now.
     ///
     /// Answers whether the tile opened. A panel that will not load live says
     /// why in a banner, and the tiles stay.
-    pub fn open_panel_tile(&mut self, index: usize) -> bool {
+    pub fn open_panel_with_grid(&mut self, index: usize) -> bool {
         let opened = {
             let Some(panels) = self.tiles.as_ref().and_then(PanelTiles::panels) else {
                 return false;
@@ -9522,6 +9541,10 @@ impl MeridianApp {
                 self.charts.doc.spec_path = Some(file);
                 self.charts.doc.protocol_tables = tables;
                 self.charts.doc.wire_watch();
+                // The hero-and-grid pane group, as `adopt_boot` sets it for a
+                // data file's dashboard. A panel is one picture with no column
+                // of tiles beside it, so the column holds none.
+                self.charts.doc.set_stacked_tiles(Some(0));
                 if let Some(tiles) = self.tiles.as_mut() {
                     tiles.select(Some(index));
                 }

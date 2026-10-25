@@ -3969,7 +3969,8 @@ impl ChartDoc {
     ///
     /// Set by the open-a-data-file path from
     /// [`Dashboard::hero_index`](crate::dashboard::Dashboard::hero_index),
-    /// which is where the layout is decided.
+    /// which is where the layout is decided, and to `Some(0)` by opening a
+    /// Protocol's panel, which is drawn beside its grid with no column.
     pub fn set_stacked_tiles(&mut self, tiles: Option<usize>) {
         self.stacked_tiles = tiles;
     }

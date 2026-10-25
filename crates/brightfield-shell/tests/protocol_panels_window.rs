@@ -155,7 +155,7 @@ impl Window {
     /// The CO2 bar tile, open as the chart.
     fn open_bar_tile(&mut self) -> usize {
         let at = self.tile_index(CHANGE);
-        assert!(self.app.open_panel_tile(at));
+        assert!(self.app.open_panel_with_grid(at));
         self.settle();
         assert_eq!(self.selected(), Some(at));
         at
@@ -604,7 +604,10 @@ fn saving_a_tile_writes_the_panel_without_injected_tables() {
     let tables = win.panels().tables_dir().to_path_buf();
     let at = win.tile_index(CHANGE);
 
-    assert!(win.app.open_panel_tile(at), "the tile opens as the chart");
+    assert!(
+        win.app.open_panel_with_grid(at),
+        "the tile opens as the chart"
+    );
     win.settle();
     let title = RowEdit {
         channel: ShelfChannel::X,
@@ -894,7 +897,7 @@ fn going_back_is_refused_while_the_open_tile_has_unsaved_edits() {
     let ran = ran_fixture(CO2);
     let mut win = Window::over(open(&ran.dir));
     let at = win.tile_index(CHANGE);
-    assert!(win.app.open_panel_tile(at));
+    assert!(win.app.open_panel_with_grid(at));
     win.settle();
     let title = RowEdit {
         channel: ShelfChannel::X,
@@ -920,7 +923,7 @@ fn a_reload_waits_for_the_way_back_from_an_open_tile() {
     let mut win = Window::over(open(&ran.dir));
     let first_run = win.panels().run_id.clone();
     let at = win.tile_index(CHANGE);
-    assert!(win.app.open_panel_tile(at));
+    assert!(win.app.open_panel_with_grid(at));
     win.settle();
 
     let model = ran.dir.join("models/03_co2_per_capita_change.sql");
@@ -1156,5 +1159,107 @@ fn an_open_panel_titles_the_window_and_the_locator_by_its_name() {
         !win.texts.iter().any(|t| t.ends_with(".yaml")),
         "the window spells a panel's extension: {:?}",
         win.texts
+    );
+}
+
+/// The rows the grid drew on the last frame, and its column count.
+fn grid_drew(win: &Window) -> (u64, usize) {
+    let drawn = win
+        .app
+        .chart_doc()
+        .grid_drawn()
+        .expect("the grid drew a table");
+    (drawn.rows, drawn.columns)
+}
+
+/// A Protocol's panel opens as the chart document with the Data pane beside
+/// it, as a data file's dashboard does, and the grid lists the table the
+/// panel's marks read: the bar panel reads the one-row-per-country change
+/// table (nine countries, nine columns), not the per-year table it is built
+/// from (hundreds of rows, seven columns).
+#[test]
+fn a_protocol_panel_opens_beside_the_grid_of_the_table_it_reads() {
+    let ran = ran_fixture(CO2);
+    let mut win = Window::over(open(&ran.dir));
+    assert_eq!(win.tile_index(CHANGE), 0, "the bar panel is the first tile");
+    let countries = bar_categories(win.panels()).len();
+    assert_eq!(countries, 9, "the change table holds one row per country");
+
+    assert!(win.app.open_panel_with_grid(0), "the panel opens");
+    win.settle();
+    assert_eq!(win.selected(), Some(0));
+
+    let panes = win.app.canvas_panes();
+    assert!(
+        panes.pane("map").is_some() && panes.pane("grid").is_some(),
+        "the canvas did not draw the panel beside its grid"
+    );
+    assert_eq!(
+        grid_drew(&win),
+        (countries as u64, 9),
+        "the grid lists a table other than the one the panel reads"
+    );
+
+    // A panel has no column of tiles to read as rows, so the grid stays a
+    // table when the window's grid layout is the transposed one.
+    win.app
+        .set_grid_layout(brightfield_shell::app::GridLayout::Columns);
+    win.settle();
+    assert_eq!(
+        grid_drew(&win),
+        (countries as u64, 9),
+        "under the transposed layout the panel's grid drew no table"
+    );
+}
+
+/// A filter typed in a Protocol panel's grid narrows the panel's charts when
+/// the panel declares a crossfilter selection, through the same path as a
+/// data file's dashboard. The committed panels declare none, so the copy's
+/// bar panel is given one.
+#[test]
+fn a_typed_grid_filter_narrows_a_protocol_panels_charts() {
+    let ran = ran_fixture(CO2);
+    let path = ran.dir.join(CHANGE);
+    edit(
+        &path,
+        "data: { from: co2_per_capita_change }",
+        "data: { from: co2_per_capita_change, filterBy: $sel }",
+    );
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        format!("params:\n  sel: {{ select: crossfilter }}\n{text}"),
+    )
+    .unwrap();
+    let mut win = Window::over(open(&ran.dir));
+    assert!(win.app.open_panel_with_grid(0), "the panel opens");
+    win.settle();
+    let bars = |win: &Window| match win.app.chart_doc().composed.plots[0].scales.get(Channel::Y) {
+        Some(Scale::Band { categories, .. }) => categories.len(),
+        other => panic!("the bar panel's y scale is not a band: {other:?}"),
+    };
+    assert_eq!(bars(&win), 9, "the panel opens whole");
+
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("grouping = 'G7'".into()),
+            ..Default::default()
+        });
+    win.settle();
+
+    assert_eq!(grid_drew(&win).0, 7, "the grid did not take the filter");
+    assert_eq!(
+        bars(&win),
+        7,
+        "the chart still draws the rows the grid filtered out"
+    );
+    assert!(
+        win.app.chart_doc().chart_fault().is_none(),
+        "a filter over the panel's own table raised a fault: {:?}",
+        win.app
+            .chart_doc()
+            .chart_fault()
+            .map(|f| (f.title, f.detail))
     );
 }
