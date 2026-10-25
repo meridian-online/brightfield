@@ -803,7 +803,8 @@ fn a_running_start_says_what_it_fetches_and_offers_no_run() {
 /// either route: the click that runs it, and a later click that finds its
 /// run. Its panel reads a column the table does not have, so the tile holds
 /// that problem rather than a chart, and the next launch must not restore a
-/// start as opened on a panel that never opened.
+/// start as opened on a panel that never opened. The banner an earlier failed
+/// attempt at the same start raised goes all the same: the folder opened.
 #[test]
 fn a_start_whose_panel_does_not_open_is_not_recorded_as_landed() {
     let _config = datasets_into_scratch("panel_does_not_open");
@@ -819,9 +820,26 @@ fn a_start_whose_panel_does_not_open_is_not_recorded_as_landed() {
         }
     }
     let protocol = shipped_protocol::shipped("shipped-unopened", 1, files);
+    let url = nothing_listening("measures.csv");
+    let unreachable = shipped_protocol::fetching_fixture("shipped-unreachable", &url);
+    // An earlier attempt at the start failed, and its banner names the URL.
+    let failed_first = |win: &mut Window| {
+        win.take_and_land(unreachable);
+        assert!(
+            win.banners().iter().any(|b| b.contains(&url)),
+            "the failed fetch raised no banner, so this test proves nothing: {:?}",
+            win.banners()
+        );
+    };
 
     let mut win = Window::open(runner());
+    failed_first(&mut win);
     win.take_and_land(protocol);
+    assert!(
+        win.banners().is_empty(),
+        "the earlier attempt's banner outlived a run that succeeded: {:?}",
+        win.banners()
+    );
     assert!(
         win.app
             .panel_tiles()
@@ -835,6 +853,7 @@ fn a_start_whose_panel_does_not_open_is_not_recorded_as_landed() {
     );
 
     let mut again = Window::open(runner());
+    failed_first(&mut again);
     let ctx = again.ctx.clone();
     again.app.open_shipped_protocol(&ctx, ID, protocol);
     assert!(
@@ -842,6 +861,11 @@ fn a_start_whose_panel_does_not_open_is_not_recorded_as_landed() {
         "a folder that has run was run again"
     );
     again.settle();
+    assert!(
+        again.banners().is_empty(),
+        "the earlier attempt's banner outlived opening a folder that has run: {:?}",
+        again.banners()
+    );
     assert_ne!(
         again.app.layout().opened.as_deref(),
         Some(ID),

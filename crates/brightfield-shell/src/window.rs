@@ -9031,6 +9031,7 @@ impl MeridianApp {
             return false;
         };
         if tiles.panels().is_some() {
+            self.dismiss_start_banner(id);
             // Landed only when the panel opened: a panel that cannot draw
             // leaves the tiles saying why, and a start recorded as opened
             // would be restored on a panel that never opened.
@@ -9074,13 +9075,21 @@ impl MeridianApp {
         self.documents_changed();
     }
 
+    /// Take down the banner an earlier failed attempt at the start `id`
+    /// raised. Called once the start's folder has opened or its run has
+    /// settled, whether or not its panel then opens, since what the banner
+    /// said went wrong did not happen this time.
+    fn dismiss_start_banner(&mut self, id: &'static str) {
+        self.notifications
+            .dismiss(NotificationId::composite("open-start", id));
+    }
+
     /// Record a start that has landed: its banner dismissed, the layout's
     /// `opened` and the door's row for it, the toast and the window's title.
     /// The tail of [`Self::land_start`], and of `poll_run` for a Protocol start
     /// whose run landed later.
     fn record_landed(&mut self, ctx: &egui::Context, id: &'static str) {
-        let banner = NotificationId::composite("open-start", id);
-        self.notifications.dismiss(banner);
+        self.dismiss_start_banner(id);
         self.layout.live_mut().opened = Some(id.to_string());
         // …and remembered as a Protocol, which is the other half: `opened` is
         // what the next launch restores, and this is what the door lists. The
@@ -10284,6 +10293,7 @@ impl MeridianApp {
             self.refuse_start(ctx, landing.id, &why);
             return;
         }
+        self.dismiss_start_banner(landing.id);
         if let Some(tiles) = self.tiles.as_mut() {
             if tiles.selected().is_none() {
                 tiles.reload();
