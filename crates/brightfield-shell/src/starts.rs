@@ -91,7 +91,7 @@
 //! which [`Start::on_door`] decides and [`on_door`] iterates. The generated
 //! chart starts left the door earlier for the reason that remains true of
 //! them: they are generated data with nothing to do to it. The paragraphs
-//! below describe the set the binary carries, all eleven starts, not the six
+//! below describe the set the binary carries, all twelve starts, not the six
 //! the door shows.
 //!
 //! The **manifest** is the vendored EDGAR ↔ GLEIF Protocol under
@@ -113,18 +113,19 @@
 //! binary could open was a declaration, so every surface that exists to report
 //! a run reported the same nothing on every screen a stranger could reach.
 //!
-//! It does not retire the run-less start: the declaration and the result are
-//! the pair the door is built around, and a Protocol with no run behind it is a
-//! real state an analyst meets on their own first manifest — the state the
-//! `(no run)` disclosure exists for.
+//! It does not retire the run-less start: the door shows the run and leaves the
+//! declaration to the protocol view's empty pane, but a Protocol with no run
+//! behind it is a real state an analyst meets on their own first manifest — the
+//! state the `(no run)` disclosure exists for.
 //!
 //! The **chart** is what that Protocol produces, once someone has run it and
 //! published the Parquet: the whole crosswalk, read live over httpfs and drawn
 //! as two aggregating marks. Its data is not inside the binary, which is what
 //! [`Start::remote`] exists to say out loud. It is here
 //! because a lineage graph cannot be filtered, panned or brushed, and a
-//! product whose gallery offers only the declaration has nothing on it to
-//! demonstrate the verbs with.
+//! product whose binary carries only the declaration and the run has nothing
+//! on it to demonstrate the verbs with. It is not on the door, which draws the
+//! run and the five real-data starts.
 //!
 //! The three generated chart starts each land on a different drawn answer — a
 //! two-plot dashboard, a histogram, a ranked bar chart — and each is a
@@ -136,9 +137,9 @@
 //!
 //! The chart view's empty pane offers the first chart start; the protocol
 //! view's empty canvas offers the crosswalk manifest — [`for_pane`] hands a
-//! pane the FIRST start that fills it, and the manifest is still first. Neither switches the
-//! view out from under the click, and neither empty pane offers a start that
-//! needs the network. The front door's Datasets section offers the starts
+//! pane the FIRST start that fills it, and the manifest is still first.
+//! Neither switches the view out from under the click, and neither empty pane
+//! offers a start that needs the network. The front door's Datasets section offers the starts
 //! that declare [`Start::on_door`], which are the six above.
 //!
 //! # The one thing the crosswalk MANIFEST has to say out loud
@@ -389,9 +390,9 @@ pub struct Start {
     /// catalogue is mostly those is a first screen that argues against the
     /// product. The Datasets section is therefore the real subject — the
     /// five real-data starts and the crosswalk run — and the generated starts
-    /// stay in the binary for the job they are actually good at: giving the chart pane's
-    /// empty state a button that works with no network, and giving the tests
-    /// a chart to compose without one.
+    /// stay in the binary for the job they are actually good at: giving the
+    /// chart pane's empty state a button that works with no network, and
+    /// giving the tests a chart to compose without one.
     ///
     /// `the_door_offers_only_starts_that_declare_themselves_for_it` is what
     /// holds the section to this field rather than to the length of
@@ -707,9 +708,9 @@ pub const STARTS: &[Start] = &[
     },
     // Placed after the generated chart starts rather than beside the
     // crosswalks, and the position is `for_pane`'s rather than the door's.
-    // It is off the door, but still loads and reopens. `for_pane` hands an empty pane the FIRST start that fills it, and the
-    // chart pane's empty state is not this card's question: changing which
-    // button that pane offers is a decision about that empty state, and it is
+    // It is off the door, but still loads and reopens. `for_pane` hands an
+    // empty pane the FIRST start that fills it, and the chart pane's empty
+    // state is not this card's question: changing which button that pane offers is a decision about that empty state, and it is
     // not one this start was added to make.
     Start {
         id: CALIFORNIA_HOUSING,

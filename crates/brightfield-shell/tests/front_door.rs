@@ -109,9 +109,9 @@ fn the_data_file_start() -> &'static starts::Start {
 /// Write the data start's file where a click looks for it, from the committed
 /// copy of its source rather than over the network, and answer where it is.
 ///
-/// A click on the data start's card with no file at [`starts::dataset_path`]
+/// A click on the data start's row with no file at [`starts::dataset_path`]
 /// fetches; with the file there it opens it, as a second launch does. The
-/// tests that click the card are about what the click opens, not about the
+/// tests that click it are about what the click opens, not about the
 /// fetch, so they start from the second case: the first is
 /// `remote_start.rs`'s, against a server on localhost.
 fn seed_the_data_file(start: &starts::Start) -> PathBuf {
@@ -123,6 +123,11 @@ fn seed_the_data_file(start: &starts::Start) -> PathBuf {
             start.id
         ),
     }
+}
+
+/// The cargo-built runner a window hands a shipped Protocol's run to.
+fn shell_runner() -> brightfield_shell::run::Runner {
+    brightfield_shell::run::Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))
 }
 
 /// A window under test: the app, and **one** `egui::Context` for its whole
@@ -231,6 +236,21 @@ impl Window {
         win.take_the_row(id);
         win.settle();
         win
+    }
+
+    /// Drive frames until a run the last click started has landed, then
+    /// settle. A start that needs no run returns at once.
+    fn land_the_run(&mut self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while self.app.run_outstanding() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the start's run never landed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            self.run(vec![Vec::new()]);
+        }
+        self.settle();
     }
 
     /// Press the registry's `open-home` keystroke — the way back to the door
@@ -595,7 +615,7 @@ const JAILED_CHILD_VAR: &str = "BRIGHTFIELD_TEST_JAILED_LOOPBACK_PORT";
 /// - then loads each start in `starts::STARTS` that does not declare
 ///   `remote` through `Boot::start`, the boot path's own entry;
 /// - then writes the California Housing file from the committed copy of its
-///   source, clicks its card on a real door, and requires the window to have
+///   source, takes its Protocols row on a real door, and requires the window to have
 ///   left the door: with the file there, the click reads no network.
 ///
 /// The parent then requires the child to have run exactly this test and passed
@@ -825,9 +845,9 @@ fn the_fetched_dataset_is_described_by_its_own_descriptor() {
 
 /// **The click and the picker land on one window.**
 ///
-/// AC2 of the card that cut this start. The two routes are the start's card on
-/// the front door and `MeridianApp::open_data_file`, which is the entry point
-/// the file dialog reaches through — and what is compared is what a reader
+/// AC2 of the card that cut this start. The two routes are the start's
+/// Protocols row on the front door and `MeridianApp::open_data_file`, which is
+/// the entry point the file dialog reaches through — and what is compared is what a reader
 /// looks at: the locator band's line, the columns the rails list, and the
 /// window's own title.
 ///
@@ -1134,8 +1154,8 @@ fn a_launch_restoring_the_data_file_start_lands_on_its_own_document() {
 /// Housing under a build that shipped it has the start remembered and its
 /// file somewhere this build does not look. Fetching there would put a
 /// download, with no window and no readout, between the launch and the first
-/// frame. The door has the start's card on it, and the click fetches on the
-/// window's worker.
+/// frame. The door has the start's Protocols row on it, and the click fetches on
+/// the window's worker.
 ///
 /// A fetch here would write the file, so its absence afterwards is the
 /// evidence that none happened — on a machine with a network, where one
@@ -1162,24 +1182,36 @@ fn a_launch_restoring_the_data_file_start_with_no_file_opens_the_door() {
         "the restored launch wrote {}, so it fetched before the window existed",
         starts::dataset_path(data).display()
     );
-    let mut win = Window::open(boot);
+    // The window a real restore opens: the door, over a layout that remembers
+    // the start. The door draws no card for it, so the click that fetches is
+    // its Protocols row's.
+    let mut win = Window {
+        app: MeridianApp::headless_with_layout(
+            boot,
+            layout_remembering(&[(start.id, "remembered", RunState::NeverRun, 60)]),
+            Mode::Light,
+        ),
+        ctx: egui::Context::default(),
+        screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+    };
     win.settle();
-    // The door no longer carries a card for this start, so the click that
-    // fetches is the Protocols row's; the start itself is still in the
-    // binary for a later launch or a row to open.
     assert!(
         win.app.front_door_is_live(),
         "the window the restore opened is not the door"
     );
     assert!(
-        starts::find(start.id).is_some(),
-        "{} is no longer a shipped start, so a remembered one resolves to nothing",
+        win.app
+            .front_door_rows()
+            .iter()
+            .any(|row| row.id == start.id),
+        "the door the restore opened has no Protocols row for {}, so nothing \
+         on it fetches the file",
         start.id
     );
 }
 
 /// **The Datasets row fits the door's column** — every card the door draws is
-/// inside the window, and they are all on one row.
+/// inside the window, and the six lie on one row.
 ///
 /// AC1's geometry half, and it is a different claim from
 /// `a_first_run_populates_datasets_and_states_what_protocols_will_hold`, which
@@ -1207,11 +1239,11 @@ fn the_doors_datasets_row_is_one_row_and_all_of_it_is_on_screen() {
             (start.id, rect)
         })
         .collect();
-    assert!(
-        cards.len() >= 2,
-        "the door drew {} card(s), so neither a second row nor a column too \
-         narrow for one is observable here",
-        cards.len()
+    assert_eq!(
+        cards.len(),
+        6,
+        "the door shows six starts, and a row of any other count is not the \
+         one this column was sized for"
     );
     let (first_id, first) = cards[0];
     for (id, rect) in &cards[1..] {
@@ -1229,6 +1261,14 @@ fn the_doors_datasets_row_is_one_row_and_all_of_it_is_on_screen() {
             win.screen.contains_rect(*rect),
             "the {id} card drew at {rect:?}, outside a {:?} window",
             win.screen.size()
+        );
+    }
+    for pair in cards.windows(2) {
+        assert!(
+            pair[1].1.left() > pair[0].1.right(),
+            "the {} card overlaps the {} card beside it",
+            pair[1].0,
+            pair[0].0
         );
     }
 }
@@ -1321,6 +1361,29 @@ fn the_way_in_declares_no_verb_and_therefore_no_keystroke() {
             matches!(next.action, Action::Open(_)),
             "{what} offers a way in that declares a verb: {:?}",
             next.action
+        );
+        // The way in still opens the start that left the door: the pane's
+        // button is the first start that fills it, and that start loads.
+        let pane = if what == "the chart pane" {
+            CHART
+        } else {
+            CANVAS
+        };
+        let expected = if what == "the chart pane" {
+            starts::DASHBOARD
+        } else {
+            starts::CROSSWALK
+        };
+        let start = starts::for_pane(pane).expect("a start fills the pane");
+        assert_eq!(start.id, expected, "{what} offers a different start");
+        assert_eq!(
+            next.action,
+            Action::Open(start.id),
+            "{what}'s button does not open the start that fills it"
+        );
+        assert!(
+            starts::load(start.id).is_ok(),
+            "{what}'s start does not load"
         );
         // Every verb the subject declares comes from its toolbar and only
         // its toolbar — the way in itself contributes none, so the chrome
@@ -1805,40 +1868,6 @@ fn the_door_heads_two_sections_and_says_neither_of_the_names_it_replaced() {
 /// decision about the door: a set that outgrows one row of the default window
 /// comes up for that decision here rather than wrapping quietly.
 #[test]
-fn the_six_cards_lie_on_one_row_at_the_default_window_size() {
-    let mut win = Window::open(Boot::empty());
-    win.settle();
-
-    let rects: Vec<egui::Rect> = starts::on_door()
-        .map(|s| {
-            win.app
-                .front_door_card_rect(s.id)
-                .unwrap_or_else(|| panic!("no card drawn for {}", s.id))
-        })
-        .collect();
-    assert_eq!(rects.len(), 6, "the door shows six starts");
-    let top = rects[0].top();
-    for (n, r) in rects.iter().enumerate() {
-        assert_eq!(
-            r.top(),
-            top,
-            "card {n} drew at {r:?}, not on the first card's row at y = {top}: the gallery wrapped"
-        );
-        assert!(
-            win.screen.contains_rect(*r),
-            "card {n} drew at {r:?}, outside the {:?} window",
-            win.screen.size()
-        );
-        if n > 0 {
-            assert!(
-                r.left() > rects[n - 1].right(),
-                "card {n} overlaps its neighbour"
-            );
-        }
-    }
-}
-
-#[test]
 fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
     let mut win = Window::open(Boot::empty());
     win.settle();
@@ -2108,37 +2137,32 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 /// It walks the door's own set rather than one hand-picked start, because a
 /// route that diverges for one document kind and not the other is the
 /// divergence a single-case test would survive. **Today that walk is three
-/// starts** — the crosswalk manifest, a run of it, and California Housing,
-/// whose file is written first from the committed copy of its source so
-/// neither route fetches: the Datasets section offers four, and the fourth
-/// composes over the network. So the count is
-/// asserted rather than left implicit — a door that lost its last local card
-/// would otherwise pass this by walking an empty set, which is the failure
-/// this file has already had once in a different loop.
+/// starts** — Palmer Penguins, the USGS earthquakes and the crosswalk run — of
+/// the door's six. The two shipped Protocols are run by the cargo-built runner
+/// in a window given one, as `shipped_protocol_start.rs` does, and the three
+/// fetched starts read the network, so they are skipped. The count is asserted
+/// rather than left implicit — a door that lost its last local card would
+/// otherwise pass this by walking an empty set, which is the failure this file
+/// has already had once in a different loop.
 ///
-/// The crosswalk chart is skipped, for the reason its siblings in this file
-/// skip it: taking its card composes its spec, and that spec reads an `https://`
-/// source, which would put a fetch of someone else's server inside a hermetic
-/// suite. Walking the Datasets set rather than the shipped set changes which
-/// starts are in scope and not that one: the generated chart starts have no
-/// card to take, so the card half of the comparison has nothing to click for
-/// them.
+/// Taking a fetched start's card would put a fetch of someone else's server
+/// inside a hermetic suite, so those are skipped; the generated chart starts
+/// have no card to take, so the card half of the comparison has nothing to
+/// click for them.
 ///
 /// Watched redden, one mutation: having `door_row` push
 /// `Request::Focus(PaneKey::new(PROTOCOL_CANVAS))` after
 /// its `Request::Open` — a plausible "put the cursor where the work is" —
-/// fails at "edgar-gleif-crosswalk: the row and the card leave focus on
+/// fails at "palmer-penguins: the row and the card leave focus on
 /// different surfaces", `Some(protocol-canvas)` against `None`.
 #[test]
 fn either_route_to_the_same_subject_leaves_the_same_window() {
     let _config = datasets_into_scratch("either_route_to_the_same_subject_leaves_the_same_window");
-    seed_the_data_file(the_data_file_start());
     let mut walked = 0;
     for start in starts::on_door() {
-        // A fetched start reads the network, and a shipped Protocol start
-        // that has not run needs a runner this window does not have; both
-        // have their own suites (`remote_start.rs`, `shipped_protocol_start.rs`).
-        if (start.remote && start.data.is_none()) || start.protocol.is_some() {
+        // A fetched start reads the network, which a hermetic suite may not;
+        // `remote_start.rs` holds those.
+        if start.remote {
             continue;
         }
         walked += 1;
@@ -2149,18 +2173,24 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
                 Boot::empty(),
                 layout_remembering(&recents),
                 Mode::Light,
-            ),
+            )
+            .running_with(Some(shell_runner())),
             ctx: egui::Context::default(),
             screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
         };
         by_row.settle();
         by_row.take_the_row(start.id);
-        by_row.settle();
+        by_row.land_the_run();
 
-        let mut by_card = Window::open(Boot::empty());
+        let mut by_card = Window {
+            app: MeridianApp::headless_with_layout(Boot::empty(), default_layout(), Mode::Light)
+                .running_with(Some(shell_runner())),
+            ctx: egui::Context::default(),
+            screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+        };
         by_card.settle();
         by_card.take_the_card(start.id);
-        by_card.settle();
+        by_card.land_the_run();
 
         assert_eq!(
             by_row.app.graph_on_canvas(),
@@ -2198,16 +2228,14 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
             start.id
         );
     }
-    // Six starts declare themselves for the door. Three read over the network
-    // and two are shipped Protocols that need a runner to open, so the run of
-    // the crosswalk is what a hermetic run can compare by both routes.
-    // Written as the number rather than as the same filter the loop is built
-    // from, because a filter compared against itself agrees whatever it
-    // yields.
+    // Six starts declare themselves for the door and three read over the
+    // network, so three are what a hermetic run can compare. Written as the
+    // number rather than as the same filter the loop is built from, because a
+    // filter compared against itself agrees whatever it yields.
     assert_eq!(
-        walked, 1,
+        walked, 3,
         "{walked} start(s) were compared, where the Datasets section offers \
-         one a hermetic run can take by both routes — a walk of nothing here \
+         three a hermetic run can take by both routes — a walk of nothing here \
          would leave both routes unasserted and this test green, and a walk of \
          a different number means the section changed without this one being \
          looked at"
@@ -2314,7 +2342,7 @@ fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
 /// each has one caller, which is this write.
 ///
 /// Both kinds of start are walked, and by both of the door's routes. The
-/// crosswalk opens a graph off its Datasets card; the dashboard opens a chart
+/// crosswalk run opens a graph off its Datasets card; the dashboard opens a chart
 /// off a Protocols row, which is where it is reached from now that the
 /// generated starts are off the Datasets section. The two documents name
 /// themselves differently, so a name read off the wrong one is a difference
@@ -2369,7 +2397,7 @@ fn what_open_start_records_is_what_the_opened_document_says() {
     assert_eq!(
         recorded.run,
         RunState::Fresh,
-        "the crosswalk run's steps all report a recorded success, so fresh is \
+        "the crosswalk run's steps report recorded successes, so fresh is \
          what there is to record"
     );
 

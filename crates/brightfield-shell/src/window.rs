@@ -285,7 +285,7 @@ const TITLE_MARK_SIDE: f32 = spacing::ROW_GRID;
 /// carries its name here rather than relying on the picture.
 pub const HOME_CONTROL_NAME: &str = "Home";
 
-/// The curated section's heading: the datasets that ship with this build.
+/// The curated section's heading: the datasets chosen for this build.
 ///
 /// One of the door's two section names. The pair replaces the door's earlier
 /// *Explore* and *Continue*, and the argument those had — verbs invite,
@@ -299,7 +299,7 @@ pub const DATASETS_SECTION: &str = "Datasets";
 pub const PROTOCOLS_SECTION: &str = "Protocols";
 
 /// What the Datasets heading says about itself, beside it.
-pub const DATASETS_NOTE: &str = "curated, and they ship with this build";
+pub const DATASETS_NOTE: &str = "curated for this build";
 
 /// What the Protocols heading says about itself on a **first run**, when the
 /// section below it is empty and has to state what it will hold rather than
@@ -539,10 +539,10 @@ const CARD_WIDTH: f32 = 156.0;
 const CARD_IMAGE_HEIGHT: f32 = (CARD_WIDTH - 2.0 * spacing::SPACE_2) / 1.6;
 
 /// One gallery card's outer height: the image and its insets, room for a
-/// two-line label and a three-line summary, and one grid row at the foot for
-/// [`DOOR_ENTRY_PROMISE`]. A label that wraps past that is clipped by the
+/// three-line label and a five-line summary, and two grid rows at the foot for
+/// [`DOOR_ENTRY_PROMISE`], which wraps to two lines at the card's measure. A label that wraps past that is clipped by the
 /// card's own rect rather than pushing the gallery apart.
-const CARD_HEIGHT: f32 = 220.0 + spacing::ROW_GRID;
+const CARD_HEIGHT: f32 = 220.0 + 2.0 * spacing::ROW_GRID;
 
 /// The natural window size in logical points for a composed dashboard: exactly
 /// big enough that the chart pane's content box fits the dashboard's raster,
@@ -8669,8 +8669,8 @@ impl MeridianApp {
         // inside one frame: the click that opens the only start reading real
         // published data was the one click that stopped the window answering.
         // `crate::remote` moves the bytes on a worker; the door keeps drawing,
-        // the card the click landed on wears the readout, and `draw` composes
-        // when they land — over a local file, which is the engine doing
+        // the card the click landed on, where the door draws one, wears the
+        // readout, and `draw` composes when they land — over a local file, which is the engine doing
         // exactly what it did before at local-file speed.
         //
         // The start's own `spec:` is the whole of what is handed over:
@@ -10697,8 +10697,8 @@ impl MeridianApp {
         // what has arrived, which is the one line on this surface that is
         // about the window rather than about the start. It replaces the
         // promise rather than being added under it: the card's height is
-        // `CARD_HEIGHT`, one grid row of which is this line, so a second line
-        // here would draw over the card below it — and
+        // `CARD_HEIGHT`, two grid rows of which are this line wrapped, so a
+        // third line here would draw over the card's summary — and
         // `no_two_texts_are_drawn_into_one_place` is what would say so.
         let foot = self
             .fetching
