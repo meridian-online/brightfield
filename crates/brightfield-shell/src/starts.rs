@@ -781,7 +781,8 @@ pub const HOUSING_FILE: &str = "california_housing.parquet";
 pub const HOUSING_DESCRIPTOR: &str =
     include_str!("../assets/starts/california_housing.datapackage.json");
 
-/// Every file of the [`PALMER_PENGUINS`] Protocol folder under `examples/starts/`.
+/// The files of the [`PALMER_PENGUINS`] Protocol folder under `examples/starts/`, as its
+/// start writes them.
 const PALMER_PENGUINS_FILES: &[(&str, &[u8])] = &[
     (
         "arcform.yaml",
@@ -813,7 +814,8 @@ const PALMER_PENGUINS_FILES: &[(&str, &[u8])] = &[
     ),
 ];
 
-/// Every file of the [`USGS_EARTHQUAKES`] Protocol folder under `examples/starts/`.
+/// The files of the [`USGS_EARTHQUAKES`] Protocol folder under `examples/starts/`, as its
+/// start writes them.
 const USGS_EARTHQUAKES_FILES: &[(&str, &[u8])] = &[
     (
         "arcform.yaml",
