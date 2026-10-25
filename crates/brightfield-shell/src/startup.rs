@@ -232,6 +232,17 @@ pub fn opening_boot(
             return Ok(crate::window::Boot::empty());
         }
     }
+    // A Protocol start with no finished run would run here, before the window
+    // exists, and a fetched one would reach the network with no readout to
+    // show. The door opens instead, and its card runs it on the window's
+    // worker.
+    if let Some(protocol) = crate::starts::find(id).and_then(|start| start.protocol.as_ref()) {
+        let dir = crate::starts::protocol_path(protocol);
+        if !dir.is_dir() || crate::starts::needs_run(&dir) {
+            eprintln!("{id} has not run on this machine yet; its card on the door runs it");
+            return Ok(crate::window::Boot::empty());
+        }
+    }
     Ok(crate::window::Boot::start(id, flow).unwrap_or_else(|e| {
         eprintln!("could not reopen {id}: {e}");
         crate::window::Boot::empty()

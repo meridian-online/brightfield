@@ -489,6 +489,21 @@ struct PendingRun {
     protocol: String,
 }
 
+/// A shipped Protocol start whose run is under way, to open on its first
+/// panel when the run lands.
+///
+/// Set by [`MeridianApp::land_start`] once the start's tiles are installed and
+/// its run has begun, and taken by `poll_run` when a run of the same folder
+/// finishes: a success opens the first panel beside its grid and records the
+/// start, and a failure raises the start's banner and goes back to the door.
+/// A window that opens anything else in the meantime drops it.
+struct PendingLanding {
+    /// The start the click took.
+    id: &'static str,
+    /// The Protocol folder the run is of.
+    dir: PathBuf,
+}
+
 /// The words on the ledger strip's Run control while it can be taken.
 pub const RUN_LABEL: &str = "Run";
 
@@ -1309,8 +1324,47 @@ impl Boot {
     ///
     /// If `id` is not a start this build ships, or the embedded fixture fails
     /// to load.
+    ///
+    /// A [`crate::starts::Start::protocol`] start that has not run is run
+    /// here, to completion, by [`crate::run::Runner::this_binary`]: the live
+    /// binary is its own runner. A test harness is not one, so a test boots
+    /// such a start through [`Boot::start_running`] instead.
     pub fn start(id: &str, flow: Flow) -> Result<Self, String> {
-        Self::from_start(id, crate::starts::load(id)?, flow)
+        Self::start_running(id, flow, crate::run::Runner::this_binary().as_ref())
+    }
+
+    /// [`Boot::start`] with the runner a Protocol start that has not run is
+    /// handed to, or none, which refuses such a start.
+    ///
+    /// # Errors
+    ///
+    /// As [`Boot::start`], plus a Protocol start whose run fails, carrying
+    /// the words its banner would.
+    pub fn start_running(
+        id: &str,
+        flow: Flow,
+        runner: Option<&crate::run::Runner>,
+    ) -> Result<Self, String> {
+        Self::from_start(id, crate::starts::load(id)?, flow, runner)
+    }
+
+    /// [`Boot::start`] over `protocol` in place of the start's own: its folder
+    /// written, run to completion by `runner` when it has not run, and opened
+    /// on its panels. For a test that boots a variant of a Protocol start,
+    /// such as one whose `http_fetch` steps are replaced by committed copies
+    /// of what they fetch, so it draws with no network.
+    ///
+    /// # Errors
+    ///
+    /// The folder will not write, the run fails, or the panels do not open.
+    pub fn shipped_protocol(
+        id: &str,
+        protocol: &crate::starts::ShippedProtocol,
+        flow: Flow,
+        runner: Option<&crate::run::Runner>,
+    ) -> Result<Self, String> {
+        let dir = crate::starts::write_protocol(protocol)?;
+        Self::from_start(id, crate::starts::Opened::Panels(dir), flow, runner)
     }
 
     /// [`Boot::start`] over sources already on disk: the chart start `id`,
@@ -1325,11 +1379,16 @@ impl Boot {
         fetched: crate::remote::Fetched,
         flow: Flow,
     ) -> Result<Self, String> {
-        Self::from_start(id, crate::starts::load_with(id, fetched)?, flow)
+        Self::from_start(id, crate::starts::load_with(id, fetched)?, flow, None)
     }
 
     /// The boot over what a start opened, remembered under `id`.
-    fn from_start(id: &str, opened: crate::starts::Opened, flow: Flow) -> Result<Self, String> {
+    fn from_start(
+        id: &str,
+        opened: crate::starts::Opened,
+        flow: Flow,
+        runner: Option<&crate::run::Runner>,
+    ) -> Result<Self, String> {
         let boot = match opened {
             // The session comes with it, so the pane can re-composite into the
             // box the dock gives it. See [`crate::starts::OpenedChart`].
@@ -1344,11 +1403,43 @@ impl Boot {
             // line makes. See [`crate::starts::Opened::File`] for why the
             // route is shared rather than duplicated.
             crate::starts::Opened::File(path) => Self::data_file(&path.to_string_lossy())?,
+            // A Protocol folder is run to completion before it composes, so a
+            // boot of a start that has not run draws its panels rather than
+            // the not-run state; a run that fails is this boot's error.
+            crate::starts::Opened::Panels(dir) => Self::ran_panels(&dir, flow, runner)?,
         };
         Ok(Self {
             opened_id: Some(id.to_string()),
             ..boot
         })
+    }
+
+    /// The shipped Protocol folder `dir`, run by `runner` first when it has
+    /// not run, opened on its panels.
+    fn ran_panels(
+        dir: &std::path::Path,
+        flow: Flow,
+        runner: Option<&crate::run::Runner>,
+    ) -> Result<Self, String> {
+        if crate::starts::needs_run(dir) {
+            let Some(runner) = runner else {
+                return Err(format!(
+                    "{} has not run, and there is no runner to hand the run to",
+                    dir.display()
+                ));
+            };
+            let finished = crate::run::Run::begin(runner, dir, || {}).wait();
+            crate::starts::settle_run(dir, &finished)?;
+        }
+        let manifest = dir.join(arc::spec::MANIFEST_FILENAME);
+        let boot = Self::open(&manifest.to_string_lossy(), flow, None)?;
+        if boot.panels.is_none() {
+            return Err(match &boot.panels_problem {
+                Some((_, problem)) => problem.message(),
+                None => format!("{} did not open for its panels", dir.display()),
+            });
+        }
+        Ok(boot)
     }
 
     /// Whether the canvas of a window over these documents holds the asset
@@ -2555,6 +2646,9 @@ pub struct MeridianApp {
     /// The run of the open Protocol this window started and has not landed —
     /// see [`PendingRun`] and [`MeridianApp::run_protocol`].
     running: Option<PendingRun>,
+    /// The shipped Protocol start waiting on [`Self::running`] to open its
+    /// first panel — see [`PendingLanding`].
+    landing: Option<PendingLanding>,
     /// The program a run is handed to. `None` until [`MeridianApp::running_with`]
     /// gives one — see [`crate::run::Runner`] for why a window does not assume
     /// the process it is in.
@@ -3010,6 +3104,7 @@ impl MeridianApp {
             door_help: None,
             fetching: None,
             running: None,
+            landing: None,
             runner: None,
             descriptions: None,
             rail_before_ask: None,
@@ -4024,8 +4119,9 @@ impl MeridianApp {
         self.canvas_split
     }
 
-    /// **Which way the grid pane drew the file** in the last frame — the state
-    /// the switch on its header band is in.
+    /// **Which way the reader chose to lay the grid out** — the state the
+    /// switch on its header band is in. The layout the grid is drawn in can
+    /// differ from it; [`Self::drawn_grid_layout`] answers that.
     #[must_use]
     pub const fn grid_layout(&self) -> crate::app::GridLayout {
         self.grid_layout
@@ -8574,6 +8670,12 @@ impl MeridianApp {
                 return;
             }
         }
+        // A Protocol start writes its folder and lands on it, running it on a
+        // worker when it has not run.
+        if let Some(protocol) = crate::starts::find(id).and_then(|start| start.protocol.as_ref()) {
+            self.open_shipped_protocol(ctx, id, protocol);
+            return;
+        }
         let opened = match crate::starts::load(id) {
             Ok(opened) => opened,
             Err(e) => {
@@ -8582,6 +8684,30 @@ impl MeridianApp {
             }
         };
         self.land_start(ctx, id, opened);
+    }
+
+    /// Open a shipped Protocol as the start `id`: write its folder to
+    /// [`crate::starts::protocol_path`], and land on it. A folder that has run
+    /// opens on its first panel beside its grid at once; one that has not is
+    /// shown as its tiles while the embedded runner runs it on a worker, and
+    /// opens on that panel when the run lands. A run that fails raises the
+    /// start's banner, naming the network and the URL when a fetch failed,
+    /// over the door, and leaves no database for the next open to trust.
+    ///
+    /// **Public, and taking the Protocol rather than reading it off `id`**,
+    /// for the reason [`Self::open_fetched_start`] takes its data: a test
+    /// hands in a Protocol of its own, such as one whose fetch points at a
+    /// port on localhost with nothing listening.
+    pub fn open_shipped_protocol(
+        &mut self,
+        ctx: &egui::Context,
+        id: &'static str,
+        protocol: &crate::starts::ShippedProtocol,
+    ) {
+        match crate::starts::write_protocol(protocol) {
+            Ok(dir) => self.land_start(ctx, id, crate::starts::Opened::Panels(dir)),
+            Err(e) => self.refuse_start(ctx, id, &e),
+        }
     }
 
     /// Open a start whose `spec` reads a source over the network **without
@@ -8710,10 +8836,10 @@ impl MeridianApp {
     /// `either_route_to_the_same_subject_leaves_the_same_window` is the claim
     /// that would quietly stop being true if there were two tails.
     fn land_start(&mut self, ctx: &egui::Context, id: &'static str, opened: crate::starts::Opened) {
-        let banner = NotificationId::composite("open-start", id);
         // A start is a new document, and a Protocol's panel tiles are the
-        // outgoing one's.
+        // outgoing one's, as is any start still waiting on its run.
         self.tiles = None;
+        self.landing = None;
         match opened {
             // A new chart document is a new set of things to say, and a
             // reason to stop saying the last one's.
@@ -8760,7 +8886,90 @@ impl MeridianApp {
                 };
                 self.adopt_boot(boot);
             }
+            crate::starts::Opened::Panels(dir) => {
+                if !self.land_panels(ctx, id, &dir) {
+                    return;
+                }
+            }
         }
+        self.record_landed(ctx, id);
+    }
+
+    /// Install the tiles of the shipped Protocol folder `dir` and open its
+    /// first panel beside its grid, running it first when it has not run.
+    /// Answers whether the start has landed now; `false` both when it was
+    /// refused, with its banner up, and when its run is under way, which
+    /// `poll_run` lands through [`Self::landing`].
+    fn land_panels(
+        &mut self,
+        ctx: &egui::Context,
+        id: &'static str,
+        dir: &std::path::Path,
+    ) -> bool {
+        let needs_run = crate::starts::needs_run(dir);
+        let manifest = dir.join(arc::spec::MANIFEST_FILENAME);
+        let boot = match Boot::open(
+            &manifest.to_string_lossy(),
+            self.protocol.doc.model.flow(),
+            None,
+        ) {
+            Ok(boot) => boot,
+            Err(e) => {
+                self.refuse_start(ctx, id, &e);
+                return false;
+            }
+        };
+        self.adopt_boot(boot);
+        let Some(tiles) = self.tiles.as_ref() else {
+            self.back_to_the_door();
+            self.refuse_start(
+                ctx,
+                id,
+                &format!("{} did not open for its panels", dir.display()),
+            );
+            return false;
+        };
+        if tiles.panels().is_some() {
+            self.open_panel_with_grid(0);
+            return true;
+        }
+        let not_run = matches!(
+            tiles.problem(),
+            Some(crate::protocol_panels::OpenProblem::NotRun { .. })
+        );
+        if !(needs_run || not_run) {
+            // A problem a run would not answer, such as a database another
+            // process holds: the tiles say it, and retry when it can clear.
+            return true;
+        }
+        let tiles_dir = tiles.dir().to_path_buf();
+        if !self.run_panel_protocol(ctx) {
+            // `run_panel_protocol` raised its own banner saying why, and it
+            // stays up over the door.
+            self.back_to_the_door();
+            return false;
+        }
+        self.landing = Some(PendingLanding { id, dir: tiles_dir });
+        false
+    }
+
+    /// Empty both documents and the tiles, which is the front door: where a
+    /// shipped Protocol start that could not run leaves the window.
+    fn back_to_the_door(&mut self) {
+        self.tiles = None;
+        self.landing = None;
+        self.open_chart(Composed::empty());
+        self.protocol.doc.open(ProtocolInputs::empty());
+        self.remote_files = None;
+        self.documents_changed();
+    }
+
+    /// Record a start that has landed: its banner dismissed, the layout's
+    /// `opened` and the door's row for it, the toast and the window's title.
+    /// The tail of [`Self::land_start`], and of `poll_run` for a Protocol start
+    /// whose run landed later.
+    fn record_landed(&mut self, ctx: &egui::Context, id: &'static str) {
+        let banner = NotificationId::composite("open-start", id);
         self.notifications.dismiss(banner);
         self.layout.live_mut().opened = Some(id.to_string());
         // …and remembered as a Protocol, which is the other half: `opened` is
@@ -8876,6 +9085,7 @@ impl MeridianApp {
     /// everything else that belonged to the outgoing document, so each of them
     /// has to be put back **after** it rather than before.
     fn adopt_boot(&mut self, boot: Boot) {
+        self.landing = None;
         self.tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         self.open_chart(boot.composed);
         if let Some(live) = boot.live {
@@ -9650,17 +9860,23 @@ impl MeridianApp {
     /// the folder and the window does not write its spec first, as it does
     /// for one of its own. The tiles reload when the run lands.
     fn run_panel_protocol(&mut self, ctx: &egui::Context) -> bool {
+        let banner = NotificationId::new("run-protocol");
         let Some((dir, name)) = self
             .tiles
             .as_ref()
             .map(|t| (t.dir().to_path_buf(), t.name().to_string()))
         else {
+            eprintln!("could not run the Protocol: none is open");
+            self.notifications.raise(
+                Notification::new(banner, Severity::Error, "Could not run this Protocol")
+                    .body("this window holds no Protocol to run"),
+            );
+            ctx.request_repaint();
             return false;
         };
         if self.run_in_progress() {
             return true;
         }
-        let banner = NotificationId::new("run-protocol");
         let Some(runner) = self.runner.as_ref() else {
             eprintln!("could not run the Protocol: no runner");
             self.notifications.raise(
@@ -9700,7 +9916,7 @@ impl MeridianApp {
     /// Answers whether a run of this document is under way when it returns:
     /// `false` for a window with no Protocol source to run (a chart spec, a
     /// shipped start, the front door), for a spec that would not write, and for
-    /// a window given no runner, the last two with a banner; `true` when it
+    /// a window given no runner, each with a banner; `true` when it
     /// started one, and when one was already running for this document — a
     /// second press while it runs is the same press.
     pub fn run_protocol(&mut self, ctx: &egui::Context) -> bool {
@@ -9805,7 +10021,19 @@ impl MeridianApp {
         let dir = pending.run.dir().to_path_buf();
         let protocol = std::mem::take(&mut pending.protocol);
         self.running = None;
+        let landing = self.landing.take_if(|landing| landing.dir == dir);
         if !self.holds_protocol(&dir, &protocol) {
+            // Gone to another document: a start that was waiting on this run
+            // has nothing to land on, and its folder's next open runs it again
+            // if this run failed.
+            if !(finished.succeeded && finished.record.is_some()) {
+                let _ = crate::starts::settle_run(&dir, &finished);
+            }
+            return;
+        }
+        if let Some(landing) = landing {
+            self.land_shipped_run(ctx, landing, &finished);
+            ctx.request_repaint();
             return;
         }
         if let Some(tiles) = self.tiles.as_mut() {
@@ -9873,6 +10101,56 @@ impl MeridianApp {
         }
         self.protocol.doc.model.set_run_log(finished.log);
         ctx.request_repaint();
+    }
+
+    /// Land a shipped Protocol start whose run has finished: on a success, its
+    /// tiles drawn again from the run and its first panel opened beside its
+    /// grid; on a failure, its database removed and its banner raised over
+    /// the door.
+    ///
+    /// **Unsaved work is never dropped.** Opening the panel replaces the chart
+    /// document, so when the chart open now has edits no file holds, the panel
+    /// is not opened: the tiles stay, with the banner
+    /// [`Self::back_to_panel_tiles`] raises for the same reason, and the
+    /// reader opens the panel from its tile once the edits are saved or
+    /// undone. A failure leaves such a window as it is, with the banner.
+    fn land_shipped_run(
+        &mut self,
+        ctx: &egui::Context,
+        landing: PendingLanding,
+        finished: &crate::run::Finished,
+    ) {
+        if let Some(tiles) = self.tiles.as_mut() {
+            if tiles.selected().is_none() {
+                tiles.reload();
+            }
+        }
+        self.refresh_agent_protocol();
+        if let Err(why) = crate::starts::settle_run(&landing.dir, finished) {
+            eprintln!(
+                "the run of {} did not finish:\n{}",
+                landing.dir.display(),
+                finished.log
+            );
+            if !self.charts.doc.has_unsaved_work() {
+                self.back_to_the_door();
+            }
+            self.refuse_start(ctx, landing.id, &why);
+            return;
+        }
+        if self.charts.doc.has_unsaved_work() {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new("panel-unsaved"),
+                    Severity::Warning,
+                    "The panel was not opened over unsaved edits",
+                )
+                .body("Save the chart, or undo its edits, then open the panel from its tile."),
+            );
+        } else if self.tiles.as_ref().and_then(PanelTiles::panels).is_some() {
+            self.open_panel_with_grid(0);
+        }
+        self.record_landed(ctx, landing.id);
     }
 
     /// Open the Protocol saved at `path` — the route a front door row for a

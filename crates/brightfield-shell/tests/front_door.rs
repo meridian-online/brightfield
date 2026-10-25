@@ -24,6 +24,11 @@
 //! real capture path, which
 //! needs a wgpu adapter, exactly as `surfaces.rs` does.
 
+#[path = "support/agent_protocol.rs"]
+mod agent_protocol;
+#[path = "support/shipped_protocol.rs"]
+mod shipped_protocol;
+
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -457,7 +462,9 @@ fn every_shipped_start_loads_into_a_document_with_something_in_it() {
         // the others: which pane's empty state offers it, which for a picture
         // over a table is the chart pane.
         let opens_a_chart = match &opened {
-            Opened::Charts(_) | Opened::File(_) => true,
+            // A Protocol start lands on its first panel as the chart
+            // document, beside its grid.
+            Opened::Charts(_) | Opened::File(_) | Opened::Panels(_) => true,
             Opened::Protocol(_) => false,
         };
         assert_eq!(
@@ -523,6 +530,23 @@ fn every_shipped_start_loads_into_a_document_with_something_in_it() {
                     !inputs.graph_full.edges.is_empty(),
                     "{} built assets with no lineage between them, which is \
                      the one thing this view is for",
+                    start.id
+                );
+            }
+            // The whole open, as for a data file: the folder run and its
+            // panels drawn, not only written.
+            Opened::Panels(_) => {
+                let boot = boot_offline(start).unwrap_or_else(|e| {
+                    panic!("{} wrote a Protocol that will not run: {e}", start.id)
+                });
+                let panels = boot
+                    .panels
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{} did not open on its panels", start.id));
+                assert!(
+                    panels.tiles.first().is_some_and(|t| t.outcome.is_ok()),
+                    "{}'s first panel does not draw, so the card that opens it \
+                     lands on a problem",
                     start.id
                 );
             }
@@ -602,9 +626,10 @@ fn the_local_starts_open_with_the_network_denied_and_a_cold_extension_cache() {
              network and proves nothing about running without one"
         );
         for start in starts::STARTS.iter().filter(|s| !s.remote) {
-            let boot = Boot::start(start.id, Flow::Vertical).unwrap_or_else(|e| {
-                panic!("{} no longer opens with the network denied: {e}", start.id)
-            });
+            let boot = Boot::start_running(start.id, Flow::Vertical, Some(&protocol_runner()))
+                .unwrap_or_else(|e| {
+                    panic!("{} no longer opens with the network denied: {e}", start.id)
+                });
             assert!(
                 boot.has_chart() || !boot.protocol.graph_full.nodes.is_empty(),
                 "{} opened onto nothing with the network denied",
@@ -678,29 +703,39 @@ fn the_local_starts_open_with_the_network_denied_and_a_cold_extension_cache() {
     );
 }
 
-/// **A start declares a chart spec or a data file, and not both.**
+/// **A start declares a chart spec, a data file or a shipped Protocol, and
+/// only one of them.**
 ///
-/// `starts::load` takes the data arm first, so a start carrying both would
-/// materialise its file and leave its spec uncomposed — a silent wrong answer
-/// where a refusal was wanted. The arm order is a decision about which of two
-/// mistakes to make; this is what says the situation does not arise.
+/// `starts::load` takes the data arm first and the Protocol arm next, so a
+/// start carrying two would open one and never the other — a silent wrong
+/// answer where a refusal was wanted. The arm order is a decision about which
+/// of two mistakes to make; this is what says the situation does not arise.
 ///
 /// Watched redden, one mutation: giving the California Housing entry
 /// `spec: Some(CROSSWALK_CHART_SPEC)` beside its `data:` fails here at
-/// "california-housing declares both a chart spec and a data file".
+/// "california-housing declares more than one of a chart spec, a data file
+/// and a Protocol".
 #[test]
 fn a_start_declares_a_spec_or_a_data_file_and_never_both() {
     for start in starts::STARTS {
+        let declared = [
+            start.spec.is_some(),
+            start.data.is_some(),
+            start.protocol.is_some(),
+        ]
+        .into_iter()
+        .filter(|d| *d)
+        .count();
         assert!(
-            !(start.spec.is_some() && start.data.is_some()),
-            "{} declares both a chart spec and a data file, and `load` will \
-             open the file and never the spec",
+            declared <= 1,
+            "{} declares more than one of a chart spec, a data file and a \
+             Protocol, and `load` will open one and never the others",
             start.id
         );
         assert!(
-            start.spec.is_some() || start.data.is_some() || start.fills != CHART,
-            "{} fills the chart pane and declares neither a spec nor a data \
-             file, so its click reaches `load`'s refusal",
+            declared == 1 || start.fills != CHART,
+            "{} fills the chart pane and declares neither a spec, a data file \
+             nor a Protocol, so its click reaches `load`'s refusal",
             start.id
         );
     }
@@ -2867,6 +2902,39 @@ const REMOTE_FIXTURES: &[(&str, &str)] = &[
 /// crosswalk's reduced copy.
 const CROSSWALK_PROVENANCE: &str = "tests/data/edgar_gleif_reduced.json";
 
+/// The runner a Protocol start is run by in these tests: the
+/// `brightfield-shell` binary cargo built, not this harness.
+fn protocol_runner() -> brightfield_shell::run::Runner {
+    agent_protocol::arc_stores();
+    brightfield_shell::run::Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))
+}
+
+/// Boot `start` with no network: a chart or data start over
+/// [`remote_stand_in`], a Protocol start over its stand-in — its folder with
+/// each `http_fetch` step replaced by the committed copy in
+/// [`REMOTE_FIXTURES`] — run to completion first, and a start that reads
+/// nothing remote as it is.
+fn boot_offline(start: &'static starts::Start) -> Result<Boot, String> {
+    if let Some(protocol) = &start.protocol {
+        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let copies: Vec<(&str, PathBuf)> = REMOTE_FIXTURES
+            .iter()
+            .map(|(url, file)| (*url, crate_dir.join(file)))
+            .collect();
+        let borrowed: Vec<(&str, &std::path::Path)> = copies
+            .iter()
+            .map(|(url, path)| (*url, path.as_path()))
+            .collect();
+        let offline = shipped_protocol::stand_in(protocol, &borrowed);
+        return Boot::shipped_protocol(start.id, offline, Flow::Vertical, Some(&protocol_runner()));
+    }
+    if start.remote {
+        Boot::start_with(start.id, remote_stand_in(start), Flow::Vertical)
+    } else {
+        Boot::start_running(start.id, Flow::Vertical, Some(&protocol_runner()))
+    }
+}
+
 /// What `start`'s network sources are replaced with when its thumbnail is
 /// drawn: the committed copies in [`REMOTE_FIXTURES`].
 fn remote_stand_in(start: &starts::Start) -> brightfield_shell::remote::Fetched {
@@ -2874,6 +2942,11 @@ fn remote_stand_in(start: &starts::Start) -> brightfield_shell::remote::Fetched 
         (Some(spec), _) => brightfield_shell::remote::remote_sources(spec)
             .unwrap_or_else(|e| panic!("{}: {e}", start.id)),
         (None, Some(data)) => vec![data.url.to_string()],
+        (None, None) if start.protocol.is_some() => panic!(
+            "{} is a Protocol start, whose fetches are its `http_fetch` steps: \
+             boot it through `boot_offline`, which runs its stand-in",
+            start.id
+        ),
         (None, None) => panic!("{} is remote and reads nothing", start.id),
     };
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -3127,12 +3200,8 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) {
     let options = egui_kittest::SnapshotOptions::default().output_path(&assets);
     let mut failures = Vec::new();
     for start in starts {
-        let boot = if start.remote {
-            Boot::start_with(start.id, remote_stand_in(start), Flow::Vertical)
-        } else {
-            Boot::start(start.id, Flow::Vertical)
-        }
-        .unwrap_or_else(|e| panic!("{} no longer loads: {e}", start.id));
+        let boot =
+            boot_offline(start).unwrap_or_else(|e| panic!("{} no longer loads: {e}", start.id));
         // The window the start itself asks for — its content's own natural
         // size, the same answer the live click gives.
         let size = boot.window_size();

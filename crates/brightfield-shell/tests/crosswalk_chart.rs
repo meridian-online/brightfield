@@ -801,6 +801,12 @@ fn the_crosswalk_chart_start_opens_over_the_network_drawing_every_row() {
         starts::Opened::File(path) => {
             panic!("the crosswalk CHART opened a data file: {}", path.display())
         }
+        starts::Opened::Panels(dir) => {
+            panic!(
+                "the crosswalk CHART opened a Protocol's panels: {}",
+                dir.display()
+            )
+        }
     }
 
     let (spec, analysis) = shipped();

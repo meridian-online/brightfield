@@ -386,6 +386,35 @@ pub struct Start {
     /// with the same argument. `the_card_and_the_picker_land_on_one_window` is
     /// what reads that back off two real opens.
     pub data: Option<FetchedData>,
+    /// The **Protocol folder** this start writes, runs and opens on its
+    /// panel, or `None` for a start that opens anything else.
+    ///
+    /// Exclusive with [`spec`](Self::spec) and [`data`](Self::data), which
+    /// `a_start_declares_a_spec_or_a_data_file_and_never_both` holds.
+    ///
+    /// [`load`] writes the folder to [`protocol_path`] and hands back where it
+    /// is; the window then runs it with the embedded arc runner when it has
+    /// not run, and opens its first panel beside its grid, so a click lands
+    /// where an analyst's own run of the same Protocol would. A Protocol whose
+    /// steps include an `http_fetch` reaches the network on its first run, and
+    /// its start says so with [`REMOTE_MARK`] like any other remote start.
+    pub protocol: Option<ShippedProtocol>,
+}
+
+/// A Protocol folder a start ships inside the binary: every file of it, by
+/// its path relative to the folder.
+///
+/// The folder is written whole to [`protocol_path`], which names the
+/// revision, so a build that changes the folder raises [`Self::revision`]
+/// and writes it afresh beside the older one rather than reopening the older
+/// one's files or the database its run made.
+pub struct ShippedProtocol {
+    /// The folder's name under its revision's directory.
+    pub dir_name: &'static str,
+    /// Which shape of folder this build ships, as part of [`protocol_path`].
+    pub revision: u32,
+    /// Each file of the folder, as `(path relative to the folder, bytes)`.
+    pub files: &'static [(&'static str, &'static [u8])],
 }
 
 impl Start {
@@ -437,6 +466,7 @@ pub const STARTS: &[Start] = &[
         // A Protocol manifest, not a chart spec — see `load`.
         spec: None,
         data: None,
+        protocol: None,
     },
     Start {
         id: CROSSWALK_RUN,
@@ -457,6 +487,7 @@ pub const STARTS: &[Start] = &[
         // A Protocol+Run contract, not a chart spec — see `load`.
         spec: None,
         data: None,
+        protocol: None,
     },
     Start {
         id: DASHBOARD,
@@ -471,6 +502,7 @@ pub const STARTS: &[Start] = &[
         on_door: false,
         spec: Some(DASHBOARD_SPEC),
         data: None,
+        protocol: None,
     },
     Start {
         id: DISTRIBUTION,
@@ -485,6 +517,7 @@ pub const STARTS: &[Start] = &[
         on_door: false,
         spec: Some(DISTRIBUTION_SPEC),
         data: None,
+        protocol: None,
     },
     Start {
         id: BREAKDOWN,
@@ -498,6 +531,7 @@ pub const STARTS: &[Start] = &[
         on_door: false,
         spec: Some(BREAKDOWN_SPEC),
         data: None,
+        protocol: None,
     },
     // Placed after the generated chart starts rather than beside the
     // crosswalks, and the position is `for_pane`'s rather than the door's.
@@ -538,6 +572,7 @@ pub const STARTS: &[Start] = &[
             prepare: crate::housing::unpack,
             descriptor: HOUSING_DESCRIPTOR,
         }),
+        protocol: None,
     },
     // Last on purpose. `for_pane` hands an empty pane the FIRST start that
     // fills it, and an empty state whose one button can fail for want of a
@@ -556,6 +591,7 @@ pub const STARTS: &[Start] = &[
         on_door: true,
         spec: Some(CROSSWALK_CHART_SPEC),
         data: None,
+        protocol: None,
     },
 ];
 
@@ -651,6 +687,10 @@ pub enum Opened {
     /// it. What the two routes then share is not an agreement; it is the same
     /// function called with the same argument.
     File(std::path::PathBuf),
+    /// A **Protocol folder**, written at this path by a [`Start::protocol`]
+    /// start, for the caller to run when it has not run and open on its
+    /// panels.
+    Panels(std::path::PathBuf),
 }
 
 /// The name [`CALIFORNIA_HOUSING`]'s file is written under.
@@ -775,6 +815,12 @@ pub fn load(id: &str) -> Result<Opened, String> {
         }
         let fetched = crate::remote::Fetch::begin(vec![data.url.to_string()], || {}).wait()?;
         return write_fetched(data, &fetched).map(Opened::File);
+    }
+    // The Protocol arm writes the folder and hands back where it is. Running
+    // it is the caller's: the window runs it on a worker and keeps drawing,
+    // and `Boot` runs it to completion before it composes.
+    if let Some(protocol) = &start.protocol {
+        return write_protocol(protocol).map(Opened::Panels);
     }
     // The chart arm reads the start's own [`Start::spec`] rather than a second
     // table keyed by id, so the bytes a check reads off the entry are the bytes
@@ -979,4 +1025,193 @@ pub fn write_fetched(
         format!("{} -> {}: {e}", staging.display(), path.display())
     })?;
     Ok(path)
+}
+
+/// The subdirectory of [`datasets_dir`] a shipped Protocol folder is written
+/// into, beside [`FETCHED_DIR`].
+pub const PROTOCOLS_DIR: &str = "protocols";
+
+/// Where `protocol`'s folder is written on this machine:
+/// `protocols/v{revision}/{dir_name}` under [`datasets_dir`].
+///
+/// A stable path, so the next launch finds the folder and the run it made,
+/// and reopens it with no run and no network.
+#[must_use]
+pub fn protocol_path(protocol: &ShippedProtocol) -> std::path::PathBuf {
+    datasets_dir()
+        .join(PROTOCOLS_DIR)
+        .join(format!("v{}", protocol.revision))
+        .join(protocol.dir_name)
+}
+
+/// Write `protocol`'s folder at [`protocol_path`], and hand back where it is.
+///
+/// A folder already there for the same revision is left alone: it may hold a
+/// run, and it is this build's folder. Otherwise every file is written into a
+/// staging folder beside it, which is renamed into place, so a folder is
+/// either whole or absent, and a write that fails part way leaves nothing for
+/// the next open to find and trust.
+///
+/// # Errors
+///
+/// A file path that leaves the folder, or a directory, file or rename that
+/// fails, each naming the path.
+pub fn write_protocol(protocol: &ShippedProtocol) -> Result<std::path::PathBuf, String> {
+    let path = protocol_path(protocol);
+    if path.join(arc::spec::MANIFEST_FILENAME).is_file() {
+        return Ok(path);
+    }
+    let parent = path
+        .parent()
+        .expect("protocol_path is a folder inside a revision directory");
+    std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let staging = parent.join(format!(
+        "{}.{}-{}.part",
+        protocol.dir_name,
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&staging);
+    let written = (|| {
+        for (file, bytes) in protocol.files {
+            let relative = std::path::Path::new(file);
+            if relative.is_absolute()
+                || relative
+                    .components()
+                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
+            {
+                return Err(format!(
+                    "{}: the file {file:?} is not inside the folder",
+                    protocol.dir_name
+                ));
+            }
+            let target = staging.join(relative);
+            if let Some(dir) = target.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            }
+            std::fs::write(&target, bytes).map_err(|e| format!("{}: {e}", target.display()))?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&staging, &path) {
+        let _ = std::fs::remove_dir_all(&staging);
+        // Another writer got there first with the same revision's folder.
+        if path.join(arc::spec::MANIFEST_FILENAME).is_file() {
+            return Ok(path);
+        }
+        return Err(format!("{} -> {}: {e}", staging.display(), path.display()));
+    }
+    Ok(path)
+}
+
+/// The URLs the `http_fetch` steps of the Protocol in `manifest` fetch, in
+/// step order: what a run of it reads over the network.
+#[must_use]
+pub fn fetch_urls(manifest: &str) -> Vec<String> {
+    let Ok(parsed) = serde_yaml::from_str::<serde_yaml::Value>(manifest) else {
+        return Vec::new();
+    };
+    parsed
+        .get("steps")
+        .and_then(serde_yaml::Value::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter(|step| {
+            step.get("op")
+                .and_then(serde_yaml::Value::as_str)
+                .is_some_and(is_fetch_op)
+        })
+        .filter_map(|step| step.get("with")?.get("url")?.as_str().map(str::to_string))
+        .collect()
+}
+
+/// Whether a step's `op:` names arc's `http_fetch`, with or without a
+/// version (`http_fetch@1`).
+#[must_use]
+pub fn is_fetch_op(op: &str) -> bool {
+    op.strip_prefix("http_fetch").is_some_and(|rest| {
+        rest.is_empty()
+            || rest
+                .strip_prefix('@')
+                .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
+/// The database a run of the Protocol in `dir` writes, and its write-ahead
+/// log beside it.
+fn protocol_db_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(db) = arc::spec::protocol_db_path(dir) else {
+        return Vec::new();
+    };
+    let mut wal = db.clone().into_os_string();
+    wal.push(".wal");
+    vec![db, std::path::PathBuf::from(wal)]
+}
+
+/// Whether the shipped Protocol in `dir` needs a run before its panels can
+/// open: it has no database, or a database no finished run accounts for.
+///
+/// A database with no run record behind it is one a run left when it was
+/// stopped part way, and it is removed here, so the run that follows starts
+/// from nothing rather than from tables nobody finished.
+#[must_use]
+pub fn needs_run(dir: &std::path::Path) -> bool {
+    let files = protocol_db_files(dir);
+    let Some(db) = files.first() else {
+        return true;
+    };
+    if db.is_file() && arc::spec::run_tables(dir, None).is_ok() {
+        return false;
+    }
+    for file in &files {
+        let _ = std::fs::remove_file(file);
+    }
+    true
+}
+
+/// What a finished run of the shipped Protocol in `dir` means for its start:
+/// `Ok` when it ran to a record, and otherwise the words its banner carries.
+///
+/// A failed run's database is removed first, so the next open runs the
+/// Protocol again rather than trusting tables a failed run left. A run that
+/// could not fetch one of the Protocol's `http_fetch` URLs says it could not
+/// reach that URL over the network; any other failure says the run did not
+/// finish. Either way the run's own log follows, so a missing DuckDB CLI is
+/// named in arc's own words.
+///
+/// # Errors
+///
+/// The banner's words, when the run did not succeed.
+pub fn settle_run(dir: &std::path::Path, finished: &crate::run::Finished) -> Result<(), String> {
+    if finished.succeeded && finished.record.is_some() {
+        return Ok(());
+    }
+    for file in protocol_db_files(dir) {
+        let _ = std::fs::remove_file(file);
+    }
+    let manifest =
+        std::fs::read_to_string(dir.join(arc::spec::MANIFEST_FILENAME)).unwrap_or_default();
+    let urls = fetch_urls(&manifest);
+    let log = finished.log.trim();
+    let mut named: Vec<&String> = urls
+        .iter()
+        .filter(|url| log.contains(url.as_str()))
+        .collect();
+    if named.is_empty() && log.contains("http_fetch") {
+        named = urls.iter().collect();
+    }
+    if named.is_empty() {
+        Err(format!("the Protocol's run did not finish:\n{log}"))
+    } else {
+        let urls: Vec<&str> = named.iter().map(|u| u.as_str()).collect();
+        Err(format!(
+            "could not reach {} over the network, so the Protocol did not run:\n{log}",
+            urls.join(", ")
+        ))
+    }
 }

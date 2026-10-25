@@ -1,0 +1,1 @@
+A small Protocol a shipped-Protocol start is tested against: one bundled CSV, one SQL step and one panel. `tests/shipped_protocol_start.rs` writes it the way a start writes its folder, and adds an `http_fetch` step pointing at a port with nothing listening to stand for a start that fetches.

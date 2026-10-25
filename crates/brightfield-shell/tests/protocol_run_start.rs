@@ -49,6 +49,10 @@ fn run_model() -> ProtocolModel {
         Opened::Protocol(inputs) => ProtocolModel::new(*inputs, Flow::Vertical),
         Opened::Charts(_) => panic!("the run start opened a chart, not a Protocol"),
         Opened::File(path) => panic!("the run start opened a data file: {}", path.display()),
+        Opened::Panels(dir) => panic!(
+            "the run start opened a Protocol's panels: {}",
+            dir.display()
+        ),
     }
 }
 
@@ -186,6 +190,10 @@ fn the_run_less_start_still_reports_every_step_as_never_run() {
         Opened::Protocol(inputs) => ProtocolModel::new(*inputs, Flow::Vertical),
         Opened::Charts(_) => panic!("the manifest start opened a chart"),
         Opened::File(path) => panic!("the manifest start opened a data file: {}", path.display()),
+        Opened::Panels(dir) => panic!(
+            "the manifest start opened a Protocol's panels: {}",
+            dir.display()
+        ),
     };
     let states = model.step_states();
     assert!(
