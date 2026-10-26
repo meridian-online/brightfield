@@ -198,3 +198,33 @@ fn fetch_message_names_the_extension() {
     let both = data_file::fetch_message(&["excel", "sqlite"], &[]).unwrap();
     assert!(both.contains("excel") && both.contains("sqlite"), "{both}");
 }
+
+#[test]
+fn a_folder_member_named_with_pattern_syntax_is_left_out_not_read_as_another_file() {
+    let dir = input("glob-names");
+    std::fs::write(dir.join("sales1.csv"), "id\n1\n2\n").unwrap();
+    std::fs::write(dir.join("sales[1].csv"), "id\n9\n").unwrap();
+    std::fs::write(dir.join("other.csv"), "k\n1\n").unwrap();
+    let Opened::Model(p) = data_file::open_any(&dir, &runner()).expect("the folder opens") else {
+        panic!("two readable tables are a model");
+    };
+    let names: Vec<&str> = p.sources.tables.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["other", "sales1"]);
+    assert!(p
+        .sources
+        .skipped
+        .iter()
+        .any(|(f, why)| f.ends_with("sales[1].csv") && why.contains("pattern")));
+    let rows = p
+        .profiles
+        .iter()
+        .find(|s| s.name == "sales1")
+        .map(|s| &s.outcome);
+    assert!(
+        matches!(
+            rows,
+            Some(brightfield_engine::ProfileOutcome::Profiled { row_count: 2, .. })
+        ),
+        "{rows:?}"
+    );
+}

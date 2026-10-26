@@ -2038,3 +2038,23 @@ fn every_url_scheme_is_refused_before_the_engine() {
         assert!(refusal.contains("URL"), "{url}: {refusal}");
     }
 }
+
+/// A path that needs an extension that is not installed raises the notice that names it and
+/// waits: the open runs on a later frame, once a frame has had the notice to draw.
+#[test]
+fn an_open_that_fetches_an_extension_waits_for_a_frame_after_the_notice() {
+    let mut win = Window::open();
+    win.settle();
+    let ctx = win.ctx.clone();
+    win.app
+        .open_path_knowing(&ctx, "/tmp/bf-no-such-book.xlsx", &[]);
+    assert_eq!(
+        win.app.pending_open(),
+        Some("/tmp/bf-no-such-book.xlsx"),
+        "the open has not run when the notice is raised"
+    );
+    assert_eq!(win.app.notifications().len(), 1, "the notice is up");
+
+    win.run(vec![Vec::new()]);
+    assert_eq!(win.app.pending_open(), None, "the next frame runs the open");
+}

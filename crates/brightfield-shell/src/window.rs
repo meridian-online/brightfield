@@ -6043,15 +6043,17 @@ impl MeridianApp {
         // raised there hangs until something kills it. The flag is left set so
         // a headless test can still assert the control asked; the door rewrites
         // it on its next frame.
+        // An open that waited a frame so the canvas could say what it is fetching first. Taken
+        // before the picker, so a path latched on this frame waits for the next one, after this
+        // frame has drawn the notice.
+        if let Some(path) = self.pending_open.take() {
+            self.open_path_now(&ctx, &path);
+        }
         if self.pick_requested && self.dialogs_allowed {
             self.pick_requested = false;
             if let Some(path) = crate::data_file::pick() {
                 self.open_path(&ctx, &path.to_string_lossy());
             }
-        }
-        // An open that waited a frame so the canvas could say what it is fetching first.
-        if let Some(path) = self.pending_open.take() {
-            self.open_path_now(&ctx, &path);
         }
         // A saved Protocol picked off the door. No dialog and no gate: the path
         // came off a row this build already decided it can reopen, so unlike
@@ -9320,9 +9322,14 @@ impl MeridianApp {
     /// is being fetched and the open itself waits for the next frame, so the notice is on screen
     /// while the thread is held.
     pub fn open_path(&mut self, ctx: &egui::Context, chosen: &str) {
-        let needed = crate::data_file::extensions_likely_needed(std::path::Path::new(chosen));
         let installed = crate::data_file::installed_extensions();
-        if let Some(message) = crate::data_file::fetch_message(&needed, &installed) {
+        self.open_path_knowing(ctx, chosen, &installed);
+    }
+
+    /// [`Self::open_path`] told which extensions are installed, so a test can name a set.
+    pub fn open_path_knowing(&mut self, ctx: &egui::Context, chosen: &str, installed: &[String]) {
+        let needed = crate::data_file::extensions_likely_needed(std::path::Path::new(chosen));
+        if let Some(message) = crate::data_file::fetch_message(&needed, installed) {
             self.notifications.raise(
                 Notification::new(
                     NotificationId::new("open-fetching-extension"),
@@ -9356,6 +9363,12 @@ impl MeridianApp {
             }
             Err(e) => self.say_open_failed(ctx, chosen, e),
         }
+    }
+
+    /// The path whose open is waiting for a frame to draw the fetch notice first.
+    #[must_use]
+    pub fn pending_open(&self) -> Option<&str> {
+        self.pending_open.as_deref()
     }
 
     /// Where the model pane will open for an own-files Protocol. Until it exists, the window says

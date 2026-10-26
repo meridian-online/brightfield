@@ -80,6 +80,19 @@ pub fn discover(path: &Path) -> Result<SourceSet, String> {
             .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
+        // A reader resolves a path as a glob, so a name with pattern syntax could load another
+        // file's rows; such a file is left out rather than read.
+        if let Some(found) = file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.chars().find(|c| PATTERN_CHARACTERS.contains(c)))
+        {
+            set.skipped.push((
+                file,
+                format!("`{found}` in its name is pattern syntax to the reader; rename the file"),
+            ));
+            continue;
+        }
         let parts = match ext.as_str() {
             "csv" => probe.flat(&file, Reader::Csv),
             "tsv" => probe.flat(&file, Reader::Tsv),
@@ -118,6 +131,9 @@ pub fn discover(path: &Path) -> Result<SourceSet, String> {
     }
     Ok(set)
 }
+
+/// Characters a DuckDB file reader reads as pattern syntax rather than as themselves.
+const PATTERN_CHARACTERS: &[char] = &['*', '?', '[', ']', '{', '}'];
 
 /// The DuckDB extensions loading `set` needs, in a fixed order.
 pub fn extensions_needed(set: &SourceSet) -> Vec<&'static str> {
