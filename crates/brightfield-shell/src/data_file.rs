@@ -1026,7 +1026,7 @@ pub fn installed_extensions() -> Vec<String> {
 }
 
 /// What the canvas says while a load needs extensions that are not installed yet: the ones
-/// `needed` that `installed` lacks, named, and when the wait happens. `None` when all of them are
+/// `needed` that `installed` lacks, named, and when the wait happens. `None` when those are
 /// installed.
 #[must_use]
 pub fn fetch_message(needed: &[&str], installed: &[String]) -> Option<String> {

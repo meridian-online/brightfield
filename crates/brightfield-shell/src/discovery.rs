@@ -2,7 +2,7 @@
 //! discovers how the tables relate.
 //!
 //! A [`Discovery`] reads a [`OwnProtocol`] (its data packages and raw tables) and answers a
-//! [`Model`]. It runs in two passes, a quick one over a sample and a complete one over all the rows,
+//! [`Model`]. It runs in two passes, a quick one over a sample and a complete one over the whole table,
 //! and [`discover_model`] folds each into the model already held so what the analyst has decided
 //! survives both. [`StandIn`] is what runs until a real discoverer is wired in: it returns the model
 //! already in the Protocol folder, or else lists each table as unclear with no joins.
