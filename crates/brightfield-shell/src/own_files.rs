@@ -306,9 +306,9 @@ fn frictionless_type(label: Option<&str>, duckdb_type: &str) -> &'static str {
     }
     // FineType labels whose values are exactly what Frictionless reads by default for the type,
     // from the `examples` and `pattern` of each label in the taxonomy catalogue of FineType
-    // v0.6.59 (`taxonomy-schemas.json` in the bundle). Every other label is a string: no
-    // `true_false`-only boolean label exists (`binary`, `initials` and `terms` all carry other
-    // words), and a date, time or number in another form needs a `format` or a cast first.
+    // v0.6.59 (`taxonomy-schemas.json` in the bundle). A label not listed is a string, as
+    // `only_default_format_labels_are_typed` shows: the boolean labels (`binary`, `initials`,
+    // `terms`) all carry words besides true and false, and a date, time or number in another form needs a `format` or a cast first.
     match label {
         Some("datetime.date.iso") => "date",
         Some("datetime.time.hms_24h") => "time",
