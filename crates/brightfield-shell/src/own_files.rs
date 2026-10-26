@@ -133,16 +133,6 @@ pub fn run_loads(p: &OwnProtocol, runner: &Runner) -> Result<(), String> {
 /// The reason when the manifest cannot be read or written, or a step file cannot be written.
 pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
     let transforms = FinetypeTransforms::vendored();
-    let models = p.dir.join("models");
-    let entries = std::fs::read_dir(&models).map_err(|e| format!("{}: {e}", models.display()))?;
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with(SILVER_FILE) || name.starts_with(FAILED_FILE) {
-            std::fs::remove_file(entry.path())
-                .map_err(|e| format!("{}: {e}", entry.path().display()))?;
-        }
-    }
-
     let manifest_path = p.dir.join("arcform.yaml");
     let text = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
@@ -159,6 +149,16 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
             .unwrap_or("");
         !(name.starts_with(SILVER_STEP) || name.starts_with(FAILED_STEP))
     });
+
+    let models = p.dir.join("models");
+    let entries = std::fs::read_dir(&models).map_err(|e| format!("{}: {e}", models.display()))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(SILVER_FILE) || name.starts_with(FAILED_FILE) {
+            std::fs::remove_file(entry.path())
+                .map_err(|e| format!("{}: {e}", entry.path().display()))?;
+        }
+    }
 
     for table in &p.sources.tables {
         let silver = silver_sql(model, &table.name, &transforms);

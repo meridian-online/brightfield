@@ -8,7 +8,7 @@
 //! The contracts are FineType's, vendored at the tag the rest of the app stages FineType from (see
 //! `vendor/finetype/README.md`), so the cast and the classifier that chose the labels agree.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use brightfield_ossie::{Dataset, Model, Relationship};
 use serde::Deserialize;
@@ -66,7 +66,8 @@ impl FinetypeTransforms {
         self.labels.get(label).map(|c| c.duckdb_type.as_str())
     }
 
-    /// The SQL that casts a value of `label`, or `None` for a label with no transform or an unknown one.
+    /// The SQL that casts a value of `label`, or `None` for a label with no transform or an
+    /// unknown one.
     #[must_use]
     pub fn transform(&self, label: &str) -> Option<&str> {
         self.labels.get(label)?.transform.as_deref()
@@ -173,20 +174,51 @@ fn fold_keys<'m>(
     })
 }
 
+/// A dataset folded into a host, with the key columns that join them: the host's and its own.
+struct Fold<'m> {
+    dataset: &'m Dataset,
+    host_keys: &'m [String],
+    keys: &'m [String],
+}
+
+/// The datasets folded into `host` that can be joined: not excluded, and tied to it by a
+/// relationship with the same number of key columns on each side.
+fn folds_of<'m>(model: &'m Model, host: &str) -> Vec<Fold<'m>> {
+    model
+        .datasets
+        .iter()
+        .filter(|f| f.meta.folded_into.as_deref() == Some(host) && !f.meta.excluded)
+        .filter_map(|dataset| {
+            let (host_keys, keys) = fold_keys(model, host, &dataset.name)?;
+            (!host_keys.is_empty() && host_keys.len() == keys.len()).then_some(Fold {
+                dataset,
+                host_keys,
+                keys,
+            })
+        })
+        .collect()
+}
+
+/// The dataset `dataset` names, when it gets silver tables.
+fn silver_dataset<'m>(model: &'m Model, dataset: &str) -> Option<&'m Dataset> {
+    model
+        .datasets
+        .iter()
+        .find(|d| d.name == dataset)
+        .filter(|d| has_silver(d))
+}
+
 /// The statement that makes `dataset`'s silver table from its raw table, or an empty string for a
 /// dataset that is excluded, folded into another, or not in the model.
 ///
 /// The table has the lineage columns, then each field's cast under its own name, then each
 /// dataset folded into this one, joined on the relationship between them with its cast columns
-/// named `<folded>_<column>` and its join key left out.
+/// named `<folded>_<column>` and its join key left out. A folded dataset is reduced to its first
+/// row (by source file and row) for each cast key before the join, so the table has a row for each
+/// row of the raw one; a name that would repeat a column already there takes a `_2`, `_3` suffix.
 #[must_use]
 pub fn silver_sql(model: &Model, dataset: &str, transforms: &FinetypeTransforms) -> String {
-    let Some(d) = model
-        .datasets
-        .iter()
-        .find(|d| d.name == dataset)
-        .filter(|d| has_silver(d))
-    else {
+    let Some(d) = silver_dataset(model, dataset) else {
         return String::new();
     };
     let mut ctes = vec![format!(
@@ -194,41 +226,41 @@ pub fn silver_sql(model: &Model, dataset: &str, transforms: &FinetypeTransforms)
         projections(d, transforms).join(", "),
         source(d, transforms)
     )];
+    let mut taken: HashSet<String> = LINEAGE.iter().map(|c| (*c).to_string()).collect();
+    taken.extend(d.fields.iter().map(|f| f.name.clone()));
     let mut select = vec!["host.*".to_string()];
     let mut joins = Vec::new();
-    let folds = model
-        .datasets
-        .iter()
-        .filter(|f| f.meta.folded_into.as_deref() == Some(dataset) && !f.meta.excluded);
-    for (n, folded) in folds.enumerate() {
-        let Some((host_keys, folded_keys)) = fold_keys(model, dataset, &folded.name) else {
-            continue;
-        };
-        if host_keys.is_empty() || host_keys.len() != folded_keys.len() {
-            continue;
-        }
+    for (n, fold) in folds_of(model, dataset).into_iter().enumerate() {
         let alias = format!("fold_{n}");
+        let partition: Vec<String> = fold.keys.iter().map(|k| quoted(k)).collect();
         ctes.push(format!(
-            "{alias} AS (SELECT {} FROM ({}))",
-            projections(folded, transforms).join(", "),
-            source(folded, transforms)
+            "{alias} AS (SELECT * FROM (SELECT {} FROM ({})) QUALIFY row_number() OVER \
+             (PARTITION BY {} ORDER BY \"__source_file\", \"__source_row\") = 1)",
+            projections(fold.dataset, transforms).join(", "),
+            source(fold.dataset, transforms),
+            partition.join(", ")
         ));
-        let on: Vec<String> = host_keys
+        let on: Vec<String> = fold
+            .host_keys
             .iter()
-            .zip(folded_keys)
+            .zip(fold.keys)
             .map(|(h, f)| format!("host.{} = {alias}.{}", quoted(h), quoted(f)))
             .collect();
         joins.push(format!("LEFT JOIN {alias} ON {}", on.join(" AND ")));
-        for f in folded
+        for f in fold
+            .dataset
             .fields
             .iter()
-            .filter(|f| !folded_keys.contains(&f.name))
+            .filter(|f| !fold.keys.contains(&f.name))
         {
-            select.push(format!(
-                "{alias}.{} AS {}",
-                quoted(&f.name),
-                quoted(&format!("{}_{}", folded.name, f.name))
-            ));
+            let base = format!("{}_{}", fold.dataset.name, f.name);
+            let mut name = base.clone();
+            let mut suffix = 2;
+            while !taken.insert(name.clone()) {
+                name = format!("{base}_{suffix}");
+                suffix += 1;
+            }
+            select.push(format!("{alias}.{} AS {}", quoted(&f.name), quoted(&name)));
         }
     }
     format!(
@@ -240,38 +272,54 @@ pub fn silver_sql(model: &Model, dataset: &str, transforms: &FinetypeTransforms)
     )
 }
 
-/// The statement that makes `<dataset>__failed`, or an empty string where [`silver_sql`] makes no
-/// table. It holds one row per value that was present in the raw table and did not cast: its
-/// lineage columns, the `column` it was in and its raw `value`.
-#[must_use]
-pub fn failed_sql(model: &Model, dataset: &str, transforms: &FinetypeTransforms) -> String {
-    let Some(d) = model
-        .datasets
-        .iter()
-        .find(|d| d.name == dataset)
-        .filter(|d| has_silver(d))
-    else {
-        return String::new();
-    };
-    let target = quoted(&format!("{dataset}__failed"));
+/// One `SELECT` per typed column of `d` that lists the values of `from` that were present and did
+/// not cast, named `prefix` followed by the field's name.
+fn failures(d: &Dataset, from: &str, prefix: &str, transforms: &FinetypeTransforms) -> Vec<String> {
     let lineage = LINEAGE
         .iter()
         .map(|c| quoted(c))
         .collect::<Vec<_>>()
         .join(", ");
-    let parts: Vec<String> = d
-        .fields
+    d.fields
         .iter()
         .filter_map(|f| {
             let expr = cast_expr(&f.name, f.meta.finetype.as_deref(), transforms)?;
             let col = quoted(&f.name);
             Some(format!(
-                "SELECT {lineage}, {} AS \"column\", {col} AS \"value\" FROM src \
+                "SELECT {lineage}, {} AS \"column\", {col} AS \"value\" FROM {from} \
                  WHERE {col} IS NOT NULL AND {expr} IS NULL",
-                literal(&f.name)
+                literal(&format!("{prefix}{}", f.name))
             ))
         })
-        .collect();
+        .collect()
+}
+
+/// The statement that makes `<dataset>__failed`, or an empty string where [`silver_sql`] makes no
+/// table. It holds one row per value that was present in a raw table and did not cast: the row's
+/// lineage columns, the `column` it was in and its raw `value`. The values of the datasets folded
+/// into this one are listed too, with the folded dataset's own lineage and the column named
+/// `<folded>_<column>`.
+#[must_use]
+pub fn failed_sql(model: &Model, dataset: &str, transforms: &FinetypeTransforms) -> String {
+    let Some(d) = silver_dataset(model, dataset) else {
+        return String::new();
+    };
+    let target = quoted(&format!("{dataset}__failed"));
+    let mut ctes = vec![format!("src AS ({})", source(d, transforms))];
+    let mut parts = failures(d, "src", "", transforms);
+    for (n, fold) in folds_of(model, dataset).into_iter().enumerate() {
+        let alias = format!("fold_src_{n}");
+        let found = failures(
+            fold.dataset,
+            &alias,
+            &format!("{}_", fold.dataset.name),
+            transforms,
+        );
+        if !found.is_empty() {
+            ctes.push(format!("{alias} AS ({})", source(fold.dataset, transforms)));
+            parts.extend(found);
+        }
+    }
     if parts.is_empty() {
         return format!(
             "CREATE OR REPLACE TABLE {target} AS SELECT NULL::VARCHAR AS \"__source_file\", \
@@ -280,8 +328,8 @@ pub fn failed_sql(model: &Model, dataset: &str, transforms: &FinetypeTransforms)
         );
     }
     format!(
-        "CREATE OR REPLACE TABLE {target} AS WITH src AS ({}) {}",
-        source(d, transforms),
+        "CREATE OR REPLACE TABLE {target} AS WITH {} {}",
+        ctes.join(", "),
         parts.join(" UNION ALL ")
     )
 }

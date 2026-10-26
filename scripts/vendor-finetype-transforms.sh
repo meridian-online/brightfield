@@ -12,7 +12,8 @@
 # vendored instead and scripts/check-finetype-pin.sh refuses it when its tag is not the pin.
 #
 # `broad_type` is mapped to the DuckDB type name exactly as `DdlInfo::duckdb_type_from_broad_type`
-# does at that tag. Needs `gh` (or --from) and python3 with PyYAML.
+# does at that tag. Needs `gh` (or --from) and python3 with PyYAML (`-s -E` ignores the user site
+# and PYTHON* variables, so PyYAML must be installed system-wide or in the active environment).
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -33,7 +34,7 @@ else
   done
 fi
 
-python3 -I - "$SRC" "$TAG" "$OUT" <<'PY'
+python3 -s -E - "$SRC" "$TAG" "$OUT" <<'PY'
 import glob, json, os, sys
 import yaml
 

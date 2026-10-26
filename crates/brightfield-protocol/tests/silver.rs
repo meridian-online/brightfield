@@ -184,3 +184,139 @@ fn vendored_tag_is_the_pin() {
         .unwrap();
     assert_eq!(transforms().tag(), tag);
 }
+
+/// A tiny model: `items` (columns `Order ID`, `select`, `a"b`, each labelled a date) with the
+/// dataset `look ups` folded into it on `select`.
+fn awkward_model() -> Model {
+    read(
+        r#"version: 0.2.0.dev0
+name: awkward
+datasets:
+- name: items
+  source: items.csv
+  fields:
+  - name: Order ID
+    expression: {sql: x}
+    custom_extensions:
+    - {vendor_name: MERIDIAN, data: '{"finetype":"datetime.date.iso","decided_by":"dovetail"}'}
+  - name: select
+    expression: {sql: x}
+  - name: a"b
+    expression: {sql: x}
+    custom_extensions:
+    - {vendor_name: MERIDIAN, data: '{"finetype":"datetime.date.iso","decided_by":"dovetail"}'}
+  - name: look ups_note
+    expression: {sql: x}
+  custom_extensions:
+  - {vendor_name: MERIDIAN, data: '{"role":"event","decided_by":"dovetail","source_file":"i"}'}
+- name: look ups
+  source: l.csv
+  fields:
+  - name: select
+    expression: {sql: x}
+  - name: note
+    expression: {sql: x}
+  - name: seen
+    expression: {sql: x}
+    custom_extensions:
+    - {vendor_name: MERIDIAN, data: '{"finetype":"datetime.date.iso","decided_by":"dovetail"}'}
+  custom_extensions:
+  - {vendor_name: MERIDIAN, data: '{"role":"reference","folded_into":"items","decided_by":"dovetail","source_file":"l"}'}
+relationships:
+- name: items_look_ups
+  from: items
+  to: look ups
+  from_columns: [select]
+  to_columns: [select]
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"grade":"likely","evidence":{"value_overlap":1.0,"orphans":0,"child_rows":1,"child_type":"VARCHAR","parent_type":"VARCHAR","types_agree":true,"name_similarity":1.0},"cardinality":"N:1","verified":"full","decided_by":"dovetail"}'
+custom_extensions:
+- {vendor_name: MERIDIAN, data: '{"generator":"test"}'}
+"#,
+    )
+    .expect("the model reads")
+}
+
+fn awkward_db() -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE raw_items AS SELECT * FROM (VALUES \
+           ('i', NULL::VARCHAR, 1::BIGINT, '2024-01-02', 'k1', 'nope', 'mine'), \
+           ('i', NULL::VARCHAR, 2::BIGINT, '2024-01-03', 'k2', '2024-05-06', 'mine'), \
+           ('i', NULL::VARCHAR, 3::BIGINT, '2024-01-04', 'k9', NULL, 'mine')) \
+           t(__source_file, __source_part, __source_row, \"Order ID\", \"select\", \"a\"\"b\", \"look ups_note\"); \
+         CREATE TABLE \"raw_look ups\" AS SELECT * FROM (VALUES \
+           ('l', NULL::VARCHAR, 1::BIGINT, 'k1', 'first', '2024-02-02'), \
+           ('l', NULL::VARCHAR, 2::BIGINT, 'k1', 'duplicate', 'garbled'), \
+           ('l', NULL::VARCHAR, 3::BIGINT, 'k2', 'other', NULL)) \
+           t(__source_file, __source_part, __source_row, \"select\", note, seen);",
+    )
+    .unwrap();
+    conn
+}
+
+#[test]
+fn awkward_names_run_through_silver_and_failed() {
+    let (model, t) = (awkward_model(), transforms());
+    let conn = awkward_db();
+    conn.execute_batch(&silver_sql(&model, "items", &t))
+        .unwrap();
+    conn.execute_batch(&failed_sql(&model, "items", &t))
+        .unwrap();
+    // A folded name that repeats a column of the host takes a suffix.
+    let cols: Vec<String> = conn
+        .prepare("SELECT column_name FROM information_schema.columns WHERE table_name = 'items' ORDER BY ordinal_position")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        cols[cols.len() - 3..],
+        ["look ups_note", "look ups_note_2", "look ups_seen"]
+    );
+}
+
+#[test]
+fn fold_keeps_one_row_per_host_row_when_folded_keys_repeat() {
+    let (model, t) = (awkward_model(), transforms());
+    let conn = awkward_db();
+    conn.execute_batch(&silver_sql(&model, "items", &t))
+        .unwrap();
+    let n: i64 = conn
+        .query_row("SELECT count(*) FROM items", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 3);
+    let note: String = conn
+        .query_row(
+            "SELECT \"look ups_note_2\" FROM items WHERE __source_row = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(note, "first");
+}
+
+#[test]
+fn failures_inside_a_folded_dataset_are_kept() {
+    let (model, t) = (awkward_model(), transforms());
+    let conn = awkward_db();
+    conn.execute_batch(&failed_sql(&model, "items", &t))
+        .unwrap();
+    let mut rows: Vec<(String, i64, String, String)> = conn
+        .prepare("SELECT __source_file, __source_row, \"column\", \"value\" FROM items__failed")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        [
+            ("i".into(), 1, "a\"b".into(), "nope".into()),
+            ("l".into(), 2, "look ups_seen".into(), "garbled".into()),
+        ]
+    );
+}
