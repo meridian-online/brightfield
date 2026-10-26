@@ -184,8 +184,8 @@ fn find_item(
         .collect();
     for (k, &st) in starts.iter().enumerate() {
         let end = starts.get(k + 1).copied().unwrap_or(range.end);
-        for i in st..end {
-            let l = lines[i];
+        for (i, l) in lines.iter().enumerate().take(end).skip(st) {
+            let l = *l;
             let (col, body) = if i == st {
                 (seq + 2, l.trim_start().trim_start_matches("- "))
             } else {
