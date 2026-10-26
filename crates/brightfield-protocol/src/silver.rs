@@ -66,7 +66,7 @@ impl FinetypeTransforms {
         self.labels.get(label).map(|c| c.duckdb_type.as_str())
     }
 
-    /// The SQL that casts a value of `label`, or `None` when the label has none or is unknown.
+    /// The SQL that casts a value of `label`, or `None` for a label with no transform or an unknown one.
     #[must_use]
     pub fn transform(&self, label: &str) -> Option<&str> {
         self.labels.get(label)?.transform.as_deref()
