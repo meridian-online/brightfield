@@ -335,11 +335,15 @@ fn merge_renames_a_colliding_proposed_join() {
     fresh.to_columns = vec!["other".into()];
     proposed.relationships.push(fresh);
     let merged = merge_discovery(&current, &proposed);
-    assert_eq!(merged.relationships.len(), 8);
-    let mut names: Vec<_> = merged.relationships.iter().map(|r| &r.name).collect();
-    names.sort();
-    names.dedup();
-    assert_eq!(names.len(), 8);
+    let again = merge_discovery(&merged, &proposed);
+    assert_eq!(again, merged);
+    for m in [&merged, &again] {
+        assert_eq!(m.relationships.len(), 8);
+        let mut names: Vec<_> = m.relationships.iter().map(|r| &r.name).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), 8);
+    }
 }
 
 #[test]
@@ -366,4 +370,65 @@ fn merge_carries_excluded_on_a_dovetail_dataset() {
     d.meta.excluded = true;
     let merged = merge_discovery(&current, &model());
     assert!(dataset(&merged, "promo_codes").meta.excluded);
+}
+
+#[test]
+fn fold_keeps_its_join_through_a_merge() {
+    let current = apply(
+        &model(),
+        &Edit::Unfold {
+            dataset: "categories".into(),
+        },
+    )
+    .unwrap();
+    let current = apply(
+        &current,
+        &Edit::Fold {
+            dataset: "categories".into(),
+            into: "products".into(),
+        },
+    )
+    .unwrap();
+    let mut proposed = model();
+    proposed
+        .relationships
+        .retain(|r| r.name != "products_categories");
+    let merged = merge_discovery(&current, &proposed);
+    assert!(rel(&merged, "products_categories").is_some());
+    assert_eq!(
+        dataset(&merged, "categories").meta.folded_into.as_deref(),
+        Some("products")
+    );
+}
+
+#[test]
+fn change_keys_and_change_back() {
+    let original = rel(&model(), "transactions_customers").unwrap().clone();
+    let change = |m: &Model, f: &[String], t: &[String]| {
+        apply(
+            m,
+            &Edit::ChangeKeys {
+                relationship: "transactions_customers".into(),
+                from_columns: f.to_vec(),
+                to_columns: t.to_vec(),
+            },
+        )
+        .unwrap()
+    };
+    // Unchanged keys leave nothing rejected.
+    let same = change(&model(), &original.from_columns, &original.to_columns);
+    assert!(same.meta.rejected.is_empty());
+    let moved = change(&model(), &["x".to_string()], &["y".to_string()]);
+    assert_eq!(moved.meta.rejected.len(), 1);
+    let back = change(&moved, &original.from_columns, &original.to_columns);
+    assert!(back.meta.rejected.is_empty());
+    let merged = merge_discovery(&back, &model());
+    assert_eq!(
+        merged
+            .relationships
+            .iter()
+            .filter(|r| r.from == "transactions" && r.to == "customers")
+            .count(),
+        1
+    );
 }

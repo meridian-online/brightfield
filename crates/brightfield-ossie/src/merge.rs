@@ -3,7 +3,7 @@
 use crate::edit::unique_name;
 use crate::{Dataset, DecidedBy, Model, Relationship};
 
-fn same_join(a: &Relationship, b: &Relationship) -> bool {
+pub(crate) fn same_join(a: &Relationship, b: &Relationship) -> bool {
     a.from == b.from
         && a.from_columns == b.from_columns
         && a.to == b.to
@@ -40,7 +40,9 @@ pub fn merge_discovery(current: &Model, proposed: &Model) -> Model {
         if cur.meta.decided_by == DecidedBy::Analyst {
             relationships.push(cur.clone());
         } else if let Some(prop) = proposed.relationships.iter().find(|p| same_join(cur, p)) {
-            relationships.push(prop.clone());
+            let mut carried = prop.clone();
+            carried.name = cur.name.clone();
+            relationships.push(carried);
         }
     }
     for prop in &proposed.relationships {

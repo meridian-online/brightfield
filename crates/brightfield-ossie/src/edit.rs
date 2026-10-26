@@ -3,6 +3,7 @@
 
 use std::fmt;
 
+use crate::merge::same_join;
 use crate::{DecidedBy, Evidence, Grade, Model, Relationship, RelationshipMeta, Role, Verified};
 
 /// One change the analyst makes to the model.
@@ -157,12 +158,20 @@ pub fn apply(model: &Model, edit: &Edit) -> Result<Model, EditError> {
                 ));
             }
             let at = relationship_index(&m, relationship)?;
+            let mut changed = m.relationships[at].clone();
+            changed.from_columns = from_columns.clone();
+            changed.to_columns = to_columns.clone();
             // Keep the join discovery found as a rejected one, so a rediscovery
             // doesn't add it back beside the corrected keys.
-            let mut original = m.relationships[at].clone();
-            original.name = unique_name(&original.name, &m.relationships, &m.meta.rejected);
-            original.meta.decided_by = DecidedBy::Analyst;
-            m.meta.rejected.push(original);
+            let original = &m.relationships[at];
+            if original.meta.decided_by == DecidedBy::Dovetail && !same_join(original, &changed) {
+                let mut kept = original.clone();
+                kept.name = unique_name(&kept.name, &m.relationships, &m.meta.rejected);
+                kept.meta.decided_by = DecidedBy::Analyst;
+                m.meta.rejected.push(kept);
+            }
+            // Changing back to a rejected join takes it out of the rejected list.
+            m.meta.rejected.retain(|x| !same_join(x, &changed));
             let r = &mut m.relationships[at];
             r.from_columns = from_columns.clone();
             r.to_columns = to_columns.clone();
@@ -184,6 +193,12 @@ pub fn apply(model: &Model, edit: &Edit) -> Result<Model, EditError> {
                 return err(format!(
                     "{dataset} can't fold into {into}: no relationship joins them"
                 ));
+            }
+            // The join the fold rests on is the analyst's now, so discovery keeps it.
+            for r in &mut m.relationships {
+                if (r.from == *dataset && r.to == *into) || (r.from == *into && r.to == *dataset) {
+                    r.meta.decided_by = DecidedBy::Analyst;
+                }
             }
             let d = dataset_mut(&mut m, dataset)?;
             d.meta.folded_into = Some(into.clone());
