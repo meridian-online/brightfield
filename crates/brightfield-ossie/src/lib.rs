@@ -8,11 +8,15 @@
 //!
 //! No UI framework: could this run headless? yes.
 
+mod edit;
+mod merge;
 mod meridian;
 mod model;
 mod validate;
 mod wire;
 
+pub use edit::{apply, Edit, EditError};
+pub use merge::merge_discovery;
 pub use model::{
     Dataset, DatasetMeta, Datatype, DecidedBy, Evidence, Extension, Field, FieldMeta, Grade, Model,
     ModelMeta, Relationship, RelationshipMeta, Role, SkippedSource, Verified,
