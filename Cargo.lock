@@ -762,6 +762,7 @@ name = "brightfield-ossie"
 version = "0.1.0"
 dependencies = [
  "jsonschema",
+ "meridian-design",
  "serde",
  "serde_json",
  "serde_yaml",

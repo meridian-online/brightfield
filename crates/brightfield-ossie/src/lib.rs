@@ -9,6 +9,7 @@
 //! No UI framework: could this run headless? yes.
 
 mod edit;
+mod layout;
 mod merge;
 mod meridian;
 mod model;
@@ -16,6 +17,9 @@ mod validate;
 mod wire;
 
 pub use edit::{apply, Edit, EditError};
+pub use layout::{
+    edge_text, layout, list_rows, summary, Band, Card, EdgeLabel, ListRow, ModelLayout,
+};
 pub use merge::merge_discovery;
 pub use model::{
     Dataset, DatasetMeta, Datatype, DecidedBy, Evidence, Extension, Field, FieldMeta, Grade, Model,
