@@ -268,7 +268,7 @@ fn dotted_and_quoted_names_survive_the_load_sql() {
         dotted.iter().map(|r| r.3.as_str()).collect::<Vec<_>>(),
         ["1", "2"]
     );
-    assert_eq!(dotted[0].1.as_deref(), Some("sales.2024"));
+    assert_eq!(dotted[0].1.as_deref(), Some("\"sales.2024\""));
     assert_eq!(rows_of("a\"b", None)[0].3, "3");
     assert_eq!(rows_of("t", Some("s.x"))[0].3, "4");
 }
@@ -278,12 +278,14 @@ fn apostrophes_survive_the_load_sql() {
     if extension_available("sqlite") {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("it's.sqlite");
-        let out = std::process::Command::new("/usr/bin/sqlite3")
-            .arg(&file)
-            .arg("CREATE TABLE \"It's\" (v INTEGER); INSERT INTO \"It's\" VALUES (5);")
-            .output()
+        Connection::open_in_memory()
+            .unwrap()
+            .execute_batch(&format!(
+                "LOAD sqlite; ATTACH '{}' AS w (TYPE sqlite); \
+                 CREATE TABLE w.\"It's\" (v INTEGER); INSERT INTO w.\"It's\" VALUES (5); DETACH w;",
+                file.display().to_string().replace('\'', "''")
+            ))
             .unwrap();
-        assert!(out.status.success());
         let set = discover(&file).unwrap();
         assert_eq!(set.tables[0].part.as_deref(), Some("It's"));
         let rows = load(&set.tables[0], dir.path(), "v");

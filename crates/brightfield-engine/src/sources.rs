@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 use duckdb::Connection;
 
-/// What a file holds: each table's schema (unset for the main schema), its sheet or table name
-/// (unset for a flat file) and the reader that loads it.
+/// What a file holds: each table's schema (unset for the main schema, or for a file with no
+/// schemas), its sheet or table name (unset for a flat file) and the reader that loads it.
 type Parts = Vec<(Option<String>, Option<String>, Reader)>;
 
 /// How a table's rows are read.
@@ -141,10 +141,18 @@ pub fn load_sql(table: &SourceTable, protocol_dir: &Path) -> String {
     let shown = table.file.strip_prefix(protocol_dir).unwrap_or(&table.file);
     let file = literal(&table.file.to_string_lossy());
     let lineage_file = literal(&shown.to_string_lossy());
-    // A table outside `main` is recorded as `schema.table` so two schemas' tables stay apart.
+    // The lineage part is the table's name; one outside `main` is `schema.table`. A name holding a
+    // `.` is quoted, so `"sales.2024"` in `main` and `sales."2024"`-style pairs stay distinct.
+    let dotted = |n: &str| {
+        if n.contains('.') {
+            ident(n)
+        } else {
+            n.to_string()
+        }
+    };
     let part = match (&table.schema, &table.part) {
-        (Some(schema), Some(part)) => literal(&format!("{schema}.{part}")),
-        (None, Some(part)) => literal(part),
+        (Some(schema), Some(part)) => literal(&format!("{}.{}", dotted(schema), dotted(part))),
+        (None, Some(part)) => literal(&dotted(part)),
         _ => "NULL::VARCHAR".to_string(),
     };
     let target = format!(
