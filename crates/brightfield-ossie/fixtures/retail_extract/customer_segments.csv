@@ -1,0 +1,5 @@
+customer_id,segment,assessed_on
+1,loyal,2025-01-01
+2,occasional,2025-01-01
+4,new,2025-01-01
+5,lapsed,2025-01-01

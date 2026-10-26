@@ -33,6 +33,9 @@ allow = [
   # 0BSD (BSD Zero Clause) is OSI-approved and maximally permissive — public-
   # domain-equivalent, no attribution clause.
   "0BSD",
+  # MIT-0 (MIT No Attribution) is MIT without the attribution clause. Entrant:
+  # borrow-or-share, under jsonschema (brightfield-ossie).
+  "MIT-0",
   # Open-font licenses for egui's bundled default fonts (Ubuntu-Light + the
   # Noto/emoji fallbacks the egui default FontDefinitions ship). Both are
   # permissive OSS font licenses, fine to redistribute in an MIT binary; they

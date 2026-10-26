@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/brightfield-workbench", "crates/brightfield-spec", "crates/brightfield-keys", "crates/brightfield-conformance", "crates/brightfield-sql", "crates/brightfield-protocol", "crates/brightfield-engine", "crates/brightfield-render", "crates/brightfield-ui", "crates/brightfield-model", "crates/brightfield-shell", "crates/brightfield-bench", "crates/brightfield-report", "xtask"]
+members = ["crates/brightfield-workbench", "crates/brightfield-spec", "crates/brightfield-keys", "crates/brightfield-conformance", "crates/brightfield-sql", "crates/brightfield-protocol", "crates/brightfield-engine", "crates/brightfield-render", "crates/brightfield-ui", "crates/brightfield-model", "crates/brightfield-shell", "crates/brightfield-bench", "crates/brightfield-report", "crates/brightfield-ossie", "xtask"]
 resolver = "2"
 
 [workspace.package]
@@ -66,6 +66,9 @@ duckdb = { version = "=1.20000.0", features = ["bundled"] }
 egui = "0.35"
 egui_tiles = "0.16"
 indexmap = "2"
+# Validates an Ossie document against the vendored schema; no remote-reference
+# resolvers, since the schema refers only to itself.
+jsonschema = { version = "0.30", default-features = false }
 kurbo = "0.13"
 meridian-design = { git = "https://github.com/meridian-online/design", rev = "194322fe70b84e336d9910f78a7afa409d073e82" }
 meridian-egui = { git = "https://github.com/meridian-online/design", rev = "194322fe70b84e336d9910f78a7afa409d073e82" }
