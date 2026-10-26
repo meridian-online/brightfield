@@ -315,7 +315,7 @@ pub fn verified_line(verified: Verified) -> &'static str {
 }
 
 /// Read what the inspector shows for `selection` from `model` and the Protocol's database in
-/// `dir`. `None` when the selection names nothing the model holds.
+/// `dir`. `None` when the model holds no table or join of the selection's name.
 #[must_use]
 pub fn inspect(
     dir: &Path,

@@ -90,8 +90,8 @@ pub fn join_preview_sql(model: &Model, relationship: &str, limit: usize) -> Stri
     format!("{joined} LIMIT {limit}")
 }
 
-/// [`join_preview_sql`] without the sample: every child row of `relationship`, joined to its
-/// parent row.
+/// [`join_preview_sql`] without the sample or the limit: the child rows of `relationship`, each
+/// joined to its parent row.
 #[must_use]
 pub fn join_rows_sql(model: &Model, relationship: &str) -> String {
     join_sql(model, relationship, |table| table)

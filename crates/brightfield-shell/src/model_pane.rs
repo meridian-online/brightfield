@@ -138,7 +138,8 @@ pub struct ModelDrawn {
     /// The joins the list's gutter routed between its rows.
     pub routes: Vec<RouteDrawn>,
     /// Whether each list row was drawn lit, in the order of [`ModelDrawn::body`]: with a
-    /// selection, only the rows connected to it are.
+    /// selection, a row not connected to it is drawn dimmed
+    /// (`a_list_row_selects_and_the_rest_dims` in `tests/model_inspector.rs`).
     pub list_lit: Vec<bool>,
     /// What the inspector drew, when something was selected.
     pub inspector: Option<InspectorDrawn>,
@@ -291,7 +292,7 @@ impl ModelPane {
 
     /// What the inspector shows for the selection, read from the model and the Protocol's
     /// database once for each selection and model, and kept until either changes. `None` with
-    /// nothing selected, or a selection the model no longer holds.
+    /// no selection, or a selection the model no longer holds.
     pub fn inspected(&mut self) -> Option<&Inspected> {
         let selected = self.focus.selected.clone()?;
         let fresh = self
