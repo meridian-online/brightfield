@@ -71,6 +71,7 @@ chrono = { workspace = true }
 # is built on is a trap laid for the increment after this one.
 egui_tiles = { workspace = true, features = ["serde"] }
 brightfield-protocol = { workspace = true }
+brightfield-ossie = { workspace = true }
 # The runner behind the ledger strip's Run control — `crate::run`. The workspace's
 # one `arc`, the package and rev `brightfield-protocol` links for its spec loader,
 # with `cli` on for the one item it adds:

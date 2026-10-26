@@ -262,3 +262,117 @@ fn package_folders_never_collide() {
     }
     assert_eq!(folders, expected);
 }
+
+/// A model over the folder `silver_folder` makes: `events.when` is labelled a US-style date, and
+/// `notes` is left out of the silver tables when `exclude_notes` is set.
+fn silver_model(exclude_notes: bool) -> brightfield_ossie::Model {
+    let notes_meta = format!(
+        r#"{{"role":"unclear","excluded":{exclude_notes},"decided_by":"dovetail","source_file":"notes.csv"}}"#
+    );
+    let yaml = format!(
+        r#"version: 0.2.0.dev0
+name: silver
+datasets:
+- name: events
+  source: events.csv
+  fields:
+  - name: id
+    expression: {{sql: id}}
+  - name: when
+    expression: {{sql: when}}
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{{"finetype":"datetime.date.mdy_slash","decided_by":"dovetail"}}'
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{{"role":"event","excluded":false,"decided_by":"dovetail","source_file":"events.csv"}}'
+- name: notes
+  source: notes.csv
+  fields:
+  - name: text
+    expression: {{sql: text}}
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{notes_meta}'
+custom_extensions:
+- vendor_name: MERIDIAN
+  data: '{{"generator":"test"}}'
+"#
+    );
+    brightfield_ossie::read(&yaml).unwrap()
+}
+
+fn silver_folder(name: &str) -> PathBuf {
+    let dir = scratch().join("input").join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("events.csv"),
+        "id,when\n1,01/02/2024\n2,not a date\n3,03/04/2024\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("notes.csv"), "text\nhello\n").unwrap();
+    dir
+}
+
+#[test]
+fn silver_runs_and_keeps_failures() {
+    let p = own_files::create(&silver_folder("silver_runs")).unwrap();
+    own_files::write_silver(&p, &silver_model(false)).unwrap();
+    own_files::run_loads(&p, &runner()).unwrap();
+    let db = arc::spec::protocol_db_path(&p.dir).unwrap();
+    let dates = query_strings(
+        &db,
+        "SELECT coalesce(CAST(\"when\" AS VARCHAR), 'NULL') FROM events ORDER BY __source_row",
+    );
+    assert_eq!(dates, ["2024-01-02", "NULL", "2024-03-04"]);
+    let failed = query_strings(
+        &db,
+        "SELECT __source_row || '|' || \"column\" || '|' || \"value\" FROM events__failed",
+    );
+    assert_eq!(failed, ["2|when|not a date"]);
+    assert_eq!(
+        query_strings(&db, "SELECT count(*)::VARCHAR FROM notes__failed"),
+        ["0"]
+    );
+}
+
+#[test]
+fn silver_steps_are_rewritten_not_accumulated() {
+    let p = own_files::create(&silver_folder("silver_rewrite")).unwrap();
+    let names = |p: &own_files::OwnProtocol| -> Vec<String> {
+        let text = std::fs::read_to_string(p.dir.join("arcform.yaml")).unwrap();
+        let manifest: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+        manifest["steps"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    own_files::write_silver(&p, &silver_model(false)).unwrap();
+    own_files::write_silver(&p, &silver_model(false)).unwrap();
+    assert_eq!(
+        names(&p),
+        [
+            "load_events",
+            "load_notes",
+            "silver_events",
+            "failed_events",
+            "silver_notes",
+            "failed_notes"
+        ]
+    );
+    own_files::write_silver(&p, &silver_model(true)).unwrap();
+    assert_eq!(
+        names(&p),
+        [
+            "load_events",
+            "load_notes",
+            "silver_events",
+            "failed_events"
+        ]
+    );
+    assert!(!p.dir.join("models/02_silver_notes.sql").exists());
+    assert!(!p.dir.join("models/02_failed_notes.sql").exists());
+    assert!(p.dir.join("models/02_silver_events.sql").exists());
+}

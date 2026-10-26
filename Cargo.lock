@@ -777,6 +777,7 @@ name = "brightfield-protocol"
 version = "0.1.0"
 dependencies = [
  "arcform",
+ "brightfield-ossie",
  "brightfield-spec",
  "brightfield-sql",
  "chrono",
@@ -829,6 +830,7 @@ dependencies = [
  "brightfield-engine",
  "brightfield-keys",
  "brightfield-model",
+ "brightfield-ossie",
  "brightfield-protocol",
  "brightfield-render",
  "brightfield-report",

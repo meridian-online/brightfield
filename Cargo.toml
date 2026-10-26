@@ -36,6 +36,7 @@ repository = "https://github.com/meridian-online/brightfield"
 # Members that more than one member depends on.
 brightfield-engine = { path = "crates/brightfield-engine" }
 brightfield-keys = { path = "crates/brightfield-keys", version = "0.1.0" }
+brightfield-ossie = { path = "crates/brightfield-ossie" }
 brightfield-protocol = { path = "crates/brightfield-protocol", version = "0.1.0" }
 brightfield-render = { path = "crates/brightfield-render" }
 brightfield-spec = { path = "crates/brightfield-spec" }

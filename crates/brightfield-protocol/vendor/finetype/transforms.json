@@ -1,0 +1,1010 @@
+{
+ "labels": {
+  "container.array.comma_separated": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "container.array.pipe_separated": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "container.array.semicolon_separated": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "container.array.whitespace_separated": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "container.key_value.query_string": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "container.object.csv": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "container.object.html": {
+   "duckdb_type": "VARCHAR",
+   "transform": "REGEXP_REPLACE({col}, '<[^>]+>', '', 'g')"
+  },
+  "container.object.json": {
+   "duckdb_type": "JSON",
+   "transform": "CAST({col} AS JSON)"
+  },
+  "container.object.json_array": {
+   "duckdb_type": "JSON",
+   "transform": "CAST({col} AS JSON)"
+  },
+  "container.object.s_expression": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "container.object.xml": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "container.object.yaml": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "datetime.component.day_of_week": {
+   "duckdb_type": "VARCHAR",
+   "transform": "{col}"
+  },
+  "datetime.component.month_name": {
+   "duckdb_type": "VARCHAR",
+   "transform": "{col}"
+  },
+  "datetime.component.periodicity": {
+   "duckdb_type": "VARCHAR",
+   "transform": "{col}"
+  },
+  "datetime.component.year": {
+   "duckdb_type": "SMALLINT",
+   "transform": "{col}::SMALLINT"
+  },
+  "datetime.date.abbrev_month_no_comma": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%b %d %Y')::DATE"
+  },
+  "datetime.date.abbreviated_month": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%b %d, %Y')::DATE"
+  },
+  "datetime.date.chinese_ymd": {
+   "duckdb_type": "DATE",
+   "transform": "strptime(regexp_replace(regexp_replace(regexp_replace({col}, '年', '-'), '月', '-'), '日', ''), '%Y-%-m-%-d')::DATE"
+  },
+  "datetime.date.compact_dmy": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%d%m%Y')::DATE"
+  },
+  "datetime.date.compact_mdy": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%m%d%Y')::DATE"
+  },
+  "datetime.date.compact_ym": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col} || '01', '%Y%m%d')::DATE"
+  },
+  "datetime.date.compact_ymd": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%Y%m%d')::DATE"
+  },
+  "datetime.date.dmy_dash": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%d-%m-%Y')::DATE"
+  },
+  "datetime.date.dmy_dash_abbrev": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%d-%b-%Y')::DATE"
+  },
+  "datetime.date.dmy_dash_abbrev_short": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%d-%b-%y')::DATE"
+  },
+  "datetime.date.dmy_dot": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%d.%m.%Y')::DATE"
+  },
+  "datetime.date.dmy_short_dot": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%d.%m.%y')::DATE"
+  },
+  "datetime.date.dmy_short_slash": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%d/%m/%y')::DATE"
+  },
+  "datetime.date.dmy_slash": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%d/%m/%Y')::DATE"
+  },
+  "datetime.date.dmy_space_abbrev": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%d %b %Y')::DATE"
+  },
+  "datetime.date.dmy_space_full": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%d %B %Y')::DATE"
+  },
+  "datetime.date.full_month_no_comma": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%B %d %Y')::DATE"
+  },
+  "datetime.date.iso": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%Y-%m-%d')::DATE"
+  },
+  "datetime.date.iso_week": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col} || '-1', '%G-W%V-%u')::DATE"
+  },
+  "datetime.date.jp_era_long": {
+   "duckdb_type": "DATE",
+   "transform": "CASE\n  WHEN {col} LIKE '\\u4EE4\\u548C%' THEN make_date(2018 + CAST(regexp_extract({col}, '(\\d+)\\u5E74', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u6708', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u65E5', 1) AS INT))\n  WHEN {col} LIKE '\\u5E73\\u6210%' THEN make_date(1988 + CAST(regexp_extract({col}, '(\\d+)\\u5E74', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u6708', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u65E5', 1) AS INT))\n  WHEN {col} LIKE '\\u662D\\u548C%' THEN make_date(1925 + CAST(regexp_extract({col}, '(\\d+)\\u5E74', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u6708', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u65E5', 1) AS INT))\n  WHEN {col} LIKE '\\u5927\\u6B63%' THEN make_date(1911 + CAST(regexp_extract({col}, '(\\d+)\\u5E74', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u6708', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u65E5', 1) AS INT))\n  WHEN {col} LIKE '\\u660E\\u6CBB%' THEN make_date(1867 + CAST(regexp_extract({col}, '(\\d+)\\u5E74', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u6708', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u65E5', 1) AS INT))\nEND\n"
+  },
+  "datetime.date.jp_era_short": {
+   "duckdb_type": "DATE",
+   "transform": "CASE\n  WHEN {col}[1] = 'R' THEN make_date(2018 + CAST(split_part(substring({col}, 2), '/', 1) AS INT), CAST(split_part(substring({col}, 2), '/', 2) AS INT), CAST(split_part(substring({col}, 2), '/', 3) AS INT))\n  WHEN {col}[1] = 'H' THEN make_date(1988 + CAST(split_part(substring({col}, 2), '/', 1) AS INT), CAST(split_part(substring({col}, 2), '/', 2) AS INT), CAST(split_part(substring({col}, 2), '/', 3) AS INT))\n  WHEN {col}[1] = 'S' THEN make_date(1925 + CAST(split_part(substring({col}, 2), '/', 1) AS INT), CAST(split_part(substring({col}, 2), '/', 2) AS INT), CAST(split_part(substring({col}, 2), '/', 3) AS INT))\n  WHEN {col}[1] = 'T' THEN make_date(1911 + CAST(split_part(substring({col}, 2), '/', 1) AS INT), CAST(split_part(substring({col}, 2), '/', 2) AS INT), CAST(split_part(substring({col}, 2), '/', 3) AS INT))\n  WHEN {col}[1] = 'M' THEN make_date(1867 + CAST(split_part(substring({col}, 2), '/', 1) AS INT), CAST(split_part(substring({col}, 2), '/', 2) AS INT), CAST(split_part(substring({col}, 2), '/', 3) AS INT))\nEND\n"
+  },
+  "datetime.date.julian": {
+   "duckdb_type": "DATE",
+   "transform": "strptime(concat('20', {col}), '%Y-%j')::DATE"
+  },
+  "datetime.date.korean_ymd": {
+   "duckdb_type": "DATE",
+   "transform": "strptime(regexp_replace(regexp_replace(regexp_replace({col}, '년 ', '-'), '월 ', '-'), '일', ''), '%Y-%-m-%-d')::DATE"
+  },
+  "datetime.date.long_full_month": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%B %d, %Y')::DATE"
+  },
+  "datetime.date.mdy_dash": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%m-%d-%Y')::DATE"
+  },
+  "datetime.date.mdy_short_slash": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%m/%d/%y')::DATE"
+  },
+  "datetime.date.mdy_slash": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%m/%d/%Y')::DATE"
+  },
+  "datetime.date.month_year_abbrev": {
+   "duckdb_type": "DATE",
+   "transform": "strptime('01 ' || {col}, '%d %b %Y')::DATE"
+  },
+  "datetime.date.month_year_full": {
+   "duckdb_type": "DATE",
+   "transform": "strptime('01 ' || {col}, '%d %B %Y')::DATE"
+  },
+  "datetime.date.month_year_slash": {
+   "duckdb_type": "DATE",
+   "transform": "CASE WHEN LENGTH({col}) = 5 THEN strptime('01/' || SUBSTRING({col}, 1, 2) || '/20' || SUBSTRING({col}, 4, 2), '%d/%m/%Y')::DATE ELSE strptime('01/' || {col}, '%d/%m/%Y')::DATE END"
+  },
+  "datetime.date.ordinal": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%Y-%j')::DATE"
+  },
+  "datetime.date.short_dmy": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%d-%m-%y')::DATE"
+  },
+  "datetime.date.short_mdy": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%m-%d-%y')::DATE"
+  },
+  "datetime.date.short_ymd": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%y-%m-%d')::DATE"
+  },
+  "datetime.date.weekday_abbreviated_month": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%A, %b %d, %Y')::DATE"
+  },
+  "datetime.date.weekday_dmy_full": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%A, %d %B %Y')::DATE"
+  },
+  "datetime.date.weekday_full_month": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%A, %B %d, %Y')::DATE"
+  },
+  "datetime.date.year_month": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col} || '-01', '%Y-%m-%d')::DATE"
+  },
+  "datetime.date.ymd_dot": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%Y.%m.%d')::DATE"
+  },
+  "datetime.date.ymd_slash": {
+   "duckdb_type": "DATE",
+   "transform": "strptime({col}, '%Y/%m/%d')::DATE"
+  },
+  "datetime.duration.iso_8601": {
+   "duckdb_type": "INTERVAL",
+   "transform": "CAST(\n  COALESCE(NULLIF(REGEXP_EXTRACT({col}, '(\\d+)Y', 1), '') || ' years ', '') ||\n  COALESCE(NULLIF(REGEXP_EXTRACT({col}, 'P[^T]*?(\\d+)M', 1), '') || ' months ', '') ||\n  COALESCE(NULLIF(REGEXP_EXTRACT({col}, '(\\d+)W', 1), '') || ' weeks ', '') ||\n  COALESCE(NULLIF(REGEXP_EXTRACT({col}, '(\\d+)D', 1), '') || ' days ', '') ||\n  COALESCE(NULLIF(REGEXP_EXTRACT({col}, '(\\d+)H', 1), '') || ' hours ', '') ||\n  COALESCE(NULLIF(REGEXP_EXTRACT({col}, 'T.*?(\\d+)M', 1), '') || ' minutes ', '') ||\n  COALESCE(NULLIF(REGEXP_EXTRACT({col}, '(\\d+(?:\\.\\d+)?)S', 1), '') || ' seconds', '0 seconds')\nAS INTERVAL)\n"
+  },
+  "datetime.epoch.unix_microseconds": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "to_timestamp({col}::BIGINT / 1000000)"
+  },
+  "datetime.epoch.unix_milliseconds": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "to_timestamp({col}::BIGINT / 1000)"
+  },
+  "datetime.epoch.unix_seconds": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "to_timestamp({col}::BIGINT)"
+  },
+  "datetime.offset.iana": {
+   "duckdb_type": "VARCHAR",
+   "transform": "{col}"
+  },
+  "datetime.offset.timezone_abbreviation": {
+   "duckdb_type": "VARCHAR",
+   "transform": "{col}"
+  },
+  "datetime.offset.utc": {
+   "duckdb_type": "VARCHAR",
+   "transform": "{col}"
+  },
+  "datetime.period.fiscal_year": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST(regexp_extract({col}, 'FY(\\d{2,4})', 1) AS VARCHAR)"
+  },
+  "datetime.period.quarter": {
+   "duckdb_type": "DATE",
+   "transform": "make_date(CAST(regexp_extract({col}, '(\\d{4})', 1) AS INT), (CAST(regexp_extract({col}, 'Q([1-4])', 1) AS INT) - 1) * 3 + 1, 1)"
+  },
+  "datetime.time.hm_12h": {
+   "duckdb_type": "TIME",
+   "transform": "strptime({col}, '%I:%M %p')::TIME"
+  },
+  "datetime.time.hm_24h": {
+   "duckdb_type": "TIME",
+   "transform": "strptime({col}, '%H:%M')::TIME"
+  },
+  "datetime.time.hms_12h": {
+   "duckdb_type": "TIME",
+   "transform": "strptime({col}, '%I:%M:%S %p')::TIME"
+  },
+  "datetime.time.hms_24h": {
+   "duckdb_type": "TIME",
+   "transform": "strptime({col}, '%H:%M:%S')::TIME"
+  },
+  "datetime.time.iso": {
+   "duckdb_type": "TIME",
+   "transform": "strptime({col}, '%H:%M:%S.%f')::TIME"
+  },
+  "datetime.timestamp.clf": {
+   "duckdb_type": "TIMESTAMP WITH TIME ZONE",
+   "transform": "strptime({col}, '%d/%b/%Y:%H:%M:%S %z')"
+  },
+  "datetime.timestamp.ctime": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%a %b %-d %H:%M:%S %Y')"
+  },
+  "datetime.timestamp.dmy_hm": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%d/%m/%Y %H:%M')"
+  },
+  "datetime.timestamp.dot_dmy_24h": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%d.%m.%Y %H:%M:%S')"
+  },
+  "datetime.timestamp.dot_ymd_24h": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%Y.%m.%d %H:%M:%S')"
+  },
+  "datetime.timestamp.epoch_nanoseconds": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "make_timestamp_ns({col}::BIGINT)"
+  },
+  "datetime.timestamp.iso_8601": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%Y-%m-%dT%H:%M:%SZ')"
+  },
+  "datetime.timestamp.iso_8601_compact": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%Y%m%dT%H%M%S')"
+  },
+  "datetime.timestamp.iso_8601_micros_offset": {
+   "duckdb_type": "TIMESTAMP WITH TIME ZONE",
+   "transform": "strptime({col}, '%Y-%m-%dT%H:%M:%S.%f%z')"
+  },
+  "datetime.timestamp.iso_8601_microseconds": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%Y-%m-%dT%H:%M:%S.%fZ')"
+  },
+  "datetime.timestamp.iso_8601_millis_offset": {
+   "duckdb_type": "TIMESTAMP WITH TIME ZONE",
+   "transform": "strptime({col}, '%Y-%m-%dT%H:%M:%S.%g%z')"
+  },
+  "datetime.timestamp.iso_8601_milliseconds": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%Y-%m-%dT%H:%M:%S.%gZ')"
+  },
+  "datetime.timestamp.iso_8601_offset": {
+   "duckdb_type": "TIMESTAMP WITH TIME ZONE",
+   "transform": "strptime({col}, '%Y-%m-%dT%H:%M:%S%z')"
+  },
+  "datetime.timestamp.iso_microseconds": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%Y-%m-%dT%H:%M:%S.%f')"
+  },
+  "datetime.timestamp.iso_milliseconds": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%Y-%m-%dT%H:%M:%S.%g')"
+  },
+  "datetime.timestamp.iso_minutes": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%Y-%m-%dT%H:%M')"
+  },
+  "datetime.timestamp.iso_seconds": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%Y-%m-%dT%H:%M:%S')"
+  },
+  "datetime.timestamp.iso_space_zulu": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%Y-%m-%d %H:%M:%SZ')"
+  },
+  "datetime.timestamp.mdy_12h": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%m/%d/%Y %I:%M %p')"
+  },
+  "datetime.timestamp.mdy_24h": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%m/%d/%Y %H:%M:%S')"
+  },
+  "datetime.timestamp.pg_short_offset": {
+   "duckdb_type": "TIMESTAMP WITH TIME ZONE",
+   "transform": "strptime({col} || ':00', '%Y-%m-%d %H:%M:%S.%f%z')"
+  },
+  "datetime.timestamp.rfc_2822": {
+   "duckdb_type": "TIMESTAMP WITH TIME ZONE",
+   "transform": "strptime({col}, '%a, %d %b %Y %H:%M:%S %z')"
+  },
+  "datetime.timestamp.rfc_2822_ordinal": {
+   "duckdb_type": "TIMESTAMP WITH TIME ZONE",
+   "transform": "strptime(regexp_replace({col}, '(\\d+)(?:st|nd|rd|th)', '\\1'), '%d %b %Y %H:%M:%S %z')"
+  },
+  "datetime.timestamp.rfc_3339": {
+   "duckdb_type": "TIMESTAMP WITH TIME ZONE",
+   "transform": "strptime({col}, '%Y-%m-%d %H:%M:%S%z')"
+  },
+  "datetime.timestamp.slash_ymd_24h": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%Y/%m/%d %H:%M:%S')"
+  },
+  "datetime.timestamp.sql_microseconds": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%Y-%m-%d %H:%M:%S.%f')"
+  },
+  "datetime.timestamp.sql_microseconds_offset": {
+   "duckdb_type": "TIMESTAMP WITH TIME ZONE",
+   "transform": "strptime({col}, '%Y-%m-%d %H:%M:%S.%f%z')"
+  },
+  "datetime.timestamp.sql_milliseconds": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%Y-%m-%d %H:%M:%S.%g')"
+  },
+  "datetime.timestamp.sql_minutes": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%Y-%m-%d %H:%M')"
+  },
+  "datetime.timestamp.sql_standard": {
+   "duckdb_type": "TIMESTAMP",
+   "transform": "strptime({col}, '%Y-%m-%d %H:%M:%S')"
+  },
+  "datetime.timestamp.syslog_bsd": {
+   "duckdb_type": "VARCHAR",
+   "transform": "strptime(CAST(YEAR(CURRENT_DATE) AS VARCHAR) || ' ' || {col}, '%Y %b %-d %H:%M:%S')"
+  },
+  "finance.banking.aba_routing": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "finance.banking.bsb": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "finance.banking.iban": {
+   "duckdb_type": "VARCHAR",
+   "transform": "UPPER(CAST({col} AS VARCHAR))"
+  },
+  "finance.banking.swift_bic": {
+   "duckdb_type": "VARCHAR",
+   "transform": "UPPER(CAST({col} AS VARCHAR))"
+  },
+  "finance.crypto.bitcoin_address": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "finance.crypto.ethereum_address": {
+   "duckdb_type": "VARCHAR",
+   "transform": "LOWER(CAST({col} AS VARCHAR))"
+  },
+  "finance.currency.amount": {
+   "duckdb_type": "DECIMAL",
+   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(CASE WHEN {col} LIKE '(%' THEN '-' || REPLACE(REPLACE({col}, '(', ''), ')', '') ELSE {col} END, '^[^0-9\\-]+', ''), '[^0-9\\.\\-]', '', 'g'), ',', '', 'g'), '\\s+', '', 'g') AS DECIMAL(18,2))"
+  },
+  "finance.currency.amount_accounting": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE({col}, '(', '-'), ')', ''), '$', ''), ',', ''), ' ', '') AS DECIMAL(18,2))"
+  },
+  "finance.currency.amount_apostrophe": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, 'CHF\\s?', ''), '[''\\x{2019}]', '', 'g'), '\\s+', '') AS DECIMAL(18,2))"
+  },
+  "finance.currency.amount_code_prefix": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE({col}, '^[A-Z]{3}\\s?', ''), ',', '') AS DECIMAL(18,2))"
+  },
+  "finance.currency.amount_comma": {
+   "duckdb_type": "DECIMAL",
+   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, '[€\\$£¥₹₩₿\\p{Sc}]', '', 'g'), '\\s+', '', 'g'), '\\.', '', 'g'), ',', '.') AS DECIMAL(18,2))"
+  },
+  "finance.currency.amount_comma_suffix": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, '[€$£¥₹₩₿\\p{Sc}]', '', 'g'), '\\s+', '', 'g'), '\\.', '', 'g'), ',', '.') AS DECIMAL(18,2))"
+  },
+  "finance.currency.amount_crypto": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST(REGEXP_REPLACE({col}, '\\s*[A-Z]{2,5}$', '') AS DECIMAL(18,8))"
+  },
+  "finance.currency.amount_lakh": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE({col}, '[₹Rs\\.\\s]', '', 'g'), ',', '') AS DECIMAL(18,2))"
+  },
+  "finance.currency.amount_multisym": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, '^[A-Za-z$₹€£¥₩₿\\p{Sc}\\s]+', ''), '[.,](?=[0-9]{3})', '', 'g'), '[\\s]', '', 'g'), ',', '.') AS DECIMAL(18,2))"
+  },
+  "finance.currency.amount_neg_trailing": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST(CASE WHEN {col} LIKE '%-' OR {col} LIKE '%CR' THEN '-' || REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, '[-]$|\\s*(CR|DR)$', ''), '[\\$€£¥₹]', ''), ',', '') ELSE REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, '[-]$|\\s*(CR|DR)$', ''), '[\\$€£¥₹]', ''), ',', '') END AS DECIMAL(18,2))"
+  },
+  "finance.currency.amount_nodecimal": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE({col}, '[¥₩\\p{Sc}]', '', 'g'), ',', '') AS INTEGER)"
+  },
+  "finance.currency.amount_space": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, '[€$£¥₹₩₿\\p{Sc}]', '', 'g'), '[\\s\\x{00A0}]+', '', 'g'), ',', '.'), '\\.$', '') AS DECIMAL(18,2))"
+  },
+  "finance.currency.currency_code": {
+   "duckdb_type": "VARCHAR",
+   "transform": "UPPER(CAST({col} AS VARCHAR))"
+  },
+  "finance.currency.currency_symbol": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "finance.payment.credit_card_number": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "finance.rate.basis_points": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST(REGEXP_REPLACE({col}, '\\s*(bps|bp)$', '') AS DECIMAL(18,4)) / 10000"
+  },
+  "finance.rate.yield": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST(REGEXP_REPLACE({col}, '%$', '') AS DECIMAL(10,4)) / 100"
+  },
+  "finance.securities.cusip": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "finance.securities.figi": {
+   "duckdb_type": "VARCHAR",
+   "transform": "UPPER(CAST({col} AS VARCHAR))"
+  },
+  "finance.securities.isin": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "finance.securities.lei": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "finance.securities.sedol": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "finance.securities.ticker": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.address.full_address": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.address.postal_code": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.address.street_name": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.address.street_suffix": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.contact.calling_code": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.coordinate.coordinates": {
+   "duckdb_type": "POINT",
+   "transform": "STRUCT_PACK(lat := CAST(SPLIT_PART({col}, ',', 1) AS DOUBLE), lon := CAST(SPLIT_PART({col}, ',', 2) AS DOUBLE))"
+  },
+  "geography.coordinate.dms": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.coordinate.geohash": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.coordinate.latitude": {
+   "duckdb_type": "DOUBLE",
+   "transform": "CAST({col} AS DOUBLE)"
+  },
+  "geography.coordinate.longitude": {
+   "duckdb_type": "DOUBLE",
+   "transform": "CAST({col} AS DOUBLE)"
+  },
+  "geography.coordinate.mgrs": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.coordinate.plus_code": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.format.wkt": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.index.h3": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.location.city": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.location.continent": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.location.country": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.location.country_code": {
+   "duckdb_type": "VARCHAR",
+   "transform": "UPPER(CAST({col} AS VARCHAR))"
+  },
+  "geography.location.region": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.location.state_code": {
+   "duckdb_type": "VARCHAR",
+   "transform": "UPPER(CAST({col} AS VARCHAR))"
+  },
+  "geography.transportation.hs_code": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.transportation.iata_code": {
+   "duckdb_type": "VARCHAR",
+   "transform": "UPPER(CAST({col} AS VARCHAR))"
+  },
+  "geography.transportation.icao_code": {
+   "duckdb_type": "VARCHAR",
+   "transform": "UPPER(CAST({col} AS VARCHAR))"
+  },
+  "geography.transportation.iso6346": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "geography.transportation.unlocode": {
+   "duckdb_type": "VARCHAR",
+   "transform": "UPPER(CAST({col} AS VARCHAR))"
+  },
+  "identity.academic.orcid": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.commerce.ean": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.commerce.isbn": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.commerce.isrc": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.commerce.issn": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.commerce.upc": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.government.abn": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.government.ein": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.government.eu_vat": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.government.pan_india": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.government.ssn": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.government.vin": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.industry.naics": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.medical.cpt": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.medical.dea_number": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.medical.hcpcs": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.medical.icd10": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.medical.loinc": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.medical.ndc": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.medical.npi": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.person.blood_type": {
+   "duckdb_type": "VARCHAR",
+   "transform": "UPPER(CAST({col} AS VARCHAR))"
+  },
+  "identity.person.email": {
+   "duckdb_type": "VARCHAR",
+   "transform": "LOWER(CAST({col} AS VARCHAR))"
+  },
+  "identity.person.email_display": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.person.first_name": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.person.full_name": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.person.gender": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.person.gender_code": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST(UPPER({col}) AS VARCHAR)"
+  },
+  "identity.person.height": {
+   "duckdb_type": "DOUBLE",
+   "transform": "CASE\n  WHEN UPPER({col}) LIKE '%FT%' OR {col} LIKE '%''%' THEN\n    (CAST(REGEXP_EXTRACT({col}, '^([0-9]+)') AS DOUBLE) * 30.48) +\n    (CAST(COALESCE(NULLIF(REGEXP_EXTRACT({col}, '''([0-9]+)', 1), ''), '0') AS DOUBLE) * 2.54)\n  WHEN UPPER({col}) LIKE '%IN%' THEN CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE) * 2.54\n  ELSE CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE)\nEND\n"
+  },
+  "identity.person.last_name": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.person.password": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.person.phone_e164": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.person.phone_number": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "identity.person.username": {
+   "duckdb_type": "VARCHAR",
+   "transform": "LOWER(CAST({col} AS VARCHAR))"
+  },
+  "identity.person.weight": {
+   "duckdb_type": "DOUBLE",
+   "transform": "CASE\n  WHEN UPPER({col}) LIKE '%LB%' THEN CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE) / 2.20462\n  ELSE CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE)\nEND\n"
+  },
+  "representation.boolean.binary": {
+   "duckdb_type": "BOOLEAN",
+   "transform": "CAST({col} AS BOOLEAN)"
+  },
+  "representation.boolean.initials": {
+   "duckdb_type": "BOOLEAN",
+   "transform": "CAST({col} AS BOOLEAN)"
+  },
+  "representation.boolean.terms": {
+   "duckdb_type": "BOOLEAN",
+   "transform": "CAST({col} AS BOOLEAN)"
+  },
+  "representation.discrete.ordinal": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "representation.file.excel_format": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "representation.file.extension": {
+   "duckdb_type": "VARCHAR",
+   "transform": "LOWER(REGEXP_REPLACE({col}, '^\\.*', ''))"
+  },
+  "representation.file.file_size": {
+   "duckdb_type": "BIGINT",
+   "transform": "CASE\n  WHEN UPPER({col}) LIKE '%GB%' THEN CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE) * 1024 * 1024 * 1024\n  WHEN UPPER({col}) LIKE '%MB%' THEN CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE) * 1024 * 1024\n  WHEN UPPER({col}) LIKE '%KB%' THEN CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE) * 1024\n  WHEN UPPER({col}) LIKE '%B%' THEN CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE)\n  ELSE CAST({col} AS BIGINT)\nEND\n"
+  },
+  "representation.file.mime_type": {
+   "duckdb_type": "VARCHAR",
+   "transform": "LOWER(CAST({col} AS VARCHAR))"
+  },
+  "representation.format.color_hex": {
+   "duckdb_type": "VARCHAR",
+   "transform": "UPPER(CAST({col} AS VARCHAR))"
+  },
+  "representation.format.color_hsl": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "representation.format.color_rgb": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "representation.identifier.alphanumeric_id": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "representation.identifier.increment": {
+   "duckdb_type": "BIGINT",
+   "transform": "CAST({col} AS BIGINT)"
+  },
+  "representation.identifier.numeric_code": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "representation.identifier.uuid": {
+   "duckdb_type": "UUID",
+   "transform": "CAST({col} AS UUID)"
+  },
+  "representation.numeric.decimal_number": {
+   "duckdb_type": "DOUBLE",
+   "transform": "CAST({col} AS DOUBLE)"
+  },
+  "representation.numeric.decimal_number_comma": {
+   "duckdb_type": "DOUBLE",
+   "transform": "CAST(REPLACE(REPLACE({col}, '.', ''), ',', '.') AS DOUBLE)"
+  },
+  "representation.numeric.integer_number": {
+   "duckdb_type": "BIGINT",
+   "transform": "CAST({col} AS BIGINT)"
+  },
+  "representation.numeric.percentage": {
+   "duckdb_type": "DOUBLE",
+   "transform": "CAST(REGEXP_EXTRACT({col}, '^(-?[0-9]+(\\.[0-9]+)?)') AS DOUBLE)"
+  },
+  "representation.numeric.scientific_notation": {
+   "duckdb_type": "DOUBLE",
+   "transform": "CAST({col} AS DOUBLE)"
+  },
+  "representation.numeric.si_number": {
+   "duckdb_type": "DOUBLE",
+   "transform": "CASE\n  WHEN regexp_extract(regexp_replace({col}, '^[\\\\$€£+-]', ''), '[KkMmBbTt]$') IN ('K','k')\n    THEN CAST(regexp_replace(regexp_replace({col}, '^[\\\\$€£+-]', ''), '[Kk]$', '') AS DOUBLE) * 1000\n  WHEN regexp_extract(regexp_replace({col}, '^[\\\\$€£+-]', ''), '[KkMmBbTt]$') IN ('M','m')\n    THEN CAST(regexp_replace(regexp_replace({col}, '^[\\\\$€£+-]', ''), '[Mm]$', '') AS DOUBLE) * 1000000\n  WHEN regexp_extract(regexp_replace({col}, '^[\\\\$€£+-]', ''), '[KkMmBbTt]$') IN ('B','b')\n    THEN CAST(regexp_replace(regexp_replace({col}, '^[\\\\$€£+-]', ''), '[Bb]$', '') AS DOUBLE) * 1000000000\n  WHEN regexp_extract(regexp_replace({col}, '^[\\\\$€£+-]', ''), '[KkMmBbTt]$') IN ('T','t')\n    THEN CAST(regexp_replace(regexp_replace({col}, '^[\\\\$€£+-]', ''), '[Tt]$', '') AS DOUBLE) * 1000000000000\nEND\n"
+  },
+  "representation.scientific.cas_number": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "representation.scientific.dna_sequence": {
+   "duckdb_type": "VARCHAR",
+   "transform": "UPPER(CAST({col} AS VARCHAR))"
+  },
+  "representation.scientific.inchi": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "representation.scientific.measurement_unit": {
+   "duckdb_type": "VARCHAR",
+   "transform": "LOWER(CAST({col} AS VARCHAR))"
+  },
+  "representation.scientific.protein_sequence": {
+   "duckdb_type": "VARCHAR",
+   "transform": "UPPER(CAST({col} AS VARCHAR))"
+  },
+  "representation.scientific.rna_sequence": {
+   "duckdb_type": "VARCHAR",
+   "transform": "UPPER(CAST({col} AS VARCHAR))"
+  },
+  "representation.scientific.smiles": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "representation.text.emoji": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "representation.text.entity_name": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "representation.text.plain_text": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "representation.text.word": {
+   "duckdb_type": "VARCHAR",
+   "transform": "LOWER(CAST({col} AS VARCHAR))"
+  },
+  "technology.cloud.aws_arn": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.cloud.s3_uri": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.code.doi": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.code.imei": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.code.locale_code": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.code.qualified_name": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.cryptographic.hash": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.cryptographic.jwt": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.cryptographic.token_urlsafe": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.development.calver": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.development.docker_ref": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.development.version": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.filesystem.filename": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.filesystem.windows_path": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.identifier.snowflake_id": {
+   "duckdb_type": "BIGINT",
+   "transform": "epoch_ms(({col}::BIGINT >> 22) + 1288834974657)"
+  },
+  "technology.identifier.tsid": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.identifier.ulid": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.internet.cidr": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.internet.data_uri": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.internet.hostname": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.internet.http_method": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.internet.ip_v4": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.internet.ip_v4_with_port": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.internet.ip_v6": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.internet.mac_address": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.internet.message_id": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.internet.top_level_domain": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.internet.url": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.internet.urn": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  },
+  "technology.internet.user_agent": {
+   "duckdb_type": "VARCHAR",
+   "transform": "CAST({col} AS VARCHAR)"
+  }
+ },
+ "source": "https://github.com/meridian-online/finetype/blob/<tag>/labels/definitions_*.yaml",
+ "tag": "v0.6.59"
+}

@@ -17,6 +17,8 @@ use std::path::{Component, Path, PathBuf};
 
 use brightfield_engine::sources::{self, SourceSet, SourceTable};
 use brightfield_engine::{ColumnProfile, Engine, LoadOptions, ProfileOutcome, SourceProfile};
+use brightfield_ossie::Model;
+use brightfield_protocol::silver::{failed_sql, silver_sql, FinetypeTransforms};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
 use serde_json::{json, Value};
@@ -34,6 +36,12 @@ const PROFILE_DIR: &str = ".profile";
 /// The lineage columns every raw table carries; they describe where a row came from, not what it
 /// holds, so neither the profile nor the data packages list them.
 const LINEAGE: [&str; 3] = ["__source_file", "__source_part", "__source_row"];
+
+/// The name prefixes of the silver steps and the files holding their SQL.
+const SILVER_STEP: &str = "silver_";
+const FAILED_STEP: &str = "failed_";
+const SILVER_FILE: &str = "02_silver_";
+const FAILED_FILE: &str = "02_failed_";
 
 /// An analyst's own files written as a Protocol.
 #[derive(Debug, Clone)]
@@ -110,6 +118,83 @@ pub fn run_loads(p: &OwnProtocol, runner: &Runner) -> Result<(), String> {
     } else {
         Err(finished.log)
     }
+}
+
+/// Write the silver steps for `model`: for each dataset that has a silver table, a step that casts
+/// the raw table through FineType's transformation contracts and one that keeps the values that did
+/// not cast, as `models/02_silver_<name>.sql` and `models/02_failed_<name>.sql`.
+///
+/// Every call rewrites them: steps and files from an earlier call are removed first, so a dataset
+/// that has since been excluded or folded into another loses its silver table's steps. The load
+/// steps are left as they are. Run the Protocol afterwards to make the tables.
+///
+/// # Errors
+///
+/// The reason when the manifest cannot be read or written, or a step file cannot be written.
+pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
+    let transforms = FinetypeTransforms::vendored();
+    let models = p.dir.join("models");
+    let entries = std::fs::read_dir(&models).map_err(|e| format!("{}: {e}", models.display()))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(SILVER_FILE) || name.starts_with(FAILED_FILE) {
+            std::fs::remove_file(entry.path())
+                .map_err(|e| format!("{}: {e}", entry.path().display()))?;
+        }
+    }
+
+    let manifest_path = p.dir.join("arcform.yaml");
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    let mut manifest: serde_yaml::Value =
+        serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    let steps = manifest
+        .get_mut("steps")
+        .and_then(serde_yaml::Value::as_sequence_mut)
+        .ok_or_else(|| format!("{}: no steps", manifest_path.display()))?;
+    steps.retain(|s| {
+        let name = s
+            .get("name")
+            .and_then(serde_yaml::Value::as_str)
+            .unwrap_or("");
+        !(name.starts_with(SILVER_STEP) || name.starts_with(FAILED_STEP))
+    });
+
+    for table in &p.sources.tables {
+        let silver = silver_sql(model, &table.name, &transforms);
+        if silver.is_empty() {
+            continue;
+        }
+        let failed = failed_sql(model, &table.name, &transforms);
+        for (step, file, sql, produces) in [
+            (
+                format!("{SILVER_STEP}{}", table.name),
+                format!("models/{SILVER_FILE}{}.sql", table.name),
+                silver,
+                table.name.clone(),
+            ),
+            (
+                format!("{FAILED_STEP}{}", table.name),
+                format!("models/{FAILED_FILE}{}.sql", table.name),
+                failed,
+                format!("{}__failed", table.name),
+            ),
+        ] {
+            std::fs::write(p.dir.join(&file), format!("{sql};\n"))
+                .map_err(|e| format!("{file}: {e}"))?;
+            steps.push(
+                serde_yaml::from_str(&format!(
+                    "name: {}\nsql: {}\nproduces:\n  - {}\n",
+                    quoted_yaml(&step),
+                    quoted_yaml(&file),
+                    quoted_yaml(&produces)
+                ))
+                .map_err(|e| e.to_string())?,
+            );
+        }
+    }
+    let out = serde_yaml::to_string(&manifest).map_err(|e| e.to_string())?;
+    std::fs::write(&manifest_path, out).map_err(|e| format!("{}: {e}", manifest_path.display()))
 }
 
 /// Profile the raw tables with FineType, one [`SourceProfile`] per table in `p.profiles`.
