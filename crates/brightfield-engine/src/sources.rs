@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 use duckdb::Connection;
 
-/// What a file holds: each table's schema (`None` for the main schema or a file with none), its
-/// sheet or table name (`None` for a flat file) and the reader that loads it.
+/// What a file holds: each table's schema (unset for the main schema), its sheet or table name
+/// (unset for a flat file) and the reader that loads it.
 type Parts = Vec<(Option<String>, Option<String>, Reader)>;
 
 /// How a table's rows are read.
