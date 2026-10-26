@@ -86,6 +86,8 @@ const PORT_INSET: f64 = 8.0;
 const TURN: f64 = 60.0;
 /// How far an edge to the row below keeps heading down as it leaves and enters the lane.
 const LANE_DIP: f64 = 12.0;
+/// Clearance of the first and last lane from the upper cards and from the row.
+const LANE_INSET: f64 = 8.0;
 /// Space between the upper bands and the row below.
 const ROW_BAND_GAP: f64 = spacing::SPACE_9 as f64;
 /// How far a same-band edge swings out beyond its cards.
@@ -388,6 +390,18 @@ pub fn layout(model: &Model) -> ModelLayout {
             }
         }
     };
+    // Joins to the row below each get their own run down the gap and their own lane,
+    // in the order of where they land, so no two share a segment.
+    let mut to_row: Vec<(usize, f64)> = planned
+        .iter()
+        .enumerate()
+        .filter(|(_, j)| j.sides.1 == Side::Top)
+        .map(|(i, j)| (i, port(j.e, Side::Top, i).0))
+        .collect();
+    to_row.sort_by(|a, b| {
+        a.1.total_cmp(&b.1)
+            .then_with(|| planned[a.0].r.name.cmp(&planned[b.0].r.name))
+    });
     let edges = planned
         .iter()
         .enumerate()
@@ -398,6 +412,10 @@ pub fn layout(model: &Model) -> ModelLayout {
             points: route(
                 (port(j.s, j.sides.0, i), j.sides.0),
                 (port(j.e, j.sides.1, i), j.sides.1),
+                (
+                    to_row.iter().position(|&(k, _)| k == i).unwrap_or(0),
+                    to_row.len(),
+                ),
             ),
         })
         .collect();
@@ -422,7 +440,11 @@ enum Side {
 /// `[start, control1, control2, end]` between two ports (a join to the row below is
 /// two such curves end to end, seven points), each leaving its card square to
 /// the side it sits on.
-fn route(from: ((f64, f64), Side), to: ((f64, f64), Side)) -> Vec<(f64, f64)> {
+fn route(
+    from: ((f64, f64), Side),
+    to: ((f64, f64), Side),
+    slot: (usize, usize),
+) -> Vec<(f64, f64)> {
     let ((a, sa), (b, sb)) = (from, to);
     match (sa, sb) {
         // Round the band's outer side, or under the row below.
@@ -438,29 +460,41 @@ fn route(from: ((f64, f64), Side), to: ((f64, f64), Side)) -> Vec<(f64, f64)> {
         // then along the lane and into the top of a card in the row. Two curves
         // joined at the lane, so the sweep sideways happens below every upper card
         // and cannot cut across the stacked cards of either column.
-        (Side::Right, Side::Top) => down_the_gap(a, b, BAND_GAP / 2.0),
-        _ => down_the_gap(a, b, -BAND_GAP / 2.0),
+        (Side::Right, Side::Top) => down_the_gap(a, b, Side::Right, slot),
+        _ => down_the_gap(a, b, Side::Left, slot),
     }
 }
 
-/// The height midway between the upper bands' lowest cards and the row below, given
-/// the top of a card in that row.
-fn lane(top: (f64, f64)) -> f64 {
-    top.1 - (ROW_BAND_GAP / 2.0).round()
-}
-
-/// Two joined cubics, seven points, from a port out into the gap `reach` pixels
-/// away, down to the lane, and on to `b`, the top of a card in the row below.
-fn down_the_gap(a: (f64, f64), b: (f64, f64), reach: f64) -> Vec<(f64, f64)> {
-    let lane = lane(b);
-    let q = (a.0 + reach, lane);
+/// Two joined cubics, seven points, from a port out into the gap, down it, along a
+/// lane and into `b`, the top of a card in the row below. `slot` is this join's place
+/// `(k, n)` among the `n` joins to the row: the k-th takes the k-th of `n` evenly
+/// spaced runs down the gap and the k-th of `n` lanes between the upper bands' lowest
+/// cards and the row, as ports are spaced on a card side.
+fn down_the_gap(
+    a: (f64, f64),
+    b: (f64, f64),
+    leaving: Side,
+    slot: (usize, usize),
+) -> Vec<(f64, f64)> {
+    let frac = (slot.0 as f64 + 1.0) / (slot.1 as f64 + 1.0);
+    let (gap_left, sign) = if leaving == Side::Right {
+        (a.0, 1.0)
+    } else {
+        (a.0 - BAND_GAP, -1.0)
+    };
+    let q = (
+        gap_left + (BAND_GAP * frac).round(),
+        b.1 - ROW_BAND_GAP + LANE_INSET + ((ROW_BAND_GAP - 2.0 * LANE_INSET) * frac).round(),
+    );
+    let out = TURN.min((q.0 - a.0).abs());
+    let dip = ((b.1 - q.1) / 2.0).round().min(LANE_DIP);
     vec![
         a,
-        (a.0 + reach.signum() * TURN, a.1),
+        (a.0 + sign * out, a.1),
         (q.0, q.1 - TURN),
         q,
-        (q.0, q.1 + LANE_DIP),
-        (b.0, b.1 - LANE_DIP),
+        (q.0, q.1 + dip),
+        (b.0, b.1 - dip),
         b,
     ]
 }

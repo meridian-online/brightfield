@@ -163,6 +163,7 @@ fn assert_routes_clear_of_cards(m: &Model) {
 #[test]
 fn retail_routes_clear_of_cards() {
     assert_routes_clear_of_cards(&model());
+    assert_routes_distinct(&model());
 }
 
 /// Four stacked event cards, two entities, and a row of four below, with joins to the
@@ -217,4 +218,61 @@ fn routes_to_the_row_below_clear_stacked_cards() {
     let l = layout(&m);
     assert_eq!(l.edges.len(), 10);
     assert_routes_clear_of_cards(&m);
+    assert_routes_distinct(&m);
+}
+
+/// The curve of an edge sampled finely, as points.
+fn sampled(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    for k in 0..points.len() / 3 {
+        let p = &points[3 * k..=3 * k + 3];
+        for step in 0..=200 {
+            let t = f64::from(step) / 200.0;
+            let u = 1.0 - t;
+            let at = |f: fn(&(f64, f64)) -> f64| {
+                u * u * u * f(&p[0])
+                    + 3.0 * u * u * t * f(&p[1])
+                    + 3.0 * u * t * t * f(&p[2])
+                    + t * t * t * f(&p[3])
+            };
+            out.push((at(|q| q.0), at(|q| q.1)));
+        }
+    }
+    out
+}
+
+/// Joins to the row below never share a junction, a run down the gap or a lane, and no
+/// two routes lie along one another: where two routes cross they come within a pixel
+/// at a few samples, where they overlap along a run it is hundreds.
+fn assert_routes_distinct(m: &Model) {
+    let l = layout(m);
+    let turns: Vec<_> = l.edges.iter().filter(|e| e.points.len() == 7).collect();
+    for (i, a) in turns.iter().enumerate() {
+        for b in &turns[i + 1..] {
+            let (q, r) = (a.points[3], b.points[3]);
+            assert!(
+                q.0 != r.0 && q.1 != r.1,
+                "{} and {} share a run or a lane",
+                a.relationship,
+                b.relationship
+            );
+        }
+    }
+    for (i, a) in l.edges.iter().enumerate() {
+        let sa = sampled(&a.points);
+        for b in &l.edges[i + 1..] {
+            let sb = sampled(&b.points);
+            let close = sa
+                .iter()
+                .flat_map(|p| sb.iter().map(move |q| (p, q)))
+                .filter(|(p, q)| (p.0 - q.0).hypot(p.1 - q.1) < 1.0)
+                .count();
+            assert!(
+                close < 60,
+                "{} and {} run along one another ({close} close samples)",
+                a.relationship,
+                b.relationship
+            );
+        }
+    }
 }
