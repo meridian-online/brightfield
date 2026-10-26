@@ -304,15 +304,14 @@ fn frictionless_type(label: Option<&str>, duckdb_type: &str) -> &'static str {
     if let Some(t) = by_storage {
         return t;
     }
-    // FineType labels whose values are exactly what Frictionless reads by default for the type,
-    // from the `examples` and `pattern` of each label in the taxonomy catalogue of FineType
-    // v0.6.59 (`taxonomy-schemas.json` in the bundle). A label not listed is a string, as
-    // `only_default_format_labels_are_typed` shows: the boolean labels (`binary`, `initials`,
-    // `terms`) all carry words besides true and false, and a date, time or number in another form needs a `format` or a cast first.
+    // FineType labels whose pattern admits nothing outside what Frictionless reads by default for
+    // the type, from the `pattern` of each label in the taxonomy catalogue of FineType v0.6.59
+    // (`taxonomy-schemas.json` in the bundle). A label not listed is a string, as
+    // `only_default_format_labels_are_typed` shows: `datetime.time.hms_24h` admits a one-digit
+    // hour and fractional seconds, `datetime.timestamp.iso_8601` admits fractional seconds, and
+    // the boolean labels (`binary`, `initials`, `terms`) all carry words besides true and false.
     match label {
         Some("datetime.date.iso") => "date",
-        Some("datetime.time.hms_24h") => "time",
-        Some("datetime.timestamp.iso_8601" | "datetime.timestamp.iso_8601_offset") => "datetime",
         Some("representation.numeric.integer_number") => "integer",
         Some("representation.numeric.decimal_number") => "number",
         _ => "string",
@@ -437,10 +436,11 @@ mod tests {
         assert_eq!(typed("datetime.date.iso"), "date");
         assert_eq!(typed("datetime.date.iso_week"), "string");
         assert_eq!(typed("datetime.date.mdy_slash"), "string");
-        assert_eq!(typed("datetime.timestamp.iso_8601"), "datetime");
+        assert_eq!(typed("datetime.timestamp.iso_8601"), "string");
+        assert_eq!(typed("datetime.timestamp.iso_8601_offset"), "string");
         assert_eq!(typed("datetime.timestamp.iso_8601_compact"), "string");
         assert_eq!(typed("datetime.timestamp.iso_space_zulu"), "string");
-        assert_eq!(typed("datetime.time.hms_24h"), "time");
+        assert_eq!(typed("datetime.time.hms_24h"), "string");
         assert_eq!(typed("datetime.time.hms_12h"), "string");
         assert_eq!(typed("representation.numeric.integer_number"), "integer");
         assert_eq!(typed("representation.numeric.decimal_number"), "number");
