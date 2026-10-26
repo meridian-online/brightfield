@@ -520,6 +520,8 @@ pub struct CodeSurfaceOutput {
     /// The primary cursor as 1-based `(line, column)`, when the surface has
     /// one.
     pub cursor: Option<(usize, usize)>,
+    /// Whether the text edit holds the keyboard at the end of the frame.
+    pub focused: bool,
 }
 
 /// Draw the code surface: gutter with line numbers, the highlighted text
@@ -667,6 +669,7 @@ fn gutter_and_edit(
         };
 
         result.changed = access == Access::Editable && output.response.changed();
+        result.focused = output.response.has_focus();
         result.cursor = output
             .cursor_range
             .map(|range| line_col(text, range.primary.index.0));

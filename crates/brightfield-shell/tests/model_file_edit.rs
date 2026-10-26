@@ -1,8 +1,10 @@
 //! Editing the Ossie file by hand in the model pane's file view. Each pause in typing reads the
 //! text: a document Brightfield reads becomes the model, with what the edit changed marked as the
 //! analyst's, and the diagram follows; one it cannot read leaves the last good model standing and
-//! says why, at its line. What a readable edit names that Brightfield cannot act on stays in the
-//! file and is listed under the editor, one warning each.
+//! says why, at its line. What a readable edit names that Brightfield cannot act on is listed
+//! under the editor, one warning each: a join to a missing table and a metric stay in the file,
+//! and a role outside the six is ignored, so the file always reads. The editor keeps what was
+//! typed while it holds the keyboard, and a reshape reads a waiting edit first.
 //!
 //! The Protocols here are opened through the app's own open, with the `brightfield-shell` binary
 //! cargo built as their runner, under a scratch folder of this file's that the config directory
@@ -13,11 +15,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use brightfield_ossie::{Band, DecidedBy, Model, Role};
+use brightfield_ossie::{Band, DecidedBy, Edit, Model, Role};
 use brightfield_render::model_scene::Selection;
 use brightfield_shell::data_file::{self, Opened};
 use brightfield_shell::design::Mode;
-use brightfield_shell::model_pane::{ModelPane, ModelView, FILE_PAUSE_MS};
+use brightfield_shell::model_pane::{Dispatched, ModelPane, ModelView, FILE_PAUSE_MS};
 use brightfield_shell::run::Runner;
 use brightfield_shell::window::{Boot, MeridianApp};
 
@@ -132,6 +134,25 @@ fn card_band(pane: &ModelPane, dataset: &str) -> Option<Band> {
         .iter()
         .find(|c| c.dataset == dataset)
         .map(|c| c.band)
+}
+
+fn button(at: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+fn key(key: egui::Key) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }
 }
 
 /// Draw `pane` once, with `events`, in a context of its own.
@@ -264,18 +285,16 @@ fn hand_edit_marks_analyst() {
         join("loyalty_visits_customers").meta.decided_by,
         DecidedBy::Analyst
     );
-    // The join taken out is kept as the analyst's rejection, so discovery does not propose it.
+    // The join taken out is simply gone.
     assert!(!disk
         .relationships
         .iter()
         .any(|r| r.name == "loyalty_visits_stores"));
-    let rejected = disk
+    assert!(!disk
         .meta
         .rejected
         .iter()
-        .find(|r| r.name == "loyalty_visits_stores")
-        .expect("the join taken out is kept as rejected");
-    assert_eq!(rejected.meta.decided_by, DecidedBy::Analyst);
+        .any(|r| r.name == "loyalty_visits_stores"));
 }
 
 #[test]
@@ -319,7 +338,7 @@ fn unknown_dataset_warns_and_rest_applies() {
 }
 
 #[test]
-fn an_unknown_role_and_a_metric_warn_and_stay_in_the_file() {
+fn an_unknown_role_is_ignored_and_the_file_reopens() {
     let (mut pane, _held) = opened();
     let text = pane.file_text().to_string();
     let edited = replaced(
@@ -340,7 +359,7 @@ fn an_unknown_role_and_a_metric_warn_and_stay_in_the_file() {
     assert_eq!(
         pane.file_warnings(),
         vec![
-            "customers has the role \"fact\", which is not entity, event, reference, bridge, snapshot or unclear: it stays in the file, and the table is shown as entity".to_string(),
+            "role 'fact' is not one of the six; customers stays entity".to_string(),
             "The metric revenue stays in the file: Brightfield does not act on metrics".to_string(),
         ]
     );
@@ -354,9 +373,186 @@ fn an_unknown_role_and_a_metric_warn_and_stay_in_the_file() {
         .and_then(|d| d.fields.iter().find(|f| f.name == "email"))
         .unwrap();
     assert_eq!(email.expression_sql, "lower(email)");
+    // The file keeps the role the table had, so it reads; the editor keeps what was typed.
     let disk = on_disk(&pane);
-    assert!(disk.contains(r#""role":"fact""#), "{disk}");
+    assert!(!disk.contains("fact"), "{disk}");
     assert!(disk.contains("name: revenue"), "{disk}");
+    assert!(pane.file_draft().contains(r#""role":"fact""#));
+    let reopened = ModelPane::open(pane.protocol.clone(), runner()).expect("the folder reopens");
+    let customers = reopened
+        .model
+        .datasets
+        .iter()
+        .find(|d| d.name == "customers")
+        .unwrap();
+    assert_eq!(customers.meta.role, Role::Entity);
+}
+
+#[test]
+fn a_read_error_beside_an_unknown_role_names_the_typed_line() {
+    let mut pane = written_retail("read-error-line");
+    // A comment, which a document written again would not keep, so every line after it would
+    // move up one.
+    let text = format!("# Notes on the retail model\n{}", pane.file_text());
+    let edited = replaced(
+        &text,
+        CUSTOMERS_ROLE,
+        &CUSTOMERS_ROLE.replace("entity", "fact"),
+    );
+    // The first field of stores, with Meridian data the reader refuses.
+    let city = edited.lines().position(|l| l == "  - name: city").unwrap();
+    let mut lines: Vec<&str> = edited.lines().collect();
+    let data = city + 5;
+    assert_eq!(lines[data], r#"      data: '{"decided_by":"dovetail"}'"#);
+    lines[data] = r#"      data: '{"decided_by":"nobody"}'"#;
+    let edited = format!("{}\n", lines.join("\n"));
+
+    type_and_pause(&mut pane, edited);
+
+    let error = pane.file_error().expect("the field's data is refused");
+    assert!(error.starts_with(&format!("Line {}:", city + 1)), "{error}");
+}
+
+#[test]
+fn an_applied_edit_leaves_the_focused_editor_as_typed() {
+    let (mut pane, _held) = opened();
+    let ctx = egui::Context::default();
+    pane.view = ModelView::File;
+    draw(&ctx, &mut pane, Vec::new());
+    let at = pane.drawn().file_editor.expect("the editor drew").center();
+    draw(
+        &ctx,
+        &mut pane,
+        vec![egui::Event::PointerMoved(at), button(at, true)],
+    );
+    draw(&ctx, &mut pane, vec![button(at, false)]);
+
+    // A join to a missing table at the head of the joins, which the file writes at their end.
+    let typed = replaced(
+        pane.file_text(),
+        "relationships:\n",
+        "relationships:\n- name: transactions_suppliers\n  from: transactions\n  to: suppliers\n  from_columns:\n  - store_id\n  to_columns:\n  - supplier_id\n",
+    );
+    pane.set_file_draft(typed.clone());
+    draw(&ctx, &mut pane, Vec::new());
+    type_and_pause(&mut pane, typed.clone());
+    draw(&ctx, &mut pane, Vec::new());
+    assert_eq!(pane.tick_file_edit(FILE_PAUSE_MS + 1), None);
+    assert_ne!(
+        on_disk(&pane),
+        typed,
+        "the file is written as the writer emits it"
+    );
+    assert_eq!(
+        pane.file_draft(),
+        typed,
+        "the focused editor keeps what was typed"
+    );
+
+    // Let go of the keyboard, and the editor takes the file.
+    draw(&ctx, &mut pane, vec![key(egui::Key::Escape)]);
+    draw(&ctx, &mut pane, Vec::new());
+    assert_eq!(pane.tick_file_edit(FILE_PAUSE_MS + 2), None);
+    assert_eq!(pane.file_draft(), on_disk(&pane));
+}
+
+#[test]
+fn a_reshape_reads_a_waiting_edit_first() {
+    let (mut pane, _held) = opened();
+    let edited = replaced(
+        pane.file_text(),
+        CUSTOMERS_ROLE,
+        &CUSTOMERS_ROLE.replace("entity", "event"),
+    );
+    // Typed, and the reshape comes before the pause is out.
+    pane.set_file_draft(edited);
+    pane.focus.selected = Some(Selection::Relationship("transactions_stores".into()));
+    let done = pane.perform_reshape("drop-join").expect("a reshape verb");
+    assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
+
+    let disk = brightfield_ossie::read(&on_disk(&pane)).unwrap();
+    let customers = disk
+        .datasets
+        .iter()
+        .find(|d| d.name == "customers")
+        .unwrap();
+    assert_eq!(
+        customers.meta.role,
+        Role::Event,
+        "the waiting edit was read"
+    );
+    assert!(!disk
+        .relationships
+        .iter()
+        .any(|r| r.name == "transactions_stores"));
+}
+
+#[test]
+fn a_refused_edit_blocks_a_reshape_until_discarded() {
+    let (mut pane, _held) = opened();
+    let disk = on_disk(&pane);
+    let broken = replaced(pane.file_text(), "\ndatasets:\n", "\ndatasets: :\n");
+    pane.set_file_draft(broken.clone());
+    pane.focus.selected = Some(Selection::Relationship("transactions_stores".into()));
+
+    let refused = pane.perform_reshape("drop-join").expect("a reshape verb");
+    assert_eq!(
+        refused,
+        Dispatched::Failed(
+            "The file has an edit that doesn't read — fix or discard it first".to_string()
+        )
+    );
+    assert_eq!(on_disk(&pane), disk, "nothing is written");
+    assert_eq!(pane.file_draft(), broken, "the edit stays to be put right");
+    assert!(pane.file_error().is_some_and(|e| e.starts_with("Line 3:")));
+
+    // Discard edit, under the editor, puts the file back.
+    let ctx = egui::Context::default();
+    pane.view = ModelView::File;
+    draw(&ctx, &mut pane, Vec::new());
+    let discard = pane
+        .drawn()
+        .file_discard
+        .expect("a refused edit offers Discard");
+    draw(
+        &ctx,
+        &mut pane,
+        vec![
+            egui::Event::PointerMoved(discard.center()),
+            button(discard.center(), true),
+        ],
+    );
+    draw(&ctx, &mut pane, vec![button(discard.center(), false)]);
+    assert_eq!(pane.file_draft(), disk);
+    assert_eq!(pane.file_error(), None);
+    let done = pane.perform_reshape("drop-join").expect("a reshape verb");
+    assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
+}
+
+#[test]
+fn a_join_to_a_missing_table_survives_a_reshape() {
+    let (mut pane, _held) = opened();
+    let edited = replaced(
+        pane.file_text(),
+        "relationships:\n",
+        "relationships:\n- name: transactions_suppliers\n  from: transactions\n  to: suppliers\n  from_columns:\n  - store_id\n  to_columns:\n  - supplier_id\n",
+    );
+    type_and_pause(&mut pane, edited);
+    assert!(on_disk(&pane).contains("to: suppliers"));
+
+    let model = brightfield_ossie::apply(
+        &pane.model,
+        &Edit::DropJoin {
+            relationship: "transactions_stores".into(),
+        },
+    )
+    .unwrap();
+    pane.save_model(model).expect("the reshaped model runs");
+
+    let disk = on_disk(&pane);
+    assert!(disk.contains("name: transactions_suppliers"), "{disk}");
+    assert!(!disk.contains("name: transactions_stores"), "{disk}");
+    assert_eq!(pane.file_warnings().len(), 1, "{:?}", pane.file_warnings());
 }
 
 #[test]

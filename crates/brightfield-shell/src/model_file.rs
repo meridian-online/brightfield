@@ -5,14 +5,19 @@
 //! and, where the text says, the line. A text Brightfield reads becomes the next model, and each
 //! dataset, field and relationship that differs from the one of the same name in the current
 //! model, or is new, is marked as the analyst's; what the edit left alone keeps who decided it. A
-//! relationship the edit removed is kept as rejected, as dropping it from the inspector keeps it,
-//! so discovery does not propose it back.
+//! relationship the edit removed is simply gone.
 //!
 //! What the text names that Brightfield cannot act on is not refused. A relationship naming a
-//! table the model does not hold, and a role outside the six, are set aside in [`Kept`]: left out
-//! of the model the diagram is drawn from and the silver steps are written for, and written back
-//! into the file by [`written`], since the analyst wrote them. Metrics ride in the model as it is,
-//! since nothing Brightfield builds reads them. Each of these is one line of [`warnings`].
+//! table the model does not hold is set aside in [`Kept`]: left out of the model the diagram is
+//! drawn from and the silver steps are written for, and written back into the file by
+//! [`written`], after the model's own relationships, since the analyst wrote it. A role outside
+//! the six is ignored: the table keeps the role it had, in the diagram and in the file, so the
+//! file always reads. Metrics ride in the model as it is, since nothing Brightfield builds reads
+//! them. Each of these is one line of [`warnings`].
+//!
+//! The file is written as [`brightfield_ossie::write`] emits it, so YAML comments and the
+//! analyst's own layout do not reach the disk; the editor keeps the text as typed until it lets
+//! go of the keyboard.
 
 use brightfield_ossie::{
     line_of, Dataset, DatasetMeta, DecidedBy, Element, Field, FieldMeta, Model, ReadError,
@@ -22,24 +27,24 @@ use serde_yaml::Value;
 
 use crate::model_inspector::role_label;
 
-/// What an edited file holds that Brightfield does not act on, set aside so the file goes on
-/// holding it.
+/// What an edited text holds that Brightfield does not act on.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Kept {
-    /// Relationships that name a table the model does not hold.
+    /// Relationships that name a table the model does not hold, written back into the file.
     pub relationships: Vec<Relationship>,
-    /// Roles that are not one of the six.
-    pub roles: Vec<KeptRole>,
+    /// Roles that are not one of the six, as the editor's text holds them. They are only
+    /// warned of: the file holds the role each table kept.
+    pub roles: Vec<IgnoredRole>,
 }
 
-/// A table's role as written, when it is not one of the six.
+/// A table's role as typed, when it is not one of the six.
 #[derive(Debug, Clone, PartialEq)]
-pub struct KeptRole {
+pub struct IgnoredRole {
     /// The table.
     pub dataset: String,
-    /// The role as the file writes it, a JSON value.
+    /// The role as typed, a JSON value.
     pub written: serde_json::Value,
-    /// The role the table is shown with instead: the one it had before the edit, or unclear.
+    /// The role the table keeps: the one it had before the edit, or unclear.
     pub shown: Role,
 }
 
@@ -71,7 +76,12 @@ pub fn read_hand_edit(current: &Model, text: &str) -> Result<HandEdit, String> {
     let readable = if roles.is_empty() {
         text.to_string()
     } else {
-        serde_yaml::to_string(&doc).map_err(|e| e.to_string())?
+        match roles_replaced_in_place(text, &roles) {
+            Some(replaced) => replaced,
+            // A layout the line-for-line swap does not follow: read the whole document again,
+            // whose lines may then differ from the editor's.
+            None => serde_yaml::to_string(&doc).map_err(|e| e.to_string())?,
+        }
     };
     let mut model = brightfield_ossie::read(&readable).map_err(|e| read_error(&e))?;
     let tables: Vec<String> = model.datasets.iter().map(|d| d.name.clone()).collect();
@@ -81,7 +91,6 @@ pub fn read_hand_edit(current: &Model, text: &str) -> Result<HandEdit, String> {
             .partition(|r| tables.contains(&r.from) && tables.contains(&r.to));
     model.relationships = acted;
     mark_changed(current, &mut model);
-    reject_removed(current, &mut model, &unjoined);
     Ok(HandEdit {
         model,
         kept: Kept {
@@ -91,9 +100,9 @@ pub fn read_hand_edit(current: &Model, text: &str) -> Result<HandEdit, String> {
     })
 }
 
-/// What of `kept` still stands beside `model`: a relationship set aside that no relationship of
-/// the model now shares a name with, and a role set aside on a table that still has the role it
-/// was shown with. A reshape that sets the table's role lets the written one go.
+/// What of `kept` still stands beside `model` once the file is written for it and the editor
+/// holds the file: each relationship set aside that no relationship of the model now shares a
+/// name with. No ignored role stands, since the file holds none.
 #[must_use]
 pub fn still_kept(model: &Model, kept: &Kept) -> Kept {
     Kept {
@@ -103,46 +112,18 @@ pub fn still_kept(model: &Model, kept: &Kept) -> Kept {
             .filter(|k| !model.relationships.iter().any(|r| r.name == k.name))
             .cloned()
             .collect(),
-        roles: kept
-            .roles
-            .iter()
-            .filter(|k| {
-                model
-                    .datasets
-                    .iter()
-                    .any(|d| d.name == k.dataset && d.meta.role == k.shown)
-            })
-            .cloned()
-            .collect(),
+        roles: Vec::new(),
     }
 }
 
-/// The Ossie file for `model` with `kept` written back into it: the relationships set aside after
-/// the model's own, and each role set aside in place of the one its table is shown with.
+/// The Ossie file for `model` with the relationships `kept` sets aside written back after the
+/// model's own.
 #[must_use]
 pub fn written(model: &Model, kept: &Kept) -> String {
     let mut full = model.clone();
     full.relationships
         .extend(kept.relationships.iter().cloned());
-    let text = brightfield_ossie::write(&full);
-    if kept.roles.is_empty() {
-        return text;
-    }
-    let Ok(mut doc) = serde_yaml::from_str::<Value>(&text) else {
-        return text;
-    };
-    for role in &kept.roles {
-        let Some(data) = meridian_data(&mut doc, &role.dataset) else {
-            continue;
-        };
-        let Some(Value::String(json)) = data else {
-            continue;
-        };
-        // `write` emits the entry as compact JSON, so the role stands exactly so in it.
-        let shown = format!("\"role\":\"{}\"", role_label(role.shown));
-        *json = json.replacen(&shown, &format!("\"role\":{}", role.written), 1);
-    }
-    serde_yaml::to_string(&doc).unwrap_or(text)
+    brightfield_ossie::write(&full)
 }
 
 /// One line for each thing the file holds that Brightfield does not act on: the relationships
@@ -167,11 +148,13 @@ pub fn warnings(model: &Model, kept: &Kept) -> Vec<String> {
         ));
     }
     for role in &kept.roles {
+        let typed = match &role.written {
+            serde_json::Value::String(typed) => typed.clone(),
+            other => other.to_string(),
+        };
         said.push(format!(
-            "{} has the role {}, which is not entity, event, reference, bridge, snapshot or \
-             unclear: it stays in the file, and the table is shown as {}",
+            "role '{typed}' is not one of the six; {} stays {}",
             role.dataset,
-            role.written,
             role_label(role.shown)
         ));
     }
@@ -261,9 +244,78 @@ fn meridian_data<'a>(doc: &'a mut Value, dataset: &str) -> Option<Option<&'a mut
     Some(entry.get_mut("data"))
 }
 
+/// `text` with each of `roles` swapped, on the line its table's Meridian entry stands on, for
+/// the role the table keeps, so the text reads and every other line stays where the editor shows
+/// it. `None` when an entry is not on one line of its own.
+fn roles_replaced_in_place(text: &str, roles: &[IgnoredRole]) -> Option<String> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    for role in roles {
+        let start = line_of(text, Element::Dataset(&role.dataset))? - 1;
+        // `- name: …` opens the item at its own indent; a `name:` under the dash stands two in.
+        let item_indent = if lines[start].trim_start().starts_with("- ") {
+            indent(&lines[start])
+        } else {
+            indent(&lines[start]).saturating_sub(2)
+        };
+        let end = (start + 1..lines.len())
+            .find(|&i| {
+                let l = lines[i].trim_start();
+                !l.is_empty()
+                    && !l.starts_with('#')
+                    && (indent(&lines[i]) < item_indent
+                        || (indent(&lines[i]) == item_indent && l.starts_with("- ")))
+            })
+            .unwrap_or(lines.len());
+        let swapped = (start..end).find_map(|i| {
+            let line = &lines[i];
+            let lead = line.len() - line.trim_start().len();
+            let body = line.trim_start();
+            let (dash, entry) = match body.strip_prefix("- ") {
+                Some(rest) => ("- ", rest),
+                None => ("", body),
+            };
+            if !entry.starts_with("data:") {
+                return None;
+            }
+            let parsed: Value = serde_yaml::from_str(entry).ok()?;
+            let json = parsed.get("data")?.as_str()?;
+            let serde_json::Value::Object(mut meta) = serde_json::from_str(json).ok()? else {
+                return None;
+            };
+            if meta.get("role") != Some(&role.written) {
+                return None;
+            }
+            meta.insert(
+                "role".to_string(),
+                serde_json::Value::String(role_label(role.shown).to_string()),
+            );
+            let mut swapped = serde_yaml::Mapping::new();
+            swapped.insert(
+                Value::String("data".to_string()),
+                Value::String(serde_json::Value::Object(meta).to_string()),
+            );
+            let entry = serde_yaml::to_string(&swapped).ok()?;
+            let entry = entry.trim_end();
+            // A value the writer folds over several lines would move every line after it.
+            (!entry.contains('\n')).then(|| (i, format!("{}{dash}{entry}", &line[..lead])))
+        });
+        let (i, line) = swapped?;
+        lines[i] = line;
+    }
+    let mut out = lines.join("\n");
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    Some(out)
+}
+
+fn indent(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
 /// Set aside each role in `doc` that is not one of the six, putting in its place the one its
 /// table has in `current` (or unclear, for a table `current` does not hold), so the rest reads.
-fn set_aside_roles(current: &Model, doc: &mut Value) -> Vec<KeptRole> {
+fn set_aside_roles(current: &Model, doc: &mut Value) -> Vec<IgnoredRole> {
     let names: Vec<String> = doc
         .get("datasets")
         .and_then(Value::as_sequence)
@@ -298,7 +350,7 @@ fn set_aside_roles(current: &Model, doc: &mut Value) -> Vec<KeptRole> {
             serde_json::Value::String(role_label(shown).to_string()),
         );
         *json = serde_json::Value::Object(meta).to_string();
-        kept.push(KeptRole {
+        kept.push(IgnoredRole {
             dataset: name,
             written,
             shown,
@@ -325,24 +377,6 @@ fn mark_changed(current: &Model, edited: &mut Model) {
         let was = current.relationships.iter().find(|c| c.name == r.name);
         if was.is_none_or(|c| !same_relationship(c, r)) {
             r.meta.decided_by = DecidedBy::Analyst;
-        }
-    }
-}
-
-/// Keep each relationship of `current` the edit removed as rejected by the analyst, unless the
-/// edit already lists it so or set it aside.
-fn reject_removed(current: &Model, edited: &mut Model, set_aside: &[Relationship]) {
-    for r in &current.relationships {
-        let held = edited
-            .relationships
-            .iter()
-            .chain(set_aside)
-            .chain(&edited.meta.rejected)
-            .any(|e| e.name == r.name);
-        if !held {
-            let mut dropped = r.clone();
-            dropped.meta.decided_by = DecidedBy::Analyst;
-            edited.meta.rejected.push(dropped);
         }
     }
 }

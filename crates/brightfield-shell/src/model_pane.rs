@@ -32,6 +32,11 @@
 //! says why, at its line, under the editor. Under it too stands a warning for each thing the file
 //! holds that Brightfield does not act on. The window drives the pause with
 //! [`ModelPane::tick_file_edit`]. Shown with something selected, the file scrolls to it.
+//!
+//! The editor's text is the analyst's while the editor holds the keyboard: an applied edit writes
+//! the file as the writer emits it, and the editor takes that text only once it lets go of the
+//! keyboard with no refused edit in it. A reshape reads a waiting edit first, and is refused while
+//! the editor holds one that does not read; Discard edit puts the file back in the editor.
 
 use std::path::{Path, PathBuf};
 
@@ -79,6 +84,9 @@ const SHOW_VIEW: [(&str, ModelView); 3] = [
 /// shell's typing pause, [`crate::typed_sql::TYPED_PAUSE`].
 #[allow(clippy::cast_possible_truncation)] // 300 ms fits a u64
 pub const FILE_PAUSE_MS: u64 = crate::typed_sql::TYPED_PAUSE.as_millis() as u64;
+
+/// The width of the Discard edit control at the end of a refused edit's error line.
+const DISCARD_WIDTH: f32 = 96.0;
 
 /// Which way the model is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -183,6 +191,8 @@ pub struct ModelDrawn {
     pub inspector: Option<InspectorDrawn>,
     /// Where the file view's editor was laid out, when the file view was drawn.
     pub file_editor: Option<egui::Rect>,
+    /// Where the Discard edit control beside a refused edit's error line was laid out.
+    pub file_discard: Option<egui::Rect>,
     /// The line the file view scrolled to this frame, 1-based: the selection's, the first frame
     /// the file view shows it.
     pub file_scrolled_to: Option<usize>,
@@ -226,6 +236,11 @@ pub struct ModelPane {
     kept: Kept,
     /// The selection the file view last scrolled to, while the file view shows.
     file_scrolled_for: Option<Selection>,
+    /// Whether the file view's editor held the keyboard when the pane was last drawn.
+    file_focused: bool,
+    /// Whether the last text read was refused, so it stays in the editor until put right or
+    /// discarded.
+    draft_refused: bool,
     /// Bumped whenever the model changes, so the diagram is drawn again.
     generation: u64,
     raster: Option<(DiagramKey, egui::TextureId)>,
@@ -284,6 +299,8 @@ impl ModelPane {
             file_error: None,
             kept: Kept::default(),
             file_scrolled_for: None,
+            file_focused: false,
+            draft_refused: false,
             generation: 0,
             raster: None,
             drawn: ModelDrawn::default(),
@@ -373,7 +390,17 @@ impl ModelPane {
     /// edit arms it again, and once the text has rested [`FILE_PAUSE_MS`] it is read. Answers
     /// what came of a read when one was made: `Err` with why the text was refused or its run
     /// failed, which [`Self::file_error`] then says too.
+    ///
+    /// An editor that has let go of the keyboard, with no refused edit in it, takes the file's
+    /// text here.
     pub fn tick_file_edit(&mut self, now_ms: u64) -> Option<Result<(), String>> {
+        if !self.file_focused
+            && !self.draft_refused
+            && self.file_draft == self.file_read
+            && self.file_draft != self.file_text
+        {
+            self.resync_draft();
+        }
         if self.file_draft == self.file_read {
             self.file_pause = None;
             return None;
@@ -410,22 +437,64 @@ impl ModelPane {
         model_file::warnings(&self.model, &self.kept)
     }
 
+    /// Put the file back in the editor, dropping the edit in it: what Discard edit does.
+    pub fn discard_file_edit(&mut self) {
+        self.resync_draft();
+        self.file_error = None;
+    }
+
+    /// The editor takes the file's text, and what an earlier text held but the file does not
+    /// is let go.
+    fn resync_draft(&mut self) {
+        self.file_draft.clone_from(&self.file_text);
+        self.file_read.clone_from(&self.file_text);
+        self.file_pause = None;
+        self.draft_refused = false;
+        self.kept.roles.clear();
+    }
+
     /// Read the file view's text and, when Brightfield reads it and it changes anything, save
-    /// it as the model.
+    /// it as the model. The editor keeps the text as typed.
     fn read_file_draft(&mut self) -> Result<(), String> {
         self.file_read = self.file_draft.clone();
+        self.file_pause = None;
         let result = match model_file::read_hand_edit(&self.model, &self.file_draft) {
-            // Only the text's layout changed: nothing to write or run.
-            Ok(edit) if edit.model == self.model && edit.kept == self.kept => Ok(()),
+            // Nothing the file holds changed, only the text's layout or a role it ignores:
+            // nothing to write or run.
+            Ok(edit)
+                if edit.model == self.model
+                    && edit.kept.relationships == self.kept.relationships =>
+            {
+                self.kept = edit.kept;
+                self.draft_refused = false;
+                Ok(())
+            }
             Ok(edit) => {
-                let saved = self.save_with(edit.model, edit.kept);
+                let saved = self.save_with(edit.model, edit.kept, true);
                 self.let_go_of_what_is_gone();
                 saved
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                self.draft_refused = true;
+                Err(e)
+            }
         };
         self.file_error = result.as_ref().err().cloned();
         result
+    }
+
+    /// Before a reshape saves: read an edit still waiting out its pause, and refuse when the
+    /// editor holds one that does not read.
+    fn settle_file_edit(&mut self) -> Result<(), String> {
+        if self.file_draft != self.file_read {
+            // Its outcome stands in the file view; what matters here is whether it was refused.
+            let _ = self.read_file_draft();
+        }
+        if self.draft_refused {
+            Err("The file has an edit that doesn't read — fix or discard it first".to_string())
+        } else {
+            Ok(())
+        }
     }
 
     /// Let the selection go when the model no longer holds it.
@@ -632,6 +701,9 @@ impl ModelPane {
                 return self.open_picker(picker);
             }
         };
+        if let Err(e) = self.settle_file_edit() {
+            return Dispatched::Failed(e);
+        }
         let said = edit_said(&edit);
         let model = match brightfield_ossie::apply(&self.model, &edit) {
             Ok(model) => model,
@@ -724,19 +796,24 @@ impl ModelPane {
     /// the run failed.
     pub fn save_model(&mut self, model: Model) -> Result<(), String> {
         let kept = model_file::still_kept(&model, &self.kept);
-        self.save_with(model, kept)
+        self.save_with(model, kept, false)
     }
 
-    fn save_with(&mut self, model: Model, kept: Kept) -> Result<(), String> {
+    /// Write `model` with `kept`, as [`Self::save_model`] says. A save from the editor's own
+    /// text (`from_editor`), or one while the editor holds the keyboard, leaves the editor's text
+    /// as it stands, to take the file's once the editor lets go of the keyboard.
+    fn save_with(&mut self, model: Model, kept: Kept, from_editor: bool) -> Result<(), String> {
         let path = self.protocol.dir.join(MODEL_FILE);
         let text = model_file::written(&model, &kept);
         std::fs::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
         self.layout = brightfield_ossie::layout(&model);
         self.model = model;
         self.kept = kept;
-        self.file_draft.clone_from(&text);
-        self.file_read.clone_from(&text);
         self.file_text = text;
+        if !(from_editor || self.file_focused) {
+            self.resync_draft();
+        }
+        self.draft_refused = false;
         self.file_pause = None;
         self.file_error = None;
         self.generation += 1;
@@ -845,6 +922,7 @@ impl ModelPane {
         let mut view_ui = ui.new_child(egui::UiBuilder::new().max_rect(view_rect));
         if self.view != ModelView::File {
             self.file_scrolled_for = None;
+            self.file_focused = false;
         }
         match self.view {
             ModelView::Diagram => self.diagram_ui(&mut view_ui, &mut drawn),
@@ -916,7 +994,7 @@ impl ModelPane {
         };
         self.file_scrolled_for.clone_from(&self.focus.selected);
         let mut editor_ui = ui.new_child(egui::UiBuilder::new().max_rect(editor_rect));
-        crate::editor::code_surface_at(
+        let surface = crate::editor::code_surface_at(
             &mut editor_ui,
             "model-file",
             &mut self.file_draft,
@@ -924,17 +1002,35 @@ impl ModelPane {
             mode,
             scroll_to,
         );
-        let painter = ui.painter();
+        self.file_focused = surface.focused;
         for (i, (note, ink)) in notes.iter().enumerate() {
-            #[allow(clippy::cast_precision_loss)]
+            #[allow(clippy::cast_precision_loss)] // a handful of notes
             let y = editor_rect.bottom() + note_h * (i as f32 + 0.5);
-            painter.text(
+            ui.painter().text(
                 egui::pos2(area.left(), y),
                 egui::Align2::LEFT_CENTER,
                 note,
                 crate::protocol::ui_font(),
                 *ink,
             );
+        }
+        // A refused edit's error line ends in the way back to the file.
+        if self.draft_refused && self.file_error.is_some() {
+            let row = egui::Rect::from_min_max(
+                egui::pos2(area.left(), editor_rect.bottom()),
+                egui::pos2(area.right(), editor_rect.bottom() + note_h),
+            );
+            let rect = egui::Rect::from_min_max(
+                egui::pos2((row.right() - DISCARD_WIDTH).max(row.left()), row.top()),
+                row.max,
+            );
+            if ui
+                .put(rect, egui::Button::new("Discard edit").small())
+                .clicked()
+            {
+                self.discard_file_edit();
+            }
+            drawn.file_discard = Some(rect);
         }
         drawn.file_editor = Some(editor_rect);
         drawn.file_scrolled_to = scroll_to;
