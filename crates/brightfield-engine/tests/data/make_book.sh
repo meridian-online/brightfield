@@ -1,7 +1,9 @@
 #!/bin/sh
-# Regenerates book.xlsx, the workbook the sources tests read. It holds two sheets:
+# Regenerates book.xlsx and named_sheets.xlsx, the workbooks the sources tests read.
+# book.xlsx holds two sheets:
 #   "Empty"  - a sheet with no cells at all
 #   "Orders" - row 1 blank, row 2 the header (id, item, qty), rows 3-5 three data rows
+# named_sheets.xlsx holds three empty sheets, two of whose names need XML escapes.
 # Built from hand-written minimal OOXML parts, so no spreadsheet library is needed.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
@@ -39,4 +41,26 @@ n() { printf '<c r="%s"><v>%s</v></c>' "$1" "$2"; }
 } > "$tmp/xl/worksheets/sheet2.xml"
 rm -f "$here/own_files_book.tmp" "$here/book.xlsx"
 (cd "$tmp" && /usr/bin/zip -X -q -r "$here/book.xlsx" '[Content_Types].xml' _rels xl)
+rm -rf "$tmp"
+
+# named_sheets.xlsx: only the sheet list matters, so every sheet is empty.
+tmp=$(mktemp -d)
+mkdir -p "$tmp/_rels" "$tmp/xl/_rels" "$tmp/xl/worksheets"
+ct=''; rels=''; sheets=''; i=1
+for name in 'Q1 &amp; Q2' 'It&apos;s' 'Last'; do
+  ct="$ct<Override PartName=\"/xl/worksheets/sheet$i.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+  rels="$rels<Relationship Id=\"rId$i\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet$i.xml\"/>"
+  sheets="$sheets<sheet name=\"$name\" sheetId=\"$i\" r:id=\"rId$i\"/>"
+  printf '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>' > "$tmp/xl/worksheets/sheet$i.xml"
+  i=$((i + 1))
+done
+printf '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>%s</Types>' "$ct" > "$tmp/[Content_Types].xml"
+cat > "$tmp/_rels/.rels" <<'X'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>
+X
+printf '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>%s</sheets></workbook>' "$sheets" > "$tmp/xl/workbook.xml"
+printf '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">%s</Relationships>' "$rels" > "$tmp/xl/_rels/workbook.xml.rels"
+rm -f "$here/named_sheets.xlsx"
+(cd "$tmp" && /usr/bin/zip -X -q -r "$here/named_sheets.xlsx" '[Content_Types].xml' _rels xl)
 rm -rf "$tmp"

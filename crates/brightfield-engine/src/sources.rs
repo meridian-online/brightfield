@@ -370,103 +370,12 @@ fn is_sqlite(file: &Path) -> Result<bool, String> {
 /// The sheet names of a workbook, in workbook order.
 ///
 /// DuckDB's excel extension cannot list a workbook's sheets: `read_xlsx` is the one function that
-/// reads a workbook, and it takes a sheet to read rather than naming them. So the names are read
-/// here, from `xl/workbook.xml`, and DuckDB reads the data.
+/// reads a workbook, and it takes a sheet to read rather than naming them. So calamine names them
+/// and DuckDB reads the data.
 fn workbook_sheets(path: &Path) -> Result<Vec<String>, String> {
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("not a workbook: {e}"))?;
-    let mut xml = String::new();
-    zip.by_name("xl/workbook.xml")
-        .map_err(|e| format!("not a workbook: {e}"))?
-        .read_to_string(&mut xml)
-        .map_err(|e| format!("not a workbook: {e}"))?;
-    Ok(sheet_names(&xml))
-}
-
-/// The `name` of each `<sheet>` element in a workbook part.
-fn sheet_names(xml: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut rest = xml;
-    while let Some(at) = rest.find('<') {
-        rest = &rest[at + 1..];
-        // The element is `sheet`, optionally behind a namespace prefix (`x:sheet`); `sheets` and
-        // `sheetPr` are other elements, and a sheet's tag name is followed by whitespace.
-        let tag_name_end = rest
-            .find(|c: char| c.is_ascii_whitespace() || c == '>' || c == '/')
-            .unwrap_or(rest.len());
-        let tag_name = &rest[..tag_name_end];
-        if tag_name.rsplit(':').next() != Some("sheet") {
-            continue;
-        }
-        rest = &rest[tag_name_end..];
-        if !rest.starts_with(|c: char| c.is_ascii_whitespace()) {
-            continue;
-        }
-        let Some(end) = rest.find('>') else { break };
-        let tag = &rest[..end];
-        if let Some(name) = attribute(tag, "name") {
-            names.push(unescape(name));
-        }
-        rest = &rest[end..];
-    }
-    names
-}
-
-/// The raw value of `name="..."` (or single-quoted) inside one tag's text.
-fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
-    let mut from = 0;
-    while let Some(at) = tag[from..].find(name) {
-        let start = from + at;
-        let after = &tag[start + name.len()..];
-        let preceded = tag[..start].ends_with(|c: char| c.is_ascii_whitespace());
-        let after = after.trim_start();
-        if preceded && after.starts_with('=') {
-            let value = after[1..].trim_start();
-            let quote = value.chars().next().filter(|c| *c == '"' || *c == '\'')?;
-            let value = &value[1..];
-            return value.find(quote).map(|end| &value[..end]);
-        }
-        from = start + name.len();
-    }
-    None
-}
-
-fn unescape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(at) = rest.find('&') {
-        out.push_str(&rest[..at]);
-        rest = &rest[at..];
-        let decoded = rest.find(';').and_then(|end| {
-            let ch = match &rest[1..end] {
-                "amp" => '&',
-                "lt" => '<',
-                "gt" => '>',
-                "quot" => '"',
-                "apos" => '\'',
-                n => {
-                    let code = match n.strip_prefix("#x").or_else(|| n.strip_prefix("#X")) {
-                        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-                        None => n.strip_prefix('#')?.parse().ok()?,
-                    };
-                    char::from_u32(code)?
-                }
-            };
-            Some((ch, end))
-        });
-        match decoded {
-            Some((ch, end)) => {
-                out.push(ch);
-                rest = &rest[end + 1..];
-            }
-            None => {
-                out.push('&');
-                rest = &rest[1..];
-            }
-        }
-    }
-    out.push_str(rest);
-    out
+    use calamine::Reader;
+    let book = calamine::open_workbook_auto(path).map_err(|e| format!("not a workbook: {e}"))?;
+    Ok(book.sheet_names())
 }
 
 #[cfg(test)]
@@ -474,12 +383,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sheet_names_keep_order_and_decode_entities() {
-        let xml = r#"<workbook><sheets><sheet name="Q1 &amp; Q2" sheetId="1" r:id="rId1"/><sheet sheetId="2" name='It&apos;s' r:id="rId2"/></sheets></workbook>"#;
-        assert_eq!(sheet_names(xml), ["Q1 & Q2", "It's"]);
-        let prefixed =
-            r#"<x:workbook><x:sheets><x:sheet name="A" sheetId="1"/></x:sheets></x:workbook>"#;
-        assert_eq!(sheet_names(prefixed), ["A"]);
+    fn workbook_sheets_keep_order_and_decode_entities() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/named_sheets.xlsx");
+        assert_eq!(workbook_sheets(&path).unwrap(), ["Q1 & Q2", "It's", "Last"]);
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_workbook_is_named_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plain.xlsx");
+        std::fs::write(&path, "not a zip").unwrap();
+        let err = workbook_sheets(&path).unwrap_err();
+        assert!(err.starts_with("not a workbook: "), "{err}");
     }
 
     #[test]

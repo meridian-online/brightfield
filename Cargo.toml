@@ -81,9 +81,10 @@ serde_yaml = "0.9"
 sqlparser = { version = "0.61", features = ["visitor"] }
 thiserror = "2"
 vello = "0.9"
-# Reads one entry, a workbook's sheet list, out of an .xlsx; nothing else.
+# Names an .xlsx workbook's sheets; DuckDB reads the rows.
+calamine = { version = "0.37", default-features = false }
+# Reads zip entries; a member that does says which zlib backend it wants.
 zip = { version = "6", default-features = false, features = ["deflate-flate2"] }
-# `deflate-flate2` names no zlib backend of its own; a member that reads a zip says which.
 flate2 = "1"
 
 [workspace.lints.rust]

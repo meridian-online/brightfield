@@ -30,9 +30,7 @@ brightfield-sql = { workspace = true }
 duckdb = { workspace = true, features = ["parquet"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-zip = { workspace = true }
-# zip's `deflate-flate2` picks no zlib backend; this is the pure-Rust default.
-flate2 = { workspace = true }
+calamine = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
