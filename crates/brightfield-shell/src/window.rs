@@ -2189,9 +2189,10 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "1" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Num1)),
         "2" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Num2)),
         "3" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Num3)),
-        // The model pane's reshape keys. Their bare letters match only an unshifted press: egui's
-        // `consume_key` lets a Shift the pattern does not name through, so a bare `z` would take
-        // the `shift-z` that unfolds.
+        // The model pane's reshape keys. Their bare letters refuse a held Shift
+        // (`shift_z_unfolds_rather_than_folds` in `tests/model_reshape.rs`): egui's `consume_key`
+        // lets a Shift the pattern does not name through, so a bare `z` would take the `shift-z`
+        // that unfolds.
         "y" => ctx.input_mut(|i| consume_unshifted(i, Key::Y)),
         "r" => ctx.input_mut(|i| consume_unshifted(i, Key::R)),
         "z" => ctx.input_mut(|i| consume_unshifted(i, Key::Z)),
