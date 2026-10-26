@@ -930,8 +930,8 @@ impl SchemaCatalogue {
     }
 
     /// The icon the catalogue names for this label, when its entry carries an
-    /// `x-finetype-icon`. The pinned catalogue carries none today, so this
-    /// answers `None` for every label until a bundle that does is pinned.
+    /// `x-finetype-icon`. The pinned catalogue's entries name no icon, so a
+    /// bundle at that pin answers `None` here.
     #[must_use]
     pub fn icon(&self, label: &str) -> Option<&str> {
         self.icons.get(label).map(String::as_str)
