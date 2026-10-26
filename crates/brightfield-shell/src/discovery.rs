@@ -2,10 +2,10 @@
 //! discovers how the tables relate.
 //!
 //! A [`Discovery`] reads a [`OwnProtocol`] (its data packages and raw tables) and answers a
-//! [`Model`]. It runs in two passes, a quick one over a sample and a complete one over everything,
+//! [`Model`]. It runs in two passes, a quick one over a sample and a complete one over all the rows,
 //! and [`discover_model`] folds each into the model already held so what the analyst has decided
 //! survives both. [`StandIn`] is what runs until a real discoverer is wired in: it returns the model
-//! already in the Protocol folder, or else lists every table as unclear with no joins.
+//! already in the Protocol folder, or else lists each table as unclear with no joins.
 
 use std::path::Path;
 
@@ -163,7 +163,7 @@ fn source_file_of(file: &Path, dir: &Path) -> String {
 
 /// The model for `protocol`: a sample pass, then a full pass, each folded into the model held so
 /// far, which is the one on disk if there is one and otherwise the sample pass's own. What the
-/// analyst has decided in between is never overwritten (see [`merge_discovery`]).
+/// analyst has decided in between is kept as it is (see [`merge_discovery`]).
 ///
 /// The passes run one after the other on the calling thread.
 ///

@@ -1026,8 +1026,8 @@ pub fn installed_extensions() -> Vec<String> {
 }
 
 /// What the canvas says while a load needs extensions that are not installed yet: the ones
-/// `needed` that `installed` lacks, named, and when the wait happens. `None` when nothing has to
-/// be fetched.
+/// `needed` that `installed` lacks, named, and when the wait happens. `None` when all of them are
+/// installed.
 #[must_use]
 pub fn fetch_message(needed: &[&str], installed: &[String]) -> Option<String> {
     let parts: Vec<String> = needed
@@ -1084,8 +1084,8 @@ pub fn ask_pick_kind() -> Option<PickKind> {
 /// chooses, none of which needs a dialog. The dialog's own job is to return a
 /// path.
 ///
-/// The file dialog is filtered to the extensions `accept` will take, so the common refusal never
-/// has to be shown: a picker that offers a `.txt` and then declines it is a
+/// The file dialog is filtered to the extensions `accept` will take, so the common refusal is
+/// seldom shown: a picker that offers a `.txt` and then declines it is a
 /// picker arguing with itself.
 #[must_use]
 pub fn pick() -> Option<PathBuf> {
