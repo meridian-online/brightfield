@@ -199,7 +199,7 @@ fn qualified(db: &str, part: &str) -> String {
     }
 }
 
-/// Lower-cased, every non-alphanumeric turned to `_`; a name already taken gets `_2`, `_3`, in
+/// Lower-cased, with each non-alphanumeric turned to `_`; a name already taken gets `_2`, `_3`, in
 /// the order the tables are discovered.
 fn unique_name(base: &str, taken: &mut HashSet<String>) -> String {
     let clean: String = base
@@ -338,8 +338,8 @@ fn is_sqlite(file: &Path) -> Result<bool, String> {
 
 /// The sheet names of a workbook, in workbook order.
 ///
-/// DuckDB's excel extension cannot list a workbook's sheets (it has `read_xlsx` and nothing that
-/// names them), so only the names are read here, from `xl/workbook.xml`; every row is read by
+/// DuckDB's excel extension cannot list a workbook's sheets (its only readers are `read_xlsx` and
+/// `excel_text`, and neither names them), so only the names are read here, from `xl/workbook.xml`; every row is read by
 /// DuckDB.
 fn workbook_sheets(path: &Path) -> Result<Vec<String>, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;

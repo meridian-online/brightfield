@@ -48,7 +48,7 @@ fn names(set: &SourceSet) -> Vec<&str> {
 }
 
 /// Runs `table`'s load step in a fresh DuckDB and returns `(source_file, source_part, rows)`
-/// ordered by `__source_row`, with every other column's text in `cols`.
+/// ordered by `__source_row`, with the text of the columns in `cols`.
 fn load(
     table: &SourceTable,
     protocol_dir: &Path,
