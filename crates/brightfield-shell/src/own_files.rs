@@ -11,7 +11,7 @@
 //! Protocol so nothing later mistakes it for data the analyst gave. The data packages are the
 //! boundary file the model is built from; FineType will write them once it can.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 
@@ -178,25 +178,30 @@ pub fn write_packages(p: &OwnProtocol) -> Result<Vec<PathBuf>, String> {
             None => by_file.push((&table.file, vec![table])),
         }
     }
-    let mut taken: HashMap<String, usize> = HashMap::new();
+    let mut taken: HashSet<String> = HashSet::new();
     let mut written = Vec::new();
     for (file, tables) in by_file {
         let stem = file
             .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
+            .map(|s| s.to_string_lossy().to_lowercase())
             .unwrap_or_default();
-        // Two files with one stem (`a.csv`, `a.xlsx`) get distinct package folders.
-        let n = taken.entry(stem.clone()).or_insert(0);
-        *n += 1;
-        let folder = if *n == 1 {
-            stem.clone()
-        } else {
-            let ext = file
-                .extension()
-                .map(|e| e.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            format!("{stem}_{ext}")
-        };
+        // Package folders are compared lower-cased, as `Sales.csv` and `sales.parquet` are one
+        // folder on a case-insensitive file system. A stem already taken gets its extension
+        // (`a_xlsx`), then a number.
+        let ext = file
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let mut folder = stem.clone();
+        if taken.contains(&folder) {
+            folder = format!("{stem}_{ext}");
+        }
+        let mut n = 2;
+        while taken.contains(&folder) {
+            folder = format!("{stem}_{ext}_{n}");
+            n += 1;
+        }
+        taken.insert(folder.clone());
         let package_dir = p.dir.join("packages").join(&folder);
         let mut resources = Vec::new();
         for table in tables {
@@ -204,7 +209,7 @@ pub fn write_packages(p: &OwnProtocol) -> Result<Vec<PathBuf>, String> {
         }
         let package = json!({
             "$schema": "https://datapackage.org/profiles/2.0/datapackage.json",
-            "name": folder.to_lowercase().replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_' && c != '.', "-"),
+            "name": folder.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_' && c != '.', "-"),
             "resources": resources,
         });
         std::fs::create_dir_all(&package_dir)
@@ -240,7 +245,7 @@ fn resource(p: &OwnProtocol, table: &SourceTable, package_dir: &Path) -> Result<
         .collect();
     let mut resource = json!({
         "name": table.name,
-        "path": relative_to(&table.file, package_dir),
+        "path": relative_to(&table.file, package_dir)?,
         "schema": { "fields": fields },
     });
     if let Some(part) = &table.part {
@@ -251,7 +256,12 @@ fn resource(p: &OwnProtocol, table: &SourceTable, package_dir: &Path) -> Result<
 
 /// One field: its name, the Frictionless type, and FineType's label when it gave one.
 fn field(column: &ColumnProfile) -> Value {
-    let label = column.semantic.label();
+    // A label whose values the column's own data contradicts is not trusted for the type or kept.
+    let label = column
+        .semantic
+        .is_usable()
+        .then(|| column.semantic.label())
+        .flatten();
     let mut field = json!({
         "name": column.name,
         "type": frictionless_type(label, &column.type_name),
@@ -269,14 +279,26 @@ fn field(column: &ColumnProfile) -> Value {
 /// its type from its FineType label's domain and kind, so `datetime.date.iso` is a `date`. No
 /// label, or one that names text, is a `string`.
 fn frictionless_type(label: Option<&str>, duckdb_type: &str) -> &'static str {
-    let by_storage = match duckdb_type.split(['(', '[']).next().unwrap_or("").trim() {
+    let upper = duckdb_type.trim().to_uppercase();
+    if upper.ends_with(']') || upper.starts_with("LIST") {
+        return "array";
+    }
+    if upper.starts_with("STRUCT") || upper.starts_with("MAP") {
+        return "object";
+    }
+    let by_storage = match upper.split('(').next().unwrap_or("").trim() {
         "BOOLEAN" => Some("boolean"),
         "TINYINT" | "SMALLINT" | "INTEGER" | "BIGINT" | "HUGEINT" | "UTINYINT" | "USMALLINT"
         | "UINTEGER" | "UBIGINT" | "UHUGEINT" => Some("integer"),
         "FLOAT" | "DOUBLE" | "DECIMAL" => Some("number"),
         "DATE" => Some("date"),
-        "TIME" => Some("time"),
-        "TIMESTAMP" | "TIMESTAMP WITH TIME ZONE" | "TIMESTAMPTZ" => Some("datetime"),
+        "TIME" | "TIME WITH TIME ZONE" | "TIMETZ" => Some("time"),
+        "TIMESTAMP"
+        | "TIMESTAMP_NS"
+        | "TIMESTAMP_MS"
+        | "TIMESTAMP_S"
+        | "TIMESTAMP WITH TIME ZONE"
+        | "TIMESTAMPTZ" => Some("datetime"),
         _ => None,
     };
     if let Some(t) = by_storage {
@@ -284,11 +306,15 @@ fn frictionless_type(label: Option<&str>, duckdb_type: &str) -> &'static str {
     }
     let Some(label) = label else { return "string" };
     let mut parts = label.split('.');
+    let leaf = label.rsplit('.').next().unwrap_or("");
+    // Only forms that match Frictionless's default format are typed; every other date, time or
+    // boolean form stays a string, and its label still says what it is.
+    let iso = leaf.contains("iso");
     match (parts.next(), parts.next()) {
-        (Some("datetime"), Some("date")) => "date",
-        (Some("datetime"), Some("time")) => "time",
-        (Some("datetime"), Some("timestamp")) => "datetime",
-        (Some("representation"), Some("boolean")) => "boolean",
+        (Some("datetime"), Some("date")) if iso => "date",
+        (Some("datetime"), Some("time")) if iso => "time",
+        (Some("datetime"), Some("timestamp")) if iso => "datetime",
+        (Some("representation"), Some("boolean")) if leaf.contains("true_false") => "boolean",
         (Some("representation"), Some("numeric")) => {
             if label.contains("integer") {
                 "integer"
@@ -301,10 +327,16 @@ fn frictionless_type(label: Option<&str>, duckdb_type: &str) -> &'static str {
 }
 
 /// The path from `base` (a directory) to `target`, both absolute.
-fn relative_to(target: &Path, base: &Path) -> String {
+fn relative_to(target: &Path, base: &Path) -> Result<String, String> {
     let target: Vec<Component> = target.components().collect();
     let base: Vec<Component> = base.components().collect();
     let common = target.iter().zip(&base).take_while(|(a, b)| a == b).count();
+    if common == 0 {
+        return Err(format!(
+            "{}: shares no root with the Protocol folder, so a package cannot point at it",
+            Path::new(&target.iter().collect::<PathBuf>()).display()
+        ));
+    }
     let mut out = PathBuf::new();
     for _ in common..base.len() {
         out.push("..");
@@ -312,7 +344,7 @@ fn relative_to(target: &Path, base: &Path) -> String {
     for c in &target[common..] {
         out.push(c);
     }
-    out.to_string_lossy().replace('\\', "/")
+    Ok(out.to_string_lossy().replace('\\', "/"))
 }
 
 /// The opened path's stem, kept to characters a folder name and an arc Protocol name are safe
@@ -390,8 +422,83 @@ mod tests {
     #[test]
     fn relative_paths_climb_out_of_the_package() {
         assert_eq!(
-            relative_to(Path::new("/a/b/c.csv"), Path::new("/a/p/packages/c")),
+            relative_to(Path::new("/a/b/c.csv"), Path::new("/a/p/packages/c")).unwrap(),
             "../../../b/c.csv"
         );
+    }
+
+    #[test]
+    fn nested_and_zoned_storage_types() {
+        assert_eq!(frictionless_type(None, "INTEGER[]"), "array");
+        assert_eq!(frictionless_type(None, "INTEGER[3]"), "array");
+        assert_eq!(frictionless_type(None, "VARCHAR[][]"), "array");
+        assert_eq!(frictionless_type(None, "STRUCT(a INTEGER)"), "object");
+        assert_eq!(frictionless_type(None, "MAP(VARCHAR, INTEGER)"), "object");
+        for t in [
+            "TIMESTAMP_NS",
+            "TIMESTAMP_MS",
+            "TIMESTAMP_S",
+            "TIMESTAMP WITH TIME ZONE",
+            "TIMESTAMPTZ",
+        ] {
+            assert_eq!(frictionless_type(None, t), "datetime", "{t}");
+        }
+        assert_eq!(frictionless_type(None, "TIME WITH TIME ZONE"), "time");
+    }
+
+    #[test]
+    fn only_default_format_forms_are_typed_by_label() {
+        assert_eq!(
+            frictionless_type(Some("datetime.date.mdy_slash"), "VARCHAR"),
+            "string"
+        );
+        assert_eq!(
+            frictionless_type(Some("datetime.timestamp.iso_8601"), "VARCHAR"),
+            "datetime"
+        );
+        assert_eq!(
+            frictionless_type(Some("representation.boolean.binary"), "VARCHAR"),
+            "string"
+        );
+        assert_eq!(
+            frictionless_type(Some("representation.boolean.true_false"), "VARCHAR"),
+            "boolean"
+        );
+    }
+
+    #[test]
+    fn an_unusable_label_is_neither_trusted_nor_written() {
+        use brightfield_engine::SemanticType;
+        let mut column = ColumnProfile {
+            name: "d".into(),
+            type_name: "VARCHAR".into(),
+            non_null: 1,
+            nulls: 0,
+            distinct: 1,
+            min: None,
+            max: None,
+            semantic: SemanticType::Unusable {
+                label: "datetime.date.iso".into(),
+                confidence: 0.9,
+                checked: 10,
+                failed: 9,
+                first_failure: None,
+            },
+            moments: None,
+        };
+        let f = field(&column);
+        assert_eq!(f["type"], "string");
+        assert!(f.get("x-finetype-label").is_none());
+        column.semantic = SemanticType::Labelled {
+            label: "datetime.date.iso".into(),
+            confidence: 0.9,
+            check: brightfield_engine::ValueCheck::Checked {
+                checked: 10,
+                failed: 0,
+            },
+        };
+        let f = field(&column);
+        assert_eq!(f["type"], "date");
+        assert_eq!(f["x-finetype-label"], "datetime.date.iso");
     }
 }

@@ -192,9 +192,12 @@ fn workbook_and_sqlite_files_load_under_arc() {
     let dir = scratch().join("input").join("mixed");
     std::fs::create_dir_all(&dir).unwrap();
     let conn = duckdb::Connection::open_in_memory().unwrap();
+    if let Err(e) = conn.execute_batch("INSTALL excel; LOAD excel; INSTALL sqlite; LOAD sqlite;") {
+        eprintln!("skipping: the excel and sqlite extensions cannot be installed here: {e}");
+        return;
+    }
     conn.execute_batch(&format!(
-        "INSTALL excel; LOAD excel; INSTALL sqlite; LOAD sqlite; \
-         COPY (SELECT 1 AS a, 'x' AS b) TO '{0}/book.xlsx' (FORMAT xlsx, HEADER true); \
+        "COPY (SELECT 1 AS a, 'x' AS b) TO '{0}/book.xlsx' (FORMAT xlsx, HEADER true); \
          ATTACH '{0}/lite.sqlite' AS lite (TYPE sqlite); \
          CREATE TABLE lite.t AS SELECT 7 AS n;",
         dir.display()
@@ -211,4 +214,51 @@ fn workbook_and_sqlite_files_load_under_arc() {
         query_strings(&db, "SELECT CAST(n AS VARCHAR) FROM raw_lite_t"),
         ["7"]
     );
+}
+
+/// Package folders are lower-cased and distinct: `a.csv`, `a.xlsx` and `a_xlsx.csv` are three
+/// folders, and `Sales.csv` and `sales.parquet` are two.
+#[test]
+fn package_folders_never_collide() {
+    let dir = scratch().join("input").join("collide");
+    std::fs::create_dir_all(&dir).unwrap();
+    for name in ["a.csv", "a_xlsx.csv", "Sales.csv"] {
+        std::fs::write(dir.join(name), "x\n1\n").unwrap();
+    }
+    let conn = duckdb::Connection::open_in_memory().unwrap();
+    conn.execute_batch(&format!(
+        "COPY (SELECT 1 AS x) TO '{0}/sales.parquet' (FORMAT parquet);",
+        dir.display()
+    ))
+    .unwrap();
+    // The workbook is only needed when the excel extension can be had; the others still collide.
+    let workbook = conn
+        .execute_batch(&format!(
+            "INSTALL excel; LOAD excel; COPY (SELECT 1 AS x) TO '{0}/a.xlsx' (FORMAT xlsx, HEADER true);",
+            dir.display()
+        ))
+        .is_ok();
+    drop(conn);
+    let mut p = own_files::create(&dir).unwrap();
+    own_files::run_loads(&p, &runner()).unwrap();
+    own_files::profile(&mut p).unwrap();
+    let written = own_files::write_packages(&p).unwrap();
+    let mut folders: Vec<String> = written
+        .iter()
+        .map(|w| {
+            w.parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    folders.sort();
+    let mut expected = vec!["a", "a_xlsx", "sales", "sales_parquet"];
+    if workbook {
+        expected.push("a_xlsx_csv");
+        expected.sort();
+    }
+    assert_eq!(folders, expected);
 }
