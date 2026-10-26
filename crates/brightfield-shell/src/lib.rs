@@ -98,6 +98,7 @@ pub mod dashboard;
 pub mod data_file;
 pub mod data_grid;
 pub mod devtools;
+pub mod discovery;
 pub mod editor;
 pub mod export;
 pub mod gallery;

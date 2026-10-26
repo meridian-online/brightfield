@@ -132,8 +132,10 @@ Usage: brightfield [FILE] [OPTIONS]
 Arguments:
   [FILE]                          A chart spec, a Protocol manifest, or a data
                                   file (.csv, .tsv, .parquet) to open as the
-                                  dashboard generated for it. With none, opens
-                                  on the bundled gallery.
+                                  dashboard generated for it. A folder, or an
+                                  .xlsx, .duckdb, .db or .sqlite file, opens
+                                  from the window's Open… button. With none,
+                                  opens on the bundled gallery.
 
 Options:
   --theme <light|dark>            Colour mode (default: light).

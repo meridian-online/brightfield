@@ -212,9 +212,11 @@ pub const UNSAVED_MARK: &str = "\u{2022}";
 /// drawing a tile per column reddens rather than going on promising one.
 ///
 /// Changing these words is a copy decision, not a refactor — as [`TAGLINE`].
-pub const OPEN_FILE_PROMISE: &str = "A CSV or a Parquet on this machine. It opens as a table you \
-                                     can read and a chart for every column it can draw one for — \
-                                     nothing is uploaded and nothing is fetched.";
+pub const OPEN_FILE_PROMISE: &str = "A CSV, Parquet or Excel file, a folder of them, or a DuckDB \
+                                     or SQLite database on this machine. One table opens as a \
+                                     table you can read and a chart for every column it can draw \
+                                     one for; several open as a model of how they relate — \
+                                     nothing is uploaded.";
 
 /// The front door's content column, in logical points: **every** shipped
 /// start's card and the gaps between them, so the Datasets row sets the
@@ -987,12 +989,13 @@ pub fn fit_window_to_display(ctx: &egui::Context, natural: (f32, f32)) -> Displa
 /// `tests/scripted_open.rs` walks the list and holds them to it.
 #[must_use]
 pub fn names_a_data_file(chosen: &str) -> bool {
-    std::path::Path::new(chosen)
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| {
-            crate::data_file::OPENABLE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str())
-        })
+    std::path::Path::new(chosen).is_dir()
+        || std::path::Path::new(chosen)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| {
+                crate::data_file::OPENABLE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str())
+            })
 }
 
 /// Whether the canvas region holds the **asset graph** rather than a chart
@@ -2736,6 +2739,9 @@ pub struct MeridianApp {
     /// the `Ui` borrow across a window this process does not own. It is read
     /// after the frame's requests are applied — see [`MeridianApp::draw`].
     pick_requested: bool,
+    /// A path chosen at the door whose open waits one frame, so a notice that a DuckDB extension
+    /// is being fetched is drawn before the open blocks the thread.
+    pending_open: Option<String>,
     /// A saved Protocol whose front-door row was clicked, latched for after the
     /// frame. Latched rather than acted on for the reason `pick_requested` is:
     /// the `Ui` borrow the door drew through is still live at the click, and
@@ -3172,6 +3178,7 @@ impl MeridianApp {
             remote_files: None,
             door_open_file: None,
             pick_requested: false,
+            pending_open: None,
             door_open_protocol: None,
             dialogs_allowed: false,
             overlay: None,
@@ -6039,8 +6046,12 @@ impl MeridianApp {
         if self.pick_requested && self.dialogs_allowed {
             self.pick_requested = false;
             if let Some(path) = crate::data_file::pick() {
-                self.open_data_file(&ctx, &path.to_string_lossy());
+                self.open_path(&ctx, &path.to_string_lossy());
             }
+        }
+        // An open that waited a frame so the canvas could say what it is fetching first.
+        if let Some(path) = self.pending_open.take() {
+            self.open_path_now(&ctx, &path);
         }
         // A saved Protocol picked off the door. No dialog and no gate: the path
         // came off a row this build already decided it can reopen, so unlike
@@ -9270,26 +9281,98 @@ impl MeridianApp {
     /// deleted or moved. Reopening files across launches is a recent-files
     /// list, which is its own piece of work.
     pub fn open_data_file(&mut self, ctx: &egui::Context, chosen: &str) {
-        let banner = NotificationId::new("open-data-file");
-        let boot = match crate::data_file::open(chosen) {
-            Ok(opened) => Boot::of_opened_file(opened),
-            Err(e) => {
-                eprintln!("could not open {chosen}: {e}");
-                self.notifications.raise(
-                    Notification::new(banner, Severity::Error, "Could not open that data file")
-                        .body(e),
-                );
-                ctx.request_repaint();
-                return;
-            }
-        };
-        self.adopt_boot(boot);
-        self.notifications.dismiss(banner);
+        match crate::data_file::open(chosen) {
+            Ok(opened) => self.adopt_opened_file(ctx, opened),
+            Err(e) => self.say_open_failed(ctx, chosen, e),
+        }
+    }
+
+    /// Raise the one banner a failed open leaves.
+    fn say_open_failed(&mut self, ctx: &egui::Context, chosen: &str, reason: String) {
+        eprintln!("could not open {chosen}: {reason}");
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new("open-data-file"),
+                Severity::Error,
+                "Could not open that data file",
+            )
+            .body(reason),
+        );
+        ctx.request_repaint();
+    }
+
+    /// Take a flat file that opened into the window and say so.
+    fn adopt_opened_file(&mut self, ctx: &egui::Context, opened: crate::data_file::OpenedFile) {
+        self.adopt_boot(Boot::of_opened_file(opened));
+        self.notifications
+            .dismiss(NotificationId::new("open-data-file"));
         self.toasts.push(Toast::new(
             Severity::Success,
             format!("Opened {}", self.title()),
         ));
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        ctx.request_repaint();
+    }
+
+    /// Open what the front door's picker chose: a file, a folder, a workbook or a database.
+    ///
+    /// When the open will need a DuckDB extension that is not installed, the canvas says which one
+    /// is being fetched and the open itself waits for the next frame, so the notice is on screen
+    /// while the thread is held.
+    pub fn open_path(&mut self, ctx: &egui::Context, chosen: &str) {
+        let needed = crate::data_file::extensions_likely_needed(std::path::Path::new(chosen));
+        let installed = crate::data_file::installed_extensions();
+        if let Some(message) = crate::data_file::fetch_message(&needed, &installed) {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new("open-fetching-extension"),
+                    Severity::Warning,
+                    "Fetching an extension",
+                )
+                .body(message),
+            );
+            self.pending_open = Some(chosen.to_string());
+            ctx.request_repaint();
+            return;
+        }
+        self.open_path_now(ctx, chosen);
+    }
+
+    /// [`Self::open_path`] without the wait for a frame. Like a flat file's open it runs on the
+    /// calling thread, so a folder or workbook holds the window for as long as its tables take to
+    /// load and profile.
+    fn open_path_now(&mut self, ctx: &egui::Context, chosen: &str) {
+        self.notifications
+            .dismiss(NotificationId::new("open-fetching-extension"));
+        let Some(runner) = crate::run::Runner::this_binary() else {
+            // Without a runner only the flat-file route can work.
+            self.open_data_file(ctx, chosen);
+            return;
+        };
+        match crate::data_file::open_any(std::path::Path::new(chosen), &runner) {
+            Ok(crate::data_file::Opened::OneTable(opened)) => self.adopt_opened_file(ctx, opened),
+            Ok(crate::data_file::Opened::Model(protocol)) => {
+                self.open_model_pane(ctx, &protocol);
+            }
+            Err(e) => self.say_open_failed(ctx, chosen, e),
+        }
+    }
+
+    /// Where the model pane will open for an own-files Protocol. Until it exists, the window says
+    /// what was made: the Protocol folder and how many tables it holds.
+    fn open_model_pane(&mut self, ctx: &egui::Context, protocol: &crate::own_files::OwnProtocol) {
+        self.notifications
+            .dismiss(NotificationId::new("open-data-file"));
+        let tables = protocol.sources.tables.len();
+        self.toasts.push(Toast::new(
+            Severity::Success,
+            format!(
+                "Opened {} table{} as a Protocol in {}",
+                tables,
+                if tables == 1 { "" } else { "s" },
+                protocol.dir.display()
+            ),
+        ));
         ctx.request_repaint();
     }
 
@@ -10506,8 +10589,7 @@ impl MeridianApp {
                         // because that carries a `&'static str` start id and a
                         // file the user chose is neither static nor a start.
                         door_zone_heading(ui, "Start", sem);
-                        let open =
-                            ui.button(egui::RichText::new("Open a data file…").font(ui_font()));
+                        let open = ui.button(egui::RichText::new("Open…").font(ui_font()));
                         self.door_open_file = Some(open.rect);
                         if open.clicked() {
                             open_file = true;

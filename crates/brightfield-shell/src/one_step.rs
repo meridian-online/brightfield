@@ -71,7 +71,7 @@ use brightfield_engine::ColumnProfile;
 use brightfield_protocol::graph::AssetId;
 
 use crate::dashboard::{ChosenBy, Dashboard};
-use crate::data_file::OPENABLE_EXTENSIONS;
+use crate::data_file::FLAT_EXTENSIONS;
 use crate::protocol::{load_protocol_str, ProtocolInputs};
 
 /// The one step's name — what the Steps pane lists and what `produced by`
@@ -645,7 +645,7 @@ pub(crate) fn data_file_of_load(step: &brightfield_protocol::Step, dir: &Path) -
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
-        .is_some_and(|e| OPENABLE_EXTENSIONS.contains(&e.as_str()));
+        .is_some_and(|e| FLAT_EXTENSIONS.contains(&e.as_str()));
     (openable && path.is_file()).then_some(path)
 }
 
@@ -654,7 +654,7 @@ pub(crate) fn data_file_of_load(step: &brightfield_protocol::Step, dir: &Path) -
 // ---------------------------------------------------------------------------
 
 /// The DuckDB reader for `path`'s extension — the same dispatch
-/// [`OPENABLE_EXTENSIONS`] enumerates, with `tsv` riding the CSV reader.
+/// [`FLAT_EXTENSIONS`] enumerates, with `tsv` riding the CSV reader.
 fn reader_for(path: &Path) -> &'static str {
     let ext = path
         .extension()

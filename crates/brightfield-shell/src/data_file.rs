@@ -173,16 +173,28 @@ use brightfield_spec::{parse_spec, Format};
 use crate::dashboard::Dashboard;
 use crate::pipeline::{Composed, LiveDashboard};
 
-/// The file extensions this action opens, lowercased and without the dot.
+/// The file extensions the front door accepts, lowercased and without the dot.
 ///
-/// The engine's source emitter dispatches on exactly these spellings for the
-/// two formats a data file arrives in; `tsv` rides the same reader as `csv`.
-/// JSON and the DuckDB/DuckLake attach forms are deliberately absent: they are
-/// emitted by the same dispatch but they are not what "open a data file" means
-/// to someone with a table in front of them, and each carries its own
-/// behaviour (a whole catalog attaches, a database file has many tables) that
-/// this one-view path has no answer for.
-pub const OPENABLE_EXTENSIONS: &[&str] = &["csv", "tsv", "parquet"];
+/// The first three are single flat files, which [`open`] reads as one table;
+/// `tsv` rides the same reader as `csv`. A workbook, or a DuckDB or SQLite
+/// database file, holds several tables and opens through [`open_any`] as a
+/// model of them, as a folder does. JSON and the DuckLake attach forms are
+/// deliberately absent: each carries behaviour this door has no answer for.
+pub const OPENABLE_EXTENSIONS: &[&str] =
+    &["csv", "tsv", "parquet", "xlsx", "duckdb", "db", "sqlite"];
+
+/// The extensions of a single flat file, the ones [`open`] reads and the
+/// one-table route is written for; the rest of [`OPENABLE_EXTENSIONS`] opens
+/// as a model.
+pub const FLAT_EXTENSIONS: &[&str] = &["csv", "tsv", "parquet"];
+
+/// Whether `path` names a single flat file by its extension.
+pub(crate) fn is_flat_name(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|e| FLAT_EXTENSIONS.contains(&e.as_str()))
+}
 
 /// **The largest file [`open`] will attempt to read into memory before
 /// composing**, measured on disk. Above it the file stays a DuckDB view over
@@ -363,7 +375,7 @@ const PATTERN_CHARACTERS: &[char] = &['*', '?', '[', ']', '{', '}'];
 /// A URL rather than a local path; a path with no extension or an extension
 /// this build does not read; a path the reader would resolve as a pattern
 /// (see `PATTERN_CHARACTERS`) or one carrying a control character; or a path
-/// naming something that is not a readable file.
+/// naming something that is neither a file nor a folder.
 pub fn accept(chosen: &str) -> Result<PathBuf, String> {
     if let Some(scheme) = url_scheme(chosen) {
         return Err(format!(
@@ -377,6 +389,8 @@ pub fn accept(chosen: &str) -> Result<PathBuf, String> {
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
     match extension {
+        // A folder is opened for what is in it, whatever its name ends in.
+        _ if path.is_dir() => {}
         Some(ext) if OPENABLE_EXTENSIONS.contains(&ext.as_str()) => {}
         Some(ext) => {
             return Err(format!(
@@ -409,14 +423,14 @@ pub fn accept(chosen: &str) -> Result<PathBuf, String> {
             chosen.escape_debug()
         ));
     }
-    if !path.is_file() {
+    if !path.is_file() && !path.is_dir() {
         return Err(format!("{chosen}: there is no file there to open."));
     }
     Ok(path)
 }
 
-/// `.csv, .tsv and .parquet files`, written from the one list so the sentence
-/// cannot describe a set this build does not read.
+/// `.csv, .tsv, .parquet, … and .sqlite files`, written from the one list so
+/// the sentence cannot describe a set this build does not read.
 fn openable_prose() -> String {
     let dotted: Vec<String> = OPENABLE_EXTENSIONS
         .iter()
@@ -686,6 +700,12 @@ impl Default for OpenOptions {
 /// As [`open`].
 pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, OpenTrace), String> {
     let path = accept(chosen)?;
+    if !path.is_file() || !is_flat_name(&path) {
+        return Err(format!(
+            "{chosen}: this opens a single CSV, TSV or Parquet file as one table; a folder, \
+             workbook or database opens as a model of its tables from the front door."
+        ));
+    }
     let columns = columns_of(&path, options)?;
     let dashboard = Dashboard::of(&path, &columns);
     if dashboard.tiles().is_empty() {
@@ -910,24 +930,174 @@ fn columns_of(path: &Path, options: &OpenOptions) -> Result<Vec<ColumnProfile>, 
     }
 }
 
-/// Ask the operating system for a data file, blocking until the user chooses
-/// or cancels.
+// ---------------------------------------------------------------------------
+// Opening anything the door accepts
+// ---------------------------------------------------------------------------
+
+/// What [`open_any`] made of the path it was given.
+// A flat file's open is the larger value, and one `Opened` lives at a time.
+#[allow(clippy::large_enum_variant)]
+pub enum Opened {
+    /// A single flat file, opened exactly as [`open`] opens it.
+    OneTable(OpenedFile),
+    /// A folder, workbook or database: a Protocol folder holding a load step per table, the raw
+    /// tables, the silver tables and the model that relates them.
+    Model(crate::own_files::OwnProtocol),
+}
+
+/// Open `path` (a file, a folder, a workbook or a database file) as whatever it holds.
+///
+/// A path whose tables come to exactly one flat file takes today's route, [`open`], unchanged.
+/// Anything else takes the own-files flow: the Protocol is made and run, the raw tables are
+/// profiled, a model is discovered and written beside the Protocol, and the silver steps for it
+/// are run. `runner` runs the Protocol's steps, as it does for [`crate::own_files::run_loads`].
+///
+/// # Errors
+///
+/// The reason the path was refused (see [`accept`]), held no table Brightfield reads, or a step
+/// of the flow failed. Each carries the path or the folder it concerns.
+pub fn open_any(path: &Path, runner: &crate::run::Runner) -> Result<Opened, String> {
+    let path = accept(&path.to_string_lossy())?;
+    let found = brightfield_engine::sources::discover(&path)?;
+    if let [table] = found.tables.as_slice() {
+        if is_flat_name(&table.file) {
+            return open(&table.file.to_string_lossy()).map(Opened::OneTable);
+        }
+    }
+
+    use crate::own_files as own;
+    let mut protocol = own::create(&path)?;
+    own::run_loads(&protocol, runner)?;
+    own::profile(&mut protocol)?;
+    own::write_packages(&protocol)?;
+    let model = crate::discovery::discover_model(&protocol)?;
+    let model_file = protocol.dir.join(crate::discovery::MODEL_FILE);
+    std::fs::write(&model_file, brightfield_ossie::write(&model))
+        .map_err(|e| format!("{}: {e}", model_file.display()))?;
+    own::write_silver(&protocol, &model)?;
+    own::run_loads(&protocol, runner)?;
+    Ok(Opened::Model(protocol))
+}
+
+/// The DuckDB extensions opening `path` is likely to need, judged from its name or, for a folder,
+/// from the names of what is in it. Cheap and approximate: it decides whether to say a fetch is
+/// coming, not what is loaded.
+#[must_use]
+pub fn extensions_likely_needed(path: &Path) -> Vec<&'static str> {
+    let names: Vec<PathBuf> = if path.is_dir() {
+        std::fs::read_dir(path)
+            .map(|d| d.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default()
+    } else {
+        vec![path.to_path_buf()]
+    };
+    let has = |exts: &[&str]| {
+        names.iter().any(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| exts.contains(&e.to_ascii_lowercase().as_str()))
+        })
+    };
+    let mut needed = Vec::new();
+    if has(&["xlsx"]) {
+        needed.push("excel");
+    }
+    if has(&["sqlite", "db"]) {
+        needed.push("sqlite");
+    }
+    needed
+}
+
+/// The names of the DuckDB extensions installed on this machine, as `duckdb_extensions()` reports
+/// them; empty when the question cannot be asked.
+#[must_use]
+pub fn installed_extensions() -> Vec<String> {
+    let Ok(conn) = duckdb::Connection::open_in_memory() else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) =
+        conn.prepare("SELECT extension_name FROM duckdb_extensions() WHERE installed")
+    else {
+        return Vec::new();
+    };
+    stmt.query_map([], |row| row.get::<_, String>(0))
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default()
+}
+
+/// What the canvas says while a load needs extensions that are not installed yet: the ones
+/// `needed` that `installed` lacks, named, and when the wait happens. `None` when nothing has to
+/// be fetched.
+#[must_use]
+pub fn fetch_message(needed: &[&str], installed: &[String]) -> Option<String> {
+    let parts: Vec<String> = needed
+        .iter()
+        .filter(|ext| !installed.iter().any(|i| i == *ext))
+        .map(|ext| {
+            let first = match *ext {
+                "excel" => "a workbook",
+                "sqlite" => "a SQLite file",
+                _ => "a file that needs it",
+            };
+            format!("Fetching DuckDB's {ext} extension, the first time {first} is opened")
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(". "))
+}
+
+/// What the front door's Open… button is asked to pick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickKind {
+    File,
+    Folder,
+}
+
+/// Ask whether to pick a file or a folder, blocking until the user answers; `None` when they
+/// cancel.
+#[must_use]
+pub fn ask_pick_kind() -> Option<PickKind> {
+    use rfd::MessageDialogResult as Answer;
+    let answer = rfd::MessageDialog::new()
+        .set_title("Open")
+        .set_description("Open a data file, or a folder of them?")
+        .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
+            "A file".into(),
+            "A folder".into(),
+            "Cancel".into(),
+        ))
+        .show();
+    match answer {
+        Answer::Yes => Some(PickKind::File),
+        Answer::No => Some(PickKind::Folder),
+        Answer::Custom(label) if label == "A file" => Some(PickKind::File),
+        Answer::Custom(label) if label == "A folder" => Some(PickKind::Folder),
+        _ => None,
+    }
+}
+
+/// Ask the operating system for a data file or a folder, blocking until the user chooses or
+/// cancels.
 ///
 /// The one call in this crate that opens a window nobody laid out, and the one
 /// thing here no headless test drives — everything a test needs to know about
-/// opening a file is decided by `accept`, `open` and the dashboard `open`
+/// opening a path is decided by `accept`, `open_any` and the dashboard `open`
 /// chooses, none of which needs a dialog. The dialog's own job is to return a
 /// path.
 ///
-/// Filtered to the extensions `accept` will take, so the common refusal never
+/// The file dialog is filtered to the extensions `accept` will take, so the common refusal never
 /// has to be shown: a picker that offers a `.txt` and then declines it is a
 /// picker arguing with itself.
 #[must_use]
 pub fn pick() -> Option<PathBuf> {
-    rfd::FileDialog::new()
-        .set_title("Open a data file")
-        .add_filter("Data files", OPENABLE_EXTENSIONS)
-        .pick_file()
+    match ask_pick_kind()? {
+        PickKind::File => rfd::FileDialog::new()
+            .set_title("Open a data file")
+            .add_filter("Data files", OPENABLE_EXTENSIONS)
+            .pick_file(),
+        PickKind::Folder => rfd::FileDialog::new()
+            .set_title("Open a folder of data files")
+            .pick_folder(),
+    }
 }
 
 // ---------------------------------------------------------------------------
