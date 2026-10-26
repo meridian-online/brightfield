@@ -369,8 +369,8 @@ fn every_reshape_verb_is_registered_and_reachable_from_palette() {
         assert!(model_pane::is_model_verb(longname), "{longname}");
     }
 
-    // The window's palette, opened over the model, lists each one, and choosing one acts on the
-    // selection.
+    // The window's palette, opened over the model, lists each one. Choosing a row is
+    // `a_palette_row_reshapes_the_selection`; here a key reaches one.
     let mut win = Window::over_retail();
     win.key(egui::Key::Space, egui::Modifiers::NONE);
     let rows = win.app.open_palette_rows();
@@ -396,6 +396,144 @@ fn every_reshape_verb_is_registered_and_reachable_from_palette() {
         .relationships
         .iter()
         .any(|r| r.name == "transactions_stores"));
+}
+
+#[test]
+fn a_palette_row_reshapes_the_selection() {
+    let mut win = Window::over_retail();
+    win.app.model_pane_mut().unwrap().focus.selected =
+        Some(Selection::Dataset("promo_codes".into()));
+    win.key(egui::Key::Space, egui::Modifiers::NONE);
+    win.frame(Vec::new()); // the query line takes focus
+    win.frame(vec![egui::Event::Text("leave-out-table".into())]);
+    win.frame(Vec::new());
+    assert_eq!(
+        win.app.open_palette_rows().first().map(String::as_str),
+        Some("leave-out-table")
+    );
+    win.key(egui::Key::Enter, egui::Modifiers::NONE);
+    assert!(
+        win.app.open_palette_rows().is_empty(),
+        "the choice closes it"
+    );
+    let pane = win.app.model_pane().unwrap();
+    for model in [pane.model.clone(), written(pane)] {
+        assert!(
+            model
+                .datasets
+                .iter()
+                .any(|d| d.name == "promo_codes" && d.meta.excluded),
+            "the chosen row left promo_codes out"
+        );
+    }
+}
+
+#[test]
+fn shift_z_unfolds_rather_than_folds() {
+    let mut win = Window::over_retail();
+    win.app.model_pane_mut().unwrap().focus.selected =
+        Some(Selection::Dataset("categories".into()));
+    win.key(egui::Key::Z, egui::Modifiers::SHIFT);
+    let pane = win.app.model_pane().unwrap();
+    assert_eq!(pane.picker(), None, "no fold picker opened");
+    for model in [pane.model.clone(), written(pane)] {
+        let categories = model
+            .datasets
+            .iter()
+            .find(|d| d.name == "categories")
+            .unwrap();
+        assert_eq!(categories.meta.folded_into, None, "shift-z unfolded it");
+    }
+}
+
+#[test]
+fn the_retype_picker_offers_the_chosen_columns_type() {
+    use egui::accesskit::Role as A11y;
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut pane = written_retail("retype-column-change");
+    pane.focus.selected = Some(Selection::Dataset("promo_codes".into()));
+    assert!(matches!(
+        pane.perform_reshape("retype-column"),
+        Some(Dispatched::Picking(_))
+    ));
+    let first = brightfield_protocol::silver::FinetypeTransforms::vendored()
+        .labels()
+        .next()
+        .unwrap()
+        .to_string();
+    let finetype = |pane: &ModelPane| match pane.picker() {
+        Some(ModelPicker::Retype {
+            field, finetype, ..
+        }) => (field.clone(), finetype.clone()),
+        other => panic!("the retype picker: {other:?}"),
+    };
+    // code has no label, so the picker offers FineType's first.
+    assert_eq!(finetype(&pane), ("code".to_string(), first));
+
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1400.0, 900.0))
+        .build_ui_state(|ui, pane: &mut ModelPane| pane.ui(ui, Mode::Light), pane);
+    harness.run();
+    // The table's role picker is the inspector's first drop-down, the picker's Column the next.
+    harness
+        .get_all_by_role(A11y::ComboBox)
+        .nth(1)
+        .expect("the Column drop-down")
+        .click();
+    harness.run();
+    harness
+        .get_by_role_and_label(A11y::Button, "valid_to")
+        .click();
+    harness.run();
+    let pane = harness.into_state();
+    assert_eq!(
+        finetype(&pane),
+        ("valid_to".to_string(), "datetime.date.iso".to_string()),
+        "the type follows the column chosen"
+    );
+}
+
+#[test]
+fn include_and_leave_out_refuse_a_table_already_so() {
+    let mut pane = written_retail("include-guard");
+    let text = pane.file_text().to_string();
+    let decided = |pane: &ModelPane| {
+        pane.model
+            .datasets
+            .iter()
+            .find(|d| d.name == "promo_codes")
+            .map(|d| d.meta.decided_by)
+    };
+    let before = decided(&pane);
+    assert_eq!(before, Some(DecidedBy::Dovetail));
+    pane.focus.selected = Some(Selection::Dataset("promo_codes".into()));
+    assert_eq!(
+        pane.perform_reshape("include-table"),
+        Some(Dispatched::Failed(
+            "promo_codes is not left out of the model".into()
+        ))
+    );
+    assert_eq!(decided(&pane), before, "nothing is marked the analyst's");
+    assert_eq!(pane.file_text(), text, "the file is unchanged");
+
+    // A table already left out is refused the other way.
+    pane.model = brightfield_ossie::apply(
+        &pane.model,
+        &Edit::Exclude {
+            dataset: "promo_codes".into(),
+        },
+    )
+    .unwrap();
+    let left_out = pane.model.clone();
+    assert_eq!(
+        pane.perform_reshape("leave-out-table"),
+        Some(Dispatched::Failed(
+            "promo_codes is already left out of the model".into()
+        ))
+    );
+    assert_eq!(pane.model, left_out, "the model is unchanged");
+    assert_eq!(pane.file_text(), text, "the file is unchanged");
 }
 
 #[test]
@@ -478,15 +616,17 @@ fn the_pickers_change_keys_and_retype_a_column() {
     let Some(ModelPicker::Retype { fields, labels, .. }) = pane.picker().cloned() else {
         panic!("the retype picker");
     };
-    assert_eq!(fields, vec!["code", "discount_pct", "valid_to"]);
+    let names: Vec<&str> = fields.iter().map(|(f, _)| f.as_str()).collect();
+    assert_eq!(names, ["code", "discount_pct", "valid_to"]);
     assert!(labels
         .iter()
         .any(|l| l == "representation.numeric.integer_number"));
+    // The picker opens on the first column, code; the type is the Type combo's choice.
     if let Some(ModelPicker::Retype {
         field, finetype, ..
     }) = pane.picker_mut()
     {
-        *field = "code".into();
+        assert_eq!(field, "code");
         *finetype = "representation.numeric.integer_number".into();
     }
     draw(&ctx, &mut pane, Vec::new());

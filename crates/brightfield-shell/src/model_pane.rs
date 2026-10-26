@@ -373,10 +373,32 @@ impl ModelPane {
                     Err(format!("{name} is not folded into another table"))
                 }
             }),
-            "leave-out-table" => table.map(ModelAction::LeaveOut),
-            "include-table" => table.map(ModelAction::Include),
+            // Each of these two refuses a table already as it would leave it, so a stray key
+            // changes nothing and marks nothing the analyst's.
+            "leave-out-table" => table.and_then(|name| {
+                if self.is_excluded(&name) {
+                    Err(format!("{name} is already left out of the model"))
+                } else {
+                    Ok(ModelAction::LeaveOut(name))
+                }
+            }),
+            "include-table" => table.and_then(|name| {
+                if self.is_excluded(&name) {
+                    Ok(ModelAction::Include(name))
+                } else {
+                    Err(format!("{name} is not left out of the model"))
+                }
+            }),
             _ => table.map(ModelAction::RetypeColumn),
         })
+    }
+
+    /// Whether the model leaves the table `name` out.
+    fn is_excluded(&self, name: &str) -> bool {
+        self.model
+            .datasets
+            .iter()
+            .any(|d| d.name == name && d.meta.excluded)
     }
 
     /// Perform reshape verb `longname` on the selection, and answer what came of it; `None` when

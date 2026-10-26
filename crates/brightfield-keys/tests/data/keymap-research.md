@@ -208,7 +208,9 @@ Each writes the Ossie file, so all ten are **Data**-tier spec edits, and each ac
 addressed by its name in the model (`relationship.<name>`, `dataset.<name>`) rather than by where it is
 drawn. They apply at the model altitude only. Their keys keep off `h j k l`, `v` and the digits, and off
 the bare letters the chart already binds in the same context (`a`, `c`, `d`, `x`), whose shifted forms
-they take as the heavier, durable sibling; `f` and `t` stay with the deferred filter verbs.
+they take as the heavier, durable sibling; `f` stays with the deferred filter verbs and `t` with
+the deferred point-select verb. (`z` here is the fold key; the `z` the scope model dropped below was a
+scope prefix.)
 
 | longname | key(s) | freq / mnem / conv | motor note |
 |----------|--------|--------------------|------------|

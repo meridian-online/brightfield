@@ -190,13 +190,17 @@ pub enum ModelPicker {
     },
     /// The table to fold `dataset` into: each table a relationship joins it to.
     Fold { dataset: String, hosts: Vec<String> },
-    /// One of `dataset`'s columns, and the FineType label to give it.
+    /// One of `dataset`'s columns, and the FineType label to give it. Choosing another column puts
+    /// the label it has now in `finetype`, so the type offered is always the chosen column's.
     Retype {
         dataset: String,
-        fields: Vec<String>,
+        /// Each column, with the label the model gives it now.
+        fields: Vec<(String, Option<String>)>,
         labels: Vec<String>,
         field: String,
         finetype: String,
+        /// The column `finetype` was last set for.
+        typed_for: String,
     },
     /// The role to give `dataset`.
     Role { dataset: String },
@@ -338,24 +342,40 @@ pub fn fold_picker(model: &Model, dataset: &str) -> Result<ModelPicker, String> 
 ///
 /// When the table has no columns to retype.
 pub fn retype_picker(model: &Model, dataset: &str) -> Result<ModelPicker, String> {
-    let fields = columns(model, dataset);
-    let Some(field) = fields.first().cloned() else {
+    let fields: Vec<(String, Option<String>)> = columns(model, dataset)
+        .into_iter()
+        .map(|f| {
+            let label = label_of(model, dataset, &f);
+            (f, label)
+        })
+        .collect();
+    let Some(field) = fields.first().map(|(f, _)| f.clone()) else {
         return Err(format!("{dataset} has no columns to retype"));
     };
     let labels: Vec<String> = brightfield_protocol::silver::FinetypeTransforms::vendored()
         .labels()
         .map(str::to_string)
         .collect();
-    let finetype = label_of(model, dataset, &field)
-        .or_else(|| labels.first().cloned())
-        .unwrap_or_default();
+    let finetype = offered_label(&fields, &labels, &field);
     Ok(ModelPicker::Retype {
         dataset: dataset.to_string(),
         fields,
         labels,
+        typed_for: field.clone(),
         field,
         finetype,
     })
+}
+
+/// The label the Retype picker offers for `field`: the one the model gives it, or else the first
+/// label FineType defines.
+fn offered_label(fields: &[(String, Option<String>)], labels: &[String], field: &str) -> String {
+    fields
+        .iter()
+        .find(|(f, _)| f == field)
+        .and_then(|(_, label)| label.clone())
+        .or_else(|| labels.first().cloned())
+        .unwrap_or_default()
 }
 
 /// The FineType label the model gives `field` of `dataset`, if any.
@@ -535,10 +555,17 @@ pub fn picker_ui(
             labels,
             field,
             finetype,
+            typed_for,
         } => {
+            let names: Vec<String> = fields.iter().map(|(f, _)| f.clone()).collect();
             ui.horizontal(|ui| {
-                combo(ui, "model-retype-field", "Column", field, fields);
+                combo(ui, "model-retype-field", "Column", field, &names);
             });
+            // Another column chosen, by the combo or otherwise: offer the type it has now.
+            if field != typed_for {
+                *finetype = offered_label(fields, labels, field);
+                typed_for.clone_from(field);
+            }
             ui.horizontal(|ui| {
                 combo(ui, "model-retype-type", "Type", finetype, labels);
             });

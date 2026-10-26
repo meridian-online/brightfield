@@ -2189,11 +2189,13 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "1" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Num1)),
         "2" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Num2)),
         "3" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Num3)),
-        // The model pane's reshape keys.
-        "y" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Y)),
-        "r" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::R)),
-        "z" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Z)),
-        "i" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::I)),
+        // The model pane's reshape keys. Their bare letters match only an unshifted press: egui's
+        // `consume_key` lets a Shift the pattern does not name through, so a bare `z` would take
+        // the `shift-z` that unfolds.
+        "y" => ctx.input_mut(|i| consume_unshifted(i, Key::Y)),
+        "r" => ctx.input_mut(|i| consume_unshifted(i, Key::R)),
+        "z" => ctx.input_mut(|i| consume_unshifted(i, Key::Z)),
+        "i" => ctx.input_mut(|i| consume_unshifted(i, Key::I)),
         "shift-d" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::D)),
         "shift-a" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::A)),
         "shift-c" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::C)),
@@ -2202,6 +2204,20 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "shift-t" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::T)),
         _ => false,
     }
+}
+
+/// Consume a press of `key` with no modifier held, Shift included, and answer whether there was
+/// one.
+fn consume_unshifted(i: &mut egui::InputState, key: egui::Key) -> bool {
+    let before = i.events.len();
+    i.events.retain(|event| {
+        !matches!(
+            event,
+            egui::Event::Key { key: k, modifiers, pressed: true, .. }
+                if *k == key && modifiers.matches_exact(egui::Modifiers::NONE)
+        )
+    });
+    i.events.len() != before
 }
 
 /// The egui key the registry's `set-channel` is bound to, which hands the
