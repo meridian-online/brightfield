@@ -208,6 +208,7 @@ fn xlsx_load_step_installs_excel() {
         name: "book_orders".into(),
         file: data("book.xlsx"),
         part: Some("Orders".into()),
+        schema: None,
         reader: Reader::XlsxSheet,
     };
     assert!(load_sql(&table, &data("")).starts_with("INSTALL excel; LOAD excel;"));
@@ -219,6 +220,7 @@ fn extensions_needed_names_excel_and_sqlite() {
         name: "t".into(),
         file: PathBuf::from("/x"),
         part: None,
+        schema: None,
         reader,
     };
     let set = |readers: &[Reader]| SourceSet {
@@ -235,5 +237,73 @@ fn extensions_needed_names_excel_and_sqlite() {
     assert_eq!(
         extensions_needed(&set(&[Reader::SqliteTable, Reader::XlsxSheet, Reader::Csv])),
         ["excel", "sqlite"]
+    );
+}
+
+#[test]
+fn dotted_and_quoted_names_survive_the_load_sql() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("odd.duckdb");
+    {
+        let conn = Connection::open(&file).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE \"sales.2024\" (v INTEGER); INSERT INTO \"sales.2024\" VALUES (1), (2); \
+             CREATE TABLE \"a\"\"b\" (v INTEGER); INSERT INTO \"a\"\"b\" VALUES (3); \
+             CREATE SCHEMA \"s.x\"; CREATE TABLE \"s.x\".t (v INTEGER); INSERT INTO \"s.x\".t VALUES (4);",
+        )
+        .unwrap();
+    }
+    let set = discover(&file).unwrap();
+    assert_eq!(set.tables.len(), 3, "{:?}", set.tables);
+    let rows_of = |part: &str, schema: Option<&str>| {
+        let t = set
+            .tables
+            .iter()
+            .find(|t| t.part.as_deref() == Some(part) && t.schema.as_deref() == schema)
+            .unwrap();
+        load(t, dir.path(), "v")
+    };
+    let dotted = rows_of("sales.2024", None);
+    assert_eq!(
+        dotted.iter().map(|r| r.3.as_str()).collect::<Vec<_>>(),
+        ["1", "2"]
+    );
+    assert_eq!(dotted[0].1.as_deref(), Some("sales.2024"));
+    assert_eq!(rows_of("a\"b", None)[0].3, "3");
+    assert_eq!(rows_of("t", Some("s.x"))[0].3, "4");
+}
+
+#[test]
+fn apostrophes_survive_the_load_sql() {
+    if extension_available("sqlite") {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("it's.sqlite");
+        let out = std::process::Command::new("/usr/bin/sqlite3")
+            .arg(&file)
+            .arg("CREATE TABLE \"It's\" (v INTEGER); INSERT INTO \"It's\" VALUES (5);")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let set = discover(&file).unwrap();
+        assert_eq!(set.tables[0].part.as_deref(), Some("It's"));
+        let rows = load(&set.tables[0], dir.path(), "v");
+        assert_eq!(
+            (rows[0].0.as_str(), rows[0].1.as_deref(), rows[0].3.as_str()),
+            ("it's.sqlite", Some("It's"), "5")
+        );
+    }
+    // A sheet with an apostrophe in its name: book.xlsx's "Orders" re-pointed is not possible
+    // without a second fixture, so the sheet case goes through the SQL text alone.
+    let table = SourceTable {
+        name: "b_it_s".into(),
+        file: PathBuf::from("/x/o'brien.xlsx"),
+        part: Some("It's".into()),
+        schema: None,
+        reader: Reader::XlsxSheet,
+    };
+    let sql = load_sql(&table, Path::new("/x"));
+    assert!(
+        sql.contains("sheet = 'It''s'") && sql.contains("'o''brien.xlsx'"),
+        "{sql}"
     );
 }

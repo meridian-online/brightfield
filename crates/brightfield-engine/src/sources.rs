@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 
 use duckdb::Connection;
 
-/// What a file holds: each sheet or table (`None` for a flat file) with the reader that loads it.
-type Parts = Vec<(Option<String>, Reader)>;
+/// What a file holds: each table's schema (`None` for the main schema or a file with none), its
+/// sheet or table name (`None` for a flat file) and the reader that loads it.
+type Parts = Vec<(Option<String>, Option<String>, Reader)>;
 
 /// How a table's rows are read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +36,9 @@ pub struct SourceTable {
     pub file: PathBuf,
     /// The sheet or database table inside `file`; `None` for a flat file.
     pub part: Option<String>,
+    /// The schema holding a DuckDB table when it is not `main`; `None` otherwise. Kept apart from
+    /// `part` because a schema or table name may itself contain a `.`.
+    pub schema: Option<String>,
     pub reader: Reader,
 }
 
@@ -97,17 +101,17 @@ pub fn discover(path: &Path) -> Result<SourceSet, String> {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        for (part, reader) in parts {
-            let base = match (&part, reader) {
-                (Some(part), Reader::XlsxSheet | Reader::SqliteTable | Reader::DuckdbTable) => {
-                    format!("{stem}_{part}")
-                }
+        for (schema, part, reader) in parts {
+            let base = match (&schema, &part) {
+                (Some(schema), Some(part)) => format!("{stem}_{schema}_{part}"),
+                (None, Some(part)) => format!("{stem}_{part}"),
                 _ => stem.clone(),
             };
             set.tables.push(SourceTable {
                 name: unique_name(&base, &mut taken),
                 file: file.clone(),
                 part,
+                schema,
                 reader,
             });
         }
@@ -137,10 +141,12 @@ pub fn load_sql(table: &SourceTable, protocol_dir: &Path) -> String {
     let shown = table.file.strip_prefix(protocol_dir).unwrap_or(&table.file);
     let file = literal(&table.file.to_string_lossy());
     let lineage_file = literal(&shown.to_string_lossy());
-    let part = table
-        .part
-        .as_deref()
-        .map_or("NULL::VARCHAR".to_string(), literal);
+    // A table outside `main` is recorded as `schema.table` so two schemas' tables stay apart.
+    let part = match (&table.schema, &table.part) {
+        (Some(schema), Some(part)) => literal(&format!("{schema}.{part}")),
+        (None, Some(part)) => literal(part),
+        _ => "NULL::VARCHAR".to_string(),
+    };
     let target = format!(
         "CREATE OR REPLACE TABLE {} AS",
         ident(&format!("raw_{}", table.name))
@@ -176,7 +182,7 @@ pub fn load_sql(table: &SourceTable, protocol_dir: &Path) -> String {
              DETACH DATABASE IF EXISTS __source; ATTACH {file} AS __source (READ_ONLY); \
              {target} SELECT {lead}, {row_number}, * FROM {}; \
              DETACH DATABASE __source;",
-            qualified("__source", part_name)
+            qualified("__source", table.schema.as_deref().unwrap_or("main"), part_name)
         ),
     }
 }
@@ -191,12 +197,9 @@ fn ident(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
 }
 
-/// `db.schema.table` from a part recorded as `table` (main schema) or `schema.table`.
-fn qualified(db: &str, part: &str) -> String {
-    match part.split_once('.') {
-        Some((schema, table)) => format!("{db}.{}.{}", ident(schema), ident(table)),
-        None => format!("{db}.main.{}", ident(part)),
-    }
+/// `db.schema.table`, each part quoted.
+fn qualified(db: &str, schema: &str, table: &str) -> String {
+    format!("{db}.{}.{}", ident(schema), ident(table))
 }
 
 /// Lower-cased, with each non-alphanumeric turned to `_`; a name already taken gets `_2`, `_3`, in
@@ -255,7 +258,7 @@ impl Probe {
             _ => format!("read_csv({f})"),
         };
         self.ask(&format!("SELECT * FROM {from} LIMIT 1"))?;
-        Ok(vec![(None, reader)])
+        Ok(vec![(None, None, reader)])
     }
 
     fn workbook(
@@ -272,7 +275,7 @@ impl Probe {
                 literal(&sheet)
             );
             match self.ask(&sql) {
-                Ok(()) => parts.push((Some(sheet), Reader::XlsxSheet)),
+                Ok(()) => parts.push((None, Some(sheet), Reader::XlsxSheet)),
                 // A sheet with no cells at all is the one failure DuckDB names this way.
                 Err(e) if e.contains("No rows found") => {
                     skipped.push((file.to_path_buf(), format!("empty sheet ({sheet})")));
@@ -305,12 +308,8 @@ impl Probe {
                 stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
             rows.map(|r| {
                 r.map(|(schema, table)| {
-                    let part = if schema == "main" {
-                        table
-                    } else {
-                        format!("{schema}.{table}")
-                    };
-                    (Some(part), reader)
+                    let schema = (schema != "main").then_some(schema);
+                    (schema, Some(table), reader)
                 })
             })
             .collect()
@@ -338,9 +337,9 @@ fn is_sqlite(file: &Path) -> Result<bool, String> {
 
 /// The sheet names of a workbook, in workbook order.
 ///
-/// DuckDB's excel extension cannot list a workbook's sheets: it offers `read_xlsx` and `excel_text`,
-/// and neither names them. So the names are read here, from `xl/workbook.xml`, and DuckDB reads
-/// the data.
+/// DuckDB's excel extension cannot list a workbook's sheets: `read_xlsx` is the one function that
+/// reads a workbook, and it takes a sheet to read rather than naming them. So the names are read
+/// here, from `xl/workbook.xml`, and DuckDB reads the data.
 fn workbook_sheets(path: &Path) -> Result<Vec<String>, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("not a workbook: {e}"))?;
@@ -356,9 +355,18 @@ fn workbook_sheets(path: &Path) -> Result<Vec<String>, String> {
 fn sheet_names(xml: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut rest = xml;
-    while let Some(at) = rest.find("<sheet") {
-        rest = &rest[at + "<sheet".len()..];
-        // `<sheets>` and `<sheetPr>` also start this way; a sheet element's tag ends in a space.
+    while let Some(at) = rest.find('<') {
+        rest = &rest[at + 1..];
+        // The element is `sheet`, optionally behind a namespace prefix (`x:sheet`); `sheets` and
+        // `sheetPr` are other elements, and a sheet's tag name is followed by whitespace.
+        let tag_name_end = rest
+            .find(|c: char| c.is_ascii_whitespace() || c == '>' || c == '/')
+            .unwrap_or(rest.len());
+        let tag_name = &rest[..tag_name_end];
+        if tag_name.rsplit(':').next() != Some("sheet") {
+            continue;
+        }
+        rest = &rest[tag_name_end..];
         if !rest.starts_with(|c: char| c.is_ascii_whitespace()) {
             continue;
         }
@@ -437,6 +445,9 @@ mod tests {
     fn sheet_names_keep_order_and_decode_entities() {
         let xml = r#"<workbook><sheets><sheet name="Q1 &amp; Q2" sheetId="1" r:id="rId1"/><sheet sheetId="2" name='It&apos;s' r:id="rId2"/></sheets></workbook>"#;
         assert_eq!(sheet_names(xml), ["Q1 & Q2", "It's"]);
+        let prefixed =
+            r#"<x:workbook><x:sheets><x:sheet name="A" sheetId="1"/></x:sheets></x:workbook>"#;
+        assert_eq!(sheet_names(prefixed), ["A"]);
     }
 
     #[test]
