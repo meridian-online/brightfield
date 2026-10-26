@@ -276,8 +276,8 @@ fn field(column: &ColumnProfile) -> Value {
 ///
 /// A column DuckDB already typed keeps the type that implies. A VARCHAR column, which is every
 /// column of a workbook and any CSV column DuckDB could not read as something narrower, takes
-/// its type from its FineType label's domain and kind, so `datetime.date.iso` is a `date`. No
-/// label, or one that names text, is a `string`.
+/// its type from its FineType label when the label is one whose values Frictionless reads as
+/// that type unaided, so `datetime.date.iso` is a `date`. No label, or any other, is a `string`.
 fn frictionless_type(label: Option<&str>, duckdb_type: &str) -> &'static str {
     let upper = duckdb_type.trim().to_uppercase();
     if upper.ends_with(']') || upper.starts_with("LIST") {
@@ -304,37 +304,30 @@ fn frictionless_type(label: Option<&str>, duckdb_type: &str) -> &'static str {
     if let Some(t) = by_storage {
         return t;
     }
-    let Some(label) = label else { return "string" };
-    let mut parts = label.split('.');
-    let leaf = label.rsplit('.').next().unwrap_or("");
-    // Only forms that match Frictionless's default format are typed; every other date, time or
-    // boolean form stays a string, and its label still says what it is.
-    let iso = leaf.contains("iso");
-    match (parts.next(), parts.next()) {
-        (Some("datetime"), Some("date")) if iso => "date",
-        (Some("datetime"), Some("time")) if iso => "time",
-        (Some("datetime"), Some("timestamp")) if iso => "datetime",
-        (Some("representation"), Some("boolean")) if leaf.contains("true_false") => "boolean",
-        (Some("representation"), Some("numeric")) => {
-            if label.contains("integer") {
-                "integer"
-            } else {
-                "number"
-            }
-        }
+    // FineType labels whose values are exactly what Frictionless reads by default for the type,
+    // from the `examples` and `pattern` of each label in the taxonomy catalogue of FineType
+    // v0.6.59 (`taxonomy-schemas.json` in the bundle). Every other label is a string: no
+    // `true_false`-only boolean label exists (`binary`, `initials` and `terms` all carry other
+    // words), and a date, time or number in another form needs a `format` or a cast first.
+    match label {
+        Some("datetime.date.iso") => "date",
+        Some("datetime.time.hms_24h") => "time",
+        Some("datetime.timestamp.iso_8601" | "datetime.timestamp.iso_8601_offset") => "datetime",
+        Some("representation.numeric.integer_number") => "integer",
+        Some("representation.numeric.decimal_number") => "number",
         _ => "string",
     }
 }
 
 /// The path from `base` (a directory) to `target`, both absolute.
-fn relative_to(target: &Path, base: &Path) -> Result<String, String> {
-    let target: Vec<Component> = target.components().collect();
+fn relative_to(target_path: &Path, base: &Path) -> Result<String, String> {
+    let target: Vec<Component> = target_path.components().collect();
     let base: Vec<Component> = base.components().collect();
     let common = target.iter().zip(&base).take_while(|(a, b)| a == b).count();
     if common == 0 {
         return Err(format!(
             "{}: shares no root with the Protocol folder, so a package cannot point at it",
-            Path::new(&target.iter().collect::<PathBuf>()).display()
+            target_path.display()
         ));
     }
     let mut out = PathBuf::new();
@@ -406,14 +399,6 @@ mod tests {
         assert_eq!(frictionless_type(None, "TIMESTAMP"), "datetime");
         assert_eq!(frictionless_type(None, "VARCHAR"), "string");
         assert_eq!(
-            frictionless_type(Some("datetime.date.iso"), "VARCHAR"),
-            "date"
-        );
-        assert_eq!(
-            frictionless_type(Some("representation.numeric.integer_number"), "VARCHAR"),
-            "integer"
-        );
-        assert_eq!(
             frictionless_type(Some("identity.person.email"), "VARCHAR"),
             "string"
         );
@@ -447,23 +432,26 @@ mod tests {
     }
 
     #[test]
-    fn only_default_format_forms_are_typed_by_label() {
+    fn only_default_format_labels_are_typed() {
+        let typed = |label| frictionless_type(Some(label), "VARCHAR");
+        assert_eq!(typed("datetime.date.iso"), "date");
+        assert_eq!(typed("datetime.date.iso_week"), "string");
+        assert_eq!(typed("datetime.date.mdy_slash"), "string");
+        assert_eq!(typed("datetime.timestamp.iso_8601"), "datetime");
+        assert_eq!(typed("datetime.timestamp.iso_8601_compact"), "string");
+        assert_eq!(typed("datetime.timestamp.iso_space_zulu"), "string");
+        assert_eq!(typed("datetime.time.hms_24h"), "time");
+        assert_eq!(typed("datetime.time.hms_12h"), "string");
+        assert_eq!(typed("representation.numeric.integer_number"), "integer");
+        assert_eq!(typed("representation.numeric.decimal_number"), "number");
         assert_eq!(
-            frictionless_type(Some("datetime.date.mdy_slash"), "VARCHAR"),
+            typed("representation.numeric.decimal_number_comma"),
             "string"
         );
-        assert_eq!(
-            frictionless_type(Some("datetime.timestamp.iso_8601"), "VARCHAR"),
-            "datetime"
-        );
-        assert_eq!(
-            frictionless_type(Some("representation.boolean.binary"), "VARCHAR"),
-            "string"
-        );
-        assert_eq!(
-            frictionless_type(Some("representation.boolean.true_false"), "VARCHAR"),
-            "boolean"
-        );
+        assert_eq!(typed("representation.numeric.percentage"), "string");
+        assert_eq!(typed("representation.numeric.si_number"), "string");
+        assert_eq!(typed("representation.boolean.terms"), "string");
+        assert_eq!(typed("representation.boolean.binary"), "string");
     }
 
     #[test]
