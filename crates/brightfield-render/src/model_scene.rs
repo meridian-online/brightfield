@@ -120,9 +120,20 @@ fn card_rect(c: &Card) -> Rect {
     Rect::new(c.x, c.y, c.x + c.width, c.y + c.height)
 }
 
-fn curve(e: &EdgeLabel) -> Option<CubicBez> {
-    let p = |i: usize| e.points.get(i).map(|&(x, y)| Point::new(x, y));
-    Some(CubicBez::new(p(0)?, p(1)?, p(2)?, p(3)?))
+/// The join's chain of cubics: the first four points, then three more for each further curve.
+fn curves(e: &EdgeLabel) -> Vec<CubicBez> {
+    let pt = |i: usize| Point::new(e.points[i].0, e.points[i].1);
+    (0..e.points.len().saturating_sub(1) / 3)
+        .map(|k| CubicBez::new(pt(3 * k), pt(3 * k + 1), pt(3 * k + 2), pt(3 * k + 3)))
+        .collect()
+}
+
+/// The point a fraction `t` of the way along the chain, each curve taking an equal share.
+fn point_at(e: &EdgeLabel, t: f64) -> Option<Point> {
+    let chain = curves(e);
+    let scaled = t.clamp(0.0, 1.0) * chain.len() as f64;
+    let k = (scaled.floor() as usize).min(chain.len().checked_sub(1)?);
+    Some(chain[k].eval(scaled - k as f64))
 }
 
 /// The pill's words: the join, and its grade when it is only a possible one.
@@ -145,7 +156,7 @@ fn has_warning(model: &Model, e: &EdgeLabel) -> bool {
 const PILL_STOPS: [f64; 9] = [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8, 0.1, 0.9];
 
 fn pill_at(e: &EdgeLabel, t: f64) -> Option<Rect> {
-    let mid = curve(e)?.eval(t);
+    let mid = point_at(e, t)?;
     let width = measure_width(&pill_text(e), LABEL_SIZE) + 2.0 * PILL_PAD;
     let (x, y) = (mid.x.round() - (width / 2.0).round(), mid.y.round());
     Some(Rect::new(
@@ -265,7 +276,7 @@ fn draw_edge(
     sel: Option<&Selection>,
     pal: &Palette,
 ) {
-    let Some(c) = curve(e) else { return };
+    let chain = curves(e);
     let lit = edge_lit(model, sel, e);
     let chosen = is_selected(sel, &Selection::Relationship(e.relationship.clone()));
     let colour = if !lit {
@@ -282,8 +293,12 @@ fn draw_edge(
         stroke = stroke.with_dashes(0.0, DASH);
     }
     let mut path = BezPath::new();
-    path.move_to(c.p0);
-    path.curve_to(c.p1, c.p2, c.p3);
+    if let Some(first) = chain.first() {
+        path.move_to(first.p0);
+    }
+    for c in &chain {
+        path.curve_to(c.p1, c.p2, c.p3);
+    }
     scene.stroke(&stroke, Affine::IDENTITY, colour, None, &path);
 }
 

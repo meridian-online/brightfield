@@ -31,7 +31,8 @@ fn retail_bands() {
     assert_eq!(l.cards.len(), 7);
     assert_eq!(l.edges.len(), 6);
     for e in &l.edges {
-        assert_eq!(e.points.len(), 4);
+        // One cubic, or two when the join turns in the lane above the row below.
+        assert!(e.points.len() == 4 || e.points.len() == 7, "{e:?}");
     }
     // Customers has the most joins, so it leads its band.
     let first = l.cards.iter().find(|c| c.band == Band::Entities).unwrap();
@@ -122,4 +123,98 @@ fn list_puts_possible_first() {
         products,
         (vec!["categories".to_string()], vec!["sku".to_string()])
     );
+}
+
+/// Every edge's curve, sampled finely, stays out of every card but its own two ends.
+fn assert_routes_clear_of_cards(m: &Model) {
+    let l = layout(m);
+    for e in &l.edges {
+        let r = m
+            .relationships
+            .iter()
+            .find(|r| r.name == e.relationship)
+            .unwrap();
+        for (k, step) in (0..e.points.len() / 3).flat_map(|k| (0..=400).map(move |s| (k, s))) {
+            let t = f64::from(step) / 400.0;
+            let p = &e.points[3 * k..=3 * k + 3];
+            let u = 1.0 - t;
+            let at = |f: fn(&(f64, f64)) -> f64| {
+                u * u * u * f(&p[0])
+                    + 3.0 * u * u * t * f(&p[1])
+                    + 3.0 * u * t * t * f(&p[2])
+                    + t * t * t * f(&p[3])
+            };
+            let (x, y) = (at(|q| q.0), at(|q| q.1));
+            for c in &l.cards {
+                if c.dataset == r.from || c.dataset == r.to {
+                    continue;
+                }
+                let inside = x > c.x && x < c.x + c.width && y > c.y && y < c.y + c.height;
+                assert!(
+                    !inside,
+                    "{} passes through {} at ({x:.0}, {y:.0})",
+                    e.relationship, c.dataset
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn retail_routes_clear_of_cards() {
+    assert_routes_clear_of_cards(&model());
+}
+
+/// Four stacked event cards, two entities, and a row of four below, with joins to the
+/// row's cards from both upper columns, including ones under the opposite column.
+#[test]
+fn routes_to_the_row_below_clear_stacked_cards() {
+    let base = model();
+    let dataset = |from: &str, name: &str, role: Role| {
+        let mut d = base
+            .datasets
+            .iter()
+            .find(|d| d.name == from)
+            .unwrap()
+            .clone();
+        d.name = name.into();
+        d.meta.role = role;
+        d.meta.folded_into = None;
+        d
+    };
+    let mut m = base.clone();
+    m.datasets.clear();
+    for i in 1..=4 {
+        m.datasets
+            .push(dataset("transactions", &format!("e{i}"), Role::Event));
+        m.datasets
+            .push(dataset("promo_codes", &format!("b{i}"), Role::Reference));
+    }
+    for i in 1..=2 {
+        m.datasets
+            .push(dataset("customers", &format!("n{i}"), Role::Entity));
+    }
+    let template = base.relationships[0].clone();
+    m.relationships.clear();
+    for (from, to) in [
+        ("e1", "n1"),
+        ("e2", "n2"),
+        ("e3", "n1"),
+        ("e4", "n2"),
+        ("e1", "b4"),
+        ("e2", "b3"),
+        ("e4", "b4"),
+        ("n1", "b1"),
+        ("n2", "b4"),
+        ("n2", "b2"),
+    ] {
+        let mut r = template.clone();
+        r.name = format!("{from}_{to}");
+        r.from = from.into();
+        r.to = to.into();
+        m.relationships.push(r);
+    }
+    let l = layout(&m);
+    assert_eq!(l.edges.len(), 10);
+    assert_routes_clear_of_cards(&m);
 }

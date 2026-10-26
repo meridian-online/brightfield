@@ -30,7 +30,8 @@ pub struct Card {
     pub band: Band,
 }
 
-/// A drawn join: its text and a cubic Bezier `[start, control1, control2, end]`.
+/// A drawn join: its text and a chain of cubic Beziers, each `[control1, control2, end]`
+/// after the first point (four points, or seven when it turns in the lane below the bands).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EdgeLabel {
     pub relationship: String,
@@ -83,6 +84,8 @@ const BAND_GAP: f64 = 280.0;
 const PORT_INSET: f64 = 8.0;
 /// How far an edge to the row below runs sideways before turning down.
 const TURN: f64 = 60.0;
+/// How far an edge to the row below keeps heading down as it leaves and enters the lane.
+const LANE_DIP: f64 = 12.0;
 /// Space between the upper bands and the row below.
 const ROW_BAND_GAP: f64 = spacing::SPACE_9 as f64;
 /// How far a same-band edge swings out beyond its cards.
@@ -416,7 +419,8 @@ enum Side {
     Bottom,
 }
 
-/// `[start, control1, control2, end]` between two ports, each leaving its card square to
+/// `[start, control1, control2, end]` between two ports (a join to the row below is
+/// two such curves end to end, seven points), each leaving its card square to
 /// the side it sits on.
 fn route(from: ((f64, f64), Side), to: ((f64, f64), Side)) -> Vec<(f64, f64)> {
     let ((a, sa), (b, sb)) = (from, to);
@@ -430,8 +434,33 @@ fn route(from: ((f64, f64), Side), to: ((f64, f64), Side)) -> Vec<(f64, f64)> {
             let dx = ((b.0 - a.0) / 2.0).round();
             vec![a, (a.0 + dx, a.1), (b.0 - dx, b.1), b]
         }
-        // Out into the gap, then down into the top of a card in the row below.
-        (Side::Right, Side::Top) => vec![a, (a.0 + TURN, a.1), (b.0, b.1 - TURN / 2.0), b],
-        _ => vec![a, (a.0 - TURN, a.1), (b.0, b.1 - TURN / 2.0), b],
+        // Out into the gap, down it to the lane between the upper bands and the row,
+        // then along the lane and into the top of a card in the row. Two curves
+        // joined at the lane, so the sweep sideways happens below every upper card
+        // and cannot cut across the stacked cards of either column.
+        (Side::Right, Side::Top) => down_the_gap(a, b, BAND_GAP / 2.0),
+        _ => down_the_gap(a, b, -BAND_GAP / 2.0),
     }
+}
+
+/// The height midway between the upper bands' lowest cards and the row below, given
+/// the top of a card in that row.
+fn lane(top: (f64, f64)) -> f64 {
+    top.1 - (ROW_BAND_GAP / 2.0).round()
+}
+
+/// Two joined cubics, seven points, from a port out into the gap `reach` pixels
+/// away, down to the lane, and on to `b`, the top of a card in the row below.
+fn down_the_gap(a: (f64, f64), b: (f64, f64), reach: f64) -> Vec<(f64, f64)> {
+    let lane = lane(b);
+    let q = (a.0 + reach, lane);
+    vec![
+        a,
+        (a.0 + reach.signum() * TURN, a.1),
+        (q.0, q.1 - TURN),
+        q,
+        (q.0, q.1 + LANE_DIP),
+        (b.0, b.1 - LANE_DIP),
+        b,
+    ]
 }
