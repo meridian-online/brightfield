@@ -209,8 +209,8 @@ impl ModelPane {
     }
 
     /// The files the open passed over, each with the first line of its reason:
-    /// `2 files skipped: notes.txt (not a kind of file Brightfield reads), …`. `None` when none
-    /// were.
+    /// `2 files skipped: notes.txt (not a kind of file Brightfield reads), …`. `None` when the
+    /// open skipped no file.
     #[must_use]
     pub fn skipped_line(&self) -> Option<String> {
         let skipped = &self.protocol.sources.skipped;
