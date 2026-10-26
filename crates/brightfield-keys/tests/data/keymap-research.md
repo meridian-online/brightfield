@@ -202,6 +202,27 @@ drawn is never written anywhere.
 | `show-model-list` | `2` | 2 / 3 / 4 | `2` = the second of the three views; Finder's list view is its second |
 | `show-model-file` | `3` | 2 / 3 / 3 | `3` = the third of the three views; the file is the model as written |
 
+The model pane's reshape verbs change the model itself: keep or drop a join, add one or change its
+keys, give a table another role, fold or unfold it, leave it out or bring it back, and retype a column.
+Each writes the Ossie file, so all ten are **Data**-tier spec edits, and each acts on what is selected,
+addressed by its name in the model (`relationship.<name>`, `dataset.<name>`) rather than by where it is
+drawn. They apply at the model altitude only. Their keys keep off `h j k l`, `v` and the digits, and off
+the bare letters the chart already binds in the same context (`a`, `c`, `d`, `x`), whose shifted forms
+they take as the heavier, durable sibling; `f` and `t` stay with the deferred filter verbs.
+
+| longname | key(s) | freq / mnem / conv | motor note |
+|----------|--------|--------------------|------------|
+| `keep-join` | `y` | 4 / 4 / 3 | `y` = yes to a proposal, the accept key of a y/n prompt |
+| `drop-join` | `shift-d` | 3 / 4 / 4 | `shift-d` = delete (vim `D`); bare `d` is the chart's remove-mark |
+| `add-join` | `shift-a` | 2 / 4 / 3 | `shift-a` = add (vim `A`); bare `a` is the chart's add-mark; a drag between cards opens the same picker |
+| `change-join-keys` | `shift-c` | 2 / 4 / 3 | `shift-c` = change (vim `C`); bare `c` is the chart's colour scheme |
+| `set-role` | `r` | 3 / 5 / 2 | `r` = role; reload keeps `cmd-r` |
+| `fold-table` | `z` | 2 / 3 / 4 | `z` = fold (vim's `z` fold family) |
+| `unfold-table` | `shift-z` | 2 / 3 / 3 | `shift-z` = the undoing sibling of `z` |
+| `leave-out-table` | `shift-x` | 2 / 4 / 3 | `shift-x` = cut it out (vim `X`); bare `x` is the chart's axis lock |
+| `include-table` | `i` | 1 / 4 / 2 | `i` = include (vim's insert) |
+| `retype-column` | `shift-t` | 2 / 4 / 2 | `shift-t` = type; bare `t` stays with the deferred point-select verb |
+
 Reserved verbs are deliberately unscored (no key yet), shown greyed in the palette until their keys land:
 needs-keyboard-target (`filter-view`, `cross-filter-all`, `toggle-point-select`, `set-param`) and
 needs-command-log (`change-mark-type`, `add-mark`, `set-channel`, `remove-mark`, `undo`).

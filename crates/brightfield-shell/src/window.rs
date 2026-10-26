@@ -2189,6 +2189,17 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "1" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Num1)),
         "2" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Num2)),
         "3" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Num3)),
+        // The model pane's reshape keys.
+        "y" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Y)),
+        "r" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::R)),
+        "z" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Z)),
+        "i" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::I)),
+        "shift-d" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::D)),
+        "shift-a" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::A)),
+        "shift-c" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::C)),
+        "shift-z" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::Z)),
+        "shift-x" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::X)),
+        "shift-t" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::T)),
         _ => false,
     }
 }
@@ -7188,18 +7199,34 @@ impl MeridianApp {
         {
             return;
         }
+        let mut pressed = Vec::new();
         for verb in brightfield_keys::registry()
             .iter()
             .filter(|v| v.applies_at(Altitude::Model))
         {
             for spec in &verb.binding_specs {
                 if consume_token(ctx, spec.keystrokes) {
-                    if let Some(model) = self.model.as_mut() {
-                        model.doc.perform(verb.longname);
-                    }
-                    ctx.request_repaint();
+                    pressed.push(verb.longname);
                 }
             }
+        }
+        for longname in pressed {
+            self.perform_model_verb(ctx, longname);
+        }
+    }
+
+    /// Perform one of the model pane's verbs: a view verb changes the view, and a reshape verb
+    /// acts on the selection and says what came of it in a toast.
+    fn perform_model_verb(&mut self, ctx: &egui::Context, longname: &str) {
+        let Some(model) = self.model.as_mut() else {
+            return;
+        };
+        ctx.request_repaint();
+        if model.doc.perform(longname) {
+            return;
+        }
+        if let Some(dispatched) = model.doc.perform_reshape(longname) {
+            self.report_model_dispatch(ctx, dispatched);
         }
     }
 
@@ -8603,10 +8630,7 @@ impl MeridianApp {
                 }
                 // The model pane's verbs are its own, chosen from the palette it opens.
                 Request::Verb(verb) if crate::model_pane::is_model_verb(verb.as_str()) => {
-                    if let Some(model) = self.model.as_mut() {
-                        model.doc.perform(verb.as_str());
-                        ctx.request_repaint();
-                    }
+                    self.perform_model_verb(ctx, verb.as_str());
                 }
                 // The navigator rail's toggle spans both documents for the
                 // same reason open-home does — it is the window's verb, not
@@ -9578,9 +9602,23 @@ impl MeridianApp {
         let Some(model) = self.model.as_mut() else {
             return;
         };
-        let (severity, said) = match model.doc.dispatch(action) {
+        let dispatched = model.doc.dispatch(action);
+        self.report_model_dispatch(ctx, dispatched);
+    }
+
+    /// Say what came of a model action in a toast, or open the rows it names in the grid. A picker
+    /// that opened is drawn in the inspector, and needs no toast.
+    fn report_model_dispatch(
+        &mut self,
+        ctx: &egui::Context,
+        dispatched: crate::model_pane::Dispatched,
+    ) {
+        let (severity, said) = match dispatched {
             crate::model_pane::Dispatched::Done(said) => (Severity::Success, said),
-            crate::model_pane::Dispatched::NotYet(said) => (Severity::Info, said),
+            crate::model_pane::Dispatched::Picking(_) => {
+                ctx.request_repaint();
+                return;
+            }
             crate::model_pane::Dispatched::Failed(said) => (Severity::Error, said),
             crate::model_pane::Dispatched::OpenInGrid(target) => {
                 self.open_model_in_grid(ctx, &target);

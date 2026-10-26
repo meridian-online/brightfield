@@ -69,6 +69,11 @@ impl FinetypeTransforms {
     pub fn transform(&self, label: &str) -> Option<&str> {
         self.labels.get(label)?.transform.as_deref()
     }
+
+    /// Every label the contracts define, in name order: the types a column can be given.
+    pub fn labels(&self) -> impl Iterator<Item = &str> {
+        self.labels.keys().map(String::as_str)
+    }
 }
 
 /// `name` as a SQL identifier.
@@ -379,5 +384,9 @@ mod tests {
         let t = FinetypeTransforms::vendored();
         assert!(t.labels.len() > 100);
         assert!(t.tag().starts_with('v'));
+        let labels: Vec<&str> = t.labels().collect();
+        assert_eq!(labels.len(), t.labels.len());
+        assert!(labels.windows(2).all(|w| w[0] < w[1]), "in name order");
+        assert!(labels.contains(&"representation.numeric.integer_number"));
     }
 }

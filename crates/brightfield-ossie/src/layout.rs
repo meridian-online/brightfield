@@ -165,10 +165,8 @@ pub fn edge_text(r: &Relationship) -> String {
 pub fn summary(model: &Model) -> String {
     let names = placed_names(model);
     let joins = drawn_joins(model, &names);
-    let possible = joins
-        .iter()
-        .filter(|r| r.meta.grade == Grade::Possible)
-        .count();
+    // Counted as the review queue counts them, so a kept possible join leaves the count.
+    let possible = joins.iter().filter(|r| is_proposal(r)).count();
     let unclear = model
         .datasets
         .iter()

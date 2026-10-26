@@ -87,6 +87,21 @@ fn summary_counts_retail() {
         summary(&model()),
         "7 tables · 6 joins · 1 possible · 1 unclear"
     );
+    // A kept possible join is no longer waiting on the analyst, so the count drops with the queue.
+    let kept = brightfield_ossie::apply(
+        &model(),
+        &brightfield_ossie::Edit::KeepJoin {
+            relationship: "customer_segments_customers".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        summary(&kept),
+        "7 tables · 6 joins · 0 possible · 1 unclear"
+    );
+    assert!(!list_rows(&kept)
+        .iter()
+        .any(|r| matches!(r, ListRow::Review { .. })));
 }
 
 #[test]

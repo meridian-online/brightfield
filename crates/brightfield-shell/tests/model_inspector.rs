@@ -448,16 +448,25 @@ fn the_inspectors_actions_change_the_model_through_the_pane() {
     assert_eq!(d.meta.role, brightfield_ossie::Role::Bridge);
     assert_eq!(d.meta.decided_by, brightfield_ossie::DecidedBy::Analyst);
 
-    for stub in [
-        ModelAction::ChangeKeys("x".into()),
-        ModelAction::FoldInto(table.clone()),
+    // The actions that need a choice open a picker, and change nothing yet.
+    let joined = pane.model.relationships[0].name.clone();
+    let before = pane.model.clone();
+    for asks in [
+        ModelAction::ChangeKeys(joined),
+        ModelAction::FoldInto("customer_segments".into()),
         ModelAction::RetypeColumn(table.clone()),
     ] {
         assert!(
-            matches!(pane.dispatch(stub.clone()), Dispatched::NotYet(_)),
-            "{stub:?}"
+            matches!(pane.dispatch(asks.clone()), Dispatched::Picking(_)),
+            "{asks:?}"
         );
+        assert!(pane.picker().is_some(), "{asks:?}");
     }
+    assert_eq!(pane.model, before);
+    assert!(matches!(
+        pane.dispatch(ModelAction::ChangeKeys("x".into())),
+        Dispatched::Failed(_)
+    ));
     assert!(matches!(
         pane.dispatch(ModelAction::Keep("no_such_join".into())),
         Dispatched::Failed(_)
@@ -698,10 +707,6 @@ fn a_left_out_table_is_selected_from_the_list_and_offers_include() {
     assert!(!drawn.actions.iter().any(|a| a == "Leave out"), "{drawn:?}");
     let chosen = click_button(&ctx, &mut pane, "Include");
     assert_eq!(chosen, vec![ModelAction::Include("promo_codes".into())]);
-    assert!(matches!(
-        pane.dispatch(chosen[0].clone()),
-        Dispatched::NotYet(_)
-    ));
 }
 
 #[test]

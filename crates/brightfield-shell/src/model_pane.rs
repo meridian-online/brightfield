@@ -17,6 +17,13 @@
 //! diagram, or on a row of the list, selects it, and in either view what is not connected to the
 //! selection dims. While something is selected the inspector ([`crate::model_inspector`]) stands
 //! beside the view, and the actions it offers come back to [`ModelPane::dispatch`].
+//!
+//! The reshape verbs ([`RESHAPE_VERBS`]) change the model from the keyboard and the palette as the
+//! inspector's buttons do from the pointer: each one names the selection to
+//! [`ModelPane::reshape_action`], and the action it answers goes through the same dispatch, which
+//! applies the edit, writes the file, rewrites silver and runs the Protocol before the next frame
+//! draws. A drag from one card to another on the diagram opens the add-join picker between them.
+//! What came of the last action stands in a status line under the summary.
 
 use std::path::{Path, PathBuf};
 
@@ -37,7 +44,7 @@ use meridian_design::{semantic, spacing};
 use crate::canvas::EguiCanvasHost;
 use crate::design::Mode;
 use crate::discovery::MODEL_FILE;
-use crate::model_inspector::{self, Inspected, InspectorDrawn, ModelAction};
+use crate::model_inspector::{self, Inspected, InspectorDrawn, ModelAction, ModelPicker};
 use crate::own_files::{self, OwnProtocol};
 use crate::run::Runner;
 
@@ -103,10 +110,26 @@ pub fn model_palette_verbs() -> Vec<&'static str> {
         .collect()
 }
 
+/// The verbs that change the model, each acting on the selection.
+pub const RESHAPE_VERBS: [&str; 10] = [
+    "keep-join",
+    "drop-join",
+    "add-join",
+    "change-join-keys",
+    "set-role",
+    "fold-table",
+    "unfold-table",
+    "leave-out-table",
+    "include-table",
+    "retype-column",
+];
+
 /// Whether `longname` is one of the model pane's verbs.
 #[must_use]
 pub fn is_model_verb(longname: &str) -> bool {
-    longname == CYCLE_MODEL_VIEW || SHOW_VIEW.iter().any(|(verb, _)| *verb == longname)
+    longname == CYCLE_MODEL_VIEW
+        || SHOW_VIEW.iter().any(|(verb, _)| *verb == longname)
+        || RESHAPE_VERBS.contains(&longname)
 }
 
 /// The model pane's registry: its one pane, the centre of the model document.
@@ -178,6 +201,12 @@ pub struct ModelPane {
     inspected: Option<(Selection, u64, Option<Inspected>)>,
     /// The actions the inspector's buttons chose in the last frame, for the window to dispatch.
     actions: Vec<ModelAction>,
+    /// The choice the inspector is asking for, while one is open.
+    picker: Option<ModelPicker>,
+    /// What came of the last action, for the status line.
+    status: Option<String>,
+    /// The table a drag on the diagram started on, while the drag lasts.
+    drag_from: Option<String>,
 }
 
 /// What became of a [`ModelAction`] the pane dispatched.
@@ -185,8 +214,8 @@ pub struct ModelPane {
 pub enum Dispatched {
     /// The action was taken; the words say what changed.
     Done(String),
-    /// The action needs a picker this build does not have yet; the words say so.
-    NotYet(String),
+    /// The action opened a picker in the inspector; the words say what it asks.
+    Picking(String),
     /// The action was refused or failed; the words say why.
     Failed(String),
     /// The action opens rows in the grid, which is the window's to do.
@@ -225,6 +254,9 @@ impl ModelPane {
             },
             inspected: None,
             actions: Vec::new(),
+            picker: None,
+            status: None,
+            drag_from: None,
         })
     }
 
@@ -284,6 +316,81 @@ impl ModelPane {
         &self.file_text
     }
 
+    /// The diagram's layout, as last laid out from the model.
+    #[must_use]
+    pub fn layout(&self) -> &ModelLayout {
+        &self.layout
+    }
+
+    /// The choice the inspector is asking for, while one is open.
+    #[must_use]
+    pub fn picker(&self) -> Option<&ModelPicker> {
+        self.picker.as_ref()
+    }
+
+    /// The open picker, to change what it has chosen.
+    pub fn picker_mut(&mut self) -> Option<&mut ModelPicker> {
+        self.picker.as_mut()
+    }
+
+    /// What came of the last action: what changed, what a picker asks, or why it was refused.
+    #[must_use]
+    pub fn status(&self) -> Option<&str> {
+        self.status.as_deref()
+    }
+
+    /// The action reshape verb `longname` takes on the selection, or why it takes none: a join's
+    /// verb with no join selected, say. `None` when `longname` is not a reshape verb.
+    #[must_use]
+    pub fn reshape_action(&self, longname: &str) -> Option<Result<ModelAction, String>> {
+        if !RESHAPE_VERBS.contains(&longname) {
+            return None;
+        }
+        let join = match &self.focus.selected {
+            Some(Selection::Relationship(name)) => Ok(name.clone()),
+            _ => Err(format!("Select a join first: {longname} acts on a join")),
+        };
+        let table = match &self.focus.selected {
+            Some(Selection::Dataset(name)) => Ok(name.clone()),
+            _ => Err(format!("Select a table first: {longname} acts on a table")),
+        };
+        Some(match longname {
+            "keep-join" => join.map(ModelAction::Keep),
+            "drop-join" => join.map(ModelAction::Drop),
+            "change-join-keys" => join.map(ModelAction::ChangeKeys),
+            "add-join" => table.map(ModelAction::AddJoin),
+            "set-role" => table.map(ModelAction::PickRole),
+            "fold-table" => table.map(ModelAction::FoldInto),
+            "unfold-table" => table.and_then(|name| {
+                let folded = self
+                    .model
+                    .datasets
+                    .iter()
+                    .any(|d| d.name == name && d.meta.folded_into.is_some());
+                if folded {
+                    Ok(ModelAction::Unfold(name))
+                } else {
+                    Err(format!("{name} is not folded into another table"))
+                }
+            }),
+            "leave-out-table" => table.map(ModelAction::LeaveOut),
+            "include-table" => table.map(ModelAction::Include),
+            _ => table.map(ModelAction::RetypeColumn),
+        })
+    }
+
+    /// Perform reshape verb `longname` on the selection, and answer what came of it; `None` when
+    /// `longname` is not a reshape verb.
+    pub fn perform_reshape(&mut self, longname: &str) -> Option<Dispatched> {
+        Some(match self.reshape_action(longname)? {
+            Ok(action) => self.dispatch(action),
+            Err(e) => {
+                self.status = Some(e.clone());
+                Dispatched::Failed(e)
+            }
+        })
+    }
+
     /// What the pane drew in the last frame it was drawn in.
     #[must_use]
     pub fn drawn(&self) -> &ModelDrawn {
@@ -328,35 +435,53 @@ impl ModelPane {
 
     /// Carry out `action`: an edit goes through [`brightfield_ossie::apply`] and then
     /// [`Self::save_model`], Show in file switches to the file view, and Open in grid is handed
-    /// back for the window to open. The actions that need a picker say they are not available
-    /// yet.
+    /// back for the window to open. The actions that need a choice first open a picker in the
+    /// inspector, whose answer comes back here as [`ModelAction::Edit`]. What came of it stands in
+    /// the status line.
     pub fn dispatch(&mut self, action: ModelAction) -> Dispatched {
+        let dispatched = self.carry_out(action);
+        match &dispatched {
+            Dispatched::Done(said) | Dispatched::Picking(said) | Dispatched::Failed(said) => {
+                self.status = Some(said.clone());
+            }
+            Dispatched::OpenInGrid(_) => {}
+        }
+        dispatched
+    }
+
+    fn carry_out(&mut self, action: ModelAction) -> Dispatched {
         let edit = match action {
             ModelAction::Keep(relationship) => Edit::KeepJoin { relationship },
             ModelAction::Drop(relationship) => Edit::DropJoin { relationship },
             ModelAction::ChangeRole { dataset, role } => Edit::SetRole { dataset, role },
             ModelAction::Unfold(dataset) => Edit::Unfold { dataset },
             ModelAction::LeaveOut(dataset) => Edit::Exclude { dataset },
+            ModelAction::Include(dataset) => Edit::Include { dataset },
+            ModelAction::Edit(edit) => edit,
             ModelAction::ShowInFile => {
                 self.view = ModelView::File;
                 return Dispatched::Done("Showing the Ossie file".to_string());
             }
             ModelAction::OpenInGrid(selection) => return Dispatched::OpenInGrid(selection),
-            ModelAction::ChangeKeys(_) => {
-                return Dispatched::NotYet("Changing a join's keys isn't available yet".into())
+            ModelAction::ChangeKeys(relationship) => {
+                let picker = model_inspector::keys_picker(&self.model, &relationship);
+                return self.open_picker(picker);
             }
-            ModelAction::FoldInto(_) => {
-                return Dispatched::NotYet(
-                    "Folding a table into another isn't available yet".into(),
-                )
+            ModelAction::FoldInto(dataset) => {
+                let picker = model_inspector::fold_picker(&self.model, &dataset);
+                return self.open_picker(picker);
             }
-            ModelAction::RetypeColumn(_) => {
-                return Dispatched::NotYet("Retyping a column isn't available yet".into())
+            ModelAction::RetypeColumn(dataset) => {
+                let picker = model_inspector::retype_picker(&self.model, &dataset);
+                return self.open_picker(picker);
             }
-            ModelAction::Include(_) => {
-                return Dispatched::NotYet(
-                    "Bringing a left-out table back isn't available yet".into(),
-                )
+            ModelAction::AddJoin(dataset) => {
+                let picker = model_inspector::add_join_picker(&self.model, &dataset, None);
+                return self.open_picker(picker);
+            }
+            ModelAction::PickRole(dataset) => {
+                let picker = model_inspector::role_picker_for(&self.model, &dataset);
+                return self.open_picker(picker);
             }
         };
         let said = edit_said(&edit);
@@ -364,6 +489,7 @@ impl ModelPane {
             Ok(model) => model,
             Err(e) => return Dispatched::Failed(e.0),
         };
+        self.picker = None;
         let saved = self.save_model(model);
         // A dropped join is gone from the model, and so is anything selected on it.
         if let Some(Selection::Relationship(name)) = &self.focus.selected {
@@ -373,6 +499,20 @@ impl ModelPane {
         }
         match saved {
             Ok(()) => Dispatched::Done(said),
+            Err(e) => Dispatched::Failed(e),
+        }
+    }
+
+    /// Open `picker` over its subject, selecting it so the inspector shows it, or say why it
+    /// cannot open.
+    fn open_picker(&mut self, picker: Result<ModelPicker, String>) -> Dispatched {
+        match picker {
+            Ok(picker) => {
+                let said = picker.prompt();
+                self.focus.selected = Some(picker.subject());
+                self.picker = Some(picker);
+                Dispatched::Picking(said)
+            }
             Err(e) => Dispatched::Failed(e),
         }
     }
@@ -423,8 +563,10 @@ impl ModelPane {
     ///
     /// The run executes only the steps whose SQL changed, which are the silver and failed-value
     /// steps: arc skips a step whose SQL file and inputs hash as they did after its last success,
-    /// and the load steps' are untouched. The pane takes `model` once the file is written, so a
-    /// failed run leaves it showing what the folder holds.
+    /// and the load steps' are untouched. A table left out or folded into another loses its
+    /// silver tables from the database before the run ([`own_files::drop_unmade_silver`]). The
+    /// pane takes `model` once the file is written, so a failed run leaves it showing what the
+    /// folder holds.
     ///
     /// # Errors
     ///
@@ -439,6 +581,7 @@ impl ModelPane {
         self.file_text = text;
         self.generation += 1;
         own_files::write_silver(&self.protocol, &self.model)?;
+        own_files::drop_unmade_silver(&self.protocol, &self.model)?;
         own_files::run_loads(&self.protocol, &self.runner)
     }
 
@@ -495,6 +638,10 @@ impl ModelPane {
             ui.label(egui::RichText::new(&skipped).color(secondary));
             drawn.header.push(skipped);
         }
+        if let Some(status) = &self.status {
+            ui.label(egui::RichText::new(status).color(secondary));
+            drawn.header.push(status.clone());
+        }
         ui.horizontal(|ui| {
             for (_, view) in SHOW_VIEW {
                 if ui
@@ -510,6 +657,14 @@ impl ModelPane {
         // With a selection the inspector stands to the right of the view, and the view has what
         // is left.
         let area = ui.available_rect_before_wrap();
+        // A picker asks about what was selected when it opened, and closes once that is let go.
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|p| self.focus.selected.as_ref() != Some(&p.subject()))
+        {
+            self.picker = None;
+        }
         let inspector = self.inspected().cloned().map(|inspected| {
             let rect = egui::Rect::from_min_max(
                 egui::pos2(
@@ -558,6 +713,7 @@ impl ModelPane {
                 &mut inspector_ui,
                 &inspected,
                 &actions,
+                &mut self.picker,
                 mode,
                 &mut self.actions,
                 &mut said,
@@ -571,11 +727,13 @@ impl ModelPane {
     fn diagram_ui(&mut self, ui: &mut egui::Ui, drawn: &mut ModelDrawn) {
         let size = egui::vec2(self.layout.width as f32, self.layout.height as f32);
         let mut clicked = None;
+        let mut drag_from = self.drag_from.clone();
+        let mut dragged = None;
         egui::ScrollArea::both()
             .id_salt("model-diagram")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+                let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
                 drawn.diagram = Some(rect);
                 if let Some((_, texture)) = &self.raster {
                     ui.painter().image(
@@ -585,19 +743,42 @@ impl ModelPane {
                         egui::Color32::WHITE,
                     );
                 }
+                let under = |at: egui::Pos2| {
+                    let local = at - rect.min;
+                    hit_test(&self.layout, f64::from(local.x), f64::from(local.y))
+                };
+                let table_under = |at: Option<egui::Pos2>| match at.and_then(under) {
+                    Some(Selection::Dataset(name)) => Some(name),
+                    _ => None,
+                };
                 if response.clicked() {
                     if let Some(at) = response.interact_pointer_pos() {
-                        let local = at - rect.min;
-                        clicked = Some(hit_test(
-                            &self.layout,
-                            f64::from(local.x),
-                            f64::from(local.y),
-                        ));
+                        clicked = Some(under(at));
+                    }
+                }
+                // A drag from one card to another asks for the join between them.
+                if response.drag_started() {
+                    drag_from = table_under(ui.input(|i| i.pointer.press_origin()));
+                }
+                if response.drag_stopped() {
+                    let to = table_under(ui.input(|i| i.pointer.latest_pos()));
+                    if let (Some(from), Some(to)) = (drag_from.take(), to) {
+                        if from != to {
+                            dragged = Some((from, to));
+                        }
                     }
                 }
             });
+        self.drag_from = drag_from;
         if let Some(selected) = clicked {
             self.focus.selected = selected;
+        }
+        if let Some((from, to)) = dragged {
+            let picker = model_inspector::add_join_picker(&self.model, &from, Some(&to));
+            let dispatched = self.open_picker(picker);
+            if let Dispatched::Picking(said) | Dispatched::Failed(said) = dispatched {
+                self.status = Some(said);
+            }
         }
     }
 }
@@ -897,7 +1078,32 @@ fn edit_said(edit: &Edit) -> String {
         }
         Edit::Unfold { dataset } => format!("Unfolded {dataset}"),
         Edit::Exclude { dataset } => format!("Left {dataset} out of the model"),
-        other => format!("{other:?}"),
+        Edit::Include { dataset } => format!("Brought {dataset} back into the model"),
+        Edit::AddJoin {
+            from,
+            from_columns,
+            to,
+            to_columns,
+        } => format!(
+            "Joined {from} ({}) to {to} ({})",
+            from_columns.join(", "),
+            to_columns.join(", ")
+        ),
+        Edit::ChangeKeys {
+            relationship,
+            from_columns,
+            to_columns,
+        } => format!(
+            "{relationship} now matches {} to {}",
+            from_columns.join(", "),
+            to_columns.join(", ")
+        ),
+        Edit::Fold { dataset, into } => format!("Folded {dataset} into {into}"),
+        Edit::Retype {
+            dataset,
+            field,
+            finetype,
+        } => format!("{dataset}.{field} is now {finetype}"),
     }
 }
 
@@ -954,7 +1160,7 @@ impl Item<ModelPane> for ModelItem {
     }
 
     fn perform(&mut self, doc: &mut ModelPane, verb: Verb, _cx: &mut ItemCtx<'_>) -> Handled {
-        if doc.perform(verb.as_str()) {
+        if doc.perform(verb.as_str()) || doc.perform_reshape(verb.as_str()).is_some() {
             Handled::Yes
         } else {
             Handled::No

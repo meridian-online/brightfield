@@ -1208,6 +1208,125 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Show the model as the Ossie file",
             scores: Some(Scores { frequency: 2, mnemonic: 3, convention: 3, motor_note: "3 = the third of the three views; the file is the model as written" }),
         },
+        // ---- the model pane's reshape verbs: each changes the model the
+        //      analyst is looking at and writes it as the Ossie file, so all
+        //      are Data-tier spec edits. Each acts on what is selected, a join
+        //      or a table, addressed by its name in the model
+        //      (`relationship.<name>`, `dataset.<name>`), never by where it is
+        //      drawn. The keys keep off h j k l, v and the digits, and off
+        //      every bare letter the chart already binds in this context; the
+        //      shifted forms are the heavier sibling of a bare letter the
+        //      chart holds (d, a, c, x) or of the verb beside it (z). ----
+        VerbEntry {
+            longname: "keep-join",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("y")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Keep the selected possible join as the analyst's",
+            scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 3, motor_note: "y = yes to a proposal, the accept key of a y/n prompt; one bare key for the commonest review answer" }),
+        },
+        VerbEntry {
+            longname: "drop-join",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("shift-d")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Drop the selected join, keeping it as rejected so discovery does not add it back",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 4, motor_note: "shift-d = delete (vim D); bare d is the chart's remove-mark, and the shift makes a durable drop deliberate" }),
+        },
+        VerbEntry {
+            longname: "add-join",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("shift-a")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Add a join from the selected table to another, choosing the columns on each side",
+            scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 3, motor_note: "shift-a = add (vim A appends); bare a is the chart's add-mark; a drag from one card to another opens the same picker" }),
+        },
+        VerbEntry {
+            longname: "change-join-keys",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("shift-c")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Change the columns the selected join matches on",
+            scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 3, motor_note: "shift-c = change (vim C); bare c is the chart's colour scheme" }),
+        },
+        VerbEntry {
+            longname: "set-role",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("r")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Give the selected table another role: entity, event, reference, bridge, snapshot or unclear",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 2, motor_note: "r = role; bare r is free here, reload keeps cmd-r" }),
+        },
+        VerbEntry {
+            longname: "fold-table",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("z")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Fold the selected table into a table it joins, as columns of that table",
+            scores: Some(Scores { frequency: 2, mnemonic: 3, convention: 4, motor_note: "z = fold (vim's z fold family); f and t stay with the deferred filter verbs" }),
+        },
+        VerbEntry {
+            longname: "unfold-table",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("shift-z")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Unfold the selected table from the table it is folded into",
+            scores: Some(Scores { frequency: 2, mnemonic: 3, convention: 3, motor_note: "shift-z = the undoing sibling of z, one shift away from the fold it reverses" }),
+        },
+        VerbEntry {
+            longname: "leave-out-table",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("shift-x")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Leave the selected table out of the model; its silver tables are dropped",
+            scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 3, motor_note: "shift-x = cut it out (vim X deletes); bare x is the chart's axis lock" }),
+        },
+        VerbEntry {
+            longname: "include-table",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("i")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Bring the selected table, left out of the model, back into it",
+            scores: Some(Scores { frequency: 1, mnemonic: 4, convention: 2, motor_note: "i = include (vim's insert); bare i is free here" }),
+        },
+        VerbEntry {
+            longname: "retype-column",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("shift-t")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Give one of the selected table's columns another FineType type, and cast it again",
+            scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 2, motor_note: "shift-t = type; bare t stays with the deferred point-select verb" }),
+        },
     ]
 }
 
@@ -1521,6 +1640,16 @@ mod tests {
             "show-model-diagram",
             "show-model-list",
             "show-model-file",
+            "keep-join",
+            "drop-join",
+            "add-join",
+            "change-join-keys",
+            "set-role",
+            "fold-table",
+            "unfold-table",
+            "leave-out-table",
+            "include-table",
+            "retype-column",
         ];
         assert_eq!(got, expected);
     }
@@ -1539,8 +1668,9 @@ mod tests {
             .map(|v| v.longname)
             .collect();
         // The Data-tier set is exactly the addressed spec-edit verbs plus undo,
-        // the Outline's put-a-column-on-a-channel verbs, the shelf's keep, and the
-        // Versions panel's step back, which Save writes.
+        // the Outline's put-a-column-on-a-channel verbs, the shelf's keep, the
+        // Versions panel's step back, which Save writes, and the model pane's
+        // reshape verbs, which write the Ossie file.
         let mut got = durable.clone();
         got.sort_unstable();
         let mut expected = vec![
@@ -1560,6 +1690,16 @@ mod tests {
             "keep-shelf-choice",
             "set-shelf-setting-to-auto",
             "step-back-to-version",
+            "keep-join",
+            "drop-join",
+            "add-join",
+            "change-join-keys",
+            "set-role",
+            "fold-table",
+            "unfold-table",
+            "leave-out-table",
+            "include-table",
+            "retype-column",
         ];
         expected.sort_unstable();
         assert_eq!(got, expected, "only durable-writing (Data) verbs write");
@@ -1912,6 +2052,56 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_model_reshape_verbs_write_durably_on_keys_of_their_own() {
+        let reg = registry();
+        let reshape = [
+            "keep-join",
+            "drop-join",
+            "add-join",
+            "change-join-keys",
+            "set-role",
+            "fold-table",
+            "unfold-table",
+            "leave-out-table",
+            "include-table",
+            "retype-column",
+        ];
+        let mut keys: Vec<&str> = Vec::new();
+        for name in reshape {
+            let v = reg
+                .iter()
+                .find(|v| v.longname == name)
+                .unwrap_or_else(|| panic!("{name} is registered"));
+            assert_eq!(v.tier, CommandTier::Data, "{name} writes the Ossie file");
+            assert_eq!(v.drives, Drives::SpecEdit, "{name}");
+            assert_eq!(v.status, VerbStatus::Built, "{name}");
+            assert_eq!(v.scope_applicability, vec![Altitude::Model], "{name}");
+            assert!(v.scores.is_some(), "{name} is scored");
+            assert!(!v.help.is_empty(), "{name} has a help line");
+            for b in &v.binding_specs {
+                assert_eq!(b.context, BindingContext::Workspace, "{name}");
+                assert!(
+                    !["h", "j", "k", "l", "v", "1", "2", "3"].contains(&b.keystrokes),
+                    "{name} takes {}, which motion or the view verbs hold",
+                    b.keystrokes
+                );
+                keys.push(b.keystrokes);
+            }
+        }
+        // No two verbs at the model altitude share a key.
+        let mut at_model: Vec<&str> = reg
+            .iter()
+            .filter(|v| v.applies_at(Altitude::Model))
+            .flat_map(|v| v.binding_specs.iter().map(|b| b.keystrokes))
+            .collect();
+        let all = at_model.len();
+        at_model.sort_unstable();
+        at_model.dedup();
+        assert_eq!(at_model.len(), all, "a key repeats at the model altitude");
+        assert_eq!(keys.len(), reshape.len(), "one key each");
     }
 
     #[test]

@@ -202,6 +202,63 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
     Ok(())
 }
 
+/// Drop the silver and failed-value tables of each table `model` gives none, from the Protocol's
+/// database: a table left out or folded into another keeps no table of its own.
+///
+/// arc never drops what a step it no longer runs once made, so [`write_silver`] taking a table's
+/// steps out of the manifest would leave its tables standing. The record arc keeps of each of
+/// those steps' last success goes too, so a table brought back has its steps run again rather
+/// than skipped as unchanged. A Protocol that has not been run has no database, and nothing to
+/// drop.
+///
+/// # Errors
+///
+/// The reason when the database cannot be opened or a table cannot be dropped.
+pub fn drop_unmade_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
+    let db = arc::spec::protocol_db_path(&p.dir).map_err(|e| e.to_string())?;
+    if !db.is_file() {
+        return Ok(());
+    }
+    let transforms = FinetypeTransforms::vendored();
+    let unmade: Vec<&str> = p
+        .sources
+        .tables
+        .iter()
+        .filter(|t| silver_sql(model, &t.name, &transforms).is_empty())
+        .map(|t| t.name.as_str())
+        .collect();
+    if unmade.is_empty() {
+        return Ok(());
+    }
+    let conn = duckdb::Connection::open(&db).map_err(|e| format!("{}: {e}", db.display()))?;
+    let state: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = '_arcform_state'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("{}: {e}", db.display()))?;
+    let mut sql = String::new();
+    for name in unmade {
+        let _ = write!(
+            sql,
+            "DROP TABLE IF EXISTS {}; DROP TABLE IF EXISTS {};",
+            quoted(name),
+            quoted(&format!("{name}__failed"))
+        );
+        if state > 0 {
+            let _ = write!(
+                sql,
+                "DELETE FROM _arcform_state WHERE step_name IN ({}, {});",
+                literal(&format!("{SILVER_STEP}{name}")),
+                literal(&format!("{FAILED_STEP}{name}"))
+            );
+        }
+    }
+    conn.execute_batch(&sql)
+        .map_err(|e| format!("{}: {e}", db.display()))
+}
+
 /// Profile the raw tables with FineType, one [`SourceProfile`] per table in `p.profiles`.
 ///
 /// Each table is copied to a Parquet snapshot first, with the database held only for the copy, as

@@ -8,12 +8,14 @@
 //! values with the row each came from.
 //!
 //! Its buttons do nothing themselves: each one is a [`ModelAction`] the pane dispatches, so a
-//! click, a test and a later verb reach the same change.
+//! click, a test and a key reach the same change. An action that needs a choice first, such as
+//! the table to fold into, opens a [`ModelPicker`] under the buttons, and the picker's answer is
+//! the edit itself, as [`ModelAction::Edit`].
 
 use std::path::{Path, PathBuf};
 
 use brightfield_engine::semantic::SchemaCatalogue;
-use brightfield_ossie::{DecidedBy, Grade, Model, Role, Verified, LINEAGE};
+use brightfield_ossie::{DecidedBy, Edit, Grade, Model, Role, Verified, LINEAGE};
 use brightfield_render::model_scene::Selection;
 use brightfield_workbench::chrome;
 use meridian_design::{control, semantic, spacing};
@@ -63,8 +65,15 @@ pub enum ModelAction {
     Include(String),
     /// Give one of a table's columns another type.
     RetypeColumn(String),
+    /// Add a join from a table to another.
+    AddJoin(String),
+    /// Choose a table's role from a picker, as the keyboard does; the inspector's own role picker
+    /// answers [`ModelAction::ChangeRole`] directly.
+    PickRole(String),
     /// Open the selection's rows in the grid: a table's silver rows, or a join's joined rows.
     OpenInGrid(Selection),
+    /// Make one edit, as a picker answers once its choices are made.
+    Edit(Edit),
 }
 
 impl ModelAction {
@@ -83,7 +92,10 @@ impl ModelAction {
             ModelAction::LeaveOut(_) => "Leave out".into(),
             ModelAction::Include(_) => "Include".into(),
             ModelAction::RetypeColumn(_) => "Retype column\u{2026}".into(),
+            ModelAction::AddJoin(_) => "Add join\u{2026}".into(),
+            ModelAction::PickRole(_) => "Change role".into(),
             ModelAction::OpenInGrid(_) => "Open in grid".into(),
+            ModelAction::Edit(_) => "Apply".into(),
         }
     }
 }
@@ -118,9 +130,10 @@ pub fn join_actions(model: &Model, relationship: &str) -> Vec<ModelAction> {
 }
 
 /// The buttons a table's inspector offers, in order, besides its role picker: a folded table's
-/// Unfold, or Fold into…; an Unfold for each table folded into this one; Leave out, or Include for
-/// a table already left out; then Retype column…, Show in file and, for a table with a silver
-/// table of its own, Open in grid.
+/// Unfold, or Fold into…; an Unfold for each table folded into this one and not left out; Leave
+/// out, or Include for a table already left out; then Retype column…, and for a table with a
+/// silver table of its own Add join…; Show in file; and, again for a table with a silver table of
+/// its own, Open in grid.
 #[must_use]
 pub fn table_actions(model: &Model, dataset: &str) -> Vec<ModelAction> {
     let Some(d) = model.datasets.iter().find(|d| d.name == dataset) else {
@@ -136,7 +149,7 @@ pub fn table_actions(model: &Model, dataset: &str) -> Vec<ModelAction> {
     let mut folded: Vec<&str> = model
         .datasets
         .iter()
-        .filter(|f| f.meta.folded_into.as_deref() == Some(dataset))
+        .filter(|f| !f.meta.excluded && f.meta.folded_into.as_deref() == Some(dataset))
         .map(|f| f.name.as_str())
         .collect();
     folded.sort_unstable();
@@ -151,11 +164,464 @@ pub fn table_actions(model: &Model, dataset: &str) -> Vec<ModelAction> {
         actions.push(ModelAction::LeaveOut(name.clone()));
     }
     actions.push(ModelAction::RetypeColumn(name.clone()));
+    if materialised(model, dataset) {
+        actions.push(ModelAction::AddJoin(name.clone()));
+    }
     actions.push(ModelAction::ShowInFile);
     if materialised(model, dataset) {
         actions.push(ModelAction::OpenInGrid(Selection::Dataset(name)));
     }
     actions
+}
+
+/// A choice the inspector asks for before it can make an edit, drawn under its buttons. Each holds
+/// what it offers, read from the model when it opened, and what is chosen so far.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelPicker {
+    /// The columns a join matches on: one pair for each of its keys.
+    Keys {
+        relationship: String,
+        from: String,
+        to: String,
+        from_choices: Vec<String>,
+        to_choices: Vec<String>,
+        from_columns: Vec<String>,
+        to_columns: Vec<String>,
+    },
+    /// The table to fold `dataset` into: each table a relationship joins it to.
+    Fold { dataset: String, hosts: Vec<String> },
+    /// One of `dataset`'s columns, and the FineType label to give it.
+    Retype {
+        dataset: String,
+        fields: Vec<String>,
+        labels: Vec<String>,
+        field: String,
+        finetype: String,
+    },
+    /// The role to give `dataset`.
+    Role { dataset: String },
+    /// A join from `from` to another table, and the column on each side.
+    AddJoin {
+        from: String,
+        from_choices: Vec<String>,
+        /// Each table the join can go to, with its columns.
+        tables: Vec<(String, Vec<String>)>,
+        to: String,
+        from_column: String,
+        to_column: String,
+    },
+}
+
+impl ModelPicker {
+    /// What the picker is about: the join whose keys it changes, or the table it acts on.
+    #[must_use]
+    pub fn subject(&self) -> Selection {
+        match self {
+            ModelPicker::Keys { relationship, .. } => Selection::Relationship(relationship.clone()),
+            ModelPicker::Fold { dataset, .. }
+            | ModelPicker::Retype { dataset, .. }
+            | ModelPicker::Role { dataset } => Selection::Dataset(dataset.clone()),
+            ModelPicker::AddJoin { from, .. } => Selection::Dataset(from.clone()),
+        }
+    }
+
+    /// The line the picker asks its question in.
+    #[must_use]
+    pub fn prompt(&self) -> String {
+        match self {
+            ModelPicker::Keys { relationship, .. } => {
+                format!("Choose the columns {relationship} matches on")
+            }
+            ModelPicker::Fold { dataset, .. } => format!("Fold {dataset} into"),
+            ModelPicker::Retype { dataset, .. } => {
+                format!("Choose a column of {dataset} and its type")
+            }
+            ModelPicker::Role { dataset } => format!("Choose the role of {dataset}"),
+            ModelPicker::AddJoin { from, .. } => {
+                format!("Join {from} to another table on a column of each")
+            }
+        }
+    }
+}
+
+/// `dataset`'s columns, without the lineage columns every table carries.
+fn columns(model: &Model, dataset: &str) -> Vec<String> {
+    model
+        .datasets
+        .iter()
+        .find(|d| d.name == dataset)
+        .map(|d| {
+            d.fields
+                .iter()
+                .filter(|f| !LINEAGE.contains(&f.name.as_str()))
+                .map(|f| f.name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The picker for the columns `relationship` matches on, opened on the ones it has now.
+///
+/// # Errors
+///
+/// When the model has no join of that name.
+pub fn keys_picker(model: &Model, relationship: &str) -> Result<ModelPicker, String> {
+    let r = model
+        .relationships
+        .iter()
+        .find(|r| r.name == relationship)
+        .ok_or_else(|| format!("the model has no join named {relationship}"))?;
+    Ok(ModelPicker::Keys {
+        relationship: r.name.clone(),
+        from: r.from.clone(),
+        to: r.to.clone(),
+        from_choices: columns(model, &r.from),
+        to_choices: columns(model, &r.to),
+        from_columns: r.from_columns.clone(),
+        to_columns: r.to_columns.clone(),
+    })
+}
+
+/// The tables `dataset` can be folded into: each one a relationship joins it to that is in the
+/// model and has a table of its own, and is not the one it is folded into already. In name order.
+#[must_use]
+pub fn fold_hosts(model: &Model, dataset: &str) -> Vec<String> {
+    let current = model
+        .datasets
+        .iter()
+        .find(|d| d.name == dataset)
+        .and_then(|d| d.meta.folded_into.as_deref());
+    let mut hosts: Vec<String> = model
+        .relationships
+        .iter()
+        .filter_map(|r| {
+            if r.from == dataset {
+                Some(&r.to)
+            } else if r.to == dataset {
+                Some(&r.from)
+            } else {
+                None
+            }
+        })
+        .filter(|host| {
+            host.as_str() != dataset && Some(host.as_str()) != current && materialised(model, host)
+        })
+        .cloned()
+        .collect();
+    hosts.sort_unstable();
+    hosts.dedup();
+    hosts
+}
+
+/// The picker for the table to fold `dataset` into.
+///
+/// # Errors
+///
+/// When no relationship joins it to a table it could fold into, so there is nothing to offer.
+pub fn fold_picker(model: &Model, dataset: &str) -> Result<ModelPicker, String> {
+    let hosts = fold_hosts(model, dataset);
+    if hosts.is_empty() {
+        return Err(format!(
+            "{dataset} can't fold into another table: no relationship joins it to one"
+        ));
+    }
+    Ok(ModelPicker::Fold {
+        dataset: dataset.to_string(),
+        hosts,
+    })
+}
+
+/// The picker for a column of `dataset` and its type, offering every label FineType's vendored
+/// transformation contracts define, and opened on the first column and the label it has.
+///
+/// # Errors
+///
+/// When the table has no columns to retype.
+pub fn retype_picker(model: &Model, dataset: &str) -> Result<ModelPicker, String> {
+    let fields = columns(model, dataset);
+    let Some(field) = fields.first().cloned() else {
+        return Err(format!("{dataset} has no columns to retype"));
+    };
+    let labels: Vec<String> = brightfield_protocol::silver::FinetypeTransforms::vendored()
+        .labels()
+        .map(str::to_string)
+        .collect();
+    let finetype = label_of(model, dataset, &field)
+        .or_else(|| labels.first().cloned())
+        .unwrap_or_default();
+    Ok(ModelPicker::Retype {
+        dataset: dataset.to_string(),
+        fields,
+        labels,
+        field,
+        finetype,
+    })
+}
+
+/// The FineType label the model gives `field` of `dataset`, if any.
+fn label_of(model: &Model, dataset: &str, field: &str) -> Option<String> {
+    model
+        .datasets
+        .iter()
+        .find(|d| d.name == dataset)?
+        .fields
+        .iter()
+        .find(|f| f.name == field)?
+        .meta
+        .finetype
+        .clone()
+}
+
+/// The picker for `dataset`'s role.
+///
+/// # Errors
+///
+/// When the model has no table of that name.
+pub fn role_picker_for(model: &Model, dataset: &str) -> Result<ModelPicker, String> {
+    if !model.datasets.iter().any(|d| d.name == dataset) {
+        return Err(format!("the model has no table named {dataset}"));
+    }
+    Ok(ModelPicker::Role {
+        dataset: dataset.to_string(),
+    })
+}
+
+/// The picker for a join from `from`: to `to` when one is given, as a drag from one card to another
+/// gives it, or else to the first other table. Each side opens on a column the two tables share by
+/// name, or on its first column.
+///
+/// # Errors
+///
+/// When `from` has no table of its own, or there is no other table to join it to.
+pub fn add_join_picker(model: &Model, from: &str, to: Option<&str>) -> Result<ModelPicker, String> {
+    if !materialised(model, from) {
+        return Err(format!(
+            "{from} has no table of its own to join: it is left out or folded into another"
+        ));
+    }
+    let tables: Vec<(String, Vec<String>)> = model
+        .datasets
+        .iter()
+        .filter(|d| d.name != from && materialised(model, &d.name))
+        .map(|d| (d.name.clone(), columns(model, &d.name)))
+        .collect();
+    let to = match to {
+        Some(to) if tables.iter().any(|(t, _)| t == to) => to.to_string(),
+        Some(to) => {
+            return Err(format!(
+                "{from} can't join {to}: {to} has no table of its own"
+            ))
+        }
+        None => match tables.first() {
+            Some((t, _)) => t.clone(),
+            None => return Err(format!("there is no other table to join {from} to")),
+        },
+    };
+    let from_choices = columns(model, from);
+    let (from_column, to_column) = shared_column(&from_choices, &to_columns(&tables, &to));
+    Ok(ModelPicker::AddJoin {
+        from: from.to_string(),
+        from_choices,
+        tables,
+        to,
+        from_column,
+        to_column,
+    })
+}
+
+/// The columns of `table` among the picker's `tables`.
+fn to_columns(tables: &[(String, Vec<String>)], table: &str) -> Vec<String> {
+    tables
+        .iter()
+        .find(|(t, _)| t == table)
+        .map(|(_, c)| c.clone())
+        .unwrap_or_default()
+}
+
+/// The first column of `from` that `to` also has, on both sides; or each side's first column.
+fn shared_column(from: &[String], to: &[String]) -> (String, String) {
+    match from.iter().find(|c| to.contains(c)) {
+        Some(c) => (c.clone(), c.clone()),
+        None => (
+            from.first().cloned().unwrap_or_default(),
+            to.first().cloned().unwrap_or_default(),
+        ),
+    }
+}
+
+/// Draw `picker` into `ui`, and answer whether it stays open. A choice made pushes the edit it
+/// makes onto `chosen` and closes it, and so does Cancel, with nothing pushed.
+pub fn picker_ui(
+    ui: &mut egui::Ui,
+    picker: &mut ModelPicker,
+    chosen: &mut Vec<ModelAction>,
+    drawn: &mut InspectorDrawn,
+) -> bool {
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(picker.prompt())
+                .font(ui_font())
+                .strong(),
+        )
+        .wrap(),
+    );
+    drawn.lines.push(picker.prompt());
+    let mut open = true;
+    let button = picker_button;
+    match picker {
+        ModelPicker::Fold { dataset, hosts } => {
+            ui.horizontal_wrapped(|ui| {
+                for host in hosts.iter() {
+                    if button(ui, host, drawn) {
+                        chosen.push(ModelAction::Edit(Edit::Fold {
+                            dataset: dataset.clone(),
+                            into: host.clone(),
+                        }));
+                        open = false;
+                    }
+                }
+            });
+        }
+        ModelPicker::Role { dataset } => {
+            ui.horizontal_wrapped(|ui| {
+                for role in ROLES {
+                    if button(ui, role_label(role), drawn) {
+                        chosen.push(ModelAction::ChangeRole {
+                            dataset: dataset.clone(),
+                            role,
+                        });
+                        open = false;
+                    }
+                }
+            });
+        }
+        ModelPicker::Keys {
+            relationship,
+            from,
+            to,
+            from_choices,
+            to_choices,
+            from_columns,
+            to_columns,
+        } => {
+            for (i, (f, t)) in from_columns
+                .iter_mut()
+                .zip(to_columns.iter_mut())
+                .enumerate()
+            {
+                ui.horizontal(|ui| {
+                    combo(ui, ("model-keys-from", i), from, f, from_choices);
+                    ui.label("=");
+                    combo(ui, ("model-keys-to", i), to, t, to_choices);
+                });
+            }
+            ui.horizontal(|ui| {
+                if button(ui, "Change keys", drawn) {
+                    chosen.push(ModelAction::Edit(Edit::ChangeKeys {
+                        relationship: relationship.clone(),
+                        from_columns: from_columns.clone(),
+                        to_columns: to_columns.clone(),
+                    }));
+                    open = false;
+                }
+                if button(ui, "Cancel", drawn) {
+                    open = false;
+                }
+            });
+        }
+        ModelPicker::Retype {
+            dataset,
+            fields,
+            labels,
+            field,
+            finetype,
+        } => {
+            ui.horizontal(|ui| {
+                combo(ui, "model-retype-field", "Column", field, fields);
+            });
+            ui.horizontal(|ui| {
+                combo(ui, "model-retype-type", "Type", finetype, labels);
+            });
+            ui.horizontal(|ui| {
+                if button(ui, "Retype", drawn) {
+                    chosen.push(ModelAction::Edit(Edit::Retype {
+                        dataset: dataset.clone(),
+                        field: field.clone(),
+                        finetype: finetype.clone(),
+                    }));
+                    open = false;
+                }
+                if button(ui, "Cancel", drawn) {
+                    open = false;
+                }
+            });
+        }
+        ModelPicker::AddJoin {
+            from,
+            from_choices,
+            tables,
+            to,
+            from_column,
+            to_column,
+        } => {
+            let names: Vec<String> = tables.iter().map(|(t, _)| t.clone()).collect();
+            ui.horizontal(|ui| {
+                combo(ui, "model-join-from", from, from_column, from_choices);
+            });
+            let before = to.clone();
+            ui.horizontal(|ui| {
+                combo(ui, "model-join-to-table", "to", to, &names);
+            });
+            let choices = to_columns(tables, to);
+            if *to != before {
+                *to_column = shared_column(std::slice::from_ref(from_column), &choices).1;
+            }
+            ui.horizontal(|ui| {
+                combo(ui, "model-join-to", to.as_str(), to_column, &choices);
+            });
+            ui.horizontal(|ui| {
+                if button(ui, "Add join", drawn) {
+                    chosen.push(ModelAction::Edit(Edit::AddJoin {
+                        from: from.clone(),
+                        from_columns: vec![from_column.clone()],
+                        to: to.clone(),
+                        to_columns: vec![to_column.clone()],
+                    }));
+                    open = false;
+                }
+                if button(ui, "Cancel", drawn) {
+                    open = false;
+                }
+            });
+        }
+    }
+    open
+}
+
+/// One of a picker's buttons, recorded in `drawn`; answers whether it was clicked.
+fn picker_button(ui: &mut egui::Ui, label: &str, drawn: &mut InspectorDrawn) -> bool {
+    let response = ui.button(label);
+    drawn.picker.push(label.to_string());
+    drawn.picker_rects.push(response.rect);
+    response.clicked()
+}
+
+/// A labelled drop-down that sets `value` to one of `choices`.
+fn combo(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    label: &str,
+    value: &mut String,
+    choices: &[String],
+) {
+    ui.label(egui::RichText::new(label).font(ui_font()));
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(value.as_str())
+        .show_ui(ui, |ui| {
+            for c in choices {
+                ui.selectable_value(value, c.clone(), c);
+            }
+        });
 }
 
 /// Rows read back from the Protocol's database, every value as text.
@@ -460,6 +926,10 @@ pub struct InspectorDrawn {
     pub button_rects: Vec<egui::Rect>,
     /// The columns of the rows table it drew, and how many rows it held.
     pub table: Option<(Vec<String>, usize)>,
+    /// The words on each of the open picker's buttons, in order.
+    pub picker: Vec<String>,
+    /// Where each of those buttons was laid out, in the order of [`InspectorDrawn::picker`].
+    pub picker_rects: Vec<egui::Rect>,
 }
 
 /// The name a role is written as.
@@ -475,12 +945,14 @@ pub fn role_label(role: Role) -> &'static str {
     }
 }
 
-/// Draw the inspector for `inspected` into `ui`, offering `actions`, and push each one the
-/// analyst chose onto `chosen`.
+/// Draw the inspector for `inspected` into `ui`, offering `actions` and, under them, the open
+/// `picker`, and push each one the analyst chose onto `chosen`. A picker that is answered or
+/// cancelled is taken out of `picker`.
 pub fn ui(
     ui: &mut egui::Ui,
     inspected: &Inspected,
     actions: &[ModelAction],
+    picker: &mut Option<ModelPicker>,
     mode: Mode,
     chosen: &mut Vec<ModelAction>,
     drawn: &mut InspectorDrawn,
@@ -519,6 +991,7 @@ pub fn ui(
                 }
                 ui.add_space(spacing::SPACE_2);
                 buttons(ui, actions, chosen, drawn);
+                open_picker(ui, picker, chosen, drawn);
                 ui.add_space(spacing::SPACE_2);
                 line(
                     ui,
@@ -552,6 +1025,7 @@ pub fn ui(
                 }
                 ui.add_space(spacing::SPACE_2);
                 buttons(ui, actions, chosen, drawn);
+                open_picker(ui, picker, chosen, drawn);
                 if let Some(failed) = &t.failed {
                     ui.add_space(spacing::SPACE_2);
                     line(
@@ -564,6 +1038,21 @@ pub fn ui(
                 }
             }
         });
+}
+
+/// The open picker, if any, under the buttons; closed once it is answered or cancelled.
+fn open_picker(
+    ui: &mut egui::Ui,
+    picker: &mut Option<ModelPicker>,
+    chosen: &mut Vec<ModelAction>,
+    drawn: &mut InspectorDrawn,
+) {
+    if let Some(p) = picker {
+        ui.add_space(spacing::SPACE_2);
+        if !picker_ui(ui, p, chosen, drawn) {
+            *picker = None;
+        }
+    }
 }
 
 fn heading(ui: &mut egui::Ui, text: &str, ink: egui::Color32) {
