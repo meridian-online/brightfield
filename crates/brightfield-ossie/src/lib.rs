@@ -14,6 +14,7 @@ mod merge;
 mod meridian;
 mod model;
 mod validate;
+mod verify;
 mod wire;
 
 pub use edit::{apply, Edit, EditError};
@@ -26,6 +27,7 @@ pub use model::{
     ModelMeta, Relationship, RelationshipMeta, Role, SkippedSource, Verified,
 };
 pub use validate::{validate, SchemaIssue};
+pub use verify::{apply_evidence, evidence_sql};
 pub use wire::{line_of, read, write, Element, ReadError};
 
 /// The Ossie specification version this crate reads and writes.

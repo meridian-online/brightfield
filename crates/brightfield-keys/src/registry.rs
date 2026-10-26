@@ -1327,6 +1327,21 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Give one of the selected table's columns another FineType type, and cast it again",
             scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 2, motor_note: "shift-t = type; bare t stays with the deferred point-select verb" }),
         },
+        // Rediscover runs discovery again over the whole model and folds what it
+        // proposes around the analyst's decisions, rewriting the Ossie file: a
+        // Data-tier spec edit like the reshape verbs, on the shifted form of the
+        // role key beside it.
+        VerbEntry {
+            longname: "rediscover-model",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("shift-r")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Run discovery again and fold what it finds around what you have decided",
+            scores: Some(Scores { frequency: 1, mnemonic: 4, convention: 3, motor_note: "shift-r = run again (vim R replaces, a rerun key in many tools); bare r is set-role, and the shift makes a rewrite of the whole model deliberate; cmd-shift-r stays the data reload" }),
+        },
     ]
 }
 
@@ -1650,6 +1665,7 @@ mod tests {
             "leave-out-table",
             "include-table",
             "retype-column",
+            "rediscover-model",
         ];
         assert_eq!(got, expected);
     }
@@ -1700,6 +1716,7 @@ mod tests {
             "leave-out-table",
             "include-table",
             "retype-column",
+            "rediscover-model",
         ];
         expected.sort_unstable();
         assert_eq!(got, expected, "only durable-writing (Data) verbs write");
@@ -2068,6 +2085,7 @@ mod tests {
             "leave-out-table",
             "include-table",
             "retype-column",
+            "rediscover-model",
         ];
         let mut keys: Vec<&str> = Vec::new();
         for name in reshape {

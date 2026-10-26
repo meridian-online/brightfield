@@ -11,7 +11,11 @@
 //! through Vello into a slot of the window's canvas host, as an arc Protocol's panel tiles are;
 //! a click on it selects what [`brightfield_render::model_scene::hit_test`] finds under the
 //! pointer. [`ModelPane::save_model`] is how a changed model reaches the folder: it writes the
-//! Ossie file, rewrites the silver steps for it and runs the Protocol again.
+//! Ossie file, rewrites the silver steps for it and runs the Protocol again. After each run, and
+//! when the pane opens over a Protocol already run, each join's evidence is measured again over the
+//! silver tables ([`measure_joins`]); a join the data no longer bears out carries a warning, which
+//! its pill and its inspector show. Rediscover ([`REDISCOVER_MODEL`]) runs discovery again and
+//! folds what it proposes around what the analyst decided.
 //!
 //! What is selected belongs to the pane, not to a view: a click on a card or a join on the
 //! diagram, or on a row of the list, selects it, and in either view what is not connected to the
@@ -42,7 +46,7 @@ use std::path::{Path, PathBuf};
 
 use brightfield_engine::semantic::SchemaCatalogue;
 use brightfield_keys::{Altitude, BindingContext};
-use brightfield_ossie::{Edit, ListRow, Model, ModelLayout};
+use brightfield_ossie::{Edit, Evidence, ListRow, Model, ModelLayout};
 use brightfield_render::canvas_host::{Color, PixelSize};
 use brightfield_render::model_scene::{
     dataset_lit, hit_test, relationship_lit, render_model, ModelFocus, Selection,
@@ -56,7 +60,7 @@ use meridian_design::{semantic, spacing};
 
 use crate::canvas::EguiCanvasHost;
 use crate::design::Mode;
-use crate::discovery::MODEL_FILE;
+use crate::discovery::{discover_with, Discovery, StandIn, MODEL_FILE};
 use crate::editor::Access;
 use crate::model_file::{self, Kept};
 use crate::model_inspector::{self, Inspected, InspectorDrawn, ModelAction, ModelPicker};
@@ -147,10 +151,14 @@ pub const RESHAPE_VERBS: [&str; 10] = [
     "retype-column",
 ];
 
+/// The verb that runs discovery again and folds what it proposes around the analyst's decisions.
+pub const REDISCOVER_MODEL: &str = "rediscover-model";
+
 /// Whether `longname` is one of the model pane's verbs.
 #[must_use]
 pub fn is_model_verb(longname: &str) -> bool {
     longname == CYCLE_MODEL_VIEW
+        || longname == REDISCOVER_MODEL
         || SHOW_VIEW.iter().any(|(verb, _)| *verb == longname)
         || RESHAPE_VERBS.contains(&longname)
 }
@@ -285,7 +293,7 @@ impl ModelPane {
             std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let model =
             brightfield_ossie::read(&file_text).map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(Self {
+        let mut pane = Self {
             protocol,
             layout: brightfield_ossie::layout(&model),
             model,
@@ -315,7 +323,13 @@ impl ModelPane {
             picker: None,
             status: None,
             drag_from: None,
-        })
+        };
+        // A Protocol already run has silver tables to measure the joins over; one not yet run
+        // has none, and nothing is measured.
+        if let Err(e) = pane.reverify(false) {
+            pane.status = Some(format!("The joins could not be measured again: {e}"));
+        }
+        Ok(pane)
     }
 
     /// Step to the next view.
@@ -596,9 +610,13 @@ impl ModelPane {
             .any(|d| d.name == name && d.meta.excluded)
     }
 
-    /// Perform reshape verb `longname` on the selection, and answer what came of it; `None` when
-    /// `longname` is not a reshape verb.
+    /// Perform reshape verb `longname` on the selection, or Rediscover on the whole model, and
+    /// answer what came of it; `None` when `longname` is neither.
     pub fn perform_reshape(&mut self, longname: &str) -> Option<Dispatched> {
+        if longname == REDISCOVER_MODEL {
+            // The stand-in is the discoverer the open uses ([`crate::discovery::discover_model`]).
+            return Some(self.rediscover(&StandIn));
+        }
         Some(match self.reshape_action(longname)? {
             Ok(action) => self.dispatch(action),
             Err(e) => {
@@ -723,6 +741,43 @@ impl ModelPane {
         }
     }
 
+    /// Run `discovery` over the Protocol again and fold what it proposes into the model, as
+    /// [`discover_with`] does: what the analyst decided stays as it is, and what Dovetail decided
+    /// takes the fresh pass. The result is saved as an action's model is. What came of it stands
+    /// in the status line.
+    pub fn rediscover(&mut self, discovery: &dyn Discovery) -> Dispatched {
+        let dispatched = self.rediscovered(discovery);
+        match &dispatched {
+            Dispatched::Done(said) | Dispatched::Picking(said) | Dispatched::Failed(said) => {
+                self.status = Some(said.clone());
+            }
+            Dispatched::OpenInGrid(_) => {}
+        }
+        dispatched
+    }
+
+    fn rediscovered(&mut self, discovery: &dyn Discovery) -> Dispatched {
+        if let Err(e) = self.settle_file_edit() {
+            return Dispatched::Failed(e);
+        }
+        let model = match discover_with(discovery, &self.protocol) {
+            Ok(model) => model,
+            Err(e) => return Dispatched::Failed(format!("Discovery failed: {e}")),
+        };
+        if model == self.model {
+            return Dispatched::Done("Discovery found nothing to change".to_string());
+        }
+        self.picker = None;
+        let saved = self.save_model(model);
+        self.let_go_of_what_is_gone();
+        match saved {
+            Ok(()) => {
+                Dispatched::Done("Discovered the model again, around what you decided".to_string())
+            }
+            Err(e) => Dispatched::Failed(e),
+        }
+    }
+
     /// Open `picker` over its subject, selecting it so the inspector shows it, or say why it
     /// cannot open.
     fn open_picker(&mut self, picker: Result<ModelPicker, String>) -> Dispatched {
@@ -790,6 +845,10 @@ impl ModelPane {
     /// pane takes `model` once the file is written, so a failed run leaves it showing what the
     /// folder holds.
     ///
+    /// After a run that succeeds, each join's evidence is measured again over the silver tables
+    /// ([`measure_joins`]), and when that changes the model it is written again, without a run:
+    /// evidence is what the file says about the data, not a step of the Protocol.
+    ///
     /// # Errors
     ///
     /// The reason the file or the silver steps could not be written, or what arc printed when
@@ -803,6 +862,16 @@ impl ModelPane {
     /// text (`from_editor`), or one while the editor holds the keyboard, leaves the editor's text
     /// as it stands, to take the file's once the editor lets go of the keyboard.
     fn save_with(&mut self, model: Model, kept: Kept, from_editor: bool) -> Result<(), String> {
+        self.write_model(model, kept, from_editor)?;
+        own_files::write_silver(&self.protocol, &self.model)?;
+        own_files::drop_unmade_silver(&self.protocol, &self.model)?;
+        own_files::run_loads(&self.protocol, &self.runner)?;
+        self.reverify(from_editor)
+    }
+
+    /// Write `model` with `kept` as the Ossie file and make it the pane's model, without touching
+    /// the Protocol's steps or running it.
+    fn write_model(&mut self, model: Model, kept: Kept, from_editor: bool) -> Result<(), String> {
         let path = self.protocol.dir.join(MODEL_FILE);
         let text = model_file::written(&model, &kept);
         std::fs::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -817,9 +886,19 @@ impl ModelPane {
         self.file_pause = None;
         self.file_error = None;
         self.generation += 1;
-        own_files::write_silver(&self.protocol, &self.model)?;
-        own_files::drop_unmade_silver(&self.protocol, &self.model)?;
-        own_files::run_loads(&self.protocol, &self.runner)
+        Ok(())
+    }
+
+    /// Measure each join's evidence again over the Protocol's silver tables, and write the model
+    /// when that changed it. `from_editor` is as [`Self::save_with`] takes it.
+    fn reverify(&mut self, from_editor: bool) -> Result<(), String> {
+        let measured = measure_joins(&self.protocol.dir, &self.model)?;
+        if measured == self.model {
+            return Ok(());
+        }
+        // Measuring renames and removes nothing, so what the file kept beside the model stands.
+        let kept = self.kept.clone();
+        self.write_model(measured, kept, from_editor)
     }
 
     /// Raster the diagram through `host` when it is showing and what it depends on changed.
@@ -1380,6 +1459,73 @@ fn list_line(row: &ListRow) -> String {
             text
         }
     }
+}
+
+/// `model` with each join's evidence measured again over the silver tables of the Protocol in
+/// `dir` ([`brightfield_ossie::evidence_sql`]) and written onto it with whatever warning that
+/// calls for ([`brightfield_ossie::apply_evidence`]).
+///
+/// A join is measured when both its tables are in the model and each has a silver table in the
+/// database; a folded table has none, and its join is left as it is. A join whose statement
+/// fails, keys whose types do not compare, say, is left as it is too. The evidence a statement
+/// does not measure (the key types and how alike the names are) stays as it was. A Protocol that
+/// has not been run has no database, and `model` comes back as it is.
+///
+/// # Errors
+///
+/// The reason when the database cannot be opened.
+pub fn measure_joins(dir: &Path, model: &Model) -> Result<Model, String> {
+    let db = arc::spec::protocol_db_path(dir).map_err(|e| e.to_string())?;
+    if !db.is_file() || model.relationships.is_empty() {
+        return Ok(model.clone());
+    }
+    let tables = model_inspector::query(dir, "SELECT table_name FROM duckdb_tables()")?;
+    let has_table = |name: &str| {
+        tables
+            .rows
+            .iter()
+            .any(|row| row.first().and_then(Option::as_deref) == Some(name))
+    };
+    let included = |name: &str| {
+        model
+            .datasets
+            .iter()
+            .any(|d| d.name == name && !d.meta.excluded)
+    };
+    let mut out = model.clone();
+    for r in &model.relationships {
+        if !(included(&r.from) && included(&r.to) && has_table(&r.from) && has_table(&r.to)) {
+            continue;
+        }
+        let sql = brightfield_ossie::evidence_sql(model, &r.name);
+        if sql.is_empty() {
+            continue;
+        }
+        let Ok(rows) = model_inspector::query(dir, &sql) else {
+            continue;
+        };
+        let count = |column: &str| rows.value(0, column).and_then(|v| v.parse::<u64>().ok());
+        let overlap = rows
+            .value(0, "value_overlap")
+            .and_then(|v| v.parse::<f64>().ok());
+        let (Some(value_overlap), Some(orphans), Some(child_rows), Some(parent_duplicates)) = (
+            overlap,
+            count("orphans"),
+            count("child_rows"),
+            count("parent_duplicates"),
+        ) else {
+            continue;
+        };
+        let measured = Evidence {
+            value_overlap,
+            orphans,
+            child_rows,
+            parent_duplicates,
+            ..r.meta.evidence.clone()
+        };
+        out = brightfield_ossie::apply_evidence(&out, &r.name, measured);
+    }
+    Ok(out)
 }
 
 /// What a toast says once `edit` is saved.

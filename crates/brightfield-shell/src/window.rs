@@ -2203,6 +2203,8 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "shift-z" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::Z)),
         "shift-x" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::X)),
         "shift-t" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::T)),
+        // Rediscover, the shifted form of the role key.
+        "shift-r" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::R)),
         _ => false,
     }
 }

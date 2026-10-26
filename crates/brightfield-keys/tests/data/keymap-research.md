@@ -212,6 +212,10 @@ they take as the heavier, durable sibling; `f` stays with the deferred filter ve
 the deferred point-select verb. (`z` here is the fold key; the `z` the scope model dropped below was a
 scope prefix.)
 
+Rediscover (`rediscover-model`) runs discovery again over the whole model and folds what it proposes
+around the analyst's decisions. It rewrites the Ossie file, so it is a **Data**-tier spec edit too, and
+it takes the shifted form of the role key beside it.
+
 | longname | key(s) | freq / mnem / conv | motor note |
 |----------|--------|--------------------|------------|
 | `keep-join` | `y` | 4 / 4 / 3 | `y` = yes to a proposal, the accept key of a y/n prompt |
@@ -224,6 +228,7 @@ scope prefix.)
 | `leave-out-table` | `shift-x` | 2 / 4 / 3 | `shift-x` = cut it out (vim `X`); bare `x` is the chart's axis lock |
 | `include-table` | `i` | 1 / 4 / 2 | `i` = include (vim's insert) |
 | `retype-column` | `shift-t` | 2 / 4 / 2 | `shift-t` = type; bare `t` stays with the deferred point-select verb |
+| `rediscover-model` | `shift-r` | 1 / 4 / 3 | `shift-r` = run again; bare `r` is set-role, and the shift makes a rewrite of the whole model deliberate; `cmd-shift-r` stays the data reload |
 
 Reserved verbs are deliberately unscored (no key yet), shown greyed in the palette until their keys land:
 needs-keyboard-target (`filter-view`, `cross-filter-all`, `toggle-point-select`, `set-param`) and

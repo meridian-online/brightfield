@@ -174,6 +174,15 @@ pub struct Evidence {
     pub parent_type: Option<String>,
     pub types_agree: bool,
     pub name_similarity: f64,
+    /// Parent key values held by more than one parent row: a join that should find one parent
+    /// per child row finds several for these.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub parent_duplicates: u64,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes a reference
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
