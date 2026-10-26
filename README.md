@@ -43,6 +43,8 @@ cargo run -p brightfield-shell --bin brightfield-shot -- \
   --spec examples/scatter.yaml --out scatter.png --vello-only
 ```
 
+A build run from source has no FineType bundle beside it, so its column headers name no types. `scripts/stage-finetype-bundle-for-source-run.sh` downloads the pinned bundle into `target/debug/finetype` (pass `release` for a `--release` build), where the next `cargo run` finds it. It lives under `target/`, so git ignores it.
+
 `examples/scatter.yaml` is inline data — nothing external to download. Over 50 further Mosaic specs ship under [`crates/brightfield-spec/vendor/mosaic-specs/yaml/`](crates/brightfield-spec/vendor/mosaic-specs/yaml/); note that many read from Parquet/CSV files that are not bundled, so not all of them render out of the box yet.
 
 The live window and the headless shot both run on the egui/wgpu stack. macOS (Metal) is the validated target today; the Linux/Windows window stack is wgpu-supported but not yet CI-validated (see [Platform Support](#platform-support)).

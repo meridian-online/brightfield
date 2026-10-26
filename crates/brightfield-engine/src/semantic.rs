@@ -915,9 +915,28 @@ pub struct SchemaCatalogue {
     checkable: HashMap<String, String>,
     /// Every label the catalogue carries an entry for, checkable or not.
     mentioned: std::collections::HashSet<String>,
+    /// Label → the catalogue's `title` for it, for entries that carry one.
+    titles: HashMap<String, String>,
+    /// Label → the entry's `x-finetype-icon`, for entries that carry one.
+    icons: HashMap<String, String>,
 }
 
 impl SchemaCatalogue {
+    /// The catalogue's display title for this label (`Email Address`), when its
+    /// entry carries one.
+    #[must_use]
+    pub fn title(&self, label: &str) -> Option<&str> {
+        self.titles.get(label).map(String::as_str)
+    }
+
+    /// The icon the catalogue names for this label, when its entry carries an
+    /// `x-finetype-icon`. The pinned catalogue carries none today, so this
+    /// answers `None` for every label until a bundle that does is pinned.
+    #[must_use]
+    pub fn icon(&self, label: &str) -> Option<&str> {
+        self.icons.get(label).map(String::as_str)
+    }
+
     /// The label's schema, for labels with something checkable.
     #[must_use]
     pub fn schema_for(&self, label: &str) -> Option<&str> {
@@ -979,6 +998,12 @@ pub fn parse_schema_catalogue(text: &str) -> Result<SchemaCatalogue, String> {
             continue;
         };
         out.mentioned.insert(label.to_string());
+        if let Some(title) = obj.get("title").and_then(|v| v.as_str()) {
+            out.titles.insert(label.to_string(), title.to_string());
+        }
+        if let Some(icon) = obj.get("x-finetype-icon").and_then(|v| v.as_str()) {
+            out.icons.insert(label.to_string(), icon.to_string());
+        }
         if CHECKABLE.iter().any(|k| obj.contains_key(*k)) {
             out.checkable.insert(label.to_string(), entry.to_string());
         }
@@ -1103,6 +1128,17 @@ pub fn bundle_beside(exe: &Path) -> Option<PathBuf> {
         .find(|candidate| candidate.join(EXTENSION_FILE).is_file())
 }
 
+/// The catalogue of the bundle beside `exe`, when there is one and it reads.
+///
+/// For display text only: a band names a column's type by the catalogue's
+/// title. Nothing here checks a value, so a bundle that does not read is the
+/// same as no bundle.
+#[must_use]
+pub fn catalogue_beside(exe: &Path) -> Option<SchemaCatalogue> {
+    let text = std::fs::read_to_string(bundle_beside(exe)?.join(SCHEMA_CATALOGUE)).ok()?;
+    parse_schema_catalogue(&text).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1214,6 +1250,23 @@ mod tests {
         assert!(cat.mentions("representation.text.plain_text"));
         assert!(!cat.mentions("finance.banking.iban"));
         assert_eq!(cat.len(), 3, "the label-less entry is not indexable");
+    }
+
+    #[test]
+    fn catalogue_reads_titles_and_icons_where_entries_carry_them() {
+        let cat = parse_schema_catalogue(
+            r#"[
+              {"x-finetype-label": "identity.person.email", "title": "Email Address",
+               "pattern": "^.+@.+$"},
+              {"x-finetype-label": "geography.address.country_code", "enum": ["GB"],
+               "title": "Country Code", "x-finetype-icon": "flag"}
+            ]"#,
+        )
+        .expect("a well-formed catalogue");
+        assert_eq!(cat.title("identity.person.email"), Some("Email Address"));
+        assert_eq!(cat.icon("identity.person.email"), None);
+        assert_eq!(cat.icon("geography.address.country_code"), Some("flag"));
+        assert_eq!(cat.title("finance.banking.iban"), None);
     }
 
     #[test]

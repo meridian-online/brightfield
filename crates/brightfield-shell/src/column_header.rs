@@ -392,6 +392,24 @@ impl ColumnHeaderFrame {
 // The faces.
 // ---------------------------------------------------------------------------
 
+/// The bundle catalogue read once, from beside the running executable.
+///
+/// Titles and icons are static taxonomy text, so a band reads them from the
+/// same bundle a `cargo run` or packaged build finds its type source in rather
+/// than having every open thread a catalogue down to the paint. A build with no
+/// bundle beside it has none, and its bands name no type.
+fn catalogue() -> Option<&'static brightfield_engine::semantic::SchemaCatalogue> {
+    static CATALOGUE: std::sync::OnceLock<Option<brightfield_engine::semantic::SchemaCatalogue>> =
+        std::sync::OnceLock::new();
+    CATALOGUE
+        .get_or_init(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| brightfield_engine::semantic::catalogue_beside(&exe))
+        })
+        .as_ref()
+}
+
 /// The glyph's face: the mono family two steps under the UI size, so a `#`
 /// sits beside the name without competing with it.
 fn glyph_font() -> egui::FontId {
@@ -511,6 +529,13 @@ pub struct ColumnBandDrawn {
     pub glyph: String,
     /// The density this cell drew at.
     pub density: GridDensity,
+    /// The catalogue title naming the column's type, at the compact density,
+    /// when the catalogue had one and it fit beside the name.
+    pub title: Option<String>,
+    /// Where [`Self::title`] was painted.
+    pub title_rect: Option<egui::Rect>,
+    /// The catalogue's icon drawn before the title, when the entry names one.
+    pub icon: Option<String>,
     /// The cell's own box.
     pub cell: egui::Rect,
     /// The clip it drew under.
@@ -849,13 +874,63 @@ pub fn draw_column_band(
         );
         text_left = at.right() + spacing::SPACE_3;
     }
-    painter.text(
-        egui::pos2(text_left, y + NAME_ROW / 2.0),
-        egui::Align2::LEFT_CENTER,
-        &facts.column,
-        name_font(),
-        frame.name,
-    );
+    let name_right = painter
+        .text(
+            egui::pos2(text_left, y + NAME_ROW / 2.0),
+            egui::Align2::LEFT_CENTER,
+            &facts.column,
+            name_font(),
+            frame.name,
+        )
+        .right();
+
+    // The type's catalogue title at the trailing end of the name row, with the
+    // catalogue's icon before it when it names one. Compact density only, and
+    // only when it fits beside the name: the title is a gloss on the name, so
+    // it gives way rather than pushing the name or the column wider. A label
+    // the catalogue has no title for, or a build with no catalogue, draws
+    // nothing here and reserves nothing.
+    let (mut title, mut icon, mut title_rect) = (None, None, None);
+    if !frame.density.is_full() {
+        let entry = facts
+            .label
+            .as_deref()
+            .zip(catalogue())
+            .and_then(|(label, cat)| cat.title(label).map(|t| (t, cat.icon(label))));
+        if let Some((text, mark)) = entry {
+            let at = egui::pos2(inner.right(), y + NAME_ROW / 2.0);
+            let galley =
+                painter.layout_no_wrap(text.to_owned(), detail_font(), egui::Color32::PLACEHOLDER);
+            let mark_width = mark.map_or(0.0, |m| {
+                painter
+                    .layout_no_wrap(m.to_owned(), detail_font(), egui::Color32::PLACEHOLDER)
+                    .size()
+                    .x
+                    + spacing::SPACE_3
+            });
+            if name_right + RANGE_GAP + mark_width + galley.size().x <= inner.right() {
+                let rect = painter.text(
+                    at,
+                    egui::Align2::RIGHT_CENTER,
+                    text,
+                    detail_font(),
+                    frame.caption,
+                );
+                if let Some(mark) = mark {
+                    painter.text(
+                        egui::pos2(rect.left() - spacing::SPACE_3, at.y),
+                        egui::Align2::RIGHT_CENTER,
+                        mark,
+                        detail_font(),
+                        frame.caption,
+                    );
+                    icon = Some(mark.to_owned());
+                }
+                title = Some(text.to_owned());
+                title_rect = Some(rect);
+            }
+        }
+    }
     y += NAME_ROW;
 
     // 2. The validity band, with its count at the trailing end.
@@ -1090,6 +1165,9 @@ pub fn draw_column_band(
         name: facts.column.clone(),
         glyph: glyph.to_string(),
         density: frame.density,
+        title,
+        title_rect,
+        icon,
         cell,
         clip: painter.clip_rect(),
         extent: frame.extent(),
