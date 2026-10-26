@@ -150,6 +150,12 @@ pub struct ColumnFacts {
     /// band states and draws. `None` for a column the engine defines no moment
     /// over: see [`ColumnMoments`](brightfield_engine::ColumnMoments).
     pub moments: Option<brightfield_engine::ColumnMoments>,
+    /// The catalogue's display title for [`Self::label`] (`Email Address`),
+    /// which the compact header band names the type by. `None` for a column
+    /// opened with no catalogue, or whose label it has no title for.
+    pub title: Option<String>,
+    /// The catalogue's icon for [`Self::label`], when its entry names one.
+    pub icon: Option<String>,
 }
 
 impl ColumnFacts {
@@ -222,6 +228,17 @@ impl OneStepProtocol {
             data: path.to_path_buf(),
             dir,
             spelled,
+        }
+    }
+
+    /// Take each labelled column's title and icon from `catalogue`, in the
+    /// columns the rail lists and the tiles the composition draws alike.
+    pub fn name_types(&mut self, catalogue: &brightfield_engine::semantic::SchemaCatalogue) {
+        for facts in self.columns.iter_mut().chain(self.tiles.iter_mut()) {
+            if let Some(label) = facts.label.as_deref() {
+                facts.title = catalogue.title(label).map(str::to_string);
+                facts.icon = catalogue.icon(label).map(str::to_string);
+            }
         }
     }
 
@@ -901,6 +918,8 @@ fn build_facts(
         min: profile.min.clone(),
         max: profile.max.clone(),
         moments: profile.moments.clone(),
+        title: None,
+        icon: None,
     }
 }
 

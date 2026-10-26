@@ -1,11 +1,9 @@
 //! **The compact header band names each column's type by its catalogue title.**
 //!
-//! The title is read from the pinned FineType bundle's catalogue, staged beside
-//! the test executable by `scripts/fetch-finetype-bundle.sh`. These tests
-//! assert against that real catalogue, so a machine without the bundle fails
-//! them with the command that stages it rather than skipping.
+//! The title reaches the band on the column's own facts, set from a catalogue by
+//! its label, so these tests build a small catalogue inline and need no bundle.
 
-use brightfield_engine::semantic::catalogue_beside;
+use brightfield_engine::semantic::{parse_schema_catalogue, SchemaCatalogue};
 use brightfield_shell::column_header::{
     column_header_frame, draw_column_band, ColumnBandDrawn, GridDensity,
 };
@@ -15,18 +13,21 @@ use meridian_design::spacing;
 
 const EMAIL: &str = "identity.person.email";
 
-fn catalogue() -> brightfield_engine::semantic::SchemaCatalogue {
-    let exe = std::env::current_exe().expect("the test executable's path");
-    catalogue_beside(&exe).unwrap_or_else(|| {
-        panic!(
-            "no FineType bundle beside {}; stage it with \
-             scripts/fetch-finetype-bundle.sh <rust-target> <target-dir>/debug/deps/finetype",
-            exe.display()
-        )
-    })
+/// A catalogue of this test's own, in the shape the bundle's exporter emits.
+fn catalogue() -> SchemaCatalogue {
+    parse_schema_catalogue(
+        r#"[
+          {"x-finetype-label": "identity.person.email", "title": "Email Address",
+           "pattern": "^.+@.+$"}
+        ]"#,
+    )
+    .expect("a well-formed catalogue")
 }
 
+/// A column the way an open names it: the title and icon come from `catalogue`
+/// by the label, as `OneStepProtocol::name_types` sets them.
 fn facts(column: &str, label: Option<&str>) -> ColumnFacts {
+    let catalogue = catalogue();
     ColumnFacts {
         column: column.to_string(),
         label: label.map(str::to_string),
@@ -43,6 +44,8 @@ fn facts(column: &str, label: Option<&str>) -> ColumnFacts {
         min: None,
         max: None,
         moments: None,
+        title: label.and_then(|l| catalogue.title(l)).map(str::to_string),
+        icon: label.and_then(|l| catalogue.icon(l)).map(str::to_string),
     }
 }
 
@@ -81,11 +84,7 @@ fn collect(shape: &egui::epaint::Shape, into: &mut Vec<String>) {
 
 #[test]
 fn compact_band_reads_title_by_text() {
-    let catalogue = catalogue();
-    let title = catalogue
-        .title(EMAIL)
-        .expect("the pinned catalogue titles the email label");
-    assert_eq!(title, "Email Address");
+    let title = "Email Address";
 
     let (drawn, texts) = draw(&facts("reply_to", Some(EMAIL)), 220.0, Mode::Light);
     assert_eq!(drawn.title.as_deref(), Some(title));
@@ -102,11 +101,10 @@ fn compact_band_reads_title_by_text() {
 
 #[test]
 fn no_icon_reserves_no_width() {
-    let catalogue = catalogue();
     assert_eq!(
-        catalogue.icon(EMAIL),
+        catalogue().icon(EMAIL),
         None,
-        "the pinned catalogue carries no icon, so the slot is empty"
+        "this catalogue names no icon"
     );
     let (drawn, texts) = draw(&facts("reply_to", Some(EMAIL)), 220.0, Mode::Light);
     assert_eq!(drawn.icon, None);
@@ -158,12 +156,10 @@ fn snapshot(mode: Mode, name: &str) {
 
 #[test]
 fn compact_band_light_baseline() {
-    catalogue();
     snapshot(Mode::Light, "column_header_type_light");
 }
 
 #[test]
 fn compact_band_dark_baseline() {
-    catalogue();
     snapshot(Mode::Dark, "column_header_type_dark");
 }

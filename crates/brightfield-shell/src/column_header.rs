@@ -392,24 +392,6 @@ impl ColumnHeaderFrame {
 // The faces.
 // ---------------------------------------------------------------------------
 
-/// The bundle catalogue read once, from beside the running executable.
-///
-/// Titles and icons are static taxonomy text, so a band reads them from the
-/// same bundle a `cargo run` or packaged build finds its type source in rather
-/// than having every open thread a catalogue down to the paint. A build with no
-/// bundle beside it has none, and its bands name no type.
-fn catalogue() -> Option<&'static brightfield_engine::semantic::SchemaCatalogue> {
-    static CATALOGUE: std::sync::OnceLock<Option<brightfield_engine::semantic::SchemaCatalogue>> =
-        std::sync::OnceLock::new();
-    CATALOGUE
-        .get_or_init(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|exe| brightfield_engine::semantic::catalogue_beside(&exe))
-        })
-        .as_ref()
-}
-
 /// The glyph's face: the mono family two steps under the UI size, so a `#`
 /// sits beside the name without competing with it.
 fn glyph_font() -> egui::FontId {
@@ -887,17 +869,13 @@ pub fn draw_column_band(
     // The type's catalogue title at the trailing end of the name row, with the
     // catalogue's icon before it when it names one. Compact density only, and
     // only when it fits beside the name: the title is a gloss on the name, so
-    // it gives way rather than pushing the name or the column wider. A label
-    // the catalogue has no title for, or a build with no catalogue, draws
-    // nothing here and reserves nothing.
+    // it gives way rather than pushing the name or the column wider. A column
+    // with no title, such as one opened with no catalogue, draws nothing here
+    // and reserves nothing.
     let (mut title, mut icon, mut title_rect) = (None, None, None);
     if !frame.density.is_full() {
-        let entry = facts
-            .label
-            .as_deref()
-            .zip(catalogue())
-            .and_then(|(label, cat)| cat.title(label).map(|t| (t, cat.icon(label))));
-        if let Some((text, mark)) = entry {
+        if let Some(text) = facts.title.as_deref() {
+            let mark = facts.icon.as_deref();
             let at = egui::pos2(inner.right(), y + NAME_ROW / 2.0);
             let galley =
                 painter.layout_no_wrap(text.to_owned(), detail_font(), egui::Color32::PLACEHOLDER);
@@ -1359,6 +1337,8 @@ mod tests {
                 max: 1.0,
                 distribution: brightfield_engine::Distribution::Bins(Vec::new()),
             }),
+            title: None,
+            icon: None,
         }
     }
 
@@ -1564,6 +1544,8 @@ mod tests {
             min: None,
             max: None,
             moments: None,
+            title: None,
+            icon: None,
         };
         let columns = vec![
             facts("a", "DOUBLE"),

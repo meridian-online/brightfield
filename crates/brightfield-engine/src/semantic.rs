@@ -1128,14 +1128,14 @@ pub fn bundle_beside(exe: &Path) -> Option<PathBuf> {
         .find(|candidate| candidate.join(EXTENSION_FILE).is_file())
 }
 
-/// The catalogue of the bundle beside `exe`, when there is one and it reads.
+/// The catalogue of the bundle in `dir`, when it reads.
 ///
 /// For display text only: a band names a column's type by the catalogue's
 /// title. Nothing here checks a value, so a bundle that does not read is the
 /// same as no bundle.
 #[must_use]
-pub fn catalogue_beside(exe: &Path) -> Option<SchemaCatalogue> {
-    let text = std::fs::read_to_string(bundle_beside(exe)?.join(SCHEMA_CATALOGUE)).ok()?;
+pub fn catalogue_in(dir: &Path) -> Option<SchemaCatalogue> {
+    let text = std::fs::read_to_string(dir.join(SCHEMA_CATALOGUE)).ok()?;
     parse_schema_catalogue(&text).ok()
 }
 

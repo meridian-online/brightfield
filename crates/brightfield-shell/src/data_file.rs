@@ -782,7 +782,14 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
     // The other document. Built from the same profile the dashboard was chosen
     // from, so the columns the rails list and the columns the tiles draw are
     // one walk over one table rather than two that could disagree.
-    let protocol = crate::one_step::OneStepProtocol::of(&path, &columns, &dashboard);
+    let mut protocol = crate::one_step::OneStepProtocol::of(&path, &columns, &dashboard);
+    // The bundle the types were answered from is also where their display
+    // titles are read, so a band names a type only for a session that had one.
+    if let Some(TypeSourceSpec::Bundle(dir)) = &options.type_source {
+        if let Some(catalogue) = brightfield_engine::semantic::catalogue_in(dir) {
+            protocol.name_types(&catalogue);
+        }
+    }
     Ok((
         OpenedFile {
             live,
