@@ -116,7 +116,7 @@ fn has_table(pane: &ModelPane, table: &str) -> bool {
     rows.value(0, "n") != Some("0")
 }
 
-/// The silver SQL file written for `dataset`, or `None` when it has none.
+/// The silver SQL file written for `dataset`, if one was written.
 fn silver_file(pane: &ModelPane, dataset: &str) -> Option<String> {
     std::fs::read_to_string(
         pane.protocol

@@ -205,10 +205,11 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
 /// Drop the silver and failed-value tables of each table `model` gives none, from the Protocol's
 /// database: a table left out or folded into another keeps no table of its own.
 ///
-/// arc never drops what a step it no longer runs once made, so [`write_silver`] taking a table's
-/// steps out of the manifest would leave its tables standing. The record arc keeps of each of
-/// those steps' last success goes too, so a table brought back has its steps run again rather
-/// than skipped as unchanged. A Protocol that has not been run has no database, and nothing to
+/// arc leaves standing what a step it no longer runs once made, so [`write_silver`] taking a
+/// table's steps out of the manifest would leave its tables in the database
+/// (`left_out_table_is_not_left_materialised` in `tests/model_reshape.rs`). The record arc keeps
+/// of each of those steps' last success goes too, so a table brought back has its steps run again
+/// rather than skipped as unchanged. A Protocol that has not been run has no database, and nothing to
 /// drop.
 ///
 /// # Errors
