@@ -233,7 +233,7 @@ const DASHBOARD_AND_VIEW: &[Altitude] = &[Altitude::Dashboard, Altitude::View];
 /// and [`help_sheet`].
 #[must_use]
 pub fn registry() -> Vec<VerbEntry> {
-    use Altitude::{Dashboard, Protocol, View};
+    use Altitude::{Dashboard, Model, Protocol, View};
     use BindingContext::{Editor, Global, Workspace};
     use Drives as D;
 
@@ -1156,6 +1156,58 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Show or hide the design gallery — the component vocabulary, drawn live",
             scores: None,
         },
+        // ---- the model pane: the tables an open found and the joins between
+        //      them, shown three ways. `v` steps through the three, and each
+        //      has a key of its own so the palette can name it: 1, 2 and 3,
+        //      the views' places in that one closed set of three. All are
+        //      View-tier: which way the model is drawn is never written
+        //      anywhere, and none moves focus. They apply at the model altitude
+        //      and nowhere else, so `v` and the digits mean nothing to the chart
+        //      or the graph. ----
+        VerbEntry {
+            longname: "cycle-model-view",
+            tier: CommandTier::View,
+            binding_specs: vec![ws("v")],
+            scope_applicability: vec![Model],
+            drives: D::Presentation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Show the model the next way: the diagram, then the list, then the Ossie file",
+            scores: Some(Scores { frequency: 4, mnemonic: 5, convention: 4, motor_note: "v = view; one key steps through the three, as a viewer's view key does; h j k l stay motion" }),
+        },
+        VerbEntry {
+            longname: "show-model-diagram",
+            tier: CommandTier::View,
+            binding_specs: vec![ws("1")],
+            scope_applicability: vec![Model],
+            drives: D::Presentation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Show the model as a diagram",
+            scores: Some(Scores { frequency: 2, mnemonic: 3, convention: 4, motor_note: "1 = the first of the three views, the one the pane opens on; Finder numbers its views the same way (with cmd, which this window keeps off digits)" }),
+        },
+        VerbEntry {
+            longname: "show-model-list",
+            tier: CommandTier::View,
+            binding_specs: vec![ws("2")],
+            scope_applicability: vec![Model],
+            drives: D::Presentation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Show the model as a list",
+            scores: Some(Scores { frequency: 2, mnemonic: 3, convention: 4, motor_note: "2 = the second of the three views; Finder's list view is its second" }),
+        },
+        VerbEntry {
+            longname: "show-model-file",
+            tier: CommandTier::View,
+            binding_specs: vec![ws("3")],
+            scope_applicability: vec![Model],
+            drives: D::Presentation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Show the model as the Ossie file",
+            scores: Some(Scores { frequency: 2, mnemonic: 3, convention: 3, motor_note: "3 = the third of the three views; the file is the model as written" }),
+        },
     ]
 }
 
@@ -1465,6 +1517,10 @@ mod tests {
             "open-run-quality",
             "move-grid",
             "toggle-gallery",
+            "cycle-model-view",
+            "show-model-diagram",
+            "show-model-list",
+            "show-model-file",
         ];
         assert_eq!(got, expected);
     }
@@ -1802,6 +1858,57 @@ mod tests {
                     b.longname,
                     a.keystrokes,
                     a.context
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn v_binding_is_unique_in_model_scope() {
+        let reg = registry();
+        let at_model: Vec<&VerbEntry> = reg
+            .iter()
+            .filter(|v| v.applies_at(Altitude::Model))
+            .collect();
+        let on_v: Vec<&str> = at_model
+            .iter()
+            .filter(|v| v.binding_specs.iter().any(|b| b.keystrokes == "v"))
+            .map(|v| v.longname)
+            .collect();
+        assert_eq!(on_v, ["cycle-model-view"]);
+        let cycle = reg
+            .iter()
+            .find(|v| v.longname == "cycle-model-view")
+            .unwrap();
+        assert_eq!(cycle.scope_applicability, vec![Altitude::Model]);
+        assert_eq!(cycle.tier, CommandTier::View);
+        assert_eq!(cycle.drives, Drives::Presentation);
+        assert!(cycle.scores.is_some());
+        // No other verb binds `v` in the context the model's verbs resolve in.
+        let in_workspace: Vec<&str> = reg
+            .iter()
+            .filter(|v| {
+                v.binding_specs
+                    .iter()
+                    .any(|b| b.keystrokes == "v" && b.context == BindingContext::Workspace)
+            })
+            .map(|v| v.longname)
+            .collect();
+        assert_eq!(in_workspace, ["cycle-model-view"]);
+        // The model's verbs stay at the model altitude, and h j k l are not theirs.
+        for v in &at_model {
+            assert_eq!(
+                v.scope_applicability,
+                vec![Altitude::Model],
+                "{}",
+                v.longname
+            );
+            for b in &v.binding_specs {
+                assert!(
+                    !["h", "j", "k", "l"].contains(&b.keystrokes),
+                    "{} rebinds {}",
+                    v.longname,
+                    b.keystrokes
                 );
             }
         }

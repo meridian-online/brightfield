@@ -27,6 +27,8 @@
 //!   bucket column that gives a column of instants a band to draw on.
 //! - [`legend`] — the chart legend as a native egui margin panel, outside the
 //!   plot rect, derived from the scales each chart was drawn against.
+//! - [`model_pane`] — an own-files open's model: its tables and joins as a
+//!   diagram, a list or the Ossie file, cycled with `v`.
 //! - [`navigation`] — pan/zoom: the gesture arithmetic read off the displayed
 //!   scales, the axis lock, and the settle rule that makes a continuously
 //!   moving frame issue exactly one re-query per gesture.
@@ -108,6 +110,7 @@ pub mod housing;
 pub mod inspector;
 pub mod interval_drag;
 pub mod legend;
+pub mod model_pane;
 pub mod navigation;
 pub mod one_step;
 pub mod operation;
