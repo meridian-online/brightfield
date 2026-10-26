@@ -794,8 +794,10 @@ name = "brightfield-render"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "brightfield-ossie",
  "brightfield-protocol",
  "brightfield-spec",
+ "image",
  "indexmap",
  "kurbo",
  "meridian-design",
