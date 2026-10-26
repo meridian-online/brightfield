@@ -17,9 +17,12 @@ pub fn encode<T: Serialize>(meta: &T) -> Extension {
 
 /// Split `exts` into the decoded Meridian entry (the first one) and the other
 /// vendors' entries, in order. Any further `MERIDIAN` entries are kept with the others.
+/// An element with no Meridian entry (a hand-written one) gets `default()`, so
+/// the file stays readable; an entry whose data is not valid is an error.
 pub fn split<T: DeserializeOwned>(
     exts: Vec<Extension>,
     what: &str,
+    default: impl FnOnce() -> T,
 ) -> Result<(T, Vec<Extension>), String> {
     let mut meta = None;
     let mut others = Vec::new();
@@ -33,8 +36,7 @@ pub fn split<T: DeserializeOwned>(
             others.push(e);
         }
     }
-    meta.map(|m| (m, others))
-        .ok_or_else(|| format!("{what}: no {VENDOR} extension"))
+    Ok((meta.unwrap_or_else(default), others))
 }
 
 /// The entries to write: Meridian's first, then the other vendors'.

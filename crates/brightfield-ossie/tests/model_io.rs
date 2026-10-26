@@ -75,3 +75,138 @@ fn schema_violations_are_reported() {
 fn stand_in_is_in_the_form_write_emits() {
     assert_eq!(write(&read(STAND_IN).unwrap()), STAND_IN);
 }
+
+const HAND_WRITTEN: &str = "\
+version: 0.2.0.dev0
+name: shop
+description: A small shop
+ai_context: Ask about sales
+datasets:
+- name: sales
+  source: sales.csv
+  description: One row per sale
+  unique_keys:
+  - - sale_id
+  fields:
+  - name: sale_id
+    expression:
+      sql: sale_id
+    label: Sale
+    dimension:
+      is_time: false
+  - name: sold_at
+    expression:
+      dialects:
+      - dialect: DUCKDB
+        expression: CAST(sold_at AS DATE)
+  metrics:
+  - name: revenue
+    expression:
+      sql: SUM(sales.amount)
+relationships:
+- name: sales_shops
+  from: sales
+  to: shops
+  from_columns:
+  - shop_id
+  to_columns:
+  - shop_id
+  ai_context: Each sale belongs to one shop
+metrics:
+- name: total_revenue
+  expression:
+    sql: SUM(sales.amount)
+";
+
+#[test]
+fn unmodelled_content_and_dialects_round_trip() {
+    let m = read(HAND_WRITTEN).unwrap();
+    assert_eq!(m.description.as_deref(), Some("A small shop"));
+    assert_eq!(m.metrics.len(), 1);
+    assert_eq!(m.metrics[0].name, "total_revenue");
+    let sales = dataset(&m, "sales");
+    assert_eq!(sales.metrics[0].name, "revenue");
+    let sold_at = &sales.fields[1];
+    assert!(sold_at.dialects_only);
+    assert_eq!(sold_at.expression_sql, "CAST(sold_at AS DATE)");
+
+    let out = write(&m);
+    assert_eq!(validate(&out), vec![]);
+    assert!(
+        !out.contains("sql: CAST"),
+        "dialect relabelled as sql: {out}"
+    );
+    let again = read(&out).unwrap();
+    assert_eq!(again, m);
+    // Nothing the file said is lost: the same document, read as plain YAML, matches
+    // once the Meridian entries the writer adds are set aside.
+    let strip = |mut v: serde_yaml::Value| {
+        fn walk(v: &mut serde_yaml::Value) {
+            match v {
+                serde_yaml::Value::Mapping(m) => {
+                    m.remove("custom_extensions");
+                    m.values_mut().for_each(walk);
+                }
+                serde_yaml::Value::Sequence(s) => s.iter_mut().for_each(walk),
+                _ => {}
+            }
+        }
+        walk(&mut v);
+        v
+    };
+    let a: serde_yaml::Value = serde_yaml::from_str(HAND_WRITTEN).unwrap();
+    let b: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+    assert_eq!(strip(a), strip(b));
+    assert_eq!(write(&again), out);
+}
+
+#[test]
+fn elements_without_the_extension_read_with_defaults() {
+    use brightfield_ossie::{DecidedBy, Grade, Role, Verified};
+    let m = read(HAND_WRITTEN).unwrap();
+    let sales = dataset(&m, "sales");
+    assert_eq!(sales.meta.role, Role::Unclear);
+    assert_eq!(sales.meta.decided_by, DecidedBy::Analyst);
+    assert_eq!(sales.meta.source_file, "sales.csv");
+    assert_eq!(sales.meta.source_part, None);
+    assert_eq!(sales.meta.rows, None);
+    assert_eq!(sales.fields[0].meta.finetype, None);
+    assert_eq!(sales.fields[0].meta.decided_by, DecidedBy::Analyst);
+    let r = &m.relationships[0];
+    assert_eq!(r.meta.grade, Grade::Possible);
+    assert_eq!(r.meta.verified, Verified::Sample);
+    assert_eq!(r.meta.decided_by, DecidedBy::Analyst);
+    assert_eq!(r.meta.evidence.child_rows, 0);
+}
+
+#[test]
+fn bad_extension_data_names_the_element_line() {
+    let yaml = "\
+version: 0.2.0.dev0
+name: x
+datasets:
+- name: a
+  source: a.csv
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: not json
+";
+    let err = read(yaml).unwrap_err();
+    assert_eq!(err.line, 4, "{err}");
+}
+
+#[test]
+fn non_finite_evidence_is_written_as_zero_and_reads_back() {
+    let mut m = read(STAND_IN).unwrap();
+    m.relationships[0].meta.evidence.value_overlap = f64::NAN;
+    m.relationships[0].meta.evidence.name_similarity = f64::INFINITY;
+    m.relationships[0].meta.evidence.child_rows = 0;
+    let mut rejected = m.relationships[1].clone();
+    rejected.meta.evidence.value_overlap = f64::NEG_INFINITY;
+    m.meta.rejected.push(rejected);
+    let back = read(&write(&m)).expect("writes a readable file");
+    assert_eq!(back.relationships[0].meta.evidence.value_overlap, 0.0);
+    assert_eq!(back.relationships[0].meta.evidence.name_similarity, 0.0);
+    assert_eq!(back.relationships[0].meta.evidence.child_rows, 0);
+    assert_eq!(back.meta.rejected[0].meta.evidence.value_overlap, 0.0);
+}
