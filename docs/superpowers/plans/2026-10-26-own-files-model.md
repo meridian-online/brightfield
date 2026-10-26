@@ -6,7 +6,7 @@
 
 **Architecture:** A new framework-free crate, `brightfield-ossie`, owns the model: the pinned Ossie document types with Meridian's vendor extension, the analyst's edits, the merge that keeps the analyst's decisions, and the role-banded layout. The shell writes the analyst's Protocol folder (load steps, per-source data packages, the Ossie file, silver steps) and runs it with the arc child process it already uses. `brightfield-render` draws the model scene in Vello, and a new model pane hosts Diagram, List and Ossie-file views beside an inspector. dovetail joins later as a child process of the same binary, behind a discovery seam whose only implementation until then reads hand-written stand-in models.
 
-**Tech Stack:** Rust 1.95 workspace, DuckDB 2.0 (`duckdb = "=1.20000.0"`, bundled), arcform (pinned rev, child process), FineType bundle (DuckDB extension) plus `finetype-core` (taxonomy), `calamine` (Excel), `rusqlite` with `bundled` (SQLite), `serde_yaml`, `jsonschema`, egui/eframe, Vello.
+**Tech Stack:** Rust 1.95 workspace, DuckDB 2.0 (`duckdb = "=1.20000.0"`, bundled), arcform (pinned rev, child process), FineType bundle (DuckDB extension) plus `finetype-core` (taxonomy), DuckDB's `excel` and `sqlite` extensions, `serde_yaml`, `jsonschema`, egui/eframe, Vello.
 
 **Spec:** `docs/superpowers/specs/2026-10-26-own-files-model-design.md`
 
@@ -19,7 +19,7 @@
 - Lineage columns on every loaded and silver table: `__source_file` (VARCHAR, path relative to the Protocol folder or absolute for files left in place), `__source_part` (VARCHAR, sheet or table name, NULL for a flat file), `__source_row` (BIGINT, 1-based data row, header excluded).
 - The silver cast is FineType's transformation contract: `finetype-core` `Taxonomy::ddl_info(label)` → its `transform` with `{col}` replaced by the quoted column, wrapped in `TRY(...)`; no transform and non-VARCHAR → `TRY_CAST(col AS duckdb_type)`; VARCHAR or unlabelled → passthrough. This mirrors `build_transform_projection_one` in finetype's `crates/finetype-cli/src/transform_projection.rs` with `try_wrap = true`.
 - `finetype-core` is pinned to the same tag as `FINETYPE_TAG` in `packaging/finetype-pin.env`; the `finetype-pin` gate step refuses a mismatch.
-- No network at open time: Excel sheets and SQLite tables are read by `calamine` and `rusqlite` and staged as Parquet; DuckDB's `excel` and `sqlite` extensions are not used on this path.
+- What DuckDB can do is done in DuckDB: workbooks are read with `read_xlsx` and SQLite files through the `sqlite` extension, in SQL a Protocol step records. No Rust reader replicates either. The extensions may download on first use; the window names the extension while it fetches.
 - Every analyst action is a verb in `brightfield-keys`' registry. `v` cycles Diagram → List → Ossie file. `h`, `j`, `k`, `l` are not rebound.
 - A single CSV, TSV or Parquet file keeps today's route (`data_file::open`) unchanged.
 - No private planning identifiers in code, comments, commits, branch names or pull request text.
@@ -156,11 +156,11 @@ Events in the left band, entities in the right band, snapshots, bridges and uncl
 - [ ] **Step 4: Run** the same command. Expected: PASS.
 - [ ] **Step 5: Commit** — "Lay out an Ossie model by table role".
 
-### Task 4: Finding the tables in what was opened, and staging them with lineage
+### Task 4: Finding the tables in what was opened, and their load SQL with lineage
 
 **Files:**
 - Create: `crates/brightfield-engine/src/sources.rs`
-- Modify: `crates/brightfield-engine/src/lib.rs` (export), `crates/brightfield-engine/Cargo.toml` (`calamine`, `rusqlite` with `bundled`), `Cargo.toml` (workspace deps)
+- Modify: `crates/brightfield-engine/src/lib.rs` (export)
 - Create: `crates/brightfield-engine/tests/data/own_files/` — a folder fixture (two CSVs, one Parquet named like a CSV, a `.DS_Store`, a `notes.txt`, a corrupt CSV), `book.xlsx` (two sheets, one empty, one with a blank first row), `shop.sqlite` (two tables)
 - Test: `crates/brightfield-engine/tests/sources.rs`
 
@@ -168,21 +168,21 @@ Events in the left band, entities in the right band, snapshots, bridges and uncl
 - Produces:
 
 ```rust
-pub enum Reader { Csv, Tsv, Parquet, StagedParquet, DuckdbTable { database: PathBuf } }
+pub enum Reader { Csv, Tsv, Parquet, XlsxSheet, SqliteTable, DuckdbTable }
 pub struct SourceTable { pub name: String, pub file: PathBuf, pub part: Option<String>, pub reader: Reader }
 pub struct SourceSet { pub tables: Vec<SourceTable>, pub skipped: Vec<(PathBuf, String)> }
 pub fn discover(path: &Path) -> Result<SourceSet, String>;
-pub fn stage(set: &SourceSet, staging_dir: &Path) -> Result<SourceSet, String>;  // xlsx sheets and sqlite tables → Parquet; others unchanged
+pub fn extensions_needed(set: &SourceSet) -> Vec<&'static str>;               // "excel", "sqlite" as the set requires
 pub fn load_sql(table: &SourceTable, protocol_dir: &Path) -> String;             // CREATE OR REPLACE TABLE "raw_<name>" AS ... with the three lineage columns
 ```
 
-`discover` reads a folder's top level only (no recursion), takes `csv`, `tsv`, `parquet`, `xlsx`, `duckdb`, `db`, `sqlite`, and lists everything else in `skipped` with a reason; a file that fails to open is skipped, not fatal. Table names are the file stem (or `stem_sheet`, or the database table name), lower-cased, non-alphanumerics to `_`; a collision appends `_2`, `_3` in path order. `stage` reads each sheet with `calamine` (first non-blank row is the header; an all-empty sheet is skipped with reason "empty sheet") and each SQLite table with `rusqlite`, writing `<staging_dir>/<name>.parquet` with `__source_file`, `__source_part`, `__source_row` already present, all data columns VARCHAR. `load_sql` adds lineage for CSV/TSV with `row_number() OVER ()` under `preserve_insertion_order`, and for Parquet with `read_parquet(..., file_row_number = true)` plus one.
+`discover` reads a folder's top level only (no recursion), takes `csv`, `tsv`, `parquet`, `xlsx`, `duckdb`, `db`, `sqlite`, and lists everything else in `skipped` with a reason; a file that fails to open is skipped, not fatal. It lists a workbook's sheets and a database's tables through DuckDB itself: `ATTACH ... (READ_ONLY)` for DuckDB files, `ATTACH ... (TYPE sqlite, READ_ONLY)` for SQLite files, then `duckdb_tables()`; for a workbook, the excel extension's own means of naming its sheets. **If the excel extension pinned with DuckDB 2.0 offers no way to list a workbook's sheets, stop and raise it**: the answer is not a second reader in Rust. Table names are the file stem (or `stem_sheet`, or the database table name), lower-cased, non-alphanumerics to `_`; a collision appends `_2`, `_3` in path order. `load_sql` emits `CREATE OR REPLACE TABLE "raw_<name>" AS SELECT <file> AS __source_file, <part> AS __source_part, <row> AS __source_row, * FROM <reader>`: `read_csv` with `row_number() OVER ()` under `preserve_insertion_order`; `read_parquet(..., file_row_number = true)` plus one; `read_xlsx(<file>, sheet = <sheet>, all_varchar = true)` with `row_number() OVER ()`, using `read_xlsx`'s header and range options so a blank first row is not the header and an all-empty sheet is skipped with reason "empty sheet"; `sqlite_scan` or the attached SQLite table with `row_number() OVER ()`; the attached DuckDB table likewise. Each load step that needs an extension starts with `INSTALL <ext>; LOAD <ext>;`, so the Protocol records it.
 
-- [ ] **Step 1: Write the failing tests**: `folder_takes_readable_and_names_skipped` (3 tables; `.DS_Store`, `notes.txt` and the corrupt CSV in `skipped`), `name_collision_is_deterministic` (`sales` and `sales_2`), `workbook_sheets_and_empty_sheet` (one table, empty sheet skipped with "empty sheet"), `blank_first_row_is_not_header`, `sqlite_tables_stage_to_parquet`, `lineage_rows_are_one_based` (loading a 3-row CSV yields `__source_row` 1, 2, 3 in file order), `duckdb_file_lists_its_tables`.
+- [ ] **Step 1: Write the failing tests**: `folder_takes_readable_and_names_skipped` (3 tables; `.DS_Store`, `notes.txt` and the corrupt CSV in `skipped`), `name_collision_is_deterministic` (`sales` and `sales_2`), `workbook_sheets_and_empty_sheet` (one table, empty sheet skipped with "empty sheet"), `blank_first_row_is_not_header`, `sqlite_file_lists_its_tables`, `lineage_rows_are_one_based` (loading a 3-row CSV yields `__source_row` 1, 2, 3 in file order; the same for a sheet), `duckdb_file_lists_its_tables`, `xlsx_load_step_installs_excel` (`load_sql` for a sheet starts with `INSTALL excel; LOAD excel;`), `extensions_needed_names_excel_and_sqlite`. Tests that need the excel or sqlite extension skip with a printed reason when it is neither installed nor reachable, as the FineType tests do without a bundle.
 - [ ] **Step 2: Run** `cargo test -p brightfield-engine --test sources`. Expected: FAIL.
-- [ ] **Step 3: Implement** `discover`, `stage`, `load_sql`.
-- [ ] **Step 4: Run** the same command. Expected: PASS. Run `cargo xtask ci --step deny`.
-- [ ] **Step 5: Commit** — "Find and stage the tables in a folder, workbook or database file, with row lineage".
+- [ ] **Step 3: Implement** `discover`, `extensions_needed`, `load_sql`.
+- [ ] **Step 4: Run** the same command. Expected: PASS.
+- [ ] **Step 5: Commit** — "Find the tables in a folder, workbook or database file, and load them with row lineage through DuckDB".
 
 ### Task 5: The analyst's Protocol folder: load steps, profile, data packages
 
@@ -192,19 +192,19 @@ pub fn load_sql(table: &SourceTable, protocol_dir: &Path) -> String;            
 - Test: `crates/brightfield-shell/tests/own_files_protocol.rs`
 
 **Interfaces:**
-- Consumes: `sources::{discover, stage, load_sql}` (Task 4); `starts::datasets_dir()`; `run::Run` (the arc child process); `Session::profile_sources` on Parquet snapshots of the raw tables, as `panel_tiles.rs` snapshots arc's tables.
+- Consumes: `sources::{discover, extensions_needed, load_sql}` (Task 4); `starts::datasets_dir()`; `run::Run` (the arc child process); `Session::profile_sources` on Parquet snapshots of the raw tables, as `panel_tiles.rs` snapshots arc's tables.
 - Produces:
 
 ```rust
 pub const OWN_DIR: &str = "own";   // under starts::datasets_dir()/protocols/
 pub struct OwnProtocol { pub dir: PathBuf, pub sources: SourceSet, pub profiles: Vec<SourceProfile> }
-pub fn create(opened: &Path) -> Result<OwnProtocol, String>;              // folder, arcform.yaml with load steps, staged files under sources/
+pub fn create(opened: &Path) -> Result<OwnProtocol, String>;              // folder and arcform.yaml with load steps reading the files where they are
 pub fn run_loads(p: &OwnProtocol) -> Result<(), String>;                   // arc run; raw tables exist
 pub fn profile(p: &mut OwnProtocol) -> Result<(), String>;                 // FineType labels per column
 pub fn write_packages(p: &OwnProtocol) -> Result<Vec<PathBuf>, String>;    // packages/<source>/datapackage.json
 ```
 
-Folder: `<datasets_dir>/protocols/own/<slug>-<n>/` where `slug` is the opened path's stem and `n` the first unused integer from 1. Contents: `arcform.yaml` (name = folder name, `engine: duckdb`, one step per table `load_<name>` → `models/01_load_<name>.sql`), `sources/` (staged Parquet), `packages/<source-stem>/datapackage.json` (Frictionless 2.0, one resource per table of that source, each field with `type` from the FineType label's Frictionless mapping and `x-finetype-label`). Data packages are what finetype will write once it can; this task writes them in Brightfield so the boundary file exists now.
+Folder: `<datasets_dir>/protocols/own/<slug>-<n>/` where `slug` is the opened path's stem and `n` the first unused integer from 1. Contents: `arcform.yaml` (name = folder name, `engine: duckdb`, one step per table `load_<name>` → `models/01_load_<name>.sql`, reading the analyst's files in place by absolute path), `packages/<source-stem>/datapackage.json` (Frictionless 2.0, one resource per table of that source, each field with `type` from the FineType label's Frictionless mapping and `x-finetype-label`). Data packages are what finetype will write once it can; this task writes them in Brightfield so the boundary file exists now.
 
 - [ ] **Step 1: Write the failing tests** (they run arc as the shell's other arc tests do; FineType-typed assertions skip with a printed reason when no bundle is beside the test binary, as existing semantic tests do): `creates_numbered_folder` (two creates for the same input give `-1` and `-2`), `manifest_has_one_load_step_per_table`, `raw_tables_carry_lineage` (after `run_loads`, `raw_customers` has the three lineage columns), `packages_name_each_field`, `profile_labels_email_column` (bundle present: `customers.email`'s label ends in `.email`).
 - [ ] **Step 2: Run** `cargo test -p brightfield-shell --test own_files_protocol`. Expected: FAIL.
@@ -251,9 +251,9 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String>;      
 - Creates: `crates/brightfield-shell/src/discovery.rs` with the `Discovery` trait, `Pass`, `StandIn` and `discover_model` exactly as Task 15's Interfaces block gives them, and its first two tests (`stand_in_reads_fixture_model`, `stand_in_without_model_lists_unclear_tables`); Task 15 adds the dovetail child process.
 - Produces: `pub enum Opened { OneTable(OpenedFile), Model(OwnProtocol) }` and `pub fn open_any(path: &Path) -> Result<Opened, String>`.
 
-`OPENABLE_EXTENSIONS` becomes `["csv", "tsv", "parquet", "xlsx", "duckdb", "db", "sqlite"]`. The picker offers files and folders (`rfd::FileDialog::pick_folder` beside `pick_file`, behind one "Open…" button with a choice of file or folder). `open_any` routes a path whose `discover` yields exactly one flat-file table to `data_file::open` unchanged, and everything else to the own-files flow. The promise text names the new kinds: "A CSV, Parquet or Excel file, a folder of them, or a DuckDB or SQLite database on this machine".
+`OPENABLE_EXTENSIONS` becomes `["csv", "tsv", "parquet", "xlsx", "duckdb", "db", "sqlite"]`. The picker offers files and folders (`rfd::FileDialog::pick_folder` beside `pick_file`, behind one "Open…" button with a choice of file or folder). `open_any` routes a path whose `discover` yields exactly one flat-file table to `data_file::open` unchanged, and everything else to the own-files flow. The promise text names the new kinds: "A CSV, Parquet or Excel file, a folder of them, or a DuckDB or SQLite database on this machine". While a load needs an extension that `duckdb_extensions()` reports as not installed, the canvas says so by name ("Fetching DuckDB's excel extension, the first time a workbook is opened"), as a start's first run names what it fetches.
 
-- [ ] **Step 1: Write the failing tests**: `single_csv_keeps_todays_route` (returns `Opened::OneTable`), `folder_opens_a_model`, `workbook_opens_a_model`, `sqlite_opens_a_model`, `accept_still_refuses_urls`, `typed_path_to_folder_is_recognised` (`names_a_data_file` true for a directory).
+- [ ] **Step 1: Write the failing tests**: `single_csv_keeps_todays_route` (returns `Opened::OneTable`), `folder_opens_a_model`, `workbook_opens_a_model`, `sqlite_opens_a_model`, `accept_still_refuses_urls`, `typed_path_to_folder_is_recognised` (`names_a_data_file` true for a directory), `fetch_message_names_the_extension` (the message chosen for a set needing `excel` that is not installed names it).
 - [ ] **Step 2: Run** `cargo test -p brightfield-shell --test front_door_open`. Expected: FAIL.
 - [ ] **Step 3: Implement** `open_any` and the picker and acceptance changes.
 - [ ] **Step 4: Run** the same command, then `cargo test -p brightfield-shell data_file`. Expected: PASS.

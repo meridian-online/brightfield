@@ -72,7 +72,7 @@ It fails, even if it works, if:
 - **FineType reaches Brightfield as a DuckDB extension bundle** (`finetype.duckdb_extension`, its model directory and `taxonomy-schemas.json`) found beside the executable, and dovetail uses finetype's crates in-process. The two must agree on the FineType version; today Brightfield's bundle pin and dovetail's crate pin are set separately.
 - **finetype does not yet write a per-source data package.** Today `dovetail survey` writes the `datapackage.json`, typed by FineType, and `dovetail relate` writes `foreignKeys` into it. Under goal 3, finetype owns the per-source data package and dovetail's cross-source output is Ossie. Until finetype ships that, Brightfield may produce the per-source package through dovetail's existing survey; the boundary file is the same either way.
 - **Ossie is a draft.** The core specification is `0.2.0.dev0`, incubating at Apache, and its validator rejects versions it does not support. Pin one version; expect to move with it. Ossie relationships are statements: there is no grade and no evidence in the core, and datasets have no role field. Roles, grades, evidence and folds are carried in `custom_extensions` under one Meridian vendor name. FineType types are carried the same way unless finetype publishes its taxonomy as an Ossie ontology of value types, which would let a field point at its type through a standard ontology mapping.
-- **Excel.** Nothing in Brightfield reads a workbook. DuckDB's `excel` extension and dovetail's vendored `calamine` are both candidates.
+- **What DuckDB can do is done in DuckDB.** Hugh, 2026-10-26: replicating something DuckDB can do costs data lineage and the reproducibility of the transformation. So workbooks are read with DuckDB's `read_xlsx` (its `excel` extension) and SQLite files through its `sqlite` extension, in the load steps arc runs, not by a Rust library inside Brightfield. These extensions download on first use, which is acceptable, as FineType's model already downloads on first use; while one is fetched the window says so. An installer that offers to pre-load extensions is separate work.
 - **The keyboard grammar.** Every action is a verb in `brightfield-keys`' registry, reached by key, by the Space palette, by code and by an agent. `h`, `j`, `k` and `l` already move focus.
 - **The picker today** accepts single `csv`, `tsv` and `parquet` files and refuses `.duckdb` on purpose, because its one-view path has no answer for a file with many tables. The profiler returns `Unsupported` for an attached database. Both change.
 
@@ -186,7 +186,6 @@ This design depends on work in two other repositories. Each is designed in its o
 ## Left to the builder
 
 - How a folder is read: which files it takes, whether it recurses, and what it does with files it cannot read (list them; do not fail the open).
-- The Excel reader, between DuckDB's `excel` extension and calamine.
 - The sample size and sampling method for discovery and preview. Hamilton Ulmer's note on join sampling applies: sample the most upstream table of the foreign-key graph and then join, rather than joining two samples.
 - The Meridian vendor name and the JSON shape inside `custom_extensions`, and the pinned Ossie version.
 - File names and layout inside the Protocol folder.
