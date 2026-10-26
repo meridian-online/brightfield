@@ -174,7 +174,7 @@ fn elements_without_the_extension_read_with_defaults() {
     assert_eq!(sales.fields[0].meta.decided_by, DecidedBy::Analyst);
     let r = &m.relationships[0];
     assert_eq!(r.meta.grade, Grade::Possible);
-    assert_eq!(r.meta.verified, Verified::Sample);
+    assert_eq!(r.meta.verified, Verified::Unmeasured);
     assert_eq!(r.meta.decided_by, DecidedBy::Analyst);
     assert_eq!(r.meta.evidence.child_rows, 0);
 }
@@ -209,4 +209,45 @@ fn non_finite_evidence_is_written_as_zero_and_reads_back() {
     assert_eq!(back.relationships[0].meta.evidence.name_similarity, 0.0);
     assert_eq!(back.relationships[0].meta.evidence.child_rows, 0);
     assert_eq!(back.meta.rejected[0].meta.evidence.value_overlap, 0.0);
+}
+
+#[test]
+fn errors_are_located_by_path_not_bare_name() {
+    let yaml = "\
+version: 0.2.0.dev0
+name: x
+datasets:
+- name: \"1\" # first
+  source: a.csv
+  fields:
+  - name: shop_id
+    expression:
+      sql: shop_id
+- name: 'b'
+  source: b.csv
+  fields:
+  - name: other
+    expression:
+      sql: other
+  - name: shop_id
+    expression:
+      sql: shop_id
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: not json
+";
+    let err = read(yaml).unwrap_err();
+    assert_eq!(err.line, 16, "{err}");
+}
+
+#[test]
+fn rejected_relationship_extras_with_non_string_keys_still_write() {
+    let mut m = read(STAND_IN).unwrap();
+    let mut r = m.relationships[0].clone();
+    let odd: serde_yaml::Value = serde_yaml::from_str("{1: one, [2, 3]: two}").unwrap();
+    r.extras.insert("ai_context".into(), odd);
+    m.meta.rejected.push(r);
+    let back = read(&write(&m)).expect("write is total and readable");
+    assert_eq!(back.meta.rejected.len(), 1);
+    assert!(back.meta.rejected[0].extras.contains_key("ai_context"));
 }

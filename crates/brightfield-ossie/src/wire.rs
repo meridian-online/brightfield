@@ -89,30 +89,148 @@ struct WireRelationship {
     extras: Extras,
 }
 
-/// A problem in an element's meaning, with the element's name so the text can be searched for a line.
+/// Where in the document a problem sits, by path rather than by bare name, so
+/// two datasets that share a field name are told apart.
+enum At {
+    Model,
+    Dataset(String),
+    Field(String, String),
+    Relationship(String),
+}
+
+/// A problem in an element's meaning, and the element it is in.
 struct Bad {
     message: String,
-    name: String,
+    at: At,
 }
 
-fn bad(name: &str) -> impl Fn(String) -> Bad + '_ {
-    move |message| Bad {
-        message,
-        name: name.to_string(),
+fn bad(at: At) -> impl FnOnce(String) -> Bad {
+    move |message| Bad { message, at }
+}
+
+fn indent(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+fn is_blank(line: &str) -> bool {
+    let t = line.trim();
+    t.is_empty() || t.starts_with('#')
+}
+
+/// A scalar as written: trailing comment dropped, one layer of quotes removed.
+fn scalar(raw: &str) -> String {
+    let raw = raw.trim();
+    let raw = match raw.find(" #") {
+        Some(i) if !raw.starts_with(['\'', '"']) => &raw[..i],
+        _ => raw,
+    };
+    let raw = raw.trim();
+    // A quoted scalar may be followed by a comment after the closing quote.
+    for q in ['\'', '"'] {
+        if let Some(rest) = raw.strip_prefix(q) {
+            if let Some(end) = rest.find(q) {
+                return rest[..end].to_string();
+            }
+        }
     }
+    raw.to_string()
 }
 
-/// The line and column of the first `name: <name>` in `yaml`, or (0, 0).
-fn locate(yaml: &str, name: &str) -> (usize, usize) {
-    let key = format!("name: {name}");
-    yaml.lines()
-        .enumerate()
-        .find_map(|(i, l)| {
-            let t = l.trim_start();
-            let t = t.strip_prefix("- ").unwrap_or(t);
-            (t == key).then(|| (i + 1, l.len() - t.len() + 1))
+/// The lines after `key_line` that belong to its value: up to the next line that
+/// is at or left of the key's indent (a `- ` item at the key's own indent still belongs).
+fn block_end(lines: &[&str], key_line: usize) -> usize {
+    let ki = indent(lines[key_line]);
+    (key_line + 1..lines.len())
+        .find(|&i| {
+            let l = lines[i];
+            !is_blank(l)
+                && (indent(l) < ki || (indent(l) == ki && !l.trim_start().starts_with("- ")))
         })
-        .unwrap_or((0, 0))
+        .unwrap_or(lines.len())
+}
+
+/// The line of `key:` at exactly `at_indent` within `range`, if any.
+fn find_key(
+    lines: &[&str],
+    range: std::ops::Range<usize>,
+    at_indent: usize,
+    key: &str,
+) -> Option<usize> {
+    let want = format!("{key}:");
+    range.into_iter().find(|&i| {
+        let l = lines[i];
+        !is_blank(l) && indent(l) == at_indent && l.trim_start().starts_with(&want)
+    })
+}
+
+/// Each item of the sequence in `range` whose `name` is `name`: its line range
+/// and the line and 0-based column of its `name:` key.
+fn find_item(
+    lines: &[&str],
+    range: std::ops::Range<usize>,
+    name: &str,
+) -> Option<(std::ops::Range<usize>, usize, usize)> {
+    let seq = range
+        .clone()
+        .find(|&i| !is_blank(lines[i]) && lines[i].trim_start().starts_with("- "))
+        .map(|i| indent(lines[i]))?;
+    let starts: Vec<usize> = range
+        .clone()
+        .filter(|&i| {
+            !is_blank(lines[i])
+                && indent(lines[i]) == seq
+                && lines[i].trim_start().starts_with("- ")
+        })
+        .collect();
+    for (k, &st) in starts.iter().enumerate() {
+        let end = starts.get(k + 1).copied().unwrap_or(range.end);
+        for i in st..end {
+            let l = lines[i];
+            let (col, body) = if i == st {
+                (seq + 2, l.trim_start().trim_start_matches("- "))
+            } else {
+                (indent(l), l.trim_start())
+            };
+            if col == seq + 2 && !is_blank(l) {
+                if let Some(v) = body.strip_prefix("name:") {
+                    if scalar(v) == name {
+                        return Some((st..end, i, col));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Line and column (1-based) of the element, or (0, 0) when the text has no such element.
+fn locate(yaml: &str, at: &At) -> (usize, usize) {
+    let lines: Vec<&str> = yaml.lines().collect();
+    let all = 0..lines.len();
+    let found = (|| match at {
+        At::Model => {
+            let i = find_key(&lines, all, 0, "name")?;
+            Some((i, 0))
+        }
+        At::Relationship(r) => {
+            let k = find_key(&lines, all, 0, "relationships")?;
+            let (_, i, col) = find_item(&lines, k + 1..block_end(&lines, k), r)?;
+            Some((i, col))
+        }
+        At::Dataset(d) | At::Field(d, _) => {
+            let k = find_key(&lines, all, 0, "datasets")?;
+            let (dr, i, col) = find_item(&lines, k + 1..block_end(&lines, k), d)?;
+            let At::Field(_, f) = at else {
+                return Some((i, col));
+            };
+            let fk = find_key(&lines, dr.clone(), col, "fields")?;
+            let end = block_end(&lines, fk).min(dr.end);
+            let (_, fi, fcol) = find_item(&lines, fk + 1..end, f)?;
+            Some((fi, fcol))
+        }
+    })();
+    found.map_or((0, 0), |(i, col)| (i + 1, col + 1))
 }
 
 /// Parse a `model.ossie.yaml`. An element with no Meridian extension is read
@@ -131,7 +249,7 @@ pub fn read(yaml: &str) -> Result<Model, ReadError> {
         }
     })?;
     from_wire(w).map_err(|b| {
-        let (line, column) = locate(yaml, &b.name);
+        let (line, column) = locate(yaml, &b.at);
         ReadError {
             message: b.message,
             line,
@@ -181,7 +299,7 @@ fn default_relationship_meta() -> RelationshipMeta {
             name_similarity: 0.0,
         },
         cardinality: "N:1".to_string(),
-        verified: Verified::Sample,
+        verified: Verified::Unmeasured,
         decided_by: DecidedBy::Analyst,
         warning: None,
     }
@@ -190,7 +308,7 @@ fn default_relationship_meta() -> RelationshipMeta {
 fn from_wire(w: WireModel) -> Result<Model, Bad> {
     let (meta, other_extensions) =
         meridian::split::<ModelMeta>(w.custom_extensions, "model", default_model_meta)
-            .map_err(bad(&w.name))?;
+            .map_err(bad(At::Model))?;
     let datasets = w
         .datasets
         .into_iter()
@@ -218,7 +336,7 @@ fn dataset_from_wire(d: WireDataset) -> Result<Dataset, Bad> {
         meridian::split::<DatasetMeta>(d.custom_extensions, &format!("dataset {}", d.name), || {
             default_dataset_meta(&d.source)
         })
-        .map_err(bad(&d.name))?;
+        .map_err(bad(At::Dataset(d.name.clone())))?;
     let fields = d
         .fields
         .into_iter()
@@ -253,7 +371,7 @@ fn field_from_wire(dataset: &str, f: WireField) -> Result<Field, Bad> {
     let what = format!("field {dataset}.{}", f.name);
     let (meta, other_extensions) =
         meridian::split::<FieldMeta>(f.custom_extensions, &what, default_field_meta)
-            .map_err(bad(&f.name))?;
+            .map_err(bad(At::Field(dataset.to_string(), f.name.clone())))?;
     let dialects_only = f.expression.sql.is_none();
     let expression_sql = match f.expression.sql {
         Some(sql) => sql,
@@ -261,7 +379,7 @@ fn field_from_wire(dataset: &str, f: WireField) -> Result<Field, Bad> {
             .map(|d| d.expression.clone())
             .ok_or_else(|| Bad {
                 message: format!("{what}: no expression"),
-                name: f.name.clone(),
+                at: At::Field(dataset.to_string(), f.name.clone()),
             })?,
     };
     Ok(Field {
@@ -282,7 +400,7 @@ fn relationship_from_wire(r: WireRelationship) -> Result<Relationship, Bad> {
         &format!("relationship {}", r.name),
         default_relationship_meta,
     )
-    .map_err(bad(&r.name))?;
+    .map_err(bad(At::Relationship(r.name.clone())))?;
     Ok(Relationship {
         name: r.name,
         from: r.from,
@@ -321,6 +439,11 @@ pub fn write(model: &Model) -> String {
 
 fn finite_relationship(r: &Relationship) -> Relationship {
     let mut r = r.clone();
+    r.extras = r
+        .extras
+        .into_iter()
+        .map(|(k, v)| (k, string_keys(v)))
+        .collect();
     let e = &mut r.meta.evidence;
     for v in [&mut e.value_overlap, &mut e.name_similarity] {
         if !v.is_finite() {
@@ -328,6 +451,33 @@ fn finite_relationship(r: &Relationship) -> Relationship {
         }
     }
     r
+}
+
+/// `v` with every mapping key as a string (a non-string key becomes its YAML
+/// text), since the `rejected` list is stored as JSON, which has only string keys.
+fn string_keys(v: serde_yaml::Value) -> serde_yaml::Value {
+    use serde_yaml::Value;
+    match v {
+        Value::Mapping(m) => Value::Mapping(
+            m.into_iter()
+                .map(|(k, v)| {
+                    let k = match k {
+                        Value::String(s) => s,
+                        other => serde_yaml::to_string(&other)
+                            .map(|s| s.trim().to_string())
+                            .unwrap_or_default(),
+                    };
+                    (Value::String(k), string_keys(v))
+                })
+                .collect(),
+        ),
+        Value::Sequence(s) => Value::Sequence(s.into_iter().map(string_keys).collect()),
+        Value::Tagged(t) => Value::Tagged(Box::new(serde_yaml::value::TaggedValue {
+            tag: t.tag,
+            value: string_keys(t.value),
+        })),
+        other => other,
+    }
 }
 
 fn dataset_to_wire(d: &Dataset) -> WireDataset {

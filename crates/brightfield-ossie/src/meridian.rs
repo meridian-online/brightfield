@@ -10,7 +10,8 @@ use crate::VENDOR;
 pub fn encode<T: Serialize>(meta: &T) -> Extension {
     Extension {
         vendor_name: VENDOR.to_string(),
-        // Plain structs of strings, numbers and options always serialise.
+        // Total for these types: their only free-form parts are string-keyed once
+        // `write` has normalised the keys of a rejected relationship's extras.
         data: serde_json::to_string(meta).expect("meridian metadata serialises"),
     }
 }

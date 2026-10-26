@@ -133,6 +133,8 @@ pub enum DecidedBy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Verified {
+    /// Nothing was measured: the join was written by hand, so its evidence is zeroed, not found.
+    Unmeasured,
     Sample,
     Full,
 }
