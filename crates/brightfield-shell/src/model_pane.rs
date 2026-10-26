@@ -805,7 +805,7 @@ impl ModelPane {
         Some(self.fold_full_pass(answer))
     }
 
-    /// [`Self::poll_discovery`], waiting for the full pass to land: `None` when none is running,
+    /// [`Self::poll_discovery`], waiting for the full pass to land: `None` when no pass is out,
     /// or a hand edit in the file view waits to be read.
     pub fn finish_discovery(&mut self) -> Option<Dispatched> {
         if self.file_edit_armed() || self.draft_refused {
