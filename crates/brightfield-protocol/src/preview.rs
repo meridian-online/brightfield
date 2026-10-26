@@ -2,8 +2,8 @@
 //! opening them in the grid.
 //!
 //! Each side reads its dataset's rows as cast by the silver contract: the silver table, named as
-//! the dataset, or, for a dataset that has none because it is left out or folded into another,
-//! its raw table read through silver's own `TRY` cast projection ([`cast_rows_sql`]). So both
+//! the dataset, or, for a left-out or folded dataset without a silver table of its own, its raw
+//! table read through silver's own `TRY` cast projection ([`cast_rows_sql`]). So both
 //! sides' keys are compared as silver compares them, and a raw value that does not cast reads
 //! NULL rather than failing the statement. The lineage columns are left out of both, and each
 //! column is named `<dataset>.<column>` so the two sides' columns stay apart.
