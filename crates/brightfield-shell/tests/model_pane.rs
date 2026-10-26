@@ -191,24 +191,139 @@ fn l_still_moves_focus() {
 #[test]
 fn skipped_sources_are_named() {
     let win = Window::over_fixture();
+    // The files a clean checkout of the fixture holds that are not tables, in the order discover
+    // reports them, each with the first line of the reason it gives.
     let found = brightfield_engine::sources::discover(&fixture()).expect("the fixture reads");
-    let reason = |name: &str| {
-        let (_, why) = found
-            .skipped
-            .iter()
-            .find(|(path, _)| path.file_name().is_some_and(|n| n == name))
-            .unwrap_or_else(|| panic!("{name} is skipped"));
-        why.lines().next().unwrap_or("").trim().to_string()
-    };
-    let expected = format!(
-        "3 files skipped: .DS_Store ({}), broken.csv ({}), notes.txt ({})",
-        reason(".DS_Store"),
-        reason("broken.csv"),
-        reason("notes.txt"),
+    let named: Vec<String> = found
+        .skipped
+        .iter()
+        .map(|(path, why)| {
+            format!(
+                "{} ({})",
+                path.file_name().unwrap().to_string_lossy(),
+                why.lines().next().unwrap_or("").trim()
+            )
+        })
+        .collect();
+    let expected = format!("2 files skipped: {}", named.join(", "));
+    assert!(
+        expected.starts_with("2 files skipped: broken.csv ("),
+        "{expected}"
+    );
+    assert!(
+        expected.ends_with(", notes.txt (not a kind of file Brightfield reads)"),
+        "{expected}"
     );
     let header = &win.pane().drawn().header;
     assert_eq!(header.get(1), Some(&expected), "{header:?}");
-    assert!(expected.contains("notes.txt (not a kind of file Brightfield reads)"));
+    // A hidden file beside them, as a file manager leaves one, is not named.
+    assert!(!expected.contains(".DS_Store"));
+}
+
+/// A pane over the retail fixture's model, which has joins to route, drawn once as the list.
+fn retail_list() -> ModelPane {
+    let dir = scratch().join(format!("retail-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../brightfield-ossie/fixtures/retail_extract/model.ossie.yaml");
+    std::fs::copy(fixture, dir.join("model.ossie.yaml")).unwrap();
+    let protocol = brightfield_shell::own_files::OwnProtocol {
+        dir,
+        sources: brightfield_engine::sources::SourceSet::default(),
+        profiles: Vec::new(),
+    };
+    let mut pane = ModelPane::open(protocol, runner()).expect("the retail model reads");
+    pane.view = ModelView::List;
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1200.0, 800.0),
+        )),
+        ..Default::default()
+    };
+    let _ = ctx.run_ui(raw, |ui| pane.ui(ui, Mode::Light));
+    pane
+}
+
+#[test]
+fn the_lists_gutter_routes_each_join_between_its_two_rows() {
+    let pane = retail_list();
+    let drawn = pane.drawn();
+    let model = &pane.model;
+    let placed = |name: &str| {
+        model
+            .datasets
+            .iter()
+            .any(|d| d.name == name && !d.meta.excluded && d.meta.folded_into.is_none())
+    };
+    // Every join between two placed tables, read off the model rather than the list.
+    let mut expected: Vec<&str> = model
+        .relationships
+        .iter()
+        .filter(|r| r.from != r.to && placed(&r.from) && placed(&r.to))
+        .map(|r| r.name.as_str())
+        .collect();
+    expected.sort_unstable();
+    let mut routed: Vec<&str> = drawn
+        .routes
+        .iter()
+        .map(|r| r.route.relationship.as_str())
+        .collect();
+    routed.sort_unstable();
+    assert_eq!(routed, expected, "one connector per placed join");
+    assert!(!routed.is_empty());
+
+    // The review queue comes first.
+    let possible = model
+        .relationships
+        .iter()
+        .filter(|r| expected.contains(&r.name.as_str()))
+        .filter(|r| r.meta.grade == brightfield_ossie::Grade::Possible)
+        .count();
+    assert!(possible > 0, "the fixture has a possible join to review");
+    for line in &drawn.body[..possible] {
+        assert!(line.starts_with("Possible join "), "{line}");
+    }
+
+    let table_of = |row: usize| drawn.body[row].split(" · ").nth(1).map(str::to_string);
+    for r in &drawn.routes {
+        let rel = model
+            .relationships
+            .iter()
+            .find(|x| x.name == r.route.relationship)
+            .unwrap();
+        // It links the rows of the two tables it joins…
+        assert_eq!(
+            table_of(r.route.from_row).as_deref(),
+            Some(rel.from.as_str())
+        );
+        assert_eq!(table_of(r.route.to_row).as_deref(), Some(rel.to.as_str()));
+        // …with a tick into the middle of each, from a run left of the ticks' end…
+        assert_eq!(r.ticks.0, drawn.list_rows[r.route.from_row].center().y);
+        assert_eq!(r.ticks.1, drawn.list_rows[r.route.to_row].center().y);
+        assert!(r.x < r.tick_end, "{r:?}");
+        // …dashed when the join is only possible.
+        assert_eq!(
+            r.route.possible,
+            rel.meta.grade == brightfield_ossie::Grade::Possible
+        );
+    }
+    // No two routes on one lane meet, so a tick never lands on another route's run.
+    let span = |r: &brightfield_shell::model_pane::RouteDrawn| {
+        let (a, b) = (r.route.from_row, r.route.to_row);
+        (a.min(b), a.max(b))
+    };
+    for (i, a) in drawn.routes.iter().enumerate() {
+        for b in &drawn.routes[i + 1..] {
+            if a.route.lane == b.route.lane {
+                let ((a0, a1), (b0, b1)) = (span(a), span(b));
+                assert!(a1 < b0 || b1 < a0, "{a:?} and {b:?} share a lane");
+            } else {
+                assert_ne!(a.x, b.x, "different lanes stand apart");
+            }
+        }
+    }
 }
 
 #[test]
@@ -287,6 +402,29 @@ fn save_model_writes_the_file_and_reruns_only_the_silver_steps() {
         .unwrap()
         .meta
         .excluded = true;
+    // …and a field dropped from a table kept, so its silver step's SQL changes and must run.
+    let changed = {
+        let kept = model
+            .datasets
+            .iter_mut()
+            .find(|d| {
+                d.name != left_out
+                    && before.contains(&format!("silver_{}", d.name))
+                    && d.fields
+                        .iter()
+                        .filter(|f| !f.name.starts_with("__"))
+                        .count()
+                        > 1
+            })
+            .expect("a kept table with two fields");
+        let at = kept
+            .fields
+            .iter()
+            .rposition(|f| !f.name.starts_with("__"))
+            .unwrap();
+        kept.fields.remove(at);
+        kept.name.clone()
+    };
     pane.save_model(model.clone()).expect("the save runs");
 
     // The file holds the new model, and the pane shows it.
@@ -306,6 +444,18 @@ fn save_model_writes_the_file_and_reruns_only_the_silver_steps() {
         .expect("the save ran the Protocol");
     let contract =
         brightfield_protocol::contract::parse_contract(&std::fs::read(&newest).unwrap()).unwrap();
+    // The changed table's silver step ran.
+    let silver = contract
+        .steps
+        .iter()
+        .find(|s| s.name == format!("silver_{changed}"))
+        .expect("the changed table's silver step is in the run");
+    assert_eq!(
+        silver.status.state,
+        brightfield_protocol::contract::StepState::Success,
+        "{} did not run",
+        silver.name
+    );
     let loads: Vec<_> = contract
         .steps
         .iter()

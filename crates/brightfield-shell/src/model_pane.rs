@@ -124,6 +124,10 @@ pub struct ModelDrawn {
     pub body: Vec<String>,
     /// Where the diagram's raster was laid out, in window-space logical points.
     pub diagram: Option<egui::Rect>,
+    /// Where each list row was laid out, in the order of [`ModelDrawn::body`].
+    pub list_rows: Vec<egui::Rect>,
+    /// The joins the list's gutter routed between its rows.
+    pub routes: Vec<RouteDrawn>,
 }
 
 /// What the diagram's raster depends on: when any of it changes, the scene is drawn again.
@@ -341,7 +345,7 @@ impl ModelPane {
 
         match self.view {
             ModelView::Diagram => self.diagram_ui(ui, &mut drawn),
-            ModelView::List => list_ui(ui, &self.model, primary, secondary, &mut drawn),
+            ModelView::List => list_ui(ui, &self.model, mode, &mut drawn),
             ModelView::File => file_ui(ui, &self.file_text, primary, &mut drawn),
         }
         self.drawn = drawn;
@@ -381,50 +385,183 @@ impl ModelPane {
     }
 }
 
-/// The list view: possible joins waiting on the analyst first, then a row per table, each with a
-/// gutter naming the joins it takes part in.
-fn list_ui(
-    ui: &mut egui::Ui,
-    model: &Model,
-    primary: egui::Color32,
-    secondary: egui::Color32,
-    drawn: &mut ModelDrawn,
-) {
+/// One join in the list's gutter: a run down its own lane from one table's row to the other's,
+/// with a tick into each.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GutterRoute {
+    /// The relationship's name.
+    pub relationship: String,
+    /// The list row of the relationship's `from` table.
+    pub from_row: usize,
+    /// The list row of its `to` table.
+    pub to_row: usize,
+    /// Its lane, counted from the gutter's left edge.
+    pub lane: usize,
+    /// Whether the join is only possible, drawn dashed in the proposal ink.
+    pub possible: bool,
+}
+
+/// The gutter's routes for `rows` (the model's [`brightfield_ossie::list_rows`]): one per join
+/// between two placed tables, each on the leftmost lane no other route overlapping it holds. Two
+/// routes share a lane only when the rows they span do not meet, so no tick lands on another
+/// route's run.
+#[must_use]
+pub fn gutter_routes(model: &Model, rows: &[ListRow]) -> Vec<GutterRoute> {
+    let row_of = |table: &str| {
+        rows.iter()
+            .position(|r| matches!(r, ListRow::Table { name, .. } if name == table))
+    };
+    let mut joins: Vec<&str> = rows
+        .iter()
+        .filter_map(|r| match r {
+            ListRow::Table { joins, .. } => Some(joins.iter().map(String::as_str)),
+            ListRow::Review { .. } => None,
+        })
+        .flatten()
+        .collect();
+    joins.sort_unstable();
+    joins.dedup();
+    let mut routes: Vec<GutterRoute> = joins
+        .into_iter()
+        .filter_map(|name| {
+            let r = model.relationships.iter().find(|r| r.name == name)?;
+            Some(GutterRoute {
+                relationship: r.name.clone(),
+                from_row: row_of(&r.from)?,
+                to_row: row_of(&r.to)?,
+                lane: 0,
+                possible: r.meta.grade == brightfield_ossie::Grade::Possible,
+            })
+        })
+        .collect();
+    let span = |r: &GutterRoute| (r.from_row.min(r.to_row), r.from_row.max(r.to_row));
+    routes.sort_by(|a, b| {
+        span(a)
+            .cmp(&span(b))
+            .then(a.relationship.cmp(&b.relationship))
+    });
+    // The last row each lane's routes reach.
+    let mut lane_ends: Vec<usize> = Vec::new();
+    for route in &mut routes {
+        let (top, bottom) = span(route);
+        route.lane = match lane_ends.iter().position(|&end| end < top) {
+            Some(lane) => lane,
+            None => {
+                lane_ends.push(0);
+                lane_ends.len() - 1
+            }
+        };
+        lane_ends[route.lane] = bottom;
+    }
+    routes
+}
+
+/// A route as the list drew it, in window-space logical points.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RouteDrawn {
+    /// The route it draws.
+    pub route: GutterRoute,
+    /// Where its run stands.
+    pub x: f32,
+    /// The heights of its ticks: into the `from` row, then into the `to` row.
+    pub ticks: (f32, f32),
+    /// Where its ticks end, at the gutter's right edge.
+    pub tick_end: f32,
+}
+
+/// The height of one list row, in logical points.
+const LIST_ROW: f32 = 24.0;
+/// The width of one gutter lane.
+const LANE: f32 = 8.0;
+/// Space either side of the gutter's lanes.
+const GUTTER_PAD: f32 = 6.0;
+/// The gutter's dashes, for a possible join: the dash and the gap.
+const GUTTER_DASH: (f32, f32) = (4.0, 3.0);
+
+/// The list view: possible joins waiting on the analyst first, then a row per table with its
+/// metadata, and the joins routed in a narrow gutter on the left linking the rows they join.
+fn list_ui(ui: &mut egui::Ui, model: &Model, mode: Mode, drawn: &mut ModelDrawn) {
+    let sem = semantic(mode.is_dark());
+    let primary = chrome::colour(sem.text.primary);
+    let likely = chrome::colour(sem.borders.default_);
+    let proposal = chrome::colour(sem.role(meridian_design::Role::Neutral).foreground.base);
+    let rows = brightfield_ossie::list_rows(model);
+    let routes = gutter_routes(model, &rows);
+    let lanes = routes.iter().map(|r| r.lane + 1).max().unwrap_or(0);
+    let gutter = GUTTER_PAD * 2.0 + LANE * lanes as f32;
     egui::ScrollArea::vertical()
         .id_salt("model-list")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for row in brightfield_ossie::list_rows(model) {
-                let (gutter, text) = list_line(&row);
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [LIST_GUTTER, ui.spacing().interact_size.y],
-                        egui::Label::new(egui::RichText::new(&gutter).color(secondary)),
-                    );
-                    ui.label(egui::RichText::new(&text).color(primary));
-                });
-                drawn.body.push(if gutter.is_empty() {
-                    text
+            let width = ui.available_width();
+            let (area, _) = ui.allocate_exact_size(
+                egui::vec2(width, LIST_ROW * rows.len() as f32),
+                egui::Sense::hover(),
+            );
+            let painter = ui.painter();
+            let row_rect = |i: usize| {
+                egui::Rect::from_min_size(
+                    area.min + egui::vec2(0.0, LIST_ROW * i as f32),
+                    egui::vec2(width, LIST_ROW),
+                )
+            };
+            for (i, row) in rows.iter().enumerate() {
+                let rect = row_rect(i);
+                let (text, ink) = match row {
+                    ListRow::Review { .. } => (list_line(row), proposal),
+                    ListRow::Table { .. } => (list_line(row), primary),
+                };
+                painter.text(
+                    egui::pos2(rect.left() + gutter + spacing::SPACE_2, rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    &text,
+                    crate::protocol::ui_font(),
+                    ink,
+                );
+                drawn.list_rows.push(rect);
+                drawn.body.push(text);
+            }
+            let tick_end = area.left() + gutter - GUTTER_PAD / 2.0;
+            for route in routes {
+                let x = area.left() + GUTTER_PAD + LANE * (route.lane as f32 + 0.5);
+                let ticks = (
+                    row_rect(route.from_row).center().y,
+                    row_rect(route.to_row).center().y,
+                );
+                let stroke = egui::Stroke::new(1.5, if route.possible { proposal } else { likely });
+                let path = [
+                    egui::pos2(tick_end, ticks.0),
+                    egui::pos2(x, ticks.0),
+                    egui::pos2(x, ticks.1),
+                    egui::pos2(tick_end, ticks.1),
+                ];
+                if route.possible {
+                    painter.extend(egui::Shape::dashed_line(
+                        &path,
+                        stroke,
+                        GUTTER_DASH.0,
+                        GUTTER_DASH.1,
+                    ));
                 } else {
-                    format!("{gutter} | {text}")
+                    painter.add(egui::Shape::line(path.to_vec(), stroke));
+                }
+                drawn.routes.push(RouteDrawn {
+                    route,
+                    x,
+                    ticks,
+                    tick_end,
                 });
             }
         });
 }
 
-/// The width of the list's joins gutter, in logical points.
-const LIST_GUTTER: f32 = 72.0;
-
-/// One list row as its gutter and its text.
-fn list_line(row: &ListRow) -> (String, String) {
+/// One list row's text: a possible join's review line, or a table's metadata.
+fn list_line(row: &ListRow) -> String {
     match row {
         ListRow::Review {
             relationship,
             edge_text,
-        } => (
-            "review".to_string(),
-            format!("Possible join {relationship}: {edge_text}"),
-        ),
+        } => format!("Possible join {relationship}: {edge_text}"),
         ListRow::Table {
             role,
             name,
@@ -434,11 +571,6 @@ fn list_line(row: &ListRow) -> (String, String) {
             folded,
             joins,
         } => {
-            let gutter = match joins.len() {
-                0 => String::new(),
-                1 => "1 join".to_string(),
-                n => format!("{n} joins"),
-            };
             let mut text = format!("{} · {name}", role_label(*role));
             if let Some(rows) = rows {
                 text.push_str(&format!(" · {rows} rows"));
@@ -456,7 +588,7 @@ fn list_line(row: &ListRow) -> (String, String) {
             if !joins.is_empty() {
                 text.push_str(&format!(" · joins {}", joins.join(", ")));
             }
-            (gutter, text)
+            text
         }
     }
 }

@@ -80,8 +80,26 @@ fn folder_takes_readable_and_names_skipped() {
         .map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     skipped.sort();
-    assert_eq!(skipped, [".DS_Store", "broken.csv", "notes.txt"]);
+    // The `.DS_Store` beside them is a hidden entry, passed over without being named.
+    assert_eq!(skipped, ["broken.csv", "notes.txt"]);
     assert!(set.skipped.iter().all(|(_, why)| !why.is_empty()));
+}
+
+#[test]
+fn hidden_entries_are_neither_read_nor_named() {
+    let dir = folder_with_junk();
+    // A hidden file that would read as a table, and a hidden folder.
+    std::fs::write(dir.path().join(".scratch.csv"), "id\n1\n").unwrap();
+    std::fs::create_dir(dir.path().join(".cache")).unwrap();
+    let set = discover(dir.path()).unwrap();
+    assert_eq!(names(&set), ["items", "sales", "sales_2"]);
+    assert!(
+        set.skipped
+            .iter()
+            .all(|(p, _)| !p.file_name().unwrap().to_string_lossy().starts_with('.')),
+        "{:?}",
+        set.skipped
+    );
 }
 
 #[test]

@@ -50,15 +50,23 @@ pub struct SourceSet {
 }
 
 /// The tables in `path`: a folder's top level (no recursion), or a single workbook or database
-/// file. A file that cannot be opened is skipped with the reason, never fatal.
+/// file. A file that cannot be opened is skipped with the reason, never fatal. A folder's hidden
+/// entries (a name starting with `.`, such as the `.DS_Store` a file manager leaves) are passed
+/// over without a word: they are the file system's, not files the analyst chose.
 pub fn discover(path: &Path) -> Result<SourceSet, String> {
     let path = std::path::absolute(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let files = if path.is_dir() {
         let mut entries: Vec<PathBuf> = std::fs::read_dir(&path)
             .map_err(|e| format!("{}: {e}", path.display()))?
             .map(|e| e.map(|e| e.path()))
-            .collect::<Result<_, _>>()
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            .into_iter()
+            .filter(|p| {
+                !p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+            })
+            .collect();
         entries.sort();
         entries
     } else if path.is_file() {
