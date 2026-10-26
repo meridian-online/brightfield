@@ -12,13 +12,21 @@
 //! a click on it selects what [`brightfield_render::model_scene::hit_test`] finds under the
 //! pointer. [`ModelPane::save_model`] is how a changed model reaches the folder: it writes the
 //! Ossie file, rewrites the silver steps for it and runs the Protocol again.
+//!
+//! What is selected belongs to the pane, not to a view: a click on a card or a join on the
+//! diagram, or on a row of the list, selects it, and in either view what is not connected to the
+//! selection dims. While something is selected the inspector ([`crate::model_inspector`]) stands
+//! beside the view, and the actions it offers come back to [`ModelPane::dispatch`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use brightfield_engine::semantic::SchemaCatalogue;
 use brightfield_keys::{Altitude, BindingContext};
-use brightfield_ossie::{ListRow, Model, ModelLayout, Role};
+use brightfield_ossie::{Edit, ListRow, Model, ModelLayout};
 use brightfield_render::canvas_host::{Color, PixelSize};
-use brightfield_render::model_scene::{hit_test, render_model, ModelFocus, Selection};
+use brightfield_render::model_scene::{
+    dataset_lit, hit_test, relationship_lit, render_model, ModelFocus, Selection,
+};
 use brightfield_workbench::registry::Slot;
 use brightfield_workbench::{
     chrome, EmptyState, Handled, Icon, Item, ItemCtx, ItemId, ItemRegistry, ItemSpec, PaneKey,
@@ -29,6 +37,7 @@ use meridian_design::{semantic, spacing};
 use crate::canvas::EguiCanvasHost;
 use crate::design::Mode;
 use crate::discovery::MODEL_FILE;
+use crate::model_inspector::{self, Inspected, InspectorDrawn, ModelAction};
 use crate::own_files::{self, OwnProtocol};
 use crate::run::Runner;
 
@@ -128,6 +137,11 @@ pub struct ModelDrawn {
     pub list_rows: Vec<egui::Rect>,
     /// The joins the list's gutter routed between its rows.
     pub routes: Vec<RouteDrawn>,
+    /// Whether each list row was drawn lit, in the order of [`ModelDrawn::body`]: with a
+    /// selection, only the rows connected to it are.
+    pub list_lit: Vec<bool>,
+    /// What the inspector drew, when something was selected.
+    pub inspector: Option<InspectorDrawn>,
 }
 
 /// What the diagram's raster depends on: when any of it changes, the scene is drawn again.
@@ -157,6 +171,25 @@ pub struct ModelPane {
     generation: u64,
     raster: Option<(DiagramKey, egui::TextureId)>,
     drawn: ModelDrawn,
+    /// The FineType catalogue the inspector names column types from, when a bundle is staged.
+    catalogue: Option<SchemaCatalogue>,
+    /// What the inspector shows for the selection, read for the model generation beside it.
+    inspected: Option<(Selection, u64, Option<Inspected>)>,
+    /// The actions the inspector's buttons chose in the last frame, for the window to dispatch.
+    actions: Vec<ModelAction>,
+}
+
+/// What became of a [`ModelAction`] the pane dispatched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dispatched {
+    /// The action was taken; the words say what changed.
+    Done(String),
+    /// The action needs a picker this build does not have yet; the words say so.
+    NotYet(String),
+    /// The action was refused or failed; the words say why.
+    Failed(String),
+    /// The action opens rows in the grid, which is the window's to do.
+    OpenInGrid(Selection),
 }
 
 impl ModelPane {
@@ -183,6 +216,14 @@ impl ModelPane {
             generation: 0,
             raster: None,
             drawn: ModelDrawn::default(),
+            catalogue: match brightfield_engine::LoadOptions::packaged().type_source {
+                Some(brightfield_engine::semantic::TypeSourceSpec::Bundle(dir)) => {
+                    brightfield_engine::semantic::catalogue_in(&dir)
+                }
+                _ => None,
+            },
+            inspected: None,
+            actions: Vec::new(),
         })
     }
 
@@ -246,6 +287,123 @@ impl ModelPane {
     #[must_use]
     pub fn drawn(&self) -> &ModelDrawn {
         &self.drawn
+    }
+
+    /// What the inspector shows for the selection, read from the model and the Protocol's
+    /// database once for each selection and model, and kept until either changes. `None` with
+    /// nothing selected, or a selection the model no longer holds.
+    pub fn inspected(&mut self) -> Option<&Inspected> {
+        let selected = self.focus.selected.clone()?;
+        let fresh = self
+            .inspected
+            .as_ref()
+            .is_some_and(|(s, generation, _)| *s == selected && *generation == self.generation);
+        if !fresh {
+            let found = model_inspector::inspect(
+                &self.protocol.dir,
+                &self.model,
+                &selected,
+                self.catalogue.as_ref(),
+            );
+            self.inspected = Some((selected, self.generation, found));
+        }
+        self.inspected.as_ref()?.2.as_ref()
+    }
+
+    /// The actions the inspector offers for the selection, in the order its buttons stand.
+    #[must_use]
+    pub fn offered_actions(&self) -> Vec<ModelAction> {
+        match &self.focus.selected {
+            Some(Selection::Relationship(name)) => model_inspector::join_actions(&self.model, name),
+            Some(Selection::Dataset(name)) => model_inspector::table_actions(&self.model, name),
+            None => Vec::new(),
+        }
+    }
+
+    /// Take the actions the inspector's buttons chose since the last call.
+    pub fn take_actions(&mut self) -> Vec<ModelAction> {
+        std::mem::take(&mut self.actions)
+    }
+
+    /// Carry out `action`: an edit goes through [`brightfield_ossie::apply`] and then
+    /// [`Self::save_model`], Show in file switches to the file view, and Open in grid is handed
+    /// back for the window to open. The actions that need a picker say they are not available
+    /// yet.
+    pub fn dispatch(&mut self, action: ModelAction) -> Dispatched {
+        let edit = match action {
+            ModelAction::Keep(relationship) => Edit::KeepJoin { relationship },
+            ModelAction::Drop(relationship) => Edit::DropJoin { relationship },
+            ModelAction::ChangeRole { dataset, role } => Edit::SetRole { dataset, role },
+            ModelAction::Unfold(dataset) => Edit::Unfold { dataset },
+            ModelAction::LeaveOut(dataset) => Edit::Exclude { dataset },
+            ModelAction::ShowInFile => {
+                self.view = ModelView::File;
+                return Dispatched::Done("Showing the Ossie file".to_string());
+            }
+            ModelAction::OpenInGrid(selection) => return Dispatched::OpenInGrid(selection),
+            ModelAction::ChangeKeys(_) => {
+                return Dispatched::NotYet("Changing a join's keys isn't available yet".into())
+            }
+            ModelAction::FoldInto(_) => {
+                return Dispatched::NotYet(
+                    "Folding a table into another isn't available yet".into(),
+                )
+            }
+            ModelAction::RetypeColumn(_) => {
+                return Dispatched::NotYet("Retyping a column isn't available yet".into())
+            }
+        };
+        let said = edit_said(&edit);
+        let model = match brightfield_ossie::apply(&self.model, &edit) {
+            Ok(model) => model,
+            Err(e) => return Dispatched::Failed(e.0),
+        };
+        let saved = self.save_model(model);
+        // A dropped join is gone from the model, and so is anything selected on it.
+        if let Some(Selection::Relationship(name)) = &self.focus.selected {
+            if !self.model.relationships.iter().any(|r| r.name == *name) {
+                self.focus.selected = None;
+            }
+        }
+        match saved {
+            Ok(()) => Dispatched::Done(said),
+            Err(e) => Dispatched::Failed(e),
+        }
+    }
+
+    /// Write the rows `target` names to a Parquet file in the Protocol folder for the grid to
+    /// open, and answer its path: a table's silver rows, or every joined row of a join, each
+    /// without their lineage columns.
+    ///
+    /// # Errors
+    ///
+    /// The reason when the target has no rows of its own in the database, or the copy fails.
+    pub fn grid_snapshot(&self, target: &Selection) -> Result<PathBuf, String> {
+        let (name, sql) = match target {
+            Selection::Dataset(name) => {
+                if !model_inspector::materialised(&self.model, name) {
+                    return Err(format!(
+                        "{name} has no table of its own: it is left out or folded into another"
+                    ));
+                }
+                (name.clone(), model_inspector::silver_rows_sql(name))
+            }
+            Selection::Relationship(name) => {
+                let sql = brightfield_ossie::join_rows_sql(&self.model, name);
+                if sql.is_empty() {
+                    return Err(format!("the model has no join named {name}"));
+                }
+                (name.clone(), sql)
+            }
+        };
+        model_inspector::snapshot(&self.protocol.dir, &name, &sql)
+    }
+
+    /// Forget the diagram's raster, so the next frame that shows the diagram draws it again: the
+    /// window calls this when the pane comes back from the grid, whose document replaced the
+    /// canvas host's textures.
+    pub fn forget_raster(&mut self) {
+        self.raster = None;
     }
 
     /// The canvas-host slot the diagram rasters into, for the window's sweep.
@@ -343,11 +501,64 @@ impl ModelPane {
         });
         ui.add_space(spacing::SPACE_2);
 
+        // With a selection the inspector stands to the right of the view, and the view has what
+        // is left.
+        let area = ui.available_rect_before_wrap();
+        let inspector = self.inspected().cloned().map(|inspected| {
+            let rect = egui::Rect::from_min_max(
+                egui::pos2(
+                    (area.right() - model_inspector::INSPECTOR_WIDTH).max(area.left()),
+                    area.top(),
+                ),
+                area.max,
+            );
+            (rect, inspected)
+        });
+        let view_rect = match &inspector {
+            Some((rect, _)) => egui::Rect::from_min_max(
+                area.min,
+                egui::pos2(rect.left() - spacing::SPACE_2, area.bottom()),
+            ),
+            None => area,
+        };
+        let mut view_ui = ui.new_child(egui::UiBuilder::new().max_rect(view_rect));
         match self.view {
-            ModelView::Diagram => self.diagram_ui(ui, &mut drawn),
-            ModelView::List => list_ui(ui, &self.model, mode, &mut drawn),
-            ModelView::File => file_ui(ui, &self.file_text, primary, &mut drawn),
+            ModelView::Diagram => self.diagram_ui(&mut view_ui, &mut drawn),
+            ModelView::List => {
+                if let Some(selected) = list_ui(
+                    &mut view_ui,
+                    &self.model,
+                    self.focus.selected.as_ref(),
+                    mode,
+                    &mut drawn,
+                ) {
+                    self.focus.selected = selected;
+                }
+            }
+            ModelView::File => file_ui(&mut view_ui, &self.file_text, primary, &mut drawn),
         }
+        if let Some((rect, inspected)) = inspector {
+            let sem = semantic(mode.is_dark());
+            ui.painter().line_segment(
+                [rect.left_top(), rect.left_bottom()],
+                egui::Stroke::new(1.0, chrome::colour(sem.borders.subtle)),
+            );
+            let mut inspector_ui = ui.new_child(
+                egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(spacing::SPACE_2, 0.0))),
+            );
+            let actions = self.offered_actions();
+            let mut said = InspectorDrawn::default();
+            model_inspector::ui(
+                &mut inspector_ui,
+                &inspected,
+                &actions,
+                mode,
+                &mut self.actions,
+                &mut said,
+            );
+            drawn.inspector = Some(said);
+        }
+        ui.allocate_rect(area, egui::Sense::hover());
         self.drawn = drawn;
     }
 
@@ -478,17 +689,46 @@ const GUTTER_PAD: f32 = 6.0;
 /// The gutter's dashes, for a possible join: the dash and the gap.
 const GUTTER_DASH: (f32, f32) = (4.0, 3.0);
 
+/// The selection a list row stands for: its table, or the possible join it asks about.
+fn row_selection(row: &ListRow) -> Selection {
+    match row {
+        ListRow::Review { relationship, .. } => Selection::Relationship(relationship.clone()),
+        ListRow::Table { name, .. } => Selection::Dataset(name.clone()),
+    }
+}
+
+/// Whether `selected` leaves a list row lit, by the rule the diagram dims by.
+fn row_lit(model: &Model, selected: Option<&Selection>, row: &ListRow) -> bool {
+    match row {
+        ListRow::Review { relationship, .. } => relationship_lit(model, selected, relationship),
+        ListRow::Table { name, .. } => dataset_lit(model, selected, name),
+    }
+}
+
 /// The list view: possible joins waiting on the analyst first, then a row per table with its
 /// metadata, and the joins routed in a narrow gutter on the left linking the rows they join.
-fn list_ui(ui: &mut egui::Ui, model: &Model, mode: Mode, drawn: &mut ModelDrawn) {
+///
+/// A click on a row selects what it stands for, and a click on the selected row lets it go: the
+/// answer is the new selection when a row was clicked. With a selection, the rows and routes not
+/// connected to it are drawn in the dimmed ink.
+fn list_ui(
+    ui: &mut egui::Ui,
+    model: &Model,
+    selected: Option<&Selection>,
+    mode: Mode,
+    drawn: &mut ModelDrawn,
+) -> Option<Option<Selection>> {
     let sem = semantic(mode.is_dark());
     let primary = chrome::colour(sem.text.primary);
     let likely = chrome::colour(sem.borders.default_);
     let proposal = chrome::colour(sem.role(meridian_design::Role::Neutral).foreground.base);
+    let dimmed = chrome::colour(sem.text.disabled);
+    let chosen_fill = chrome::colour(sem.rows.selected_background);
     let rows = brightfield_ossie::list_rows(model);
     let routes = gutter_routes(model, &rows);
     let lanes = routes.iter().map(|r| r.lane + 1).max().unwrap_or(0);
     let gutter = GUTTER_PAD * 2.0 + LANE * lanes as f32;
+    let mut clicked = None;
     egui::ScrollArea::vertical()
         .id_salt("model-list")
         .auto_shrink([false, false])
@@ -498,7 +738,6 @@ fn list_ui(ui: &mut egui::Ui, model: &Model, mode: Mode, drawn: &mut ModelDrawn)
                 egui::vec2(width, LIST_ROW * rows.len() as f32),
                 egui::Sense::hover(),
             );
-            let painter = ui.painter();
             let row_rect = |i: usize| {
                 egui::Rect::from_min_size(
                     area.min + egui::vec2(0.0, LIST_ROW * i as f32),
@@ -507,10 +746,30 @@ fn list_ui(ui: &mut egui::Ui, model: &Model, mode: Mode, drawn: &mut ModelDrawn)
             };
             for (i, row) in rows.iter().enumerate() {
                 let rect = row_rect(i);
+                let this = row_selection(row);
+                if ui
+                    .interact(
+                        rect,
+                        ui.id().with(("model-list-row", i)),
+                        egui::Sense::click(),
+                    )
+                    .clicked()
+                {
+                    clicked = Some((selected != Some(&this)).then(|| this.clone()));
+                }
+            }
+            let painter = ui.painter();
+            for (i, row) in rows.iter().enumerate() {
+                let rect = row_rect(i);
+                let lit = row_lit(model, selected, row);
+                if selected == Some(&row_selection(row)) {
+                    painter.rect_filled(rect, 0.0, chosen_fill);
+                }
                 let (text, ink) = match row {
                     ListRow::Review { .. } => (list_line(row), proposal),
                     ListRow::Table { .. } => (list_line(row), primary),
                 };
+                let ink = if lit { ink } else { dimmed };
                 painter.text(
                     egui::pos2(rect.left() + gutter + spacing::SPACE_2, rect.center().y),
                     egui::Align2::LEFT_CENTER,
@@ -519,6 +778,7 @@ fn list_ui(ui: &mut egui::Ui, model: &Model, mode: Mode, drawn: &mut ModelDrawn)
                     ink,
                 );
                 drawn.list_rows.push(rect);
+                drawn.list_lit.push(lit);
                 drawn.body.push(text);
             }
             let tick_end = area.left() + gutter - GUTTER_PAD / 2.0;
@@ -528,7 +788,14 @@ fn list_ui(ui: &mut egui::Ui, model: &Model, mode: Mode, drawn: &mut ModelDrawn)
                     row_rect(route.from_row).center().y,
                     row_rect(route.to_row).center().y,
                 );
-                let stroke = egui::Stroke::new(1.5, if route.possible { proposal } else { likely });
+                let ink = if !relationship_lit(model, selected, &route.relationship) {
+                    dimmed
+                } else if route.possible {
+                    proposal
+                } else {
+                    likely
+                };
+                let stroke = egui::Stroke::new(1.5, ink);
                 let path = [
                     egui::pos2(tick_end, ticks.0),
                     egui::pos2(x, ticks.0),
@@ -553,6 +820,7 @@ fn list_ui(ui: &mut egui::Ui, model: &Model, mode: Mode, drawn: &mut ModelDrawn)
                 });
             }
         });
+    clicked
 }
 
 /// One list row's text: a possible join's review line, or a table's metadata.
@@ -571,7 +839,7 @@ fn list_line(row: &ListRow) -> String {
             folded,
             joins,
         } => {
-            let mut text = format!("{} · {name}", role_label(*role));
+            let mut text = format!("{} · {name}", model_inspector::role_label(*role));
             if let Some(rows) = rows {
                 text.push_str(&format!(" · {rows} rows"));
             }
@@ -593,15 +861,51 @@ fn list_line(row: &ListRow) -> String {
     }
 }
 
-fn role_label(role: Role) -> &'static str {
-    match role {
-        Role::Entity => "entity",
-        Role::Event => "event",
-        Role::Reference => "reference",
-        Role::Bridge => "bridge",
-        Role::Snapshot => "snapshot",
-        Role::Unclear => "unclear",
+/// What a toast says once `edit` is saved.
+fn edit_said(edit: &Edit) -> String {
+    match edit {
+        Edit::KeepJoin { relationship } => format!("Kept {relationship}"),
+        Edit::DropJoin { relationship } => format!("Dropped {relationship}"),
+        Edit::SetRole { dataset, role } => {
+            format!("{dataset} is now {}", model_inspector::role_label(*role))
+        }
+        Edit::Unfold { dataset } => format!("Unfolded {dataset}"),
+        Edit::Exclude { dataset } => format!("Left {dataset} out of the model"),
+        other => format!("{other:?}"),
     }
+}
+
+/// The band the window draws above the grid while the model pane waits behind it: the way back
+/// to the model, as a control at its left, and the name of what the grid holds. Answers whether
+/// the way back was taken.
+pub fn back_band(ui: &mut egui::Ui, band: egui::Rect, showing: &str, mode: Mode) -> bool {
+    let sem = semantic(mode.is_dark());
+    ui.painter()
+        .rect_filled(band, 0.0, chrome::colour(sem.surfaces.header));
+    ui.painter().line_segment(
+        [band.left_bottom(), band.right_bottom()],
+        egui::Stroke::new(1.0, chrome::colour(sem.borders.subtle)),
+    );
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(band.shrink2(egui::vec2(spacing::SPACE_3, 0.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    child.shrink_clip_rect(band);
+    let back = child
+        .button(
+            egui::RichText::new("\u{2190} Model")
+                .font(crate::protocol::ui_font())
+                .color(chrome::colour(sem.text.primary)),
+        )
+        .on_hover_text("Back to the model (Esc)");
+    child.add_space(spacing::SPACE_4);
+    child.label(
+        egui::RichText::new(showing)
+            .font(crate::protocol::ui_font())
+            .color(chrome::colour(sem.text.primary)),
+    );
+    back.clicked()
 }
 
 /// The file view: the Ossie file as written, in the mono face. Read-only here.

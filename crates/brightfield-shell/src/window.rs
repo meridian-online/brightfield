@@ -2481,9 +2481,22 @@ struct ProtocolView {
 }
 
 /// The model pane's document and its live item, while the window holds an own-files Protocol.
+///
+/// It is kept, as the panel tiles are, while the inspector's Open in grid puts rows on the
+/// canvas: `in_grid` names what the grid holds then, and the canvas draws the dock with the way
+/// back above it. Only an opener of a different document lets the pane go.
 struct ModelDoc {
     doc: crate::model_pane::ModelPane,
     items: ItemMap<crate::model_pane::ModelPane>,
+    /// What the grid holds while the pane waits behind it: `None` while the pane is on the canvas.
+    in_grid: Option<String>,
+}
+
+impl ModelDoc {
+    /// Whether the pane is on the canvas, rather than waiting behind the grid.
+    fn shown(&self) -> bool {
+        self.in_grid.is_none()
+    }
 }
 
 /// The window.
@@ -3557,9 +3570,6 @@ impl MeridianApp {
         // assigns it immediately before this call, and the engine is reading
         // those files for the life of the document that just arrived.
         self.fetching = None;
-        // The model pane belongs to the own-files Protocol it was opened for, and a different
-        // document has arrived. `open_model_pane` sets it after this has run.
-        self.model = None;
         // The statement form has no scrim, so an opener can be clicked while
         // it stands, and what was typed was read against the old file. The
         // form closes and its reads and counts go with it
@@ -3945,6 +3955,10 @@ impl MeridianApp {
     /// which is also the fallback for a view whose node the graph no longer
     /// knows.
     fn crumb_line(&self) -> Vec<String> {
+        // The model's rows open in the grid: the model, then what the grid holds.
+        if let Some(showing) = self.model.as_ref().and_then(|m| m.in_grid.clone()) {
+            return vec!["Model".to_string(), showing];
+        }
         // A Protocol's panel open from its tile: the Protocol, then the panel.
         if let Some(tiles) = &self.tiles {
             let protocol = format!("Protocol \u{b7} {}", tiles.name());
@@ -4411,7 +4425,7 @@ impl MeridianApp {
         self.charts.doc.is_empty()
             && !self.protocol.doc.model.has_assets()
             && self.tiles.is_none()
-            && self.model.is_none()
+            && !self.model.as_ref().is_some_and(ModelDoc::shown)
     }
 
     /// The rect the front door drew the gallery card for the start `id` at,
@@ -5009,7 +5023,7 @@ impl MeridianApp {
         }
         // The model's diagram rasters into a slot of the chart document's host, as a Protocol's
         // panel tiles do: the chart document is empty while the model pane is open.
-        if let Some(model) = self.model.as_mut() {
+        if let Some(model) = self.model.as_mut().filter(|m| m.shown()) {
             model
                 .doc
                 .present(self.charts.doc.canvas_host(), ctx.pixels_per_point(), mode);
@@ -5046,6 +5060,8 @@ impl MeridianApp {
         let canvas = plan.expect_region(arrangement::CANVAS);
 
         let mut requests: Vec<Request> = Vec::new();
+        // What the model inspector's buttons chose, dispatched once the canvas has drawn.
+        let mut model_actions = Vec::new();
         if door {
             // ---- the navigator rail, on the door.
             //
@@ -5145,7 +5161,7 @@ impl MeridianApp {
                 self.front_door_ui(ui, &mut requests);
             });
             self.regions.push((canvas.id, drawn.response.rect));
-        } else if let Some(model) = self.model.as_mut() {
+        } else if let Some(model) = self.model.as_mut().filter(|m| m.shown()) {
             // The model pane, across the canvas region, in place of the dock: both documents are
             // empty beside it, so every rail would draw its empty state. No stale door geometry,
             // for the reason the dock's branch clears it.
@@ -5161,6 +5177,7 @@ impl MeridianApp {
                     draw_model_pane(ui, model, mode, &mut requests);
                 });
             self.regions.push((canvas.id, drawn.response.rect));
+            model_actions = model.doc.take_actions();
         } else {
             // Content somewhere, so the regions — and no stale door geometry: a
             // test that asks where a card was after the door has gone must
@@ -5197,11 +5214,13 @@ impl MeridianApp {
             let source = self.document_source();
             let source_about = self.document_source_about();
             // With a Protocol's panel open from its tile, the Protocol's crumb
-            // is the way back to every tile.
+            // is the way back to every tile; with the model's rows open in the
+            // grid, the model's crumb is the way back to the model.
             let crumb_link = self
                 .tiles
                 .as_ref()
-                .is_some_and(|tiles| tiles.selected().is_some());
+                .is_some_and(|tiles| tiles.selected().is_some())
+                || self.model_behind_grid();
             let mut crumb_back = false;
             let drawn = Panel::top(panel_id(locator, false))
                 .resizable(false)
@@ -5399,6 +5418,10 @@ impl MeridianApp {
                 let panels = tiles.panels()?;
                 Some(panels.tiles.get(tiles.selected()?)?.file.clone())
             });
+            // What the grid holds while the model pane waits behind it: the
+            // canvas draws the way back to the model above it.
+            let model_in_grid: Option<String> = self.model.as_ref().and_then(|m| m.in_grid.clone());
+            let mut model_back = false;
             let mut tile_action: Option<TilesAction> = None;
             let mut tile_back = false;
             // What the tiles say while this window runs their Protocol: the
@@ -5821,6 +5844,13 @@ impl MeridianApp {
                             );
                             tile_back = crate::panel_tiles::back_band(ui, band, file, mode);
                             body.min.y = band.max.y;
+                        } else if let Some(showing) = &model_in_grid {
+                            let band = egui::Rect::from_min_size(
+                                body.min,
+                                egui::vec2(body.width(), crate::panel_tiles::back_band_height()),
+                            );
+                            model_back = crate::model_pane::back_band(ui, band, showing, mode);
+                            body.min.y = band.max.y;
                         }
                         let item = projections[projection].item;
                         // A generated dashboard is a hero beside a column, and
@@ -6066,7 +6096,11 @@ impl MeridianApp {
                 }
                 None => {}
             }
-            if tile_back || crumb_back {
+            if self.model_behind_grid() {
+                if model_back || crumb_back {
+                    self.back_to_model();
+                }
+            } else if tile_back || crumb_back {
                 self.back_to_panel_tiles();
             }
             for id in picks.collapse {
@@ -6076,6 +6110,9 @@ impl MeridianApp {
             }
         }
 
+        for action in model_actions {
+            self.perform_model_action(&ctx, action);
+        }
         self.status_rail_ui(&ctx, graph_on_canvas, &mut requests);
         self.controls = self.name_controls(std::mem::take(&mut bar.controls));
 
@@ -6163,7 +6200,7 @@ impl MeridianApp {
             return;
         }
         let pressed = |token: Option<&'static str>| token.is_some_and(|t| consume_token(ctx, t));
-        if self.model.is_some() && pressed(self.overlay_keys.palette) {
+        if self.model.as_ref().is_some_and(ModelDoc::shown) && pressed(self.overlay_keys.palette) {
             self.open_model_palette();
         } else if graph_on_canvas && pressed(self.overlay_keys.palette) {
             self.open_protocol_palette();
@@ -7129,7 +7166,10 @@ impl MeridianApp {
     /// the model altitude, gated exactly as [`Self::home_key`] is. Only those keys are taken, so
     /// `h`, `j`, `k` and `l` go on to the window's own handlers.
     fn model_keys(&mut self, ctx: &egui::Context) {
-        if self.model.is_none() || self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+        if !self.model.as_ref().is_some_and(ModelDoc::shown)
+            || self.overlay.is_some()
+            || ctx.egui_wants_keyboard_input()
+        {
             return;
         }
         for verb in brightfield_keys::registry()
@@ -8744,6 +8784,7 @@ impl MeridianApp {
             return;
         }
         self.tiles = None;
+        self.model = None;
         self.open_chart(Composed::empty());
         self.protocol.doc.open(ProtocolInputs::empty());
         // Going Home is a document swap, so the fetched files go with the
@@ -9010,8 +9051,10 @@ impl MeridianApp {
     /// that would quietly stop being true if there were two tails.
     fn land_start(&mut self, ctx: &egui::Context, id: &'static str, opened: crate::starts::Opened) {
         // A start is a new document, and a Protocol's panel tiles are the
-        // outgoing one's, as is any start still waiting on its run.
+        // outgoing one's, as is any start still waiting on its run, and the
+        // model pane.
         self.tiles = None;
+        self.model = None;
         self.landing = None;
         match opened {
             // A new chart document is a new set of things to say, and a
@@ -9170,6 +9213,7 @@ impl MeridianApp {
     /// shipped Protocol start that could not run leaves the window.
     fn back_to_the_door(&mut self) {
         self.tiles = None;
+        self.model = None;
         self.landing = None;
         self.open_chart(Composed::empty());
         self.protocol.doc.open(ProtocolInputs::empty());
@@ -9309,6 +9353,9 @@ impl MeridianApp {
         self.landing = None;
         let open_panel = boot.open_panel;
         self.tiles = panel_tiles_of(boot.panels, boot.panels_problem);
+        // The model pane belongs to the own-files Protocol it was opened for, and a different
+        // document is arriving. `open_model_pane` and `open_model_in_grid` put it back after.
+        self.model = None;
         self.open_chart(boot.composed);
         if let Some(live) = boot.live {
             self.charts.doc.attach_live(live);
@@ -9486,6 +9533,7 @@ impl MeridianApp {
         self.model = Some(ModelDoc {
             doc,
             items: crate::model_pane::model_registry().instantiate(),
+            in_grid: None,
         });
         self.toasts.push(Toast::new(
             Severity::Success,
@@ -9497,6 +9545,112 @@ impl MeridianApp {
             ),
         ));
         ctx.request_repaint();
+    }
+
+    /// Whether the model pane is waiting behind the grid, which holds rows opened from it.
+    fn model_behind_grid(&self) -> bool {
+        self.model.as_ref().is_some_and(|m| m.in_grid.is_some())
+    }
+
+    /// Carry out one of the model inspector's actions: the pane takes the edits and the view
+    /// change, and the window opens rows in the grid and says what came of it in a toast.
+    pub fn perform_model_action(
+        &mut self,
+        ctx: &egui::Context,
+        action: crate::model_inspector::ModelAction,
+    ) {
+        let Some(model) = self.model.as_mut() else {
+            return;
+        };
+        let (severity, said) = match model.doc.dispatch(action) {
+            crate::model_pane::Dispatched::Done(said) => (Severity::Success, said),
+            crate::model_pane::Dispatched::NotYet(said) => (Severity::Info, said),
+            crate::model_pane::Dispatched::Failed(said) => (Severity::Error, said),
+            crate::model_pane::Dispatched::OpenInGrid(target) => {
+                self.open_model_in_grid(ctx, &target);
+                return;
+            }
+        };
+        self.toasts.push(Toast::new(severity, said));
+        ctx.request_repaint();
+    }
+
+    /// **Open the rows `target` names in the grid**, with the model pane kept behind it: a
+    /// table's silver rows, or a join's joined rows, opened as an opened Parquet file is, so its
+    /// dashboard and charts are reached as that file's are. The canvas draws the way back to the
+    /// model above it ([`Self::back_to_model`]).
+    ///
+    /// Answers whether the rows opened. When they cannot be, a banner says why and the pane stays.
+    pub fn open_model_in_grid(
+        &mut self,
+        ctx: &egui::Context,
+        target: &brightfield_render::model_scene::Selection,
+    ) -> bool {
+        let Some(mut model) = self.model.take() else {
+            return false;
+        };
+        let opened = model
+            .doc
+            .grid_snapshot(target)
+            .and_then(|path| crate::data_file::open(&path.to_string_lossy()));
+        match opened {
+            Ok(opened) => {
+                self.adopt_boot(Boot::of_opened_file(opened));
+                let showing = match target {
+                    brightfield_render::model_scene::Selection::Dataset(name) => {
+                        format!("Table {name}")
+                    }
+                    brightfield_render::model_scene::Selection::Relationship(name) => {
+                        format!("Join {name}")
+                    }
+                };
+                model.in_grid = Some(showing);
+                self.model = Some(model);
+                self.notifications
+                    .dismiss(NotificationId::new("open-model-grid"));
+                ctx.request_repaint();
+                true
+            }
+            Err(e) => {
+                self.model = Some(model);
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new("open-model-grid"),
+                        Severity::Error,
+                        "Could not open these rows in the grid",
+                    )
+                    .body(e),
+                );
+                ctx.request_repaint();
+                false
+            }
+        }
+    }
+
+    /// **Go back from the grid to the model pane** it was opened from: the grid's document goes,
+    /// and the pane is on the canvas again as it was left, over the same Protocol folder. Held, as
+    /// going back to the panel tiles is, while the grid's dashboard has edits no file holds.
+    pub fn back_to_model(&mut self) -> bool {
+        if !self.model_behind_grid() {
+            return false;
+        }
+        let banner = NotificationId::new("model-grid-unsaved");
+        if self.charts.doc.has_unsaved_work() {
+            self.notifications.raise(
+                Notification::new(banner, Severity::Warning, "These rows have unsaved edits")
+                    .body("Save the dashboard, or undo its edits, before going back to the model."),
+            );
+            return false;
+        }
+        self.notifications.dismiss(banner);
+        let Some(mut model) = self.model.take() else {
+            return false;
+        };
+        self.adopt_boot(Boot::empty());
+        model.in_grid = None;
+        model.doc.forget_raster();
+        self.model = Some(model);
+        true
     }
 
     /// The model pane's document, while the window holds one.
@@ -10016,10 +10170,12 @@ impl MeridianApp {
     /// next rung of the Esc ladder: an overlay, a field holding the keyboard,
     /// the shelf and a selection each take the key first.
     fn tile_back_key(&mut self, ctx: &egui::Context) {
-        let open = self
-            .tiles
-            .as_ref()
-            .is_some_and(|tiles| tiles.selected().is_some());
+        let in_grid = self.model_behind_grid();
+        let open = in_grid
+            || self
+                .tiles
+                .as_ref()
+                .is_some_and(|tiles| tiles.selected().is_some());
         // A widget that held the keyboard at the end of the last frame takes
         // this Esc as its way out: egui lets go of the focused widget on a
         // bare Esc as the frame begins, so the focus asked about below has
@@ -10034,7 +10190,11 @@ impl MeridianApp {
             return;
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            self.back_to_panel_tiles();
+            if in_grid {
+                self.back_to_model();
+            } else {
+                self.back_to_panel_tiles();
+            }
             ctx.request_repaint();
         }
     }
@@ -13537,7 +13697,7 @@ fn draw_model_pane(
     requests: &mut Vec<Request>,
 ) {
     let key = PaneKey::new(crate::model_pane::MODEL);
-    let ModelDoc { doc, items } = model;
+    let ModelDoc { doc, items, .. } = model;
     let Some(pane) = items.get_mut(&key) else {
         chrome::orphan_pane(ui, key, mode);
         return;

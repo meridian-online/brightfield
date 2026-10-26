@@ -13,6 +13,7 @@ mod layout;
 mod merge;
 mod meridian;
 mod model;
+mod preview;
 mod validate;
 mod wire;
 
@@ -25,6 +26,7 @@ pub use model::{
     Dataset, DatasetMeta, Datatype, DecidedBy, Evidence, Extension, Field, FieldMeta, Grade, Model,
     ModelMeta, Relationship, RelationshipMeta, Role, SkippedSource, Verified,
 };
+pub use preview::{join_preview_sql, join_rows_sql};
 pub use validate::{validate, SchemaIssue};
 pub use wire::{read, write, ReadError};
 

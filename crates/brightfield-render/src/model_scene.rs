@@ -231,11 +231,25 @@ fn card_lit(model: &Model, sel: Option<&Selection>, dataset: &str) -> bool {
 }
 
 fn edge_lit(model: &Model, sel: Option<&Selection>, e: &EdgeLabel) -> bool {
+    relationship_lit(model, sel, &e.relationship)
+}
+
+/// Whether a selection leaves a table lit: it is the selected table or joined to it, or one end
+/// of the selected join. Everything is lit when nothing is selected.
+#[must_use]
+pub fn dataset_lit(model: &Model, sel: Option<&Selection>, dataset: &str) -> bool {
+    card_lit(model, sel, dataset)
+}
+
+/// Whether a selection leaves a join lit: it is the selected join, or it touches the selected
+/// table. Everything is lit when nothing is selected.
+#[must_use]
+pub fn relationship_lit(model: &Model, sel: Option<&Selection>, relationship: &str) -> bool {
     match sel {
         None => true,
-        Some(Selection::Relationship(r)) => *r == e.relationship,
+        Some(Selection::Relationship(r)) => r == relationship,
         Some(Selection::Dataset(d)) => {
-            ends(model, &e.relationship).is_some_and(|(a, b)| a == d || b == d)
+            ends(model, relationship).is_some_and(|(a, b)| a == d || b == d)
         }
     }
 }
