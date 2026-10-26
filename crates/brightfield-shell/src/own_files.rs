@@ -124,9 +124,10 @@ pub fn run_loads(p: &OwnProtocol, runner: &Runner) -> Result<(), String> {
 /// the raw table through FineType's transformation contracts and one that keeps the values that did
 /// not cast, as `models/02_silver_<name>.sql` and `models/02_failed_<name>.sql`.
 ///
-/// Every call rewrites them: steps and files from an earlier call are removed first, so a dataset
-/// that has since been excluded or folded into another loses its silver table's steps. The load
-/// steps are left as they are. Run the Protocol afterwards to make the tables.
+/// Every call rewrites them: the new files and manifest are written first and the earlier files
+/// the manifest no longer names are removed after, so a failed write leaves a usable folder. A
+/// dataset that has since been excluded or folded into another loses its silver table's steps. The
+/// load steps are left as they are. Run the Protocol afterwards to make the tables.
 ///
 /// # Errors
 ///
@@ -150,16 +151,7 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
         !(name.starts_with(SILVER_STEP) || name.starts_with(FAILED_STEP))
     });
 
-    let models = p.dir.join("models");
-    let entries = std::fs::read_dir(&models).map_err(|e| format!("{}: {e}", models.display()))?;
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with(SILVER_FILE) || name.starts_with(FAILED_FILE) {
-            std::fs::remove_file(entry.path())
-                .map_err(|e| format!("{}: {e}", entry.path().display()))?;
-        }
-    }
-
+    let mut written: HashSet<String> = HashSet::new();
     for table in &p.sources.tables {
         let silver = silver_sql(model, &table.name, &transforms);
         if silver.is_empty() {
@@ -182,6 +174,7 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
         ] {
             std::fs::write(p.dir.join(&file), format!("{sql};\n"))
                 .map_err(|e| format!("{file}: {e}"))?;
+            written.insert(file.clone());
             steps.push(
                 serde_yaml::from_str(&format!(
                     "name: {}\nsql: {}\nproduces:\n  - {}\n",
@@ -194,7 +187,21 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
         }
     }
     let out = serde_yaml::to_string(&manifest).map_err(|e| e.to_string())?;
-    std::fs::write(&manifest_path, out).map_err(|e| format!("{}: {e}", manifest_path.display()))
+    std::fs::write(&manifest_path, out).map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+
+    // Only now, with the manifest naming the new files, are the old ones that nothing names removed.
+    let models = p.dir.join("models");
+    let entries = std::fs::read_dir(&models).map_err(|e| format!("{}: {e}", models.display()))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let stale = (name.starts_with(SILVER_FILE) || name.starts_with(FAILED_FILE))
+            && !written.contains(&format!("models/{name}"));
+        if stale {
+            std::fs::remove_file(entry.path())
+                .map_err(|e| format!("{}: {e}", entry.path().display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Profile the raw tables with FineType, one [`SourceProfile`] per table in `p.profiles`.

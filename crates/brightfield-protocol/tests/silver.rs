@@ -320,3 +320,40 @@ fn failures_inside_a_folded_dataset_are_kept() {
         ]
     );
 }
+
+#[test]
+fn colliding_folded_names_agree_in_silver_and_failed() {
+    // The folded `note` and `seen` columns are `look ups_note` and `look ups_seen`; a host column
+    // named `look ups_seen` in another case takes the first, so the folded one is suffixed.
+    let mut model = awkward_model();
+    let items = model
+        .datasets
+        .iter_mut()
+        .find(|d| d.name == "items")
+        .unwrap();
+    items.fields[3].name = "Look Ups_Seen".into();
+    let t = transforms();
+    let conn = awkward_db();
+    conn.execute_batch("ALTER TABLE raw_items RENAME \"look ups_note\" TO \"Look Ups_Seen\"")
+        .unwrap();
+    conn.execute_batch(&silver_sql(&model, "items", &t))
+        .unwrap();
+    conn.execute_batch(&failed_sql(&model, "items", &t))
+        .unwrap();
+    let seen: Option<String> = conn
+        .query_row(
+            "SELECT CAST(\"look ups_seen_2\" AS VARCHAR) FROM items WHERE __source_row = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(seen.as_deref(), Some("2024-02-02"));
+    let column: String = conn
+        .query_row(
+            "SELECT \"column\" FROM items__failed WHERE __source_file = 'l'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(column, "look ups_seen_2");
+}
