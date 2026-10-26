@@ -75,8 +75,14 @@ const HEADER_HEIGHT: f64 = 32.0;
 const LINE_HEIGHT: f64 = 20.0;
 const CARD_PAD: f64 = spacing::SPACE_5 as f64;
 const ROW_GAP: f64 = spacing::SPACE_6 as f64;
-/// Space between the two upper bands, wide enough for edges to curve through.
-const BAND_GAP: f64 = spacing::SPACE_9 as f64 * 3.0;
+/// Space between the two upper bands: wider than the widest join label drawn on it
+/// (a possible join's pill, about 240 pixels), so a label never covers a card.
+/// Layout cannot measure text, so this is an estimate with room to spare.
+const BAND_GAP: f64 = 280.0;
+/// Inset of the first and last edge port from a card's side.
+const PORT_INSET: f64 = 8.0;
+/// How far an edge to the row below runs sideways before turning down.
+const TURN: f64 = 60.0;
 /// Space between the upper bands and the row below.
 const ROW_BAND_GAP: f64 = spacing::SPACE_9 as f64;
 /// How far a same-band edge swings out beyond its cards.
@@ -296,7 +302,14 @@ pub fn layout(model: &Model) -> ModelLayout {
     }
 
     let at = |name: &str| cards.iter().find(|c| c.dataset == name).unwrap();
-    let edges = joins
+    // Each join leaves one card and enters another by a side chosen from their bands.
+    struct Join<'a> {
+        r: &'a Relationship,
+        s: &'a Card,
+        e: &'a Card,
+        sides: (Side, Side),
+    }
+    let planned: Vec<Join> = joins
         .iter()
         .map(|r| {
             let (a, b) = (at(&r.from), at(&r.to));
@@ -306,12 +319,83 @@ pub fn layout(model: &Model) -> ModelLayout {
             } else {
                 (b, a)
             };
-            EdgeLabel {
-                relationship: r.name.clone(),
-                text: edge_text(r),
-                grade: r.meta.grade,
-                points: route(s, e),
+            let sides = match (s.band, e.band) {
+                (Band::Events, Band::Events) => (Side::Left, Side::Left),
+                (Band::Entities, Band::Entities) => (Side::Right, Side::Right),
+                (Band::Below, Band::Below) => (Side::Bottom, Side::Bottom),
+                (Band::Events, Band::Entities) => (Side::Right, Side::Left),
+                // To the row below: leave by the side facing the gap between the bands.
+                (Band::Events, Band::Below) => (Side::Right, Side::Top),
+                (_, Band::Below) => (Side::Left, Side::Top),
+                _ => (Side::Left, Side::Right),
+            };
+            Join { r, s, e, sides }
+        })
+        .collect();
+    // Every edge on a card side gets its own port, in the order of where the other end
+    // lies, so edges fan out instead of converging on one point and their labels part.
+    let ports = |card: &Card, side: Side| -> Vec<usize> {
+        let mut on: Vec<(usize, f64)> = planned
+            .iter()
+            .enumerate()
+            .filter_map(|(i, j)| {
+                let other = if j.s.dataset == card.dataset && j.sides.0 == side {
+                    j.e
+                } else if j.e.dataset == card.dataset && j.sides.1 == side {
+                    j.s
+                } else {
+                    return None;
+                };
+                let along = match side {
+                    Side::Left | Side::Right => other.y + other.height / 2.0,
+                    Side::Top | Side::Bottom => other.x + other.width / 2.0,
+                };
+                Some((i, along))
+            })
+            .collect();
+        on.sort_by(|a, b| {
+            a.1.total_cmp(&b.1)
+                .then_with(|| planned[a.0].r.name.cmp(&planned[b.0].r.name))
+        });
+        on.into_iter().map(|(i, _)| i).collect()
+    };
+    let port = |card: &Card, side: Side, edge: usize| -> (f64, f64) {
+        let on = ports(card, side);
+        let k = on.iter().position(|&i| i == edge).unwrap() as f64;
+        let frac = (k + 1.0) / (on.len() as f64 + 1.0);
+        match side {
+            Side::Left | Side::Right => {
+                let x = if side == Side::Left {
+                    card.x
+                } else {
+                    card.x + card.width
+                };
+                (
+                    x,
+                    card.y + PORT_INSET + ((card.height - 2.0 * PORT_INSET) * frac).round(),
+                )
             }
+            Side::Top | Side::Bottom => {
+                let y = if side == Side::Top {
+                    card.y
+                } else {
+                    card.y + card.height
+                };
+                (card.x + (card.width * frac).round(), y)
+            }
+        }
+    };
+    let edges = planned
+        .iter()
+        .enumerate()
+        .map(|(i, j)| EdgeLabel {
+            relationship: j.r.name.clone(),
+            text: edge_text(j.r),
+            grade: j.r.meta.grade,
+            points: route(
+                (port(j.s, j.sides.0, i), j.sides.0),
+                (port(j.e, j.sides.1, i), j.sides.1),
+            ),
         })
         .collect();
 
@@ -323,41 +407,31 @@ pub fn layout(model: &Model) -> ModelLayout {
     }
 }
 
-fn mid_y(c: &Card) -> f64 {
-    (c.y + c.height / 2.0).round()
+/// Which side of a card an edge meets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Left,
+    Right,
+    Top,
+    Bottom,
 }
 
-fn mid_x(c: &Card) -> f64 {
-    (c.x + c.width / 2.0).round()
-}
-
-/// `[start, control1, control2, end]` for an edge from `s` to `e`.
-fn route(s: &Card, e: &Card) -> Vec<(f64, f64)> {
-    if s.band == e.band {
-        // Around the band's outer side: left for events, right for entities, under the row below.
-        return match s.band {
-            Band::Events => {
-                let (a, b) = ((s.x, mid_y(s)), (e.x, mid_y(e)));
-                vec![a, (a.0 - SWING, a.1), (b.0 - SWING, b.1), b]
-            }
-            Band::Entities => {
-                let (a, b) = ((s.x + s.width, mid_y(s)), (e.x + e.width, mid_y(e)));
-                vec![a, (a.0 + SWING, a.1), (b.0 + SWING, b.1), b]
-            }
-            Band::Below => {
-                let (a, b) = ((mid_x(s), s.y + s.height), (mid_x(e), e.y + e.height));
-                vec![a, (a.0, a.1 + SWING), (b.0, b.1 + SWING), b]
-            }
-        };
+/// `[start, control1, control2, end]` between two ports, each leaving its card square to
+/// the side it sits on.
+fn route(from: ((f64, f64), Side), to: ((f64, f64), Side)) -> Vec<(f64, f64)> {
+    let ((a, sa), (b, sb)) = (from, to);
+    match (sa, sb) {
+        // Round the band's outer side, or under the row below.
+        (Side::Left, Side::Left) => vec![a, (a.0 - SWING, a.1), (b.0 - SWING, b.1), b],
+        (Side::Right, Side::Right) => vec![a, (a.0 + SWING, a.1), (b.0 + SWING, b.1), b],
+        (Side::Bottom, Side::Bottom) => vec![a, (a.0, a.1 + SWING), (b.0, b.1 + SWING), b],
+        // Across the gap between the two upper bands.
+        (Side::Right, Side::Left) => {
+            let dx = ((b.0 - a.0) / 2.0).round();
+            vec![a, (a.0 + dx, a.1), (b.0 - dx, b.1), b]
+        }
+        // Out into the gap, then down into the top of a card in the row below.
+        (Side::Right, Side::Top) => vec![a, (a.0 + TURN, a.1), (b.0, b.1 - TURN / 2.0), b],
+        _ => vec![a, (a.0 - TURN, a.1), (b.0, b.1 - TURN / 2.0), b],
     }
-    if e.band == Band::Below {
-        // From the bottom of a card above to the top of one below.
-        let (a, b) = ((mid_x(s), s.y + s.height), (mid_x(e), e.y));
-        let dy = ((b.1 - a.1) / 2.0).round();
-        return vec![a, (a.0, a.1 + dy), (b.0, b.1 - dy), b];
-    }
-    // Events to entities: right edge to left edge.
-    let (a, b) = ((s.x + s.width, mid_y(s)), (e.x, mid_y(e)));
-    let dx = ((b.0 - a.0) / 2.0).round();
-    vec![a, (a.0 + dx, a.1), (b.0 - dx, b.1), b]
 }

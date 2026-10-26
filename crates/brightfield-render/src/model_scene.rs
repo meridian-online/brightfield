@@ -2,11 +2,12 @@
 //!
 //! Cards carry a role marker, the table's name, its row and field counts and, when
 //! references are folded into it, a `+ name` line. Joins are cubic curves between
-//! cards with a label pill at their midpoint: a likely join is solid, a possible one
-//! is dashed in the Info role's colour and says so in its pill, and a join carrying a
-//! warning wears an amber badge on its pill's corner. The design system has no token named for "a
-//! proposal" or "dimmed", so the possible joins take the Info role (neutral
-//! information, never "good") and a dimmed element takes the disabled ink.
+//! cards with a label pill on the curve: a likely join is solid, a possible one is
+//! dashed in the Neutral role's ink and says so in its pill, and a join carrying a
+//! warning wears an amber badge on its pill's corner. The design system has no token
+//! named for "a proposal" or "dimmed", so the possible joins take the Neutral role's
+//! ink, which no role marker or status colour shares (the Info blue sits too close to
+//! the event marker's blue), and a dimmed element takes the disabled ink.
 //!
 //! With a selection, everything not connected to it is flattened to the dimmed ink:
 //! a card becomes a plate of it with its words knocked out, an edge and its pill the
@@ -70,7 +71,7 @@ impl Palette {
             selected: ink(sem.borders.focus),
             text: ink(sem.text.primary),
             quiet: ink(sem.text.secondary),
-            proposal: ink(sem.role(meridian_design::Role::Info).background.base),
+            proposal: ink(sem.role(meridian_design::Role::Neutral).foreground.base),
             dimmed: ink(sem.text.disabled),
             warning: ink(sem.role(meridian_design::Role::Warning).background.base),
             warning_glyph: ink(sem.role(meridian_design::Role::Warning).foreground.base),
@@ -141,7 +142,7 @@ fn has_warning(model: &Model, e: &EdgeLabel) -> bool {
 
 /// Where along its curve a pill may sit, best first: the middle, then alternately
 /// either side of it.
-const PILL_STOPS: [f64; 7] = [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8];
+const PILL_STOPS: [f64; 9] = [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8, 0.1, 0.9];
 
 fn pill_at(e: &EdgeLabel, t: f64) -> Option<Rect> {
     let mid = curve(e)?.eval(t);
@@ -174,7 +175,10 @@ fn pill_rects(layout: &ModelLayout) -> Vec<Option<Rect>> {
                 .iter()
                 .filter_map(|&t| pill_at(e, t))
                 .map(|r| {
-                    let pills: f64 = placed.iter().map(|&p| overlap(r, p)).sum();
+                    let pills: f64 = placed
+                        .iter()
+                        .map(|&p| overlap(r, p.inflate(3.0, 3.0)))
+                        .sum();
                     let cards: f64 = layout.cards.iter().map(|c| overlap(r, card_rect(c))).sum();
                     (r, pills * 4.0 + cards)
                 })
