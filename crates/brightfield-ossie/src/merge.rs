@@ -1,5 +1,6 @@
 //! Folding a fresh discovery into the model the analyst has been editing.
 
+use crate::edit::unique_name;
 use crate::{Dataset, DecidedBy, Model, Relationship};
 
 fn same_join(a: &Relationship, b: &Relationship) -> bool {
@@ -14,7 +15,7 @@ fn same_join(a: &Relationship, b: &Relationship) -> bool {
 /// Whatever `current` holds as the analyst's stays exactly as it is, and a join the
 /// analyst dropped is not proposed back. What `current` holds as Dovetail's takes
 /// `proposed`'s value; a Dovetail join `proposed` no longer finds is removed. A
-/// dataset `proposed` doesn't mention stays: discovery never deletes the analyst's tables.
+/// dataset the analyst decided is kept whole, fields included. A dataset `proposed` doesn't mention stays: discovery never deletes the analyst's tables.
 pub fn merge_discovery(current: &Model, proposed: &Model) -> Model {
     let mut out = current.clone();
     out.meta.skipped_sources = proposed.meta.skipped_sources.clone();
@@ -50,7 +51,9 @@ pub fn merge_discovery(current: &Model, proposed: &Model) -> Model {
             .iter()
             .any(|r| r.meta.decided_by == DecidedBy::Analyst && same_join(r, prop));
         if !known && !rejected {
-            relationships.push(prop.clone());
+            let mut added = prop.clone();
+            added.name = unique_name(&added.name, &relationships, &current.meta.rejected);
+            relationships.push(added);
         }
     }
     out.relationships = relationships;

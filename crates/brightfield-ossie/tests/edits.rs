@@ -302,3 +302,68 @@ fn merge_is_idempotent() {
     let plain = model();
     assert_eq!(merge_discovery(&plain, &plain), plain);
 }
+
+#[test]
+fn change_keys_then_merge() {
+    let current = apply(
+        &model(),
+        &Edit::ChangeKeys {
+            relationship: "transactions_customers".into(),
+            from_columns: vec!["x".into()],
+            to_columns: vec!["y".into()],
+        },
+    )
+    .unwrap();
+    let merged = merge_discovery(&current, &model());
+    let n = merged
+        .relationships
+        .iter()
+        .filter(|r| r.from == "transactions" && r.to == "customers")
+        .count();
+    assert_eq!(n, 1);
+    assert_eq!(
+        rel(&merged, "transactions_customers").unwrap().from_columns,
+        vec!["x"]
+    );
+}
+
+#[test]
+fn merge_renames_a_colliding_proposed_join() {
+    let current = model();
+    let mut proposed = model();
+    let mut fresh = proposed.relationships[0].clone();
+    fresh.to_columns = vec!["other".into()];
+    proposed.relationships.push(fresh);
+    let merged = merge_discovery(&current, &proposed);
+    assert_eq!(merged.relationships.len(), 8);
+    let mut names: Vec<_> = merged.relationships.iter().map(|r| &r.name).collect();
+    names.sort();
+    names.dedup();
+    assert_eq!(names.len(), 8);
+}
+
+#[test]
+fn drop_of_the_join_behind_a_fold_is_refused() {
+    let e = apply(
+        &model(),
+        &Edit::DropJoin {
+            relationship: "products_categories".into(),
+        },
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("unfold"));
+}
+
+#[test]
+fn merge_carries_excluded_on_a_dovetail_dataset() {
+    let mut current = model();
+    let d = current
+        .datasets
+        .iter_mut()
+        .find(|d| d.name == "promo_codes")
+        .unwrap();
+    assert_eq!(d.meta.decided_by, DecidedBy::Dovetail);
+    d.meta.excluded = true;
+    let merged = merge_discovery(&current, &model());
+    assert!(dataset(&merged, "promo_codes").meta.excluded);
+}

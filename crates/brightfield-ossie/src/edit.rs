@@ -74,6 +74,24 @@ pub fn apply(model: &Model, edit: &Edit) -> Result<Model, EditError> {
         }
         Edit::DropJoin { relationship } => {
             let at = relationship_index(&m, relationship)?;
+            let r = &m.relationships[at];
+            let joins = |a: &str, b: &str| {
+                m.relationships
+                    .iter()
+                    .filter(|x| (x.from == a && x.to == b) || (x.from == b && x.to == a))
+                    .count()
+            };
+            for (child, host) in [(&r.from, &r.to), (&r.to, &r.from)] {
+                let folded = m
+                    .datasets
+                    .iter()
+                    .any(|d| d.name == *child && d.meta.folded_into.as_deref() == Some(host));
+                if folded && joins(child, host) == 1 {
+                    return err(format!(
+                        "{relationship} is the only join folding {child} into {host}: unfold {child} first"
+                    ));
+                }
+            }
             let mut dropped = m.relationships.remove(at);
             dropped.meta.decided_by = DecidedBy::Analyst;
             m.meta.rejected.push(dropped);
@@ -101,19 +119,7 @@ pub fn apply(model: &Model, edit: &Edit) -> Result<Model, EditError> {
                     "the model already joins {from} to {to} on those columns"
                 ));
             }
-            let base = format!("{from}_{to}");
-            let taken = |n: &str| {
-                m.relationships
-                    .iter()
-                    .chain(&m.meta.rejected)
-                    .any(|r| r.name == n)
-            };
-            let mut name = base.clone();
-            let mut n = 2;
-            while taken(&name) {
-                name = format!("{base}_{n}");
-                n += 1;
-            }
+            let name = unique_name(&format!("{from}_{to}"), &m.relationships, &m.meta.rejected);
             m.relationships.push(Relationship {
                 name,
                 from: from.clone(),
@@ -150,7 +156,14 @@ pub fn apply(model: &Model, edit: &Edit) -> Result<Model, EditError> {
                     "{relationship} needs the same, non-zero number of columns on each side"
                 ));
             }
-            let r = relationship_mut(&mut m, relationship)?;
+            let at = relationship_index(&m, relationship)?;
+            // Keep the join discovery found as a rejected one, so a rediscovery
+            // doesn't add it back beside the corrected keys.
+            let mut original = m.relationships[at].clone();
+            original.name = unique_name(&original.name, &m.relationships, &m.meta.rejected);
+            original.meta.decided_by = DecidedBy::Analyst;
+            m.meta.rejected.push(original);
+            let r = &mut m.relationships[at];
             r.from_columns = from_columns.clone();
             r.to_columns = to_columns.clone();
             r.meta.verified = Verified::Unmeasured;
@@ -206,6 +219,18 @@ pub fn apply(model: &Model, edit: &Edit) -> Result<Model, EditError> {
         }
     }
     Ok(m)
+}
+
+/// `base`, or `base_2`, `base_3`... when a kept or rejected relationship already has the name.
+pub(crate) fn unique_name(base: &str, kept: &[Relationship], rejected: &[Relationship]) -> String {
+    let taken = |n: &str| kept.iter().chain(rejected).any(|r| r.name == n);
+    let mut name = base.to_string();
+    let mut n = 2;
+    while taken(&name) {
+        name = format!("{base}_{n}");
+        n += 1;
+    }
+    name
 }
 
 fn dataset_index(m: &Model, name: &str) -> Result<usize, EditError> {
