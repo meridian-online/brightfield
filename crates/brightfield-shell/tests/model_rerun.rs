@@ -17,7 +17,9 @@ use brightfield_render::model_scene::Selection;
 use brightfield_shell::data_file::{self, Opened};
 use brightfield_shell::design::Mode;
 use brightfield_shell::discovery::{Discovery, Pass};
-use brightfield_shell::model_pane::{self, Dispatched, ModelPane, REDISCOVER_MODEL};
+use brightfield_shell::model_pane::{
+    self, Dispatched, ModelPane, ModelView, FILE_PAUSE_MS, REDISCOVER_MODEL,
+};
 use brightfield_shell::own_files::OwnProtocol;
 use brightfield_shell::run::Runner;
 
@@ -346,4 +348,95 @@ fn rediscover_is_a_durable_verb_of_the_model() {
         .expect("a model verb");
     assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
     assert_eq!(pane.file_text(), text);
+}
+
+#[test]
+fn a_hand_edit_never_claims_measured_evidence() {
+    // Sales to a customer the extract does not hold, so measuring the written model warns.
+    let dir = retail_copy(
+        "retail-hand-edit",
+        "1009,99,1,BEV-001,1,4.50,2025-01-12\n1010,98,2,BEV-001,1,4.50,2025-01-12\n",
+    );
+    let opened = {
+        let _held = folder_lock();
+        data_file::open_any(&dir, &runner()).expect("it opens")
+    };
+    let Opened::Model(protocol) = opened else {
+        panic!("several tables are a model");
+    };
+    let mut pane = ModelPane::open(protocol, runner()).expect("the model reads");
+
+    // The file view's editor takes the keyboard.
+    let ctx = egui::Context::default();
+    let frame = |pane: &mut ModelPane, events: Vec<egui::Event>| {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 900.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |ui| pane.ui(ui, Mode::Light));
+    };
+    pane.view = ModelView::File;
+    frame(&mut pane, Vec::new());
+    let at = pane.drawn().file_editor.expect("the editor drew").center();
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frame(&mut pane, vec![egui::Event::PointerMoved(at), button(true)]);
+    frame(&mut pane, vec![button(false)]);
+
+    // The written model runs and is measured while the editor holds the keyboard: the file on
+    // disk warns, and the editor still holds text without the warning.
+    pane.save_model(retail_model())
+        .expect("the written model runs");
+    assert_eq!(
+        rel(&written(&pane), "transactions_customers")
+            .meta
+            .warning
+            .as_deref(),
+        Some(ORPHANS_SAID)
+    );
+
+    // An unrelated hand edit to the text from before the measurement: promo_codes made a
+    // reference table.
+    let stale = brightfield_ossie::write(&retail_model());
+    let promo = r#"data: '{"role":"unclear""#;
+    assert_eq!(stale.matches(promo).count(), 1, "{stale}");
+    let typed = stale.replacen(promo, r#"data: '{"role":"reference""#, 1);
+    pane.set_file_draft(typed.clone());
+    frame(&mut pane, Vec::new());
+    assert_eq!(pane.tick_file_edit(0), None);
+    let read = pane
+        .tick_file_edit(FILE_PAUSE_MS)
+        .expect("the edit is read");
+    assert_eq!(read, Ok(()));
+    assert_eq!(
+        pane.file_draft(),
+        typed,
+        "the focused editor keeps what was typed"
+    );
+
+    let file = written(&pane);
+    let promo_codes = file
+        .datasets
+        .iter()
+        .find(|d| d.name == "promo_codes")
+        .unwrap();
+    assert_eq!(promo_codes.meta.role, Role::Reference);
+    assert_eq!(promo_codes.meta.decided_by, DecidedBy::Analyst);
+    // The join whose evidence was measured stays Dovetail's, with the measured evidence.
+    let r = rel(&file, "transactions_customers");
+    assert_eq!(r.meta.decided_by, DecidedBy::Dovetail);
+    assert_eq!(r.meta.warning.as_deref(), Some(ORPHANS_SAID));
+    assert_eq!(r.meta.evidence.orphans, 2);
+    assert_eq!(r.meta.evidence.child_rows, 10);
+    for r in &file.relationships {
+        assert_eq!(r.meta.decided_by, DecidedBy::Dovetail, "{}", r.name);
+    }
 }

@@ -5,7 +5,8 @@
 //! and, where the text says, the line. A text Brightfield reads becomes the next model, and each
 //! dataset, field and relationship that differs from the one of the same name in the current
 //! model, or is new, is marked as the analyst's; what the edit left alone keeps who decided it. A
-//! relationship the edit removed is simply gone.
+//! relationship the edit removed is simply gone. A relationship's evidence and warning are measured
+//! after each run, not decided: a hand edit neither changes them nor is judged by them.
 //!
 //! What the text names that Brightfield cannot act on is not refused. A relationship naming a
 //! table the model does not hold is set aside in [`Kept`]: left out of the model the diagram is
@@ -90,6 +91,7 @@ pub fn read_hand_edit(current: &Model, text: &str) -> Result<HandEdit, String> {
             .into_iter()
             .partition(|r| tables.contains(&r.from) && tables.contains(&r.to));
     model.relationships = acted;
+    keep_measurements(current, &mut model);
     mark_changed(current, &mut model);
     Ok(HandEdit {
         model,
@@ -359,6 +361,19 @@ fn set_aside_roles(current: &Model, doc: &mut Value) -> Vec<IgnoredRole> {
     kept
 }
 
+/// Give each relationship of `edited` that `current` also holds `current`'s evidence and warning.
+/// Those are measured over the data after each run, not decided, so a hand edit never claims
+/// them: an editor whose text predates the last measurement would otherwise write the old
+/// numbers back and mark every join they differ on as the analyst's.
+fn keep_measurements(current: &Model, edited: &mut Model) {
+    for r in &mut edited.relationships {
+        if let Some(c) = current.relationships.iter().find(|c| c.name == r.name) {
+            r.meta.evidence.clone_from(&c.meta.evidence);
+            r.meta.warning.clone_from(&c.meta.warning);
+        }
+    }
+}
+
 /// Mark as the analyst's each element of `edited` that `current` does not hold as it is.
 fn mark_changed(current: &Model, edited: &mut Model) {
     for d in &mut edited.datasets {
@@ -406,10 +421,14 @@ fn same_field(a: &Field, b: &Field) -> bool {
     bare(a) == bare(b)
 }
 
+/// Whether two relationships are the same but for who decided them and what was measured of
+/// them, their evidence and warning.
 fn same_relationship(a: &Relationship, b: &Relationship) -> bool {
     let bare = |r: &Relationship| Relationship {
         meta: RelationshipMeta {
             decided_by: DecidedBy::Analyst,
+            evidence: b.meta.evidence.clone(),
+            warning: b.meta.warning.clone(),
             ..r.meta.clone()
         },
         ..r.clone()
