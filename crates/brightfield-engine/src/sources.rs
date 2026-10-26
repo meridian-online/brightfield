@@ -338,9 +338,9 @@ fn is_sqlite(file: &Path) -> Result<bool, String> {
 
 /// The sheet names of a workbook, in workbook order.
 ///
-/// DuckDB's excel extension cannot list a workbook's sheets (its only readers are `read_xlsx` and
-/// `excel_text`, and neither names them), so only the names are read here, from `xl/workbook.xml`; every row is read by
-/// DuckDB.
+/// DuckDB's excel extension cannot list a workbook's sheets: it offers `read_xlsx` and `excel_text`,
+/// and neither names them. So the names are read here, from `xl/workbook.xml`, and DuckDB reads
+/// the data.
 fn workbook_sheets(path: &Path) -> Result<Vec<String>, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("not a workbook: {e}"))?;
