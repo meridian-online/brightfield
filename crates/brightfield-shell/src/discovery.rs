@@ -12,16 +12,13 @@ use std::path::Path;
 use brightfield_engine::ProfileOutcome;
 use brightfield_ossie::{
     merge_discovery, read, Dataset, DatasetMeta, DecidedBy, Field, FieldMeta, Model, ModelMeta,
-    Role, SkippedSource,
+    Role, SkippedSource, LINEAGE,
 };
 
 use crate::own_files::OwnProtocol;
 
 /// The model's file in the Protocol folder.
 pub const MODEL_FILE: &str = "model.ossie.yaml";
-
-/// The lineage columns a raw table carries and a model never lists.
-const LINEAGE: [&str; 3] = ["__source_file", "__source_part", "__source_row"];
 
 /// How much of the data a pass reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

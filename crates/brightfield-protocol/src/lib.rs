@@ -41,6 +41,7 @@ pub mod layout;
 pub mod manifest;
 pub mod nav;
 pub mod panel;
+pub mod preview;
 pub mod sheet;
 pub mod silver;
 pub mod sql_assets;

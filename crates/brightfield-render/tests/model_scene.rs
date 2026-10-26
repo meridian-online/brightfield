@@ -146,3 +146,41 @@ fn hit_test_finds_card_and_edge_label() {
     }
     assert_eq!(hit_test(&l, -5.0, -5.0), None);
 }
+
+/// How many pixels are drawn in exactly `colour`.
+fn count_of(pixels: &[u8], colour: [u8; 4]) -> usize {
+    pixels.chunks_exact(4).filter(|p| *p == colour).count()
+}
+
+#[test]
+fn a_kept_possible_join_draws_solid_not_as_a_proposal() {
+    let proposed = retail();
+    let mut kept = proposed.clone();
+    let join = kept
+        .relationships
+        .iter_mut()
+        .find(|r| r.meta.grade == brightfield_ossie::Grade::Possible)
+        .expect("the fixture has a possible join");
+    join.meta.decided_by = brightfield_ossie::DecidedBy::Analyst;
+    let none = ModelFocus::default();
+    for dark in [false, true] {
+        let proposal = ink(meridian_design::semantic(dark)
+            .role(meridian_design::Role::Neutral)
+            .foreground
+            .base)
+        .to_rgba8()
+        .to_u8_array();
+        // The proposal ink is the Neutral role's, which other marks may share, so the pixels it
+        // covers are compared rather than counted from nothing.
+        let l = layout(&proposed);
+        let proposed_ink = count_of(&render(&proposed, &l, &none, dark), proposal);
+        let l = layout(&kept);
+        assert!(!l.edges.iter().any(|e| e.proposal));
+        let kept_ink = count_of(&render(&kept, &l, &none, dark), proposal);
+        // Once the analyst keeps it, its line and pill rim leave the proposal ink.
+        assert!(
+            kept_ink < proposed_ink,
+            "dark={dark}: {kept_ink} proposal-ink pixels kept, {proposed_ink} proposed"
+        );
+    }
+}

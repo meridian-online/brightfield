@@ -5842,14 +5842,30 @@ impl MeridianApp {
                                 body.min,
                                 egui::vec2(body.width(), crate::panel_tiles::back_band_height()),
                             );
-                            tile_back = crate::panel_tiles::back_band(ui, band, file, mode);
+                            tile_back = crate::panel_tiles::back_band(
+                                ui,
+                                band,
+                                "\u{2190} All panels",
+                                "Back to every panel (Esc)",
+                                &crate::panel_tiles::panel_name(file),
+                                Some(&crate::panel_tiles::panel_about(file)),
+                                mode,
+                            );
                             body.min.y = band.max.y;
                         } else if let Some(showing) = &model_in_grid {
                             let band = egui::Rect::from_min_size(
                                 body.min,
                                 egui::vec2(body.width(), crate::panel_tiles::back_band_height()),
                             );
-                            model_back = crate::model_pane::back_band(ui, band, showing, mode);
+                            model_back = crate::panel_tiles::back_band(
+                                ui,
+                                band,
+                                "\u{2190} Model",
+                                "Back to the model (Esc)",
+                                showing,
+                                None,
+                                mode,
+                            );
                             body.min.y = band.max.y;
                         }
                         let item = projections[projection].item;

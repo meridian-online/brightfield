@@ -17,7 +17,9 @@ use std::path::{Component, Path, PathBuf};
 
 use brightfield_engine::sources::{self, SourceSet, SourceTable};
 use brightfield_engine::{ColumnProfile, Engine, LoadOptions, ProfileOutcome, SourceProfile};
-use brightfield_ossie::Model;
+// The lineage columns every raw table carries describe where a row came from, not what it holds,
+// so neither the profile nor the data packages list them.
+use brightfield_ossie::{Model, LINEAGE};
 use brightfield_protocol::silver::{failed_sql, silver_sql, FinetypeTransforms};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
@@ -32,10 +34,6 @@ pub const OWN_DIR: &str = "own";
 
 /// Where the raw tables' Parquet snapshots are kept inside the Protocol folder.
 const PROFILE_DIR: &str = ".profile";
-
-/// The lineage columns every raw table carries; they describe where a row came from, not what it
-/// holds, so neither the profile nor the data packages list them.
-const LINEAGE: [&str; 3] = ["__source_file", "__source_part", "__source_row"];
 
 /// The name prefixes of the silver steps and the files holding their SQL.
 const SILVER_STEP: &str = "silver_";

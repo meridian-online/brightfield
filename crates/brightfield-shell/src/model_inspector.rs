@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use brightfield_engine::semantic::SchemaCatalogue;
-use brightfield_ossie::{DecidedBy, Grade, Model, Role, Verified};
+use brightfield_ossie::{DecidedBy, Grade, Model, Role, Verified, LINEAGE};
 use brightfield_render::model_scene::Selection;
 use brightfield_workbench::chrome;
 use meridian_design::{control, semantic, spacing};
@@ -26,9 +26,6 @@ pub const PREVIEW_ROWS: usize = 20;
 
 /// The width of the inspector, beside the view it inspects.
 pub const INSPECTOR_WIDTH: f32 = 360.0;
-
-/// The lineage columns every loaded and silver table starts with.
-const LINEAGE: [&str; 3] = ["__source_file", "__source_part", "__source_row"];
 
 /// The folder inside the Protocol that holds the snapshots opened in the grid.
 const GRID_DIR: &str = ".grid";
@@ -62,6 +59,8 @@ pub enum ModelAction {
     Unfold(String),
     /// Leave a table out of the model.
     LeaveOut(String),
+    /// Bring a table left out of the model back into it.
+    Include(String),
     /// Give one of a table's columns another type.
     RetypeColumn(String),
     /// Open the selection's rows in the grid: a table's silver rows, or a join's joined rows.
@@ -69,20 +68,22 @@ pub enum ModelAction {
 }
 
 impl ModelAction {
-    /// The words on the action's button.
+    /// The words on the action's button. Unfold names the table it unfolds, since a host's
+    /// inspector offers one for each table folded into it.
     #[must_use]
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> String {
         match self {
-            ModelAction::Keep(_) => "Keep",
-            ModelAction::Drop(_) => "Drop",
-            ModelAction::ChangeKeys(_) => "Change keys\u{2026}",
-            ModelAction::ShowInFile => "Show in file",
-            ModelAction::ChangeRole { .. } => "Change role",
-            ModelAction::FoldInto(_) => "Fold into\u{2026}",
-            ModelAction::Unfold(_) => "Unfold",
-            ModelAction::LeaveOut(_) => "Leave out",
-            ModelAction::RetypeColumn(_) => "Retype column\u{2026}",
-            ModelAction::OpenInGrid(_) => "Open in grid",
+            ModelAction::Keep(_) => "Keep".into(),
+            ModelAction::Drop(_) => "Drop".into(),
+            ModelAction::ChangeKeys(_) => "Change keys\u{2026}".into(),
+            ModelAction::ShowInFile => "Show in file".into(),
+            ModelAction::ChangeRole { .. } => "Change role".into(),
+            ModelAction::FoldInto(_) => "Fold into\u{2026}".into(),
+            ModelAction::Unfold(name) => format!("Unfold {name}"),
+            ModelAction::LeaveOut(_) => "Leave out".into(),
+            ModelAction::Include(_) => "Include".into(),
+            ModelAction::RetypeColumn(_) => "Retype column\u{2026}".into(),
+            ModelAction::OpenInGrid(_) => "Open in grid".into(),
         }
     }
 }
@@ -116,7 +117,10 @@ pub fn join_actions(model: &Model, relationship: &str) -> Vec<ModelAction> {
     actions
 }
 
-/// The buttons a table's inspector offers, in order, besides its role picker.
+/// The buttons a table's inspector offers, in order, besides its role picker: a folded table's
+/// Unfold, or Fold into…; an Unfold for each table folded into this one; Leave out, or Include for
+/// a table already left out; then Retype column…, Show in file and, for a table with a silver
+/// table of its own, Open in grid.
 #[must_use]
 pub fn table_actions(model: &Model, dataset: &str) -> Vec<ModelAction> {
     let Some(d) = model.datasets.iter().find(|d| d.name == dataset) else {
@@ -129,7 +133,21 @@ pub fn table_actions(model: &Model, dataset: &str) -> Vec<ModelAction> {
     } else {
         actions.push(ModelAction::FoldInto(name.clone()));
     }
-    if !d.meta.excluded {
+    let mut folded: Vec<&str> = model
+        .datasets
+        .iter()
+        .filter(|f| f.meta.folded_into.as_deref() == Some(dataset))
+        .map(|f| f.name.as_str())
+        .collect();
+    folded.sort_unstable();
+    actions.extend(
+        folded
+            .into_iter()
+            .map(|f| ModelAction::Unfold(f.to_string())),
+    );
+    if d.meta.excluded {
+        actions.push(ModelAction::Include(name.clone()));
+    } else {
         actions.push(ModelAction::LeaveOut(name.clone()));
     }
     actions.push(ModelAction::RetypeColumn(name.clone()));
@@ -357,7 +375,7 @@ pub fn inspect(
                 warning: r.meta.warning.clone(),
                 preview: query(
                     dir,
-                    &brightfield_ossie::join_preview_sql(model, name, PREVIEW_ROWS),
+                    &brightfield_protocol::preview::join_preview_sql(model, name, PREVIEW_ROWS),
                 ),
             }))
         }
@@ -436,6 +454,10 @@ pub struct InspectorDrawn {
     pub lines: Vec<String>,
     /// The words on each button it drew, in order.
     pub actions: Vec<String>,
+    /// Where each of those buttons was laid out, in the order of [`InspectorDrawn::actions`]. The
+    /// role picker, which [`InspectorDrawn::actions`] names first as "Change role", is not a button
+    /// and has no rect here.
+    pub button_rects: Vec<egui::Rect>,
     /// The columns of the rows table it drew, and how many rows it held.
     pub table: Option<(Vec<String>, usize)>,
 }
@@ -562,10 +584,13 @@ fn buttons(
 ) {
     ui.horizontal_wrapped(|ui| {
         for action in actions {
-            drawn.actions.push(action.label().to_string());
-            if ui.button(action.label()).clicked() {
+            let label = action.label();
+            let response = ui.button(&label);
+            if response.clicked() {
                 chosen.push(action.clone());
             }
+            drawn.button_rects.push(response.rect);
+            drawn.actions.push(label);
         }
     });
 }
@@ -600,8 +625,7 @@ fn role_picker(
             dataset: t.dataset.clone(),
             role: t.role,
         }
-        .label()
-        .to_string(),
+        .label(),
     );
 }
 

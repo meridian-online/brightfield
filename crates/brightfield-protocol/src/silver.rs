@@ -10,14 +10,11 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use brightfield_ossie::{Dataset, Model, Relationship};
+use brightfield_ossie::{Dataset, Model, Relationship, LINEAGE};
 use serde::Deserialize;
 
 /// The text of the vendored file, which `scripts/vendor-finetype-transforms.sh` writes.
 const VENDORED: &str = include_str!("../vendor/finetype/transforms.json");
-
-/// The lineage columns every raw and silver table starts with.
-const LINEAGE: [&str; 3] = ["__source_file", "__source_part", "__source_row"];
 
 /// What FineType's definition of one label says about casting it.
 #[derive(Debug, Clone, Deserialize)]
@@ -154,6 +151,19 @@ fn projections(d: &Dataset, transforms: &FinetypeTransforms) -> Vec<String> {
             .map(|f| cast_projection(&f.name, f.meta.finetype.as_deref(), transforms)),
     );
     out
+}
+
+/// `d`'s raw rows cast as its silver table casts them, lineage first: the same `TRY` projection
+/// over the same text-read source, without the folds a host's silver table joins on. A value that
+/// does not cast reads NULL rather than failing the statement. For reading a dataset that has no
+/// silver table of its own, because it is left out or folded into another.
+#[must_use]
+pub fn cast_rows_sql(d: &Dataset, transforms: &FinetypeTransforms) -> String {
+    format!(
+        "SELECT {} FROM ({})",
+        projections(d, transforms).join(", "),
+        source(d, transforms)
+    )
 }
 
 /// The join between a host and a dataset folded into it: the host's key columns and the folded

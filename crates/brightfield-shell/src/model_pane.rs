@@ -353,6 +353,11 @@ impl ModelPane {
             ModelAction::RetypeColumn(_) => {
                 return Dispatched::NotYet("Retyping a column isn't available yet".into())
             }
+            ModelAction::Include(_) => {
+                return Dispatched::NotYet(
+                    "Bringing a left-out table back isn't available yet".into(),
+                )
+            }
         };
         let said = edit_said(&edit);
         let model = match brightfield_ossie::apply(&self.model, &edit) {
@@ -390,7 +395,7 @@ impl ModelPane {
                 (name.clone(), model_inspector::silver_rows_sql(name))
             }
             Selection::Relationship(name) => {
-                let sql = brightfield_ossie::join_rows_sql(&self.model, name);
+                let sql = brightfield_protocol::preview::join_rows_sql(&self.model, name);
                 if sql.is_empty() {
                     return Err(format!("the model has no join named {name}"));
                 }
@@ -627,7 +632,7 @@ pub fn gutter_routes(model: &Model, rows: &[ListRow]) -> Vec<GutterRoute> {
         .iter()
         .filter_map(|r| match r {
             ListRow::Table { joins, .. } => Some(joins.iter().map(String::as_str)),
-            ListRow::Review { .. } => None,
+            ListRow::Review { .. } | ListRow::Folded { .. } | ListRow::LeftOut { .. } => None,
         })
         .flatten()
         .collect();
@@ -642,7 +647,7 @@ pub fn gutter_routes(model: &Model, rows: &[ListRow]) -> Vec<GutterRoute> {
                 from_row: row_of(&r.from)?,
                 to_row: row_of(&r.to)?,
                 lane: 0,
-                possible: r.meta.grade == brightfield_ossie::Grade::Possible,
+                possible: brightfield_ossie::is_proposal(r),
             })
         })
         .collect();
@@ -694,7 +699,9 @@ const GUTTER_DASH: (f32, f32) = (4.0, 3.0);
 fn row_selection(row: &ListRow) -> Selection {
     match row {
         ListRow::Review { relationship, .. } => Selection::Relationship(relationship.clone()),
-        ListRow::Table { name, .. } => Selection::Dataset(name.clone()),
+        ListRow::Table { name, .. }
+        | ListRow::Folded { name, .. }
+        | ListRow::LeftOut { name, .. } => Selection::Dataset(name.clone()),
     }
 }
 
@@ -702,7 +709,9 @@ fn row_selection(row: &ListRow) -> Selection {
 fn row_lit(model: &Model, selected: Option<&Selection>, row: &ListRow) -> bool {
     match row {
         ListRow::Review { relationship, .. } => relationship_lit(model, selected, relationship),
-        ListRow::Table { name, .. } => dataset_lit(model, selected, name),
+        ListRow::Table { name, .. }
+        | ListRow::Folded { name, .. }
+        | ListRow::LeftOut { name, .. } => dataset_lit(model, selected, name),
     }
 }
 
@@ -721,6 +730,7 @@ fn list_ui(
 ) -> Option<Option<Selection>> {
     let sem = semantic(mode.is_dark());
     let primary = chrome::colour(sem.text.primary);
+    let secondary = chrome::colour(sem.text.secondary);
     let likely = chrome::colour(sem.borders.default_);
     let proposal = chrome::colour(sem.role(meridian_design::Role::Neutral).foreground.base);
     let dimmed = chrome::colour(sem.text.disabled);
@@ -769,10 +779,20 @@ fn list_ui(
                 let (text, ink) = match row {
                     ListRow::Review { .. } => (list_line(row), proposal),
                     ListRow::Table { .. } => (list_line(row), primary),
+                    ListRow::Folded { .. } | ListRow::LeftOut { .. } => (list_line(row), secondary),
                 };
                 let ink = if lit { ink } else { dimmed };
+                // A folded table stands indented under its host's row.
+                let indent = if matches!(row, ListRow::Folded { .. }) {
+                    spacing::SPACE_6
+                } else {
+                    0.0
+                };
                 painter.text(
-                    egui::pos2(rect.left() + gutter + spacing::SPACE_2, rect.center().y),
+                    egui::pos2(
+                        rect.left() + gutter + spacing::SPACE_2 + indent,
+                        rect.center().y,
+                    ),
                     egui::Align2::LEFT_CENTER,
                     &text,
                     crate::protocol::ui_font(),
@@ -824,9 +844,14 @@ fn list_ui(
     clicked
 }
 
-/// One list row's text: a possible join's review line, or a table's metadata.
+/// One list row's text: a possible join's review line, a table's metadata, a folded table under
+/// its host, or a table left out.
 fn list_line(row: &ListRow) -> String {
     match row {
+        ListRow::Folded { name, into } => format!("\u{21b3} {name} · folded into {into}"),
+        ListRow::LeftOut { name, role } => {
+            format!("left out · {name} · {}", model_inspector::role_label(*role))
+        }
         ListRow::Review {
             relationship,
             edge_text,
@@ -874,39 +899,6 @@ fn edit_said(edit: &Edit) -> String {
         Edit::Exclude { dataset } => format!("Left {dataset} out of the model"),
         other => format!("{other:?}"),
     }
-}
-
-/// The band the window draws above the grid while the model pane waits behind it: the way back
-/// to the model, as a control at its left, and the name of what the grid holds. Answers whether
-/// the way back was taken.
-pub fn back_band(ui: &mut egui::Ui, band: egui::Rect, showing: &str, mode: Mode) -> bool {
-    let sem = semantic(mode.is_dark());
-    ui.painter()
-        .rect_filled(band, 0.0, chrome::colour(sem.surfaces.header));
-    ui.painter().line_segment(
-        [band.left_bottom(), band.right_bottom()],
-        egui::Stroke::new(1.0, chrome::colour(sem.borders.subtle)),
-    );
-    let mut child = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(band.shrink2(egui::vec2(spacing::SPACE_3, 0.0)))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    );
-    child.shrink_clip_rect(band);
-    let back = child
-        .button(
-            egui::RichText::new("\u{2190} Model")
-                .font(crate::protocol::ui_font())
-                .color(chrome::colour(sem.text.primary)),
-        )
-        .on_hover_text("Back to the model (Esc)");
-    child.add_space(spacing::SPACE_4);
-    child.label(
-        egui::RichText::new(showing)
-            .font(crate::protocol::ui_font())
-            .color(chrome::colour(sem.text.primary)),
-    );
-    back.clicked()
 }
 
 /// The file view: the Ossie file as written, in the mono face. Read-only here.

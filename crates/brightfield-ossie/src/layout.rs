@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use meridian_design::spacing;
 
-use crate::model::{Dataset, Grade, Model, Relationship, Role};
+use crate::model::{Dataset, DecidedBy, Grade, Model, Relationship, Role};
 
 /// Which region of the canvas a card sits in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +37,8 @@ pub struct EdgeLabel {
     pub relationship: String,
     pub text: String,
     pub grade: Grade,
+    /// Whether the join is a proposal still waiting on the analyst ([`is_proposal`]), drawn as one.
+    pub proposal: bool,
     pub points: Vec<(f64, f64)>,
 }
 
@@ -56,7 +58,7 @@ pub enum ListRow {
         relationship: String,
         edge_text: String,
     },
-    /// A placed table.
+    /// A placed table. Its folded tables follow it as [`ListRow::Folded`] rows.
     Table {
         role: Role,
         name: String,
@@ -68,6 +70,17 @@ pub enum ListRow {
         /// Names of the joins this table takes part in.
         joins: Vec<String>,
     },
+    /// A table folded into another, listed under its host's row.
+    Folded { name: String, into: String },
+    /// A table left out of the model, in a group of its own at the end of the list.
+    LeftOut { name: String, role: Role },
+}
+
+/// Whether `r` is a proposal waiting on the analyst: a possible join that discovery decided. A
+/// possible join the analyst kept stays graded possible, as evidence, but is no longer one.
+#[must_use]
+pub fn is_proposal(r: &Relationship) -> bool {
+    r.meta.grade == Grade::Possible && r.meta.decided_by == DecidedBy::Dovetail
 }
 
 const MARGIN: f64 = spacing::SPACE_8 as f64;
@@ -179,13 +192,14 @@ const ROLE_ORDER: [Role; 6] = [
     Role::Unclear,
 ];
 
-/// Possible-join review rows first, then tables grouped by role, by name within a role.
+/// Review rows for the proposals ([`is_proposal`]) first, then tables grouped by role, by name
+/// within a role, each followed by the tables folded into it, then the tables left out.
 pub fn list_rows(model: &Model) -> Vec<ListRow> {
     let names = placed_names(model);
     let joins = drawn_joins(model, &names);
     let mut rows: Vec<ListRow> = joins
         .iter()
-        .filter(|r| r.meta.grade == Grade::Possible)
+        .filter(|r| is_proposal(r))
         .map(|r| ListRow::Review {
             relationship: r.name.clone(),
             edge_text: edge_text(r),
@@ -215,7 +229,40 @@ pub fn list_rows(model: &Model) -> Vec<ListRow> {
                     .map(|r| r.name.clone())
                     .collect(),
             });
+            for folded in folded_into(model, &d.name) {
+                rows.push(ListRow::Folded {
+                    name: folded.to_string(),
+                    into: d.name.clone(),
+                });
+            }
         }
+    }
+    // A table folded into one that is not placed has no host row to stand under.
+    let mut orphans: Vec<&Dataset> = model
+        .datasets
+        .iter()
+        .filter(|d| {
+            !d.meta.excluded
+                && d.meta
+                    .folded_into
+                    .as_deref()
+                    .is_some_and(|host| !names.contains(host))
+        })
+        .collect();
+    orphans.sort_by(|a, b| a.name.cmp(&b.name));
+    for d in orphans {
+        rows.push(ListRow::Folded {
+            name: d.name.clone(),
+            into: d.meta.folded_into.clone().unwrap_or_default(),
+        });
+    }
+    let mut left_out: Vec<&Dataset> = model.datasets.iter().filter(|d| d.meta.excluded).collect();
+    left_out.sort_by(|a, b| a.name.cmp(&b.name));
+    for d in left_out {
+        rows.push(ListRow::LeftOut {
+            name: d.name.clone(),
+            role: d.meta.role,
+        });
     }
     rows
 }
@@ -409,6 +456,7 @@ pub fn layout(model: &Model) -> ModelLayout {
             relationship: j.r.name.clone(),
             text: edge_text(j.r),
             grade: j.r.meta.grade,
+            proposal: is_proposal(j.r),
             points: route(
                 (port(j.s, j.sides.0, i), j.sides.0),
                 (port(j.e, j.sides.1, i), j.sides.1),

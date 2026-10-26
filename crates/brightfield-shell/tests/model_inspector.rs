@@ -9,7 +9,7 @@
 //! it made by retyping a column.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use brightfield_ossie::{Edit, Grade, Model};
 use brightfield_render::model_scene::Selection;
@@ -55,17 +55,33 @@ fn retail_model() -> Model {
     brightfield_ossie::read(&text).unwrap()
 }
 
-/// The retail extract opened as a Protocol and run, with the model written for it saved over the
-/// one the open found, so its joins and types are the written ones.
-fn opened_retail() -> ModelPane {
-    let Opened::Model(protocol) = data_file::open_any(&retail(), &runner()).expect("it opens")
-    else {
-        panic!("eight tables are a model");
+/// Held around each open that makes a Protocol folder, so a test that checks no folder was made
+/// cannot see one its siblings made meanwhile.
+fn folder_lock() -> MutexGuard<'static, ()> {
+    static OPENS: Mutex<()> = Mutex::new(());
+    OPENS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The folder at `dir` opened as a Protocol and run, with `model` saved over the one the open
+/// found, so its joins and types are the written ones.
+fn opened(dir: &Path, model: Model) -> ModelPane {
+    let opened = {
+        let _held = folder_lock();
+        data_file::open_any(dir, &runner()).expect("it opens")
+    };
+    let Opened::Model(protocol) = opened else {
+        panic!("several tables are a model");
     };
     let mut pane = ModelPane::open(protocol, runner()).expect("the model reads");
-    pane.save_model(retail_model())
-        .expect("the written model runs");
+    pane.save_model(model).expect("the written model runs");
     pane
+}
+
+/// The retail extract opened as a Protocol and run, with the model written for it.
+fn opened_retail() -> ModelPane {
+    opened(&retail(), retail_model())
 }
 
 /// A pane over the written retail model, with no database behind it.
@@ -120,7 +136,11 @@ fn click(ctx: &egui::Context, pane: &mut ModelPane, at: egui::Pos2) {
 #[test]
 fn preview_sql_samples_child_then_joins() {
     let model = retail_model();
-    let sql = brightfield_ossie::join_preview_sql(&model, "transactions_customers", PREVIEW_ROWS);
+    let sql = brightfield_protocol::preview::join_preview_sql(
+        &model,
+        "transactions_customers",
+        PREVIEW_ROWS,
+    );
     // The child side is sampled in its own subquery, and the join to the whole parent comes after.
     let child = "(SELECT * FROM \"transactions\" USING SAMPLE 20 ROWS) AS child";
     let at_child = sql.find(child).unwrap_or_else(|| panic!("{sql}"));
@@ -136,7 +156,7 @@ fn preview_sql_samples_child_then_joins() {
     assert_eq!(sql.matches("USING SAMPLE").count(), 1, "{sql}");
 
     // Open in grid reads every child row.
-    let all = brightfield_ossie::join_rows_sql(&model, "transactions_customers");
+    let all = brightfield_protocol::preview::join_rows_sql(&model, "transactions_customers");
     assert!(
         !all.contains("USING SAMPLE") && !all.contains("LIMIT"),
         "{all}"
@@ -146,16 +166,17 @@ fn preview_sql_samples_child_then_joins() {
         "{all}"
     );
 
-    // A table folded into another has no silver table, so its side reads the raw one.
+    // A table folded into another has no silver table, so its side reads the raw one through
+    // silver's cast projection.
     let fold = model
         .relationships
         .iter()
         .find(|r| r.to == "categories" || r.from == "categories")
         .expect("a join to the folded categories");
-    let sql = brightfield_ossie::join_preview_sql(&model, &fold.name, PREVIEW_ROWS);
-    assert!(sql.contains("\"raw_categories\""), "{sql}");
+    let sql = brightfield_protocol::preview::join_preview_sql(&model, &fold.name, PREVIEW_ROWS);
+    assert!(sql.contains("FROM \"raw_categories\""), "{sql}");
 
-    assert!(brightfield_ossie::join_preview_sql(&model, "no_such_join", 20).is_empty());
+    assert!(brightfield_protocol::preview::join_preview_sql(&model, "no_such_join", 20).is_empty());
 }
 
 #[test]
@@ -488,6 +509,8 @@ fn folders_in(dir: &Path) -> usize {
 
 #[test]
 fn open_in_grid_shows_silver_rows() {
+    // Held throughout, so the counts below see only the folders this test's window makes.
+    let _held = folder_lock();
     let mut win = Window::over_retail();
     let dir = win.app.model_pane().unwrap().protocol.dir.clone();
     let folders = folders_in(&own_dir());
@@ -570,4 +593,168 @@ fn open_in_grid_shows_silver_rows() {
     );
     assert!(win.app.chart_doc().grid_drawn().is_none());
     assert_eq!(folders_in(&own_dir()), folders);
+}
+
+/// Draw `pane` as the list, click the row whose text contains `needle`, and draw it again.
+fn click_list_row(ctx: &egui::Context, pane: &mut ModelPane, needle: &str) {
+    pane.view = ModelView::List;
+    draw(ctx, pane, Vec::new());
+    let row = pane
+        .drawn()
+        .body
+        .iter()
+        .position(|line| line.contains(needle))
+        .unwrap_or_else(|| panic!("no row with {needle:?}: {:?}", pane.drawn().body));
+    let at = pane.drawn().list_rows[row].center();
+    click(ctx, pane, at);
+    draw(ctx, pane, Vec::new());
+}
+
+/// Click the inspector's button reading `label`, and answer the actions it chose.
+fn click_button(ctx: &egui::Context, pane: &mut ModelPane, label: &str) -> Vec<ModelAction> {
+    let drawn = pane.drawn().inspector.clone().expect("the inspector drew");
+    let at = drawn
+        .actions
+        .iter()
+        .filter(|a| *a != "Change role")
+        .position(|a| a == label)
+        .unwrap_or_else(|| panic!("no {label:?} button: {:?}", drawn.actions));
+    click(ctx, pane, drawn.button_rects[at].center());
+    pane.take_actions()
+}
+
+#[test]
+fn a_folded_table_is_selected_from_the_list_and_unfolded() {
+    let mut pane = opened_retail();
+    let ctx = egui::Context::default();
+    click_list_row(&ctx, &mut pane, "categories · folded into products");
+    assert_eq!(
+        pane.focus.selected,
+        Some(Selection::Dataset("categories".into()))
+    );
+    let drawn = pane.drawn().inspector.clone().expect("the inspector drew");
+    assert_eq!(drawn.title, "Table categories");
+    assert!(
+        drawn.lines.iter().any(|l| l == "Folded into products"),
+        "{drawn:?}"
+    );
+    let chosen = click_button(&ctx, &mut pane, "Unfold categories");
+    assert_eq!(chosen, vec![ModelAction::Unfold("categories".into())]);
+    for action in chosen {
+        assert!(matches!(pane.dispatch(action), Dispatched::Done(_)));
+    }
+    let categories = pane
+        .model
+        .datasets
+        .iter()
+        .find(|d| d.name == "categories")
+        .unwrap();
+    assert_eq!(categories.meta.folded_into, None);
+    // Unfolded, it has a row of its own in the list.
+    draw(&ctx, &mut pane, Vec::new());
+    assert!(
+        pane.drawn()
+            .body
+            .iter()
+            .any(|l| l.contains(" · categories · ") && !l.contains("folded into")),
+        "{:?}",
+        pane.drawn().body
+    );
+}
+
+#[test]
+fn a_hosts_inspector_unfolds_each_folded_table() {
+    let mut pane = written_retail();
+    pane.focus.selected = Some(Selection::Dataset("products".into()));
+    let ctx = egui::Context::default();
+    draw(&ctx, &mut pane, Vec::new());
+    let drawn = pane.drawn().inspector.clone().expect("the inspector drew");
+    assert!(
+        drawn.actions.iter().any(|a| a == "Unfold categories"),
+        "{drawn:?}"
+    );
+    assert!(drawn.actions.iter().any(|a| a == "Fold into\u{2026}"));
+}
+
+#[test]
+fn a_left_out_table_is_selected_from_the_list_and_offers_include() {
+    let mut pane = written_retail();
+    pane.model = brightfield_ossie::apply(
+        &pane.model,
+        &Edit::Exclude {
+            dataset: "promo_codes".into(),
+        },
+    )
+    .unwrap();
+    let ctx = egui::Context::default();
+    click_list_row(&ctx, &mut pane, "left out · promo_codes");
+    assert_eq!(
+        pane.focus.selected,
+        Some(Selection::Dataset("promo_codes".into()))
+    );
+    let drawn = pane.drawn().inspector.clone().expect("the inspector drew");
+    assert_eq!(drawn.title, "Table promo_codes");
+    assert!(drawn.lines.iter().any(|l| l == "Left out of the model"));
+    assert!(!drawn.actions.iter().any(|a| a == "Leave out"), "{drawn:?}");
+    let chosen = click_button(&ctx, &mut pane, "Include");
+    assert_eq!(chosen, vec![ModelAction::Include("promo_codes".into())]);
+    assert!(matches!(
+        pane.dispatch(chosen[0].clone()),
+        Dispatched::NotYet(_)
+    ));
+}
+
+#[test]
+fn a_fold_joins_preview_casts_the_folded_side() {
+    // The retail extract with a category key that is no number, so the raw key column is text.
+    let dir = scratch().join("retail-n-a");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for entry in std::fs::read_dir(retail()).unwrap().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".csv") {
+            std::fs::copy(entry.path(), dir.join(&name)).unwrap();
+        }
+    }
+    let categories = dir.join("categories.csv");
+    let mut text = std::fs::read_to_string(&categories).unwrap();
+    text.push_str("n/a,Unknown\n");
+    std::fs::write(&categories, text).unwrap();
+
+    // Both sides' key typed as a whole number: silver casts it, and `n/a` reads NULL.
+    let mut model = retail_model();
+    for dataset in ["products", "categories"] {
+        model = brightfield_ossie::apply(
+            &model,
+            &Edit::Retype {
+                dataset: dataset.into(),
+                field: "category_id".into(),
+                finetype: "representation.numeric.integer_number".into(),
+            },
+        )
+        .unwrap();
+    }
+    let mut pane = opened(&dir, model);
+    let fold = pane
+        .model
+        .relationships
+        .iter()
+        .find(|r| r.from == "products" && r.to == "categories")
+        .expect("the fold join")
+        .name
+        .clone();
+    pane.focus.selected = Some(Selection::Relationship(fold));
+    let Some(Inspected::Join(details)) = pane.inspected().cloned() else {
+        panic!("a join's inspector");
+    };
+    let rows = details.preview.expect("the preview runs despite the n/a");
+    assert_eq!(rows.rows.len(), 5, "every product is sampled: {rows:?}");
+    for i in 0..rows.rows.len() {
+        // Every product's category is found: the keys compare as silver casts them.
+        assert!(rows.value(i, "categories.name").is_some(), "{rows:?}");
+        assert_eq!(
+            rows.value(i, "categories.category_id"),
+            rows.value(i, "products.category_id")
+        );
+    }
 }

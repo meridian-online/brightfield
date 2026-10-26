@@ -1,4 +1,6 @@
-use brightfield_ossie::{edge_text, layout, list_rows, read, summary, Band, ListRow, Model, Role};
+use brightfield_ossie::{
+    edge_text, layout, list_rows, read, summary, Band, DecidedBy, ListRow, Model, Role,
+};
 
 const STAND_IN: &str = include_str!("../fixtures/retail_extract/model.ossie.yaml");
 
@@ -275,4 +277,68 @@ fn assert_routes_distinct(m: &Model) {
             );
         }
     }
+}
+
+#[test]
+fn a_kept_possible_join_leaves_the_review_queue() {
+    let mut m = model();
+    let kept = m
+        .relationships
+        .iter_mut()
+        .find(|r| r.name == "customer_segments_customers")
+        .unwrap();
+    kept.meta.decided_by = DecidedBy::Analyst;
+    let rows = list_rows(&m);
+    assert!(
+        !rows.iter().any(|r| matches!(r, ListRow::Review { .. })),
+        "{rows:?}"
+    );
+    let edge = layout(&m)
+        .edges
+        .into_iter()
+        .find(|e| e.relationship == "customer_segments_customers")
+        .unwrap();
+    // Still graded possible, as evidence, but no longer drawn as a proposal.
+    assert_eq!(edge.grade, brightfield_ossie::Grade::Possible);
+    assert!(!edge.proposal);
+    assert!(layout(&model())
+        .edges
+        .iter()
+        .any(|e| e.relationship == "customer_segments_customers" && e.proposal));
+}
+
+#[test]
+fn folded_and_left_out_tables_have_rows() {
+    let mut m = model();
+    m.datasets
+        .iter_mut()
+        .find(|d| d.name == "promo_codes")
+        .unwrap()
+        .meta
+        .excluded = true;
+    let rows = list_rows(&m);
+    let at = |want: &ListRow| rows.iter().position(|r| r == want);
+    let host = rows
+        .iter()
+        .position(|r| matches!(r, ListRow::Table { name, .. } if name == "products"))
+        .unwrap();
+    // The folded table stands right under its host…
+    assert_eq!(
+        at(&ListRow::Folded {
+            name: "categories".into(),
+            into: "products".into()
+        }),
+        Some(host + 1)
+    );
+    // …and the table left out is last, in a group of its own.
+    assert_eq!(
+        rows.last(),
+        Some(&ListRow::LeftOut {
+            name: "promo_codes".into(),
+            role: Role::Unclear
+        })
+    );
+    assert!(!rows
+        .iter()
+        .any(|r| matches!(r, ListRow::Table { name, .. } if name == "promo_codes")));
 }

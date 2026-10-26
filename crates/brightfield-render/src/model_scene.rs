@@ -297,13 +297,13 @@ fn draw_edge(
         pal.dimmed
     } else if chosen {
         pal.selected
-    } else if e.grade == Grade::Possible {
+    } else if e.proposal {
         pal.proposal
     } else {
         pal.border
     };
     let mut stroke = Stroke::new(if chosen { EDGE_WIDTH * 1.5 } else { EDGE_WIDTH });
-    if e.grade == Grade::Possible {
+    if e.proposal {
         stroke = stroke.with_dashes(0.0, DASH);
     }
     let mut path = BezPath::new();
@@ -331,7 +331,7 @@ fn draw_pill(
         pal.dimmed
     } else if chosen {
         pal.selected
-    } else if e.grade == Grade::Possible {
+    } else if e.proposal {
         pal.proposal
     } else {
         pal.border
