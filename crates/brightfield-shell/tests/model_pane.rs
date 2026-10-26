@@ -71,10 +71,11 @@ impl Window {
         let dir = fixture();
         win.app
             .open_path_knowing(&win.ctx, &dir.to_string_lossy(), &[]);
-        assert!(
-            win.app.model_pane().is_some(),
-            "the folder opens into the model pane"
-        );
+        // The open's full pass lands before the test looks.
+        win.app
+            .model_pane_mut()
+            .expect("the folder opens into the model pane")
+            .finish_discovery();
         win.frame(Vec::new());
         win
     }

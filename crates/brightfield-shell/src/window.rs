@@ -9579,7 +9579,11 @@ impl MeridianApp {
     ) {
         let dir = protocol.dir.clone();
         let doc = match crate::model_pane::ModelPane::open(protocol, runner) {
-            Ok(doc) => doc,
+            Ok(mut doc) => {
+                // The open wrote the sample pass's model; the full pass lands while it shows.
+                doc.start_full_pass(crate::discovery::StandIn);
+                doc
+            }
             Err(e) => {
                 self.say_open_failed(ctx, &dir.to_string_lossy(), e);
                 return;
@@ -13796,7 +13800,19 @@ fn draw_model_pane(
         let pause = std::time::Duration::from_millis(crate::model_pane::FILE_PAUSE_MS);
         ui.ctx().request_repaint_after(pause);
     }
+    // Discovery's full pass, on its worker: a fold draws again at once, and a pass still running
+    // is looked for again shortly.
+    if doc.poll_discovery().is_some() {
+        ui.ctx().request_repaint();
+    }
+    if doc.discovering() {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(DISCOVERY_POLL_MS));
+    }
 }
+
+/// How often a frame looks for discovery's full pass while it runs, in milliseconds.
+const DISCOVERY_POLL_MS: u64 = 100;
 
 /// [`draw_chart_pane`] **without the frame** — the body of a pane whose frame
 /// somebody else has already drawn.

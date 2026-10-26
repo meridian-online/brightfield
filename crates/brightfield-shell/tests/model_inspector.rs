@@ -490,10 +490,10 @@ impl Window {
         win.frame(Vec::new());
         win.app
             .open_path_knowing(&win.ctx, &retail().to_string_lossy(), &[]);
-        win.app
-            .model_pane_mut()
-            .expect("the folder opens a model")
-            .save_model(retail_model())
+        let pane = win.app.model_pane_mut().expect("the folder opens a model");
+        // The open's full pass lands before the test's model is saved over it.
+        pane.finish_discovery();
+        pane.save_model(retail_model())
             .expect("the written model runs");
         win.frame(Vec::new());
         win

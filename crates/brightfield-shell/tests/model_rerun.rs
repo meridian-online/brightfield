@@ -291,7 +291,7 @@ fn rediscover_keeps_analyst_decisions() {
     proposed
         .relationships
         .retain(|r| r.name != "loyalty_visits_stores");
-    let done = pane.rediscover(&Proposes(proposed));
+    let done = pane.rediscover(Proposes(proposed));
     assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
 
     let file = written(&pane);

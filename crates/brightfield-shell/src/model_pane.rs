@@ -17,6 +17,11 @@
 //! its pill and its inspector show. Rediscover ([`REDISCOVER_MODEL`]) runs discovery again and
 //! folds what it proposes around what the analyst decided.
 //!
+//! Discovery's full pass runs on a worker, after the open and after each Rediscover, while the
+//! pane shows the sample pass's model and the analyst works on it. The window polls it each frame
+//! ([`ModelPane::poll_discovery`]); when it lands, it is folded into the model as it stands then,
+//! once any hand edit waiting in the file view has been read, and saved when that changes it.
+//!
 //! What is selected belongs to the pane, not to a view: a click on a card or a join on the
 //! diagram, or on a row of the list, selects it, and in either view what is not connected to the
 //! selection dims. While something is selected the inspector ([`crate::model_inspector`]) stands
@@ -46,7 +51,7 @@ use std::path::{Path, PathBuf};
 
 use brightfield_engine::semantic::SchemaCatalogue;
 use brightfield_keys::{Altitude, BindingContext};
-use brightfield_ossie::{Edit, Evidence, ListRow, Model, ModelLayout};
+use brightfield_ossie::{merge_discovery, Edit, Evidence, ListRow, Model, ModelLayout};
 use brightfield_render::canvas_host::{Color, PixelSize};
 use brightfield_render::model_scene::{
     dataset_lit, hit_test, relationship_lit, render_model, ModelFocus, Selection,
@@ -60,7 +65,7 @@ use meridian_design::{semantic, spacing};
 
 use crate::canvas::EguiCanvasHost;
 use crate::design::Mode;
-use crate::discovery::{discover_with, Discovery, StandIn, MODEL_FILE};
+use crate::discovery::{discover_passes, Discovery, FullPass, StandIn, MODEL_FILE};
 use crate::editor::Access;
 use crate::model_file::{self, Kept};
 use crate::model_inspector::{self, Inspected, InspectorDrawn, ModelAction, ModelPicker};
@@ -265,6 +270,8 @@ pub struct ModelPane {
     status: Option<String>,
     /// The table a drag on the diagram started on, while the drag lasts.
     drag_from: Option<String>,
+    /// Discovery's full pass, while it runs on its worker.
+    full_pass: Option<FullPass>,
 }
 
 /// What became of a [`ModelAction`] the pane dispatched.
@@ -323,6 +330,7 @@ impl ModelPane {
             picker: None,
             status: None,
             drag_from: None,
+            full_pass: None,
         };
         // A Protocol already run has silver tables to measure the joins over; one not yet run
         // has none, and nothing is measured.
@@ -614,8 +622,8 @@ impl ModelPane {
     /// answer what came of it; `None` when `longname` is neither.
     pub fn perform_reshape(&mut self, longname: &str) -> Option<Dispatched> {
         if longname == REDISCOVER_MODEL {
-            // The stand-in is the discoverer the open uses ([`crate::discovery::discover_model`]).
-            return Some(self.rediscover(&StandIn));
+            // The stand-in is the discoverer the open uses ([`crate::data_file::open_any`]).
+            return Some(self.rediscover(StandIn));
         }
         Some(match self.reshape_action(longname)? {
             Ok(action) => self.dispatch(action),
@@ -675,12 +683,7 @@ impl ModelPane {
     /// the status line.
     pub fn dispatch(&mut self, action: ModelAction) -> Dispatched {
         let dispatched = self.carry_out(action);
-        match &dispatched {
-            Dispatched::Done(said) | Dispatched::Picking(said) | Dispatched::Failed(said) => {
-                self.status = Some(said.clone());
-            }
-            Dispatched::OpenInGrid(_) => {}
-        }
+        self.say(&dispatched);
         dispatched
     }
 
@@ -741,40 +744,109 @@ impl ModelPane {
         }
     }
 
-    /// Run `discovery` over the Protocol again and fold what it proposes into the model, as
-    /// [`discover_with`] does: what the analyst decided stays as it is, and what Dovetail decided
-    /// takes the fresh pass. The result is saved as an action's model is. What came of it stands
-    /// in the status line.
-    pub fn rediscover(&mut self, discovery: &dyn Discovery) -> Dispatched {
-        let dispatched = self.rediscovered(discovery);
-        match &dispatched {
-            Dispatched::Done(said) | Dispatched::Picking(said) | Dispatched::Failed(said) => {
-                self.status = Some(said.clone());
-            }
-            Dispatched::OpenInGrid(_) => {}
-        }
+    /// Run `discovery` over the Protocol again and fold what it proposes into the model: what the
+    /// analyst decided stays as it is, and what Dovetail decided takes the fresh pass. The sample
+    /// pass is folded in and saved, as an action's model is, before this answers; the full pass
+    /// then runs on a worker, in place of any still running, and lands through
+    /// [`Self::poll_discovery`]. What came of it stands in the status line.
+    pub fn rediscover(&mut self, discovery: impl Discovery + Send + 'static) -> Dispatched {
+        let dispatched = self.rediscovered(Box::new(discovery));
+        self.say(&dispatched);
         dispatched
     }
 
-    fn rediscovered(&mut self, discovery: &dyn Discovery) -> Dispatched {
+    fn rediscovered(&mut self, discovery: Box<dyn Discovery + Send>) -> Dispatched {
         if let Err(e) = self.settle_file_edit() {
             return Dispatched::Failed(e);
         }
-        let model = match discover_with(discovery, &self.protocol) {
-            Ok(model) => model,
+        let (model, full) = match discover_passes(discovery, &self.protocol, Some(&self.model)) {
+            Ok(passes) => passes,
             Err(e) => return Dispatched::Failed(format!("Discovery failed: {e}")),
         };
+        self.full_pass = Some(full);
         if model == self.model {
-            return Dispatched::Done("Discovery found nothing to change".to_string());
+            return Dispatched::Done("The sample pass found nothing to change".to_string());
         }
         self.picker = None;
         let saved = self.save_model(model);
         self.let_go_of_what_is_gone();
         match saved {
-            Ok(()) => {
-                Dispatched::Done("Discovered the model again, around what you decided".to_string())
-            }
+            Ok(()) => Dispatched::Done(
+                "Discovered the model again from a sample, around what you decided".to_string(),
+            ),
             Err(e) => Dispatched::Failed(e),
+        }
+    }
+
+    /// Run `discovery`'s full pass over the Protocol on a worker, in place of any still running,
+    /// to land through [`Self::poll_discovery`]. The window starts one when the pane opens, whose
+    /// model is the sample pass's.
+    pub fn start_full_pass(&mut self, discovery: impl Discovery + Send + 'static) {
+        self.full_pass = Some(FullPass::start(Box::new(discovery), &self.protocol));
+    }
+
+    /// Whether discovery's full pass is still to land, so the window keeps polling.
+    #[must_use]
+    pub fn discovering(&self) -> bool {
+        self.full_pass.is_some()
+    }
+
+    /// Fold discovery's full pass into the model once it has landed, and answer what came of it;
+    /// `None` while it runs, or while it waits for a hand edit in the file view to be read or
+    /// discarded, so the fold sees the model the edit made. A fold that changes the model saves
+    /// it, as an action's model is, and says so in the status line, as a failed pass does; what
+    /// the analyst decided stays as it is.
+    pub fn poll_discovery(&mut self) -> Option<Dispatched> {
+        if self.file_edit_armed() || self.draft_refused {
+            return None;
+        }
+        let answer = self.full_pass.as_ref()?.try_take()?;
+        self.full_pass = None;
+        Some(self.fold_full_pass(answer))
+    }
+
+    /// [`Self::poll_discovery`], waiting for the full pass to land: `None` when none is running,
+    /// or a hand edit in the file view waits to be read.
+    pub fn finish_discovery(&mut self) -> Option<Dispatched> {
+        if self.file_edit_armed() || self.draft_refused {
+            return None;
+        }
+        let answer = self.full_pass.take()?.wait();
+        Some(self.fold_full_pass(answer))
+    }
+
+    /// Fold the full pass's `answer` into the model as it stands.
+    fn fold_full_pass(&mut self, answer: Result<Model, String>) -> Dispatched {
+        let full = match answer {
+            Ok(full) => full,
+            Err(e) => {
+                let failed = Dispatched::Failed(format!("The full discovery pass failed: {e}"));
+                self.say(&failed);
+                return failed;
+            }
+        };
+        let model = merge_discovery(&self.model, &full);
+        if model == self.model {
+            // The status line keeps what the analyst last did.
+            return Dispatched::Done("The full pass found nothing to change".to_string());
+        }
+        let saved = self.save_model(model);
+        self.let_go_of_what_is_gone();
+        let dispatched = match saved {
+            Ok(()) => Dispatched::Done("Folded in the full pass, around what you decided".into()),
+            Err(e) => Dispatched::Failed(e),
+        };
+        self.say(&dispatched);
+        dispatched
+    }
+
+    /// Put what came of `dispatched` in the status line.
+    fn say(&mut self, dispatched: &Dispatched) {
+        match dispatched {
+            Dispatched::Done(said) | Dispatched::Picking(said) | Dispatched::Failed(said) => {
+                self.status = Some(said.clone());
+            }
+            Dispatched::OpenInGrid(_) => {}
         }
     }
 

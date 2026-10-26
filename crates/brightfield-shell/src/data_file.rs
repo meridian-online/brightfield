@@ -956,8 +956,10 @@ pub enum Opened {
 ///
 /// A path whose tables come to exactly one flat file takes today's route, [`open`], unchanged.
 /// Anything else takes the own-files flow: the Protocol is made and run, the raw tables are
-/// profiled, a model is discovered and written beside the Protocol, and the silver steps for it
-/// are run. `runner` runs the Protocol's steps, as it does for [`crate::own_files::run_loads`].
+/// profiled, a model is discovered from the sample pass and written beside the Protocol, and the
+/// silver steps for it are run. The full pass is the model pane's to run once it opens
+/// ([`crate::model_pane::ModelPane::start_full_pass`]), so the first model shows without waiting
+/// for it. `runner` runs the Protocol's steps, as it does for [`crate::own_files::run_loads`].
 ///
 /// # Errors
 ///
@@ -977,7 +979,7 @@ pub fn open_any(path: &Path, runner: &crate::run::Runner) -> Result<Opened, Stri
     own::run_loads(&protocol, runner)?;
     own::profile(&mut protocol)?;
     own::write_packages(&protocol)?;
-    let model = crate::discovery::discover_model(&protocol)?;
+    let model = crate::discovery::sample_pass(&crate::discovery::StandIn, &protocol, None)?;
     let model_file = protocol.dir.join(crate::discovery::MODEL_FILE);
     std::fs::write(&model_file, brightfield_ossie::write(&model))
         .map_err(|e| format!("{}: {e}", model_file.display()))?;
