@@ -1,7 +1,7 @@
 //! The Apache Ossie semantic model as Rust types, with Meridian's vendor extension.
 //!
-//! A `model.ossie.yaml` is one Ossie document. Everything Ossie defines (datasets,
-//! fields, relationships) is core; everything Meridian adds (roles, grades, evidence,
+//! A `model.ossie.yaml` is one Ossie document. The datasets, fields and
+//! relationships Ossie defines are core; what Meridian adds (roles, grades, evidence,
 //! who decided) rides in `custom_extensions` entries whose `vendor_name` is
 //! [`VENDOR`] and whose `data` is a JSON string, so a foreign Ossie reader carries
 //! it without interpreting it. Extensions from other vendors are kept verbatim.

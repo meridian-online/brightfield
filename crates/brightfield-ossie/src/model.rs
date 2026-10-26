@@ -83,7 +83,7 @@ pub enum Grade {
     Possible,
 }
 
-/// Who settled an element. An `Analyst` element is never changed by discovery, verification or rerun.
+/// Who settled an element. Discovery, verification and rerun leave an `Analyst` element as it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DecidedBy {
