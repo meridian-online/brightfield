@@ -251,3 +251,27 @@ fn rejected_relationship_extras_with_non_string_keys_still_write() {
     assert_eq!(back.meta.rejected.len(), 1);
     assert!(back.meta.rejected[0].extras.contains_key("ai_context"));
 }
+
+#[test]
+fn live_relationship_extras_keep_their_key_types() {
+    let mut m = read(STAND_IN).unwrap();
+    let odd: serde_yaml::Value = serde_yaml::from_str("{1: one}").unwrap();
+    m.relationships[0]
+        .extras
+        .insert("ai_context".into(), odd.clone());
+    let back = read(&write(&m)).unwrap();
+    assert_eq!(back.relationships[0].extras["ai_context"], odd);
+}
+
+#[test]
+fn rejected_extras_with_non_finite_floats_survive_as_text() {
+    let mut m = read(STAND_IN).unwrap();
+    let mut r = m.relationships[0].clone();
+    let odd: serde_yaml::Value = serde_yaml::from_str("{a: .nan, b: -.inf}").unwrap();
+    r.extras.insert("ai_context".into(), odd);
+    m.meta.rejected.push(r);
+    let back = read(&write(&m)).unwrap();
+    let got = &back.meta.rejected[0].extras["ai_context"];
+    assert_eq!(got["a"], ".nan");
+    assert_eq!(got["b"], "-.inf");
+}

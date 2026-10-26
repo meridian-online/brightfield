@@ -419,7 +419,7 @@ fn relationship_from_wire(r: WireRelationship) -> Result<Relationship, Bad> {
 /// and a null would make the file unreadable.
 pub fn write(model: &Model) -> String {
     let mut meta = model.meta.clone();
-    meta.rejected = meta.rejected.iter().map(finite_relationship).collect();
+    meta.rejected = meta.rejected.iter().map(for_json).collect();
     let w = WireModel {
         version: OSSIE_VERSION.to_string(),
         name: model.name.clone(),
@@ -437,13 +437,20 @@ pub fn write(model: &Model) -> String {
     serde_yaml::to_string(&w).expect("a model serialises to YAML")
 }
 
-fn finite_relationship(r: &Relationship) -> Relationship {
-    let mut r = r.clone();
+/// A rejected relationship as it is stored: evidence clamped, and extras made
+/// JSON-safe, since the `rejected` list is a JSON string in the Meridian extension.
+fn for_json(r: &Relationship) -> Relationship {
+    let mut r = finite_relationship(r);
     r.extras = r
         .extras
         .into_iter()
         .map(|(k, v)| (k, string_keys(v)))
         .collect();
+    r
+}
+
+fn finite_relationship(r: &Relationship) -> Relationship {
+    let mut r = r.clone();
     let e = &mut r.meta.evidence;
     for v in [&mut e.value_overlap, &mut e.name_similarity] {
         if !v.is_finite() {
@@ -454,7 +461,8 @@ fn finite_relationship(r: &Relationship) -> Relationship {
 }
 
 /// `v` with every mapping key as a string (a non-string key becomes its YAML
-/// text), since the `rejected` list is stored as JSON, which has only string keys.
+/// text) and every non-finite float as its YAML text (`.nan`, `.inf`, `-.inf`),
+/// since JSON has neither non-string keys nor those floats.
 fn string_keys(v: serde_yaml::Value) -> serde_yaml::Value {
     use serde_yaml::Value;
     match v {
@@ -476,6 +484,19 @@ fn string_keys(v: serde_yaml::Value) -> serde_yaml::Value {
             tag: t.tag,
             value: string_keys(t.value),
         })),
+        Value::Number(n) if n.as_f64().is_some_and(|f| !f.is_finite()) => {
+            let f = n.as_f64().unwrap_or(0.0);
+            Value::String(
+                if f.is_nan() {
+                    ".nan"
+                } else if f > 0.0 {
+                    ".inf"
+                } else {
+                    "-.inf"
+                }
+                .to_string(),
+            )
+        }
         other => other,
     }
 }
