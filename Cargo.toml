@@ -80,6 +80,8 @@ serde_yaml = "0.9"
 sqlparser = { version = "0.61", features = ["visitor"] }
 thiserror = "2"
 vello = "0.9"
+# Reads one entry, a workbook's sheet list, out of an .xlsx; nothing else.
+zip = { version = "6", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 unused_must_use = "warn"
