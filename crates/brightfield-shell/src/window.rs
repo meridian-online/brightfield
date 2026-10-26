@@ -13783,6 +13783,17 @@ fn draw_model_pane(
         let mut cx = brightfield_workbench::ItemCtx::new(mode, key, tile, true, requests);
         pane.ui(doc, &mut body, &mut cx);
     }
+    // The file view's pause, on the frame clock: a read that changed the model draws again at
+    // once, and a pause still running draws again when it is out.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // seconds since start
+    let now_ms = (ui.input(|i| i.time) * 1000.0) as u64;
+    if doc.tick_file_edit(now_ms).is_some() {
+        ui.ctx().request_repaint();
+    }
+    if doc.file_edit_armed() {
+        let pause = std::time::Duration::from_millis(crate::model_pane::FILE_PAUSE_MS);
+        ui.ctx().request_repaint_after(pause);
+    }
 }
 
 /// [`draw_chart_pane`] **without the frame** — the body of a pane whose frame

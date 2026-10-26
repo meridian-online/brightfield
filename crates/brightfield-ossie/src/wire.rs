@@ -233,6 +233,31 @@ fn locate(yaml: &str, at: &At) -> (usize, usize) {
     found.map_or((0, 0), |(i, col)| (i + 1, col + 1))
 }
 
+/// An element of a document, by the names the document gives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Element<'a> {
+    /// A dataset, by name.
+    Dataset(&'a str),
+    /// A field, by its dataset's name and its own.
+    Field(&'a str, &'a str),
+    /// A relationship, by name.
+    Relationship(&'a str),
+}
+
+/// The 1-based line of `element`'s `name:` entry in `yaml`, or `None` when the text holds no
+/// such element.
+pub fn line_of(yaml: &str, element: Element<'_>) -> Option<usize> {
+    let at = match element {
+        Element::Dataset(d) => At::Dataset(d.to_string()),
+        Element::Field(d, f) => At::Field(d.to_string(), f.to_string()),
+        Element::Relationship(r) => At::Relationship(r.to_string()),
+    };
+    match locate(yaml, &at) {
+        (0, _) => None,
+        (line, _) => Some(line),
+    }
+}
+
 /// Parse a `model.ossie.yaml`. An element with no Meridian extension is read
 /// with default metadata (see the `default_*_meta` functions); the document's
 /// version is checked by [`crate::validate`], not here.

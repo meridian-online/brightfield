@@ -26,7 +26,7 @@ pub use model::{
     ModelMeta, Relationship, RelationshipMeta, Role, SkippedSource, Verified,
 };
 pub use validate::{validate, SchemaIssue};
-pub use wire::{read, write, ReadError};
+pub use wire::{line_of, read, write, Element, ReadError};
 
 /// The Ossie specification version this crate reads and writes.
 pub const OSSIE_VERSION: &str = "0.2.0.dev0";

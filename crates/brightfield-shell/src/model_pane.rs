@@ -24,6 +24,14 @@
 //! applies the edit, writes the file, rewrites silver and runs the Protocol before the next frame
 //! draws. A drag from one card to another on the diagram opens the add-join picker between them.
 //! What came of the last action stands in a status line under the summary.
+//!
+//! The file view is an editor over the Ossie file. Each pause in typing, [`FILE_PAUSE_MS`] after
+//! the last change, reads the text through [`crate::model_file::read_hand_edit`]: a text
+//! Brightfield reads goes through [`ModelPane::save_model`] as an action's model does, with what
+//! the edit changed marked as the analyst's; one it cannot read leaves the model standing and
+//! says why, at its line, under the editor. Under it too stands a warning for each thing the file
+//! holds that Brightfield does not act on. The window drives the pause with
+//! [`ModelPane::tick_file_edit`]. Shown with something selected, the file scrolls to it.
 
 use std::path::{Path, PathBuf};
 
@@ -44,6 +52,8 @@ use meridian_design::{semantic, spacing};
 use crate::canvas::EguiCanvasHost;
 use crate::design::Mode;
 use crate::discovery::MODEL_FILE;
+use crate::editor::Access;
+use crate::model_file::{self, Kept};
 use crate::model_inspector::{self, Inspected, InspectorDrawn, ModelAction, ModelPicker};
 use crate::own_files::{self, OwnProtocol};
 use crate::run::Runner;
@@ -65,6 +75,11 @@ const SHOW_VIEW: [(&str, ModelView); 3] = [
     ("show-model-file", ModelView::File),
 ];
 
+/// How long the file view's text must rest after an edit before it is read, in milliseconds: the
+/// shell's typing pause, [`crate::typed_sql::TYPED_PAUSE`].
+#[allow(clippy::cast_possible_truncation)] // 300 ms fits a u64
+pub const FILE_PAUSE_MS: u64 = crate::typed_sql::TYPED_PAUSE.as_millis() as u64;
+
 /// Which way the model is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModelView {
@@ -73,7 +88,7 @@ pub enum ModelView {
     Diagram,
     /// One row per table, grouped by role, with a gutter naming its joins.
     List,
-    /// The Ossie file as written.
+    /// The Ossie file, in an editor the analyst can change it in.
     File,
 }
 
@@ -166,6 +181,14 @@ pub struct ModelDrawn {
     pub list_lit: Vec<bool>,
     /// What the inspector drew, when something was selected.
     pub inspector: Option<InspectorDrawn>,
+    /// Where the file view's editor was laid out, when the file view was drawn.
+    pub file_editor: Option<egui::Rect>,
+    /// The line the file view scrolled to this frame, 1-based: the selection's, the first frame
+    /// the file view shows it.
+    pub file_scrolled_to: Option<usize>,
+    /// The lines under the file view's editor: why the last text could not be read, then each
+    /// warning.
+    pub file_notes: Vec<String>,
 }
 
 /// What the diagram's raster depends on: when any of it changes, the scene is drawn again.
@@ -191,6 +214,18 @@ pub struct ModelPane {
     layout: ModelLayout,
     /// The Ossie file's text, as it is on disk.
     file_text: String,
+    /// The file view's text, as the analyst is editing it.
+    file_draft: String,
+    /// The text the pause last read, so each text is read once.
+    file_read: String,
+    /// The draft as it stood when the pause was armed, and when the pause is out.
+    file_pause: Option<(String, u64)>,
+    /// Why the last text read did not become the model.
+    file_error: Option<String>,
+    /// What the file holds that Brightfield does not act on, written back with each save.
+    kept: Kept,
+    /// The selection the file view last scrolled to, while the file view shows.
+    file_scrolled_for: Option<Selection>,
     /// Bumped whenever the model changes, so the diagram is drawn again.
     generation: u64,
     raster: Option<(DiagramKey, egui::TextureId)>,
@@ -242,7 +277,13 @@ impl ModelPane {
             view: ModelView::default(),
             focus: ModelFocus::default(),
             runner,
+            file_draft: file_text.clone(),
+            file_read: file_text.clone(),
             file_text,
+            file_pause: None,
+            file_error: None,
+            kept: Kept::default(),
+            file_scrolled_for: None,
             generation: 0,
             raster: None,
             drawn: ModelDrawn::default(),
@@ -314,6 +355,91 @@ impl ModelPane {
     #[must_use]
     pub fn file_text(&self) -> &str {
         &self.file_text
+    }
+
+    /// The file view's text, as the analyst is editing it.
+    #[must_use]
+    pub fn file_draft(&self) -> &str {
+        &self.file_draft
+    }
+
+    /// Put `text` in the file view's editor, as typing there does. It is read once the pause
+    /// after it is out ([`Self::tick_file_edit`]).
+    pub fn set_file_draft(&mut self, text: String) {
+        self.file_draft = text;
+    }
+
+    /// Tick the file view's pause at `now_ms`: an edit since the last read arms it, a further
+    /// edit arms it again, and once the text has rested [`FILE_PAUSE_MS`] it is read. Answers
+    /// what came of a read when one was made: `Err` with why the text was refused or its run
+    /// failed, which [`Self::file_error`] then says too.
+    pub fn tick_file_edit(&mut self, now_ms: u64) -> Option<Result<(), String>> {
+        if self.file_draft == self.file_read {
+            self.file_pause = None;
+            return None;
+        }
+        match &self.file_pause {
+            Some((armed, due)) if *armed == self.file_draft && now_ms >= *due => {
+                self.file_pause = None;
+                Some(self.read_file_draft())
+            }
+            Some((armed, _)) if *armed == self.file_draft => None,
+            _ => {
+                self.file_pause = Some((self.file_draft.clone(), now_ms + FILE_PAUSE_MS));
+                None
+            }
+        }
+    }
+
+    /// Whether an edit in the file view is waiting out its pause, so the window draws again to
+    /// read it.
+    #[must_use]
+    pub fn file_edit_armed(&self) -> bool {
+        self.file_draft != self.file_read
+    }
+
+    /// Why the last text the file view read did not become the model: `Line 3: …`.
+    #[must_use]
+    pub fn file_error(&self) -> Option<&str> {
+        self.file_error.as_deref()
+    }
+
+    /// A line for each thing the file holds that Brightfield does not act on.
+    #[must_use]
+    pub fn file_warnings(&self) -> Vec<String> {
+        model_file::warnings(&self.model, &self.kept)
+    }
+
+    /// Read the file view's text and, when Brightfield reads it and it changes anything, save
+    /// it as the model.
+    fn read_file_draft(&mut self) -> Result<(), String> {
+        self.file_read = self.file_draft.clone();
+        let result = match model_file::read_hand_edit(&self.model, &self.file_draft) {
+            // Only the text's layout changed: nothing to write or run.
+            Ok(edit) if edit.model == self.model && edit.kept == self.kept => Ok(()),
+            Ok(edit) => {
+                let saved = self.save_with(edit.model, edit.kept);
+                self.let_go_of_what_is_gone();
+                saved
+            }
+            Err(e) => Err(e),
+        };
+        self.file_error = result.as_ref().err().cloned();
+        result
+    }
+
+    /// Let the selection go when the model no longer holds it.
+    fn let_go_of_what_is_gone(&mut self) {
+        let held = match &self.focus.selected {
+            Some(Selection::Dataset(name)) => self.model.datasets.iter().any(|d| d.name == *name),
+            Some(Selection::Relationship(name)) => {
+                self.model.relationships.iter().any(|r| r.name == *name)
+            }
+            None => true,
+        };
+        if !held {
+            self.focus.selected = None;
+        }
     }
 
     /// The diagram's layout, as last laid out from the model.
@@ -581,7 +707,9 @@ impl ModelPane {
     }
 
     /// Make `model` the Protocol's model: write it as the Ossie file, rewrite the silver steps
-    /// for it, and run the Protocol.
+    /// for it, and run the Protocol. What the file holds that Brightfield does not act on is
+    /// written back with it, while it still stands beside `model` ([`model_file::still_kept`]),
+    /// and the file view's text becomes the file's.
     ///
     /// The run executes only the steps whose SQL changed, which are the silver and failed-value
     /// steps: arc skips a step whose SQL file and inputs hash as they did after its last success,
@@ -595,12 +723,22 @@ impl ModelPane {
     /// The reason the file or the silver steps could not be written, or what arc printed when
     /// the run failed.
     pub fn save_model(&mut self, model: Model) -> Result<(), String> {
+        let kept = model_file::still_kept(&model, &self.kept);
+        self.save_with(model, kept)
+    }
+
+    fn save_with(&mut self, model: Model, kept: Kept) -> Result<(), String> {
         let path = self.protocol.dir.join(MODEL_FILE);
-        let text = brightfield_ossie::write(&model);
+        let text = model_file::written(&model, &kept);
         std::fs::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
         self.layout = brightfield_ossie::layout(&model);
         self.model = model;
+        self.kept = kept;
+        self.file_draft.clone_from(&text);
+        self.file_read.clone_from(&text);
         self.file_text = text;
+        self.file_pause = None;
+        self.file_error = None;
         self.generation += 1;
         own_files::write_silver(&self.protocol, &self.model)?;
         own_files::drop_unmade_silver(&self.protocol, &self.model)?;
@@ -705,6 +843,9 @@ impl ModelPane {
             None => area,
         };
         let mut view_ui = ui.new_child(egui::UiBuilder::new().max_rect(view_rect));
+        if self.view != ModelView::File {
+            self.file_scrolled_for = None;
+        }
         match self.view {
             ModelView::Diagram => self.diagram_ui(&mut view_ui, &mut drawn),
             ModelView::List => {
@@ -718,7 +859,7 @@ impl ModelPane {
                     self.focus.selected = selected;
                 }
             }
-            ModelView::File => file_ui(&mut view_ui, &self.file_text, primary, &mut drawn),
+            ModelView::File => self.file_ui(&mut view_ui, mode, &mut drawn),
         }
         if let Some((rect, inspected)) = inspector {
             let sem = semantic(mode.is_dark());
@@ -744,6 +885,61 @@ impl ModelPane {
         }
         ui.allocate_rect(area, egui::Sense::hover());
         self.drawn = drawn;
+    }
+
+    /// The file view: the Ossie file in the code editor, and under it why the last text could not
+    /// be read and what the file holds that Brightfield does not act on, a line each. The first
+    /// frame it shows a selection, it scrolls to the selection's `name:` line.
+    fn file_ui(&mut self, ui: &mut egui::Ui, mode: Mode, drawn: &mut ModelDrawn) {
+        let sem = semantic(mode.is_dark());
+        let danger = chrome::colour(sem.role(meridian_design::Role::Danger).foreground.base);
+        let warning = chrome::colour(sem.role(meridian_design::Role::Warning).foreground.base);
+        let notes: Vec<(String, egui::Color32)> = self
+            .file_error
+            .iter()
+            .map(|e| (e.clone(), danger))
+            .chain(self.file_warnings().into_iter().map(|w| (w, warning)))
+            .collect();
+        let area = ui.available_rect_before_wrap();
+        let note_h = ui.text_style_height(&egui::TextStyle::Body) + spacing::SPACE_1;
+        #[allow(clippy::cast_precision_loss)] // a handful of notes
+        let notes_h = note_h * notes.len() as f32;
+        let editor_rect = egui::Rect::from_min_max(
+            area.min,
+            egui::pos2(area.max.x, (area.max.y - notes_h).max(area.min.y)),
+        );
+        let scroll_to = match &self.focus.selected {
+            Some(selected) if self.file_scrolled_for.as_ref() != Some(selected) => {
+                model_file::selection_line(&self.file_draft, selected)
+            }
+            _ => None,
+        };
+        self.file_scrolled_for.clone_from(&self.focus.selected);
+        let mut editor_ui = ui.new_child(egui::UiBuilder::new().max_rect(editor_rect));
+        crate::editor::code_surface_at(
+            &mut editor_ui,
+            "model-file",
+            &mut self.file_draft,
+            Access::Editable,
+            mode,
+            scroll_to,
+        );
+        let painter = ui.painter();
+        for (i, (note, ink)) in notes.iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let y = editor_rect.bottom() + note_h * (i as f32 + 0.5);
+            painter.text(
+                egui::pos2(area.left(), y),
+                egui::Align2::LEFT_CENTER,
+                note,
+                crate::protocol::ui_font(),
+                *ink,
+            );
+        }
+        drawn.file_editor = Some(editor_rect);
+        drawn.file_scrolled_to = scroll_to;
+        drawn.file_notes = notes.into_iter().map(|(note, _)| note).collect();
+        drawn.body = self.file_draft.lines().map(str::to_string).collect();
     }
 
     fn diagram_ui(&mut self, ui: &mut egui::Ui, drawn: &mut ModelDrawn) {
@@ -1127,24 +1323,6 @@ fn edit_said(edit: &Edit) -> String {
             finetype,
         } => format!("{dataset}.{field} is now {finetype}"),
     }
-}
-
-/// The file view: the Ossie file as written, in the mono face. Read-only here.
-fn file_ui(ui: &mut egui::Ui, text: &str, primary: egui::Color32, drawn: &mut ModelDrawn) {
-    egui::ScrollArea::both()
-        .id_salt("model-file")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(text)
-                        .font(crate::protocol::mono_font())
-                        .color(primary),
-                )
-                .extend(),
-            );
-        });
-    drawn.body = text.lines().map(str::to_string).collect();
 }
 
 fn file_name(path: &Path) -> String {

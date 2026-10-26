@@ -110,6 +110,7 @@ pub mod housing;
 pub mod inspector;
 pub mod interval_drag;
 pub mod legend;
+pub mod model_file;
 pub mod model_inspector;
 pub mod model_pane;
 pub mod navigation;
