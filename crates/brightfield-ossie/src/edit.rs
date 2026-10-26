@@ -164,7 +164,7 @@ pub fn apply(model: &Model, edit: &Edit) -> Result<Model, EditError> {
             // Keep the join discovery found as a rejected one, so a rediscovery
             // doesn't add it back beside the corrected keys.
             let original = &m.relationships[at];
-            if original.meta.decided_by == DecidedBy::Dovetail && !same_join(original, &changed) {
+            if !same_join(original, &changed) {
                 let mut kept = original.clone();
                 kept.name = unique_name(&kept.name, &m.relationships, &m.meta.rejected);
                 kept.meta.decided_by = DecidedBy::Analyst;

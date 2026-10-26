@@ -421,7 +421,11 @@ fn change_keys_and_change_back() {
     let moved = change(&model(), &["x".to_string()], &["y".to_string()]);
     assert_eq!(moved.meta.rejected.len(), 1);
     let back = change(&moved, &original.from_columns, &original.to_columns);
-    assert!(back.meta.rejected.is_empty());
+    assert!(!back
+        .meta
+        .rejected
+        .iter()
+        .any(|r| r.from_columns == original.from_columns));
     let merged = merge_discovery(&back, &model());
     assert_eq!(
         merged
@@ -431,4 +435,51 @@ fn change_keys_and_change_back() {
             .count(),
         1
     );
+}
+
+#[test]
+fn keep_then_change_keys_then_merge() {
+    let kept = apply(
+        &model(),
+        &Edit::KeepJoin {
+            relationship: "transactions_customers".into(),
+        },
+    )
+    .unwrap();
+    let changed = apply(
+        &kept,
+        &Edit::ChangeKeys {
+            relationship: "transactions_customers".into(),
+            from_columns: vec!["x".into()],
+            to_columns: vec!["y".into()],
+        },
+    )
+    .unwrap();
+    let merged = merge_discovery(&changed, &model());
+    assert_eq!(
+        merged
+            .relationships
+            .iter()
+            .filter(|r| r.from == "transactions" && r.to == "customers")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn discovered_fold_keeps_its_join_after_an_edit() {
+    let current = apply(
+        &model(),
+        &Edit::SetRole {
+            dataset: "categories".into(),
+            role: Role::Reference,
+        },
+    )
+    .unwrap();
+    let mut proposed = model();
+    proposed
+        .relationships
+        .retain(|r| r.name != "products_categories");
+    let merged = merge_discovery(&current, &proposed);
+    assert!(rel(&merged, "products_categories").is_some());
 }

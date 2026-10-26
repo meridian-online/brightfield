@@ -58,6 +58,18 @@ pub fn merge_discovery(current: &Model, proposed: &Model) -> Model {
             relationships.push(added);
         }
     }
+    // A fold rests on a join; keep the one `current` has if discovery would leave none.
+    for d in &out.datasets {
+        let Some(host) = &d.meta.folded_into else {
+            continue;
+        };
+        let between = |r: &Relationship| {
+            (r.from == d.name && r.to == *host) || (r.from == *host && r.to == d.name)
+        };
+        if !relationships.iter().any(between) {
+            relationships.extend(current.relationships.iter().filter(|r| between(r)).cloned());
+        }
+    }
     out.relationships = relationships;
     out
 }
