@@ -482,3 +482,27 @@ fn a_superseded_full_pass_is_stopped_and_never_merged() {
     assert!(!pane.discovering());
     assert_eq!(role_of(&pane.model, "stores"), Role::Entity);
 }
+
+#[test]
+fn a_rediscover_whose_save_fails_still_runs_the_full_pass() {
+    // A Protocol folder with the retail model written, whose runner cannot run.
+    let root = retail_copy("failed-save");
+    let protocol = {
+        let _held = folder_lock();
+        own_files::create(&root).unwrap()
+    };
+    brightfield_shell::discovery::write_model_file(
+        &protocol.dir,
+        &brightfield_ossie::write(&retail_model()),
+    )
+    .unwrap();
+    let mut pane = ModelPane::open(protocol, Runner::at(scratch().join("no-such-runner")))
+        .expect("the model reads");
+
+    let (release, gate) = mpsc::channel();
+    let done = pane.rediscover(Gated::new(stores_as_reference(), gate));
+    assert!(matches!(done, Dispatched::Failed(_)), "{done:?}");
+    assert!(pane.discovering(), "the full pass runs after a failed save");
+    release.send(stores_as_reference()).unwrap();
+    assert!(pane.finish_discovery().is_some(), "the full pass lands");
+}

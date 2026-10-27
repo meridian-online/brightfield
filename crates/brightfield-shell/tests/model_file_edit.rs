@@ -20,6 +20,7 @@ use brightfield_render::model_scene::Selection;
 use brightfield_shell::data_file::{self, Opened};
 use brightfield_shell::design::Mode;
 use brightfield_shell::discovery::{Discovery, Pass};
+use brightfield_shell::model_inspector::ModelAction;
 use brightfield_shell::model_pane::{Dispatched, ModelPane, ModelView, FILE_PAUSE_MS};
 use brightfield_shell::own_files::OwnProtocol;
 use brightfield_shell::run::Runner;
@@ -387,6 +388,114 @@ fn a_dataset_deleted_by_hand_stays_left_out() {
     pane.start_full_pass(Proposes(retail_model()));
     assert!(pane.finish_discovery().is_some(), "the pass lands");
     assert!(left_out(&pane.model), "the pass did not bring it back");
+    assert!(left_out(&brightfield_ossie::read(&on_disk(&pane)).unwrap()));
+}
+
+#[test]
+fn a_table_the_analyst_decided_and_deleted_by_hand_stays_left_out() {
+    let (mut pane, _held) = opened();
+    let done = pane.dispatch(ModelAction::Edit(Edit::SetRole {
+        dataset: "promo_codes".into(),
+        role: Role::Reference,
+    }));
+    assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
+    let text = pane.file_text().to_string();
+    type_and_pause(&mut pane, cut_item(&text, "promo_codes"));
+    assert_eq!(pane.file_error(), None);
+
+    // A full pass that proposes it as a table of the model again.
+    pane.start_full_pass(Proposes(retail_model()));
+    assert!(pane.finish_discovery().is_some(), "the pass lands");
+    let disk = brightfield_ossie::read(&on_disk(&pane)).unwrap();
+    for model in [&pane.model, &disk] {
+        let d = model
+            .datasets
+            .iter()
+            .find(|d| d.name == "promo_codes")
+            .expect("the deleted table stays in the model");
+        assert!(d.meta.excluded, "the pass did not bring it back");
+        assert_eq!(d.meta.decided_by, DecidedBy::Analyst);
+    }
+}
+
+/// The file view's editor of `pane` given the keyboard, in the context answered.
+fn focus_editor(pane: &mut ModelPane) -> egui::Context {
+    let ctx = egui::Context::default();
+    pane.view = ModelView::File;
+    draw(&ctx, pane, Vec::new());
+    let at = pane.drawn().file_editor.expect("the editor drew").center();
+    draw(
+        &ctx,
+        pane,
+        vec![egui::Event::PointerMoved(at), button(at, true)],
+    );
+    draw(&ctx, pane, vec![button(at, false)]);
+    ctx
+}
+
+#[test]
+fn a_join_typed_then_deleted_under_a_focused_editor_is_gone() {
+    let (mut pane, _held) = opened();
+    let ctx = focus_editor(&mut pane);
+    let name = "loyalty_visits_customer_segments";
+    let typed = replaced(
+        pane.file_draft(),
+        "relationships:\n",
+        "relationships:\n- name: loyalty_visits_customer_segments\n  from: loyalty_visits\n  to: customer_segments\n  from_columns:\n  - customer_id\n  to_columns:\n  - customer_id\n",
+    );
+    type_and_pause(&mut pane, typed.clone());
+    draw(&ctx, &mut pane, Vec::new());
+    assert_eq!(pane.file_error(), None);
+    assert!(pane.model.relationships.iter().any(|r| r.name == name));
+    assert_eq!(pane.file_draft(), typed, "the editor keeps its text");
+
+    type_and_pause(&mut pane, cut_item(&typed, name));
+    assert_eq!(pane.file_error(), None);
+    let disk = brightfield_ossie::read(&on_disk(&pane)).unwrap();
+    for model in [&pane.model, &disk] {
+        assert!(
+            !model.relationships.iter().any(|r| r.name == name),
+            "the deletion took"
+        );
+        // Deleted by hand from text that held it, it is rejected as the analyst's.
+        assert!(model
+            .meta
+            .rejected
+            .iter()
+            .any(|r| r.name == name && r.meta.decided_by == DecidedBy::Analyst));
+    }
+}
+
+#[test]
+fn a_table_left_out_since_the_editors_text_stays_left_out() {
+    let (mut pane, _held) = opened();
+    let ctx = focus_editor(&mut pane);
+    let text = pane.file_draft().to_string();
+    type_and_pause(&mut pane, cut_item(&text, "promo_codes"));
+    draw(&ctx, &mut pane, Vec::new());
+    assert_eq!(pane.file_error(), None);
+    let left_out = |model: &Model| {
+        model
+            .datasets
+            .iter()
+            .any(|d| d.name == "promo_codes" && d.meta.excluded)
+    };
+    assert!(left_out(&pane.model));
+
+    // The editor's text, which it keeps, lacks the table the model now holds left out; an
+    // unrelated edit to it does not lose the table.
+    let draft = pane.file_draft().to_string();
+    assert!(!draft.contains("- name: promo_codes\n"));
+    type_and_pause(
+        &mut pane,
+        replaced(
+            &draft,
+            CUSTOMERS_ROLE,
+            &CUSTOMERS_ROLE.replace("entity", "reference"),
+        ),
+    );
+    assert_eq!(pane.file_error(), None);
+    assert!(left_out(&pane.model), "the table stays, left out");
     assert!(left_out(&brightfield_ossie::read(&on_disk(&pane)).unwrap()));
 }
 

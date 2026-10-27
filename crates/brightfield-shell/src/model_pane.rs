@@ -241,8 +241,8 @@ pub struct ModelPane {
     file_draft: String,
     /// The text the pause last read, so each text is read once.
     file_read: String,
-    /// The model the text the editor last took from disk holds: what a hand edit starts from, so
-    /// only what it held counts as deleted when the edit lacks it.
+    /// The model of the text a hand edit starts from: the one the editor last took from disk, or
+    /// its own text as last read, so only what that held counts as deleted when the edit lacks it.
     file_base: Model,
     /// The draft as it stood when the pause was armed, and when the pause is out.
     file_pause: Option<(String, u64)>,
@@ -495,11 +495,14 @@ impl ModelPane {
                     if edit.model == self.model
                         && edit.kept.relationships == self.kept.relationships =>
                 {
+                    self.file_base = edit.typed;
                     self.kept = edit.kept;
                     self.draft_refused = false;
                     Ok(())
                 }
                 Ok(edit) => {
+                    // The next edit of this text starts from it, as typed.
+                    self.file_base = edit.typed;
                     let saved = self.save_with(edit.model, edit.kept, true);
                     self.let_go_of_what_is_gone();
                     saved
@@ -785,7 +788,8 @@ impl ModelPane {
                 Ok(()) => Dispatched::Done(
                     "Discovered the model again from a sample, around what you decided".to_string(),
                 ),
-                Err(e) => return Dispatched::Failed(e),
+                // The full pass still runs: it folds into the model as the failed save left it.
+                Err(e) => Dispatched::Failed(e),
             }
         };
         self.full_pass = Some(FullPass::start(discovery, &self.protocol));

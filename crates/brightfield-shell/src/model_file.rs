@@ -9,14 +9,16 @@
 //! neither changes them nor is judged by them.
 //!
 //! What the edit deletes stays deleted when discovery runs again ([`hold_deletions`]). What counts
-//! as deleted is what the text the editor last took from disk held and the edited text does not;
-//! what the model gained since, from a discovery pass or a save, is kept as the model holds it,
-//! since the analyst never saw it to delete it. A relationship the edit removed goes into the model's rejected joins as the analyst's, as Drop
-//! does, unless the text still holds the same join under another name, which is a rename. A
-//! rejected join leaves the rejected list when a relationship of its name is in the model again,
-//! so a name typed through on the way to another is not held against it. A dataset the edit
-//! removed stays in the model, left out, as the analyst decided, so the diagram shows it left out
-//! and a later pass does not bring it back; one the analyst had only just made is simply gone.
+//! as deleted is what the text the edit started from held and the edited text does not: the text
+//! the editor last took from disk, or the editor's own text as last read, whichever came later.
+//! What the model gained since, from a discovery pass or a save, is kept as the model holds it,
+//! since the analyst never saw it to delete it. A relationship the edit removed goes into the
+//! model's rejected joins as the analyst's, as Drop does, unless the text still holds the same
+//! join under another name, which is a rename. A rejected join leaves the rejected list when a
+//! relationship of its name is in the model again, so a name typed through on the way to another
+//! is not held against it. A dataset the edit removed stays in the model, left out, as the
+//! analyst decided, whoever had decided it before, so the diagram shows it left out and a later
+//! pass does not bring it back.
 //!
 //! What the text names that Brightfield cannot act on is not refused. A relationship naming a
 //! table the model does not hold is set aside in [`Kept`]: left out of the model the diagram is
@@ -66,11 +68,13 @@ pub struct HandEdit {
     pub model: Model,
     /// What the file holds besides, written back with it.
     pub kept: Kept,
+    /// The model as the text itself holds it, relationships set aside included, before what it
+    /// deleted is held: what the next edit of the same text starts from.
+    pub typed: Model,
 }
 
 /// Read `text`, the Ossie file as the analyst edited it, against `current`, the model the pane
-/// holds, and `base`, the model the text the editor last took from disk held, which the edit
-/// started from.
+/// holds, and `base`, the model of the text the edit started from (see the module).
 ///
 /// # Errors
 ///
@@ -96,6 +100,7 @@ pub fn read_hand_edit(current: &Model, base: &Model, text: &str) -> Result<HandE
         }
     };
     let mut model = brightfield_ossie::read(&readable).map_err(|e| read_error(&e))?;
+    let typed = model.clone();
     let tables: Vec<String> = model.datasets.iter().map(|d| d.name.clone()).collect();
     let (acted, unjoined): (Vec<Relationship>, Vec<Relationship>) =
         std::mem::take(&mut model.relationships)
@@ -111,6 +116,7 @@ pub fn read_hand_edit(current: &Model, base: &Model, text: &str) -> Result<HandE
             relationships: unjoined,
             roles,
         },
+        typed,
     })
 }
 
@@ -421,8 +427,7 @@ fn hold_deletions(current: &Model, base: &Model, edited: &mut Model, set_aside: 
         }
         if !base.datasets.iter().any(|b| b.name == c.name) {
             edited.datasets.push(c.clone());
-        } else if c.meta.decided_by == DecidedBy::Dovetail || c.meta.excluded {
-            // A dataset of the analyst's own that was never left out is one no pass proposes.
+        } else {
             let mut left_out = c.clone();
             left_out.meta.excluded = true;
             left_out.meta.decided_by = DecidedBy::Analyst;
