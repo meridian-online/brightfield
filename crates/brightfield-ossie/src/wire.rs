@@ -260,7 +260,7 @@ pub fn line_of(yaml: &str, element: Element<'_>) -> Option<usize> {
 
 /// Parse a `model.ossie.yaml`. An element with no Meridian extension is read
 /// with default metadata (see the `default_*_meta` functions); the document's
-/// version is checked by [`crate::validate`], not here.
+/// version is checked by [`crate::validate()`], not here.
 pub fn read(yaml: &str) -> Result<Model, ReadError> {
     let w: WireModel = serde_yaml::from_str(yaml).map_err(|e| {
         let loc = e.location();

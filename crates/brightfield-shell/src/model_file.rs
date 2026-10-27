@@ -8,7 +8,7 @@
 //! relationship's evidence and warning are measured after each run, not decided: a hand edit
 //! neither changes them nor is judged by them.
 //!
-//! What the edit deletes stays deleted when discovery runs again ([`hold_deletions`]). What counts
+//! What the edit deletes stays deleted when discovery runs again (`hold_deletions`). What counts
 //! as deleted is what the text the edit started from held and the edited text does not: the text
 //! the editor last took from disk, or the editor's own text as last read, whichever came later.
 //! What the model gained since, from a discovery pass or a save, is kept as the model holds it,
