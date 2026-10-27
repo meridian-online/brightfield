@@ -36,9 +36,11 @@
 //!
 //! The file view is an editor over the Ossie file. Each pause in typing, [`FILE_PAUSE_MS`] after
 //! the last change, reads the text through [`crate::model_file::read_hand_edit`]: a text
-//! Brightfield reads goes through [`ModelPane::save_model`] as an action's model does, with what
-//! the edit changed marked as the analyst's; one it cannot read leaves the model standing and
-//! says why, at its line, under the editor. Under it too stands a warning for each thing the file
+//! Brightfield reads becomes the model, the diagram and the file, with what the edit changed
+//! marked as the analyst's; one it cannot read leaves the model standing and says why, at its
+//! line, under the editor. A pause neither rewrites silver nor runs the Protocol, since the text
+//! is still being typed: that happens once, when the editor lets go of the keyboard or the file
+//! view is left, as a save from an action would have done it. Under it too stands a warning for each thing the file
 //! holds that Brightfield does not act on. The window drives the pause with
 //! [`ModelPane::tick_file_edit`]. Shown with something selected, the file scrolls to it.
 //!
@@ -257,6 +259,9 @@ pub struct ModelPane {
     /// Whether the last text read was refused, so it stays in the editor until put right or
     /// discarded.
     draft_refused: bool,
+    /// Whether a text the editor read was written as the model without the Protocol run for it,
+    /// which happens once the editor lets go of the keyboard or the file view is left.
+    run_owed: bool,
     /// Bumped whenever the model changes, so the diagram is drawn again.
     generation: u64,
     raster: Option<(DiagramKey, egui::TextureId)>,
@@ -320,6 +325,7 @@ impl ModelPane {
             file_scrolled_for: None,
             file_focused: false,
             draft_refused: false,
+            run_owed: false,
             generation: 0,
             raster: None,
             drawn: ModelDrawn::default(),
@@ -418,8 +424,11 @@ impl ModelPane {
     /// failed, which [`Self::file_error`] then says too.
     ///
     /// An editor that has let go of the keyboard, with no refused edit in it, takes the file's
-    /// text here.
+    /// text here. A read writes the model and the file without running the Protocol for it while
+    /// the editor holds the keyboard in the file view; the run comes on the first tick after the
+    /// editor lets go or the file view is left, and its outcome is answered as a read's is.
     pub fn tick_file_edit(&mut self, now_ms: u64) -> Option<Result<(), String>> {
+        let ran = self.run_if_owed();
         if !self.file_focused
             && !self.draft_refused
             && self.file_draft == self.file_read
@@ -429,19 +438,40 @@ impl ModelPane {
         }
         if self.file_draft == self.file_read {
             self.file_pause = None;
-            return None;
+            return ran;
         }
         match &self.file_pause {
             Some((armed, due)) if *armed == self.file_draft && now_ms >= *due => {
                 self.file_pause = None;
-                Some(self.read_file_draft())
+                let read = self.read_file_draft();
+                Some(match (read, self.run_if_owed()) {
+                    (Ok(()), Some(run)) => run,
+                    (read, _) => read,
+                })
             }
-            Some((armed, _)) if *armed == self.file_draft => None,
+            Some((armed, _)) if *armed == self.file_draft => ran,
             _ => {
                 self.file_pause = Some((self.file_draft.clone(), now_ms + FILE_PAUSE_MS));
-                None
+                ran
             }
         }
+    }
+
+    /// Whether a text the editor read is the model without the Protocol having run for it yet.
+    #[must_use]
+    pub fn run_waiting(&self) -> bool {
+        self.run_owed
+    }
+
+    /// Run the Protocol for a model the editor's text made, once the editor no longer holds the
+    /// keyboard in the file view; `None` when no run is owed or the editor still holds it.
+    fn run_if_owed(&mut self) -> Option<Result<(), String>> {
+        if !self.run_owed || (self.file_focused && self.view == ModelView::File) {
+            return None;
+        }
+        let ran = self.run_silver(true);
+        self.file_error = ran.as_ref().err().cloned();
+        Some(ran)
     }
 
     /// Whether an edit in the file view is waiting out its pause, so the window draws again to
@@ -482,8 +512,9 @@ impl ModelPane {
         self.kept.roles.clear();
     }
 
-    /// Read the file view's text and, when Brightfield reads it and it changes anything, save
-    /// it as the model. The editor keeps the text as typed.
+    /// Read the file view's text and, when Brightfield reads it and it changes anything, make it
+    /// the model and write the file, with the Protocol's run owed ([`Self::run_if_owed`]). The
+    /// editor keeps the text as typed.
     fn read_file_draft(&mut self) -> Result<(), String> {
         self.file_read = self.file_draft.clone();
         self.file_pause = None;
@@ -516,7 +547,11 @@ impl ModelPane {
             Ok(edit) => {
                 // The next edit of this text starts from it, as typed.
                 self.file_base = edit.typed;
-                let saved = self.save_with(edit.model, edit.kept, true);
+                // The run waits until the typing is done ([`Self::run_if_owed`]).
+                let saved = self.write_model(edit.model, edit.kept, true);
+                if saved.is_ok() {
+                    self.run_owed = true;
+                }
                 self.let_go_of_what_is_gone();
                 saved
             }
@@ -966,6 +1001,15 @@ impl ModelPane {
     /// as it stands, to take the file's once the editor lets go of the keyboard.
     fn save_with(&mut self, model: Model, kept: Kept, from_editor: bool) -> Result<(), String> {
         self.write_model(model, kept, from_editor)?;
+        self.run_silver(from_editor)
+    }
+
+    /// Rewrite the silver steps for the pane's model, run the Protocol and measure the joins
+    /// again, as [`Self::save_model`] does after writing the file. A run the editor's text owed is
+    /// paid by it, whether it succeeds or not, so a failed run is said once and not retried each
+    /// frame.
+    fn run_silver(&mut self, from_editor: bool) -> Result<(), String> {
+        self.run_owed = false;
         own_files::write_silver(&self.protocol, &self.model)?;
         own_files::drop_unmade_silver(&self.protocol, &self.model)?;
         own_files::run_loads(&self.protocol, &self.runner)?;

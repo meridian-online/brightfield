@@ -796,10 +796,10 @@ fn an_applied_edit_leaves_the_focused_editor_as_typed() {
         "the focused editor keeps what was typed"
     );
 
-    // Let go of the keyboard, and the editor takes the file.
+    // Let go of the keyboard, and the Protocol runs for the edit and the editor takes the file.
     draw(&ctx, &mut pane, vec![key(egui::Key::Escape)]);
     draw(&ctx, &mut pane, Vec::new());
-    assert_eq!(pane.tick_file_edit(FILE_PAUSE_MS + 2), None);
+    assert_eq!(pane.tick_file_edit(FILE_PAUSE_MS + 2), Some(Ok(())));
     assert_eq!(pane.file_draft(), on_disk(&pane));
 }
 
@@ -1048,5 +1048,101 @@ fn typing_in_the_file_view_fires_no_reshape_key() {
     assert!(
         pane.file_draft().contains("yv"),
         "the letters went into the text"
+    );
+}
+
+/// promo_codes' Meridian entry, as it reads while the table is in the model.
+const PROMO_KEPT: &str =
+    r#""excluded":false,"decided_by":"dovetail","source_file":"promo_codes.csv""#;
+
+/// Whether the Protocol's manifest has a silver step for promo_codes.
+fn promo_silver_step(pane: &ModelPane) -> bool {
+    std::fs::read_to_string(pane.protocol.dir.join("arcform.yaml"))
+        .unwrap()
+        .contains("silver_promo_codes")
+}
+
+/// Whether the Protocol's database holds promo_codes' silver table.
+fn promo_silver_table(pane: &ModelPane) -> bool {
+    let tables = brightfield_shell::model_inspector::query(
+        &pane.protocol.dir,
+        "SELECT table_name FROM duckdb_tables() WHERE table_name = 'promo_codes'",
+    )
+    .expect("the run's database reads");
+    !tables.rows.is_empty()
+}
+
+/// promo_codes left out by typing in the focused editor, and the pause let pass: the model, the
+/// diagram and the file take it, and nothing has run.
+fn leave_promo_out_by_typing(pane: &mut ModelPane) -> egui::Context {
+    assert!(promo_silver_step(pane) && promo_silver_table(pane));
+    let ctx = focus_editor(pane);
+    let cards = pane.layout().cards.len();
+    let typed = replaced(
+        pane.file_draft(),
+        PROMO_KEPT,
+        &PROMO_KEPT.replace("false", "true"),
+    );
+    type_and_pause(pane, typed);
+    draw(&ctx, pane, Vec::new());
+    assert_eq!(pane.file_error(), None);
+    assert!(pane
+        .model
+        .datasets
+        .iter()
+        .any(|d| d.name == "promo_codes" && d.meta.excluded));
+    assert_eq!(brightfield_ossie::read(&on_disk(pane)).unwrap(), pane.model);
+    assert_ne!(pane.layout().cards.len(), cards, "the diagram follows");
+    assert!(pane.run_waiting());
+    // Further ticks under the focused editor run nothing.
+    assert_eq!(pane.tick_file_edit(FILE_PAUSE_MS * 3), None);
+    assert!(
+        promo_silver_step(pane),
+        "the silver steps are not rewritten during a pause"
+    );
+    assert!(
+        promo_silver_table(pane),
+        "the Protocol is not run during a pause"
+    );
+    ctx
+}
+
+#[test]
+fn a_typing_pause_runs_nothing_until_the_editor_lets_go() {
+    let (mut pane, _held) = opened();
+    let ctx = leave_promo_out_by_typing(&mut pane);
+
+    // Let go of the keyboard, and the next tick runs the Protocol once.
+    draw(&ctx, &mut pane, vec![key(egui::Key::Escape)]);
+    draw(&ctx, &mut pane, Vec::new());
+    assert_eq!(pane.tick_file_edit(FILE_PAUSE_MS * 4), Some(Ok(())));
+    assert!(!pane.run_waiting());
+    assert!(
+        !promo_silver_step(&pane),
+        "the silver steps are the model's"
+    );
+    assert!(
+        !promo_silver_table(&pane),
+        "the run dropped the left-out table"
+    );
+    assert_eq!(pane.tick_file_edit(FILE_PAUSE_MS * 5), None, "it runs once");
+}
+
+#[test]
+fn a_typing_pause_runs_once_the_file_view_is_left() {
+    let (mut pane, _held) = opened();
+    let ctx = leave_promo_out_by_typing(&mut pane);
+
+    pane.view = ModelView::Diagram;
+    draw(&ctx, &mut pane, Vec::new());
+    assert_eq!(pane.tick_file_edit(FILE_PAUSE_MS * 4), Some(Ok(())));
+    assert!(!pane.run_waiting());
+    assert!(
+        !promo_silver_step(&pane),
+        "the silver steps are the model's"
+    );
+    assert!(
+        !promo_silver_table(&pane),
+        "the run dropped the left-out table"
     );
 }
