@@ -227,7 +227,7 @@ fn preview_runs_on_retail() {
         [
             "Verified on the full data",
             "Sample only",
-            "Not measured: the join was written by hand"
+            "Added by hand: no discovery pass has verified it"
         ]
         .contains(&details.verified.as_str()),
         "{}",

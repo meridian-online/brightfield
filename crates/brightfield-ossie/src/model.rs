@@ -133,7 +133,8 @@ pub enum DecidedBy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Verified {
-    /// Nothing was measured: the join was written by hand, so its evidence is zeroed, not found.
+    /// No discovery pass has verified the join: it was added by hand. Its evidence is what
+    /// Brightfield measured over the silver tables since, or empty where nothing could be measured.
     Unmeasured,
     Sample,
     Full,

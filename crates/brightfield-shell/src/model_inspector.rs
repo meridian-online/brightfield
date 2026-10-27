@@ -821,7 +821,7 @@ pub fn verified_line(verified: Verified) -> &'static str {
     match verified {
         Verified::Full => "Verified on the full data",
         Verified::Sample => "Sample only",
-        Verified::Unmeasured => "Not measured: the join was written by hand",
+        Verified::Unmeasured => "Added by hand: no discovery pass has verified it",
     }
 }
 
