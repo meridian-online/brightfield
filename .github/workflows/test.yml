@@ -68,8 +68,10 @@ jobs:
     # 39890740575: 22.9 compiling the workspace's tests, 5.5 the sibling-
     # manifest graph, 3.8 reclaiming disk and 1.3 saving the cache. It runs
     # once per lockfile, so the shards' ceiling remains the one that catches
-    # a slow test.
-    timeout-minutes: 50
+    # a slow test. Run 40451777135, the first lockfile with the Ossie model's
+    # crates, restored a partial cache and was still compiling the workspace's
+    # tests 43.3 minutes in when 50 cancelled it, after 4.6 reclaiming disk.
+    timeout-minutes: 80
     steps:
       - uses: actions/checkout@v4
 
