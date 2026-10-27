@@ -1146,3 +1146,48 @@ fn a_typing_pause_runs_once_the_file_view_is_left() {
         "the run dropped the left-out table"
     );
 }
+
+/// How many of customers' `name` values the inspector says failed to cast.
+fn name_failures(pane: &mut ModelPane) -> u64 {
+    let Some(brightfield_shell::model_inspector::Inspected::Table(details)) =
+        pane.inspected().cloned()
+    else {
+        panic!("a table's inspector");
+    };
+    details
+        .columns
+        .iter()
+        .find(|c| c.name == "name")
+        .expect("customers has a name")
+        .failed
+}
+
+#[test]
+fn the_inspector_reads_the_run_a_hand_edit_owed() {
+    let (mut pane, _held) = opened();
+    pane.focus.selected = Some(Selection::Dataset("customers".into()));
+    assert_eq!(name_failures(&mut pane), 0, "names cast as they are");
+    let ctx = focus_editor(&mut pane);
+
+    // Read as whole numbers, every name fails. The pause reads the text without running anything,
+    // and the inspector draws before the run.
+    let typed = replaced(
+        pane.file_draft(),
+        "  - name: name\n    expression:\n      sql: name\n    custom_extensions:\n    - vendor_name: MERIDIAN\n      data: '{\"decided_by\":\"dovetail\"}'\n  - name: email",
+        "  - name: name\n    expression:\n      sql: name\n    datatype: Integer\n    custom_extensions:\n    - vendor_name: MERIDIAN\n      data: '{\"finetype\":\"representation.numeric.integer_number\",\"decided_by\":\"dovetail\"}'\n  - name: email",
+    );
+    type_and_pause(&mut pane, typed);
+    draw(&ctx, &mut pane, Vec::new());
+    assert_eq!(pane.file_error(), None);
+    assert!(pane.run_waiting());
+    assert_eq!(name_failures(&mut pane), 0, "nothing has run yet");
+
+    // Letting go of the editor pays the owed run, and the inspector shows its result.
+    draw(&ctx, &mut pane, vec![key(egui::Key::Escape)]);
+    draw(&ctx, &mut pane, Vec::new());
+    assert_eq!(pane.tick_file_edit(FILE_PAUSE_MS * 4), Some(Ok(())));
+    assert!(
+        name_failures(&mut pane) > 0,
+        "the inspector reads the database the run wrote"
+    );
+}

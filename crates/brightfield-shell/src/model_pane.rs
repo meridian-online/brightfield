@@ -1013,6 +1013,9 @@ impl ModelPane {
         own_files::write_silver(&self.protocol, &self.model)?;
         own_files::drop_unmade_silver(&self.protocol, &self.model)?;
         own_files::run_loads(&self.protocol, &self.runner)?;
+        // The inspector's cache is keyed by the model, and a run changes the database under an
+        // unchanged model: a typing pause writes the model first and the run follows it.
+        self.inspected = None;
         self.reverify(from_editor)
     }
 
