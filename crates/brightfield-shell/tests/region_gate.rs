@@ -365,6 +365,7 @@ fn a_protocol_and_a_chart() -> Boot {
         panels: None,
         panels_problem: None,
         open_panel: None,
+        open_later: None,
     }
 }
 

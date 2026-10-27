@@ -972,10 +972,13 @@ pub fn fit_window_to_display(ctx: &egui::Context, natural: (f32, f32)) -> Displa
 // ---------------------------------------------------------------------------
 
 /// Whether `chosen` names a file this build opens as **data** rather than
-/// reads as a document.
+/// reads as a document: a folder, or a file by its extension.
 ///
-/// By extension alone, and deliberately: this decides which of two loaders
-/// gets the path, and it has to decide before either has touched the file.
+/// By whether it is a folder and otherwise by extension alone, and
+/// deliberately: this decides which loader gets the path, and it has to
+/// decide before any has touched the file. [`Boot::open_sampled`] then sends
+/// a single flat file to [`crate::data_file::open`] and a folder, workbook or
+/// database file to the front door's own open on the window's first frame.
 /// Everything that could make a plausible-looking path unopenable — a URL
 /// scheme, glob syntax in the name, a control character, a file that is not
 /// there — is [`crate::data_file::accept`]'s to refuse, with a sentence naming
@@ -1268,6 +1271,12 @@ pub struct Boot {
     /// the boot of such a start, so a relaunch that remembers it, and the
     /// card thumbnail drawn through it, show the screen the click lands on.
     pub open_panel: Option<usize>,
+    /// A path the window opens on its first frame, through the front door's own open
+    /// ([`MeridianApp::open_path`]'s), because that open needs the window: a folder, a
+    /// workbook, a database file or an own-files Protocol named on the command line, which open
+    /// as a model of their tables or onto the grid. Set with the boot otherwise empty, so the
+    /// first frame draws the door and the open replaces it.
+    pub open_later: Option<String>,
 }
 
 impl Boot {
@@ -1288,6 +1297,7 @@ impl Boot {
             panels: None,
             panels_problem: None,
             open_panel: None,
+            open_later: None,
         }
     }
 
@@ -1308,6 +1318,7 @@ impl Boot {
             panels: None,
             panels_problem: None,
             open_panel: None,
+            open_later: None,
         }
     }
 
@@ -1353,6 +1364,7 @@ impl Boot {
             panels: None,
             panels_problem: None,
             open_panel: None,
+            open_later: None,
         }
     }
 
@@ -1684,13 +1696,16 @@ impl Boot {
     /// had to agree about an environment gate, a window size and a summary line
     /// that neither shared.
     ///
-    /// Four outcomes, in the order they are decided. A **data file** goes
-    /// first and by extension alone — see [`names_a_data_file`] — because the
-    /// other three are classified by reading the file as text and a Parquet is
-    /// not text. Then a **one-step Protocol**, which is a manifest whose single
-    /// step is a local read of a data file this build opens: it resolves to
-    /// that file and takes the data-file route, so the declaration is read to
-    /// find the file and then discarded rather than rendered (see
+    /// Four outcomes, in the order they are decided, after an own-files
+    /// Protocol, which opens into the model pane on the window's first frame.
+    /// A **data file** goes first, as a folder or by extension alone — see
+    /// [`names_a_data_file`] — because the other three are classified by
+    /// reading the file as text and a Parquet is not text. A single flat file
+    /// opens here; a folder, workbook or database file opens on the window's
+    /// first frame, as the door's Open… opens it. Then a **one-step
+    /// Protocol**, which is a manifest whose single step is a local read of a
+    /// data file this build opens: it resolves to that file and takes the
+    /// data-file route, so the declaration is read to find the file and then discarded rather than rendered (see
     /// [`crate::one_step::data_file_named_by`], and
     /// [`crate::protocol::run_less_manifest_refusal`] for why that is not a
     /// hole in the gate below). Then any other **Protocol manifest**, behind
@@ -1727,6 +1742,27 @@ impl Boot {
         focus: Option<String>,
         sample: Option<SampleRate>,
     ) -> Result<Self, String> {
+        // An own-files Protocol, or a folder, workbook or database file, opens through the front
+        // door's own open once the window exists: it runs its Protocol with the window's runner,
+        // and may land in the model pane, which only a window holds.
+        let own = crate::own_files::own_protocol_dir(std::path::Path::new(spec));
+        let path = std::path::Path::new(spec);
+        let not_flat = path.is_dir() || !crate::data_file::is_flat_name(path);
+        if own.is_some() || (names_a_data_file(spec) && not_flat) {
+            if sample.is_some() {
+                return Err(format!(
+                    "{spec}: a sample rate is pushed into a plot's own query, and a folder, \
+                     workbook or database opens as tables with no authored plot to push it into. \
+                     Open it without the flag."
+                ));
+            }
+            return Ok(Self {
+                open_later: Some(
+                    own.map_or_else(|| spec.to_string(), |d| d.to_string_lossy().into_owned()),
+                ),
+                ..Self::empty()
+            });
+        }
         if names_a_data_file(spec) {
             if sample.is_some() {
                 return Err(format!(
@@ -2973,6 +3009,7 @@ impl MeridianApp {
     ) -> Self {
         let opened_id = boot.opened_id.clone();
         let open_panel = boot.open_panel;
+        let open_later = boot.open_later;
         let tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         let mut doc = ChartDoc::new(boot.composed, chart_host);
         if let Some(live) = boot.live {
@@ -2997,6 +3034,7 @@ impl MeridianApp {
         if let Some(index) = open_panel {
             app.open_panel_with_grid(index);
         }
+        app.pending_open = open_later;
         app
     }
 
@@ -3025,6 +3063,7 @@ impl MeridianApp {
     pub fn headless_with_layout(boot: Boot, layout: SavedLayout, mode: Mode) -> Self {
         let opened_id = boot.opened_id.clone();
         let open_panel = boot.open_panel;
+        let open_later = boot.open_later;
         let tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         let mut doc = ChartDoc::headless(boot.composed);
         if let Some(live) = boot.live {
@@ -3049,6 +3088,7 @@ impl MeridianApp {
         if let Some(index) = open_panel {
             app.open_panel_with_grid(index);
         }
+        app.pending_open = open_later;
         app
     }
 
@@ -9411,6 +9451,9 @@ impl MeridianApp {
     fn adopt_boot(&mut self, boot: Boot) {
         self.landing = None;
         let open_panel = boot.open_panel;
+        if boot.open_later.is_some() {
+            self.pending_open = boot.open_later;
+        }
         self.tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         // The model pane belongs to the own-files Protocol it was opened for, and a different
         // document is arriving. `open_model_pane` and `open_model_in_grid` put it back after.
@@ -9553,12 +9596,31 @@ impl MeridianApp {
             self.open_data_file(ctx, chosen);
             return;
         };
+        if let Some(dir) = crate::own_files::own_protocol_dir(std::path::Path::new(chosen)) {
+            self.reopen_model_pane(ctx, &dir, runner);
+            return;
+        }
         match crate::data_file::open_any(std::path::Path::new(chosen), &runner) {
             Ok(crate::data_file::Opened::OneTable(opened)) => self.adopt_opened_file(ctx, opened),
             Ok(crate::data_file::Opened::Model(protocol)) => {
-                self.open_model_pane(ctx, protocol, runner);
+                self.open_model_pane(ctx, protocol, runner, true);
             }
             Err(e) => self.say_open_failed(ctx, chosen, e),
+        }
+    }
+
+    /// Open the own-files Protocol in `dir` again into the model pane, with the model its folder
+    /// holds: the Protocol is run for that model ([`crate::own_files::reopen`]) and its joins are
+    /// measured again as the pane opens. No folder is made, and no discovery pass runs.
+    fn reopen_model_pane(
+        &mut self,
+        ctx: &egui::Context,
+        dir: &std::path::Path,
+        runner: crate::run::Runner,
+    ) {
+        match crate::own_files::reopen(dir, &runner) {
+            Ok(protocol) => self.open_model_pane(ctx, protocol, runner, false),
+            Err(e) => self.say_open_failed(ctx, &dir.to_string_lossy(), e),
         }
     }
 
@@ -9570,18 +9632,22 @@ impl MeridianApp {
 
     /// Open the model pane over an own-files Protocol, in place of whatever the window held: both
     /// documents are emptied and the pane takes the canvas. `runner` is the one the open ran the
-    /// Protocol with, and the pane runs it again when the model is saved.
+    /// Protocol with, and the pane runs it again when the model is saved. `full_pass` starts
+    /// discovery's full pass, for a model the open has just found from the sample.
     fn open_model_pane(
         &mut self,
         ctx: &egui::Context,
         protocol: crate::own_files::OwnProtocol,
         runner: crate::run::Runner,
+        full_pass: bool,
     ) {
         let dir = protocol.dir.clone();
         let doc = match crate::model_pane::ModelPane::open(protocol, runner) {
             Ok(mut doc) => {
                 // The open wrote the sample pass's model; the full pass lands while it shows.
-                doc.start_full_pass(crate::discovery::StandIn);
+                if full_pass {
+                    doc.start_full_pass(crate::discovery::StandIn);
+                }
                 doc
             }
             Err(e) => {
@@ -10786,6 +10852,18 @@ impl MeridianApp {
     /// banner and changes nothing, exactly as a data file that will not read
     /// does.
     pub fn open_protocol_path(&mut self, ctx: &egui::Context, path: &str) {
+        // An own-files Protocol opens into the model pane over the model its folder holds.
+        if let Some(dir) = crate::own_files::own_protocol_dir(std::path::Path::new(path)) {
+            match self.runner.clone().or_else(crate::run::Runner::this_binary) {
+                Some(runner) => self.reopen_model_pane(ctx, &dir, runner),
+                None => self.say_open_failed(
+                    ctx,
+                    path,
+                    "no runner to run its Protocol with".to_string(),
+                ),
+            }
+            return;
+        }
         let banner = NotificationId::new("open-protocol");
         let boot = match Boot::open(path, self.protocol.doc.model.flow(), None) {
             Ok(boot) => boot,
@@ -10886,7 +10964,7 @@ impl MeridianApp {
         // build can reopen. A recent naming a start this binary no longer
         // ships would draw a row whose click does nothing, which is worse
         // than a shorter list.
-        let recents: Vec<Recent> = self
+        let mut recents: Vec<Recent> = self
             .layout
             .live()
             .recents
@@ -10894,6 +10972,15 @@ impl MeridianApp {
             .filter(|r| reopenable(&r.id))
             .cloned()
             .collect();
+        // The Protocols made from the analyst's own files, after the recents, each reopening
+        // into the model pane over the model its folder holds.
+        for dir in crate::own_files::listed() {
+            let id = remembered_id(&dir.join(arc::spec::MANIFEST_FILENAME).to_string_lossy());
+            if recents.iter().any(|r| r.id == id) {
+                continue;
+            }
+            recents.push(own_protocol_recent(&dir, id));
+        }
         let now = now_secs();
         let mut open_help = false;
         let mut open_file = false;
@@ -10956,10 +11043,13 @@ impl MeridianApp {
                         // you open a file and the picture is already there.
                         // This control is the pointing route to that promise
                         // and `names_a_data_file` is the typed one; both end in
-                        // `data_file::open` and neither is the other's
-                        // shorthand. It is deliberately NOT a `Request::Open`,
-                        // because that carries a `&'static str` start id and a
-                        // file the user chose is neither static nor a start.
+                        // `data_file::open_any` for anything but a single flat
+                        // file, which the typed route opens with
+                        // `data_file::open` directly, and neither is the
+                        // other's shorthand. It is deliberately NOT a
+                        // `Request::Open`, because that carries a `&'static
+                        // str` start id and a file the user chose is neither
+                        // static nor a start.
                         door_zone_heading(ui, "Start", sem);
                         let open = ui.button(egui::RichText::new("Open…").font(ui_font()));
                         self.door_open_file = Some(open.rect);
@@ -12115,6 +12205,31 @@ fn canvas_occupants(region: &Region) -> (&'static [Projection], ItemId) {
             "{} is drawn as the canvas but declared {other:?}",
             region.id
         ),
+    }
+}
+
+/// The front door's row for the own-files Protocol in `dir`, under `id`: named for its folder,
+/// fresh once it has a database, and opened when its model file last changed.
+fn own_protocol_recent(dir: &std::path::Path, id: String) -> Recent {
+    let ran = arc::spec::protocol_db_path(dir).is_ok_and(|db| db.is_file());
+    let opened_at = std::fs::metadata(dir.join(crate::discovery::MODEL_FILE))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs());
+    Recent {
+        id,
+        name: dir
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+        run: if ran {
+            RunState::Fresh
+        } else {
+            RunState::NeverRun
+        },
+        grid_layout: Default::default(),
+        grid_spot: Default::default(),
+        opened_at,
     }
 }
 

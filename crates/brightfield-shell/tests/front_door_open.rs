@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 
 use brightfield_shell::data_file::{self, Opened};
 use brightfield_shell::run::Runner;
-use brightfield_shell::window::names_a_data_file;
+use brightfield_shell::window::{names_a_data_file, Boot};
 
 fn scratch() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -128,7 +128,7 @@ fn a_file_named_as_another_tables_raw_or_failed_table_still_opens() {
 }
 
 #[test]
-fn workbook_opens_a_model() {
+fn single_sheet_workbook_opens_one_table() {
     // A workbook needs the excel extension and an authoring path; the fixture is written by
     // DuckDB itself.
     let dir = input("workbook");
@@ -138,7 +138,8 @@ fn workbook_opens_a_model() {
         .execute_batch("INSTALL excel; LOAD excel;")
         .and_then(|()| {
             conn.execute_batch(&format!(
-                "COPY (SELECT 1 AS id, 'a' AS name) TO '{}' (FORMAT xlsx, SHEET 'People'); ",
+                "COPY (SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c')) t(id, name)) \
+                 TO '{}' (FORMAT xlsx, SHEET 'People'); ",
                 book.display()
             ))
         })
@@ -147,11 +148,36 @@ fn workbook_opens_a_model() {
         eprintln!("skipped: the excel extension is not available here");
         return;
     }
-    let Opened::Model(p) = data_file::open_any(&book, &runner()).expect("a workbook opens") else {
-        panic!("a workbook is a model");
-    };
-    assert_eq!(p.sources.tables.len(), 1);
-    assert!(p.dir.join("model.ossie.yaml").is_file());
+    match data_file::open_any(&book, &runner()).expect("a workbook opens") {
+        Opened::OneTable(opened) => {
+            assert!(!opened.dashboard.tiles().is_empty());
+            // The sheet's rows, without the lineage the load gave them.
+            let columns: Vec<String> = opened
+                .dashboard
+                .tiles()
+                .iter()
+                .map(|t| t.column().to_string())
+                .collect();
+            assert!(
+                !columns.iter().any(|c| c.starts_with("__source")),
+                "{columns:?}"
+            );
+        }
+        Opened::Model(_) => panic!("a workbook of one sheet opens on the grid, not as a model"),
+    }
+}
+
+#[test]
+fn single_table_database_opens_one_table() {
+    let path = database(
+        "duck-one",
+        "one.duckdb",
+        "CREATE TABLE readings AS SELECT * FROM (VALUES (1, 2.5), (2, 3.5), (3, 4.5)) t(id, reading);",
+    );
+    match data_file::open_any(&path, &runner()).expect("a duckdb file opens") {
+        Opened::OneTable(opened) => assert!(!opened.dashboard.tiles().is_empty()),
+        Opened::Model(_) => panic!("a database of one table opens on the grid, not as a model"),
+    }
 }
 
 #[test]
@@ -212,6 +238,34 @@ fn typed_path_to_folder_is_recognised() {
     assert!(names_a_data_file(&dir.to_string_lossy()));
     assert!(names_a_data_file("/tmp/no-such-book.XLSX"));
     assert!(data_file::accept(&dir.to_string_lossy()).is_ok());
+}
+
+#[test]
+fn a_typed_folder_or_workbook_waits_for_the_window_and_a_flat_file_does_not() {
+    let flow = brightfield_protocol::layout::Flow::Vertical;
+    let dir = csv_folder("typed-route");
+    // A folder, workbook or database opens through the door's own open on the window's first
+    // frame, not through the flat-file route, which refuses them.
+    for typed in [
+        dir.to_string_lossy().into_owned(),
+        "/tmp/bf-no-such-book.xlsx".to_string(),
+        "/tmp/bf-no-such-shop.sqlite".to_string(),
+    ] {
+        let boot = Boot::open(&typed, flow, None).expect("it waits for the window");
+        assert_eq!(boot.open_later.as_deref(), Some(typed.as_str()));
+        assert!(
+            boot.live.is_none(),
+            "{typed}: nothing is opened before the window"
+        );
+    }
+    let csv = input("typed-flat").join("readings.csv");
+    std::fs::write(&csv, READINGS).unwrap();
+    let boot = Boot::open(&csv.to_string_lossy(), flow, None).expect("a csv opens");
+    assert_eq!(boot.open_later, None);
+    assert!(
+        boot.live.is_some(),
+        "a flat file opens at once, as it always has"
+    );
 }
 
 #[test]

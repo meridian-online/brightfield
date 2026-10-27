@@ -472,3 +472,141 @@ fn save_model_writes_the_file_and_reruns_only_the_silver_steps() {
         );
     }
 }
+
+fn button(at: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+impl Window {
+    /// A window booted as a launch naming `typed` would be, given its first frame.
+    fn typed(typed: &str) -> Self {
+        scratch();
+        let boot = Boot::open(typed, brightfield_protocol::layout::Flow::Vertical, None)
+            .expect("the typed path is one the window opens");
+        let mut win = Self {
+            app: MeridianApp::headless(boot, Mode::Light).running_with(Some(runner())),
+            ctx: egui::Context::default(),
+        };
+        win.frame(Vec::new());
+        win
+    }
+
+    fn click(&mut self, at: egui::Pos2) {
+        self.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
+        self.frame(vec![button(at, false)]);
+    }
+
+    /// Leave a table of the model out, as the inspector's button does, and answer which.
+    fn leave_out_a_table(&mut self) -> (String, brightfield_ossie::Model) {
+        let name = self.pane().model.datasets[0].name.clone();
+        self.app.perform_model_action(
+            &self.ctx,
+            brightfield_shell::model_inspector::ModelAction::LeaveOut(name.clone()),
+        );
+        let model = self.pane().model.clone();
+        assert!(
+            model
+                .datasets
+                .iter()
+                .any(|d| d.name == name && d.meta.excluded),
+            "the table is left out"
+        );
+        (name, model)
+    }
+}
+
+#[test]
+fn a_typed_folder_opens_into_the_model_pane() {
+    let win = Window::typed(&fixture().to_string_lossy());
+    let pane = win
+        .app
+        .model_pane()
+        .expect("the folder opens into the model pane");
+    assert_eq!(pane.protocol.sources.tables.len(), 3);
+}
+
+#[test]
+fn a_reshaped_model_reopens_from_the_door() {
+    let mut win = Window::over_fixture();
+    let dir = win.pane().protocol.dir.clone();
+    let (left_out, reshaped) = win.leave_out_a_table();
+
+    // Home, and the door lists the Protocol among the analyst's own.
+    win.frame(Vec::new());
+    let home = win
+        .app
+        .home_rect()
+        .expect("the bar draws Home over the model pane");
+    win.click(home.center());
+    assert!(win.app.model_pane().is_none(), "Home leaves the model pane");
+    win.frame(Vec::new());
+    let id = dir.join("arcform.yaml").to_string_lossy().into_owned();
+    let row = win
+        .app
+        .front_door_rows()
+        .iter()
+        .find(|r| r.id == id)
+        .unwrap_or_else(|| {
+            panic!(
+                "the door lists no row for {id}: {:?}",
+                win.app.front_door_rows()
+            )
+        })
+        .id
+        .clone();
+
+    // The row's click opens its id through `open_protocol_path`. The other tests here make
+    // Protocol folders while this one runs, and each new one moves the rows, so the open is taken
+    // by the row's id rather than by a click at where the row stood a frame ago.
+    win.app.open_protocol_path(&win.ctx, &row);
+    win.frame(Vec::new());
+    let pane = win
+        .app
+        .model_pane()
+        .expect("the row reopens the model pane");
+    assert_eq!(pane.protocol.dir, dir, "the same folder, not a new one");
+    assert_eq!(pane.model, reshaped, "the reshaped model is shown");
+    assert!(pane
+        .model
+        .datasets
+        .iter()
+        .any(|d| d.name == left_out && d.meta.excluded));
+    assert_eq!(pane.protocol.sources.tables.len(), 3);
+}
+
+#[test]
+fn a_typed_own_files_protocol_reopens_its_model() {
+    let mut win = Window::over_fixture();
+    let dir = win.pane().protocol.dir.clone();
+    let (left_out, reshaped) = win.leave_out_a_table();
+    drop(win);
+
+    for typed in [dir.clone(), dir.join("arcform.yaml")] {
+        let win = Window::typed(&typed.to_string_lossy());
+        let pane = win
+            .app
+            .model_pane()
+            .unwrap_or_else(|| panic!("{} opens into the model pane", typed.display()));
+        assert_eq!(pane.protocol.dir, dir, "the same folder, not a new one");
+        assert_eq!(pane.model, reshaped, "the reshaped model is shown");
+        // The Protocol's steps are the model's: the left-out table has no silver step.
+        let manifest = std::fs::read_to_string(dir.join("arcform.yaml")).unwrap();
+        assert!(manifest.contains("load_"), "{manifest}");
+        let step = format!("silver_{left_out}");
+        assert!(
+            !manifest.lines().any(|l| l
+                .trim_end()
+                .trim_end_matches('\'')
+                .ends_with(&format!(" {step}"))
+                || l.trim_end()
+                    .trim_end_matches('\'')
+                    .ends_with(&format!("'{step}"))),
+            "{manifest}"
+        );
+    }
+}

@@ -955,7 +955,10 @@ pub enum Opened {
 /// Open `path` (a file, a folder, a workbook or a database file) as whatever it holds.
 ///
 /// A path whose tables come to exactly one flat file takes today's route, [`open`], unchanged.
-/// Anything else takes the own-files flow: the Protocol is made and run, the raw tables are
+/// One sheet of a workbook or one table of a database lands where a flat file does too, on its
+/// grid and dashboard: its Protocol is made and run as below, with no model written, and the
+/// silver table is opened through [`open`] from a Parquet copy in the Protocol folder. Anything
+/// else takes the own-files flow: the Protocol is made and run, the raw tables are
 /// profiled, a model is discovered from the sample pass and written beside the Protocol, and the
 /// silver steps for it are run. The full pass is the model pane's to run once it opens
 /// ([`crate::model_pane::ModelPane::start_full_pass`]), so the first model shows without waiting
@@ -968,11 +971,13 @@ pub enum Opened {
 pub fn open_any(path: &Path, runner: &crate::run::Runner) -> Result<Opened, String> {
     let path = accept(&path.to_string_lossy())?;
     let found = brightfield_engine::sources::discover(&path)?;
-    if let [table] = found.tables.as_slice() {
-        if is_flat_name(&table.file) {
+    let one_part = match found.tables.as_slice() {
+        [table] if is_flat_name(&table.file) => {
             return open(&table.file.to_string_lossy()).map(Opened::OneTable);
         }
-    }
+        [table] => Some(table.name.clone()),
+        _ => None,
+    };
 
     use crate::own_files as own;
     let mut protocol = own::create(&path)?;
@@ -980,10 +985,20 @@ pub fn open_any(path: &Path, runner: &crate::run::Runner) -> Result<Opened, Stri
     own::profile(&mut protocol)?;
     own::write_packages(&protocol)?;
     let model = crate::discovery::sample_pass(&crate::discovery::StandIn, &protocol, None)?;
-    crate::discovery::write_model_file(&protocol.dir, &brightfield_ossie::write(&model))?;
+    // A single table has nothing to relate, so no model is written for it, and its folder is not
+    // one the door lists as an own-files Protocol.
+    if one_part.is_none() {
+        crate::discovery::write_model_file(&protocol.dir, &brightfield_ossie::write(&model))?;
+    }
     own::write_silver(&protocol, &model)?;
     own::run_loads(&protocol, runner)?;
-    Ok(Opened::Model(protocol))
+    match one_part {
+        Some(name) => {
+            let rows = own::grid_copy(&protocol, &name)?;
+            open(&rows.to_string_lossy()).map(Opened::OneTable)
+        }
+        None => Ok(Opened::Model(protocol)),
+    }
 }
 
 /// The DuckDB extensions opening `path` is likely to need, judged from its name or, for a folder,

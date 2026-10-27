@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 
-use brightfield_engine::sources::{self, SourceSet, SourceTable};
+use brightfield_engine::sources::{self, Reader, SourceSet, SourceTable};
 use brightfield_engine::{ColumnProfile, Engine, LoadOptions, ProfileOutcome, SourceProfile};
 // The lineage columns every raw table carries describe where a row came from, not what it holds,
 // so neither the profile nor the data packages list them.
@@ -25,6 +25,7 @@ use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
 use serde_json::{json, Value};
 
+use crate::discovery::MODEL_FILE;
 use crate::run::{Finished, Run, Runner};
 use crate::starts;
 
@@ -34,6 +35,10 @@ pub const OWN_DIR: &str = "own";
 
 /// Where the raw tables' Parquet snapshots are kept inside the Protocol folder.
 const PROFILE_DIR: &str = ".profile";
+
+/// The file in the Protocol folder recording the tables the open found and the files it passed
+/// over, so the folder can be opened again ([`reopen`]) without finding them afresh.
+const SOURCES_FILE: &str = ".sources.json";
 
 /// The name prefixes of the silver steps and the files holding their SQL.
 const SILVER_STEP: &str = "silver_";
@@ -97,6 +102,7 @@ pub fn create(opened: &Path) -> Result<OwnProtocol, String> {
     }
     let path = dir.join("arcform.yaml");
     std::fs::write(&path, manifest).map_err(|e| format!("{}: {e}", path.display()))?;
+    write_sources(&dir, &sources)?;
     Ok(OwnProtocol {
         dir,
         sources,
@@ -485,6 +491,173 @@ fn relative_to(target_path: &Path, base: &Path) -> Result<String, String> {
         out.push(c);
     }
     Ok(out.to_string_lossy().replace('\\', "/"))
+}
+
+/// The own-files Protocol folder `path` names, when it names one: the folder itself or its
+/// `arcform.yaml`, with a model file beside the manifest.
+#[must_use]
+pub fn own_protocol_dir(path: &Path) -> Option<PathBuf> {
+    let dir = if path.is_dir() {
+        path
+    } else if path.file_name().is_some_and(|n| n == "arcform.yaml") {
+        path.parent()?
+    } else {
+        return None;
+    };
+    (dir.join("arcform.yaml").is_file() && dir.join(MODEL_FILE).is_file())
+        .then(|| std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()))
+}
+
+/// The own-files Protocol folders under `<datasets>/protocols/own/`, the most recently changed
+/// model first.
+#[must_use]
+pub fn listed() -> Vec<PathBuf> {
+    let parent = starts::datasets_dir().join("protocols").join(OWN_DIR);
+    let Ok(entries) = std::fs::read_dir(&parent) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| own_protocol_dir(&e.path()))
+        .map(|dir| {
+            let changed = std::fs::metadata(dir.join(MODEL_FILE))
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            (changed, dir)
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    found.into_iter().map(|(_, dir)| dir).collect()
+}
+
+/// Open the own-files Protocol in `dir` again, as it was left: the tables its open recorded,
+/// the silver steps written for the model its folder holds, the Protocol run, and the raw tables
+/// profiled. The run makes again only what has changed or is missing, since arc skips a step
+/// whose SQL and inputs are as they were after its last success.
+///
+/// # Errors
+///
+/// The reason when the folder holds no record of its tables or no model Brightfield reads, a
+/// step cannot be written, the run fails, or the raw tables cannot be profiled.
+pub fn reopen(dir: &Path, runner: &Runner) -> Result<OwnProtocol, String> {
+    let sources = read_sources(dir)?;
+    let model_path = dir.join(MODEL_FILE);
+    let text = std::fs::read_to_string(&model_path)
+        .map_err(|e| format!("{}: {e}", model_path.display()))?;
+    let model =
+        brightfield_ossie::read(&text).map_err(|e| format!("{}: {e}", model_path.display()))?;
+    let mut p = OwnProtocol {
+        dir: dir.to_path_buf(),
+        sources,
+        profiles: Vec::new(),
+    };
+    write_silver(&p, &model)?;
+    drop_unmade_silver(&p, &model)?;
+    run_loads(&p, runner)?;
+    profile(&mut p)?;
+    Ok(p)
+}
+
+/// Copy the silver table `name` to a Parquet file in the Protocol folder, its lineage columns
+/// left out, and answer the file: the rows of a single sheet or database table, for the grid.
+///
+/// # Errors
+///
+/// The reason when the Protocol has not been run or the copy fails.
+pub fn grid_copy(p: &OwnProtocol, name: &str) -> Result<PathBuf, String> {
+    crate::model_inspector::snapshot(
+        &p.dir,
+        name,
+        &format!(
+            "SELECT * EXCLUDE ({}) FROM {}",
+            LINEAGE.join(", "),
+            quoted(name)
+        ),
+    )
+}
+
+/// Record `set` in the Protocol folder `dir`, for [`reopen`].
+fn write_sources(dir: &Path, set: &SourceSet) -> Result<(), String> {
+    let tables: Vec<Value> = set
+        .tables
+        .iter()
+        .map(|t| {
+            json!({
+                "name": t.name,
+                "file": t.file.to_string_lossy(),
+                "part": t.part,
+                "schema": t.schema,
+                "reader": reader_name(t.reader),
+            })
+        })
+        .collect();
+    let skipped: Vec<Value> = set
+        .skipped
+        .iter()
+        .map(|(path, reason)| json!({ "path": path.to_string_lossy(), "reason": reason }))
+        .collect();
+    let text = serde_json::to_string_pretty(&json!({ "tables": tables, "skipped": skipped }))
+        .map_err(|e| e.to_string())?;
+    let path = dir.join(SOURCES_FILE);
+    std::fs::write(&path, text + "\n").map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The tables and skipped files [`write_sources`] recorded in `dir`.
+fn read_sources(dir: &Path) -> Result<SourceSet, String> {
+    let path = dir.join(SOURCES_FILE);
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        format!(
+            "{}: {e}; this folder records no tables, so open the files it was made from instead",
+            path.display()
+        )
+    })?;
+    let bad = |what: &str| format!("{}: {what}", path.display());
+    let value: Value = serde_json::from_str(&text).map_err(|e| bad(&e.to_string()))?;
+    let text_of = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).map(str::to_string);
+    let mut set = SourceSet::default();
+    for t in value["tables"].as_array().ok_or_else(|| bad("no tables"))? {
+        let reader = text_of(t, "reader")
+            .as_deref()
+            .and_then(reader_named)
+            .ok_or_else(|| bad("a table with no reader Brightfield knows"))?;
+        set.tables.push(SourceTable {
+            name: text_of(t, "name").ok_or_else(|| bad("a table with no name"))?,
+            file: PathBuf::from(text_of(t, "file").ok_or_else(|| bad("a table with no file"))?),
+            part: text_of(t, "part"),
+            schema: text_of(t, "schema"),
+            reader,
+        });
+    }
+    for s in value["skipped"].as_array().into_iter().flatten() {
+        if let (Some(path), Some(reason)) = (text_of(s, "path"), text_of(s, "reason")) {
+            set.skipped.push((PathBuf::from(path), reason));
+        }
+    }
+    Ok(set)
+}
+
+fn reader_name(reader: Reader) -> &'static str {
+    match reader {
+        Reader::Csv => "csv",
+        Reader::Tsv => "tsv",
+        Reader::Parquet => "parquet",
+        Reader::XlsxSheet => "xlsx_sheet",
+        Reader::SqliteTable => "sqlite_table",
+        Reader::DuckdbTable => "duckdb_table",
+    }
+}
+
+fn reader_named(name: &str) -> Option<Reader> {
+    [
+        Reader::Csv,
+        Reader::Tsv,
+        Reader::Parquet,
+        Reader::XlsxSheet,
+        Reader::SqliteTable,
+        Reader::DuckdbTable,
+    ]
+    .into_iter()
+    .find(|r| reader_name(*r) == name)
 }
 
 /// The opened path's stem, kept to characters a folder name and an arc Protocol name are safe

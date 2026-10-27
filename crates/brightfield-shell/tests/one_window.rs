@@ -177,6 +177,7 @@ fn both() -> Boot {
         panels: None,
         panels_problem: None,
         open_panel: None,
+        open_later: None,
     }
 }
 
