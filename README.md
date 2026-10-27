@@ -66,6 +66,7 @@ The live window and the headless shot both run on the egui/wgpu stack. macOS (Me
 - **Multi-view composition** — `hconcat`, `vconcat`, `hspace`, `vspace` arrange plots, inputs, and legends into dashboards
 - **Query optimisation** — automatic pre-aggregation at pixel resolution, M4 downsampling for line/area marks, result caching, priority queuing. Interaction cost stops tracking row count *where a summary can be pre-computed*: 0.5–3.6 ms per gesture at ten million rows on an aggregating mark, against 65–80 ms without one. [What makes an interaction fast](docs/interaction-speed.md) sets out when you get that and when you do not
 - **Direct data loading** — Parquet, CSV, JSON, inline data, and DuckDB database files
+- **An analyst's own files as a model** — a folder of CSV, TSV or Parquet files, an Excel workbook, or a DuckDB or SQLite database opens with each table typed by FineType and cleaned through FineType's casts, and the tables drawn as an [Apache Ossie](https://github.com/apache/ossie) model the analyst reshapes
 - **Single native binary** — no webview, no HTTP server, no runtime dependencies beyond system graphics drivers
 
 ## Architecture
@@ -142,6 +143,39 @@ With nothing open, the window shows the front door. Its Datasets row offers six 
 The first five are shipped Protocols: the arc Protocol folders under [`examples/starts/`](examples/starts/), each holding a manifest, a load step, a saved schema, one panel, and a `datapackage.json` naming the source and its terms, compiled into the binary. Taking one writes its folder to `datasets/protocols/v<revision>/<id>` beside Brightfield's layout file, runs it with Brightfield's own arc runner when it has no successful run there yet, and opens its panel beside its grid, where an analyst's own run of the same Protocol would land. While the run is going the canvas says so, naming what it fetches and from where. A later click, or a relaunch that remembers the start, opens the run already there with no network. A failed run leaves no database, so the next click runs the Protocol again. A build that changes a folder raises its revision and writes the new folder beside the old one, which stays, since the reader may have saved edits there.
 
 **A filter typed in the grid reaches the charts.** A dashboard's grid takes part in its crossfilter both ways: a brush narrows the grid, and a condition typed in the grid narrows every chart that reads the selection, while a grey layer that shows the whole table stays whole.
+
+### An analyst's own files
+
+The front door's Open… takes a single file or a folder. A single CSV, TSV or Parquet file opens on its grid and dashboard as it always has. A folder of them, an Excel workbook or a DuckDB or SQLite database file is written as an arc Protocol that loads every table, and opens on the model pane. One sheet of a workbook or one table of a database opens on its grid like a single file, through the same Protocol.
+
+**What is read.** A folder is read at its top level only, with no recursion. It takes `csv`, `tsv`, `parquet`, `xlsx`, `duckdb`, `db` and `sqlite` files. A file it cannot read (a `notes.txt`, a corrupt CSV, an empty sheet) is passed over with its reason, which the model pane's header names, and the open goes on with the rest. Each table is named after its file, its file and sheet, or its database table, and two that would share a name get `_2`, `_3` in path order. What DuckDB can read, DuckDB reads: rows come from `read_csv`, `read_parquet`, the `excel` extension's `read_xlsx` and the `sqlite` extension, in SQL a Protocol step records, so the transformation can be rerun and traced. Those two extensions download the first time they are needed, and the canvas names the one it is fetching. DuckDB's `excel` extension cannot list a workbook's sheets, so only the sheet names are read with the `calamine` crate.
+
+**Lineage to the row.** Every loaded and cleaned table starts with three columns: `__source_file`, `__source_part` (the sheet or database table, NULL for a flat file) and `__source_row`, the 1-based data row. A bad value in the model points at the line of the extract it came from.
+
+**The Protocol folder.** It is made in Brightfield's data directory under `datasets/protocols/own/<name>-<n>/`, beside the starts' Protocols, and reads the analyst's files where they are. It holds:
+
+- `arcform.yaml`, with a `load_<table>` step per table (`models/01_load_<table>.sql`, making `raw_<table>`) and a silver and a failed-values step per table kept in the model (`models/02_silver_<table>.sql`, `models/02_failed_<table>.sql`);
+- `packages/<source>/datapackage.json`, a Frictionless 2.0 data package per source file, each field carrying its FineType label;
+- `model.ossie.yaml`, the model;
+- `.sources.json`, the tables the open found and the files it passed over, so the folder reopens without finding them again.
+
+**Silver tables.** Each table kept in the model is cast column by column through its FineType label's transformation contract, the `transform` expression `finetype validate` applies, wrapped in `TRY`; a label with no transform falls back to `TRY_CAST` to its DuckDB type, and a VARCHAR or unlabelled column passes through. A value the cast turns to NULL is kept, with its lineage and raw text, in `<table>__failed`. A reference table folded into another is joined into it, its columns prefixed with its name. The transforms are vendored from FineType's label definitions at the pinned tag (`scripts/vendor-finetype-transforms.sh`), and the `finetype-pin` gate step refuses the table when its tag is not the bundle's pin.
+
+**The model.** `brightfield-ossie`, a crate with no UI or DuckDB dependency, reads, writes and validates the Ossie document (version `0.2.0.dev0`, checked against the Ossie JSON Schema vendored at a recorded commit). Ossie's core has datasets, fields and relationships. Meridian's additions ride in `custom_extensions` entries under the `MERIDIAN` vendor name: each table's role (entity, event, reference, bridge, snapshot or unclear), each join's grade (likely or possible) and evidence, folds, tables left out, and who decided each element, the discoverer or the analyst. An element the analyst decided is never changed by discovery, verification or a rerun.
+
+**The model pane.** One model, shown three ways, with one inspector. `v` steps through them, and `1`, `2` and `3` pick one:
+
+- the diagram, with each table a card banded by its role (events on the left, entities on the right, the rest below) and each join an edge labelled with its keys and cardinality, possible joins dashed;
+- the list, each table a row grouped by role with the joins routed in a gutter on its left;
+- the Ossie file, editable as text. A save redraws the picture; a save that breaks the YAML or the schema leaves the last good model on screen and shows the error at its line.
+
+Selecting a card or an edge dims what is not connected to it. The inspector shows a join's keys, grade and evidence with a preview of its joined rows on a sample, and a table's role, columns with their FineType types, what was folded into it and its failed values.
+
+**Reshaping.** Each change is a verb in the keyboard registry, reached by key or the Space palette, and rewrites the Ossie file, the silver steps, and reruns the Protocol: keep a possible join (`y`), drop a join (`shift-d`), add one (`shift-a`, or drag one card onto another, which opens the picker with keys guessed from a shared column name), change a join's keys (`shift-c`), set a table's role (`r`), fold a reference into the table it labels (`z`) or unfold it (`shift-z`), leave a table out (`shift-x`) or bring it back (`i`), and retype a column (`shift-t`).
+
+**Rerun and Rediscover.** After each run, and when the pane opens over a Protocol already run, each join's evidence is measured again on the silver tables, and a join the data no longer bears out carries a warning on its pill and in the inspector; the model is not restructured. Rediscover (`shift-r`) proposes afresh around the analyst's decisions.
+
+**Discovery.** Proposing roles and joins runs in two passes: a quick one over a sample, whose model the pane opens on, and a full one on a worker, folded into the model as it stands when it lands, edits made in the meantime included. A pass that a newer one supersedes is stopped. A discoverer run as a child process writes its proposal to `.discovery/<pass>.ossie.yaml`, and Brightfield alone writes `model.ossie.yaml`. Until [dovetail](https://github.com/meridian-online/dovetail) is built in as that child, the discoverer returns the model already in the folder, or lists each table as unclear with no joins: an opened folder or workbook shows its tables with no proposed joins, and the analyst adds the joins by hand.
 
 ### Chart versions
 
