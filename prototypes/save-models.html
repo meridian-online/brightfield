@@ -1,0 +1,1265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Save models prototype</title>
+<!--
+  PROTOTYPE — throwaway. One file, no dependencies, nothing touches disk.
+  It asks one question: does either of two save models feel right for
+  opening and saving in Brightfield? The logic lives in the SaveModels
+  module (pure, no DOM); the page below it is a thin shell.
+-->
+<style>
+:root {
+  --bg: #f4f3f0;
+  --surface: #ffffff;
+  --surface-2: #f8f7f5;
+  --ink: #1c1d1f;
+  --ink-2: #55585e;
+  --ink-3: #5f636a;
+  --line: #e3e1dc;
+  --line-2: #d4d1ca;
+  --accent: #1f6f8b;
+  --accent-ink: #ffffff;
+  --accent-soft: #e3f0f4;
+  --warn: #9a5b00;
+  --warn-soft: #fbf0dd;
+  --changed: #fff5c2;
+  --shadow: 0 1px 2px rgba(20, 20, 20, .06), 0 8px 24px rgba(20, 20, 20, .08);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #17181a; --surface: #202225; --surface-2: #26282c; --ink: #ecebe8; --ink-2: #b3b5ba; --ink-3: #9a9da3;
+    --line: #33363b; --line-2: #3f434a; --accent: #6cb6cf; --accent-ink: #0d1b20; --accent-soft: #1d3138;
+    --warn: #e7b062; --warn-soft: #3a2d18; --changed: #3d3714; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+::selection { background: var(--accent-soft); color: var(--ink); }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.page { max-width: 1320px; margin: 0 auto; padding: 28px 24px 64px; }
+
+header.top h1 { font-size: 26px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -0.02em; text-wrap: balance; }
+header.top p { margin: 0; color: var(--ink-2); max-width: 72ch; }
+.howto { margin-top: 10px; color: var(--ink-2); max-width: 80ch; font-size: 14px; }
+.howto b { color: var(--ink); }
+
+.switch { margin: 22px 0 6px; display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+.switch .label { font-weight: 600; }
+.seg { display: inline-flex; background: var(--surface); border: 1px solid var(--line-2); border-radius: 10px; padding: 3px; }
+.seg button { border: 0; background: none; padding: 7px 14px; border-radius: 7px; cursor: pointer; color: var(--ink-2); font-weight: 500; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.model-desc { color: var(--ink-2); max-width: 90ch; margin: 4px 0 0; font-size: 14px; }
+.model-desc b { color: var(--ink); }
+.replayed { font-size: 13px; color: var(--accent); margin-top: 4px; min-height: 1.2em; }
+
+nav.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 22px 0 0; border-bottom: 1px solid var(--line-2); }
+nav.tabs button { border: 0; background: none; padding: 9px 12px; cursor: pointer; color: var(--ink-2); border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 500; }
+nav.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+
+.scenario { padding: 14px 0 16px; border-bottom: 1px solid var(--line); }
+.scenario .blurb { margin: 0 0 4px; max-width: 80ch; }
+.scenario .watch { margin: 0; max-width: 80ch; }
+.scenario .watch b, .scenario .today b { color: var(--ink); }
+.scenario .today { margin: 0; color: var(--ink-2); font-size: 14px; max-width: 62ch; }
+ol.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+ol.steps li { counter-increment: step; display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: start; padding: 3px 0; color: var(--ink-3); }
+ol.steps li::before { content: counter(step); width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line-2); font-size: 12px; display: grid; place-items: center; margin-top: 4px; }
+ol.steps li.done { color: var(--ink-2); }
+ol.steps li.done::before { content: "✓"; background: var(--surface-2); }
+ol.steps li.current { color: var(--ink); }
+ol.steps li.current::before { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+ol.steps li.skipped { color: var(--ink-3); font-style: italic; }
+ol.steps li.skipped::before { content: "–"; }
+ol.steps .step-btn { text-align: left; border: 1px solid transparent; background: none; padding: 4px 8px; border-radius: 7px; cursor: default; }
+ol.steps li.current .step-btn { background: var(--accent); color: var(--accent-ink); cursor: pointer; font-weight: 600; }
+ol.steps li.current .step-btn:hover { filter: brightness(1.08); }
+ol.steps li.current .wait { padding: 4px 8px; border-radius: 7px; background: var(--warn-soft); color: var(--ink); display: inline-block; }
+ol.steps .wait { padding: 4px 8px; display: inline-block; }
+.steps-foot { display: flex; gap: 10px; align-items: center; margin-top: 10px; font-size: 14px; color: var(--ink-2); }
+.linkish { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+
+main.stage { display: grid; grid-template-columns: 250px minmax(0, 1.4fr) minmax(0, 1fr); gap: 22px; margin-top: 18px; align-items: start; }
+.steps-col { position: sticky; top: 12px; }
+.steps-col h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-3); margin: 0 0 8px; font-weight: 600; }
+.replayed:not(:empty) { background: var(--accent-soft); color: var(--ink); padding: 8px 12px; border-radius: 8px; margin-top: 10px; font-size: 14px; }
+.today-d { margin-top: 6px; font-size: 14px; color: var(--ink-2); max-width: 70ch; }
+.today-d summary { cursor: pointer; color: var(--ink-3); }
+.today-d p { margin: 4px 0 0; }
+
+/* the mock window */
+.win { background: var(--surface); border: 0; border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; position: relative; min-height: 520px; display: flex; flex-direction: column; }
+.titlebar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--surface-2); border-bottom: 1px solid var(--line); }
+.lights { display: flex; gap: 6px; }
+.lights i { width: 11px; height: 11px; border-radius: 50%; background: var(--line-2); display: block; }
+.titlebar .title { flex: 1; text-align: center; font-weight: 600; font-size: 13px; }
+.titlebar .title .edited { color: var(--warn); font-weight: 500; }
+.titlebar .title .kept { color: var(--ink-3); font-weight: 400; }
+.app-actions { display: flex; gap: 6px; }
+.btn { border: 1px solid var(--line-2); background: var(--surface); padding: 5px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+.btn:hover { background: var(--surface-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn kbd { font: 11px/1 -apple-system, system-ui, sans-serif; color: inherit; opacity: .7; margin-left: 4px; }
+.btn.cue { box-shadow: 0 0 0 2px var(--accent); }
+
+.door { padding: 22px 22px 26px; flex: 1; }
+.door h2 { margin: 0 0 4px; font-size: 20px; letter-spacing: -0.02em; }
+.door .sub { margin: 0 0 16px; color: var(--ink-2); font-size: 14px; }
+.door .opens { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+.door h3, .door-mini h3 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-3); margin: 16px 0 6px; }
+.rows { display: flex; flex-direction: column; gap: 6px; }
+.row { display: grid; grid-template-columns: 1fr auto; gap: 4px 14px; text-align: left; border: 1px solid var(--line); background: var(--surface); border-radius: 9px; padding: 10px 12px; cursor: pointer; width: 100%; }
+.row:hover { border-color: var(--accent); }
+.row.static { cursor: default; }
+.row.static:hover { border-color: var(--line); }
+.row .name { font-weight: 600; }
+.row .where { color: var(--ink-3); font-size: 13px; grid-column: 1; }
+.row .meta { color: var(--ink-2); font-size: 13px; grid-column: 1; }
+.row .run { grid-column: 2; grid-row: 1 / span 3; align-self: center; font-size: 13px; padding: 3px 8px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--line); white-space: nowrap; }
+.row .run.ran { background: var(--accent-soft); border-color: transparent; }
+.row .run.never { background: var(--warn-soft); border-color: transparent; }
+.empty { color: var(--ink-3); font-size: 14px; padding: 10px 0; }
+
+.doc { display: flex; flex-direction: column; flex: 1; }
+.locator { padding: 8px 14px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--ink-2); display: flex; gap: 8px; flex-wrap: wrap; }
+.locator b { color: var(--ink); font-weight: 600; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.toolbar .sep { width: 1px; background: var(--line); margin: 0 2px; }
+.doc-body { display: grid; grid-template-columns: 210px 1fr; flex: 1; min-height: 0; }
+.spine { border-right: 1px solid var(--line); padding: 12px; }
+.spine h4, .grid h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-3); font-weight: 600; }
+.spine ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.spine li { font-size: 13px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); }
+.spine li .tag { display: block; font-size: 11px; color: var(--warn); }
+.spine li .tag.ok { color: var(--ink-3); }
+.grid { padding: 12px; overflow-x: auto; }
+.grid table { border-collapse: collapse; font-size: 13px; width: 100%; }
+.grid th, .grid td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.grid th { color: var(--ink-3); font-weight: 600; }
+.grid td.num { text-align: right; }
+.grid .count { font-size: 12px; color: var(--ink-3); margin-top: 6px; }
+.ledger { border-top: 1px solid var(--line); padding: 8px 14px; font-size: 13px; display: flex; justify-content: space-between; align-items: center; gap: 10px; background: var(--surface-2); }
+.ledger .state b { font-weight: 600; }
+
+.off { flex: 1; display: grid; place-items: center; text-align: center; padding: 40px; color: var(--ink-2); }
+.off p { margin: 0 0 12px; }
+
+.sheet-wrap { position: absolute; inset: 0; background: rgba(20, 20, 20, .28); display: flex; justify-content: center; align-items: flex-start; padding-top: 70px; }
+.sheet { background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); width: min(420px, 92%); padding: 18px 18px 14px; border: 1px solid var(--line-2); }
+.sheet h3 { margin: 0 0 6px; font-size: 16px; }
+.sheet p { margin: 0 0 12px; color: var(--ink-2); font-size: 14px; }
+.sheet .pick { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.sheet .pick button { text-align: left; border: 1px solid var(--line); background: var(--surface-2); border-radius: 8px; padding: 8px 10px; cursor: pointer; }
+.sheet .pick button:hover { border-color: var(--accent); }
+.sheet .pick button.cue { box-shadow: 0 0 0 2px var(--accent); }
+.sheet .pick small { display: block; color: var(--ink-3); }
+.sheet label { display: block; font-size: 13px; color: var(--ink-2); margin-bottom: 4px; }
+.sheet input { width: 100%; font: inherit; padding: 7px 9px; border-radius: 7px; border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); margin-bottom: 10px; }
+.sheet .where { font-size: 13px; color: var(--ink-2); margin-bottom: 12px; }
+.sheet .buttons { display: flex; justify-content: flex-end; gap: 8px; }
+
+.toast { position: absolute; left: 50%; bottom: 52px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 7px 12px; border-radius: 8px; font-size: 13px; box-shadow: var(--shadow); max-width: 90%; }
+
+.outside { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; align-items: center; font-size: 13px; color: var(--ink-2); }
+
+/* side panels */
+aside.side { display: flex; flex-direction: column; gap: 18px; }
+.panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-3); margin: 0 0 8px; font-weight: 600; }
+.panel .hint { font-size: 13px; color: var(--ink-3); margin: -4px 0 8px; }
+.happened { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.happened .what { font-weight: 600; margin: 0 0 4px; }
+.happened ul { margin: 0; padding-left: 18px; }
+.happened li { margin: 2px 0; }
+.happened .none { color: var(--ink-3); margin: 0; }
+.disk { display: flex; flex-direction: column; gap: 10px; }
+.place { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.place .path { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+.place .path span { color: var(--ink-3); font-weight: 400; }
+.entry { font-size: 13px; padding: 4px 6px; border-radius: 6px; margin: 0 -6px; }
+.entry .l1 { color: var(--ink); }
+.entry .l2 { color: var(--ink-2); }
+.entry.file .l1 { color: var(--ink-2); }
+.entry.memory .l1 { color: var(--warn); font-weight: 600; }
+.entry.nothing .l1 { color: var(--ink-3); }
+.changed { background: var(--changed); }
+.badge { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 5px; background: var(--ink); color: var(--bg); margin-left: 6px; vertical-align: 1px; }
+.gone { text-decoration: line-through; color: var(--ink-3); font-size: 13px; }
+.door-mini .row { cursor: default; }
+.door-mini .row:hover { border-color: var(--line); }
+.door-mini .on-it { font-size: 13px; color: var(--ink-3); }
+.history { font-size: 13px; color: var(--ink-3); }
+.history summary { cursor: pointer; }
+.history ol { margin: 6px 0 0; padding-left: 20px; }
+.glossary { font-size: 13px; color: var(--ink-2); }
+.glossary summary { cursor: pointer; color: var(--ink-3); }
+.glossary dl { margin: 6px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; }
+.glossary dt { font-weight: 600; color: var(--ink); }
+.glossary dd { margin: 0; }
+
+footer { margin-top: 36px; color: var(--ink-3); font-size: 13px; }
+
+@media (max-width: 1180px) {
+  main.stage { grid-template-columns: 230px minmax(0, 1fr); }
+  main.stage aside.side { grid-column: 1 / -1; }
+}
+@media (max-width: 760px) {
+  main.stage { grid-template-columns: minmax(0, 1fr); }
+  .steps-col { position: static; }
+}
+@media (max-width: 620px) {
+  .page { padding: 18px 16px 48px; }
+  .doc-body { grid-template-columns: 1fr; }
+  .spine { border-right: 0; border-bottom: 1px solid var(--line); }
+  .titlebar .app-actions { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <h1>Opening and saving, two ways</h1>
+    <p>Drive opening and saving under two save models and watch, after every step, what the front door says, what is written where, and what survives a quit. A throwaway prototype: the data is invented and nothing touches your disk.</p>
+    <p class="howto"><b>How:</b> pick a scenario, press its highlighted step (or do the same thing in the window), and flip the switch at any point to replay your steps under the other model. ⌘S, ⌘↩ and ⌘Z work.</p>
+  </header>
+
+  <div class="switch">
+    <span class="label" id="switch-label">Save model</span>
+    <div class="seg" role="group" aria-labelledby="switch-label">
+      <button type="button" data-model="keep">Brightfield keeps it</button>
+      <button type="button" data-model="draft">A draft until saved</button>
+    </div>
+  </div>
+  <p class="model-desc" id="model-desc"></p>
+  <div class="replayed" id="replayed" aria-live="polite"></div>
+
+  <nav class="tabs" role="tablist" id="tabs"></nav>
+  <section class="scenario" id="scenario"></section>
+
+  <main class="stage">
+    <div class="steps-col" id="steps"></div>
+    <div>
+      <div class="win" id="win"></div>
+      <div class="outside" id="outside"></div>
+    </div>
+    <aside class="side">
+      <section class="panel">
+        <h2>What just happened</h2>
+        <div class="happened" id="happened" aria-live="polite"></div>
+      </section>
+      <section class="panel">
+        <h2>The front door now</h2>
+        <p class="hint">What you would see if you went back to it after this step.</p>
+        <div class="door-mini" id="door-mini"></div>
+        <details class="glossary" open>
+          <summary>What the run labels mean</summary>
+          <dl>
+            <dt>Never run</dt><dd>Nothing has computed on this Mac yet: no preview, no run.</dd>
+            <dt>Previewed · not run yet</dt><dd>You have seen rows in the window, but nothing has pressed Run.</dd>
+            <dt>Ran 09:14</dt><dd>Every step ran at that time.</dd>
+            <dt>Ran 09:14 · changed since</dt><dd>It ran, and a step has changed after that run.</dd>
+          </dl>
+        </details>
+      </section>
+      <section class="panel">
+        <h2>What is on disk</h2>
+        <p class="hint">Highlighted lines changed on the last step.</p>
+        <div class="disk" id="disk"></div>
+      </section>
+      <details class="history" id="history"></details>
+    </aside>
+  </main>
+
+  <footer>Prototype, to be thrown away once it has answered its question. The earthquake and tide rows are invented.</footer>
+</div>
+
+<!-- The model: pure, no DOM. (state, action) => state. -->
+<script>
+const SaveModels = (() => {
+  const QUAKES = '~/Data/quakes';
+  const COAST = '~/Data/coast';
+  const SOURCES = { [QUAKES]: ['earthquakes_2024.csv'], [COAST]: ['tides.csv', 'stations.csv'] };
+  const LIBRARY = "Brightfield's own folder";
+  const DIALOG_ACTIONS = new Set(['answer', 'confirmSave', 'rename', 'dismiss', 'openFile', 'openFolder']);
+
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+  const dirOf = (p) => p.slice(0, p.lastIndexOf('/'));
+  const baseOf = (p) => p.slice(p.lastIndexOf('/') + 1);
+  const stemOf = (p) => baseOf(p).replace(/\.[^.]+$/, '');
+  const srcDir = (p) => (p.source.kind === 'file' ? dirOf(p.source.path) : p.source.path);
+  const same = (a, b) => !!a && !!b && a.name === b.name && JSON.stringify(a.steps) === JSON.stringify(b.steps);
+  const isCoast = (p) => srcDir(p) === COAST;
+
+  function clock(t, now) {
+    const d = Math.floor(t / 1440), m = t % 1440;
+    const hm = String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+    const ago = Math.floor(now / 1440) - d;
+    return ago === 0 ? hm : ago === 1 ? 'yesterday ' + hm : ago + ' days ago ' + hm;
+  }
+
+  function initial(model) {
+    return {
+      model, now: 9 * 60, running: true, screen: 'door', doc: null, dialog: null,
+      folders: { [QUAKES]: null, [COAST]: null },
+      library: {}, recents: [], nextId: 1, events: [], toast: null,
+    };
+  }
+
+  function newProto(source) {
+    if (source.kind === 'file') {
+      return { name: stemOf(source.path), source, steps: [{ kind: 'load', label: 'Read ' + baseOf(source.path) }], run: { state: 'never' } };
+    }
+    return {
+      name: baseOf(source.path), source,
+      steps: [
+        { kind: 'load', label: 'Read tides.csv' },
+        { kind: 'load', label: 'Read stations.csv' },
+        { kind: 'relate', label: 'Match tides to stations on station_id' },
+      ],
+      run: { state: 'never' },
+    };
+  }
+
+  const say = (s, t) => s.events.push(t);
+
+  function keep(s) {
+    const d = s.doc;
+    s.library[d.link.id] = Object.assign(clone(d.proto), { keptAt: s.now });
+  }
+
+  function touchRecent(s, entry) {
+    s.recents = s.recents.filter((r) => r.key !== entry.key);
+    s.recents.unshift(Object.assign({ at: s.now }, entry));
+    s.recents = s.recents.slice(0, 6);
+  }
+
+  function openDoc(s, proto, link) {
+    s.doc = { proto: clone(proto), link, dirty: false, history: [], baseline: clone(proto) };
+    delete s.doc.proto.keptAt; delete s.doc.proto.savedAt;
+    s.screen = 'doc';
+    if (s.doc.proto.run.state === 'never') {
+      s.doc.proto.run = { state: 'previewed' };
+      s.previewNote = true;
+      if (s.model === 'keep') keep(s);
+    }
+    if (s.model === 'draft' && link && link.kind === 'folder') touchRecent(s, { key: 'p:' + link.dir, kind: 'protocol', dir: link.dir, previewed: true });
+    s.doc.baseline = clone(s.doc.proto);
+  }
+
+  function findKept(s, test) {
+    const id = Object.keys(s.library).find((k) => test(s.library[k]));
+    return id ? { id, proto: s.library[id] } : null;
+  }
+
+  function takeIn(s, saved) {
+    const id = String(s.nextId++);
+    const p = clone(saved);
+    delete p.savedAt;
+    p.run = { state: 'never' };
+    p.keptAt = s.now;
+    s.library[id] = p;
+    return { id, proto: p };
+  }
+
+  function startKeeping(s, source) {
+    const id = String(s.nextId++);
+    s.library[id] = Object.assign(newProto(source), { keptAt: s.now });
+    return { id, proto: s.library[id] };
+  }
+
+  // Opening anything while a window is open replaces that window.
+  function guardOpen(s, action) {
+    if (!s.doc) return false;
+    if (s.model === 'draft' && s.doc.dirty) {
+      s.dialog = { kind: 'unsaved', then: action };
+      say(s, 'Brightfield has one window, and this one has unsaved changes, so it asks before opening something else.');
+      return true;
+    }
+    s.doc = null;
+    return false;
+  }
+
+  function openFile(s, path) {
+    const dir = dirOf(path);
+    const saved = s.folders[dir];
+    if (s.model === 'keep') {
+      const kept = findKept(s, (p) => p.source.kind === 'file' && p.source.path === path);
+      if (kept) {
+        openDoc(s, kept.proto, { kind: 'library', id: kept.id });
+        say(s, 'Brightfield already keeps a Protocol for this file, so it reopened that, as you left it.');
+      } else if (saved && saved.source.path === path) {
+        const k = takeIn(s, saved);
+        say(s, "A saved Protocol sits beside this file. Brightfield didn't know it, so it took it into its own folder and opened it. Results don't travel with the copy beside the data.");
+        openDoc(s, k.proto, { kind: 'library', id: k.id });
+      } else {
+        const k = startKeeping(s, { kind: 'file', path });
+        say(s, "Brightfield started keeping a Protocol for this file in its own folder. Nothing was written beside the CSV.");
+        openDoc(s, k.proto, { kind: 'library', id: k.id });
+      }
+    } else {
+      if (saved && saved.source.path === path) {
+        openDoc(s, saved, { kind: 'folder', dir });
+        say(s, 'A saved Protocol sits beside this file, so Brightfield opened that rather than the bare CSV.');
+      } else {
+        openDoc(s, newProto({ kind: 'file', path }), null);
+        touchRecent(s, { key: 'f:' + path, kind: 'file', path });
+        say(s, 'Opened as a draft. Nothing is written anywhere until you save.');
+      }
+    }
+  }
+
+  function openFolder(s, dir) {
+    const saved = s.folders[dir];
+    if (saved) {
+      if (s.model === 'keep') {
+        const kept = findKept(s, (p) => srcDir(p) === dir);
+        if (kept) {
+          const match = same(kept.proto, saved);
+          openDoc(s, kept.proto, { kind: 'library', id: kept.id });
+          say(s, match
+            ? 'This folder holds a Protocol Brightfield already keeps, so it opened that. The copy in the folder matches.'
+            : "This folder holds a Protocol Brightfield already keeps, so it opened Brightfield's own copy. The copy in the folder is behind it.");
+        } else {
+          const k = takeIn(s, saved);
+          say(s, "This folder holds a saved Protocol Brightfield didn't know, so it took it into its own folder and opened it. Results don't travel with the copy in the folder.");
+          openDoc(s, k.proto, { kind: 'library', id: k.id });
+        }
+      } else {
+        openDoc(s, saved, { kind: 'folder', dir });
+        say(s, 'This folder holds a saved Protocol, so Brightfield opened it rather than the bare CSV.');
+      }
+      return;
+    }
+    const files = SOURCES[dir];
+    if (files.length === 1) {
+      say(s, 'There is one data file in this folder, so it opens as that file.');
+      openFile(s, dir + '/' + files[0]);
+      return;
+    }
+    if (s.model === 'keep') {
+      const kept = findKept(s, (p) => p.source.kind === 'folder' && p.source.path === dir);
+      if (kept) {
+        openDoc(s, kept.proto, { kind: 'library', id: kept.id });
+        say(s, 'Brightfield already keeps a Protocol for this folder, so it reopened that.');
+      } else {
+        const k = startKeeping(s, { kind: 'folder', path: dir });
+        say(s, 'Brightfield started keeping a Protocol for this folder in its own folder: two tables, matched on station_id. Nothing was written in ' + dir + '.');
+        openDoc(s, k.proto, { kind: 'library', id: k.id });
+      }
+    } else {
+      openDoc(s, newProto({ kind: 'folder', path: dir }), null);
+      touchRecent(s, { key: 'f:' + dir, kind: 'file', path: dir, folder: true });
+      say(s, 'Opened as a draft: two tables read and matched on station_id. Nothing is written until you save.');
+    }
+  }
+
+  function savedOf(s) {
+    const l = s.doc && s.doc.link;
+    return l && l.kind === 'folder' ? s.folders[l.dir] : null;
+  }
+
+  function afterChange(s, describe, opts = {}) {
+    const d = s.doc;
+    if (!opts.nameOnly && d.proto.run.state === 'ran') d.proto.run.changedSince = true;
+    if (s.model === 'keep') {
+      keep(s);
+      const beside = s.folders[srcDir(d.proto)];
+      say(s, describe + " Kept at once in Brightfield's own folder." +
+        (beside && !same(beside, d.proto) ? ' The copy beside the data is now behind; ⌘S brings it up to date.' : ''));
+    } else {
+      d.dirty = !same(d.proto, d.baseline);
+      say(s, describe + (d.dirty ? ' Only in this window until you save.' : ' That matches the saved version again.'));
+    }
+  }
+
+  function edit(s, change, describe) {
+    const d = s.doc;
+    d.history.push(clone(d.proto));
+    change(d.proto);
+    afterChange(s, describe);
+  }
+
+  function writeBeside(s) {
+    const d = s.doc;
+    const dir = srcDir(d.proto);
+    const p = clone(d.proto);
+    p.savedAt = s.now;
+    if (s.model === 'keep') p.run = { state: 'never' }; // results stay in Brightfield's own folder
+    s.folders[dir] = p;
+    return dir;
+  }
+
+  function finishSaveDraft(s) {
+    const d = s.doc;
+    const dir = writeBeside(s);
+    d.link = { kind: 'folder', dir };
+    d.dirty = false;
+    d.baseline = clone(d.proto);
+    s.recents = s.recents.filter((r) => r.key !== 'f:' + d.proto.source.path);
+    touchRecent(s, { key: 'p:' + dir, kind: 'protocol', dir, previewed: true });
+    return dir;
+  }
+
+  function doRun(s) {
+    const d = s.doc;
+    if (s.model === 'draft') {
+      if (!d.link) {
+        s.dialog = { kind: 'save', then: { type: 'run' }, reason: 'Running writes its results beside the Protocol, so the Protocol has to be saved first.' };
+        say(s, 'Run needs the Protocol saved somewhere first, so Brightfield asks for a name.');
+        return;
+      }
+      if (d.dirty) {
+        finishSaveDraft(s);
+        say(s, 'Saved your changes first, because a run reads the saved Protocol.');
+      }
+    }
+    d.proto.run = { state: 'ran', at: s.now };
+    const n = d.proto.steps.length;
+    if (s.model === 'keep') {
+      keep(s);
+      say(s, `Ran all ${n} steps. The results are kept in Brightfield's own folder.`);
+    } else {
+      s.folders[d.link.dir].run = clone(d.proto.run);
+      d.baseline = clone(d.proto);
+      touchRecent(s, { key: 'p:' + d.link.dir, kind: 'protocol', dir: d.link.dir, previewed: true });
+      say(s, `Ran all ${n} steps. The results are written beside the Protocol, in build/.`);
+    }
+    s.toast = 'Ran ' + n + ' steps';
+  }
+
+  function doClose(s, force) {
+    if (!s.doc) return;
+    if (!force && s.model === 'draft' && s.doc.dirty) {
+      s.dialog = { kind: 'unsaved', then: { type: 'closeWindow' } };
+      say(s, 'The window has unsaved changes, so Brightfield asks before closing it.');
+      return;
+    }
+    const neverSaved = s.model === 'draft' && !s.doc.link;
+    s.doc = null;
+    s.screen = 'door';
+    say(s, s.model === 'keep'
+      ? 'Closed the window. Nothing to save: every change was already kept.'
+      : neverSaved ? 'Closed the window. Nothing was saved, so only the recent list remembers the file.' : 'Closed the window.');
+  }
+
+  function doQuit(s, force) {
+    if (!force && s.model === 'draft' && s.doc && s.doc.dirty) {
+      s.dialog = { kind: 'unsaved', then: { type: 'quit' } };
+      say(s, 'The window has unsaved changes, so Brightfield asks before quitting.');
+      return;
+    }
+    s.doc = null;
+    s.running = false;
+    s.screen = 'door';
+    say(s, s.model === 'keep' ? 'Quit. Brightfield had already kept everything, so it asked nothing.' : 'Quit.');
+  }
+
+  function continueWith(s, then) {
+    if (!then) return;
+    if (then.type === 'run') doRun(s);
+    else if (then.type === 'quit') doQuit(s, true);
+    else if (then.type === 'closeWindow') doClose(s, true);
+    else { s.doc = null; step(s, then); }
+  }
+
+  function filterLabel(p) { return isCoast(p) ? 'Only tides above 2 m' : 'Only magnitude 6 or more'; }
+  function selectLabel(p) { return isCoast(p) ? 'Pick station, time and height' : 'Pick time, place and magnitude'; }
+
+  function step(s, a) {
+    const d = s.doc;
+    switch (a.type) {
+      case 'openFilePicker': s.dialog = { kind: 'pickFile' }; break;
+      case 'openFolderPicker': s.dialog = { kind: 'pickFolder' }; break;
+      case 'dismiss': s.dialog = null; say(s, 'Cancelled.'); break;
+      case 'openFile': s.dialog = null; if (!guardOpen(s, a)) openFile(s, a.path); break;
+      case 'openFolder': s.dialog = null; if (!guardOpen(s, a)) openFolder(s, a.dir); break;
+      case 'openRow':
+      case 'openRecent': {
+        const row = doorRows(s).find((r) => (a.key ? r.key === a.key : (r.name + ' ' + r.where).includes(a.match)));
+        if (!row) { say(s, 'The front door has no row for it. You would have to find it again with Open a file… or Open a folder….'); break; }
+        if (guardOpen(s, a)) break;
+        if (s.model === 'keep') {
+          const id = row.key.slice(4);
+          openDoc(s, s.library[id], { kind: 'library', id });
+          say(s, 'Opened from the front door, with every change as you left it.');
+        } else if (row.key.startsWith('p:')) {
+          const dir = row.key.slice(2);
+          openDoc(s, s.folders[dir], { kind: 'folder', dir });
+          say(s, 'Opened the saved Protocol from the front door.');
+        } else {
+          const path = row.key.slice(2);
+          if (SOURCES[path]) openFolder(s, path); else openFile(s, path);
+          say(s, 'The front door only remembered the file, so it opened without your earlier changes: none were saved.');
+        }
+        break;
+      }
+      case 'filter':
+        if (!d) break;
+        if (d.proto.steps.some((x) => x.kind === 'filter')) { say(s, 'Already filtered.'); break; }
+        edit(s, (p) => p.steps.push({ kind: 'filter', label: filterLabel(p) }), 'Added a filter step: ' + filterLabel(d.proto).toLowerCase() + '.');
+        break;
+      case 'keepStep': {
+        if (!d) break;
+        const label = d.proto.steps.some((x) => x.kind === 'select') ? 'Count rows by place' : selectLabel(d.proto);
+        edit(s, (p) => p.steps.push({ kind: 'select', label }), 'Added a SQL step: ' + label.toLowerCase() + '.');
+        break;
+      }
+      case 'takeOut': {
+        if (!d) break;
+        let i = -1;
+        d.proto.steps.forEach((x, j) => { if (x.kind !== 'load' && x.kind !== 'relate') i = j; });
+        if (i < 0) { say(s, "Nothing to take out: the reading steps are where the Protocol starts."); break; }
+        const label = d.proto.steps[i].label;
+        edit(s, (p) => p.steps.splice(i, 1), 'Took out the step "' + label + '".');
+        break;
+      }
+      case 'undo':
+        if (!d) break;
+        if (!d.history.length) { say(s, 'Nothing to undo.'); break; }
+        d.proto = d.history.pop();
+        afterChange(s, 'Undid the last change.');
+        break;
+      case 'renamePrompt': if (d) s.dialog = { kind: 'rename', name: d.proto.name }; break;
+      case 'rename': {
+        s.dialog = null;
+        if (!d) break;
+        const name = (a.name || '').trim() || d.proto.name;
+        if (name === d.proto.name) { say(s, 'The name is unchanged.'); break; }
+        if (s.model === 'keep') {
+          const beside = s.folders[srcDir(d.proto)];
+          d.history.push(clone(d.proto));
+          d.proto.name = name;
+          afterChange(s, `Renamed to "${name}".`, { nameOnly: true });
+          if (beside) say(s, `The copy beside the data is still called "${beside.name}" until you press ⌘S.`);
+        } else if (d.link) {
+          const saved = s.folders[d.link.dir];
+          saved.name = name; d.proto.name = name; d.baseline.name = name;
+          d.history.forEach((h) => (h.name = name));
+          say(s, `Renamed the saved Protocol on disk to "${name}".` + (d.dirty ? ' Your other changes are still unsaved.' : ''));
+        } else {
+          d.proto.name = name; d.baseline.name = name;
+          say(s, `Named the draft "${name}". It isn't saved anywhere yet.`);
+        }
+        break;
+      }
+      case 'cmdS': {
+        if (!d) { say(s, 'Nothing is open, so ⌘S has nothing to save.'); break; }
+        if (s.model === 'keep') {
+          const dir = srcDir(d.proto);
+          const old = s.folders[dir];
+          if (old && same(old, d.proto)) { say(s, 'The copy beside the data was already up to date, so nothing changed.'); break; }
+          writeBeside(s);
+          say(s, old && old.name !== d.proto.name
+            ? `Rewrote the copy beside the data in ${dir}, replacing the one called "${old.name}".`
+            : old ? `Brought the copy beside the data up to date, in ${dir}.`
+            : `Wrote a copy beside the data, in ${dir}: arcform.yaml, models/ and panels/. Brightfield's own copy was already up to date.`);
+          s.toast = 'Copy written beside the data';
+        } else if (!d.link) {
+          s.dialog = { kind: 'save', then: null };
+          say(s, 'This draft has never been saved, so Brightfield asks for a name.');
+        } else if (!d.dirty) {
+          say(s, 'Nothing has changed since the last save.');
+        } else {
+          const dir = finishSaveDraft(s);
+          say(s, `Saved, beside the data in ${dir}.`);
+          s.toast = 'Saved';
+        }
+        break;
+      }
+      case 'confirmSave': {
+        const then = s.dialog && s.dialog.then;
+        s.dialog = null;
+        d.proto.name = (a.name || '').trim() || d.proto.name;
+        const dir = finishSaveDraft(s);
+        say(s, `Saved "${d.proto.name}" beside the data, in ${dir}: arcform.yaml, models/ and panels/.`);
+        s.toast = 'Saved';
+        continueWith(s, then);
+        break;
+      }
+      case 'answer': {
+        const dlg = s.dialog;
+        if (!dlg || dlg.kind !== 'unsaved') break;
+        if (a.choice === 'cancel') { s.dialog = null; say(s, 'Kept editing.'); break; }
+        if (a.choice === 'dontSave') {
+          s.dialog = null;
+          d.dirty = false;
+          say(s, 'Threw the unsaved changes away.');
+          continueWith(s, dlg.then);
+          break;
+        }
+        if (!d.link) { s.dialog = { kind: 'save', then: dlg.then }; say(s, 'Never saved before, so Brightfield asks for a name.'); break; }
+        s.dialog = null;
+        finishSaveDraft(s);
+        say(s, 'Saved, beside the data.');
+        continueWith(s, dlg.then);
+        break;
+      }
+      case 'run': if (d) doRun(s); break;
+      case 'closeWindow': doClose(s, false); break;
+      case 'quit': doQuit(s, false); break;
+      case 'relaunch':
+        s.running = true;
+        s.now = (Math.floor(s.now / 1440) + 1) * 1440 + 8 * 60 + 30;
+        s.screen = 'door';
+        say(s, 'The next morning: Brightfield opens on its front door.');
+        break;
+      case 'forgetLibrary': {
+        const stranded = Object.values(s.library).filter((p) => s.folders[srcDir(p)] && !same(s.folders[srcDir(p)], p));
+        const unwritten = Object.values(s.library).filter((p) => !s.folders[srcDir(p)]);
+        s.library = {}; s.recents = []; s.doc = null; s.dialog = null; s.screen = 'door'; s.running = true;
+        say(s, "Now on another Mac. Brightfield's own folder and its recent list are empty there; ~/Data came across as it was.");
+        for (const p of stranded) say(s, `"${p.name}" had changes kept only in Brightfield's own folder, after the last ⌘S. They stayed on the first Mac.`);
+        for (const p of unwritten) say(s, `"${p.name}" was never written beside its data, so nothing of it came across.`);
+        break;
+      }
+    }
+  }
+
+  function reduce(state, action) {
+    const s = clone(state);
+    s.events = []; s.toast = null;
+    if (!s.running && action.type !== 'relaunch' && action.type !== 'forgetLibrary') { say(s, "Brightfield isn't running. Open it first."); return s; }
+    if (s.running && action.type === 'relaunch') { say(s, 'Brightfield is already open.'); return s; }
+    if (s.dialog && !DIALOG_ACTIONS.has(action.type)) { say(s, 'The window is asking a question. Answer it first.'); return s; }
+    s.now += action.type === 'run' ? 3 : 2;
+    step(s, action);
+    if (s.previewNote) { say(s, 'The grid computed previews, so you can see rows. Nothing has pressed Run.'); delete s.previewNote; }
+    return s;
+  }
+
+  function runLabel(run, now) {
+    if (!run || run.state === 'never') return { text: 'Never run', tone: 'never' };
+    if (run.state === 'previewed') return { text: 'Previewed · not run yet', tone: 'previewed' };
+    return { text: 'Ran ' + clock(run.at, now) + (run.changedSince ? ' · changed since' : ''), tone: 'ran' };
+  }
+
+  function sourceLabel(p) {
+    return p.source.kind === 'file' ? p.source.path : p.source.path + '/ (folder)';
+  }
+
+  // The front door's rows, in the order it lists them.
+  function doorRows(s) {
+    if (s.model === 'keep') {
+      return Object.keys(s.library)
+        .map((id) => ({ id, p: s.library[id] }))
+        .sort((a, b) => b.p.keptAt - a.p.keptAt)
+        .map(({ id, p }) => {
+          const beside = s.folders[srcDir(p)];
+          const copy = !beside ? 'No copy beside the data' : same(beside, p) ? 'Copy beside the data is up to date' : 'Copy beside the data is behind';
+          return { key: 'lib:' + id, section: 'Your Protocols', name: p.name, where: sourceLabel(p), meta: ['Kept ' + clock(p.keptAt, s.now), copy], run: runLabel(p.run, s.now) };
+        });
+    }
+    const rows = [];
+    for (const r of s.recents) {
+      if (r.kind === 'protocol') {
+        const p = s.folders[r.dir];
+        if (!p) continue;
+        const run = p.run.state === 'never' && r.previewed ? { state: 'previewed' } : p.run;
+        const meta = ['Saved ' + clock(p.savedAt, s.now)];
+        if (s.doc && s.doc.link && s.doc.link.dir === r.dir && s.doc.dirty) meta.push('Open now, with unsaved changes');
+        rows.push({ key: 'p:' + r.dir, section: 'Saved Protocols', name: p.name, where: r.dir + '/', meta, run: runLabel(run, s.now) });
+      } else {
+        rows.push({ key: 'f:' + r.path, section: 'Recent files and folders', name: baseOf(r.path) + (r.folder ? '/' : ''), where: dirOf(r.path) + '/', meta: ['Opened ' + clock(r.at, s.now), 'Nothing saved: reopens without your changes'], run: { text: 'Not saved', tone: 'never' } });
+      }
+    }
+    return rows;
+  }
+
+  function stepsSummary(p) { return p.steps.length + ' steps: ' + p.steps.map((x) => x.label).join(' → '); }
+
+  // Everything on disk, by place, plus what lives only in the window.
+  function disk(s) {
+    const places = [];
+    for (const dir of [QUAKES, COAST]) {
+      const entries = SOURCES[dir].map((f) => ({ key: dir + '/' + f, kind: 'file', l1: f }));
+      const p = s.folders[dir];
+      if (p) {
+        let status = '';
+        if (s.model === 'keep') {
+          const kept = findKept(s, (k) => srcDir(k) === dir);
+          status = !kept ? " · Brightfield's own folder has no copy of it" : same(kept.proto, p) ? ' · matches Brightfield’s copy' : ' · behind Brightfield’s copy';
+        }
+        entries.push({ key: dir + ':proto', kind: 'proto', l1: `Protocol "${p.name}" (arcform.yaml, models/, panels/)`, l2: stepsSummary(p) + ' · written ' + clock(p.savedAt, s.now) + status });
+        if (s.model === 'draft' && p.run.state === 'ran') entries.push({ key: dir + ':build', kind: 'proto', l1: 'build/ (run results)', l2: 'From the run at ' + clock(p.run.at, s.now) });
+      }
+      places.push({ key: dir, path: dir, note: 'your data folder', entries });
+    }
+    const lib = [];
+    if (s.model === 'keep') {
+      for (const id of Object.keys(s.library)) {
+        const p = s.library[id];
+        lib.push({ key: 'lib:' + id, kind: 'proto', l1: `Protocol "${p.name}"`, l2: stepsSummary(p) + ' · kept ' + clock(p.keptAt, s.now) });
+        if (p.run.state === 'ran') lib.push({ key: 'lib:' + id + ':build', kind: 'proto', l1: `Results of "${p.name}"`, l2: 'From the run at ' + clock(p.run.at, s.now) });
+      }
+    } else if (s.recents.length) {
+      lib.push({ key: 'recents', kind: 'proto', l1: 'Recent list', l2: s.recents.map((r) => (r.kind === 'protocol' ? r.dir + '/' : baseOf(r.path))).join(', ') });
+    }
+    if (!lib.length) lib.push({ key: 'lib-empty', kind: 'nothing', l1: 'Nothing yet' });
+    places.push({ key: 'lib', path: LIBRARY, note: '~/Library/Application Support/Brightfield', entries: lib });
+
+    const mem = [];
+    if (s.doc) {
+      if (s.model === 'draft' && s.doc.dirty) {
+        mem.push({ key: 'mem', kind: 'memory', l1: s.doc.link ? 'Unsaved changes' : 'An unsaved draft', l2: stepsSummary(s.doc.proto) + '. Lost if you quit and choose Don’t Save.' });
+      } else if (s.model === 'draft' && !s.doc.link) {
+        mem.push({ key: 'mem', kind: 'nothing', l1: 'A draft with no changes yet', l2: 'Closing it loses nothing but the window.' });
+      } else {
+        mem.push({ key: 'mem', kind: 'nothing', l1: 'Nothing that isn’t already on disk' });
+      }
+    } else {
+      mem.push({ key: 'mem', kind: 'nothing', l1: s.running ? 'No window is open' : 'Brightfield is not running' });
+    }
+    places.push({ key: 'mem', path: 'Only in the open window', note: '', entries: mem });
+    return places;
+  }
+
+  return { initial, reduce, doorRows, disk, runLabel, clock, srcDir, same, DIALOG_ACTIONS, QUAKES, COAST };
+})();
+</script>
+
+<!-- The page: a thin shell over SaveModels. -->
+<script>
+const M = SaveModels;
+const Q = M.QUAKES + '/earthquakes_2024.csv';
+
+const MODELS = {
+  keep: "<b>Brightfield keeps it.</b> Every file or folder you open gets a Protocol in Brightfield's own folder, and every change is kept the moment you make it. ⌘S also writes a copy beside the data, the way Lightroom Classic keeps its catalog and writes sidecar files.",
+  draft: "<b>A draft until saved.</b> Whatever you open is a draft in the window. ⌘S saves the Protocol beside the data, and quitting or closing with unsaved changes asks first, the way Tableau Desktop does (VS Code, by default, would instead keep unsaved drafts across a quit). Run saves first, because its results are written beside the Protocol.",
+};
+
+const WAIT = (label) => ({ label, wait: true });
+const SCENARIOS = [
+  {
+    id: 'quit', title: 'Open, filter, quit, reopen',
+    blurb: 'You open earthquakes_2024.csv for the first time, keep only the large quakes, quit, and come back the next morning.',
+    watch: 'Does the filter survive the night, and how do you get back to it?',
+    today: "The filter lives only in the window. Quitting asks about unsaved work, Don't Save loses it, and the front door has no row for the file.",
+    steps: [
+      { label: 'Open earthquakes_2024.csv', action: { type: 'openFile', path: Q } },
+      { label: 'Filter to magnitude 6 and up', action: { type: 'filter' } },
+      { label: 'Quit Brightfield', action: { type: 'quit' } },
+      WAIT('Brightfield is asking about your changes. Answer it in the window, whichever way you like.'),
+      { label: 'Open Brightfield the next morning', action: { type: 'relaunch' } },
+      { label: 'Reopen the quakes from the front door', action: { type: 'openRecent', match: 'quakes' } },
+    ],
+  },
+  {
+    id: 'folder', title: 'Open a folder',
+    blurb: '~/Data/coast holds two tables, tides.csv and stations.csv. You open the folder, filter, and close the window.',
+    watch: 'What gets written, and where? What does the front door offer you afterwards?',
+    today: "A folder of two or more tables becomes a Protocol in Brightfield's own folder the moment it opens, and its loads run. A folder holding a single CSV opens as that bare file.",
+    steps: [
+      { label: 'Open the folder ~/Data/coast', action: { type: 'openFolder', dir: M.COAST } },
+      { label: 'Filter tides above 2 m', action: { type: 'filter' } },
+      { label: 'Close the window', action: { type: 'closeWindow' } },
+      WAIT('Brightfield is asking about your changes. Answer it in the window.'),
+      { label: 'Reopen it from the front door', action: { type: 'openRecent', match: 'coast' } },
+    ],
+  },
+  {
+    id: 'cmds', title: '⌘S outside the editor',
+    blurb: 'Open the file, filter it, and press ⌘S with the grid in front, not the SQL editor.',
+    watch: 'What does ⌘S do, and does the front door list the Protocol afterwards?',
+    today: '⌘S only works while the SQL editor has focus, and there it saves a scratch chart file, not the Protocol. With the grid in front it does nothing. The palette’s Save does save the Protocol.',
+    steps: [
+      { label: 'Open earthquakes_2024.csv', action: { type: 'openFile', path: Q } },
+      { label: 'Filter to magnitude 6 and up', action: { type: 'filter' } },
+      { label: 'Press ⌘S (the key works too)', action: { type: 'cmdS' } },
+      WAIT('Brightfield is asking for a name. Save it from the window.'),
+      { label: 'Go back to the front door', action: { type: 'closeWindow' } },
+      WAIT('Brightfield is asking about your changes. Answer it in the window.'),
+    ],
+  },
+  {
+    id: 'savedfolder', title: "Open a saved Protocol's folder",
+    blurb: 'Save a Protocol for earthquakes_2024.csv, run it, add one more step, and quit. The next morning, open the folder ~/Data/quakes instead of the file. Then carry the folder to another Mac and open it there.',
+    watch: 'Which version opens each time, and what does the run label say on the other Mac?',
+    today: 'Picking the folder skips the saved Protocol and opens the bare CSV with a freshly generated dashboard. Your saved chart does not come back, though recorded steps do.',
+    steps: [
+      { label: 'Open earthquakes_2024.csv', action: { type: 'openFile', path: Q } },
+      { label: 'Filter to magnitude 6 and up', action: { type: 'filter' } },
+      { label: 'Press ⌘S', action: { type: 'cmdS' } },
+      WAIT('Brightfield is asking for a name. Save it from the window.'),
+      { label: 'Run it', action: { type: 'run' } },
+      { label: 'Add one more step: pick three columns', action: { type: 'keepStep' } },
+      { label: 'Quit Brightfield', action: { type: 'quit' } },
+      WAIT('Brightfield is asking about your changes. Answer it in the window.'),
+      { label: 'Open Brightfield the next morning', action: { type: 'relaunch' } },
+      { label: 'Open the folder ~/Data/quakes, not the file', action: { type: 'openFolder', dir: M.QUAKES } },
+      { label: 'Close the window', action: { type: 'closeWindow' } },
+      WAIT('Brightfield is asking about your changes. Answer it in the window.'),
+      { label: 'Carry ~/Data to another Mac', action: { type: 'forgetLibrary' } },
+      { label: 'Open the folder ~/Data/quakes there', action: { type: 'openFolder', dir: M.QUAKES } },
+    ],
+  },
+  {
+    id: 'rename', title: 'Rename it',
+    blurb: 'Save the Protocol, then rename it "Large quakes 2024".',
+    watch: 'Which names change where: the window, the front door, the files beside the CSV?',
+    today: "There is no way to rename a Protocol. Its name is the data file's name.",
+    steps: [
+      { label: 'Open earthquakes_2024.csv', action: { type: 'openFile', path: Q } },
+      { label: 'Filter to magnitude 6 and up', action: { type: 'filter' } },
+      { label: 'Press ⌘S', action: { type: 'cmdS' } },
+      WAIT('Brightfield is asking for a name. Keep the one it offers and save.'),
+      { label: 'Rename it "Large quakes 2024"', action: { type: 'rename', name: 'Large quakes 2024' } },
+      { label: 'Go back to the front door', action: { type: 'closeWindow' } },
+      WAIT('Brightfield is asking about your changes. Answer it in the window.'),
+      { label: 'Reopen it from the front door', action: { type: 'openRecent', match: 'quakes' } },
+      { label: 'Press ⌘S', action: { type: 'cmdS' } },
+    ],
+  },
+  {
+    id: 'takeout', title: 'Take a step out',
+    blurb: 'Add a SQL step, save, run, then take the step out, change your mind, and take it out for good.',
+    watch: 'What happens to the run label, and can you still get the step back once you have left the window?',
+    today: 'Nothing removes a step once it is recorded.',
+    steps: [
+      { label: 'Open earthquakes_2024.csv', action: { type: 'openFile', path: Q } },
+      { label: 'Add a SQL step: pick three columns', action: { type: 'keepStep' } },
+      { label: 'Press ⌘S', action: { type: 'cmdS' } },
+      WAIT('Brightfield is asking for a name. Save it from the window.'),
+      { label: 'Run it', action: { type: 'run' } },
+      { label: 'Take that step out', action: { type: 'takeOut' } },
+      { label: 'Change your mind: undo (⌘Z)', action: { type: 'undo' } },
+      { label: 'Take it out for good', action: { type: 'takeOut' } },
+      { label: 'Go back to the front door', action: { type: 'closeWindow' } },
+      WAIT('Brightfield is asking about your changes. Answer it in the window.'),
+      { label: 'Reopen it from the front door', action: { type: 'openRecent', match: 'quakes' } },
+    ],
+  },
+  {
+    id: 'free', title: 'Free play',
+    blurb: 'Everything is live. Start with Open a file… in the window. Quitting and moving to another Mac are the two buttons just under the window.',
+    watch: 'Try the cases the tabs skip: open the file after saving its folder, rename before the first save, run a draft that was never saved.',
+    today: '',
+    steps: [],
+  },
+];
+
+const ui = { model: 'keep', tab: 'quit', state: M.initial('keep'), prev: null, idx: 0, log: [], labels: [], skipped: new Set() };
+
+const same = (a, b) => a.type === b.type
+  && (a.path ?? null) === (b.path ?? null) && (a.dir ?? null) === (b.dir ?? null)
+  || (a.type === 'openRecent' && b.type === 'openRow');
+
+function scenario() { return SCENARIOS.find((x) => x.id === ui.tab); }
+
+function settle(st, idx, wasAsked) {
+  const steps = scenario().steps;
+  while (idx < steps.length && steps[idx].wait && !st.dialog) {
+    if (!wasAsked) ui.skipped.add(idx);
+    wasAsked = false;
+    idx++;
+  }
+  return idx;
+}
+
+function apply(st, idx, action) {
+  const next = M.reduce(st, action);
+  const steps = scenario().steps;
+  const cur = steps[idx];
+  if (cur && cur.action && same(cur.action, action) && next.events.length) idx++;
+  return { st: next, idx: settle(next, idx, !!st.dialog && !next.dialog) };
+}
+
+const LABEL = {
+  openFile: (a) => 'Open ' + a.path.split('/').pop(), openFolder: (a) => 'Open folder ' + a.dir, filter: () => 'Filter',
+  keepStep: () => 'Add a SQL step', takeOut: () => 'Take a step out', undo: () => 'Undo', rename: (a) => 'Rename to "' + a.name + '"',
+  cmdS: () => '⌘S', run: () => 'Run', closeWindow: () => 'Close window', quit: () => 'Quit', relaunch: () => 'Open Brightfield next morning',
+  openRecent: () => 'Open from the front door', openRow: () => 'Open from the front door', forgetLibrary: () => 'Move to another Mac',
+  answer: (a) => ({ save: 'Answer: Save', dontSave: "Answer: Don't Save", cancel: 'Answer: Cancel' })[a.choice],
+  confirmSave: (a) => 'Save as "' + a.name + '"', dismiss: () => 'Cancel', openFilePicker: () => 'Open a file…', openFolderPicker: () => 'Open a folder…', renamePrompt: () => 'Rename…',
+};
+
+function dispatch(action) {
+  ui.prev = ui.state;
+  const r = apply(ui.state, ui.idx, action);
+  ui.state = r.st; ui.idx = r.idx;
+  ui.log.push(action);
+  if (LABEL[action.type] && !['openFilePicker', 'openFolderPicker', 'renamePrompt'].includes(action.type)) ui.labels.push(LABEL[action.type](action));
+  document.getElementById('replayed').textContent = '';
+  render();
+}
+
+function reset() {
+  ui.skipped = new Set(); ui.state = M.initial(ui.model); ui.prev = null; ui.idx = settle(ui.state, 0); ui.log = []; ui.labels = [];
+}
+
+function switchModel(model) {
+  if (model === ui.model) return;
+  const log = ui.log.slice();
+  ui.model = model;
+  reset();
+  let replayed = 0;
+  for (const a of log) {
+    if (ui.state.dialog && !M.DIALOG_ACTIONS.has(a.type)) break;
+    if (!ui.state.dialog && ['answer', 'confirmSave'].includes(a.type)) continue;
+    ui.prev = ui.state;
+    const r = apply(ui.state, ui.idx, a);
+    ui.state = r.st; ui.idx = r.idx; ui.log.push(a);
+    if (LABEL[a.type] && !['openFilePicker', 'openFolderPicker', 'renamePrompt'].includes(a.type)) ui.labels.push(LABEL[a.type](a));
+    replayed++;
+  }
+  document.getElementById('replayed').textContent = log.length
+    ? `Replayed ${replayed} of your ${log.length} actions under this model` + (replayed < log.length ? ', up to where this model asks you something the other did not.' : '.')
+    : '';
+  render();
+}
+
+/* ---------- rendering ---------- */
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const h = (html) => html;
+
+function renderSwitch() {
+  document.querySelectorAll('.seg button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.model === ui.model)));
+  document.getElementById('model-desc').innerHTML = MODELS[ui.model];
+}
+
+function renderTabs() {
+  document.getElementById('tabs').innerHTML = SCENARIOS.map((sc) =>
+    `<button role="tab" aria-selected="${sc.id === ui.tab}" data-tab="${sc.id}">${esc(sc.title)}</button>`).join('');
+}
+
+function renderScenario() {
+  const sc = scenario();
+  const steps = sc.steps;
+  let list = '';
+  if (steps.length) {
+    list = '<ol class="steps">' + steps.map((st, i) => {
+      const skipped = ui.skipped.has(i);
+      const cls = skipped ? 'skipped' : i < ui.idx ? 'done' : i === ui.idx ? 'current' : '';
+      const inner = st.wait
+        ? `<span class="wait">${skipped ? 'Not asked under this model.' : esc(st.label)}</span>`
+        : `<button class="step-btn" ${i === ui.idx ? '' : 'disabled tabindex="-1"'} data-step="${i}">${esc(st.label)}</button>`;
+      return `<li class="${cls}">${inner}</li>`;
+    }).join('') + '</ol>';
+    const finished = ui.idx >= steps.length;
+    list += `<div class="steps-foot">${finished ? '<span>That’s the scenario. Flip the switch to see it the other way, or keep driving.</span>' : ''}<button class="linkish" data-act="restart">Start this scenario over</button></div>`;
+  } else {
+    list = '<div class="steps-foot"><button class="linkish" data-act="restart">Start over with nothing open</button></div>';
+  }
+  document.getElementById('scenario').innerHTML = `
+      <p class="blurb">${esc(sc.blurb)}</p>
+      <p class="watch"><b>Watch for:</b> ${esc(sc.watch)}</p>
+      ${sc.today ? `<details class="today-d"><summary>How the current app behaves here</summary><p>${esc(sc.today)}</p></details>` : ''}`;
+  document.getElementById('steps').innerHTML = `<h2>${steps.length ? 'Steps' : 'Free play'}</h2>${list}`;
+}
+
+function cueFor(type) {
+  const cur = scenario().steps[ui.idx];
+  return cur && cur.action && cur.action.type === type ? ' cue' : '';
+}
+
+function gridFor(p) {
+  const kinds = p.steps.map((x) => x.kind);
+  const coast = M.srcDir(p) === M.COAST;
+  let cols, rows;
+  if (coast) {
+    cols = ['station_id', 'station', 'time', 'height_m'];
+    rows = [['8443970', 'Boston', '2024-03-10 04:12', 3.4], ['8518750', 'The Battery', '2024-03-10 05:01', 2.1], ['9414290', 'San Francisco', '2024-03-10 06:40', 1.7], ['8723214', 'Virginia Key', '2024-03-10 07:15', 0.6], ['9447130', 'Seattle', '2024-03-10 08:22', 3.1]];
+    if (kinds.includes('filter')) rows = rows.filter((r) => r[3] > 2);
+    if (kinds.includes('select')) { cols = ['station', 'time', 'height_m']; rows = rows.map((r) => r.slice(1)); }
+  } else {
+    cols = ['time', 'place', 'magnitude', 'depth_km'];
+    rows = [['2024-01-01 07:10', 'Noto, Japan', 7.5, 10], ['2024-01-22 18:09', 'Xinjiang, China', 7.0, 13], ['2024-03-14 04:21', 'Fiji region', 4.6, 580], ['2024-04-02 23:58', 'Hualien, Taiwan', 7.4, 35], ['2024-05-30 11:02', 'Tonga', 5.2, 110], ['2024-08-08 07:42', 'Hyuganada, Japan', 7.1, 30]];
+    if (kinds.includes('filter')) rows = rows.filter((r) => r[2] >= 6);
+    if (kinds.includes('select')) { cols = ['time', 'place', 'magnitude']; rows = rows.map((r) => r.slice(0, 3)); }
+  }
+  const shown = coast ? (kinds.includes('filter') ? 6382 : 41210) : (kinds.includes('filter') ? 98 : 19764);
+  return `<table><thead><tr>${cols.map((c) => `<th>${c}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((v) => `<td class="${typeof v === 'number' ? 'num' : ''}">${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table><div class="count">${shown.toLocaleString()} rows (a few shown)</div>`;
+}
+
+function doorHTML(st, interactive) {
+  const rows = M.doorRows(st);
+  if (!rows.length) return '<p class="empty">Nothing here yet. Open a file or a folder to start.</p>';
+  const sections = [...new Set(rows.map((r) => r.section))];
+  const prevRows = ui.prev ? Object.fromEntries(M.doorRows(ui.prev).map((r) => [r.key, JSON.stringify(r)])) : null;
+  return sections.map((sec) => `<h3>${esc(sec)}</h3><div class="rows">` + rows.filter((r) => r.section === sec).map((r) => {
+    const was = prevRows && prevRows[r.key];
+    const changed = !interactive && prevRows && was !== JSON.stringify(r);
+    const badge = changed ? `<span class="badge">${was ? 'changed' : 'new'}</span>` : '';
+    const tag = interactive ? 'button' : 'div';
+    return `<${tag} class="row${interactive ? '' : ' static'}${changed ? ' changed' : ''}" ${interactive ? `data-row="${esc(r.key)}"` : ''}>
+      <span class="name">${esc(r.name)}${badge}</span>
+      <span class="run ${r.run.tone}">${esc(r.run.text)}</span>
+      <span class="where">${esc(r.where)}</span>
+      <span class="meta">${r.meta.map(esc).join(' · ')}</span>
+    </${tag}>`;
+  }).join('') + '</div>').join('') + (!interactive && prevRows ? goneRows(rows, prevRows) : '');
+}
+
+function goneRows(rows, prevRows) {
+  const now = new Set(rows.map((r) => r.key));
+  const gone = Object.keys(prevRows).filter((k) => !now.has(k)).map((k) => JSON.parse(prevRows[k]).name);
+  return gone.map((n) => `<p class="gone">${esc(n)} is no longer listed</p>`).join('');
+}
+
+function sheetHTML(st) {
+  const d = st.dialog;
+  if (!d) return '';
+  let inner = '';
+  if (d.kind === 'pickFile') {
+    inner = `<h3>Open a file</h3><div class="pick">
+      <button class="${cueFor('openFile') ? 'cue' : ''}" data-open-file="${esc(Q)}">earthquakes_2024.csv<small>~/Data/quakes</small></button>
+      <button data-open-file="${esc(M.COAST + '/tides.csv')}">tides.csv<small>~/Data/coast</small></button>
+      <button data-open-file="${esc(M.COAST + '/stations.csv')}">stations.csv<small>~/Data/coast</small></button>
+    </div><div class="buttons"><button class="btn" data-act="dismiss">Cancel</button></div>`;
+  } else if (d.kind === 'pickFolder') {
+    inner = `<h3>Open a folder</h3><div class="pick">
+      <button class="${scenario().steps[ui.idx]?.action?.dir === M.QUAKES ? 'cue' : ''}" data-open-folder="${esc(M.QUAKES)}">quakes<small>~/Data · ${st.folders[M.QUAKES] ? 'earthquakes_2024.csv and a saved Protocol' : 'earthquakes_2024.csv'}</small></button>
+      <button class="${scenario().steps[ui.idx]?.action?.dir === M.COAST ? 'cue' : ''}" data-open-folder="${esc(M.COAST)}">coast<small>~/Data · tides.csv, stations.csv${st.folders[M.COAST] ? ' and a saved Protocol' : ''}</small></button>
+    </div><div class="buttons"><button class="btn" data-act="dismiss">Cancel</button></div>`;
+  } else if (d.kind === 'unsaved') {
+    inner = `<h3>Save changes to “${esc(st.doc.proto.name)}”?</h3><p>Your changes are lost if you don't save them.</p>
+      <div class="buttons"><button class="btn" data-answer="dontSave">Don't Save</button><button class="btn" data-answer="cancel">Cancel</button><button class="btn primary" data-answer="save">${st.doc.link ? 'Save' : 'Save…'}</button></div>`;
+  } else if (d.kind === 'save') {
+    inner = `<h3>Save the Protocol</h3>${d.reason ? `<p>${esc(d.reason)}</p>` : ''}
+      <label for="save-name">Name</label><input id="save-name" value="${esc(st.doc.proto.name)}" autocomplete="off">
+      <div class="where">Saved beside the data, in ${esc(M.srcDir(st.doc.proto))}</div>
+      <div class="buttons"><button class="btn" data-act="dismiss">Cancel</button><button class="btn primary" data-act="confirm-save">Save</button></div>`;
+  } else if (d.kind === 'rename') {
+    inner = `<h3>Rename the Protocol</h3><label for="rename-name">Name</label><input id="rename-name" value="${esc(d.name)}" autocomplete="off">
+      <div class="buttons"><button class="btn" data-act="dismiss">Cancel</button><button class="btn primary" data-act="confirm-rename">Rename</button></div>`;
+  }
+  return `<div class="sheet-wrap"><div class="sheet" role="dialog" aria-modal="true">${inner}</div></div>`;
+}
+
+function renderWindow() {
+  const st = ui.state;
+  const win = document.getElementById('win');
+  let title = 'Brightfield', body = '';
+  if (!st.running) {
+    body = `<div class="off"><div><p>Brightfield is not running.</p><button class="btn primary${cueFor('relaunch')}" data-act="relaunch">Open Brightfield the next morning</button></div></div>`;
+  } else if (st.screen === 'door' || !st.doc) {
+    body = `<div class="door"><h2>Brightfield</h2><p class="sub">Open your own data, or come back to something you were working on.</p>
+      <div class="opens"><button class="btn primary${cueFor('openFile')}" data-act="pick-file">Open a file…</button><button class="btn${cueFor('openFolder')}" data-act="pick-folder">Open a folder…</button></div>
+      ${doorHTML(st, true)}</div>`;
+  } else {
+    const d = st.doc, p = d.proto;
+    const kept = st.model === 'keep' ? ` <span class="kept">— kept ${M.clock(st.library[d.link.id].keptAt, st.now)}</span>` : '';
+    const edited = st.model === 'draft' && d.dirty ? ' <span class="edited">— Edited</span>' : st.model === 'draft' && !d.link ? ' <span class="kept">— not saved</span>' : '';
+    title = esc(p.name) + kept + edited;
+    const base = d.baseline.steps.map((x) => x.label);
+    const spine = p.steps.map((x) => {
+      let tag = '';
+      if (st.model === 'draft' && !base.includes(x.label)) tag = '<span class="tag">not saved</span>';
+      return `<li>${esc(x.label)}${tag}</li>`;
+    }).join('');
+    const run = M.runLabel(p.run, st.now);
+    const where = p.source.kind === 'file' ? `${esc(M.srcDir(p))} / <b>${esc(p.source.path.split('/').pop())}</b>` : `<b>${esc(p.source.path)}/</b>`;
+    const saveLabel = st.model === 'keep' ? 'Copy beside data' : 'Save';
+    body = `<div class="doc">
+      <div class="locator">${where}<span>· ${p.steps.length} ${p.steps.length === 1 ? 'step' : 'steps'}</span></div>
+      <div class="toolbar">
+        <button class="btn${cueFor('filter')}" data-act="filter">Filter rows</button>
+        <button class="btn${cueFor('keepStep')}" data-act="keepStep">Add a SQL step</button>
+        <button class="btn${cueFor('takeOut')}" data-act="takeOut">Take a step out</button>
+        <button class="btn${cueFor('undo')}" data-act="undo">Undo<kbd>⌘Z</kbd></button>
+        <button class="btn${cueFor('rename')}" data-act="renamePrompt">Rename…</button>
+        <span class="sep"></span>
+        <button class="btn${cueFor('cmdS')}" data-act="cmdS">${saveLabel}<kbd>⌘S</kbd></button>
+        <button class="btn${cueFor('closeWindow')}" data-act="closeWindow">Back to the front door</button>
+      </div>
+      <div class="doc-body">
+        <div class="spine"><h4>Steps</h4><ol>${spine}</ol></div>
+        <div class="grid"><h4>Rows</h4>${gridFor(p)}</div>
+      </div>
+      <div class="ledger"><span class="state">Run state: <b>${esc(run.text)}</b></span><button class="btn primary${cueFor('run')}" data-act="run">Run<kbd>⌘↩</kbd></button></div>
+    </div>`;
+  }
+  win.innerHTML = `<div class="titlebar"><span class="lights"><i></i><i></i><i></i></span><span class="title">${title}</span><span class="app-actions"></span></div>${body}${sheetHTML(st)}${st.toast ? `<div class="toast" role="status">${esc(st.toast)}</div>` : ''}`;
+  const input = win.querySelector('.sheet input');
+  if (input) { input.focus(); input.select(); }
+
+  document.getElementById('outside').innerHTML = `
+    <button class="btn${cueFor('quit')}" data-act="quit" ${st.running ? '' : 'disabled'}>Quit Brightfield</button>
+    <button class="btn${cueFor('forgetLibrary')}" data-act="forgetLibrary">Carry ~/Data to another Mac</button>
+    <span>These happen outside Brightfield's window.</span>`;
+}
+
+function renderSide() {
+  const st = ui.state;
+  const last = ui.labels[ui.labels.length - 1];
+  document.getElementById('happened').innerHTML = st.events.length
+    ? `<p class="what">${esc(last || '')}</p><ul>${st.events.map((e) => `<li>${esc(e)}</li>`).join('')}</ul>`
+    : `<p class="none">${ui.log.length ? 'Waiting for your answer in the window.' : 'Nothing yet. Press the first step, or open something in the window.'}</p>`;
+
+  document.getElementById('door-mini').innerHTML = st.running && st.screen === 'door'
+    ? '<p class="on-it">You are looking at it, in the window.</p>' + (ui.prev ? doorDiffOnly(st) : '')
+    : doorHTML(st, false);
+
+  const prev = ui.prev ? Object.fromEntries(M.disk(ui.prev).flatMap((pl) => pl.entries.map((e) => [pl.key + '|' + e.key, JSON.stringify(e)]))) : null;
+  document.getElementById('disk').innerHTML = M.disk(st).map((pl) => `
+    <div class="place"><div class="path">${esc(pl.path)} ${pl.note ? `<span>${esc(pl.note)}</span>` : ''}</div>
+    ${pl.entries.map((e) => {
+      const was = prev && prev[pl.key + '|' + e.key];
+      const changed = prev && e.kind !== 'nothing' && was !== JSON.stringify(e);
+      return `<div class="entry ${e.kind}${changed ? ' changed' : ''}"><div class="l1">${esc(e.l1)}${changed ? `<span class="badge">${was ? 'changed' : 'new'}</span>` : ''}</div>${e.l2 ? `<div class="l2">${esc(e.l2)}</div>` : ''}</div>`;
+    }).join('')}</div>`).join('');
+
+  const hist = document.getElementById('history');
+  const open = hist.open;
+  hist.innerHTML = `<summary>Everything you have done in this scenario (${ui.labels.length})</summary>${ui.labels.length ? `<ol>${ui.labels.map((l) => `<li>${esc(l)}</li>`).join('')}</ol>` : ''}`;
+  hist.open = open;
+}
+
+function doorDiffOnly(st) {
+  const prevRows = Object.fromEntries(M.doorRows(ui.prev).map((r) => [r.key, JSON.stringify(r)]));
+  return goneRows(M.doorRows(st), prevRows);
+}
+
+function render() { renderSwitch(); renderTabs(); renderScenario(); renderWindow(); renderSide(); }
+
+/* ---------- wiring ---------- */
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('button');
+  if (!t || t.disabled) return;
+  if (t.dataset.model) return switchModel(t.dataset.model);
+  if (t.dataset.tab) { ui.tab = t.dataset.tab; reset(); document.getElementById('replayed').textContent = ''; return render(); }
+  if (t.dataset.step) { const st = scenario().steps[+t.dataset.step]; return dispatch(st.action); }
+  if (t.dataset.row) return dispatch({ type: 'openRow', key: t.dataset.row });
+  if (t.dataset.openFile) return dispatch({ type: 'openFile', path: t.dataset.openFile });
+  if (t.dataset.openFolder) return dispatch({ type: 'openFolder', dir: t.dataset.openFolder });
+  if (t.dataset.answer) return dispatch({ type: 'answer', choice: t.dataset.answer });
+  const act = t.dataset.act;
+  if (!act) return;
+  if (act === 'restart') { reset(); document.getElementById('replayed').textContent = ''; return render(); }
+  if (act === 'pick-file') return dispatch({ type: 'openFilePicker' });
+  if (act === 'pick-folder') return dispatch({ type: 'openFolderPicker' });
+  if (act === 'confirm-save') return dispatch({ type: 'confirmSave', name: document.getElementById('save-name').value });
+  if (act === 'confirm-rename') return dispatch({ type: 'rename', name: document.getElementById('rename-name').value });
+  dispatch({ type: act });
+});
+
+document.addEventListener('keydown', (e) => {
+  const st = ui.state;
+  if (e.key === 'Enter' && e.target.matches('.sheet input')) {
+    e.preventDefault();
+    const btn = document.querySelector('.sheet .btn.primary');
+    if (btn) btn.click();
+    return;
+  }
+  if (e.key === 'Escape' && st.dialog && st.dialog.kind !== 'unsaved') { dispatch({ type: 'dismiss' }); return; }
+  if (!(e.metaKey || e.ctrlKey)) return;
+  const k = e.key.toLowerCase();
+  if (k === 's') { e.preventDefault(); dispatch({ type: 'cmdS' }); }
+  else if (k === 'enter') { e.preventDefault(); if (st.doc) dispatch({ type: 'run' }); }
+  else if (k === 'z' && !e.target.matches('input')) { e.preventDefault(); if (st.doc) dispatch({ type: 'undo' }); }
+});
+
+reset();
+render();
+</script>
+</body>
+</html>
