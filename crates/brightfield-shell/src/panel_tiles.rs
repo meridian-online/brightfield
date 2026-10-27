@@ -690,10 +690,21 @@ pub fn panel_about(file: &Path) -> String {
     format!("{} \u{b7} Mosaic spec", file.display())
 }
 
-/// The header the window draws above a tile open as the chart document: the
-/// way back to every tile, as an "All panels" control at its left, and the
-/// panel's name. Answers whether the way back was taken.
-pub fn back_band(ui: &mut egui::Ui, band: egui::Rect, file: &Path, mode: Mode) -> bool {
+/// The header the window draws above a document opened from another view: the
+/// way back, as a control at its left reading `back_label` (hovered, it says
+/// `back_hover`), and the name of what is `showing` (hovered, `about`, when
+/// given). Answers whether the way back was taken. A tile open as the chart
+/// draws it with "All panels" and the panel's name; rows opened in the grid
+/// from the model pane draw it with "Model" and what the rows are.
+pub fn back_band(
+    ui: &mut egui::Ui,
+    band: egui::Rect,
+    back_label: &str,
+    back_hover: &str,
+    showing: &str,
+    about: Option<&str>,
+    mode: Mode,
+) -> bool {
     let sem = semantic(mode.is_dark());
     ui.painter()
         .rect_filled(band, 0.0, chrome::colour(sem.surfaces.header));
@@ -709,19 +720,20 @@ pub fn back_band(ui: &mut egui::Ui, band: egui::Rect, file: &Path, mode: Mode) -
     child.shrink_clip_rect(band);
     let back = child
         .button(
-            egui::RichText::new("\u{2190} All panels")
+            egui::RichText::new(back_label)
                 .font(ui_font())
                 .color(chrome::colour(sem.text.primary)),
         )
-        .on_hover_text("Back to every panel (Esc)");
+        .on_hover_text(back_hover);
     child.add_space(spacing::SPACE_4);
-    child
-        .label(
-            egui::RichText::new(panel_name(file))
-                .font(ui_font())
-                .color(chrome::colour(sem.text.primary)),
-        )
-        .on_hover_text(panel_about(file));
+    let name = child.label(
+        egui::RichText::new(showing)
+            .font(ui_font())
+            .color(chrome::colour(sem.text.primary)),
+    );
+    if let Some(about) = about {
+        name.on_hover_text(about);
+    }
     back.clicked()
 }
 

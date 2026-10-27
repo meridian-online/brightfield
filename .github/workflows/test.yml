@@ -62,14 +62,16 @@ jobs:
   warm-cache:
     name: warm the build cache
     runs-on: macos-15
-    # Above the shards' 36 because a cancelled run of this job saves nothing,
+    # Above the shards' ceiling because a cancelled run of this job saves nothing,
     # and so every run after it would be cancelled the same way until someone
     # raised it. From no cache at all this job took 34.3 minutes on run
     # 39890740575: 22.9 compiling the workspace's tests, 5.5 the sibling-
     # manifest graph, 3.8 reclaiming disk and 1.3 saving the cache. It runs
     # once per lockfile, so the shards' ceiling remains the one that catches
-    # a slow test.
-    timeout-minutes: 50
+    # a slow test. Run 40451777135, the first lockfile with the Ossie model's
+    # crates, restored a partial cache and was still compiling the workspace's
+    # tests 43.3 minutes in when 50 cancelled it, after 4.6 reclaiming disk.
+    timeout-minutes: 80
     steps:
       - uses: actions/checkout@v4
 
@@ -162,14 +164,17 @@ jobs:
     # The shards start once `warm-cache` has saved this lockfile's cache, so
     # each one restores a full match.
     needs: warm-cache
-    # The ceiling is the `timeout` in the matrix below, the same 36 minutes for
+    # The ceiling is the `timeout` in the matrix below, the same 45 minutes for
     # every shard, because the `target-seconds:` figures further down pack the
     # shards to within a minute of each other's test time on the runs they
     # were measured from. A shard's time is about 5 minutes the shards all
     # pay (restoring the cache, reclaiming disk, compiling the workspace's own
     # crates) plus its share of the tests, 13 to 22 minutes on run
-    # 39890740575, which packed them by the figures before those below.
-    # Three measures set the figure:
+    # 39890740575, which packed them by the figures before those below. Run
+    # 40456819438 paid about 12 minutes before its first test and carried 67
+    # minutes of default-thread tests, which three shards held to within two
+    # minutes of the ceiling, so there are four.
+    # Four measures set the figure:
     #
     #   - The slowest warm shard measured was cancelled at its old 27-minute
     #     ceiling 27.9 minutes after it started (one-thread-1, run
@@ -181,6 +186,10 @@ jobs:
     #     now the `warm-cache` job's, and a shard pays the warm one.
     #   - No ceiling is lowered below the one it replaces, and the highest was
     #     36.
+    #   - On run 40467588413, after the figures below were refreshed,
+    #     default-4's tests took 1.6 times the figures' estimate; it passed
+    #     every test and was cancelled at 36 minutes in the Protocol step
+    #     after them. 1.25 times 36 is 45.
     #
     # A run with no cache at all compiles every dependency in `warm-cache`,
     # not here. When a shard is cancelled at the ceiling, measure the targets again from
@@ -200,15 +209,17 @@ jobs:
       matrix:
         include:
           - name: one-thread-1
-            timeout: 36
+            timeout: 45
           - name: one-thread-2
-            timeout: 36
+            timeout: 45
           - name: default-1
-            timeout: 36
+            timeout: 45
           - name: default-2
-            timeout: 36
+            timeout: 45
           - name: default-3
-            timeout: 36
+            timeout: 45
+          - name: default-4
+            timeout: 45
 
     # The shard names itself to the command in these four variables; with
     # none of them set, as on a person's machine, a test step runs its whole
@@ -408,13 +419,14 @@ jobs:
       # serial-targets: automatic_sample axis_vocabulary_rows_past banded_bar_ink
       # serial-targets: bar_orientation
       # serial-targets: binned_histogram close_question_baseline colour_literals
+      # serial-targets: column_header_type
       # serial-targets: committed_selection_ink dark_mark_ink dashboard_baseline
       # serial-targets: data_grid decimal_column editor_snapshot frame_ink front_door
       # serial-targets: gallery_gate ghosted_histogram grouped_histogram
       # serial-targets: grouped_histogram_shares keyed_canvas legend_baseline
       # serial-targets: legend_below_baseline legend_short_chart log_binned_histogram
       # serial-targets: navigation_extent outline_list pane_reflow
-      # serial-targets: part_of_whole_histogram point_map_baseline
+      # serial-targets: model_scene part_of_whole_histogram point_map_baseline
       # serial-targets: protocol_degrade_channel protocol_frame_crop
       # serial-targets: ranked_category_bars sampled_export scatter_kind scripted_open
       # serial-targets: shelf_band shelf_band_window shelf_edit shelf_fallback
@@ -439,7 +451,8 @@ jobs:
       # target runs on exactly one shard and a target nobody weighed still
       # runs. A local `cargo xtask ci` runs each whole group instead. The seconds are the `target-seconds:` lines below: the time from
       # each target's `Running` line in the job log to the next one, the
-      # longer of `main` run 39858758378 and pull request run 39888009797,
+      # longest of `main` run 39858758378 and pull request runs 39888009797
+      # and 40456819438,
       # rounded up, for every target of 10 seconds or more, plus four
       # stand-ins. Not the `finished in` of its `test result:` line: cargo
       # prints the headers and libtest the results on different streams, and
@@ -448,48 +461,55 @@ jobs:
       # `@protocols` is the two steps that run after the suite on the last
       # shard. A target with no line counts as 2 seconds. A figure gone stale
       # makes one shard longer than the others and loses no target.
-      # target-seconds: @bins=22 @doc=5 @lib=50 @protocols=14
-      # target-seconds: automatic_sample=45 axis_vocabulary_inert=14
-      # target-seconds: axis_vocabulary_rows_past=33 canvas_pane_group=70
-      # target-seconds: chart_save_close_asks=33 chart_save_records_version=20
-      # target-seconds: chart_save_reopens_chart=33
-      # target-seconds: chart_save_reopens_relative=48
-      # target-seconds: chart_save_unsaved_mark=14 chart_save_writes_chart=33
-      # target-seconds: close_question_baseline=30
-      # target-seconds: close_question_keeps_unsaved=35 colour_literals=50
-      # target-seconds: colour_vocabulary_domain=13 committed_brush_move=16
-      # target-seconds: dashboard_baseline=139 data_file=11 examples_exercise=38
-      # target-seconds: export_cli=35 export_pdf=62 front_door=96
-      # target-seconds: generated_reopen=63 generated_steps=11
-      # target-seconds: ghosted_histogram=13 grid_cursor=10 grid_foot=32
-      # target-seconds: grid_spot=58 grid_transposed_layout=11
-      # target-seconds: grouped_histogram_shares=10 hover_readout=16
-      # target-seconds: interval_slider=18 keyed_canvas=19 legend_baseline=27
-      # target-seconds: legend_ring=21 legend_ring_baseline=73
-      # target-seconds: legend_short_chart=41 legend_steps=18
-      # target-seconds: log_binned_histogram=16 navigation_extent=28
-      # target-seconds: navigator_spine=30 one_step_protocol=14
-      # target-seconds: open_materialise=70 operation_from_the_cursor=17
-      # target-seconds: operation_panel=15 outline_list=21 point_map_baseline=10
-      # target-seconds: protocol_degrade_channel=12 protocol_frame_crop=35
-      # target-seconds: protocol_panels=20 protocol_panels_window=41
-      # target-seconds: ranked_category_bars=22 region_gate=13
-      # target-seconds: reload_data_file=12 run_control=17 sampled_export=100
-      # target-seconds: save_records_operation=31
-      # target-seconds: saved_protocol_working_directory=29 scripted_open=14
-      # target-seconds: shelf_band=19 shelf_band_window=59 shelf_column_route=64
-      # target-seconds: shelf_edit=22 shelf_fallback=117 shelf_rebind=88
-      # target-seconds: shelf_save=72 shelf_settings_axis_click=127
-      # target-seconds: shelf_settings_colour_window=265
+      # target-seconds: @bins=32 @doc=5 @lib=78 @protocols=14
+      # target-seconds: automatic_sample=47 axis_vocabulary_inert=29
+      # target-seconds: axis_vocabulary_rows_past=33 canvas_pane_group=97
+      # target-seconds: chart_save_close_asks=33 chart_save_records_version=22
+      # target-seconds: chart_save_reopens_chart=43
+      # target-seconds: chart_save_reopens_relative=53
+      # target-seconds: chart_save_unsaved_mark=22 chart_save_writes_chart=46
+      # target-seconds: close_question_baseline=32
+      # target-seconds: close_question_keeps_unsaved=43 colour_literals=57
+      # target-seconds: colour_vocabulary_domain=15 column_header_band=12
+      # target-seconds: committed_brush_move=24 dashboard_baseline=186
+      # target-seconds: data_file=15 discovery=85 examples_exercise=51
+      # target-seconds: export_cli=42 export_pdf=65 front_door=212
+      # target-seconds: front_door_open=20 generated_reopen=111
+      # target-seconds: generated_steps=18 ghosted_histogram=14 grid_cursor=11
+      # target-seconds: grid_filter_selection=24 grid_foot=54 grid_spot=104
+      # target-seconds: grid_transposed_layout=14 grouped_histogram_shares=10
+      # target-seconds: hover_readout=24 interval_slider=18 keyed_canvas=19
+      # target-seconds: legend_baseline=27 legend_ring=21
+      # target-seconds: legend_ring_baseline=95 legend_short_chart=68
+      # target-seconds: legend_steps=21 log_binned_histogram=17
+      # target-seconds: model_file_edit=575 model_inspector=101 model_pane=40
+      # target-seconds: model_rerun=107 model_reshape=127 model_scene=48
+      # target-seconds: navigation_extent=38 navigator_spine=46
+      # target-seconds: one_step_protocol=14 open_materialise=70
+      # target-seconds: operation_from_the_cursor=22 operation_panel=20
+      # target-seconds: outline_list=26 own_files_protocol=11
+      # target-seconds: point_map_baseline=13 protocol_degrade_channel=15
+      # target-seconds: protocol_frame_crop=35 protocol_panels=20
+      # target-seconds: protocol_panels_window=51 ranked_category_bars=23
+      # target-seconds: region_gate=60 reload_data_file=12 run_control=21
+      # target-seconds: sampled_export=102 save_records_operation=55
+      # target-seconds: saved_protocol_working_directory=39 scripted_open=19
+      # target-seconds: shelf_band=34 shelf_band_window=87 shelf_column_route=77
+      # target-seconds: shelf_edit=38 shelf_edit_scheme=11 shelf_edit_written=23
+      # target-seconds: shelf_fallback=186 shelf_rebind=92 shelf_save=72
+      # target-seconds: shelf_settings_axis_click=127
+      # target-seconds: shelf_settings_colour_window=298
       # target-seconds: shelf_settings_format=41 shelf_settings_range_window=67
-      # target-seconds: shelf_settings_typed=84 shelf_settings_window=17
-      # target-seconds: shelf_settings_write=42 shelf_undo=165 sorted_bar_ink=10
-      # target-seconds: square_look=17 surfaces=166 text_ink_frame=13
-      # target-seconds: tile_scale_switch=23 typed_sql_baseline=26
-      # target-seconds: typed_sql_end_to_end=28 typed_sql_keep=33
-      # target-seconds: typed_sql_palette=17 typed_sql_reads=14
-      # target-seconds: typed_sql_save=35 typed_sql_where=17 versions_panel=116
-      # target-seconds: versions_step_back=165 workflow_graph_baseline=23
+      # target-seconds: shelf_settings_typed=100 shelf_settings_window=20
+      # target-seconds: shelf_settings_write=42 shelf_undo=165
+      # target-seconds: shipped_protocol_start=60 sorted_bar_ink=10
+      # target-seconds: square_look=17 surfaces=166 text_ink_frame=18
+      # target-seconds: tile_scale_switch=30 typed_sql_baseline=34
+      # target-seconds: typed_sql_end_to_end=28 typed_sql_keep=48
+      # target-seconds: typed_sql_palette=25 typed_sql_reads=14
+      # target-seconds: typed_sql_save=35 typed_sql_where=35 typed_statement=11
+      # target-seconds: versions_panel=116 versions_step_back=178
+      # target-seconds: workflow_graph_baseline=33
       #
       # `--locked` because Cargo.lock is tracked: without it CI would happily
       # re-resolve around the committed lock and go green on a dependency graph
@@ -511,7 +531,7 @@ jobs:
         run: cargo xtask ci --step test-default
 
       # THE PIN-STALENESS CHECK AND THE CONFORMANCE SCOREBOARD run after the
-      # suite on the last of the default-threads shards, `default-3` today, and
+      # suite on the last of the default-threads shards, `default-4` today, and
       # on no other: the command picks that shard from its place in the matrix,
       # so adding or removing a shard moves them to the new last one and
       # neither is ever left without a shard. On the other shards each step

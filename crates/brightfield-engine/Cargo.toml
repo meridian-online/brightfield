@@ -30,6 +30,10 @@ brightfield-sql = { workspace = true }
 duckdb = { workspace = true, features = ["parquet"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+calamine = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 # The workspace's lints, restated: a member's `[lints]` table either inherits the
 # workspace's whole table or carries its own, never both. The one difference is

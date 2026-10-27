@@ -1,0 +1,23 @@
+[package]
+name = "brightfield-ossie"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Framework-free Apache Ossie semantic-model types with Meridian's vendor extension: read, write and validate a model.ossie.yaml. No UI framework: could this run headless? yes."
+
+[dependencies]
+meridian-design = { workspace = true }
+jsonschema = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+
+[lib]
+name = "brightfield_ossie"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

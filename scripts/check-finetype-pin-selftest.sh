@@ -135,6 +135,14 @@ expect_fail "package.sh answering with another tag" \
 expect_fail "a consumer that cannot answer at all" "failed rather than answering" \
   --fetch "false" --workflow "$GOOD_WORKFLOW"
 
+echo "== vendored transforms from another tag"
+printf '{"tag": "v9.9.9", "labels": {}}\n' > "$TMP/other-tag.json"
+expect_fail "transforms vendored from a tag other than the pin" \
+  "is vendored from FineType 'v9.9.9'" \
+  --transforms "$TMP/other-tag.json" --workflow "$GOOD_WORKFLOW"
+expect_fail "transforms that are not there" "no vendored transforms at" \
+  --transforms "$TMP/absent.json" --workflow "$GOOD_WORKFLOW"
+
 echo "== a release workflow that does not stage the pinned release"
 cat > "$TMP/no-fetch.yml" <<'YML'
       - run: TAG=$(scripts/finetype-pin.sh); echo "$TAG"
@@ -219,8 +227,9 @@ echo "== the check is not simply always red"
 # passing because the check refuses any overridden input rather than because it
 # read the disagreement.
 pin_with "$TMP/other.env" "FINETYPE_TAG=v1.2.3" "FINETYPE_MODEL_REVISION=$REAL_REVISION"
+printf '{"tag": "v1.2.3", "labels": {}}\n' > "$TMP/other-pin.json"
 expect_pass "another well-formed pin every consumer reads" \
-  --pin "$TMP/other.env" --workflow "$GOOD_WORKFLOW"
+  --pin "$TMP/other.env" --workflow "$GOOD_WORKFLOW" --transforms "$TMP/other-pin.json"
 
 echo
 if [ "$fails" -ne 0 ]; then

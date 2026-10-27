@@ -212,9 +212,11 @@ pub const UNSAVED_MARK: &str = "\u{2022}";
 /// drawing a tile per column reddens rather than going on promising one.
 ///
 /// Changing these words is a copy decision, not a refactor — as [`TAGLINE`].
-pub const OPEN_FILE_PROMISE: &str = "A CSV or a Parquet on this machine. It opens as a table you \
-                                     can read and a chart for every column it can draw one for — \
-                                     nothing is uploaded and nothing is fetched.";
+pub const OPEN_FILE_PROMISE: &str = "A CSV, Parquet or Excel file, a folder of them, or a DuckDB \
+                                     or SQLite database on this machine. One table opens as a \
+                                     table you can read and a chart for every column it can draw \
+                                     one for; several open as a model of how they relate — \
+                                     nothing is uploaded.";
 
 /// The front door's content column, in logical points: **every** shipped
 /// start's card and the gaps between them, so the Datasets row sets the
@@ -970,10 +972,13 @@ pub fn fit_window_to_display(ctx: &egui::Context, natural: (f32, f32)) -> Displa
 // ---------------------------------------------------------------------------
 
 /// Whether `chosen` names a file this build opens as **data** rather than
-/// reads as a document.
+/// reads as a document: a folder, or a file by its extension.
 ///
-/// By extension alone, and deliberately: this decides which of two loaders
-/// gets the path, and it has to decide before either has touched the file.
+/// By whether it is a folder and otherwise by extension alone, and
+/// deliberately: this decides which loader gets the path, and it has to
+/// decide before any has touched the file. [`Boot::open_sampled`] then sends
+/// a single flat file to [`crate::data_file::open`] and a folder, workbook or
+/// database file to the front door's own open on the window's first frame.
 /// Everything that could make a plausible-looking path unopenable — a URL
 /// scheme, glob syntax in the name, a control character, a file that is not
 /// there — is [`crate::data_file::accept`]'s to refuse, with a sentence naming
@@ -987,12 +992,13 @@ pub fn fit_window_to_display(ctx: &egui::Context, natural: (f32, f32)) -> Displa
 /// `tests/scripted_open.rs` walks the list and holds them to it.
 #[must_use]
 pub fn names_a_data_file(chosen: &str) -> bool {
-    std::path::Path::new(chosen)
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| {
-            crate::data_file::OPENABLE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str())
-        })
+    std::path::Path::new(chosen).is_dir()
+        || std::path::Path::new(chosen)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| {
+                crate::data_file::OPENABLE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str())
+            })
 }
 
 /// Whether the canvas region holds the **asset graph** rather than a chart
@@ -1265,6 +1271,12 @@ pub struct Boot {
     /// the boot of such a start, so a relaunch that remembers it, and the
     /// card thumbnail drawn through it, show the screen the click lands on.
     pub open_panel: Option<usize>,
+    /// A path the window opens on its first frame, through the front door's own open
+    /// ([`MeridianApp::open_path`]'s), because that open needs the window: a folder, a
+    /// workbook, a database file or an own-files Protocol named on the command line, which open
+    /// as a model of their tables or onto the grid. Set with the boot otherwise empty, so the
+    /// first frame draws the door and the open replaces it.
+    pub open_later: Option<String>,
 }
 
 impl Boot {
@@ -1285,6 +1297,7 @@ impl Boot {
             panels: None,
             panels_problem: None,
             open_panel: None,
+            open_later: None,
         }
     }
 
@@ -1305,6 +1318,7 @@ impl Boot {
             panels: None,
             panels_problem: None,
             open_panel: None,
+            open_later: None,
         }
     }
 
@@ -1350,6 +1364,7 @@ impl Boot {
             panels: None,
             panels_problem: None,
             open_panel: None,
+            open_later: None,
         }
     }
 
@@ -1681,13 +1696,16 @@ impl Boot {
     /// had to agree about an environment gate, a window size and a summary line
     /// that neither shared.
     ///
-    /// Four outcomes, in the order they are decided. A **data file** goes
-    /// first and by extension alone — see [`names_a_data_file`] — because the
-    /// other three are classified by reading the file as text and a Parquet is
-    /// not text. Then a **one-step Protocol**, which is a manifest whose single
-    /// step is a local read of a data file this build opens: it resolves to
-    /// that file and takes the data-file route, so the declaration is read to
-    /// find the file and then discarded rather than rendered (see
+    /// Four outcomes, in the order they are decided, after an own-files
+    /// Protocol, which opens into the model pane on the window's first frame.
+    /// A **data file** goes first, as a folder or by extension alone — see
+    /// [`names_a_data_file`] — because the other three are classified by
+    /// reading the file as text and a Parquet is not text. A single flat file
+    /// opens here; a folder, workbook or database file opens on the window's
+    /// first frame, as the door's Open… opens it. Then a **one-step
+    /// Protocol**, which is a manifest whose single step is a local read of a
+    /// data file this build opens: it resolves to that file and takes the
+    /// data-file route, so the declaration is read to find the file and then discarded rather than rendered (see
     /// [`crate::one_step::data_file_named_by`], and
     /// [`crate::protocol::run_less_manifest_refusal`] for why that is not a
     /// hole in the gate below). Then any other **Protocol manifest**, behind
@@ -1724,6 +1742,27 @@ impl Boot {
         focus: Option<String>,
         sample: Option<SampleRate>,
     ) -> Result<Self, String> {
+        // An own-files Protocol, or a folder, workbook or database file, opens through the front
+        // door's own open once the window exists: it runs its Protocol with the window's runner,
+        // and may land in the model pane, which only a window holds.
+        let own = crate::own_files::own_protocol_dir(std::path::Path::new(spec));
+        let path = std::path::Path::new(spec);
+        let not_flat = path.is_dir() || !crate::data_file::is_flat_name(path);
+        if own.is_some() || (names_a_data_file(spec) && not_flat) {
+            if sample.is_some() {
+                return Err(format!(
+                    "{spec}: a sample rate is pushed into a plot's own query, and a folder, \
+                     workbook or database opens as tables with no authored plot to push it into. \
+                     Open it without the flag."
+                ));
+            }
+            return Ok(Self {
+                open_later: Some(
+                    own.map_or_else(|| spec.to_string(), |d| d.to_string_lossy().into_owned()),
+                ),
+                ..Self::empty()
+            });
+        }
         if names_a_data_file(spec) {
             if sample.is_some() {
                 return Err(format!(
@@ -2181,8 +2220,43 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "x" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::X)),
         "u" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::U)),
         "0" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Num0)),
+        // The model pane's view keys.
+        "v" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::V)),
+        "1" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Num1)),
+        "2" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Num2)),
+        "3" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Num3)),
+        // The model pane's reshape keys. Their bare letters refuse a held Shift
+        // (`shift_z_unfolds_rather_than_folds` in `tests/model_reshape.rs`): egui's `consume_key`
+        // lets a Shift the pattern does not name through, so a bare `z` would take the `shift-z`
+        // that unfolds.
+        "y" => ctx.input_mut(|i| consume_unshifted(i, Key::Y)),
+        "r" => ctx.input_mut(|i| consume_unshifted(i, Key::R)),
+        "z" => ctx.input_mut(|i| consume_unshifted(i, Key::Z)),
+        "i" => ctx.input_mut(|i| consume_unshifted(i, Key::I)),
+        "shift-d" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::D)),
+        "shift-a" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::A)),
+        "shift-c" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::C)),
+        "shift-z" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::Z)),
+        "shift-x" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::X)),
+        "shift-t" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::T)),
+        // Rediscover, the shifted form of the role key.
+        "shift-r" => ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::R)),
         _ => false,
     }
+}
+
+/// Consume a press of `key` with no modifier held, Shift included, and answer whether there was
+/// one.
+fn consume_unshifted(i: &mut egui::InputState, key: egui::Key) -> bool {
+    let before = i.events.len();
+    i.events.retain(|event| {
+        !matches!(
+            event,
+            egui::Event::Key { key: k, modifiers, pressed: true, .. }
+                if *k == key && modifiers.matches_exact(egui::Modifiers::NONE)
+        )
+    });
+    i.events.len() != before
 }
 
 /// The egui key the registry's `set-channel` is bound to, which hands the
@@ -2472,6 +2546,25 @@ struct ProtocolView {
     items: ItemMap<ProtocolDoc>,
 }
 
+/// The model pane's document and its live item, while the window holds an own-files Protocol.
+///
+/// It is kept, as the panel tiles are, while the inspector's Open in grid puts rows on the
+/// canvas: `in_grid` names what the grid holds then, and the canvas draws the dock with the way
+/// back above it. Only an opener of a different document lets the pane go.
+struct ModelDoc {
+    doc: crate::model_pane::ModelPane,
+    items: ItemMap<crate::model_pane::ModelPane>,
+    /// What the grid holds while the pane waits behind it: `None` while the pane is on the canvas.
+    in_grid: Option<String>,
+}
+
+impl ModelDoc {
+    /// Whether the pane is on the canvas, rather than waiting behind the grid.
+    fn shown(&self) -> bool {
+        self.in_grid.is_none()
+    }
+}
+
 /// The window.
 pub struct MeridianApp {
     /// The live layout — the arrangement, the window geometry, and what is
@@ -2485,6 +2578,11 @@ pub struct MeridianApp {
     layout: DirtyTracker,
     charts: ChartView,
     protocol: ProtocolView,
+    /// The model pane, when the window opened a folder, workbook or database: the tables it
+    /// found and the joins between them, drawn across the canvas in place of both documents,
+    /// which are empty beside it. `None` otherwise, and cleared whenever another document comes
+    /// in ([`Self::documents_changed`]).
+    model: Option<ModelDoc>,
     mode: Mode,
     fonts_installed: bool,
     /// Whether the last `ViewportCommand::Title` this window sent carried
@@ -2736,6 +2834,9 @@ pub struct MeridianApp {
     /// the `Ui` borrow across a window this process does not own. It is read
     /// after the frame's requests are applied — see [`MeridianApp::draw`].
     pick_requested: bool,
+    /// A path chosen at the door whose open waits one frame, so a notice that a DuckDB extension
+    /// is being fetched is drawn before the open blocks the thread.
+    pending_open: Option<String>,
     /// A saved Protocol whose front-door row was clicked, latched for after the
     /// frame. Latched rather than acted on for the reason `pick_requested` is:
     /// the `Ui` borrow the door drew through is still live at the click, and
@@ -2908,6 +3009,7 @@ impl MeridianApp {
     ) -> Self {
         let opened_id = boot.opened_id.clone();
         let open_panel = boot.open_panel;
+        let open_later = boot.open_later;
         let tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         let mut doc = ChartDoc::new(boot.composed, chart_host);
         if let Some(live) = boot.live {
@@ -2932,6 +3034,7 @@ impl MeridianApp {
         if let Some(index) = open_panel {
             app.open_panel_with_grid(index);
         }
+        app.pending_open = open_later;
         app
     }
 
@@ -2960,6 +3063,7 @@ impl MeridianApp {
     pub fn headless_with_layout(boot: Boot, layout: SavedLayout, mode: Mode) -> Self {
         let opened_id = boot.opened_id.clone();
         let open_panel = boot.open_panel;
+        let open_later = boot.open_later;
         let tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         let mut doc = ChartDoc::headless(boot.composed);
         if let Some(live) = boot.live {
@@ -2984,6 +3088,7 @@ impl MeridianApp {
         if let Some(index) = open_panel {
             app.open_panel_with_grid(index);
         }
+        app.pending_open = open_later;
         app
     }
 
@@ -3128,6 +3233,7 @@ impl MeridianApp {
                 doc: protocol_doc,
                 items: protocol.instantiate(),
             },
+            model: None,
             mode,
             fonts_installed: false,
             title_marked: false,
@@ -3172,6 +3278,7 @@ impl MeridianApp {
             remote_files: None,
             door_open_file: None,
             pick_requested: false,
+            pending_open: None,
             door_open_protocol: None,
             dialogs_allowed: false,
             overlay: None,
@@ -3918,6 +4025,10 @@ impl MeridianApp {
     /// which is also the fallback for a view whose node the graph no longer
     /// knows.
     fn crumb_line(&self) -> Vec<String> {
+        // The model's rows open in the grid: the model, then what the grid holds.
+        if let Some(showing) = self.model.as_ref().and_then(|m| m.in_grid.clone()) {
+            return vec!["Model".to_string(), showing];
+        }
         // A Protocol's panel open from its tile: the Protocol, then the panel.
         if let Some(tiles) = &self.tiles {
             let protocol = format!("Protocol \u{b7} {}", tiles.name());
@@ -4381,7 +4492,10 @@ impl MeridianApp {
     /// outcompeted by content the moment either document has any.
     #[must_use]
     pub fn front_door_is_live(&self) -> bool {
-        self.charts.doc.is_empty() && !self.protocol.doc.model.has_assets() && self.tiles.is_none()
+        self.charts.doc.is_empty()
+            && !self.protocol.doc.model.has_assets()
+            && self.tiles.is_none()
+            && !self.model.as_ref().is_some_and(ModelDoc::shown)
     }
 
     /// The rect the front door drew the gallery card for the start `id` at,
@@ -4910,6 +5024,8 @@ impl MeridianApp {
         self.grid_key(&ctx);
         // The run, on the same gate and for the same reason.
         self.run_key(&ctx);
+        // The model pane's view keys, on the same gate, while it is open.
+        self.model_keys(&ctx);
         // The grid's cursor keys, ahead of the frame verbs: with the grid
         // focused its keys are the cursor's, and the frame verbs stand down.
         self.grid_cursor_keys(&ctx, graph_on_canvas);
@@ -4975,6 +5091,13 @@ impl MeridianApp {
         } else {
             self.charts.doc.present(ctx.pixels_per_point(), mode);
         }
+        // The model's diagram rasters into a slot of the chart document's host, as a Protocol's
+        // panel tiles do: the chart document is empty while the model pane is open.
+        if let Some(model) = self.model.as_mut().filter(|m| m.shown()) {
+            model
+                .doc
+                .present(self.charts.doc.canvas_host(), ctx.pixels_per_point(), mode);
+        }
 
         // The window's arrangement, read once and read from nowhere else.
         // Every extent below comes out of it rather than out of a literal in
@@ -5007,6 +5130,8 @@ impl MeridianApp {
         let canvas = plan.expect_region(arrangement::CANVAS);
 
         let mut requests: Vec<Request> = Vec::new();
+        // What the model inspector's buttons chose, dispatched once the canvas has drawn.
+        let mut model_actions = Vec::new();
         if door {
             // ---- the navigator rail, on the door.
             //
@@ -5106,6 +5231,23 @@ impl MeridianApp {
                 self.front_door_ui(ui, &mut requests);
             });
             self.regions.push((canvas.id, drawn.response.rect));
+        } else if let Some(model) = self.model.as_mut().filter(|m| m.shown()) {
+            // The model pane, across the canvas region, in place of the dock: both documents are
+            // empty beside it, so every rail would draw its empty state. No stale door geometry,
+            // for the reason the dock's branch clears it.
+            self.door_cards.clear();
+            self.door_card_feet.clear();
+            self.door_sections.clear();
+            self.door_rows.clear();
+            self.door_help = None;
+            self.door_open_file = None;
+            let drawn = CentralPanel::default()
+                .frame(chrome::region_frame(canvas.frame, ui, mode))
+                .show(ui, |ui| {
+                    draw_model_pane(ui, model, mode, &mut requests);
+                });
+            self.regions.push((canvas.id, drawn.response.rect));
+            model_actions = model.doc.take_actions();
         } else {
             // Content somewhere, so the regions — and no stale door geometry: a
             // test that asks where a card was after the door has gone must
@@ -5142,11 +5284,13 @@ impl MeridianApp {
             let source = self.document_source();
             let source_about = self.document_source_about();
             // With a Protocol's panel open from its tile, the Protocol's crumb
-            // is the way back to every tile.
+            // is the way back to every tile; with the model's rows open in the
+            // grid, the model's crumb is the way back to the model.
             let crumb_link = self
                 .tiles
                 .as_ref()
-                .is_some_and(|tiles| tiles.selected().is_some());
+                .is_some_and(|tiles| tiles.selected().is_some())
+                || self.model_behind_grid();
             let mut crumb_back = false;
             let drawn = Panel::top(panel_id(locator, false))
                 .resizable(false)
@@ -5344,6 +5488,10 @@ impl MeridianApp {
                 let panels = tiles.panels()?;
                 Some(panels.tiles.get(tiles.selected()?)?.file.clone())
             });
+            // What the grid holds while the model pane waits behind it: the
+            // canvas draws the way back to the model above it.
+            let model_in_grid: Option<String> = self.model.as_ref().and_then(|m| m.in_grid.clone());
+            let mut model_back = false;
             let mut tile_action: Option<TilesAction> = None;
             let mut tile_back = false;
             // What the tiles say while this window runs their Protocol: the
@@ -5764,7 +5912,30 @@ impl MeridianApp {
                                 body.min,
                                 egui::vec2(body.width(), crate::panel_tiles::back_band_height()),
                             );
-                            tile_back = crate::panel_tiles::back_band(ui, band, file, mode);
+                            tile_back = crate::panel_tiles::back_band(
+                                ui,
+                                band,
+                                "\u{2190} All panels",
+                                "Back to every panel (Esc)",
+                                &crate::panel_tiles::panel_name(file),
+                                Some(&crate::panel_tiles::panel_about(file)),
+                                mode,
+                            );
+                            body.min.y = band.max.y;
+                        } else if let Some(showing) = &model_in_grid {
+                            let band = egui::Rect::from_min_size(
+                                body.min,
+                                egui::vec2(body.width(), crate::panel_tiles::back_band_height()),
+                            );
+                            model_back = crate::panel_tiles::back_band(
+                                ui,
+                                band,
+                                "\u{2190} Model",
+                                "Back to the model (Esc)",
+                                showing,
+                                None,
+                                mode,
+                            );
                             body.min.y = band.max.y;
                         }
                         let item = projections[projection].item;
@@ -6011,7 +6182,11 @@ impl MeridianApp {
                 }
                 None => {}
             }
-            if tile_back || crumb_back {
+            if self.model_behind_grid() {
+                if model_back || crumb_back {
+                    self.back_to_model();
+                }
+            } else if tile_back || crumb_back {
                 self.back_to_panel_tiles();
             }
             for id in picks.collapse {
@@ -6021,6 +6196,9 @@ impl MeridianApp {
             }
         }
 
+        for action in model_actions {
+            self.perform_model_action(&ctx, action);
+        }
         self.status_rail_ui(&ctx, graph_on_canvas, &mut requests);
         self.controls = self.name_controls(std::mem::take(&mut bar.controls));
 
@@ -6036,10 +6214,16 @@ impl MeridianApp {
         // raised there hangs until something kills it. The flag is left set so
         // a headless test can still assert the control asked; the door rewrites
         // it on its next frame.
+        // An open that waited a frame so the canvas could say what it is fetching first. Taken
+        // before the picker, so a path latched on this frame waits for the next one, after this
+        // frame has drawn the notice.
+        if let Some(path) = self.pending_open.take() {
+            self.open_path_now(&ctx, &path);
+        }
         if self.pick_requested && self.dialogs_allowed {
             self.pick_requested = false;
             if let Some(path) = crate::data_file::pick() {
-                self.open_data_file(&ctx, &path.to_string_lossy());
+                self.open_path(&ctx, &path.to_string_lossy());
             }
         }
         // A saved Protocol picked off the door. No dialog and no gate: the path
@@ -6102,7 +6286,9 @@ impl MeridianApp {
             return;
         }
         let pressed = |token: Option<&'static str>| token.is_some_and(|t| consume_token(ctx, t));
-        if graph_on_canvas && pressed(self.overlay_keys.palette) {
+        if self.model.as_ref().is_some_and(ModelDoc::shown) && pressed(self.overlay_keys.palette) {
+            self.open_model_palette();
+        } else if graph_on_canvas && pressed(self.overlay_keys.palette) {
             self.open_protocol_palette();
         } else if !graph_on_canvas && pressed(self.overlay_keys.palette) {
             self.open_chart_palette();
@@ -7049,6 +7235,57 @@ impl MeridianApp {
                 self.rebind_shelf();
                 ctx.request_repaint();
             }
+        }
+    }
+
+    /// Open the command palette at the model altitude, over the model pane's verbs
+    /// ([`crate::model_pane::model_palette_verbs`]): one row for each way the model is shown, and
+    /// the key that steps through them.
+    fn open_model_palette(&mut self) {
+        let allow = crate::model_pane::model_palette_verbs();
+        self.overlay = Some(Overlay::Palette(Picker::new(
+            CommandPalette::new_restricted(Altitude::Model, self.recency.clone(), &allow),
+        )));
+    }
+
+    /// The model pane's keys, while it is open: each binding the registry declares for a verb at
+    /// the model altitude, gated exactly as [`Self::home_key`] is. Only those keys are taken, so
+    /// `h`, `j`, `k` and `l` go on to the window's own handlers.
+    fn model_keys(&mut self, ctx: &egui::Context) {
+        if !self.model.as_ref().is_some_and(ModelDoc::shown)
+            || self.overlay.is_some()
+            || ctx.egui_wants_keyboard_input()
+        {
+            return;
+        }
+        let mut pressed = Vec::new();
+        for verb in brightfield_keys::registry()
+            .iter()
+            .filter(|v| v.applies_at(Altitude::Model))
+        {
+            for spec in &verb.binding_specs {
+                if consume_token(ctx, spec.keystrokes) {
+                    pressed.push(verb.longname);
+                }
+            }
+        }
+        for longname in pressed {
+            self.perform_model_verb(ctx, longname);
+        }
+    }
+
+    /// Perform one of the model pane's verbs: a view verb changes the view, and a reshape verb
+    /// acts on the selection and says what came of it in a toast.
+    fn perform_model_verb(&mut self, ctx: &egui::Context, longname: &str) {
+        let Some(model) = self.model.as_mut() else {
+            return;
+        };
+        ctx.request_repaint();
+        if model.doc.perform(longname) {
+            return;
+        }
+        if let Some(dispatched) = model.doc.perform_reshape(longname) {
+            self.report_model_dispatch(ctx, dispatched);
         }
     }
 
@@ -8450,6 +8687,10 @@ impl MeridianApp {
                 Request::Verb(verb) if verb.as_str() == "open-home" => {
                     self.open_home(ctx);
                 }
+                // The model pane's verbs are its own, chosen from the palette it opens.
+                Request::Verb(verb) if crate::model_pane::is_model_verb(verb.as_str()) => {
+                    self.perform_model_verb(ctx, verb.as_str());
+                }
                 // The navigator rail's toggle spans both documents for the
                 // same reason open-home does — it is the window's verb, not
                 // one document's — so it is intercepted here rather than
@@ -8642,6 +8883,7 @@ impl MeridianApp {
             return;
         }
         self.tiles = None;
+        self.model = None;
         self.open_chart(Composed::empty());
         self.protocol.doc.open(ProtocolInputs::empty());
         // Going Home is a document swap, so the fetched files go with the
@@ -8908,8 +9150,10 @@ impl MeridianApp {
     /// that would quietly stop being true if there were two tails.
     fn land_start(&mut self, ctx: &egui::Context, id: &'static str, opened: crate::starts::Opened) {
         // A start is a new document, and a Protocol's panel tiles are the
-        // outgoing one's, as is any start still waiting on its run.
+        // outgoing one's, as is any start still waiting on its run, and the
+        // model pane.
         self.tiles = None;
+        self.model = None;
         self.landing = None;
         match opened {
             // A new chart document is a new set of things to say, and a
@@ -9068,6 +9312,7 @@ impl MeridianApp {
     /// shipped Protocol start that could not run leaves the window.
     fn back_to_the_door(&mut self) {
         self.tiles = None;
+        self.model = None;
         self.landing = None;
         self.open_chart(Composed::empty());
         self.protocol.doc.open(ProtocolInputs::empty());
@@ -9206,7 +9451,13 @@ impl MeridianApp {
     fn adopt_boot(&mut self, boot: Boot) {
         self.landing = None;
         let open_panel = boot.open_panel;
+        if boot.open_later.is_some() {
+            self.pending_open = boot.open_later;
+        }
         self.tiles = panel_tiles_of(boot.panels, boot.panels_problem);
+        // The model pane belongs to the own-files Protocol it was opened for, and a different
+        // document is arriving. `open_model_pane` and `open_model_in_grid` put it back after.
+        self.model = None;
         self.open_chart(boot.composed);
         if let Some(live) = boot.live {
             self.charts.doc.attach_live(live);
@@ -9270,27 +9521,291 @@ impl MeridianApp {
     /// deleted or moved. Reopening files across launches is a recent-files
     /// list, which is its own piece of work.
     pub fn open_data_file(&mut self, ctx: &egui::Context, chosen: &str) {
-        let banner = NotificationId::new("open-data-file");
-        let boot = match crate::data_file::open(chosen) {
-            Ok(opened) => Boot::of_opened_file(opened),
-            Err(e) => {
-                eprintln!("could not open {chosen}: {e}");
-                self.notifications.raise(
-                    Notification::new(banner, Severity::Error, "Could not open that data file")
-                        .body(e),
-                );
-                ctx.request_repaint();
-                return;
-            }
-        };
-        self.adopt_boot(boot);
-        self.notifications.dismiss(banner);
+        match crate::data_file::open(chosen) {
+            Ok(opened) => self.adopt_opened_file(ctx, opened),
+            Err(e) => self.say_open_failed(ctx, chosen, e),
+        }
+    }
+
+    /// Raise the one banner a failed open leaves.
+    fn say_open_failed(&mut self, ctx: &egui::Context, chosen: &str, reason: String) {
+        eprintln!("could not open {chosen}: {reason}");
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new("open-data-file"),
+                Severity::Error,
+                "Could not open that data file",
+            )
+            .body(reason),
+        );
+        ctx.request_repaint();
+    }
+
+    /// Take a flat file that opened into the window and say so.
+    fn adopt_opened_file(&mut self, ctx: &egui::Context, opened: crate::data_file::OpenedFile) {
+        self.adopt_boot(Boot::of_opened_file(opened));
+        self.notifications
+            .dismiss(NotificationId::new("open-data-file"));
         self.toasts.push(Toast::new(
             Severity::Success,
             format!("Opened {}", self.title()),
         ));
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         ctx.request_repaint();
+    }
+
+    /// Open what the front door's picker chose: a file, a folder, a workbook or a database.
+    ///
+    /// When the open will need a DuckDB extension that is not installed, the canvas says which one
+    /// is being fetched and the open itself waits for the next frame, so the notice is on screen
+    /// while the thread is held.
+    pub fn open_path(&mut self, ctx: &egui::Context, chosen: &str) {
+        let installed = crate::data_file::installed_extensions();
+        self.open_path_knowing(ctx, chosen, &installed);
+    }
+
+    /// [`Self::open_path`] told which extensions are installed, so a test can name a set.
+    pub fn open_path_knowing(&mut self, ctx: &egui::Context, chosen: &str, installed: &[String]) {
+        let needed = crate::data_file::extensions_likely_needed(std::path::Path::new(chosen));
+        if let Some(message) = crate::data_file::fetch_message(&needed, installed) {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new("open-fetching-extension"),
+                    Severity::Warning,
+                    "Fetching an extension",
+                )
+                .body(message),
+            );
+            self.pending_open = Some(chosen.to_string());
+            ctx.request_repaint();
+            return;
+        }
+        self.open_path_now(ctx, chosen);
+    }
+
+    /// [`Self::open_path`] without the wait for a frame. Like a flat file's open it runs on the
+    /// calling thread, so a folder or workbook holds the window for as long as its tables take to
+    /// load and profile.
+    fn open_path_now(&mut self, ctx: &egui::Context, chosen: &str) {
+        self.notifications
+            .dismiss(NotificationId::new("open-fetching-extension"));
+        // The runner this window was given, else this binary, which is the runner when the window
+        // is the app's own.
+        let Some(runner) = self.runner.clone().or_else(crate::run::Runner::this_binary) else {
+            // Without a runner only the flat-file route can work.
+            self.open_data_file(ctx, chosen);
+            return;
+        };
+        if let Some(dir) = crate::own_files::own_protocol_dir(std::path::Path::new(chosen)) {
+            self.reopen_model_pane(ctx, &dir, runner);
+            return;
+        }
+        match crate::data_file::open_any(std::path::Path::new(chosen), &runner) {
+            Ok(crate::data_file::Opened::OneTable(opened)) => self.adopt_opened_file(ctx, opened),
+            Ok(crate::data_file::Opened::Model(protocol)) => {
+                self.open_model_pane(ctx, protocol, runner, true);
+            }
+            Err(e) => self.say_open_failed(ctx, chosen, e),
+        }
+    }
+
+    /// Open the own-files Protocol in `dir` again into the model pane, with the model its folder
+    /// holds: the Protocol is run for that model ([`crate::own_files::reopen`]) and its joins are
+    /// measured again as the pane opens. No folder is made, and no discovery pass runs.
+    fn reopen_model_pane(
+        &mut self,
+        ctx: &egui::Context,
+        dir: &std::path::Path,
+        runner: crate::run::Runner,
+    ) {
+        match crate::own_files::reopen(dir, &runner) {
+            Ok(protocol) => self.open_model_pane(ctx, protocol, runner, false),
+            Err(e) => self.say_open_failed(ctx, &dir.to_string_lossy(), e),
+        }
+    }
+
+    /// The path whose open is waiting for a frame to draw the fetch notice first.
+    #[must_use]
+    pub fn pending_open(&self) -> Option<&str> {
+        self.pending_open.as_deref()
+    }
+
+    /// Open the model pane over an own-files Protocol, in place of whatever the window held: both
+    /// documents are emptied and the pane takes the canvas. `runner` is the one the open ran the
+    /// Protocol with, and the pane runs it again when the model is saved. `full_pass` starts
+    /// discovery's full pass, for a model the open has just found from the sample.
+    fn open_model_pane(
+        &mut self,
+        ctx: &egui::Context,
+        protocol: crate::own_files::OwnProtocol,
+        runner: crate::run::Runner,
+        full_pass: bool,
+    ) {
+        let dir = protocol.dir.clone();
+        let doc = match crate::model_pane::ModelPane::open(protocol, runner) {
+            Ok(mut doc) => {
+                // The open wrote the sample pass's model; the full pass lands while it shows.
+                if full_pass {
+                    doc.start_full_pass(crate::discovery::StandIn);
+                }
+                doc
+            }
+            Err(e) => {
+                self.say_open_failed(ctx, &dir.to_string_lossy(), e);
+                return;
+            }
+        };
+        self.notifications
+            .dismiss(NotificationId::new("open-data-file"));
+        self.adopt_boot(Boot::empty());
+        let tables = doc.protocol.sources.tables.len();
+        self.model = Some(ModelDoc {
+            doc,
+            items: crate::model_pane::model_registry().instantiate(),
+            in_grid: None,
+        });
+        self.toasts.push(Toast::new(
+            Severity::Success,
+            format!(
+                "Opened {} table{} as a Protocol in {}",
+                tables,
+                if tables == 1 { "" } else { "s" },
+                dir.display()
+            ),
+        ));
+        ctx.request_repaint();
+    }
+
+    /// Whether the model pane is waiting behind the grid, which holds rows opened from it.
+    fn model_behind_grid(&self) -> bool {
+        self.model.as_ref().is_some_and(|m| m.in_grid.is_some())
+    }
+
+    /// Carry out one of the model inspector's actions: the pane takes the edits and the view
+    /// change, and the window opens rows in the grid and says what came of it in a toast.
+    pub fn perform_model_action(
+        &mut self,
+        ctx: &egui::Context,
+        action: crate::model_inspector::ModelAction,
+    ) {
+        let Some(model) = self.model.as_mut() else {
+            return;
+        };
+        let dispatched = model.doc.dispatch(action);
+        self.report_model_dispatch(ctx, dispatched);
+    }
+
+    /// Say what came of a model action in a toast, or open the rows it names in the grid. A picker
+    /// that opened is drawn in the inspector, and needs no toast.
+    fn report_model_dispatch(
+        &mut self,
+        ctx: &egui::Context,
+        dispatched: crate::model_pane::Dispatched,
+    ) {
+        let (severity, said) = match dispatched {
+            crate::model_pane::Dispatched::Done(said) => (Severity::Success, said),
+            crate::model_pane::Dispatched::Picking(_) => {
+                ctx.request_repaint();
+                return;
+            }
+            crate::model_pane::Dispatched::Failed(said) => (Severity::Error, said),
+            crate::model_pane::Dispatched::OpenInGrid(target) => {
+                self.open_model_in_grid(ctx, &target);
+                return;
+            }
+        };
+        self.toasts.push(Toast::new(severity, said));
+        ctx.request_repaint();
+    }
+
+    /// **Open the rows `target` names in the grid**, with the model pane kept behind it: a
+    /// table's silver rows, or a join's joined rows, opened as an opened Parquet file is, so its
+    /// dashboard and charts are reached as that file's are. The canvas draws the way back to the
+    /// model above it ([`Self::back_to_model`]).
+    ///
+    /// Answers whether the rows opened. When they cannot be, a banner says why and the pane stays.
+    pub fn open_model_in_grid(
+        &mut self,
+        ctx: &egui::Context,
+        target: &brightfield_render::model_scene::Selection,
+    ) -> bool {
+        let Some(mut model) = self.model.take() else {
+            return false;
+        };
+        let opened = model
+            .doc
+            .grid_snapshot(target)
+            .and_then(|path| crate::data_file::open(&path.to_string_lossy()));
+        match opened {
+            Ok(opened) => {
+                self.adopt_boot(Boot::of_opened_file(opened));
+                let showing = match target {
+                    brightfield_render::model_scene::Selection::Dataset(name) => {
+                        format!("Table {name}")
+                    }
+                    brightfield_render::model_scene::Selection::Relationship(name) => {
+                        format!("Join {name}")
+                    }
+                };
+                model.in_grid = Some(showing);
+                self.model = Some(model);
+                self.notifications
+                    .dismiss(NotificationId::new("open-model-grid"));
+                ctx.request_repaint();
+                true
+            }
+            Err(e) => {
+                self.model = Some(model);
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new("open-model-grid"),
+                        Severity::Error,
+                        "Could not open these rows in the grid",
+                    )
+                    .body(e),
+                );
+                ctx.request_repaint();
+                false
+            }
+        }
+    }
+
+    /// **Go back from the grid to the model pane** it was opened from: the grid's document goes,
+    /// and the pane is on the canvas again as it was left, over the same Protocol folder. Held, as
+    /// going back to the panel tiles is, while the grid's dashboard has edits no file holds.
+    pub fn back_to_model(&mut self) -> bool {
+        if !self.model_behind_grid() {
+            return false;
+        }
+        let banner = NotificationId::new("model-grid-unsaved");
+        if self.charts.doc.has_unsaved_work() {
+            self.notifications.raise(
+                Notification::new(banner, Severity::Warning, "These rows have unsaved edits")
+                    .body("Save the dashboard, or undo its edits, before going back to the model."),
+            );
+            return false;
+        }
+        self.notifications.dismiss(banner);
+        let Some(mut model) = self.model.take() else {
+            return false;
+        };
+        self.adopt_boot(Boot::empty());
+        model.in_grid = None;
+        model.doc.forget_raster();
+        self.model = Some(model);
+        true
+    }
+
+    /// The model pane's document, while the window holds one.
+    #[must_use]
+    pub fn model_pane(&self) -> Option<&crate::model_pane::ModelPane> {
+        self.model.as_ref().map(|model| &model.doc)
+    }
+
+    /// The model pane's document, mutably — the seam a test or a later verb saves a model
+    /// through.
+    pub fn model_pane_mut(&mut self) -> Option<&mut crate::model_pane::ModelPane> {
+        self.model.as_mut().map(|model| &mut model.doc)
     }
 
     /// Reload the data file behind the open chart document: re-run
@@ -9798,10 +10313,12 @@ impl MeridianApp {
     /// next rung of the Esc ladder: an overlay, a field holding the keyboard,
     /// the shelf and a selection each take the key first.
     fn tile_back_key(&mut self, ctx: &egui::Context) {
-        let open = self
-            .tiles
-            .as_ref()
-            .is_some_and(|tiles| tiles.selected().is_some());
+        let in_grid = self.model_behind_grid();
+        let open = in_grid
+            || self
+                .tiles
+                .as_ref()
+                .is_some_and(|tiles| tiles.selected().is_some());
         // A widget that held the keyboard at the end of the last frame takes
         // this Esc as its way out: egui lets go of the focused widget on a
         // bare Esc as the frame begins, so the focus asked about below has
@@ -9816,7 +10333,11 @@ impl MeridianApp {
             return;
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            self.back_to_panel_tiles();
+            if in_grid {
+                self.back_to_model();
+            } else {
+                self.back_to_panel_tiles();
+            }
             ctx.request_repaint();
         }
     }
@@ -10331,6 +10852,18 @@ impl MeridianApp {
     /// banner and changes nothing, exactly as a data file that will not read
     /// does.
     pub fn open_protocol_path(&mut self, ctx: &egui::Context, path: &str) {
+        // An own-files Protocol opens into the model pane over the model its folder holds.
+        if let Some(dir) = crate::own_files::own_protocol_dir(std::path::Path::new(path)) {
+            match self.runner.clone().or_else(crate::run::Runner::this_binary) {
+                Some(runner) => self.reopen_model_pane(ctx, &dir, runner),
+                None => self.say_open_failed(
+                    ctx,
+                    path,
+                    "no runner to run its Protocol with".to_string(),
+                ),
+            }
+            return;
+        }
         let banner = NotificationId::new("open-protocol");
         let boot = match Boot::open(path, self.protocol.doc.model.flow(), None) {
             Ok(boot) => boot,
@@ -10431,7 +10964,7 @@ impl MeridianApp {
         // build can reopen. A recent naming a start this binary no longer
         // ships would draw a row whose click does nothing, which is worse
         // than a shorter list.
-        let recents: Vec<Recent> = self
+        let mut recents: Vec<Recent> = self
             .layout
             .live()
             .recents
@@ -10439,6 +10972,15 @@ impl MeridianApp {
             .filter(|r| reopenable(&r.id))
             .cloned()
             .collect();
+        // The Protocols made from the analyst's own files, after the recents, each reopening
+        // into the model pane over the model its folder holds.
+        for dir in crate::own_files::listed() {
+            let id = remembered_id(&dir.join(arc::spec::MANIFEST_FILENAME).to_string_lossy());
+            if recents.iter().any(|r| r.id == id) {
+                continue;
+            }
+            recents.push(own_protocol_recent(&dir, id));
+        }
         let now = now_secs();
         let mut open_help = false;
         let mut open_file = false;
@@ -10501,13 +11043,15 @@ impl MeridianApp {
                         // you open a file and the picture is already there.
                         // This control is the pointing route to that promise
                         // and `names_a_data_file` is the typed one; both end in
-                        // `data_file::open` and neither is the other's
-                        // shorthand. It is deliberately NOT a `Request::Open`,
-                        // because that carries a `&'static str` start id and a
-                        // file the user chose is neither static nor a start.
+                        // `data_file::open_any` for a folder, workbook or
+                        // database, while the typed route opens a single flat
+                        // file with `data_file::open` directly, and neither is
+                        // the other's shorthand. It is deliberately NOT a
+                        // `Request::Open`, because that carries a `&'static
+                        // str` start id and a file the user chose is neither
+                        // static nor a start.
                         door_zone_heading(ui, "Start", sem);
-                        let open =
-                            ui.button(egui::RichText::new("Open a data file…").font(ui_font()));
+                        let open = ui.button(egui::RichText::new("Open…").font(ui_font()));
                         self.door_open_file = Some(open.rect);
                         if open.clicked() {
                             open_file = true;
@@ -10998,6 +11542,10 @@ impl MeridianApp {
         // a slot of its own, and are presented only when a tile changes.
         if let Some(tiles) = &self.tiles {
             panes.extend(tiles.raster_keys());
+        }
+        // …and so does the model pane's diagram.
+        if let Some(model) = &self.model {
+            panes.insert(model.doc.raster_key());
         }
         self.charts.doc.sweep(&panes);
         self.protocol.doc.sweep(&panes);
@@ -11657,6 +12205,31 @@ fn canvas_occupants(region: &Region) -> (&'static [Projection], ItemId) {
             "{} is drawn as the canvas but declared {other:?}",
             region.id
         ),
+    }
+}
+
+/// The front door's row for the own-files Protocol in `dir`, under `id`: named for its folder,
+/// fresh once it has a database, and opened when its model file last changed.
+fn own_protocol_recent(dir: &std::path::Path, id: String) -> Recent {
+    let ran = arc::spec::protocol_db_path(dir).is_ok_and(|db| db.is_file());
+    let opened_at = std::fs::metadata(dir.join(crate::discovery::MODEL_FILE))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs());
+    Recent {
+        id,
+        name: dir
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+        run: if ran {
+            RunState::Fresh
+        } else {
+            RunState::NeverRun
+        },
+        grid_layout: Default::default(),
+        grid_spot: Default::default(),
+        opened_at,
     }
 }
 
@@ -13306,6 +13879,55 @@ fn subject_icon(
         None => brightfield_workbench::subject::Icon("chart-bar"),
     }
 }
+
+/// The model pane, framed with its header band, into the whole of `ui`: its empty state when
+/// the model names no table, its item's body otherwise.
+fn draw_model_pane(
+    ui: &mut egui::Ui,
+    model: &mut ModelDoc,
+    mode: Mode,
+    requests: &mut Vec<Request>,
+) {
+    let key = PaneKey::new(crate::model_pane::MODEL);
+    let ModelDoc { doc, items, .. } = model;
+    let Some(pane) = items.get_mut(&key) else {
+        chrome::orphan_pane(ui, key, mode);
+        return;
+    };
+    let subject = pane.subject(&*doc);
+    let mut body = chrome::pane_frame(ui, &subject, true, mode);
+    if let Some(empty) = &subject.empty_state {
+        chrome::empty_state(&mut body, empty, mode);
+    } else {
+        // The pane is not a tile of the workspace's tree, so its widget ids hang off a fixed one.
+        let tile = egui_tiles::TileId::from_u64(0);
+        let mut cx = brightfield_workbench::ItemCtx::new(mode, key, tile, true, requests);
+        pane.ui(doc, &mut body, &mut cx);
+    }
+    // The file view's pause, on the frame clock: a read that changed the model draws again at
+    // once, and a pause still running draws again when it is out.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // seconds since start
+    let now_ms = (ui.input(|i| i.time) * 1000.0) as u64;
+    if doc.tick_file_edit(now_ms).is_some() {
+        ui.ctx().request_repaint();
+    }
+    if doc.file_edit_armed() {
+        let pause = std::time::Duration::from_millis(crate::model_pane::FILE_PAUSE_MS);
+        ui.ctx().request_repaint_after(pause);
+    }
+    // Discovery's full pass, on its worker: a fold draws again at once, and a pass still running
+    // is looked for again shortly.
+    if doc.poll_discovery().is_some() {
+        ui.ctx().request_repaint();
+    }
+    if doc.discovering() {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(DISCOVERY_POLL_MS));
+    }
+}
+
+/// How often a frame looks for discovery's full pass while it runs, in milliseconds.
+const DISCOVERY_POLL_MS: u64 = 100;
 
 /// [`draw_chart_pane`] **without the frame** — the body of a pane whose frame
 /// somebody else has already drawn.

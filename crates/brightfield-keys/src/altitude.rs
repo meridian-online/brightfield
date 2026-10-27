@@ -18,6 +18,11 @@ pub enum Altitude {
     /// distinct altitude so protocol verbs never leak into the chart grammar
     /// and vice versa.
     Protocol,
+    /// The model pane over an own-files Protocol: the tables an open found and
+    /// the joins between them, drawn as a diagram, a list or the Ossie file. A
+    /// distinct altitude, as the protocol panel's is, so the model's verbs
+    /// never leak into the chart or protocol grammar.
+    Model,
 }
 
 impl Altitude {
@@ -28,6 +33,7 @@ impl Altitude {
             Altitude::Dashboard => "dashboard",
             Altitude::View => "view",
             Altitude::Protocol => "protocol",
+            Altitude::Model => "model",
         }
     }
 }

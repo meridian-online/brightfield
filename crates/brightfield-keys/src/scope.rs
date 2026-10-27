@@ -215,6 +215,27 @@ mod tests {
     }
 
     #[test]
+    fn a_model_verb_resolves_at_the_model_altitude_and_nowhere_else() {
+        let focused = ComponentPath("model".into());
+        let root = ComponentPath("model".into());
+        let cycle = verb("cycle-model-view");
+        assert_eq!(
+            resolve_scope(&cycle, ctx(&focused, Altitude::Model, &root), false),
+            ScopeResolution::Resolved(focused.clone())
+        );
+        assert!(bare_applicable(&cycle, Altitude::Model));
+        for altitude in [Altitude::Dashboard, Altitude::View, Altitude::Protocol] {
+            assert!(!bare_applicable(&cycle, altitude));
+            match resolve_scope(&cycle, ctx(&focused, altitude, &root), false) {
+                ScopeResolution::Rejected(reason @ RejectReason::OffAltitude { .. }) => {
+                    assert!(reason.message().contains(altitude.label()));
+                }
+                other => panic!("expected off-altitude rejection at {altitude:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn bare_reserved_verb_rejects_with_its_bucket() {
         let focused = ComponentPath("root/hconcat[0]".into());
         let root = ComponentPath("root".into());

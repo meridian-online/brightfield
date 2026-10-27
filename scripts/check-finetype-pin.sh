@@ -2,7 +2,7 @@
 # Every consumer of the FineType pin answers with what the pin declares.
 #
 #   scripts/check-finetype-pin.sh
-#   scripts/check-finetype-pin.sh --pin FILE --fetch CMD --package CMD --workflow FILE
+#   scripts/check-finetype-pin.sh --pin FILE --fetch CMD --package CMD --workflow FILE --transforms FILE
 #
 # packaging/finetype-pin.env declares a FineType tag and a model registry
 # revision, and three things stage from them.
@@ -53,6 +53,7 @@ PIN="${ROOT}/packaging/finetype-pin.env"
 FETCH_CMD="${HERE}/fetch-finetype-bundle.sh --print-tag"
 PACKAGE_CMD="${HERE}/package.sh --print-finetype-pin"
 WORKFLOW="${ROOT}/.github/workflows/release.yml"
+TRANSFORMS="${ROOT}/crates/brightfield-protocol/vendor/finetype/transforms.json"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -60,6 +61,7 @@ while [ "$#" -gt 0 ]; do
     --fetch)    FETCH_CMD="$2";   shift 2 ;;
     --package)  PACKAGE_CMD="$2"; shift 2 ;;
     --workflow) WORKFLOW="$2";    shift 2 ;;
+    --transforms) TRANSFORMS="$2"; shift 2 ;;
     *) echo "check-finetype-pin: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
@@ -98,6 +100,16 @@ ${PIN} declares '${TAG}'"
 
 consumer "scripts/fetch-finetype-bundle.sh" "$FETCH_CMD"
 consumer "scripts/package.sh" "$PACKAGE_CMD"
+
+# The label transforms the silver cast applies are vendored from FineType's
+# definitions at one tag (scripts/vendor-finetype-transforms.sh). A file from
+# another tag would cast with contracts the staged classifier did not label for.
+[ -f "$TRANSFORMS" ] || fail "no vendored transforms at ${TRANSFORMS}"
+VENDORED=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag"])' "$TRANSFORMS") \
+  || fail "${TRANSFORMS} does not read as the vendored transforms"
+[ "$VENDORED" = "$TAG" ] || fail "${TRANSFORMS} is vendored from FineType '${VENDORED}' while \
+${PIN} declares '${TAG}'; run scripts/vendor-finetype-transforms.sh"
+echo "   vendored transforms: ${VENDORED}"
 
 [ -f "$WORKFLOW" ] || fail "no workflow at ${WORKFLOW}"
 

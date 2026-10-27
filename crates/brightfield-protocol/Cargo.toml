@@ -27,6 +27,8 @@ duckdb = { workspace = true }
 # drifted off the ladder while they were bare floats in `layout.rs`.
 meridian-design = { workspace = true }
 brightfield-sql = { workspace = true }
+# The semantic model the silver tables are cast from.
+brightfield-ossie = { workspace = true }
 # The chart parser and its edit reducer, for `chart_text`: a chart edit is
 # written into a chart file's text through arc's splice, and the parser is what
 # finds the plot the edit names and checks the text it gives back.

@@ -12,6 +12,8 @@ Releases before 0.1.6 predate this file; their tags and the commit history are t
 
 - The front door offers six starts: Palmer Penguins, the USGS earthquakes of 2025, NYC yellow taxi trips, Online Retail II, Epoch AI's notable models, and a run of the EDGAR↔GLEIF crosswalk. The first five are arc Protocols that run on the first click and open their dashboard beside its grid; the taxi, retail and Epoch AI cards fetch their data over the network on that first run and say so.
 - A filter typed in a dashboard's grid narrows its charts, as a brush on a chart narrows the grid.
+- Open a folder of CSV, TSV or Parquet files, an Excel workbook, or a DuckDB or SQLite database. Each table is loaded by an arc Protocol with the file, sheet and row it came from, profiled by FineType, and cleaned through FineType's casts, with the values that fail a cast kept in a table of their own. The tables open on a model pane as a diagram, a list or the Ossie file, where the analyst keeps, drops and adds joins, sets each table's role, folds reference tables in, leaves tables out and retypes columns. Until dovetail is built in, no joins are proposed, and the analyst adds them by hand.
+- The compact header band names each column's FineType type by its title, with its icon where FineType's catalogue gives one.
 
 ### Changed
 

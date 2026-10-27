@@ -12,6 +12,8 @@ brightfield-spec = { workspace = true }
 # Asset-graph + layout types for the protocol DAG scene —
 # UI-framework-free and vello-free by contract, so this crate stays framework-free.
 brightfield-protocol = { workspace = true }
+# The semantic model the model scene draws (UI-framework-free).
+brightfield-ossie = { workspace = true }
 # Meridian design tokens (chart ink, Harbour palette, bundled Inter font).
 # MIT and dependency-free, so the render crate stays framework-free.
 meridian-design = { workspace = true }
@@ -42,6 +44,8 @@ vello-bump-probe = ["vello/debug_layers"]
 
 [dev-dependencies]
 vello = { workspace = true, features = ["wgpu"] }
+# PNG baselines for the model scene.
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [lints]
 workspace = true

@@ -15,6 +15,7 @@ pub mod preagg;
 pub mod preview;
 pub mod profile;
 pub mod semantic;
+pub mod sources;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};

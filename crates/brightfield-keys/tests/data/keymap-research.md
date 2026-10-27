@@ -184,6 +184,52 @@ it is. The step back is **Data**-tier, since Save writes it and `u` takes it bac
 | `step-back-to-version` | `enter` | 3 / 4 / 5 | enter = take the row under the cursor (the shelf's keep, telescope, fzf); a Data verb, since Save writes it; `u` takes it back |
 | `return-to-now` | `escape` | 4 / 4 / 5 | esc = back out one level (the Esc ladder), as the shelf's `back-out-of-shelf`; writes nothing |
 
+### The model pane — the tables an open found, shown three ways, at an altitude of its own
+
+A folder, workbook or database opens into a model pane: the tables it found and the joins between them,
+shown as a diagram, a list or the Ossie file the model is written as. `v` steps through the three, as a
+viewer's view key does, and each view also has a key of its own so the palette can name it: `1`, `2` and
+`3`, the views' places in one closed set of three. Finder numbers its views the same way with `cmd`, which
+this window keeps off digits; a bare digit here moves no focus, so it addresses no surface. The verbs
+apply at the model altitude and nowhere else, so `v` and the digits mean nothing to the chart or the asset
+graph, and `h`, `j`, `k` and `l` keep their motion. All four are **View**-tier: which way the model is
+drawn is never written anywhere.
+
+| longname | key(s) | freq / mnem / conv | motor note |
+|----------|--------|--------------------|------------|
+| `cycle-model-view` | `v` | 4 / 5 / 4 | `v` = view; one key steps diagram → list → file, as a viewer's view key does; h j k l stay motion |
+| `show-model-diagram` | `1` | 2 / 3 / 4 | `1` = the first of the three views, the one the pane opens on |
+| `show-model-list` | `2` | 2 / 3 / 4 | `2` = the second of the three views; Finder's list view is its second |
+| `show-model-file` | `3` | 2 / 3 / 3 | `3` = the third of the three views; the file is the model as written |
+
+The model pane's reshape verbs change the model itself: keep or drop a join, add one or change its
+keys, give a table another role, fold or unfold it, leave it out or bring it back, and retype a column.
+Each writes the Ossie file, so all ten are **Data**-tier spec edits, and each acts on what is selected,
+addressed by its name in the model (`relationship.<name>`, `dataset.<name>`) rather than by where it is
+drawn. They apply at the model altitude only. Their keys keep off `h j k l`, `v` and the digits, and off
+the bare letters the chart already binds in the same context (`a`, `c`, `d`, `x`), whose shifted forms
+they take as the heavier, durable sibling; `f` stays with the deferred filter verbs and `t` with
+the deferred point-select verb. (`z` here is the fold key; the `z` the scope model dropped below was a
+scope prefix.)
+
+Rediscover (`rediscover-model`) runs discovery again over the whole model and folds what it proposes
+around the analyst's decisions. It rewrites the Ossie file, so it is a **Data**-tier spec edit too, and
+it takes the shifted form of the role key beside it.
+
+| longname | key(s) | freq / mnem / conv | motor note |
+|----------|--------|--------------------|------------|
+| `keep-join` | `y` | 4 / 4 / 3 | `y` = yes to a proposal, the accept key of a y/n prompt |
+| `drop-join` | `shift-d` | 3 / 4 / 4 | `shift-d` = delete (vim `D`); bare `d` is the chart's remove-mark |
+| `add-join` | `shift-a` | 2 / 4 / 3 | `shift-a` = add (vim `A`); bare `a` is the chart's add-mark; a drag between cards opens the same picker |
+| `change-join-keys` | `shift-c` | 2 / 4 / 3 | `shift-c` = change (vim `C`); bare `c` is the chart's colour scheme |
+| `set-role` | `r` | 3 / 5 / 2 | `r` = role; reload keeps `cmd-r` |
+| `fold-table` | `z` | 2 / 3 / 4 | `z` = fold (vim's `z` fold family) |
+| `unfold-table` | `shift-z` | 2 / 3 / 3 | `shift-z` = the undoing sibling of `z` |
+| `leave-out-table` | `shift-x` | 2 / 4 / 3 | `shift-x` = cut it out (vim `X`); bare `x` is the chart's axis lock |
+| `include-table` | `i` | 1 / 4 / 2 | `i` = include (vim's insert) |
+| `retype-column` | `shift-t` | 2 / 4 / 2 | `shift-t` = type; bare `t` stays with the deferred point-select verb |
+| `rediscover-model` | `shift-r` | 1 / 4 / 3 | `shift-r` = run again; bare `r` is set-role, and the shift makes a rewrite of the whole model deliberate; `cmd-shift-r` stays the data reload |
+
 Reserved verbs are deliberately unscored (no key yet), shown greyed in the palette until their keys land:
 needs-keyboard-target (`filter-view`, `cross-filter-all`, `toggle-point-select`, `set-param`) and
 needs-command-log (`change-mark-type`, `add-mark`, `set-channel`, `remove-mark`, `undo`).

@@ -27,6 +27,8 @@
 //!   bucket column that gives a column of instants a band to draw on.
 //! - [`legend`] — the chart legend as a native egui margin panel, outside the
 //!   plot rect, derived from the scales each chart was drawn against.
+//! - [`model_pane`] — an own-files open's model: its tables and joins as a
+//!   diagram, a list or the Ossie file, cycled with `v`.
 //! - [`navigation`] — pan/zoom: the gesture arithmetic read off the displayed
 //!   scales, the axis lock, and the settle rule that makes a continuously
 //!   moving frame issue exactly one re-query per gesture.
@@ -64,6 +66,8 @@
 //! - [`run`] — the ledger strip's Run control underneath: `arc` running that
 //!   Protocol in a child process of this binary, on a worker, and the run
 //!   records it leaves beside the spec, read back newest first.
+//! - [`own_files`] — the Protocol folder an analyst's own files are written as: a load step
+//!   per table, the raw tables' FineType profile, and a Frictionless data package per source.
 //! - [`shelf_edit`] — a column put on a chart's x or y, as the list of chart
 //!   edits that make it: the layers that bind the channel move together, and
 //!   a map taken off its coordinate pair loses its projection.
@@ -96,6 +100,7 @@ pub mod dashboard;
 pub mod data_file;
 pub mod data_grid;
 pub mod devtools;
+pub mod discovery;
 pub mod editor;
 pub mod export;
 pub mod gallery;
@@ -105,11 +110,15 @@ pub mod housing;
 pub mod inspector;
 pub mod interval_drag;
 pub mod legend;
+pub mod model_file;
+pub mod model_inspector;
+pub mod model_pane;
 pub mod navigation;
 pub mod one_step;
 pub mod operation;
 pub mod operation_panel;
 pub mod overlays;
+pub mod own_files;
 pub mod panel_tiles;
 pub mod pipeline;
 pub mod protocol;

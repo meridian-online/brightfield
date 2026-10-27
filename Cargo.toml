@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/brightfield-workbench", "crates/brightfield-spec", "crates/brightfield-keys", "crates/brightfield-conformance", "crates/brightfield-sql", "crates/brightfield-protocol", "crates/brightfield-engine", "crates/brightfield-render", "crates/brightfield-ui", "crates/brightfield-model", "crates/brightfield-shell", "crates/brightfield-bench", "crates/brightfield-report", "xtask"]
+members = ["crates/brightfield-workbench", "crates/brightfield-spec", "crates/brightfield-keys", "crates/brightfield-conformance", "crates/brightfield-sql", "crates/brightfield-protocol", "crates/brightfield-engine", "crates/brightfield-render", "crates/brightfield-ui", "crates/brightfield-model", "crates/brightfield-shell", "crates/brightfield-bench", "crates/brightfield-report", "crates/brightfield-ossie", "xtask"]
 resolver = "2"
 
 [workspace.package]
@@ -36,6 +36,7 @@ repository = "https://github.com/meridian-online/brightfield"
 # Members that more than one member depends on.
 brightfield-engine = { path = "crates/brightfield-engine" }
 brightfield-keys = { path = "crates/brightfield-keys", version = "0.1.0" }
+brightfield-ossie = { path = "crates/brightfield-ossie" }
 brightfield-protocol = { path = "crates/brightfield-protocol", version = "0.1.0" }
 brightfield-render = { path = "crates/brightfield-render" }
 brightfield-spec = { path = "crates/brightfield-spec" }
@@ -66,6 +67,9 @@ duckdb = { version = "=1.20000.0", features = ["bundled"] }
 egui = "0.35"
 egui_tiles = "0.16"
 indexmap = "2"
+# Validates an Ossie document against the vendored schema; no remote-reference
+# resolvers, since the schema refers only to itself.
+jsonschema = { version = "0.30", default-features = false }
 kurbo = "0.13"
 meridian-design = { git = "https://github.com/meridian-online/design", rev = "194322fe70b84e336d9910f78a7afa409d073e82" }
 meridian-egui = { git = "https://github.com/meridian-online/design", rev = "194322fe70b84e336d9910f78a7afa409d073e82" }
@@ -77,6 +81,11 @@ serde_yaml = "0.9"
 sqlparser = { version = "0.61", features = ["visitor"] }
 thiserror = "2"
 vello = "0.9"
+# Names an .xlsx workbook's sheets; DuckDB reads the rows.
+calamine = { version = "0.37", default-features = false }
+# Reads zip entries; a member that does says which zlib backend it wants.
+zip = { version = "6", default-features = false, features = ["deflate-flate2"] }
+flate2 = "1"
 
 [workspace.lints.rust]
 unused_must_use = "warn"

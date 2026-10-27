@@ -520,6 +520,8 @@ pub struct CodeSurfaceOutput {
     /// The primary cursor as 1-based `(line, column)`, when the surface has
     /// one.
     pub cursor: Option<(usize, usize)>,
+    /// Whether the text edit holds the keyboard at the end of the frame.
+    pub focused: bool,
 }
 
 /// Draw the code surface: gutter with line numbers, the highlighted text
@@ -535,6 +537,19 @@ pub fn code_surface(
     text: &mut String,
     access: Access,
     mode: Mode,
+) -> CodeSurfaceOutput {
+    code_surface_at(ui, id_salt, text, access, mode, None)
+}
+
+/// [`code_surface`], scrolled this frame so that buffer line `scroll_to` (1-based) stands at the
+/// top of the surface, when one is given. A frame given `None` leaves the scroll where it was.
+pub fn code_surface_at(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    text: &mut String,
+    access: Access,
+    mode: Mode,
+    scroll_to: Option<usize>,
 ) -> CodeSurfaceOutput {
     let dark = mode.is_dark();
     let treat = treatment(access, dark);
@@ -559,9 +574,17 @@ pub fn code_surface(
     );
     inner.shrink_clip_rect(inner_rect);
 
-    let out = egui::ScrollArea::both()
+    let mut area = egui::ScrollArea::both()
         .id_salt(id_salt)
-        .auto_shrink([false, false])
+        .auto_shrink([false, false]);
+    if let Some(line) = scroll_to {
+        // The layouter does not wrap, so each buffer line is one monospace row.
+        let row_h = inner.text_style_height(&egui::TextStyle::Monospace);
+        #[allow(clippy::cast_precision_loss)] // line counts are far below f32's mantissa
+        let offset = row_h * line.saturating_sub(1) as f32;
+        area = area.vertical_scroll_offset(offset);
+    }
+    let out = area
         .show(&mut inner, |ui| {
             gutter_and_edit(ui, id_salt, text, access, dark)
         })
@@ -646,6 +669,7 @@ fn gutter_and_edit(
         };
 
         result.changed = access == Access::Editable && output.response.changed();
+        result.focused = output.response.has_focus();
         result.cursor = output
             .cursor_range
             .map(|range| line_col(text, range.primary.index.0));

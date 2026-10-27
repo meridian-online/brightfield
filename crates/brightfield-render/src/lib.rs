@@ -20,6 +20,7 @@ pub mod kde;
 pub mod layout;
 pub mod legend;
 pub mod mark;
+pub mod model_scene;
 pub mod nearest;
 pub mod past_ends;
 pub mod sample_notice;

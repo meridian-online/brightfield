@@ -71,6 +71,7 @@ chrono = { workspace = true }
 # is built on is a trap laid for the increment after this one.
 egui_tiles = { workspace = true, features = ["serde"] }
 brightfield-protocol = { workspace = true }
+brightfield-ossie = { workspace = true }
 # The runner behind the ledger strip's Run control — `crate::run`. The workspace's
 # one `arc`, the package and rev `brightfield-protocol` links for its spec loader,
 # with `cli` on for the one item it adds:
@@ -134,7 +135,7 @@ ureq = "2"
 # graph: `arc` already resolves zip 6 with exactly these features, for its
 # archive-extract operator, so this declaration adds a direct edge and no
 # build.
-zip = { version = "6", default-features = false, features = ["deflate-flate2"] }
+zip = { workspace = true }
 # The snapshot an opened agent Protocol's panels read — `crate::protocol_panels`
 # attaches the Protocol's database read-only, copies the tables the panels read
 # into memory, detaches, and writes each to Parquet. Neither crate is new to the

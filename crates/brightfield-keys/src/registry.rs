@@ -233,7 +233,7 @@ const DASHBOARD_AND_VIEW: &[Altitude] = &[Altitude::Dashboard, Altitude::View];
 /// and [`help_sheet`].
 #[must_use]
 pub fn registry() -> Vec<VerbEntry> {
-    use Altitude::{Dashboard, Protocol, View};
+    use Altitude::{Dashboard, Model, Protocol, View};
     use BindingContext::{Editor, Global, Workspace};
     use Drives as D;
 
@@ -1156,6 +1156,192 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Show or hide the design gallery — the component vocabulary, drawn live",
             scores: None,
         },
+        // ---- the model pane: the tables an open found and the joins between
+        //      them, shown three ways. `v` steps through the three, and each
+        //      has a key of its own so the palette can name it: 1, 2 and 3,
+        //      the views' places in that one closed set of three. All are
+        //      View-tier: which way the model is drawn is never written
+        //      anywhere, and none moves focus. They apply at the model altitude
+        //      and nowhere else, so `v` and the digits mean nothing to the chart
+        //      or the graph. ----
+        VerbEntry {
+            longname: "cycle-model-view",
+            tier: CommandTier::View,
+            binding_specs: vec![ws("v")],
+            scope_applicability: vec![Model],
+            drives: D::Presentation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Show the model the next way: the diagram, then the list, then the Ossie file",
+            scores: Some(Scores { frequency: 4, mnemonic: 5, convention: 4, motor_note: "v = view; one key steps through the three, as a viewer's view key does; h j k l stay motion" }),
+        },
+        VerbEntry {
+            longname: "show-model-diagram",
+            tier: CommandTier::View,
+            binding_specs: vec![ws("1")],
+            scope_applicability: vec![Model],
+            drives: D::Presentation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Show the model as a diagram",
+            scores: Some(Scores { frequency: 2, mnemonic: 3, convention: 4, motor_note: "1 = the first of the three views, the one the pane opens on; Finder numbers its views the same way (with cmd, which this window keeps off digits)" }),
+        },
+        VerbEntry {
+            longname: "show-model-list",
+            tier: CommandTier::View,
+            binding_specs: vec![ws("2")],
+            scope_applicability: vec![Model],
+            drives: D::Presentation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Show the model as a list",
+            scores: Some(Scores { frequency: 2, mnemonic: 3, convention: 4, motor_note: "2 = the second of the three views; Finder's list view is its second" }),
+        },
+        VerbEntry {
+            longname: "show-model-file",
+            tier: CommandTier::View,
+            binding_specs: vec![ws("3")],
+            scope_applicability: vec![Model],
+            drives: D::Presentation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Show the model as the Ossie file",
+            scores: Some(Scores { frequency: 2, mnemonic: 3, convention: 3, motor_note: "3 = the third of the three views; the file is the model as written" }),
+        },
+        // ---- the model pane's reshape verbs: each changes the model the
+        //      analyst is looking at and writes it as the Ossie file, so all
+        //      are Data-tier spec edits. Each acts on what is selected, a join
+        //      or a table, addressed by its name in the model
+        //      (`relationship.<name>`, `dataset.<name>`), never by where it is
+        //      drawn. The keys keep off h j k l, v and the digits, and off
+        //      every bare letter the chart already binds in this context; the
+        //      shifted forms are the heavier sibling of a bare letter the
+        //      chart holds (d, a, c, x) or of the verb beside it (z). ----
+        VerbEntry {
+            longname: "keep-join",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("y")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Keep the selected possible join as the analyst's",
+            scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 3, motor_note: "y = yes to a proposal, the accept key of a y/n prompt; one bare key for the commonest review answer" }),
+        },
+        VerbEntry {
+            longname: "drop-join",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("shift-d")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Drop the selected join, keeping it as rejected so discovery does not add it back",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 4, motor_note: "shift-d = delete (vim D); bare d is the chart's remove-mark, and the shift makes a durable drop deliberate" }),
+        },
+        VerbEntry {
+            longname: "add-join",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("shift-a")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Add a join from the selected table to another, choosing the columns on each side",
+            scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 3, motor_note: "shift-a = add (vim A appends); bare a is the chart's add-mark; a drag from one card to another opens the same picker" }),
+        },
+        VerbEntry {
+            longname: "change-join-keys",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("shift-c")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Change the columns the selected join matches on",
+            scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 3, motor_note: "shift-c = change (vim C); bare c is the chart's colour scheme" }),
+        },
+        VerbEntry {
+            longname: "set-role",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("r")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Give the selected table another role: entity, event, reference, bridge, snapshot or unclear",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 2, motor_note: "r = role; bare r is free here, reload keeps cmd-r" }),
+        },
+        VerbEntry {
+            longname: "fold-table",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("z")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Fold the selected table into a table it joins, as columns of that table",
+            scores: Some(Scores { frequency: 2, mnemonic: 3, convention: 4, motor_note: "z = fold (vim's z fold family); f and t stay with the deferred filter verbs" }),
+        },
+        VerbEntry {
+            longname: "unfold-table",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("shift-z")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Unfold the selected table from the table it is folded into",
+            scores: Some(Scores { frequency: 2, mnemonic: 3, convention: 3, motor_note: "shift-z = the undoing sibling of z, one shift away from the fold it reverses" }),
+        },
+        VerbEntry {
+            longname: "leave-out-table",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("shift-x")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Leave the selected table out of the model; its silver tables are dropped",
+            scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 3, motor_note: "shift-x = cut it out (vim X deletes); bare x is the chart's axis lock" }),
+        },
+        VerbEntry {
+            longname: "include-table",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("i")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Bring the selected table, left out of the model, back into it",
+            scores: Some(Scores { frequency: 1, mnemonic: 4, convention: 2, motor_note: "i = include (vim's insert); bare i is free here" }),
+        },
+        VerbEntry {
+            longname: "retype-column",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("shift-t")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Give one of the selected table's columns another FineType type, and cast it again",
+            scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 2, motor_note: "shift-t = type; bare t stays with the deferred point-select verb" }),
+        },
+        // Rediscover runs discovery again over the whole model and folds what it
+        // proposes around the analyst's decisions, rewriting the Ossie file: a
+        // Data-tier spec edit like the reshape verbs, on the shifted form of the
+        // role key beside it.
+        VerbEntry {
+            longname: "rediscover-model",
+            tier: CommandTier::Data,
+            binding_specs: vec![ws("shift-r")],
+            scope_applicability: vec![Model],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Run discovery again and fold what it finds around what you have decided",
+            scores: Some(Scores { frequency: 1, mnemonic: 4, convention: 3, motor_note: "shift-r = run again (vim R replaces, a rerun key in many tools); bare r is set-role, and the shift makes a rewrite of the whole model deliberate; cmd-shift-r stays the data reload" }),
+        },
     ]
 }
 
@@ -1465,6 +1651,21 @@ mod tests {
             "open-run-quality",
             "move-grid",
             "toggle-gallery",
+            "cycle-model-view",
+            "show-model-diagram",
+            "show-model-list",
+            "show-model-file",
+            "keep-join",
+            "drop-join",
+            "add-join",
+            "change-join-keys",
+            "set-role",
+            "fold-table",
+            "unfold-table",
+            "leave-out-table",
+            "include-table",
+            "retype-column",
+            "rediscover-model",
         ];
         assert_eq!(got, expected);
     }
@@ -1483,8 +1684,9 @@ mod tests {
             .map(|v| v.longname)
             .collect();
         // The Data-tier set is exactly the addressed spec-edit verbs plus undo,
-        // the Outline's put-a-column-on-a-channel verbs, the shelf's keep, and the
-        // Versions panel's step back, which Save writes.
+        // the Outline's put-a-column-on-a-channel verbs, the shelf's keep, the
+        // Versions panel's step back, which Save writes, and the model pane's
+        // reshape verbs, which write the Ossie file.
         let mut got = durable.clone();
         got.sort_unstable();
         let mut expected = vec![
@@ -1504,6 +1706,17 @@ mod tests {
             "keep-shelf-choice",
             "set-shelf-setting-to-auto",
             "step-back-to-version",
+            "keep-join",
+            "drop-join",
+            "add-join",
+            "change-join-keys",
+            "set-role",
+            "fold-table",
+            "unfold-table",
+            "leave-out-table",
+            "include-table",
+            "retype-column",
+            "rediscover-model",
         ];
         expected.sort_unstable();
         assert_eq!(got, expected, "only durable-writing (Data) verbs write");
@@ -1805,6 +2018,108 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn v_binding_is_unique_in_model_scope() {
+        let reg = registry();
+        let at_model: Vec<&VerbEntry> = reg
+            .iter()
+            .filter(|v| v.applies_at(Altitude::Model))
+            .collect();
+        let on_v: Vec<&str> = at_model
+            .iter()
+            .filter(|v| v.binding_specs.iter().any(|b| b.keystrokes == "v"))
+            .map(|v| v.longname)
+            .collect();
+        assert_eq!(on_v, ["cycle-model-view"]);
+        let cycle = reg
+            .iter()
+            .find(|v| v.longname == "cycle-model-view")
+            .unwrap();
+        assert_eq!(cycle.scope_applicability, vec![Altitude::Model]);
+        assert_eq!(cycle.tier, CommandTier::View);
+        assert_eq!(cycle.drives, Drives::Presentation);
+        assert!(cycle.scores.is_some());
+        // No other verb binds `v` in the context the model's verbs resolve in.
+        let in_workspace: Vec<&str> = reg
+            .iter()
+            .filter(|v| {
+                v.binding_specs
+                    .iter()
+                    .any(|b| b.keystrokes == "v" && b.context == BindingContext::Workspace)
+            })
+            .map(|v| v.longname)
+            .collect();
+        assert_eq!(in_workspace, ["cycle-model-view"]);
+        // The model's verbs stay at the model altitude, and h j k l are not theirs.
+        for v in &at_model {
+            assert_eq!(
+                v.scope_applicability,
+                vec![Altitude::Model],
+                "{}",
+                v.longname
+            );
+            for b in &v.binding_specs {
+                assert!(
+                    !["h", "j", "k", "l"].contains(&b.keystrokes),
+                    "{} rebinds {}",
+                    v.longname,
+                    b.keystrokes
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_model_reshape_verbs_write_durably_on_keys_of_their_own() {
+        let reg = registry();
+        let reshape = [
+            "keep-join",
+            "drop-join",
+            "add-join",
+            "change-join-keys",
+            "set-role",
+            "fold-table",
+            "unfold-table",
+            "leave-out-table",
+            "include-table",
+            "retype-column",
+            "rediscover-model",
+        ];
+        let mut keys: Vec<&str> = Vec::new();
+        for name in reshape {
+            let v = reg
+                .iter()
+                .find(|v| v.longname == name)
+                .unwrap_or_else(|| panic!("{name} is registered"));
+            assert_eq!(v.tier, CommandTier::Data, "{name} writes the Ossie file");
+            assert_eq!(v.drives, Drives::SpecEdit, "{name}");
+            assert_eq!(v.status, VerbStatus::Built, "{name}");
+            assert_eq!(v.scope_applicability, vec![Altitude::Model], "{name}");
+            assert!(v.scores.is_some(), "{name} is scored");
+            assert!(!v.help.is_empty(), "{name} has a help line");
+            for b in &v.binding_specs {
+                assert_eq!(b.context, BindingContext::Workspace, "{name}");
+                assert!(
+                    !["h", "j", "k", "l", "v", "1", "2", "3"].contains(&b.keystrokes),
+                    "{name} takes {}, which motion or the view verbs hold",
+                    b.keystrokes
+                );
+                keys.push(b.keystrokes);
+            }
+        }
+        // No two verbs at the model altitude share a key.
+        let mut at_model: Vec<&str> = reg
+            .iter()
+            .filter(|v| v.applies_at(Altitude::Model))
+            .flat_map(|v| v.binding_specs.iter().map(|b| b.keystrokes))
+            .collect();
+        let all = at_model.len();
+        at_model.sort_unstable();
+        at_model.dedup();
+        assert_eq!(at_model.len(), all, "a key repeats at the model altitude");
+        assert_eq!(keys.len(), reshape.len(), "one key each");
     }
 
     #[test]
