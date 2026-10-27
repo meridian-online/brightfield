@@ -62,7 +62,7 @@ jobs:
   warm-cache:
     name: warm the build cache
     runs-on: macos-15
-    # Above the shards' 36 because a cancelled run of this job saves nothing,
+    # Above the shards' ceiling because a cancelled run of this job saves nothing,
     # and so every run after it would be cancelled the same way until someone
     # raised it. From no cache at all this job took 34.3 minutes on run
     # 39890740575: 22.9 compiling the workspace's tests, 5.5 the sibling-
