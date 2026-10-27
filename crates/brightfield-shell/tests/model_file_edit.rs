@@ -500,6 +500,40 @@ fn a_table_left_out_since_the_editors_text_stays_left_out() {
 }
 
 #[test]
+fn a_table_renamed_through_other_names_leaves_none_of_them_behind() {
+    let (mut pane, _held) = opened();
+    let mut from = "promo_codes";
+    for to in ["promo", "promo_c", "promo_offers"] {
+        let text = pane.file_text().to_string();
+        type_and_pause(
+            &mut pane,
+            replaced(
+                &text,
+                &format!("- name: {from}\n"),
+                &format!("- name: {to}\n"),
+            ),
+        );
+        from = to;
+    }
+    let disk = brightfield_ossie::read(&on_disk(&pane)).unwrap();
+    for model in [&pane.model, &disk] {
+        let names: Vec<&str> = model.datasets.iter().map(|d| d.name.as_str()).collect();
+        assert!(
+            !names.contains(&"promo") && !names.contains(&"promo_c"),
+            "no name typed on the way is left: {names:?}"
+        );
+        assert!(names.contains(&"promo_offers"), "{names:?}");
+        let original = model
+            .datasets
+            .iter()
+            .find(|d| d.name == "promo_codes")
+            .expect("the name with a source table behind it is held");
+        assert!(original.meta.excluded);
+        assert_eq!(original.meta.decided_by, DecidedBy::Analyst);
+    }
+}
+
+#[test]
 fn a_join_renamed_through_another_name_is_not_rejected() {
     let (mut pane, _held) = opened();
     let text = pane.file_text().to_string();

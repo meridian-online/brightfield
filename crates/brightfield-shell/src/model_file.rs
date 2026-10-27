@@ -20,6 +20,10 @@
 //! analyst decided, whoever had decided it before, so the diagram shows it left out and a later
 //! pass does not bring it back.
 //!
+//! Only what a pass could propose is held: a dataset named for one of the Protocol's source
+//! tables, and a join between two of them. Anything else deleted is simply gone, such as a name
+//! typed on the way to renaming a table.
+//!
 //! What the text names that Brightfield cannot act on is not refused. A relationship naming a
 //! table the model does not hold is set aside in [`Kept`]: left out of the model the diagram is
 //! drawn from and the silver steps are written for, and written back into the file by
@@ -74,13 +78,19 @@ pub struct HandEdit {
 }
 
 /// Read `text`, the Ossie file as the analyst edited it, against `current`, the model the pane
-/// holds, and `base`, the model of the text the edit started from (see the module).
+/// holds, `base`, the model of the text the edit started from, and `sources`, the names of the
+/// Protocol's source tables (see the module).
 ///
 /// # Errors
 ///
 /// Why the text is not a model Brightfield reads, headed with its line where the text gives one:
 /// `Line 3: …`.
-pub fn read_hand_edit(current: &Model, base: &Model, text: &str) -> Result<HandEdit, String> {
+pub fn read_hand_edit(
+    current: &Model,
+    base: &Model,
+    sources: &[&str],
+    text: &str,
+) -> Result<HandEdit, String> {
     let mut doc: Value = serde_yaml::from_str(text).map_err(|e| yaml_error(text, &e))?;
     if let Some(issue) = brightfield_ossie::validate(text).into_iter().next() {
         return Err(match issue_line(text, &doc, &issue.path) {
@@ -109,7 +119,7 @@ pub fn read_hand_edit(current: &Model, base: &Model, text: &str) -> Result<HandE
     model.relationships = acted;
     keep_measurements(current, &mut model);
     mark_changed(current, &mut model);
-    hold_deletions(current, base, &mut model, &unjoined);
+    hold_deletions(current, base, sources, &mut model, &unjoined);
     Ok(HandEdit {
         model,
         kept: Kept {
@@ -417,17 +427,25 @@ fn mark_changed(current: &Model, edited: &mut Model) {
 /// Keep what the edit deleted from coming back with a later discovery pass, as the module says.
 /// An element is deleted when `base`, the model of the text the edit started from, held it and
 /// `edited` does not; one `current` gained since `base` and `edited` lacks is kept as `current`
-/// holds it. `set_aside` is what the edit holds but the model does not act on, which was not
-/// deleted. The rejected joins `current` holds are carried into `edited` too, so an editor whose
-/// text predates a drop does not take the drop back.
-fn hold_deletions(current: &Model, base: &Model, edited: &mut Model, set_aside: &[Relationship]) {
+/// holds it. Only a deleted dataset named in `sources`, or a join between two of them, is held.
+/// `set_aside` is what the edit holds but the model does not act on, which was not deleted. The
+/// rejected joins `current` holds are carried into `edited` too, so an editor whose text predates
+/// a drop does not take the drop back.
+fn hold_deletions(
+    current: &Model,
+    base: &Model,
+    sources: &[&str],
+    edited: &mut Model,
+    set_aside: &[Relationship],
+) {
+    let sourced = |name: &str| sources.contains(&name);
     for c in &current.datasets {
         if edited.datasets.iter().any(|d| d.name == c.name) {
             continue;
         }
         if !base.datasets.iter().any(|b| b.name == c.name) {
             edited.datasets.push(c.clone());
-        } else {
+        } else if sourced(&c.name) {
             let mut left_out = c.clone();
             left_out.meta.excluded = true;
             left_out.meta.decided_by = DecidedBy::Analyst;
@@ -450,7 +468,10 @@ fn hold_deletions(current: &Model, base: &Model, edited: &mut Model, set_aside: 
         }
         if !base.relationships.iter().any(|b| b.name == c.name) {
             edited.relationships.push(c.clone());
-        } else if !edited.meta.rejected.iter().any(|e| e.name == c.name) {
+        } else if sourced(&c.from)
+            && sourced(&c.to)
+            && !edited.meta.rejected.iter().any(|e| e.name == c.name)
+        {
             let mut dropped = c.clone();
             dropped.meta.decided_by = DecidedBy::Analyst;
             edited.meta.rejected.push(dropped);

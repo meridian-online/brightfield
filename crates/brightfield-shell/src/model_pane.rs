@@ -487,31 +487,44 @@ impl ModelPane {
     fn read_file_draft(&mut self) -> Result<(), String> {
         self.file_read = self.file_draft.clone();
         self.file_pause = None;
-        let result =
-            match model_file::read_hand_edit(&self.model, &self.file_base, &self.file_draft) {
-                // Nothing the file holds changed, only the text's layout or a role it ignores:
-                // nothing to write or run.
-                Ok(edit)
-                    if edit.model == self.model
-                        && edit.kept.relationships == self.kept.relationships =>
-                {
-                    self.file_base = edit.typed;
-                    self.kept = edit.kept;
-                    self.draft_refused = false;
-                    Ok(())
-                }
-                Ok(edit) => {
-                    // The next edit of this text starts from it, as typed.
-                    self.file_base = edit.typed;
-                    let saved = self.save_with(edit.model, edit.kept, true);
-                    self.let_go_of_what_is_gone();
-                    saved
-                }
-                Err(e) => {
-                    self.draft_refused = true;
-                    Err(e)
-                }
-            };
+        // The tables a discovery pass could propose, which is what a hand deletion holds.
+        let names: Vec<String> = self
+            .protocol
+            .sources
+            .tables
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        let sources: Vec<&str> = names.iter().map(String::as_str).collect();
+        let result = match model_file::read_hand_edit(
+            &self.model,
+            &self.file_base,
+            &sources,
+            &self.file_draft,
+        ) {
+            // Nothing the file holds changed, only the text's layout or a role it ignores:
+            // nothing to write or run.
+            Ok(edit)
+                if edit.model == self.model
+                    && edit.kept.relationships == self.kept.relationships =>
+            {
+                self.file_base = edit.typed;
+                self.kept = edit.kept;
+                self.draft_refused = false;
+                Ok(())
+            }
+            Ok(edit) => {
+                // The next edit of this text starts from it, as typed.
+                self.file_base = edit.typed;
+                let saved = self.save_with(edit.model, edit.kept, true);
+                self.let_go_of_what_is_gone();
+                saved
+            }
+            Err(e) => {
+                self.draft_refused = true;
+                Err(e)
+            }
+        };
         self.file_error = result.as_ref().err().cloned();
         result
     }
