@@ -164,7 +164,7 @@ jobs:
     # The shards start once `warm-cache` has saved this lockfile's cache, so
     # each one restores a full match.
     needs: warm-cache
-    # The ceiling is the `timeout` in the matrix below, the same 36 minutes for
+    # The ceiling is the `timeout` in the matrix below, the same 45 minutes for
     # every shard, because the `target-seconds:` figures further down pack the
     # shards to within a minute of each other's test time on the runs they
     # were measured from. A shard's time is about 5 minutes the shards all
@@ -174,7 +174,7 @@ jobs:
     # 40456819438 paid about 12 minutes before its first test and carried 67
     # minutes of default-thread tests, which three shards held to within two
     # minutes of the ceiling, so there are four.
-    # Three measures set the figure:
+    # Four measures set the figure:
     #
     #   - The slowest warm shard measured was cancelled at its old 27-minute
     #     ceiling 27.9 minutes after it started (one-thread-1, run
@@ -186,6 +186,10 @@ jobs:
     #     now the `warm-cache` job's, and a shard pays the warm one.
     #   - No ceiling is lowered below the one it replaces, and the highest was
     #     36.
+    #   - On run 40467588413, after the figures below were refreshed,
+    #     default-4's tests took 1.6 times the figures' estimate; it passed
+    #     every test and was cancelled at 36 minutes in the Protocol step
+    #     after them. 1.25 times 36 is 45.
     #
     # A run with no cache at all compiles every dependency in `warm-cache`,
     # not here. When a shard is cancelled at the ceiling, measure the targets again from
@@ -205,17 +209,17 @@ jobs:
       matrix:
         include:
           - name: one-thread-1
-            timeout: 36
+            timeout: 45
           - name: one-thread-2
-            timeout: 36
+            timeout: 45
           - name: default-1
-            timeout: 36
+            timeout: 45
           - name: default-2
-            timeout: 36
+            timeout: 45
           - name: default-3
-            timeout: 36
+            timeout: 45
           - name: default-4
-            timeout: 36
+            timeout: 45
 
     # The shard names itself to the command in these four variables; with
     # none of them set, as on a person's machine, a test step runs its whole
