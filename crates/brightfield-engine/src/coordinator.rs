@@ -43,6 +43,7 @@
 //! previews, and headless tests where there is no concurrent interaction to
 //! supersede.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -124,7 +125,11 @@ pub struct Requery {
 pub struct Coordinator {
     session: Session,
     generation: Generation,
+    serial: u64,
 }
+
+/// The serial the next [`Coordinator`] in this process takes.
+static NEXT_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 impl Coordinator {
     /// Load a spec into a fresh session and hold it live for interaction.
@@ -147,7 +152,20 @@ impl Coordinator {
         Self {
             session,
             generation: 0,
+            serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed),
         }
+    }
+
+    /// Which coordinator this is, unique within the process.
+    ///
+    /// Every coordinator's generation starts at 0, so a generation says how
+    /// far one session has moved and nothing about which session it is. A
+    /// reader that keeps what it read across a change of document keys on
+    /// this beside the generation: a newly opened file at generation 0 is
+    /// not the previous file at generation 0.
+    #[must_use]
+    pub fn serial(&self) -> u64 {
+        self.serial
     }
 
     /// The current generation — the version stamp of the live materialisation.

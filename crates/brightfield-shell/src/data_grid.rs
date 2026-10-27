@@ -68,8 +68,9 @@
 //! ([`crate::grid_foot`]). It is passed to each read
 //! ([`brightfield_engine::Session::execute_step_rows_window_view`] and its
 //! count) rather than held on the step, so a chart over the same step keeps
-//! its rows. [`GridCache`] is keyed on the view beside the generation and the
-//! mark, so a page read through one view is not served under another. An
+//! its rows. [`GridCache`] is keyed on the view beside the session, the
+//! generation and the mark, so a page read through one view, or from another
+//! file's session, is not served under this one. An
 //! order is read with every column by position after it, so pages over ties
 //! do not tear.
 //!
@@ -1331,6 +1332,17 @@ fn number_cell(cast: &str) -> CellText {
 /// it and the next frame reads the new materialisation state.
 #[derive(Default)]
 pub struct GridCache {
+    /// The [`Coordinator::serial`](brightfield_engine::coordinator::Coordinator::serial)
+    /// of the session the held rows were read from; `None` before the first
+    /// read.
+    ///
+    /// The first key, because the generation and the mark below say nothing
+    /// about which session they belong to. Every coordinator starts at
+    /// generation 0 with its rows at mark 0, so a file opened after another
+    /// presented the same key as the first, and the pane went on drawing the
+    /// previous file's rows under the new file's header band until an
+    /// interaction moved the generation.
+    instance: Option<u64>,
     /// The generation the cache was read at; `None` before the first read.
     generation: Option<u64>,
     /// The mark index the held rows were read at; `None` before the first
@@ -1379,6 +1391,7 @@ impl GridCache {
 /// and a test driving this directly says which mark it means.
 pub struct EngineRows<'a> {
     session: &'a Session,
+    instance: u64,
     mark_index: usize,
     generation: u64,
     view: &'a RowsView,
@@ -1387,19 +1400,23 @@ pub struct EngineRows<'a> {
 
 impl<'a> EngineRows<'a> {
     /// A source over `session`'s step at `mark_index`, caching into `cache`
-    /// keyed by the coordinator `generation`.
+    /// keyed by the coordinator's `instance` (its
+    /// [`serial`](brightfield_engine::coordinator::Coordinator::serial)) and
+    /// `generation`.
     ///
     /// Construction refreshes the count when the generation moved (an
     /// interaction re-queried the materialisation), so the scroll range is
     /// already right when the table lays out.
     pub fn new(
         session: &'a Session,
+        instance: u64,
         mark_index: usize,
         generation: u64,
         view: &'a RowsView,
         cache: &'a mut GridCache,
     ) -> Self {
-        if cache.generation != Some(generation)
+        if cache.instance != Some(instance)
+            || cache.generation != Some(generation)
             || cache.mark != Some(mark_index)
             || cache.view != *view
         {
@@ -1416,6 +1433,7 @@ impl<'a> EngineRows<'a> {
             cache.columns.clear();
             cache.window = 0..0;
             cache.rows.clear();
+            cache.instance = Some(instance);
             cache.generation = Some(generation);
             cache.mark = Some(mark_index);
             cache.view = view.clone();
@@ -1445,6 +1463,7 @@ impl<'a> EngineRows<'a> {
         }
         Self {
             session,
+            instance,
             mark_index,
             generation,
             view,
@@ -1462,8 +1481,12 @@ impl<'a> EngineRows<'a> {
 impl RowSource for EngineRows<'_> {
     fn prepare(&mut self, visible: Range<u64>) {
         debug_assert_eq!(
-            (self.cache.generation, self.cache.mark),
-            (Some(self.generation), Some(self.mark_index)),
+            (self.cache.instance, self.cache.generation, self.cache.mark),
+            (
+                Some(self.instance),
+                Some(self.generation),
+                Some(self.mark_index)
+            ),
             "EngineRows::new keys the cache before the table draws"
         );
         if visible.start >= self.cache.window.start && visible.end <= self.cache.window.end {
@@ -2875,8 +2898,10 @@ impl Item<ChartDoc> for DataGridItem {
             doc.activity.begin(Activity::EngineQuery);
             if let Some(coordinator) = doc.live_coordinator() {
                 let generation = coordinator.generation();
+                let instance = coordinator.serial();
                 let session = coordinator.session();
-                let mut source = EngineRows::new(session, mark, generation, &view, &mut self.cache);
+                let mut source =
+                    EngineRows::new(session, instance, mark, generation, &view, &mut self.cache);
                 drawn = Some(draw(ui, &mut source));
                 names = source.columns().iter().map(|c| c.name.clone()).collect();
             }
