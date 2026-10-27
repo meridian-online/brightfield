@@ -202,7 +202,7 @@ both packaged artifacts with `scripts/check-artifact-engine.sh`, and fails the
 job when it is missing, is not the pinned bytes, or is not the DuckDB the
 binary links. On the native leg the packaged binary's `--check-engine` runs it.
 
-Each tagged release is installed with `brew install meridian-online/tap/brightfield`, and the installed binary carries the headless exports (`export-pdf`, `export-png`, `export-data`) as well as the window.
+Each tagged release is installed with `brew install meridian-online/tap/brightfield`, and the installed binary carries the headless exports (`export-pdf`, `export-png`, `export-data`) as well as the window. The release workflow's `update-homebrew` job moves the tap to the new release: it rewrites `Formula/brightfield.rb` in [meridian-online/homebrew-tap](https://github.com/meridian-online/homebrew-tap) to address that tag's assets and checksums, and checks each address before it pushes, so the formula never points at a release that is not there. A release's notes are its section in [CHANGELOG.md](CHANGELOG.md), and a tag with no section there, or whose number is not the shell crate's version, fails before anything is published.
 
 ```bash
 # Package: release build → linked-library audit (OS allowlist) →
