@@ -86,6 +86,48 @@ fn folder_opens_a_model() {
 }
 
 #[test]
+fn a_file_named_as_another_tables_raw_or_failed_table_still_opens() {
+    let dir = input("derived-names");
+    std::fs::write(dir.join("orders.csv"), "id,amount\n1,2.5\n2,3.5\n").unwrap();
+    std::fs::write(dir.join("raw_orders.csv"), "id,note\n1,a\n").unwrap();
+    std::fs::write(dir.join("orders__failed.csv"), "id,why\n1,b\n").unwrap();
+    // The open runs the Protocol twice, the second time with the silver steps, so arc has
+    // accepted its manifest when it lands.
+    let Opened::Model(p) = data_file::open_any(&dir, &runner()).expect("the folder opens") else {
+        panic!("three tables are a model");
+    };
+    let names: Vec<&str> = p.sources.tables.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["orders", "orders__failed_2", "raw_orders_2"]);
+    let manifest = std::fs::read_to_string(p.dir.join("arcform.yaml")).unwrap();
+    for step in [
+        "silver_orders",
+        "silver_raw_orders_2",
+        "failed_orders__failed_2",
+    ] {
+        assert!(manifest.contains(step), "{step}: {manifest}");
+    }
+    let tables = brightfield_shell::model_inspector::query(
+        &p.dir,
+        "SELECT table_name FROM duckdb_tables() ORDER BY table_name",
+    )
+    .expect("the run's database reads");
+    let made: Vec<&str> = tables
+        .rows
+        .iter()
+        .filter_map(|row| row.first().and_then(Option::as_deref))
+        .collect();
+    for table in [
+        "orders",
+        "raw_orders",
+        "orders__failed",
+        "raw_orders_2",
+        "orders__failed_2",
+    ] {
+        assert!(made.contains(&table), "{table}: {made:?}");
+    }
+}
+
+#[test]
 fn workbook_opens_a_model() {
     // A workbook needs the excel extension and an authoring path; the fixture is written by
     // DuckDB itself.

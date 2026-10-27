@@ -234,20 +234,42 @@ fn qualified(db: &str, schema: &str, table: &str) -> String {
     format!("{db}.{}.{}", ident(schema), ident(table))
 }
 
-/// Lower-cased, with each non-alphanumeric turned to `_`; a name already taken gets `_2`, `_3`, in
-/// the order the tables are discovered.
+/// The names a table called `name` gives the tables and steps of its Protocol: its raw, silver and
+/// failed-value tables, and the load, silver and failed-value steps that make them. arc refuses a
+/// Protocol where two steps share a name or make one table, so no two source tables may share any
+/// of these.
+fn derived_names(name: &str) -> [String; 6] {
+    [
+        name.to_string(),
+        format!("raw_{name}"),
+        format!("{name}__failed"),
+        format!("load_{name}"),
+        format!("silver_{name}"),
+        format!("failed_{name}"),
+    ]
+}
+
+/// The table arc keeps its record of each step's last success in, which no step may make.
+const ARC_STATE_TABLE: &str = "_arcform_state";
+
+/// Lower-cased, with each non-alphanumeric turned to `_`; a name any of whose
+/// [`derived_names`] is already taken, by an earlier table's own or derived names, gets `_2`,
+/// `_3`, in the order the tables are discovered. So `raw_orders.csv` beside `orders.csv` becomes
+/// `raw_orders_2`, since `orders` loads into a table called `raw_orders`.
 fn unique_name(base: &str, taken: &mut HashSet<String>) -> String {
     let clean: String = base
         .to_lowercase()
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '_' })
         .collect();
+    taken.insert(ARC_STATE_TABLE.to_string());
     let mut name = clean.clone();
     let mut n = 2;
-    while !taken.insert(name.clone()) {
+    while derived_names(&name).iter().any(|d| taken.contains(d)) {
         name = format!("{clean}_{n}");
         n += 1;
     }
+    taken.extend(derived_names(&name));
     name
 }
 
@@ -403,5 +425,26 @@ mod tests {
         assert_eq!(unique_name("Sales 2026", &mut taken), "sales_2026");
         assert_eq!(unique_name("sales_2026", &mut taken), "sales_2026_2");
         assert_eq!(unique_name("sales-2026", &mut taken), "sales_2026_3");
+    }
+
+    #[test]
+    fn a_name_another_table_derives_is_numbered() {
+        let mut taken = HashSet::new();
+        // In discovery order: `orders` makes `raw_orders` and `orders__failed`, and `orders_2`
+        // makes `raw_orders_2`, so each later name is moved on past what an earlier one makes.
+        assert_eq!(unique_name("orders", &mut taken), "orders");
+        assert_eq!(
+            unique_name("orders__failed", &mut taken),
+            "orders__failed_2"
+        );
+        assert_eq!(unique_name("raw_orders", &mut taken), "raw_orders_2");
+        assert_eq!(
+            unique_name("_arcform_state", &mut taken),
+            "_arcform_state_2"
+        );
+        // A later table whose own derived names an earlier name already holds.
+        let mut taken = HashSet::new();
+        assert_eq!(unique_name("raw_items", &mut taken), "raw_items");
+        assert_eq!(unique_name("items", &mut taken), "items_2");
     }
 }

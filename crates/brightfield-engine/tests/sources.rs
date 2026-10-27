@@ -118,6 +118,18 @@ fn name_collision_is_deterministic() {
 }
 
 #[test]
+fn a_table_named_as_another_tables_raw_or_failed_table_is_numbered() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["orders.csv", "raw_orders.csv", "orders__failed.csv"] {
+        std::fs::write(dir.path().join(name), "id\n1\n").unwrap();
+    }
+    let set = discover(dir.path()).unwrap();
+    // `orders` loads into `raw_orders` and keeps its failed values in `orders__failed`, so the
+    // files named so are moved on to names of their own.
+    assert_eq!(names(&set), ["orders", "orders__failed_2", "raw_orders_2"]);
+}
+
+#[test]
 fn workbook_sheets_and_empty_sheet() {
     if !extension_available("excel") {
         return;
