@@ -1079,3 +1079,60 @@ fn clearing_the_view_restores_the_whole_table() {
     assert_eq!(harness.state().0.grid_drawn().expect("table").rows, 5);
     assert_eq!(harness.get_all_by_label("10").count(), 1);
 }
+
+/// Five rows of one table, and three of another with other columns: two
+/// files a reader might open one after the other.
+const FIRST_FILE: &str = r#"
+data:
+  t:
+    - { median_income: 1, house_age: 10 }
+    - { median_income: 2, house_age: 20 }
+    - { median_income: 3, house_age: 30 }
+    - { median_income: 4, house_age: 40 }
+    - { median_income: 5, house_age: 50 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: median_income
+    y: house_age
+"#;
+
+const SECOND_FILE: &str = r#"
+data:
+  t:
+    - { latitude: -5.7, longitude: 148.9 }
+    - { latitude: -17.6, longitude: -178.3 }
+    - { latitude: -31.5, longitude: -179.7 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: longitude
+    y: latitude
+"#;
+
+/// **A file opened after another shows its own rows on the first frame.**
+///
+/// The window keeps one grid pane and hands it each document it opens. Both
+/// documents here are fresh, so both stand at generation 0 with their rows at
+/// mark 0 under the default view: a cache keyed on those alone serves the
+/// first file's five rows under the second file's header band, and goes on
+/// doing so until an interaction moves the second file's generation.
+#[test]
+fn a_second_document_in_the_same_pane_reads_its_own_rows() {
+    let mut item = DataGridItem::new();
+    let ctx = egui::Context::default();
+    let mut first = live_doc(FIRST_FILE);
+    for _ in 0..3 {
+        run_pane(&mut first, &mut item, &ctx);
+    }
+    assert_eq!(item.held_rows(), 5, "the first file's five rows");
+
+    let mut second = live_doc(SECOND_FILE);
+    run_pane(&mut second, &mut item, &ctx);
+    assert_eq!(
+        item.held_rows(),
+        3,
+        "the pane read the second file's three rows rather than serving the \
+         first file's five under it"
+    );
+}
