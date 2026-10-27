@@ -512,7 +512,7 @@ impl ModelPane {
         self.kept.roles.clear();
     }
 
-    /// Read the file view's text and, when Brightfield reads it and it changes anything, make it
+    /// Read the file view's text and, when Brightfield reads it and it changes the model, make it
     /// the model and write the file, with the Protocol's run owed ([`Self::run_if_owed`]). The
     /// editor keeps the text as typed.
     fn read_file_draft(&mut self) -> Result<(), String> {

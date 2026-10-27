@@ -11043,10 +11043,10 @@ impl MeridianApp {
                         // you open a file and the picture is already there.
                         // This control is the pointing route to that promise
                         // and `names_a_data_file` is the typed one; both end in
-                        // `data_file::open_any` for anything but a single flat
-                        // file, which the typed route opens with
-                        // `data_file::open` directly, and neither is the
-                        // other's shorthand. It is deliberately NOT a
+                        // `data_file::open_any` for a folder, workbook or
+                        // database, while the typed route opens a single flat
+                        // file with `data_file::open` directly, and neither is
+                        // the other's shorthand. It is deliberately NOT a
                         // `Request::Open`, because that carries a `&'static
                         // str` start id and a file the user chose is neither
                         // static nor a start.
