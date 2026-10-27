@@ -120,6 +120,19 @@ pub fn read_hand_edit(
     keep_measurements(current, &mut model);
     mark_changed(current, &mut model);
     hold_deletions(current, base, sources, &mut model, &unjoined);
+    // A table the edit deleted is held, left out, so a join to it names a table of the model
+    // again and is acted on rather than set aside
+    // (`a_table_deleted_by_hand_keeps_its_joins_in_the_model`).
+    let tables: Vec<String> = model.datasets.iter().map(|d| d.name.clone()).collect();
+    let (rejoined, unjoined): (Vec<Relationship>, Vec<Relationship>) = unjoined
+        .into_iter()
+        .partition(|r| tables.contains(&r.from) && tables.contains(&r.to));
+    if !rejoined.is_empty() {
+        model.relationships.extend(rejoined);
+        // Both read `current` alone, so running them again leaves what they already did as it is.
+        keep_measurements(current, &mut model);
+        mark_changed(current, &mut model);
+    }
     Ok(HandEdit {
         model,
         kept: Kept {

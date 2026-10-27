@@ -392,6 +392,22 @@ fn a_dataset_deleted_by_hand_stays_left_out() {
 }
 
 #[test]
+fn a_table_deleted_by_hand_keeps_its_joins_in_the_model() {
+    let (mut pane, _held) = opened();
+    let text = pane.file_text().to_string();
+    // The table's own block goes and its joins stay: the table is held, left out, so its joins
+    // name a table of the model and are not set aside as joins to a missing one.
+    type_and_pause(&mut pane, cut_item(&text, "stores"));
+    assert_eq!(pane.file_error(), None);
+    assert_eq!(pane.file_warnings(), Vec::<String>::new());
+    assert!(pane
+        .model
+        .relationships
+        .iter()
+        .any(|r| r.name == "transactions_stores"));
+}
+
+#[test]
 fn a_table_the_analyst_decided_and_deleted_by_hand_stays_left_out() {
     let (mut pane, _held) = opened();
     let done = pane.dispatch(ModelAction::Edit(Edit::SetRole {

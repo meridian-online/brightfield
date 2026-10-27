@@ -187,6 +187,7 @@ pub fn apply(model: &Model, edit: &Edit) -> Result<Model, EditError> {
         Edit::Fold { dataset, into } => {
             dataset_index(&m, dataset)?;
             dataset_index(&m, into)?;
+            refuse_if_host(&m, dataset)?;
             let joined = m.relationships.iter().any(|r| {
                 (r.from == *dataset && r.to == *into) || (r.from == *into && r.to == *dataset)
             });
@@ -212,6 +213,7 @@ pub fn apply(model: &Model, edit: &Edit) -> Result<Model, EditError> {
             d.meta.decided_by = DecidedBy::Analyst;
         }
         Edit::Exclude { dataset } => {
+            refuse_if_host(&m, dataset)?;
             let d = dataset_mut(&mut m, dataset)?;
             d.meta.excluded = true;
             d.meta.decided_by = DecidedBy::Analyst;
@@ -247,6 +249,20 @@ pub(crate) fn unique_name(base: &str, kept: &[Relationship], rejected: &[Relatio
         n += 1;
     }
     name
+}
+
+/// Refuse to fold or leave out `name` while a table kept in the model is folded into it, since
+/// only a table that keeps its own silver table joins its folds in, and the folded table's
+/// columns and failed values would reach no silver table.
+fn refuse_if_host(m: &Model, name: &str) -> Result<(), EditError> {
+    match m
+        .datasets
+        .iter()
+        .find(|d| !d.meta.excluded && d.meta.folded_into.as_deref() == Some(name))
+    {
+        Some(inner) => err(format!("unfold {} from {name} first", inner.name)),
+        None => Ok(()),
+    }
 }
 
 fn dataset_index(m: &Model, name: &str) -> Result<usize, EditError> {

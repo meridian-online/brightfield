@@ -130,6 +130,43 @@ fn fold_without_join_is_refused() {
 }
 
 #[test]
+fn a_table_with_a_fold_in_it_cannot_be_folded_or_left_out() {
+    // categories is folded into products in the stand-in, so folding products into
+    // transactions, or leaving it out, would leave categories in no silver table.
+    for edit in [
+        Edit::Fold {
+            dataset: "products".into(),
+            into: "transactions".into(),
+        },
+        Edit::Exclude {
+            dataset: "products".into(),
+        },
+    ] {
+        let e = apply(&model(), &edit).unwrap_err().to_string();
+        assert!(e.contains("unfold categories from products first"), "{e}");
+    }
+    let unfolded = apply(
+        &model(),
+        &Edit::Unfold {
+            dataset: "categories".into(),
+        },
+    )
+    .unwrap();
+    let m = apply(
+        &unfolded,
+        &Edit::Fold {
+            dataset: "products".into(),
+            into: "transactions".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        dataset(&m, "products").meta.folded_into.as_deref(),
+        Some("transactions")
+    );
+}
+
+#[test]
 fn exclude_and_include_toggle() {
     let m = apply(
         &model(),
