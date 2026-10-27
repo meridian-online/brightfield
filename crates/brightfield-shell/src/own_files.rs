@@ -459,7 +459,7 @@ fn frictionless_type(label: Option<&str>, duckdb_type: &str) -> &'static str {
         return t;
     }
     // FineType labels whose pattern admits nothing outside what Frictionless reads by default for
-    // the type, from the `pattern` of each label in the taxonomy catalogue of FineType v0.6.59
+    // the type, from the `pattern` of each label in the taxonomy catalogue of FineType v0.6.64
     // (`taxonomy-schemas.json` in the bundle). A label not listed is a string, as
     // `only_default_format_labels_are_typed` shows: `datetime.time.hms_24h` admits a one-digit
     // hour and fractional seconds, `datetime.timestamp.iso_8601` admits fractional seconds, and
