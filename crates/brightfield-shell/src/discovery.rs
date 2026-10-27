@@ -4,17 +4,22 @@
 //! A [`Discovery`] reads a [`OwnProtocol`] (its data packages and raw tables) and answers a
 //! [`Model`]. It runs in two passes, a quick one over a sample and a complete one over the whole table,
 //! and each is folded into the model already held so what the analyst has decided survives both.
-//! [`discover_passes`] answers the sample's model at once and runs the full pass on a worker
-//! ([`FullPass`]), whose answer the holder folds into its model as that stands when the answer
-//! lands, edits made in the meantime included. [`discover_model`] runs both passes in turn on the
-//! calling thread.
+//! [`sample_pass`] answers the sample's model at once, and [`FullPass`] runs the full pass on a
+//! worker, whose answer the holder folds into its model as that stands when the answer lands,
+//! edits made in the meantime included. A pass that is superseded is told to stop, and its answer
+//! goes nowhere. [`discover_model`] runs both passes in turn on the calling thread.
+//!
+//! Brightfield is the only writer of `model.ossie.yaml` ([`write_model_file`]), and writes it
+//! whole, so a pass that reads it never sees half a file.
 //!
 //! [`StandIn`] is what runs until a real discoverer is wired in: it returns the model already in
 //! the Protocol folder, or else lists each table as unclear with no joins. [`Dovetail`] is where
 //! dovetail will run, once it is built in.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Arc;
 
 use brightfield_engine::ProfileOutcome;
 use brightfield_ossie::{
@@ -26,6 +31,34 @@ use crate::own_files::OwnProtocol;
 
 /// The model's file in the Protocol folder.
 pub const MODEL_FILE: &str = "model.ossie.yaml";
+
+/// The hidden folder in the Protocol where a discoverer that runs as a child writes what each pass
+/// proposes.
+pub const PROPOSALS_DIR: &str = ".discovery";
+
+/// The file a child discoverer writes `pass`'s proposal to, in the Protocol folder `dir`:
+/// `.discovery/sample.ossie.yaml` or `.discovery/full.ossie.yaml`.
+#[must_use]
+pub fn proposal_file(dir: &Path, pass: Pass) -> PathBuf {
+    let name = match pass {
+        Pass::Sample => "sample.ossie.yaml",
+        Pass::Full => "full.ossie.yaml",
+    };
+    dir.join(PROPOSALS_DIR).join(name)
+}
+
+/// Write `text` as the model file in the Protocol folder `dir`: to a file beside it first, then
+/// renamed over it, so a reader finds the old file or the new one and never part of either.
+///
+/// # Errors
+///
+/// The reason the file could not be written or renamed, with its path.
+pub fn write_model_file(dir: &Path, text: &str) -> Result<(), String> {
+    let path = dir.join(MODEL_FILE);
+    let draft = dir.join(format!(".{MODEL_FILE}.writing"));
+    std::fs::write(&draft, text).map_err(|e| format!("{}: {e}", draft.display()))?;
+    std::fs::rename(&draft, &path).map_err(|e| format!("{}: {e}", path.display()))
+}
 
 /// How much of the data a pass reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +77,40 @@ pub trait Discovery {
     ///
     /// The reason the pass could not run or its output could not be read.
     fn discover(&self, protocol: &OwnProtocol, pass: Pass) -> Result<Model, String>;
+
+    /// [`Self::discover`], for a pass that may be superseded while it runs: a discoverer whose
+    /// pass takes a while checks `cancel` and stops when it is asked to, and one that answers at
+    /// once need not, which is what this does unless a discoverer says otherwise. What a
+    /// cancelled pass answers is thrown away.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::discover`] says.
+    fn discover_until(
+        &self,
+        protocol: &OwnProtocol,
+        pass: Pass,
+        cancel: &Cancel,
+    ) -> Result<Model, String> {
+        let _ = cancel;
+        self.discover(protocol, pass)
+    }
+}
+
+/// Asks a running pass to stop: set when the pass it belongs to is superseded or let go.
+#[derive(Debug, Clone, Default)]
+pub struct Cancel(Arc<AtomicBool>);
+
+impl Cancel {
+    /// Whether the pass has been asked to stop.
+    #[must_use]
+    pub fn requested(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    fn request(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 /// Returns the model at `<protocol>/model.ossie.yaml` when there is one, and otherwise every table
@@ -60,7 +127,14 @@ impl Discovery for StandIn {
 }
 
 /// Dovetail, run as a child process over the Protocol folder: it reads the data packages in
-/// `packages/` and the raw tables, and writes `model.ossie.yaml`, which is what a pass answers.
+/// `packages/` and the raw tables, and writes what the pass proposes to that pass's own file,
+/// [`proposal_file`] (`.discovery/full.ossie.yaml` for the full pass). Brightfield reads that file
+/// as the pass's answer and folds it into the model; the child never writes `model.ossie.yaml`,
+/// which holds the analyst's decisions and is Brightfield's alone to write.
+///
+/// A pass may be superseded while its child runs, by a new pass or by the pane letting it go. The
+/// child is then killed: the real implementation overrides [`Discovery::discover_until`] and kills
+/// the child once `cancel` is requested, and its proposal file is not read.
 ///
 /// It is not built into this Brightfield yet. It waits on dovetail's DuckDB 2.0 release, which
 /// is also to bring Ossie output, table roles and the sample and full passes, and until then each
@@ -188,9 +262,11 @@ fn source_file_of(file: &Path, dir: &Path) -> String {
         .into_owned()
 }
 
-/// The full pass of a discovery, running on a worker thread until it answers.
+/// The full pass of a discovery, running on a worker thread until it answers. Dropping it, as
+/// replacing it with a new pass does, asks the pass to stop and throws its answer away.
 pub struct FullPass {
     answer: Receiver<Result<Model, String>>,
+    cancel: Cancel,
 }
 
 impl FullPass {
@@ -199,11 +275,16 @@ impl FullPass {
     pub fn start(discovery: Box<dyn Discovery + Send>, protocol: &OwnProtocol) -> Self {
         let (send, answer) = mpsc::channel();
         let protocol = protocol.clone();
+        let cancel = Cancel::default();
+        let asked = cancel.clone();
         std::thread::spawn(move || {
-            // The holder may have stopped waiting, and then the answer goes nowhere.
-            let _ = send.send(discovery.discover(&protocol, Pass::Full));
+            let answered = discovery.discover_until(&protocol, Pass::Full, &asked);
+            if !asked.requested() {
+                // The holder may have stopped waiting, and then the answer goes nowhere.
+                let _ = send.send(answered);
+            }
         });
-        Self { answer }
+        Self { answer, cancel }
     }
 
     /// The full pass's model once it has answered, without waiting; `None` while it runs.
@@ -224,6 +305,12 @@ impl FullPass {
         self.answer
             .recv()
             .unwrap_or_else(|_| Err(STOPPED.to_string()))
+    }
+}
+
+impl Drop for FullPass {
+    fn drop(&mut self) {
+        self.cancel.request();
     }
 }
 
@@ -249,29 +336,12 @@ pub fn sample_pass(
     Ok(merge_discovery(&held, &sample))
 }
 
-/// Both passes of `discovery` over `protocol`: the sample pass folded into `held` (as
-/// [`sample_pass`] does), answered at once, and the full pass started on a worker. Its answer is
-/// for the caller to fold with [`merge_discovery`] into the model it holds when the answer lands,
-/// so what the analyst decided in between stands.
-///
-/// # Errors
-///
-/// The reason the sample pass failed, or the model on disk could not be read.
-pub fn discover_passes(
-    discovery: Box<dyn Discovery + Send>,
-    protocol: &OwnProtocol,
-    held: Option<&Model>,
-) -> Result<(Model, FullPass), String> {
-    let model = sample_pass(&*discovery, protocol, held)?;
-    Ok((model, FullPass::start(discovery, protocol)))
-}
-
 /// The model for `protocol`: a sample pass, then a full pass, each folded into the model held so
 /// far, which is the one on disk if there is one and otherwise the sample pass's own. What the
 /// analyst has decided in between is kept as it is (see [`merge_discovery`]).
 ///
-/// The passes run one after the other on the calling thread; [`discover_passes`] runs the full
-/// pass on a worker.
+/// The passes run one after the other on the calling thread; [`FullPass`] runs the full pass on
+/// a worker.
 ///
 /// # Errors
 ///

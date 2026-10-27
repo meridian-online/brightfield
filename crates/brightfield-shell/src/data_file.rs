@@ -980,9 +980,7 @@ pub fn open_any(path: &Path, runner: &crate::run::Runner) -> Result<Opened, Stri
     own::profile(&mut protocol)?;
     own::write_packages(&protocol)?;
     let model = crate::discovery::sample_pass(&crate::discovery::StandIn, &protocol, None)?;
-    let model_file = protocol.dir.join(crate::discovery::MODEL_FILE);
-    std::fs::write(&model_file, brightfield_ossie::write(&model))
-        .map_err(|e| format!("{}: {e}", model_file.display()))?;
+    crate::discovery::write_model_file(&protocol.dir, &brightfield_ossie::write(&model))?;
     own::write_silver(&protocol, &model)?;
     own::run_loads(&protocol, runner)?;
     Ok(Opened::Model(protocol))

@@ -1,14 +1,15 @@
 //! The discovery seam: its stand-in, the full pass that runs on a worker and folds into the model
-//! as it stands when it lands, and the dovetail child that is not built in yet.
+//! as it stands when it lands, starts only once the sample's save is written, and is stopped when a
+//! newer pass supersedes it, and the dovetail child that is not built in yet.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use brightfield_ossie::{DecidedBy, Edit, Model, Role};
 use brightfield_shell::data_file::{self, Opened};
-use brightfield_shell::discovery::{Discovery, Dovetail, Pass, StandIn};
+use brightfield_shell::discovery::{proposal_file, Cancel, Discovery, Dovetail, Pass, StandIn};
 use brightfield_shell::model_inspector::ModelAction;
 use brightfield_shell::model_pane::{Dispatched, ModelPane};
 use brightfield_shell::own_files::{self, OwnProtocol};
@@ -124,22 +125,97 @@ fn retail_copy(name: &str) -> PathBuf {
 }
 
 /// A discoverer whose sample pass answers `sample` at once, and whose full pass waits for the
-/// test to hand it a model.
+/// test to hand it a model, then says on `asked` whether it had been asked to stop by then.
 struct Gated {
     sample: Model,
     full: Receiver<Model>,
+    asked: Option<Sender<bool>>,
+}
+
+impl Gated {
+    fn new(sample: Model, full: Receiver<Model>) -> Self {
+        Self {
+            sample,
+            full,
+            asked: None,
+        }
+    }
 }
 
 impl Discovery for Gated {
-    fn discover(&self, _protocol: &OwnProtocol, pass: Pass) -> Result<Model, String> {
+    fn discover(&self, protocol: &OwnProtocol, pass: Pass) -> Result<Model, String> {
+        self.discover_until(protocol, pass, &Cancel::default())
+    }
+
+    fn discover_until(
+        &self,
+        _protocol: &OwnProtocol,
+        pass: Pass,
+        cancel: &Cancel,
+    ) -> Result<Model, String> {
         match pass {
             Pass::Sample => Ok(self.sample.clone()),
-            Pass::Full => self
-                .full
-                .recv()
-                .map_err(|_| "the test let the full pass go".to_string()),
+            Pass::Full => {
+                let model = self
+                    .full
+                    .recv()
+                    .map_err(|_| "the test let the full pass go".to_string())?;
+                if let Some(asked) = &self.asked {
+                    let _ = asked.send(cancel.requested());
+                }
+                Ok(model)
+            }
         }
     }
+}
+
+/// A discoverer whose sample pass answers `sample`, and whose full pass reads the model file as
+/// it finds it on disk and sends what it read to the test.
+struct ReadsTheFile {
+    sample: Model,
+    read: Sender<Result<Model, String>>,
+}
+
+impl Discovery for ReadsTheFile {
+    fn discover(&self, protocol: &OwnProtocol, pass: Pass) -> Result<Model, String> {
+        match pass {
+            Pass::Sample => Ok(self.sample.clone()),
+            Pass::Full => {
+                let text = std::fs::read_to_string(protocol.dir.join("model.ossie.yaml"))
+                    .map_err(|e| e.to_string());
+                let read =
+                    text.and_then(|t| brightfield_ossie::read(&t).map_err(|e| e.to_string()));
+                let _ = self.read.send(read.clone());
+                read
+            }
+        }
+    }
+}
+
+/// The retail model with what Dovetail decided of stores changed: a reference table.
+fn stores_as_reference() -> Model {
+    let mut model = retail_model();
+    for d in &mut model.datasets {
+        if d.name == "stores" {
+            d.meta.role = Role::Reference;
+        }
+    }
+    model
+}
+
+/// The retail extract copied into `name`, opened as a Protocol, with its written model saved.
+fn retail_pane(name: &str) -> ModelPane {
+    let opened = {
+        let _held = folder_lock();
+        data_file::open_any(&retail_copy(name), &runner()).expect("it opens")
+    };
+    let Opened::Model(protocol) = opened else {
+        panic!("several tables are a model");
+    };
+    let mut pane = ModelPane::open(protocol, runner()).expect("the model reads");
+    pane.save_model(retail_model())
+        .expect("the written model runs");
+    pane
 }
 
 /// What the analyst decides between the passes, as the pane's model holds it: the possible
@@ -183,12 +259,9 @@ fn sample_then_full_merges_without_flicker() {
     pane.save_model(retail_model())
         .expect("the written model runs");
 
-    // The sample pass proposes the retail model, and its full pass waits.
+    // The sample pass proposes stores as a reference table, and its full pass waits.
     let (release, gate) = mpsc::channel();
-    let done = pane.rediscover(Gated {
-        sample: retail_model(),
-        full: gate,
-    });
+    let done = pane.rediscover(Gated::new(stores_as_reference(), gate));
     assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
     assert!(pane.discovering(), "the full pass is still out");
     let after_sample = pane.model.clone();
@@ -199,6 +272,11 @@ fn sample_then_full_merges_without_flicker() {
         .unwrap();
     assert_eq!(segments.meta.decided_by, DecidedBy::Dovetail);
     assert_eq!(role_of(&after_sample, "promo_codes"), Role::Unclear);
+    assert_eq!(
+        role_of(&after_sample, "stores"),
+        Role::Reference,
+        "the sample was folded in"
+    );
 
     // The analyst keeps the possible join and calls promo_codes a reference table while the
     // full pass runs.
@@ -219,14 +297,14 @@ fn sample_then_full_merges_without_flicker() {
     analyst_decisions_stand(&pane.model);
 
     // The full pass lands with a proposal that would undo both, and that changes what Dovetail
-    // decided besides: stores becomes a reference table.
-    let mut full = retail_model();
+    // decided besides: customers becomes a snapshot.
+    let mut full = stores_as_reference();
     full.relationships
         .retain(|r| r.name != "customer_segments_customers");
     for d in &mut full.datasets {
         match d.name.as_str() {
             "promo_codes" => d.meta.role = Role::Event,
-            "stores" => d.meta.role = Role::Reference,
+            "customers" => d.meta.role = Role::Snapshot,
             _ => {}
         }
     }
@@ -247,6 +325,7 @@ fn sample_then_full_merges_without_flicker() {
 
     // Full folded into the model the analyst left, and that is what the file holds.
     analyst_decisions_stand(&pane.model);
+    assert_eq!(role_of(&pane.model, "customers"), Role::Snapshot);
     assert_eq!(role_of(&pane.model, "stores"), Role::Reference);
     let text = std::fs::read_to_string(pane.protocol.dir.join("model.ossie.yaml")).unwrap();
     assert_eq!(pane.model, brightfield_ossie::read(&text).unwrap());
@@ -265,10 +344,7 @@ fn full_pass_waits_for_a_file_edit_to_be_read() {
     pane.save_model(retail_model())
         .expect("the written model runs");
     let (release, gate) = mpsc::channel();
-    pane.rediscover(Gated {
-        sample: retail_model(),
-        full: gate,
-    });
+    pane.rediscover(Gated::new(retail_model(), gate));
 
     // A hand edit is typed and waiting out its pause when the full pass lands.
     let text = pane.file_text().to_string();
@@ -310,18 +386,22 @@ fn dovetail_child_writes_valid_ossie() {
     };
     own_files::profile(&mut protocol).unwrap();
     own_files::write_packages(&protocol).unwrap();
+    // The model the analyst holds, which the child must leave alone.
+    let model_file = protocol.dir.join("model.ossie.yaml");
+    let held = brightfield_ossie::write(&StandIn.discover(&protocol, Pass::Sample).unwrap());
+    std::fs::write(&model_file, &held).unwrap();
 
     for pass in [Pass::Sample, Pass::Full] {
         let answered = Dovetail
             .discover(&protocol, pass)
             .expect("the dovetail child runs");
-        let text = std::fs::read_to_string(protocol.dir.join("model.ossie.yaml"))
-            .expect("the child wrote model.ossie.yaml");
+        let text = std::fs::read_to_string(proposal_file(&protocol.dir, pass))
+            .expect("the child wrote its proposal file");
         let issues = brightfield_ossie::validate(&text);
         assert!(issues.is_empty(), "{issues:?}");
-        let written = brightfield_ossie::read(&text).expect("Brightfield reads it");
-        assert_eq!(answered, written, "the answer is the file the child wrote");
-        let names: Vec<&str> = written.datasets.iter().map(|d| d.name.as_str()).collect();
+        let proposed = brightfield_ossie::read(&text).expect("Brightfield reads it");
+        assert_eq!(answered, proposed, "the answer is the file the child wrote");
+        let names: Vec<&str> = proposed.datasets.iter().map(|d| d.name.as_str()).collect();
         for table in &protocol.sources.tables {
             assert!(
                 names.contains(&table.name.as_str()),
@@ -329,13 +409,76 @@ fn dovetail_child_writes_valid_ossie() {
                 table.name
             );
         }
-        assert!(written
+        assert!(proposed
             .datasets
             .iter()
             .all(|d| d.meta.decided_by == DecidedBy::Dovetail));
         assert!(
-            !written.relationships.is_empty(),
+            !proposed.relationships.is_empty(),
             "the retail joins are found"
         );
+        assert_eq!(
+            std::fs::read_to_string(&model_file).unwrap(),
+            held,
+            "the child never writes model.ossie.yaml"
+        );
     }
+}
+
+#[test]
+fn full_pass_reads_the_file_the_sample_save_wrote() {
+    let mut pane = retail_pane("reads-after-save");
+    assert_eq!(role_of(&pane.model, "stores"), Role::Entity);
+    let (read, seen) = mpsc::channel();
+    let done = pane.rediscover(ReadsTheFile {
+        sample: stores_as_reference(),
+        read,
+    });
+    assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
+    assert_eq!(role_of(&pane.model, "stores"), Role::Reference);
+
+    // The full pass started once the sample's save was written: it reads the whole new file.
+    let found = seen
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the full pass ran")
+        .expect("the file it read was whole");
+    assert_eq!(found, pane.model, "it read the file the save wrote");
+    assert!(
+        !pane.protocol.dir.join(".model.ossie.yaml.writing").exists(),
+        "no half-written file is left beside it"
+    );
+}
+
+#[test]
+fn a_superseded_full_pass_is_stopped_and_never_merged() {
+    let mut pane = retail_pane("superseded");
+    let (release_old, old_gate) = mpsc::channel();
+    let (asked, old_asked) = mpsc::channel();
+    pane.rediscover(Gated {
+        asked: Some(asked),
+        ..Gated::new(retail_model(), old_gate)
+    });
+    let (release_new, new_gate) = mpsc::channel();
+    pane.rediscover(Gated::new(retail_model(), new_gate));
+
+    // The first pass answers after the second superseded it: it was asked to stop, and what it
+    // proposes goes nowhere.
+    release_old.send(stores_as_reference()).unwrap();
+    assert_eq!(
+        old_asked.recv_timeout(Duration::from_secs(30)),
+        Ok(true),
+        "the superseded pass was asked to stop"
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(pane.poll_discovery(), None, "only the newer pass can land");
+    assert_eq!(role_of(&pane.model, "stores"), Role::Entity);
+
+    release_new.send(retail_model()).unwrap();
+    let due = Instant::now() + Duration::from_secs(30);
+    while pane.poll_discovery().is_none() {
+        assert!(Instant::now() < due, "the newer pass never landed");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!pane.discovering());
+    assert_eq!(role_of(&pane.model, "stores"), Role::Entity);
 }

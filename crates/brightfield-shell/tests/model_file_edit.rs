@@ -15,11 +15,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use brightfield_ossie::{Band, DecidedBy, Edit, Model, Role};
+use brightfield_ossie::{Band, DecidedBy, Edit, ListRow, Model, Role};
 use brightfield_render::model_scene::Selection;
 use brightfield_shell::data_file::{self, Opened};
 use brightfield_shell::design::Mode;
+use brightfield_shell::discovery::{Discovery, Pass};
 use brightfield_shell::model_pane::{Dispatched, ModelPane, ModelView, FILE_PAUSE_MS};
+use brightfield_shell::own_files::OwnProtocol;
 use brightfield_shell::run::Runner;
 use brightfield_shell::window::{Boot, MeridianApp};
 
@@ -285,16 +287,148 @@ fn hand_edit_marks_analyst() {
         join("loyalty_visits_customers").meta.decided_by,
         DecidedBy::Analyst
     );
-    // The join taken out is simply gone.
+    // The join taken out is gone, and rejected as the analyst's, as a Drop would leave it.
     assert!(!disk
         .relationships
         .iter()
         .any(|r| r.name == "loyalty_visits_stores"));
-    assert!(!disk
+    let rejected = disk
         .meta
         .rejected
         .iter()
-        .any(|r| r.name == "loyalty_visits_stores"));
+        .find(|r| r.name == "loyalty_visits_stores")
+        .expect("the join taken out is rejected");
+    assert_eq!(rejected.meta.decided_by, DecidedBy::Analyst);
+}
+
+/// A discoverer whose every pass proposes `0`.
+struct Proposes(Model);
+
+impl Discovery for Proposes {
+    fn discover(&self, _protocol: &OwnProtocol, _pass: Pass) -> Result<Model, String> {
+        Ok(self.0.clone())
+    }
+}
+
+/// `text` without the list item that begins `- name: {name}` at the start of a line: up to the
+/// next line that starts a sibling item or a key of the document.
+fn cut_item(text: &str, name: &str) -> String {
+    let head = format!("- name: {name}\n");
+    assert_eq!(text.matches(&head).count(), 1, "{name} is one item");
+    let start = text.find(&head).unwrap();
+    let rest = &text[start + head.len()..];
+    let mut end = start + head.len();
+    for line in rest.split_inclusive('\n') {
+        if !line.starts_with(' ') {
+            break;
+        }
+        end += line.len();
+    }
+    format!("{}{}", &text[..start], &text[end..])
+}
+
+#[test]
+fn a_join_deleted_by_hand_stays_out_after_a_full_pass() {
+    let (mut pane, _held) = opened();
+    let text = pane.file_text().to_string();
+    type_and_pause(&mut pane, cut_item(&text, "transactions_stores"));
+    assert_eq!(pane.file_error(), None);
+    assert!(!pane
+        .model
+        .relationships
+        .iter()
+        .any(|r| r.name == "transactions_stores"));
+
+    // A full pass that still finds the join, as dovetail would.
+    pane.start_full_pass(Proposes(retail_model()));
+    assert!(pane.finish_discovery().is_some(), "the pass lands");
+    let disk = brightfield_ossie::read(&on_disk(&pane)).unwrap();
+    for model in [&pane.model, &disk] {
+        assert!(
+            !model
+                .relationships
+                .iter()
+                .any(|r| r.from == "transactions" && r.to == "stores"),
+            "the pass did not bring the join back"
+        );
+        assert!(model
+            .meta
+            .rejected
+            .iter()
+            .any(|r| r.name == "transactions_stores" && r.meta.decided_by == DecidedBy::Analyst));
+    }
+}
+
+#[test]
+fn a_dataset_deleted_by_hand_stays_left_out() {
+    let (mut pane, _held) = opened();
+    let text = pane.file_text().to_string();
+    type_and_pause(&mut pane, cut_item(&text, "promo_codes"));
+    assert_eq!(pane.file_error(), None);
+    let left_out = |model: &Model| {
+        let d = model
+            .datasets
+            .iter()
+            .find(|d| d.name == "promo_codes")
+            .expect("the deleted table stays in the model");
+        d.meta.excluded && d.meta.decided_by == DecidedBy::Analyst
+    };
+    assert!(left_out(&pane.model), "deleting a table leaves it out");
+    assert!(brightfield_ossie::list_rows(&pane.model)
+        .iter()
+        .any(|row| matches!(row, ListRow::LeftOut { name, .. } if name == "promo_codes")));
+    assert_eq!(
+        card_band(&pane, "promo_codes"),
+        None,
+        "no card on the diagram"
+    );
+
+    // A full pass that proposes it as a table of the model again.
+    pane.start_full_pass(Proposes(retail_model()));
+    assert!(pane.finish_discovery().is_some(), "the pass lands");
+    assert!(left_out(&pane.model), "the pass did not bring it back");
+    assert!(left_out(&brightfield_ossie::read(&on_disk(&pane)).unwrap()));
+}
+
+#[test]
+fn a_join_renamed_through_another_name_is_not_rejected() {
+    let (mut pane, _held) = opened();
+    let text = pane.file_text().to_string();
+    type_and_pause(
+        &mut pane,
+        replaced(
+            &text,
+            "- name: transactions_stores\n",
+            "- name: transactions_stor\n",
+        ),
+    );
+    let text = pane.file_text().to_string();
+    type_and_pause(
+        &mut pane,
+        replaced(
+            &text,
+            "- name: transactions_stor\n",
+            "- name: transactions_stores\n",
+        ),
+    );
+    assert_eq!(pane.file_error(), None);
+    let disk = brightfield_ossie::read(&on_disk(&pane)).unwrap();
+    for model in [&pane.model, &disk] {
+        assert!(model
+            .relationships
+            .iter()
+            .any(|r| r.name == "transactions_stores"));
+        let rejected: Vec<&str> = model
+            .meta
+            .rejected
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+        assert!(
+            !rejected.contains(&"transactions_stores") && !rejected.contains(&"transactions_stor"),
+            "{rejected:?}"
+        );
+    }
 }
 
 #[test]

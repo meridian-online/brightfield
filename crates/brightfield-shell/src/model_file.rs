@@ -5,8 +5,16 @@
 //! and, where the text says, the line. A text Brightfield reads becomes the next model, and each
 //! dataset, field and relationship that differs from the one of the same name in the current
 //! model, or is new, is marked as the analyst's; what the edit left alone keeps who decided it. A
-//! relationship the edit removed is simply gone. A relationship's evidence and warning are measured
-//! after each run, not decided: a hand edit neither changes them nor is judged by them.
+//! relationship's evidence and warning are measured after each run, not decided: a hand edit
+//! neither changes them nor is judged by them.
+//!
+//! What the edit deletes stays deleted when discovery runs again ([`hold_deletions`]). A
+//! relationship the edit removed goes into the model's rejected joins as the analyst's, as Drop
+//! does, unless the text still holds the same join under another name, which is a rename. A
+//! rejected join leaves the rejected list when a relationship of its name is in the model again,
+//! so a name typed through on the way to another is not held against it. A dataset the edit
+//! removed stays in the model, left out, as the analyst decided, so the diagram shows it left out
+//! and a later pass does not bring it back; one the analyst had only just made is simply gone.
 //!
 //! What the text names that Brightfield cannot act on is not refused. A relationship naming a
 //! table the model does not hold is set aside in [`Kept`]: left out of the model the diagram is
@@ -93,6 +101,7 @@ pub fn read_hand_edit(current: &Model, text: &str) -> Result<HandEdit, String> {
     model.relationships = acted;
     keep_measurements(current, &mut model);
     mark_changed(current, &mut model);
+    hold_deletions(current, &mut model, &unjoined);
     Ok(HandEdit {
         model,
         kept: Kept {
@@ -394,6 +403,55 @@ fn mark_changed(current: &Model, edited: &mut Model) {
             r.meta.decided_by = DecidedBy::Analyst;
         }
     }
+}
+
+/// Keep what the edit deleted from `current` from coming back with a later discovery pass, as the
+/// module says. `set_aside` is what the edit holds but the model does not act on, which was not
+/// deleted. The rejected joins `current` holds are carried into `edited` too, so an editor whose
+/// text predates a drop does not take the drop back.
+fn hold_deletions(current: &Model, edited: &mut Model, set_aside: &[Relationship]) {
+    for c in &current.datasets {
+        let gone = !edited.datasets.iter().any(|d| d.name == c.name);
+        // A dataset of the analyst's own that was never left out is one no pass proposes.
+        if gone && (c.meta.decided_by == DecidedBy::Dovetail || c.meta.excluded) {
+            let mut left_out = c.clone();
+            left_out.meta.excluded = true;
+            left_out.meta.decided_by = DecidedBy::Analyst;
+            edited.datasets.push(left_out);
+        }
+    }
+    for r in &current.meta.rejected {
+        if !edited.meta.rejected.iter().any(|e| e.name == r.name) {
+            edited.meta.rejected.push(r.clone());
+        }
+    }
+    for c in &current.relationships {
+        let held = edited
+            .relationships
+            .iter()
+            .chain(set_aside)
+            .any(|r| r.name == c.name || same_join(r, c));
+        if !held && !edited.meta.rejected.iter().any(|e| e.name == c.name) {
+            let mut dropped = c.clone();
+            dropped.meta.decided_by = DecidedBy::Analyst;
+            edited.meta.rejected.push(dropped);
+        }
+    }
+    let active: Vec<String> = edited
+        .relationships
+        .iter()
+        .chain(set_aside)
+        .map(|r| r.name.clone())
+        .collect();
+    edited.meta.rejected.retain(|r| !active.contains(&r.name));
+}
+
+/// Whether two relationships join the same tables on the same columns, whatever they are called.
+fn same_join(a: &Relationship, b: &Relationship) -> bool {
+    a.from == b.from
+        && a.from_columns == b.from_columns
+        && a.to == b.to
+        && a.to_columns == b.to_columns
 }
 
 /// Whether two datasets are the same but for who decided them and their fields, which are

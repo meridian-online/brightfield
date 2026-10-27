@@ -65,7 +65,7 @@ use meridian_design::{semantic, spacing};
 
 use crate::canvas::EguiCanvasHost;
 use crate::design::Mode;
-use crate::discovery::{discover_passes, Discovery, FullPass, StandIn, MODEL_FILE};
+use crate::discovery::{sample_pass, write_model_file, Discovery, FullPass, StandIn, MODEL_FILE};
 use crate::editor::Access;
 use crate::model_file::{self, Kept};
 use crate::model_inspector::{self, Inspected, InspectorDrawn, ModelAction, ModelPicker};
@@ -747,8 +747,10 @@ impl ModelPane {
     /// Run `discovery` over the Protocol again and fold what it proposes into the model: what the
     /// analyst decided stays as it is, and what Dovetail decided takes the fresh pass. The sample
     /// pass is folded in and saved, as an action's model is, before this answers; the full pass
-    /// then runs on a worker, in place of any still running, and lands through
-    /// [`Self::poll_discovery`]. What came of it stands in the status line.
+    /// then runs on a worker, in place of any still running, which is told to stop, and lands
+    /// through [`Self::poll_discovery`]. The full pass starts only once the sample's save is
+    /// written, so it reads the folder as the save left it. What came of it stands in the status
+    /// line.
     pub fn rediscover(&mut self, discovery: impl Discovery + Send + 'static) -> Dispatched {
         let dispatched = self.rediscovered(Box::new(discovery));
         self.say(&dispatched);
@@ -759,27 +761,31 @@ impl ModelPane {
         if let Err(e) = self.settle_file_edit() {
             return Dispatched::Failed(e);
         }
-        let (model, full) = match discover_passes(discovery, &self.protocol, Some(&self.model)) {
-            Ok(passes) => passes,
+        // A pass still running answers for a model this one replaces.
+        self.full_pass = None;
+        let model = match sample_pass(&*discovery, &self.protocol, Some(&self.model)) {
+            Ok(model) => model,
             Err(e) => return Dispatched::Failed(format!("Discovery failed: {e}")),
         };
-        self.full_pass = Some(full);
-        if model == self.model {
-            return Dispatched::Done("The sample pass found nothing to change".to_string());
-        }
-        self.picker = None;
-        let saved = self.save_model(model);
-        self.let_go_of_what_is_gone();
-        match saved {
-            Ok(()) => Dispatched::Done(
-                "Discovered the model again from a sample, around what you decided".to_string(),
-            ),
-            Err(e) => Dispatched::Failed(e),
-        }
+        let dispatched = if model == self.model {
+            Dispatched::Done("The sample pass found nothing to change".to_string())
+        } else {
+            self.picker = None;
+            let saved = self.save_model(model);
+            self.let_go_of_what_is_gone();
+            match saved {
+                Ok(()) => Dispatched::Done(
+                    "Discovered the model again from a sample, around what you decided".to_string(),
+                ),
+                Err(e) => return Dispatched::Failed(e),
+            }
+        };
+        self.full_pass = Some(FullPass::start(discovery, &self.protocol));
+        dispatched
     }
 
     /// Run `discovery`'s full pass over the Protocol on a worker, in place of any still running,
-    /// to land through [`Self::poll_discovery`]. The window starts one when the pane opens, whose
+    /// which is told to stop, to land through [`Self::poll_discovery`]. The window starts one when the pane opens, whose
     /// model is the sample pass's.
     pub fn start_full_pass(&mut self, discovery: impl Discovery + Send + 'static) {
         self.full_pass = Some(FullPass::start(Box::new(discovery), &self.protocol));
@@ -944,9 +950,8 @@ impl ModelPane {
     /// Write `model` with `kept` as the Ossie file and make it the pane's model, without touching
     /// the Protocol's steps or running it.
     fn write_model(&mut self, model: Model, kept: Kept, from_editor: bool) -> Result<(), String> {
-        let path = self.protocol.dir.join(MODEL_FILE);
         let text = model_file::written(&model, &kept);
-        std::fs::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
+        write_model_file(&self.protocol.dir, &text)?;
         self.layout = brightfield_ossie::layout(&model);
         self.model = model;
         self.kept = kept;
