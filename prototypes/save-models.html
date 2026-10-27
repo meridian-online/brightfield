@@ -59,6 +59,22 @@ header.top p { margin: 0; color: var(--ink-2); max-width: 72ch; }
 .seg { display: inline-flex; background: var(--surface); border: 1px solid var(--line-2); border-radius: 10px; padding: 3px; }
 .seg button { border: 0; background: none; padding: 7px 14px; border-radius: 7px; cursor: pointer; color: var(--ink-2); font-weight: 500; }
 .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.seg-note { font-size: 13px; color: var(--ink-2); }
+.apple summary { color: var(--ink-2); }
+.menu { position: relative; }
+.menu summary { list-style: none; }
+.menu summary::-webkit-details-marker { display: none; }
+.menu .items { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; min-width: 270px; background: var(--surface); border-radius: 9px; box-shadow: var(--shadow); padding: 5px; display: flex; flex-direction: column; }
+.menu .items button { text-align: left; border: 0; background: none; padding: 6px 10px; border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between; gap: 18px; font-size: 13px; }
+.menu .items button:hover { background: var(--accent); color: var(--accent-ink); }
+.menu .items button.cue { box-shadow: inset 0 0 0 2px var(--accent); }
+.menu .items hr { border: 0; border-top: 1px solid var(--line); margin: 4px 6px; }
+.menu .items kbd { font: inherit; opacity: .7; }
+.flag { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: var(--warn-soft); color: var(--warn); border: 0; cursor: pointer; margin-left: 8px; }
+.row .flagchip { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 5px; background: var(--warn-soft); color: var(--warn); margin-left: 8px; vertical-align: 1px; }
+.lights i.dirty { background: var(--ink-3); position: relative; }
+.lights i.dirty::after { content: ""; position: absolute; inset: 3.5px; border-radius: 50%; background: var(--surface); }
+.version small { display: block; color: var(--ink-3); }
 .model-desc { color: var(--ink-2); max-width: 90ch; margin: 4px 0 0; font-size: 14px; }
 .model-desc b { color: var(--ink); }
 .replayed { font-size: 13px; color: var(--accent); margin-top: 4px; min-height: 1.2em; }
@@ -239,8 +255,16 @@ footer { margin-top: 36px; color: var(--ink-3); font-size: 13px; }
       <button type="button" data-model="keep">Brightfield keeps it</button>
       <button type="button" data-model="draft">A draft until saved</button>
     </div>
+    <span class="seg-note" id="seg-note"></span>
+    <div hidden>
+    </div>
   </div>
   <p class="model-desc" id="model-desc"></p>
+  <details class="today-d apple">
+    <summary>Is this switch macOS's own “Ask to keep changes when closing documents” setting? Partly.</summary>
+    <p>Apple's guidelines describe that setting, in Desktop &amp; Dock, as turning autosave off. With it on, a document shows a dot on its close button and Edited in its title, and closing or quitting asks you to save. That is “A draft until saved”. With it off, macOS autosaves and keeps versions you can go back to with Revert To, which is the heart of “Brightfield keeps it”. The difference: macOS autosaves the document itself, wherever it lives, while “Brightfield keeps it” keeps it in Brightfield's own folder and writes the folder copy only on ⌘S. So the switch is that setting's two sides, plus a choice about where the kept copy lives, which macOS doesn't make.</p>
+    <p>Apple's default is autosave: avoid making people save explicitly, save periodically while they edit and when they close. Its File menu, in order, has Open…, Open Recent, Close, Save, Duplicate (preferred over Save As), Rename…, Move To… and Revert To. The window's File menu below follows that order.</p>
+  </details>
   <div class="replayed" id="replayed" aria-live="polite"></div>
 
   <nav class="tabs" role="tablist" id="tabs"></nav>
@@ -289,8 +313,10 @@ const SaveModels = (() => {
   const QUAKES = '~/Data/quakes';
   const COAST = '~/Data/coast';
   const SOURCES = { [QUAKES]: ['earthquakes_2024.csv'], [COAST]: ['tides.csv', 'stations.csv'] };
+  const PLACES = ['~/Projects/quake-study', '~/Documents/Brightfield'];
+  const NOT_MODELLED = "Duplicate and Move To are only modelled under 'Brightfield keeps it' in this prototype.";
   const LIBRARY = "Brightfield's own folder";
-  const DIALOG_ACTIONS = new Set(['answer', 'confirmSave', 'rename', 'dismiss', 'openFile', 'openFolder']);
+  const DIALOG_ACTIONS = new Set(['answer', 'confirmSave', 'rename', 'dismiss', 'openFile', 'openFolder', 'moveTo', 'revertTo']);
 
   const clone = (x) => JSON.parse(JSON.stringify(x));
   const dirOf = (p) => p.slice(0, p.lastIndexOf('/'));
@@ -310,7 +336,7 @@ const SaveModels = (() => {
   function initial(model) {
     return {
       model, now: 9 * 60, running: true, screen: 'door', doc: null, dialog: null,
-      folders: { [QUAKES]: null, [COAST]: null },
+      folders: { [QUAKES]: null, [COAST]: null, [PLACES[0]]: null, [PLACES[1]]: null },
       library: {}, recents: [], nextId: 1, events: [], toast: null,
     };
   }
@@ -332,9 +358,24 @@ const SaveModels = (() => {
 
   const say = (s, t) => s.events.push(t);
 
-  function keep(s) {
-    const d = s.doc;
-    s.library[d.link.id] = Object.assign(clone(d.proto), { keptAt: s.now });
+  // Keep the window's Protocol in Brightfield's own folder, adding a version when its content changed.
+  function keep(s, why) {
+    const d = s.doc, id = d.link.id, old = s.library[id];
+    const versions = old && old.versions ? old.versions.slice() : [];
+    const last = versions[versions.length - 1];
+    const changed = !last || !same(last.p, d.proto);
+    if (changed) versions.push({ at: s.now, why: why || 'Kept', p: { name: d.proto.name, steps: clone(d.proto.steps) } });
+    s.library[id] = Object.assign(clone(d.proto), { keptAt: changed || !old ? s.now : old.keptAt, versions, copyDir: old && old.copyDir });
+  }
+
+  function copyDirOf(s, id) { const p = s.library[id]; return (p && p.copyDir) || srcDir(p); }
+  function copyOf(s, id) { const c = s.folders[copyDirOf(s, id)]; return c && c.keptId === id ? c : null; }
+  function copyWhere(s, id) { return copyDirOf(s, id) === srcDir(s.library[id]) ? 'the copy beside the data' : 'the copy in ' + copyDirOf(s, id); }
+  function copyStatus(s, id) {
+    const dir = copyDirOf(s, id), c = s.folders[dir];
+    if (!c) return { text: 'No folder copy yet', tone: 'none' };
+    if (c.keptId !== id) return { text: `Its folder holds another Protocol's copy (${dir})`, tone: 'none' };
+    return same(c, s.library[id]) ? { text: `Copy in ${dir} is up to date`, tone: 'ok' } : { text: `Copy in ${dir} is behind`, tone: 'behind' };
   }
 
   function touchRecent(s, entry) {
@@ -345,12 +386,12 @@ const SaveModels = (() => {
 
   function openDoc(s, proto, link) {
     s.doc = { proto: clone(proto), link, dirty: false, history: [], baseline: clone(proto) };
-    delete s.doc.proto.keptAt; delete s.doc.proto.savedAt;
+    delete s.doc.proto.keptAt; delete s.doc.proto.savedAt; delete s.doc.proto.versions; delete s.doc.proto.copyDir; delete s.doc.proto.keptId;
     s.screen = 'doc';
     if (s.doc.proto.run.state === 'never') {
       s.doc.proto.run = { state: 'previewed' };
       s.previewNote = true;
-      if (s.model === 'keep') keep(s);
+      if (s.model === 'keep') keep(s, 'Opened');
     }
     if (s.model === 'draft' && link && link.kind === 'folder') touchRecent(s, { key: 'p:' + link.dir, kind: 'protocol', dir: link.dir, previewed: true });
     s.doc.baseline = clone(s.doc.proto);
@@ -367,13 +408,17 @@ const SaveModels = (() => {
     delete p.savedAt;
     p.run = { state: 'never' };
     p.keptAt = s.now;
+    p.versions = [{ at: s.now, why: 'Taken in from the folder copy', p: { name: p.name, steps: clone(p.steps) } }];
+    delete p.keptId;
     s.library[id] = p;
+    s.folders[srcDir(p)].keptId = id;
     return { id, proto: p };
   }
 
   function startKeeping(s, source) {
     const id = String(s.nextId++);
-    s.library[id] = Object.assign(newProto(source), { keptAt: s.now });
+    const p = newProto(source);
+    s.library[id] = Object.assign(p, { keptAt: s.now, versions: [{ at: s.now, why: 'Opened', p: { name: p.name, steps: clone(p.steps) } }] });
     return { id, proto: s.library[id] };
   }
 
@@ -422,7 +467,7 @@ const SaveModels = (() => {
     const saved = s.folders[dir];
     if (saved) {
       if (s.model === 'keep') {
-        const kept = findKept(s, (p) => srcDir(p) === dir);
+        const kept = saved.keptId && s.library[saved.keptId] ? { id: saved.keptId, proto: s.library[saved.keptId] } : null;
         if (kept) {
           const match = same(kept.proto, saved);
           openDoc(s, kept.proto, { kind: 'library', id: kept.id });
@@ -472,10 +517,11 @@ const SaveModels = (() => {
     const d = s.doc;
     if (!opts.nameOnly && d.proto.run.state === 'ran') d.proto.run.changedSince = true;
     if (s.model === 'keep') {
-      keep(s);
-      const beside = s.folders[srcDir(d.proto)];
+      keep(s, describe);
+      const behind = copyStatus(s, d.link.id).tone === 'behind';
+      const where = copyWhere(s, d.link.id);
       say(s, describe + " Kept at once in Brightfield's own folder." +
-        (beside && !same(beside, d.proto) ? ' The copy beside the data is now behind; ⌘S brings it up to date.' : ''));
+        (behind ? ' ' + where[0].toUpperCase() + where.slice(1) + ' is now behind; ⌘S brings it up to date.' : ''));
     } else {
       d.dirty = !same(d.proto, d.baseline);
       say(s, describe + (d.dirty ? ' Only in this window until you save.' : ' That matches the saved version again.'));
@@ -491,10 +537,10 @@ const SaveModels = (() => {
 
   function writeBeside(s) {
     const d = s.doc;
-    const dir = srcDir(d.proto);
+    const dir = s.model === 'keep' ? copyDirOf(s, d.link.id) : srcDir(d.proto);
     const p = clone(d.proto);
     p.savedAt = s.now;
-    if (s.model === 'keep') p.run = { state: 'never' }; // results stay in Brightfield's own folder
+    if (s.model === 'keep') { p.run = { state: 'never' }; p.keptId = d.link.id; } // results stay in Brightfield's own folder
     s.folders[dir] = p;
     return dir;
   }
@@ -526,7 +572,7 @@ const SaveModels = (() => {
     d.proto.run = { state: 'ran', at: s.now };
     const n = d.proto.steps.length;
     if (s.model === 'keep') {
-      keep(s);
+      keep(s, 'Ran');
       say(s, `Ran all ${n} steps. The results are kept in Brightfield's own folder.`);
     } else {
       s.folders[d.link.dir].run = clone(d.proto.run);
@@ -636,11 +682,11 @@ const SaveModels = (() => {
         const name = (a.name || '').trim() || d.proto.name;
         if (name === d.proto.name) { say(s, 'The name is unchanged.'); break; }
         if (s.model === 'keep') {
-          const beside = s.folders[srcDir(d.proto)];
+          const beside = copyOf(s, d.link.id);
           d.history.push(clone(d.proto));
           d.proto.name = name;
           afterChange(s, `Renamed to "${name}".`, { nameOnly: true });
-          if (beside) say(s, `The copy beside the data is still called "${beside.name}" until you press ⌘S.`);
+          if (beside) say(s, `The folder copy is still called "${beside.name}" until you press ⌘S.`);
         } else if (d.link) {
           const saved = s.folders[d.link.dir];
           saved.name = name; d.proto.name = name; d.baseline.name = name;
@@ -655,15 +701,15 @@ const SaveModels = (() => {
       case 'cmdS': {
         if (!d) { say(s, 'Nothing is open, so ⌘S has nothing to save.'); break; }
         if (s.model === 'keep') {
-          const dir = srcDir(d.proto);
-          const old = s.folders[dir];
-          if (old && same(old, d.proto)) { say(s, 'The copy beside the data was already up to date, so nothing changed.'); break; }
+          const id = d.link.id, dir = copyDirOf(s, id), old = s.folders[dir], where = copyWhere(s, id);
+          if (old && old.keptId === id && same(old, d.proto)) { say(s, `${where[0].toUpperCase() + where.slice(1)} was already up to date, so nothing changed.`); break; }
           writeBeside(s);
-          say(s, old && old.name !== d.proto.name
-            ? `Rewrote the copy beside the data in ${dir}, replacing the one called "${old.name}".`
-            : old ? `Brought the copy beside the data up to date, in ${dir}.`
-            : `Wrote a copy beside the data, in ${dir}: arcform.yaml, models/ and panels/. Brightfield's own copy was already up to date.`);
-          s.toast = 'Copy written beside the data';
+          say(s, old && old.keptId !== id
+            ? `Wrote ${where}, in ${dir}, replacing the copy of "${old.name}" that was there: a folder holds one Protocol's files.`
+            : old && old.name !== d.proto.name ? `Rewrote ${where} in ${dir}, replacing the one called "${old.name}".`
+            : old ? `Brought ${where} up to date, in ${dir}.`
+            : `Wrote the folder copy, in ${dir}: arcform.yaml, models/ and panels/.`);
+          s.toast = 'Folder copy written';
         } else if (!d.link) {
           s.dialog = { kind: 'save', then: null };
           say(s, 'This draft has never been saved, so Brightfield asks for a name.');
@@ -704,6 +750,60 @@ const SaveModels = (() => {
         continueWith(s, dlg.then);
         break;
       }
+      case 'duplicate': {
+        if (!d) break;
+        if (s.model !== 'keep') { say(s, NOT_MODELLED); break; }
+        const from = d.proto.name, fromId = d.link.id;
+        const id = String(s.nextId++);
+        const p = clone(d.proto);
+        p.name = from + ' copy';
+        p.run = { state: 'never' };
+        s.library[id] = Object.assign(p, { keptAt: s.now, versions: [{ at: s.now, why: `Duplicated from "${from}"`, p: { name: p.name, steps: clone(p.steps) } }] });
+        openDoc(s, s.library[id], { kind: 'library', id });
+        say(s, `Duplicated "${from}" as "${p.name}", kept in Brightfield's own folder. The window now shows the duplicate; the original is on the front door.`);
+        if (copyOf(s, fromId) && copyDirOf(s, id) === copyDirOf(s, fromId)) say(s, `Both read the same data folder, which can hold one Protocol's files, so ⌘S here would replace "${from}"'s folder copy. Move To… first to keep both.`);
+        break;
+      }
+      case 'moveToPrompt':
+        if (!d) break;
+        if (s.model !== 'keep') { say(s, NOT_MODELLED); break; }
+        s.dialog = { kind: 'moveTo' };
+        break;
+      case 'moveTo': {
+        s.dialog = null;
+        if (!d) break;
+        const id = d.link.id, from = copyDirOf(s, id), to = a.dir, home = srcDir(d.proto);
+        if (from === to) { say(s, 'The folder copy already lives there.'); break; }
+        const c = copyOf(s, id), displaced = s.folders[to];
+        if (c) { s.folders[to] = c; s.folders[from] = null; }
+        s.library[id].copyDir = to === home ? null : to;
+        say(s, c ? `Moved the folder copy from ${from} to ${to}.` : `Set where the folder copy goes: ${to}. Nothing is written until ⌘S.`);
+        if (to !== home) say(s, `From there it reads its data in ${home} by full path, so moving the data would break it.`);
+        if (c && displaced) say(s, `It replaced the copy of "${displaced.name}" that was there.`);
+        break;
+      }
+      case 'revertPrompt':
+        if (!d) break;
+        if (s.model === 'keep') { s.dialog = { kind: 'revert' }; break; }
+        if (!d.link || !d.dirty) { say(s, 'Nothing to revert: there are no changes since the last save.'); break; }
+        d.history.push(clone(d.proto));
+        d.proto = clone(d.baseline);
+        afterChange(s, 'Reverted to the saved version.');
+        break;
+      case 'revertTo': {
+        s.dialog = null;
+        if (!d || s.model !== 'keep') break;
+        const vs = s.library[d.link.id].versions;
+        const i = a.index != null ? a.index : vs.length - 1 - (a.back || 1);
+        const v = vs[i];
+        if (!v) { say(s, 'There is no earlier version.'); break; }
+        d.history.push(clone(d.proto));
+        d.proto.name = v.p.name;
+        d.proto.steps = clone(v.p.steps);
+        afterChange(s, `Reverted to the version kept at ${clock(v.at, s.now)}.`);
+        say(s, 'The version you left is still in Revert To, so this can be reverted too.');
+        break;
+      }
       case 'run': if (d) doRun(s); break;
       case 'closeWindow': doClose(s, false); break;
       case 'quit': doQuit(s, false); break;
@@ -714,12 +814,13 @@ const SaveModels = (() => {
         say(s, 'The next morning: Brightfield opens on its front door.');
         break;
       case 'forgetLibrary': {
-        const stranded = Object.values(s.library).filter((p) => s.folders[srcDir(p)] && !same(s.folders[srcDir(p)], p));
-        const unwritten = Object.values(s.library).filter((p) => !s.folders[srcDir(p)]);
+        const ids = Object.keys(s.library);
+        const stranded = ids.filter((id) => copyOf(s, id) && !same(copyOf(s, id), s.library[id])).map((id) => s.library[id]);
+        const unwritten = ids.filter((id) => !copyOf(s, id)).map((id) => s.library[id]);
         s.library = {}; s.recents = []; s.doc = null; s.dialog = null; s.screen = 'door'; s.running = true;
         say(s, "Now on another Mac. Brightfield's own folder and its recent list are empty there; ~/Data came across as it was.");
         for (const p of stranded) say(s, `"${p.name}" had changes kept only in Brightfield's own folder, after the last ⌘S. They stayed on the first Mac.`);
-        for (const p of unwritten) say(s, `"${p.name}" was never written beside its data, so nothing of it came across.`);
+        for (const p of unwritten) say(s, `"${p.name}" had no folder copy, so nothing of it came across.`);
         break;
       }
     }
@@ -754,9 +855,8 @@ const SaveModels = (() => {
         .map((id) => ({ id, p: s.library[id] }))
         .sort((a, b) => b.p.keptAt - a.p.keptAt)
         .map(({ id, p }) => {
-          const beside = s.folders[srcDir(p)];
-          const copy = !beside ? 'No copy beside the data' : same(beside, p) ? 'Copy beside the data is up to date' : 'Copy beside the data is behind';
-          return { key: 'lib:' + id, section: 'Your Protocols', name: p.name, where: sourceLabel(p), meta: ['Kept ' + clock(p.keptAt, s.now), copy], run: runLabel(p.run, s.now) };
+          const copy = copyStatus(s, id);
+          return { key: 'lib:' + id, section: 'Your Protocols', name: p.name, where: sourceLabel(p), meta: ['Kept ' + clock(p.keptAt, s.now), copy.text], run: runLabel(p.run, s.now), flag: copy.tone === 'behind' ? 'Folder copy behind' : null };
         });
     }
     const rows = [];
@@ -780,25 +880,26 @@ const SaveModels = (() => {
   // Everything on disk, by place, plus what lives only in the window.
   function disk(s) {
     const places = [];
-    for (const dir of [QUAKES, COAST]) {
-      const entries = SOURCES[dir].map((f) => ({ key: dir + '/' + f, kind: 'file', l1: f }));
+    for (const dir of Object.keys(s.folders)) {
       const p = s.folders[dir];
+      if (!SOURCES[dir] && !p) continue;
+      const entries = (SOURCES[dir] || []).map((f) => ({ key: dir + '/' + f, kind: 'file', l1: f }));
       if (p) {
         let status = '';
         if (s.model === 'keep') {
-          const kept = findKept(s, (k) => srcDir(k) === dir);
-          status = !kept ? " · Brightfield's own folder has no copy of it" : same(kept.proto, p) ? ' · matches Brightfield’s copy' : ' · behind Brightfield’s copy';
+          const kept = p.keptId && s.library[p.keptId];
+          status = !kept ? " · Brightfield's own folder has no copy of it" : same(kept, p) ? ' · matches Brightfield’s copy' : ' · behind Brightfield’s copy';
         }
         entries.push({ key: dir + ':proto', kind: 'proto', l1: `Protocol "${p.name}" (arcform.yaml, models/, panels/)`, l2: stepsSummary(p) + ' · written ' + clock(p.savedAt, s.now) + status });
         if (s.model === 'draft' && p.run.state === 'ran') entries.push({ key: dir + ':build', kind: 'proto', l1: 'build/ (run results)', l2: 'From the run at ' + clock(p.run.at, s.now) });
       }
-      places.push({ key: dir, path: dir, note: 'your data folder', entries });
+      places.push({ key: dir, path: dir, note: SOURCES[dir] ? 'your data folder' : 'a folder of your choosing', entries });
     }
     const lib = [];
     if (s.model === 'keep') {
       for (const id of Object.keys(s.library)) {
         const p = s.library[id];
-        lib.push({ key: 'lib:' + id, kind: 'proto', l1: `Protocol "${p.name}"`, l2: stepsSummary(p) + ' · kept ' + clock(p.keptAt, s.now) });
+        lib.push({ key: 'lib:' + id, kind: 'proto', l1: `Protocol "${p.name}"`, l2: stepsSummary(p) + ' · kept ' + clock(p.keptAt, s.now) + ' · ' + p.versions.length + (p.versions.length === 1 ? ' version' : ' versions') });
         if (p.run.state === 'ran') lib.push({ key: 'lib:' + id + ':build', kind: 'proto', l1: `Results of "${p.name}"`, l2: 'From the run at ' + clock(p.run.at, s.now) });
       }
     } else if (s.recents.length) {
@@ -823,7 +924,7 @@ const SaveModels = (() => {
     return places;
   }
 
-  return { initial, reduce, doorRows, disk, runLabel, clock, srcDir, same, DIALOG_ACTIONS, QUAKES, COAST };
+  return { initial, reduce, doorRows, disk, runLabel, clock, srcDir, same, copyStatus, copyOf, DIALOG_ACTIONS, QUAKES, COAST, PLACES };
 })();
 </script>
 
@@ -939,6 +1040,25 @@ const SCENARIOS = [
     ],
   },
   {
+    id: 'versions', title: 'Behind, revert, duplicate, move',
+    blurb: 'Write the folder copy, change the Protocol so the copy falls behind, revert to an earlier kept version, then duplicate it and move the duplicate’s folder copy somewhere else.',
+    watch: 'The “Folder copy behind” mark in the title bar and on the front door, and which copy ⌘S writes once there are two Protocols over one CSV.',
+    today: 'None of this exists: no versions, no Duplicate, no Move To, and nothing marks a copy as behind.',
+    steps: [
+      { label: 'Open earthquakes_2024.csv', action: { type: 'openFile', path: Q } },
+      { label: 'Filter to magnitude 6 and up', action: { type: 'filter' } },
+      { label: 'Press ⌘S', action: { type: 'cmdS' } },
+      WAIT('Brightfield is asking for a name. Save it from the window.'),
+      { label: 'Add a SQL step, and look at the title bar', action: { type: 'keepStep' } },
+      { label: 'File ▸ Revert To the version before that step', action: { type: 'revertTo', back: 1 }, only: 'keep' },
+      { label: 'File ▸ Duplicate', action: { type: 'duplicate' }, only: 'keep' },
+      { label: 'File ▸ Move To… ~/Projects/quake-study', action: { type: 'moveTo', dir: M.PLACES[0] }, only: 'keep' },
+      { label: 'Press ⌘S on the duplicate', action: { type: 'cmdS' } },
+      { label: 'Go back to the front door', action: { type: 'closeWindow' } },
+      WAIT('Brightfield is asking about your changes. Answer it in the window.'),
+    ],
+  },
+  {
     id: 'free', title: 'Free play',
     blurb: 'Everything is live. Start with Open a file… in the window. Quitting and moving to another Mac are the two buttons just under the window.',
     watch: 'Try the cases the tabs skip: open the file after saving its folder, rename before the first save, run a draft that was never saved.',
@@ -957,9 +1077,9 @@ function scenario() { return SCENARIOS.find((x) => x.id === ui.tab); }
 
 function settle(st, idx, wasAsked) {
   const steps = scenario().steps;
-  while (idx < steps.length && steps[idx].wait && !st.dialog) {
-    if (!wasAsked) ui.skipped.add(idx);
-    wasAsked = false;
+  while (idx < steps.length && ((steps[idx].wait && !st.dialog) || (steps[idx].only && steps[idx].only !== ui.model))) {
+    if (!wasAsked || steps[idx].only) ui.skipped.add(idx);
+    if (steps[idx].wait) wasAsked = false;
     idx++;
   }
   return idx;
@@ -979,7 +1099,7 @@ const LABEL = {
   cmdS: () => '⌘S', run: () => 'Run', closeWindow: () => 'Close window', quit: () => 'Quit', relaunch: () => 'Open Brightfield next morning',
   openRecent: () => 'Open from the front door', openRow: () => 'Open from the front door', forgetLibrary: () => 'Move to another Mac',
   answer: (a) => ({ save: 'Answer: Save', dontSave: "Answer: Don't Save", cancel: 'Answer: Cancel' })[a.choice],
-  confirmSave: (a) => 'Save as "' + a.name + '"', dismiss: () => 'Cancel', openFilePicker: () => 'Open a file…', openFolderPicker: () => 'Open a folder…', renamePrompt: () => 'Rename…',
+  confirmSave: (a) => 'Save as "' + a.name + '"', duplicate: () => 'Duplicate', moveTo: (a) => 'Move To ' + a.dir, revertTo: () => 'Revert To an earlier version', revertPrompt: () => 'Revert', moveToPrompt: () => 'Move To…', dismiss: () => 'Cancel', openFilePicker: () => 'Open a file…', openFolderPicker: () => 'Open a folder…', renamePrompt: () => 'Rename…',
 };
 
 function dispatch(action) {
@@ -987,7 +1107,7 @@ function dispatch(action) {
   const r = apply(ui.state, ui.idx, action);
   ui.state = r.st; ui.idx = r.idx;
   ui.log.push(action);
-  if (LABEL[action.type] && !['openFilePicker', 'openFolderPicker', 'renamePrompt'].includes(action.type)) ui.labels.push(LABEL[action.type](action));
+  if (LABEL[action.type] && !['openFilePicker', 'openFolderPicker', 'renamePrompt', 'moveToPrompt', 'revertPrompt'].includes(action.type)) ui.labels.push(LABEL[action.type](action));
   document.getElementById('replayed').textContent = '';
   render();
 }
@@ -1008,7 +1128,7 @@ function switchModel(model) {
     ui.prev = ui.state;
     const r = apply(ui.state, ui.idx, a);
     ui.state = r.st; ui.idx = r.idx; ui.log.push(a);
-    if (LABEL[a.type] && !['openFilePicker', 'openFolderPicker', 'renamePrompt'].includes(a.type)) ui.labels.push(LABEL[a.type](a));
+    if (LABEL[a.type] && !['openFilePicker', 'openFolderPicker', 'renamePrompt', 'moveToPrompt', 'revertPrompt'].includes(a.type)) ui.labels.push(LABEL[a.type](a));
     replayed++;
   }
   document.getElementById('replayed').textContent = log.length
@@ -1024,6 +1144,9 @@ const h = (html) => html;
 function renderSwitch() {
   document.querySelectorAll('.seg button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.model === ui.model)));
   document.getElementById('model-desc').innerHTML = MODELS[ui.model];
+  document.getElementById('seg-note').textContent = ui.model === 'keep'
+    ? 'Like macOS with “Ask to keep changes when closing documents” off, but kept in Brightfield’s own folder.'
+    : 'Like macOS with “Ask to keep changes when closing documents” on.';
 }
 
 function renderTabs() {
@@ -1041,6 +1164,7 @@ function renderScenario() {
       const cls = skipped ? 'skipped' : i < ui.idx ? 'done' : i === ui.idx ? 'current' : '';
       const inner = st.wait
         ? `<span class="wait">${skipped ? 'Not asked under this model.' : esc(st.label)}</span>`
+        : skipped ? `<span class="wait">${esc(st.label)}: only in “Brightfield keeps it”.</span>`
         : `<button class="step-btn" ${i === ui.idx ? '' : 'disabled tabindex="-1"'} data-step="${i}">${esc(st.label)}</button>`;
       return `<li class="${cls}">${inner}</li>`;
     }).join('') + '</ol>';
@@ -1091,7 +1215,7 @@ function doorHTML(st, interactive) {
     const badge = changed ? `<span class="badge">${was ? 'changed' : 'new'}</span>` : '';
     const tag = interactive ? 'button' : 'div';
     return `<${tag} class="row${interactive ? '' : ' static'}${changed ? ' changed' : ''}" ${interactive ? `data-row="${esc(r.key)}"` : ''}>
-      <span class="name">${esc(r.name)}${badge}</span>
+      <span class="name">${esc(r.name)}${r.flag ? `<span class="flagchip">${esc(r.flag)}</span>` : ''}${badge}</span>
       <span class="run ${r.run.tone}">${esc(r.run.text)}</span>
       <span class="where">${esc(r.where)}</span>
       <span class="meta">${r.meta.map(esc).join(' · ')}</span>
@@ -1128,11 +1252,41 @@ function sheetHTML(st) {
       <label for="save-name">Name</label><input id="save-name" value="${esc(st.doc.proto.name)}" autocomplete="off">
       <div class="where">Saved beside the data, in ${esc(M.srcDir(st.doc.proto))}</div>
       <div class="buttons"><button class="btn" data-act="dismiss">Cancel</button><button class="btn primary" data-act="confirm-save">Save</button></div>`;
+  } else if (d.kind === 'moveTo') {
+    const home = M.srcDir(st.doc.proto);
+    inner = `<h3>Move the folder copy to…</h3><p>The Protocol stays kept in Brightfield's own folder. This moves the copy ⌘S writes.</p><div class="pick">
+      ${[home, ...M.PLACES].map((dir) => `<button class="${scenario().steps[ui.idx]?.action?.dir === dir ? 'cue' : ''}" data-move-to="${esc(dir)}">${esc(dir)}<small>${dir === home ? 'Beside the data' : 'Reads the data by its full path'}</small></button>`).join('')}
+    </div><div class="buttons"><button class="btn" data-act="dismiss">Cancel</button></div>`;
+  } else if (d.kind === 'revert') {
+    const vs = st.library[st.doc.link.id].versions;
+    const copy = M.copyOf(st, st.doc.link.id);
+    const items = vs.map((v, i) => ({ v, i })).slice(0, -1).reverse();
+    inner = `<h3>Revert To</h3><p>Versions Brightfield kept as you worked, newest first. The one you leave stays in this list.</p><div class="pick">
+      ${items.length ? items.map(({ v, i }) => `<button class="version${i === vs.length - 2 && scenario().steps[ui.idx]?.action?.type === 'revertTo' ? ' cue' : ''}" data-revert="${i}">${esc(M.clock(v.at, st.now))} · ${esc(v.why.replace(/\.$/, ''))}<small>${esc(v.p.steps.map((x) => x.label).join(' → '))}${copy && M.same(copy, v.p) ? ' · matches the folder copy' : ''}</small></button>`).join('') : '<p class="empty">No earlier versions yet.</p>'}
+    </div><div class="buttons"><button class="btn" data-act="dismiss">Cancel</button></div>`;
   } else if (d.kind === 'rename') {
     inner = `<h3>Rename the Protocol</h3><label for="rename-name">Name</label><input id="rename-name" value="${esc(d.name)}" autocomplete="off">
       <div class="buttons"><button class="btn" data-act="dismiss">Cancel</button><button class="btn primary" data-act="confirm-rename">Rename</button></div>`;
   }
   return `<div class="sheet-wrap"><div class="sheet" role="dialog" aria-modal="true">${inner}</div></div>`;
+}
+
+function fileMenu(st) {
+  const d = st.doc;
+  const keepM = st.model === 'keep';
+  const item = (act, label, key, type) => `<button class="${cueFor(type || act) ? 'cue' : ''}" data-act="${act}"><span>${label}</span>${key ? `<kbd>${key}</kbd>` : ''}</button>`;
+  const items = [
+    item('pick-file', 'Open…', '⌘O', 'openFile'),
+    item('closeWindow', 'Close', '⌘W'),
+    '<hr>',
+    keepM ? item('cmdS', M.copyOf(st, d.link.id) ? 'Update Folder Copy' : 'Write Folder Copy', '⌘S') : item('cmdS', d.link ? 'Save' : 'Save…', '⌘S'),
+    keepM ? item('duplicate', 'Duplicate', '⇧⌘S') : '',
+    item('renamePrompt', 'Rename…', '', 'rename'),
+    keepM ? item('moveToPrompt', 'Move To…', '', 'moveTo') : '',
+    keepM ? item('revertPrompt', 'Revert To…', '', 'revertTo') : item('revertPrompt', 'Revert to Saved', ''),
+  ].join('');
+  const cued = ['rename', 'duplicate', 'moveTo', 'revertTo'].some((t) => cueFor(t));
+  return `<details class="menu"><summary class="btn${cued ? ' cue' : ''}">File ▾</summary><div class="items">${items}</div></details>`;
 }
 
 function renderWindow() {
@@ -1147,7 +1301,8 @@ function renderWindow() {
       ${doorHTML(st, true)}</div>`;
   } else {
     const d = st.doc, p = d.proto;
-    const kept = st.model === 'keep' ? ` <span class="kept">— kept ${M.clock(st.library[d.link.id].keptAt, st.now)}</span>` : '';
+    const cs = st.model === 'keep' ? M.copyStatus(st, d.link.id) : null;
+    const kept = st.model === 'keep' ? ` <span class="kept">— kept ${M.clock(st.library[d.link.id].keptAt, st.now)}</span>${cs.tone === 'behind' ? '<button class="flag" data-act="cmdS" title="The folder copy is older than Brightfield’s copy. ⌘S updates it.">Folder copy behind · ⌘S</button>' : ''}` : '';
     const edited = st.model === 'draft' && d.dirty ? ' <span class="edited">— Edited</span>' : st.model === 'draft' && !d.link ? ' <span class="kept">— not saved</span>' : '';
     title = esc(p.name) + kept + edited;
     const base = d.baseline.steps.map((x) => x.label);
@@ -1166,8 +1321,8 @@ function renderWindow() {
         <button class="btn${cueFor('keepStep')}" data-act="keepStep">Add a SQL step</button>
         <button class="btn${cueFor('takeOut')}" data-act="takeOut">Take a step out</button>
         <button class="btn${cueFor('undo')}" data-act="undo">Undo<kbd>⌘Z</kbd></button>
-        <button class="btn${cueFor('rename')}" data-act="renamePrompt">Rename…</button>
         <span class="sep"></span>
+        ${fileMenu(st)}
         <button class="btn${cueFor('cmdS')}" data-act="cmdS">${saveLabel}<kbd>⌘S</kbd></button>
         <button class="btn${cueFor('closeWindow')}" data-act="closeWindow">Back to the front door</button>
       </div>
@@ -1178,7 +1333,7 @@ function renderWindow() {
       <div class="ledger"><span class="state">Run state: <b>${esc(run.text)}</b></span><button class="btn primary${cueFor('run')}" data-act="run">Run<kbd>⌘↩</kbd></button></div>
     </div>`;
   }
-  win.innerHTML = `<div class="titlebar"><span class="lights"><i></i><i></i><i></i></span><span class="title">${title}</span><span class="app-actions"></span></div>${body}${sheetHTML(st)}${st.toast ? `<div class="toast" role="status">${esc(st.toast)}</div>` : ''}`;
+  win.innerHTML = `<div class="titlebar"><span class="lights"><i class="${st.running && st.doc && st.model === 'draft' && st.doc.dirty ? 'dirty' : ''}"></i><i></i><i></i></span><span class="title">${title}</span><span class="app-actions"></span></div>${body}${sheetHTML(st)}${st.toast ? `<div class="toast" role="status">${esc(st.toast)}</div>` : ''}`;
   const input = win.querySelector('.sheet input');
   if (input) { input.focus(); input.select(); }
 
@@ -1232,6 +1387,8 @@ document.addEventListener('click', (e) => {
   if (t.dataset.openFile) return dispatch({ type: 'openFile', path: t.dataset.openFile });
   if (t.dataset.openFolder) return dispatch({ type: 'openFolder', dir: t.dataset.openFolder });
   if (t.dataset.answer) return dispatch({ type: 'answer', choice: t.dataset.answer });
+  if (t.dataset.moveTo) return dispatch({ type: 'moveTo', dir: t.dataset.moveTo });
+  if (t.dataset.revert) return dispatch({ type: 'revertTo', index: +t.dataset.revert });
   const act = t.dataset.act;
   if (!act) return;
   if (act === 'restart') { reset(); document.getElementById('replayed').textContent = ''; return render(); }
