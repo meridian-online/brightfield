@@ -145,6 +145,32 @@ fn a_table_with_a_fold_in_it_cannot_be_folded_or_left_out() {
         let e = apply(&model(), &edit).unwrap_err().to_string();
         assert!(e.contains("unfold categories from products first"), "{e}");
     }
+    // Nor can a table fold into one that has no table of its own.
+    let products_out = apply(
+        &model(),
+        &Edit::Unfold {
+            dataset: "categories".into(),
+        },
+    )
+    .and_then(|m| {
+        apply(
+            &m,
+            &Edit::Exclude {
+                dataset: "products".into(),
+            },
+        )
+    })
+    .unwrap();
+    let e = apply(
+        &products_out,
+        &Edit::Fold {
+            dataset: "categories".into(),
+            into: "products".into(),
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("unfold categories from products first"), "{e}");
     let unfolded = apply(
         &model(),
         &Edit::Unfold {

@@ -17,7 +17,7 @@ mod validate;
 mod verify;
 mod wire;
 
-pub use edit::{apply, Edit, EditError};
+pub use edit::{apply, refuse_new_strands, stranded_folds, Edit, EditError};
 pub use layout::{
     edge_text, is_proposal, layout, list_rows, summary, Band, Card, EdgeLabel, ListRow, ModelLayout,
 };

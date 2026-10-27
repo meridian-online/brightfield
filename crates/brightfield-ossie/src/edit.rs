@@ -187,7 +187,6 @@ pub fn apply(model: &Model, edit: &Edit) -> Result<Model, EditError> {
         Edit::Fold { dataset, into } => {
             dataset_index(&m, dataset)?;
             dataset_index(&m, into)?;
-            refuse_if_host(&m, dataset)?;
             let joined = m.relationships.iter().any(|r| {
                 (r.from == *dataset && r.to == *into) || (r.from == *into && r.to == *dataset)
             });
@@ -213,7 +212,6 @@ pub fn apply(model: &Model, edit: &Edit) -> Result<Model, EditError> {
             d.meta.decided_by = DecidedBy::Analyst;
         }
         Edit::Exclude { dataset } => {
-            refuse_if_host(&m, dataset)?;
             let d = dataset_mut(&mut m, dataset)?;
             d.meta.excluded = true;
             d.meta.decided_by = DecidedBy::Analyst;
@@ -236,6 +234,7 @@ pub fn apply(model: &Model, edit: &Edit) -> Result<Model, EditError> {
             f.meta.decided_by = DecidedBy::Analyst;
         }
     }
+    refuse_new_strands(model, &m)?;
     Ok(m)
 }
 
@@ -251,18 +250,39 @@ pub(crate) fn unique_name(base: &str, kept: &[Relationship], rejected: &[Relatio
     name
 }
 
-/// Refuse to fold or leave out `name` while a table kept in the model is folded into it, since
-/// only a table that keeps its own silver table joins its folds in, and the folded table's
-/// columns and failed values would reach no silver table.
-fn refuse_if_host(m: &Model, name: &str) -> Result<(), EditError> {
-    match m
-        .datasets
-        .iter()
-        .find(|d| !d.meta.excluded && d.meta.folded_into.as_deref() == Some(name))
-    {
-        Some(inner) => err(format!("unfold {} from {name} first", inner.name)),
+/// Why `after` strands a folded table that `before` did not, if it does: see [`stranded_folds`].
+///
+/// # Errors
+///
+/// The first newly stranded fold, naming the table to unfold and its host.
+pub fn refuse_new_strands(before: &Model, after: &Model) -> Result<(), EditError> {
+    let had = stranded_folds(before);
+    match stranded_folds(after).into_iter().find(|s| !had.contains(s)) {
+        Some((inner, host)) => err(format!(
+            "{inner} is folded into {host}, which would have no table of its own: \
+             unfold {inner} from {host} first"
+        )),
         None => Ok(()),
     }
+}
+
+/// Each kept table folded into a host that has no silver table of its own, as `(table, host)`:
+/// a host left out, folded itself, or not in the model. Only a host with its own silver table
+/// joins its folds in, so a stranded table's columns and failed values reach no silver table.
+#[must_use]
+pub fn stranded_folds(m: &Model) -> Vec<(String, String)> {
+    m.datasets
+        .iter()
+        .filter(|d| !d.meta.excluded)
+        .filter_map(|d| {
+            let host = d.meta.folded_into.as_deref()?;
+            let own_table = m
+                .datasets
+                .iter()
+                .any(|h| h.name == host && !h.meta.excluded && h.meta.folded_into.is_none());
+            (!own_table).then(|| (d.name.clone(), host.to_string()))
+        })
+        .collect()
 }
 
 fn dataset_index(m: &Model, name: &str) -> Result<usize, EditError> {

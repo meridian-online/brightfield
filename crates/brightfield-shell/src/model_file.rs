@@ -133,6 +133,9 @@ pub fn read_hand_edit(
         keep_measurements(current, &mut model);
         mark_changed(current, &mut model);
     }
+    // A host the edit left out, folded or deleted strands what is folded into it, as a reshape
+    // would (`deleting_a_fold_host_by_hand_is_refused`).
+    brightfield_ossie::refuse_new_strands(current, &model).map_err(|e| e.to_string())?;
     Ok(HandEdit {
         model,
         kept: Kept {

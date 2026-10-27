@@ -408,6 +408,26 @@ fn a_table_deleted_by_hand_keeps_its_joins_in_the_model() {
 }
 
 #[test]
+fn deleting_a_fold_host_by_hand_is_refused() {
+    let (mut pane, _held) = opened();
+    let before = on_disk(&pane);
+    let text = pane.file_text().to_string();
+    // categories is folded into products, so leaving products out would strand it.
+    type_and_pause(&mut pane, cut_item(&text, "products"));
+    let error = pane.file_error().expect("the edit is refused");
+    assert!(
+        error.contains("unfold categories from products first"),
+        "{error}"
+    );
+    assert!(pane
+        .model
+        .datasets
+        .iter()
+        .any(|d| d.name == "products" && !d.meta.excluded));
+    assert_eq!(on_disk(&pane), before, "nothing on disk changed");
+}
+
+#[test]
 fn a_table_the_analyst_decided_and_deleted_by_hand_stays_left_out() {
     let (mut pane, _held) = opened();
     let done = pane.dispatch(ModelAction::Edit(Edit::SetRole {
