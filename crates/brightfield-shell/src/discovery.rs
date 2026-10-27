@@ -9,8 +9,9 @@
 //! edits made in the meantime included. A pass that is superseded is told to stop, and its answer
 //! goes nowhere. [`discover_model`] runs both passes in turn on the calling thread.
 //!
-//! Brightfield is the only writer of `model.ossie.yaml` ([`write_model_file`]), and writes it
-//! whole, so a pass that reads it never sees half a file.
+//! Brightfield writes `model.ossie.yaml` itself, whole ([`write_model_file`]), so a pass that
+//! reads it finds the file as a save left it (`full_pass_reads_the_file_the_sample_save_wrote`).
+//! A discoverer run as a child writes its proposal to a file of its own ([`proposal_file`]).
 //!
 //! [`StandIn`] is what runs until a real discoverer is wired in: it returns the model already in
 //! the Protocol folder, or else lists each table as unclear with no joins. [`Dovetail`] is where
