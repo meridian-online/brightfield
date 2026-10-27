@@ -432,6 +432,76 @@ fn a_join_renamed_through_another_name_is_not_rejected() {
 }
 
 #[test]
+fn a_join_a_pass_adds_under_a_focused_editor_is_not_deleted_by_hand() {
+    let (mut pane, _held) = opened();
+    let ctx = egui::Context::default();
+    pane.view = ModelView::File;
+    draw(&ctx, &mut pane, Vec::new());
+    let at = pane.drawn().file_editor.expect("the editor drew").center();
+    draw(
+        &ctx,
+        &mut pane,
+        vec![egui::Event::PointerMoved(at), button(at, true)],
+    );
+    draw(&ctx, &mut pane, vec![button(at, false)]);
+    let base = pane.file_draft().to_string();
+
+    // A full pass finds a join the editor's text has never held, while the editor holds the
+    // keyboard.
+    let mut proposed = retail_model();
+    let mut found = proposed
+        .relationships
+        .iter()
+        .find(|r| r.name == "loyalty_visits_customers")
+        .unwrap()
+        .clone();
+    found.name = "loyalty_visits_customer_segments".into();
+    found.to = "customer_segments".into();
+    proposed.relationships.push(found);
+    pane.start_full_pass(Proposes(proposed));
+    assert!(pane.finish_discovery().is_some(), "the pass lands");
+    draw(&ctx, &mut pane, Vec::new());
+    assert_eq!(pane.file_draft(), base, "the focused editor keeps its text");
+    let active =
+        |pane: &ModelPane, name: &str| pane.model.relationships.iter().any(|r| r.name == name);
+    let rejected =
+        |pane: &ModelPane, name: &str| pane.model.meta.rejected.iter().any(|r| r.name == name);
+    assert!(active(&pane, "loyalty_visits_customer_segments"));
+
+    // An unrelated edit to the editor's text, which lacks the join: the join is not deleted.
+    type_and_pause(
+        &mut pane,
+        replaced(
+            &base,
+            CUSTOMERS_ROLE,
+            &CUSTOMERS_ROLE.replace("entity", "reference"),
+        ),
+    );
+    assert_eq!(pane.file_error(), None);
+    assert!(active(&pane, "loyalty_visits_customer_segments"));
+    assert!(!rejected(&pane, "loyalty_visits_customer_segments"));
+
+    // A join the editor's text held, deleted from it, is.
+    let draft = pane.file_draft().to_string();
+    type_and_pause(&mut pane, cut_item(&draft, "transactions_stores"));
+    assert_eq!(pane.file_error(), None);
+    assert!(!active(&pane, "transactions_stores"));
+    assert!(rejected(&pane, "transactions_stores"));
+    assert!(active(&pane, "loyalty_visits_customer_segments"));
+    assert!(!rejected(&pane, "loyalty_visits_customer_segments"));
+    let disk = brightfield_ossie::read(&on_disk(&pane)).unwrap();
+    assert!(disk
+        .relationships
+        .iter()
+        .any(|r| r.name == "loyalty_visits_customer_segments"));
+    assert!(disk
+        .meta
+        .rejected
+        .iter()
+        .any(|r| r.name == "transactions_stores"));
+}
+
+#[test]
 fn unknown_dataset_warns_and_rest_applies() {
     let (mut pane, _held) = opened();
     let text = pane.file_text().to_string();

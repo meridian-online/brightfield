@@ -241,6 +241,9 @@ pub struct ModelPane {
     file_draft: String,
     /// The text the pause last read, so each text is read once.
     file_read: String,
+    /// The model the text the editor last took from disk holds: what a hand edit starts from, so
+    /// only what it held counts as deleted when the edit lacks it.
+    file_base: Model,
     /// The draft as it stood when the pause was armed, and when the pause is out.
     file_pause: Option<(String, u64)>,
     /// Why the last text read did not become the model.
@@ -303,6 +306,7 @@ impl ModelPane {
         let mut pane = Self {
             protocol,
             layout: brightfield_ossie::layout(&model),
+            file_base: model.clone(),
             model,
             view: ModelView::default(),
             focus: ModelFocus::default(),
@@ -470,6 +474,9 @@ impl ModelPane {
     fn resync_draft(&mut self) {
         self.file_draft.clone_from(&self.file_text);
         self.file_read.clone_from(&self.file_text);
+        // The file is the one Brightfield last wrote, which it reads.
+        self.file_base =
+            brightfield_ossie::read(&self.file_text).unwrap_or_else(|_| self.model.clone());
         self.file_pause = None;
         self.draft_refused = false;
         self.kept.roles.clear();
@@ -480,27 +487,28 @@ impl ModelPane {
     fn read_file_draft(&mut self) -> Result<(), String> {
         self.file_read = self.file_draft.clone();
         self.file_pause = None;
-        let result = match model_file::read_hand_edit(&self.model, &self.file_draft) {
-            // Nothing the file holds changed, only the text's layout or a role it ignores:
-            // nothing to write or run.
-            Ok(edit)
-                if edit.model == self.model
-                    && edit.kept.relationships == self.kept.relationships =>
-            {
-                self.kept = edit.kept;
-                self.draft_refused = false;
-                Ok(())
-            }
-            Ok(edit) => {
-                let saved = self.save_with(edit.model, edit.kept, true);
-                self.let_go_of_what_is_gone();
-                saved
-            }
-            Err(e) => {
-                self.draft_refused = true;
-                Err(e)
-            }
-        };
+        let result =
+            match model_file::read_hand_edit(&self.model, &self.file_base, &self.file_draft) {
+                // Nothing the file holds changed, only the text's layout or a role it ignores:
+                // nothing to write or run.
+                Ok(edit)
+                    if edit.model == self.model
+                        && edit.kept.relationships == self.kept.relationships =>
+                {
+                    self.kept = edit.kept;
+                    self.draft_refused = false;
+                    Ok(())
+                }
+                Ok(edit) => {
+                    let saved = self.save_with(edit.model, edit.kept, true);
+                    self.let_go_of_what_is_gone();
+                    saved
+                }
+                Err(e) => {
+                    self.draft_refused = true;
+                    Err(e)
+                }
+            };
         self.file_error = result.as_ref().err().cloned();
         result
     }

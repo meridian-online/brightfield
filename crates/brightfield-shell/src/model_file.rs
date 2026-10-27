@@ -8,8 +8,10 @@
 //! relationship's evidence and warning are measured after each run, not decided: a hand edit
 //! neither changes them nor is judged by them.
 //!
-//! What the edit deletes stays deleted when discovery runs again ([`hold_deletions`]). A
-//! relationship the edit removed goes into the model's rejected joins as the analyst's, as Drop
+//! What the edit deletes stays deleted when discovery runs again ([`hold_deletions`]). What counts
+//! as deleted is what the text the editor last took from disk held and the edited text does not;
+//! what the model gained since, from a discovery pass or a save, is kept as the model holds it,
+//! since the analyst never saw it to delete it. A relationship the edit removed goes into the model's rejected joins as the analyst's, as Drop
 //! does, unless the text still holds the same join under another name, which is a rename. A
 //! rejected join leaves the rejected list when a relationship of its name is in the model again,
 //! so a name typed through on the way to another is not held against it. A dataset the edit
@@ -67,13 +69,14 @@ pub struct HandEdit {
 }
 
 /// Read `text`, the Ossie file as the analyst edited it, against `current`, the model the pane
-/// holds.
+/// holds, and `base`, the model the text the editor last took from disk held, which the edit
+/// started from.
 ///
 /// # Errors
 ///
 /// Why the text is not a model Brightfield reads, headed with its line where the text gives one:
 /// `Line 3: …`.
-pub fn read_hand_edit(current: &Model, text: &str) -> Result<HandEdit, String> {
+pub fn read_hand_edit(current: &Model, base: &Model, text: &str) -> Result<HandEdit, String> {
     let mut doc: Value = serde_yaml::from_str(text).map_err(|e| yaml_error(text, &e))?;
     if let Some(issue) = brightfield_ossie::validate(text).into_iter().next() {
         return Err(match issue_line(text, &doc, &issue.path) {
@@ -101,7 +104,7 @@ pub fn read_hand_edit(current: &Model, text: &str) -> Result<HandEdit, String> {
     model.relationships = acted;
     keep_measurements(current, &mut model);
     mark_changed(current, &mut model);
-    hold_deletions(current, &mut model, &unjoined);
+    hold_deletions(current, base, &mut model, &unjoined);
     Ok(HandEdit {
         model,
         kept: Kept {
@@ -405,15 +408,21 @@ fn mark_changed(current: &Model, edited: &mut Model) {
     }
 }
 
-/// Keep what the edit deleted from `current` from coming back with a later discovery pass, as the
-/// module says. `set_aside` is what the edit holds but the model does not act on, which was not
+/// Keep what the edit deleted from coming back with a later discovery pass, as the module says.
+/// An element is deleted when `base`, the model of the text the edit started from, held it and
+/// `edited` does not; one `current` gained since `base` and `edited` lacks is kept as `current`
+/// holds it. `set_aside` is what the edit holds but the model does not act on, which was not
 /// deleted. The rejected joins `current` holds are carried into `edited` too, so an editor whose
 /// text predates a drop does not take the drop back.
-fn hold_deletions(current: &Model, edited: &mut Model, set_aside: &[Relationship]) {
+fn hold_deletions(current: &Model, base: &Model, edited: &mut Model, set_aside: &[Relationship]) {
     for c in &current.datasets {
-        let gone = !edited.datasets.iter().any(|d| d.name == c.name);
-        // A dataset of the analyst's own that was never left out is one no pass proposes.
-        if gone && (c.meta.decided_by == DecidedBy::Dovetail || c.meta.excluded) {
+        if edited.datasets.iter().any(|d| d.name == c.name) {
+            continue;
+        }
+        if !base.datasets.iter().any(|b| b.name == c.name) {
+            edited.datasets.push(c.clone());
+        } else if c.meta.decided_by == DecidedBy::Dovetail || c.meta.excluded {
+            // A dataset of the analyst's own that was never left out is one no pass proposes.
             let mut left_out = c.clone();
             left_out.meta.excluded = true;
             left_out.meta.decided_by = DecidedBy::Analyst;
@@ -431,7 +440,12 @@ fn hold_deletions(current: &Model, edited: &mut Model, set_aside: &[Relationship
             .iter()
             .chain(set_aside)
             .any(|r| r.name == c.name || same_join(r, c));
-        if !held && !edited.meta.rejected.iter().any(|e| e.name == c.name) {
+        if held {
+            continue;
+        }
+        if !base.relationships.iter().any(|b| b.name == c.name) {
+            edited.relationships.push(c.clone());
+        } else if !edited.meta.rejected.iter().any(|e| e.name == c.name) {
             let mut dropped = c.clone();
             dropped.meta.decided_by = DecidedBy::Analyst;
             edited.meta.rejected.push(dropped);
