@@ -70,7 +70,7 @@
   },
   "datetime.date.abbreviated_month": {
    "duckdb_type": "DATE",
-   "transform": "strptime({col}, '%b %d, %Y')::DATE"
+   "transform": "strptime(regexp_replace({col}, '\\bSept\\b', 'Sep'), ['%b %d, %Y', '%b. %d, %Y', '%d %b %y', '%d %b. %y', '%d %b %Y', '%d %b. %Y'])::DATE"
   },
   "datetime.date.chinese_ymd": {
    "duckdb_type": "DATE",
@@ -142,7 +142,7 @@
   },
   "datetime.date.jp_era_long": {
    "duckdb_type": "DATE",
-   "transform": "CASE\n  WHEN {col} LIKE '\\u4EE4\\u548C%' THEN make_date(2018 + CAST(regexp_extract({col}, '(\\d+)\\u5E74', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u6708', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u65E5', 1) AS INT))\n  WHEN {col} LIKE '\\u5E73\\u6210%' THEN make_date(1988 + CAST(regexp_extract({col}, '(\\d+)\\u5E74', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u6708', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u65E5', 1) AS INT))\n  WHEN {col} LIKE '\\u662D\\u548C%' THEN make_date(1925 + CAST(regexp_extract({col}, '(\\d+)\\u5E74', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u6708', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u65E5', 1) AS INT))\n  WHEN {col} LIKE '\\u5927\\u6B63%' THEN make_date(1911 + CAST(regexp_extract({col}, '(\\d+)\\u5E74', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u6708', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u65E5', 1) AS INT))\n  WHEN {col} LIKE '\\u660E\\u6CBB%' THEN make_date(1867 + CAST(regexp_extract({col}, '(\\d+)\\u5E74', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u6708', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)\\u65E5', 1) AS INT))\nEND\n"
+   "transform": "CASE\n  WHEN {col} LIKE '令和%' THEN make_date(2018 + CAST(regexp_extract({col}, '(\\d+)年', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)月', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)日', 1) AS INT))\n  WHEN {col} LIKE '平成%' THEN make_date(1988 + CAST(regexp_extract({col}, '(\\d+)年', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)月', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)日', 1) AS INT))\n  WHEN {col} LIKE '昭和%' THEN make_date(1925 + CAST(regexp_extract({col}, '(\\d+)年', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)月', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)日', 1) AS INT))\n  WHEN {col} LIKE '大正%' THEN make_date(1911 + CAST(regexp_extract({col}, '(\\d+)年', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)月', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)日', 1) AS INT))\n  WHEN {col} LIKE '明治%' THEN make_date(1867 + CAST(regexp_extract({col}, '(\\d+)年', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)月', 1) AS INT), CAST(regexp_extract({col}, '(\\d+)日', 1) AS INT))\nEND\n"
   },
   "datetime.date.jp_era_short": {
    "duckdb_type": "DATE",
@@ -202,7 +202,7 @@
   },
   "datetime.date.weekday_abbreviated_month": {
    "duckdb_type": "DATE",
-   "transform": "strptime({col}, '%A, %b %d, %Y')::DATE"
+   "transform": "strptime({col}, ['%A, %b %d, %Y', '%A, %d %b %Y'])::DATE"
   },
   "datetime.date.weekday_dmy_full": {
    "duckdb_type": "DATE",
@@ -330,7 +330,7 @@
   },
   "datetime.timestamp.iso_8601_offset": {
    "duckdb_type": "TIMESTAMP WITH TIME ZONE",
-   "transform": "strptime({col}, '%Y-%m-%dT%H:%M:%S%z')"
+   "transform": "CAST(regexp_replace(upper({col}), '([+-])([0-9]):([0-9]{2})$', '\\10\\2:\\3') AS TIMESTAMPTZ)"
   },
   "datetime.timestamp.iso_microseconds": {
    "duckdb_type": "TIMESTAMP",
@@ -374,7 +374,7 @@
   },
   "datetime.timestamp.rfc_3339": {
    "duckdb_type": "TIMESTAMP WITH TIME ZONE",
-   "transform": "strptime({col}, '%Y-%m-%d %H:%M:%S%z')"
+   "transform": "CAST(regexp_replace(upper({col}), ' ([+-]|Z)', '\\1') AS TIMESTAMPTZ)"
   },
   "datetime.timestamp.slash_ymd_24h": {
    "duckdb_type": "TIMESTAMP",
@@ -438,11 +438,11 @@
   },
   "finance.currency.amount_apostrophe": {
    "duckdb_type": "VARCHAR",
-   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, 'CHF\\s?', ''), '[''\\x{2019}]', '', 'g'), '\\s+', '') AS DECIMAL(18,2))"
+   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, 'CHF\\s?', ''), '[''\\x{2019}]', '', 'g'), '\\s+', '', 'g') AS DECIMAL(18,2))"
   },
   "finance.currency.amount_code_prefix": {
    "duckdb_type": "VARCHAR",
-   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE({col}, '^[A-Z]{3}\\s?', ''), ',', '') AS DECIMAL(18,2))"
+   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE({col}, '^[A-Z]{3}\\s?', ''), ',', '', 'g') AS DECIMAL(18,2))"
   },
   "finance.currency.amount_comma": {
    "duckdb_type": "DECIMAL",
@@ -458,19 +458,19 @@
   },
   "finance.currency.amount_lakh": {
    "duckdb_type": "VARCHAR",
-   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE({col}, '[₹Rs\\.\\s]', '', 'g'), ',', '') AS DECIMAL(18,2))"
+   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE({col}, '^(₹|Rs\\.?)\\s*', ''), ',', '', 'g') AS DECIMAL(18,2))"
   },
   "finance.currency.amount_multisym": {
    "duckdb_type": "VARCHAR",
-   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, '^[A-Za-z$₹€£¥₩₿\\p{Sc}\\s]+', ''), '[.,](?=[0-9]{3})', '', 'g'), '[\\s]', '', 'g'), ',', '.') AS DECIMAL(18,2))"
+   "transform": "CAST(REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, '^[^0-9-]+|\\s', '', 'g'), '[.,]([0-9]{1,2})$', 'D\\1'), '[.,]', '', 'g'), 'D', '.') AS DECIMAL(18,2))"
   },
   "finance.currency.amount_neg_trailing": {
    "duckdb_type": "VARCHAR",
-   "transform": "CAST(CASE WHEN {col} LIKE '%-' OR {col} LIKE '%CR' THEN '-' || REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, '[-]$|\\s*(CR|DR)$', ''), '[\\$€£¥₹]', ''), ',', '') ELSE REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, '[-]$|\\s*(CR|DR)$', ''), '[\\$€£¥₹]', ''), ',', '') END AS DECIMAL(18,2))"
+   "transform": "CAST(CASE WHEN {col} LIKE '%-' OR {col} LIKE '%CR' THEN '-' || REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, '[-]$|\\s*(CR|DR)$', ''), '[\\$€£¥₹]', ''), ',', '', 'g') ELSE REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, '[-]$|\\s*(CR|DR)$', ''), '[\\$€£¥₹]', ''), ',', '', 'g') END AS DECIMAL(18,2))"
   },
   "finance.currency.amount_nodecimal": {
    "duckdb_type": "VARCHAR",
-   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE({col}, '[¥₩\\p{Sc}]', '', 'g'), ',', '') AS INTEGER)"
+   "transform": "CAST(REGEXP_REPLACE(REGEXP_REPLACE({col}, '[¥₩\\p{Sc}]', '', 'g'), ',', '', 'g') AS INTEGER)"
   },
   "finance.currency.amount_space": {
    "duckdb_type": "VARCHAR",
@@ -542,7 +542,7 @@
   },
   "geography.coordinate.coordinates": {
    "duckdb_type": "POINT",
-   "transform": "STRUCT_PACK(lat := CAST(SPLIT_PART({col}, ',', 1) AS DOUBLE), lon := CAST(SPLIT_PART({col}, ',', 2) AS DOUBLE))"
+   "transform": "STRUCT_PACK(lat := CAST(REGEXP_EXTRACT({col}, '^([^, ]+)', 1) AS DOUBLE), lon := CAST(REGEXP_EXTRACT({col}, '[, ]([^, ]+)$', 1) AS DOUBLE))"
   },
   "geography.coordinate.dms": {
    "duckdb_type": "VARCHAR",
@@ -730,7 +730,7 @@
   },
   "identity.person.height": {
    "duckdb_type": "DOUBLE",
-   "transform": "CASE\n  WHEN UPPER({col}) LIKE '%FT%' OR {col} LIKE '%''%' THEN\n    (CAST(REGEXP_EXTRACT({col}, '^([0-9]+)') AS DOUBLE) * 30.48) +\n    (CAST(COALESCE(NULLIF(REGEXP_EXTRACT({col}, '''([0-9]+)', 1), ''), '0') AS DOUBLE) * 2.54)\n  WHEN UPPER({col}) LIKE '%IN%' THEN CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE) * 2.54\n  ELSE CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE)\nEND\n"
+   "transform": "CASE\n  WHEN UPPER({col}) LIKE '%FT%' OR {col} LIKE '%''%' THEN\n    (CAST(REGEXP_EXTRACT({col}, '^([0-9]+)', 1) AS DOUBLE) * 30.48) +\n    (CAST(COALESCE(NULLIF(REGEXP_EXTRACT({col}, '''([0-9]+)', 1), ''), '0') AS DOUBLE) * 2.54)\n  WHEN UPPER({col}) LIKE '%IN%' THEN CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)', 1) AS DOUBLE) * 2.54\n  ELSE CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)', 1) AS DOUBLE)\nEND\n"
   },
   "identity.person.last_name": {
    "duckdb_type": "VARCHAR",
@@ -754,7 +754,7 @@
   },
   "identity.person.weight": {
    "duckdb_type": "DOUBLE",
-   "transform": "CASE\n  WHEN UPPER({col}) LIKE '%LB%' THEN CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE) / 2.20462\n  ELSE CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE)\nEND\n"
+   "transform": "CASE\n  WHEN UPPER({col}) LIKE '%LB%' OR UPPER({col}) LIKE '%POUND%' THEN CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)', 1) AS DOUBLE) / 2.20462\n  ELSE CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)', 1) AS DOUBLE)\nEND\n"
   },
   "representation.boolean.binary": {
    "duckdb_type": "BOOLEAN",
@@ -766,7 +766,7 @@
   },
   "representation.boolean.terms": {
    "duckdb_type": "BOOLEAN",
-   "transform": "CAST({col} AS BOOLEAN)"
+   "transform": "CAST(CASE WHEN lower({col}) IN ('on', 'enabled', 'active') THEN 'true' WHEN lower({col}) IN ('off', 'disabled', 'inactive') THEN 'false' ELSE {col} END AS BOOLEAN)"
   },
   "representation.discrete.ordinal": {
    "duckdb_type": "VARCHAR",
@@ -782,7 +782,7 @@
   },
   "representation.file.file_size": {
    "duckdb_type": "BIGINT",
-   "transform": "CASE\n  WHEN UPPER({col}) LIKE '%GB%' THEN CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE) * 1024 * 1024 * 1024\n  WHEN UPPER({col}) LIKE '%MB%' THEN CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE) * 1024 * 1024\n  WHEN UPPER({col}) LIKE '%KB%' THEN CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE) * 1024\n  WHEN UPPER({col}) LIKE '%B%' THEN CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)') AS DOUBLE)\n  ELSE CAST({col} AS BIGINT)\nEND\n"
+   "transform": "CASE REGEXP_EXTRACT({col}, '([A-Za-z]+)$', 1)\n  WHEN '' THEN 1\n  WHEN 'B' THEN 1\n  WHEN 'kB' THEN 1000\n  WHEN 'KB' THEN 1000\n  WHEN 'MB' THEN 1000000\n  WHEN 'GB' THEN 1000000000\n  WHEN 'TB' THEN 1000000000000\n  WHEN 'PB' THEN 1000000000000000\n  WHEN 'K' THEN 1024\n  WHEN 'KiB' THEN 1024\n  WHEN 'M' THEN 1048576\n  WHEN 'MiB' THEN 1048576\n  WHEN 'G' THEN 1073741824\n  WHEN 'GiB' THEN 1073741824\n  WHEN 'T' THEN 1099511627776\n  WHEN 'TiB' THEN 1099511627776\n  WHEN 'P' THEN 1125899906842624\n  WHEN 'PiB' THEN 1125899906842624\nEND * CAST(REGEXP_EXTRACT({col}, '^([0-9.]+)', 1) AS DOUBLE)\n"
   },
   "representation.file.mime_type": {
    "duckdb_type": "VARCHAR",
@@ -830,7 +830,7 @@
   },
   "representation.numeric.percentage": {
    "duckdb_type": "DOUBLE",
-   "transform": "CAST(REGEXP_EXTRACT({col}, '^(-?[0-9]+(\\.[0-9]+)?)') AS DOUBLE)"
+   "transform": "CAST(REGEXP_EXTRACT({col}, '^%?(-?[0-9]+(\\.[0-9]+)?)', 1) AS DOUBLE)"
   },
   "representation.numeric.scientific_notation": {
    "duckdb_type": "DOUBLE",
@@ -1006,5 +1006,5 @@
   }
  },
  "source": "https://github.com/meridian-online/finetype/blob/<tag>/labels/definitions_*.yaml",
- "tag": "v0.6.59"
+ "tag": "v0.6.64"
 }
