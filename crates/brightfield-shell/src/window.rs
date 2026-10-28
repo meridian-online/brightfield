@@ -5062,8 +5062,8 @@ impl MeridianApp {
         // canvas does not draw.
         self.charts.doc.begin_controls_frame();
 
-        // The grid's foot row's Enter and Esc, ahead of every other handler:
-        // while one of its fields is edited, the two keys are the field's.
+        // The plot under the pointer, recorded before any key handler can open
+        // an overlay over it: what a picture verb is about.
         if self.overlay.is_none() {
             self.hovered_plot = ctx.pointer_hover_pos().and_then(|at| {
                 self.composed_plot_rects()
@@ -5071,6 +5071,8 @@ impl MeridianApp {
                     .position(|rect| rect.contains(at))
             });
         }
+        // The grid's foot row's Enter and Esc, ahead of every other handler:
+        // while one of its fields is edited, the two keys are the field's.
         self.grid_foot_keys(&ctx);
         // The shelf's keys, ahead of every other bare key: while the band or
         // its list holds them, they are not the frame verbs' or an overlay
