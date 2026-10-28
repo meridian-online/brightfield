@@ -59,7 +59,7 @@
 //! the moment it gains content.
 
 use std::collections::BTreeSet;
-use std::path::{Component, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use egui::containers::{CentralPanel, Panel};
 use egui_tiles::{Behavior, Container, Tile};
@@ -530,6 +530,22 @@ pub const RUNNING_LABEL: &str = "Running\u{2026}";
 /// The `run-protocol` verb's longname — the registry's, spelled once here for
 /// the window's dispatch, its key and the palette.
 pub const RUN_PROTOCOL: &str = "run-protocol";
+
+/// The `copy-chart-picture` verb's longname — the registry's, spelled once here
+/// for the window's dispatch, its key and the palette.
+pub const COPY_CHART_PICTURE: &str = "copy-chart-picture";
+
+/// The `export-chart-picture` verb's longname, spelled once as
+/// [`COPY_CHART_PICTURE`] is.
+pub const EXPORT_CHART_PICTURE: &str = "export-chart-picture";
+
+/// A picture the export verb drew, held for the save dialog that runs after
+/// the frame: the pixels, the folder the dialog opens in and the name it offers.
+struct PictureToSave {
+    image: image::RgbaImage,
+    dir: Option<PathBuf>,
+    stem: String,
+}
 
 /// One gallery card's outer width.
 ///
@@ -2193,6 +2209,19 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
         "cmd-j" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::J)),
         "cmd-enter" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)),
+        // egui-winit 0.35 turns a press of C with the command key held, Shift
+        // or not, into `Event::Copy` and drops the key event, so the chord
+        // arrives as a copy with Shift held; the key form is another host's.
+        "cmd-shift-c" => ctx.input_mut(|i| {
+            let held = i.modifiers.command && i.modifiers.shift;
+            let before = i.events.len();
+            i.events
+                .retain(|e| !(held && matches!(e, egui::Event::Copy)));
+            i.events.len() != before || i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::C)
+        }),
+        "cmd-shift-e" => {
+            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::E))
+        }
         // The navigation family. Bare keys, and mapped here for the same
         // reason the overlay openers are: the shell may not invent a binding,
         // so the token comes off the registry and only its egui spelling lives
@@ -2895,6 +2924,20 @@ pub struct MeridianApp {
     /// The `run-protocol` keystroke token, read off the registry at boot — same
     /// rule as [`Self::home_binding`].
     run_binding: Option<&'static str>,
+    /// The `copy-chart-picture` and `export-chart-picture` keystroke tokens,
+    /// read off the registry at boot — same rule as [`Self::home_binding`].
+    picture_bindings: [(Option<&'static str>, &'static str); 2],
+    /// A picture the export verb drew, waiting for the save dialog after the
+    /// frame: the dialog blocks, so it may not run inside the layout pass. Raised
+    /// where [`Self::dialogs_allowed`] says a person is there to answer it.
+    picture_to_save: Option<PictureToSave>,
+    /// The plot the pointer was on the last frame no overlay was open: what a
+    /// picture verb is about, so one confirmed in the palette is about the plot
+    /// the pointer was on before the palette opened over it.
+    hovered_plot: Option<usize>,
+    /// Where the export verb saves without asking, when a suite set it with
+    /// [`Self::exporting_pictures_to`]: a folder no dialog is raised over.
+    pictures_dir: Option<PathBuf>,
     /// The `undo` keystroke token, read off the registry at boot — same rule as
     /// [`Self::home_binding`]. The Workspace's: the shelf's own `u` and `⌘Z`
     /// are resolved by [`crate::shelf::undoes`] and the list.
@@ -3308,6 +3351,16 @@ impl MeridianApp {
                 .iter()
                 .find(|v| v.longname == crate::shelf::UNDO)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
+            picture_bindings: [COPY_CHART_PICTURE, EXPORT_CHART_PICTURE].map(|longname| {
+                let key = brightfield_keys::registry()
+                    .iter()
+                    .find(|v| v.longname == longname)
+                    .and_then(brightfield_keys::VerbEntry::primary_key);
+                (key, longname)
+            }),
+            picture_to_save: None,
+            hovered_plot: None,
+            pictures_dir: None,
             nav_bindings: navigation_bindings(),
             grid_bindings: grid_bindings(),
             versions_hold: false,
@@ -4591,6 +4644,15 @@ impl MeridianApp {
         self
     }
 
+    /// Save each exported picture into `dir` under the name the dialog would
+    /// offer, without raising the dialog: a suite's way to read back what the
+    /// export verb wrote.
+    #[must_use]
+    pub fn exporting_pictures_to(mut self, dir: PathBuf) -> Self {
+        self.pictures_dir = Some(dir);
+        self
+    }
+
     /// Give this window the program its Run control hands a run to.
     ///
     /// `main` passes [`crate::run::Runner::this_binary`]; a suite passes the
@@ -5000,6 +5062,11 @@ impl MeridianApp {
         // canvas does not draw.
         self.charts.doc.begin_controls_frame();
 
+        // The plot under the pointer, recorded before any key handler can open
+        // an overlay over it: what a picture verb is about.
+        if self.overlay.is_none() {
+            self.hovered_plot = ctx.pointer_hover_pos().and_then(|at| self.plot_under(at));
+        }
         // The grid's foot row's Enter and Esc, ahead of every other handler:
         // while one of its fields is edited, the two keys are the field's.
         self.grid_foot_keys(&ctx);
@@ -5024,6 +5091,8 @@ impl MeridianApp {
         self.grid_key(&ctx);
         // The run, on the same gate and for the same reason.
         self.run_key(&ctx);
+        // The picture verbs, on the same gate, where a chart holds the canvas.
+        self.picture_keys(&ctx, graph_on_canvas);
         // The model pane's view keys, on the same gate, while it is open.
         self.model_keys(&ctx);
         // The grid's cursor keys, ahead of the frame verbs: with the grid
@@ -6220,6 +6289,17 @@ impl MeridianApp {
         if let Some(path) = self.pending_open.take() {
             self.open_path_now(&ctx, &path);
         }
+        // The export's save dialog, on the same terms as the picker below it.
+        if let Some(picture) = self.picture_to_save.take() {
+            if self.dialogs_allowed {
+                if let Some(path) = crate::chart_picture::ask_save_path(
+                    picture.dir.as_deref(),
+                    &format!("{}.png", picture.stem),
+                ) {
+                    self.save_picture(&ctx, &picture.image, &path);
+                }
+            }
+        }
         if self.pick_requested && self.dialogs_allowed {
             self.pick_requested = false;
             if let Some(path) = crate::data_file::pick() {
@@ -6343,6 +6423,21 @@ impl MeridianApp {
         }
         if self.run_binding.is_some_and(|t| consume_token(ctx, t)) {
             self.run_protocol(ctx);
+        }
+    }
+
+    /// Copy or export the chart under the pointer if the registry's
+    /// `copy-chart-picture` or `export-chart-picture` keystroke is down this
+    /// frame. Gated as [`Self::home_key`] is, and while a chart holds the canvas:
+    /// the graph has no chart to picture.
+    fn picture_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
+        if graph_on_canvas || self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        for (token, longname) in self.picture_bindings {
+            if token.is_some_and(|t| consume_token(ctx, t)) {
+                self.chart_picture(ctx, longname);
+            }
         }
     }
 
@@ -8724,6 +8819,21 @@ impl MeridianApp {
                 Request::Verb(verb) if verb.as_str() == RUN_PROTOCOL => {
                     self.run_protocol(ctx);
                 }
+                // The picture verbs are the window's: what they draw is the
+                // chart document's, and where a file goes is the window's to
+                // say. Over the graph there is no chart, and they say so.
+                Request::Verb(verb)
+                    if matches!(verb.as_str(), COPY_CHART_PICTURE | EXPORT_CHART_PICTURE) =>
+                {
+                    if graph_on_canvas {
+                        self.toasts.push(Toast::new(
+                            Severity::Info,
+                            "Open a chart to copy or export it as a picture",
+                        ));
+                    } else {
+                        self.chart_picture(ctx, verb.as_str());
+                    }
+                }
                 // undo is the window's: the kept columns it takes back are the
                 // chart document's, and the band and an open list that follow
                 // the page are the window's. The graph has none, so there the
@@ -10300,6 +10410,121 @@ impl MeridianApp {
         });
         ctx.request_repaint();
         Some(said)
+    }
+
+    /// The plot whose part of the page is drawn under window point `at`, read
+    /// as the canvas's own gestures read the pointer ([`crate::app::page_offset`]):
+    /// `None` over the header bands, the gutter and the band below the panes,
+    /// which the page reaches and no pane drew.
+    fn plot_under(&self, at: egui::Pos2) -> Option<usize> {
+        let doc = &self.charts.doc;
+        let page = doc.raster_rect?;
+        let by = crate::app::page_offset(doc.pane_views, page, None, Some(at))?;
+        let moved = page.translate(by);
+        if !moved.contains(at) {
+            return None;
+        }
+        let local = at - moved.min;
+        crate::chart_item::plot_at(
+            &doc.composed.plots,
+            kurbo::Point::new(f64::from(local.x), f64::from(local.y)),
+        )
+    }
+
+    /// **The plot a picture verb is about**: the one under the pointer, as it
+    /// stood before any overlay opened ([`Self::hovered_plot`]), or, with the
+    /// pointer off the plots, the one the keyboard's navigation verbs address —
+    /// the first, until a gesture moves them to another.
+    fn picture_plot(&self) -> usize {
+        self.hovered_plot
+            .unwrap_or_else(|| self.charts.doc.nav_plot())
+    }
+
+    /// Where an exported picture is offered and under what name: a panel open
+    /// from its tile goes to its Protocol's `exports/` under the panel's name, as
+    /// `brightfield export png` writes it; a data file's Protocol to its
+    /// `exports/` under the chart's title; a chart spec beside the spec under its
+    /// name. A chart with no file behind it offers its title and no folder.
+    fn picture_destination(&self, plot: usize) -> (Option<PathBuf>, String) {
+        let composed = &self.charts.doc.composed;
+        let title = composed.title.clone().unwrap_or_default();
+        let stem_of = |path: &Path| {
+            path.file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let (dir, base) = if let Some(file) = self.open_tile_path() {
+            let protocol = file.parent().and_then(Path::parent).map(Path::to_path_buf);
+            (
+                protocol.map(|d| crate::chart_picture::exports_dir(&d)),
+                stem_of(&file),
+            )
+        } else if let Some(source) = self.protocol.doc.model.source() {
+            (Some(crate::chart_picture::exports_dir(&source.dir)), title)
+        } else if let Some(spec) = self.charts.doc.spec_path.as_deref() {
+            (spec.parent().map(Path::to_path_buf), stem_of(spec))
+        } else {
+            (None, title)
+        };
+        let stem = crate::chart_picture::file_stem(&base, plot, composed.plots.len());
+        (dir, stem)
+    }
+
+    /// Copy the chart under the pointer to the clipboard as a picture, or draw
+    /// it for the save dialog, as `longname` asks. A window with no chart says
+    /// so rather than doing nothing.
+    fn chart_picture(&mut self, ctx: &egui::Context, longname: &str) {
+        let plot = self.picture_plot();
+        let drawn = crate::chart_picture::render_plot(
+            &self.charts.doc.composed,
+            plot,
+            crate::chart_picture::PICTURE_SCALE,
+        );
+        let image = match drawn {
+            Ok(image) => image,
+            Err(why) => {
+                self.toasts.push(Toast::new(
+                    Severity::Error,
+                    format!("The chart could not be drawn as a picture: {why}"),
+                ));
+                ctx.request_repaint();
+                return;
+            }
+        };
+        if longname == COPY_CHART_PICTURE {
+            ctx.copy_image(crate::chart_picture::clipboard_image(&image));
+            self.toasts.push(Toast::new(
+                Severity::Success,
+                "Copied the chart as a picture",
+            ));
+        } else {
+            let (dir, stem) = self.picture_destination(plot);
+            if let Some(into) = self.pictures_dir.clone() {
+                self.save_picture(ctx, &image, &into.join(format!("{stem}.png")));
+            } else {
+                self.picture_to_save = Some(PictureToSave { image, dir, stem });
+            }
+        }
+        ctx.request_repaint();
+    }
+
+    /// Write an exported picture to `path` and say where it went, or why not.
+    fn save_picture(&mut self, ctx: &egui::Context, image: &image::RgbaImage, path: &Path) {
+        let written = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .map_err(|e| e.to_string())
+            .and_then(|()| image.save(path).map_err(|e| e.to_string()));
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        self.toasts.push(match written {
+            Ok(()) => Toast::new(Severity::Success, format!("Exported {name}")),
+            Err(e) => Toast::new(Severity::Error, format!("Could not export {name}: {e}")),
+        });
+        ctx.request_repaint();
     }
 
     /// Where the locator band drew the Protocol's crumb as a link back to

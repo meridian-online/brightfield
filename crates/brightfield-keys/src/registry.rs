@@ -531,6 +531,31 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Run the Protocol this data file opened as",
             scores: Some(Scores { frequency: 3, mnemonic: 3, convention: 5, motor_note: "cmd-enter = run (notebook cells, SQL consoles); cmd-r is taken by reload-spec" }),
         },
+        // The picture: the chart under the pointer handed over as a PNG, on the
+        // clipboard or in a file. It writes nothing of the Protocol, so View.
+        // Global, as run-protocol is, so a chord reaches it from any pane.
+        VerbEntry {
+            longname: "copy-chart-picture",
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-shift-c")],
+            scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Copy the chart under the pointer to the clipboard as a picture",
+            scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 4, motor_note: "cmd-shift-c = copy as PNG (Figma); cmd-c stays the text fields'" }),
+        },
+        VerbEntry {
+            longname: "export-chart-picture",
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-shift-e")],
+            scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Export the chart under the pointer as a PNG picture",
+            scores: Some(Scores { frequency: 2, mnemonic: 5, convention: 4, motor_note: "cmd-shift-e = export (Figma); cmd-e is taken by toggle-focus" }),
+        },
         // ---- colour preview: transient, view-scoped ----
         VerbEntry {
             longname: "cycle-colour-scheme",
@@ -1598,6 +1623,8 @@ mod tests {
             "toggle-presentation",
             "save-spec",
             "run-protocol",
+            "copy-chart-picture",
+            "export-chart-picture",
             "cycle-colour-scheme",
             "filter-view",
             "cross-filter-all",

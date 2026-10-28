@@ -60,7 +60,7 @@ fn png_of_a_panel() {
     let composed = panels.tiles.remove(index).outcome.expect("it draws");
     let (w, h) = (composed.width, composed.height);
     assert_eq!((w, h), (760, 440), "the panel declares its size");
-    let want = render_export(composed, 2.0).expect("renders");
+    let want = render_export(&composed, 2.0).expect("renders");
 
     let got = image::open(&png).expect("a PNG").to_rgba8();
     assert_eq!(got.dimensions(), (w * 2, h * 2));

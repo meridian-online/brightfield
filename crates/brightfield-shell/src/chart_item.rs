@@ -1971,7 +1971,7 @@ fn draw_scale_switches(
 
 /// The index of the plot whose placed rect contains `p` (raster-local
 /// logical pixels), if any.
-fn plot_at(plots: &[PlotHandle], p: kurbo::Point) -> Option<usize> {
+pub(crate) fn plot_at(plots: &[PlotHandle], p: kurbo::Point) -> Option<usize> {
     plots.iter().position(|plot| {
         p.x >= plot.rect.x
             && p.x <= plot.rect.x + plot.rect.width

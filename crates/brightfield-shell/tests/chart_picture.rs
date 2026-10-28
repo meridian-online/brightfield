@@ -1,0 +1,296 @@
+//! **The chart under the pointer, handed over as a picture.**
+//!
+//! `copy-chart-picture` puts the plot the pointer is on onto the clipboard and
+//! `export-chart-picture` saves it as a PNG, each from its key and from the
+//! palette. What is read back here is what a person receives: the image the
+//! frame handed the clipboard, and the file written in place of the save
+//! dialog's answer.
+
+use std::path::PathBuf;
+
+use brightfield_shell::chart_picture::{clipboard_image, plot_extent, render_plot, PICTURE_SCALE};
+use brightfield_shell::design::Mode;
+use brightfield_shell::pipeline::live_spec;
+use brightfield_shell::startup::default_layout;
+use brightfield_shell::window::{Boot, MeridianApp};
+
+struct Window {
+    app: MeridianApp,
+    ctx: egui::Context,
+    screen: egui::Rect,
+    commands: Vec<egui::OutputCommand>,
+}
+
+impl Window {
+    /// A chart over `fixture` (a name under `examples/`), live, saving its
+    /// exported pictures into `exports` when one is given.
+    fn chart(fixture: &str, exports: Option<PathBuf>) -> Self {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples")
+            .join(fixture);
+        let (live, composed) = live_spec(path.to_str().expect("utf-8 fixture path"))
+            .unwrap_or_else(|e| panic!("{fixture} loads live: {e}"));
+        let mut boot = Boot::charts(composed);
+        boot.live = Some(live);
+        boot.spec_path = Some(path);
+        let mut app = MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light);
+        if let Some(dir) = exports {
+            app = app.exporting_pictures_to(dir);
+        }
+        let mut win = Self {
+            app,
+            ctx: egui::Context::default(),
+            screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+            commands: Vec::new(),
+        };
+        win.run(vec![Vec::new(), Vec::new()]);
+        win
+    }
+
+    fn run(&mut self, frames: Vec<Vec<egui::Event>>) {
+        for events in frames {
+            let raw = egui::RawInput {
+                screen_rect: Some(self.screen),
+                events,
+                ..Default::default()
+            };
+            let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+            self.commands.extend(out.platform_output.commands);
+        }
+    }
+
+    /// Rest the pointer at `at` for a few frames, long enough for the hover
+    /// readout to draw.
+    fn hover(&mut self, at: egui::Pos2) {
+        self.run(vec![vec![egui::Event::PointerMoved(at)]]);
+        for _ in 0..4 {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            self.run(vec![Vec::new()]);
+        }
+    }
+
+    /// Press ⌘⇧ and `key` as egui-winit delivers it: ⌘⇧C arrives as a copy
+    /// with the modifiers held, since winit turns a ⌘C into `Event::Copy`
+    /// and drops the key; any other key as itself.
+    fn chord(&mut self, key: egui::Key) {
+        let modifiers = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        let event = if key == egui::Key::C {
+            egui::Event::Copy
+        } else {
+            egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }
+        };
+        for events in [vec![event], Vec::new()] {
+            let raw = egui::RawInput {
+                screen_rect: Some(self.screen),
+                modifiers,
+                events,
+                ..Default::default()
+            };
+            let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+            self.commands.extend(out.platform_output.commands);
+        }
+    }
+
+    /// The pictures the frames put on the clipboard, oldest first.
+    fn copied(&self) -> Vec<egui::ColorImage> {
+        self.commands
+            .iter()
+            .filter_map(|c| match c {
+                egui::OutputCommand::CopyImage(image) => Some(image.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn temp_dir(name: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let dir = std::env::temp_dir().join(format!("bf-{name}-{}-{nanos}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a temp directory");
+    dir
+}
+
+/// The picture is the tile's own drawing, and the hover readout over it is not
+/// in it: the picture copied with the pointer resting on a mark is the picture
+/// copied with the pointer away from the chart.
+#[test]
+fn the_copied_picture_is_the_chart_without_its_hover_chrome() {
+    let mut win = Window::chart("scatter.yaml", None);
+    win.chord(egui::Key::C);
+    let rect = *win
+        .app
+        .composed_plot_rects()
+        .first()
+        .expect("scatter draws one plot");
+    win.hover(rect.center());
+    win.chord(egui::Key::C);
+    let copied = win.copied();
+    assert_eq!(copied.len(), 2, "each ⌘⇧C copies one picture");
+    assert_eq!(
+        copied[0], copied[1],
+        "the picture copied under a resting pointer differs from the one copied without it"
+    );
+    let composed = &win.app.chart_doc().composed;
+    let extent = plot_extent(composed, 0).expect("the plot has an extent");
+    let want = [
+        (extent.width * f64::from(PICTURE_SCALE)).round() as usize,
+        (extent.height * f64::from(PICTURE_SCALE)).round() as usize,
+    ];
+    assert_eq!(
+        copied[0].size, want,
+        "the picture is the plot and its legend, at 2x"
+    );
+}
+
+/// On a page of two plots, the picture is of the plot the pointer is on.
+#[test]
+fn the_picture_is_of_the_plot_under_the_pointer() {
+    let mut win = Window::chart("crossfilter.yaml", None);
+    let rects = win.app.composed_plot_rects();
+    assert_eq!(rects.len(), 2, "crossfilter draws two plots");
+    win.hover(rects[1].center());
+    win.chord(egui::Key::C);
+    let copied = win.copied();
+    let composed = &win.app.chart_doc().composed;
+    let second = clipboard_image(&render_plot(composed, 1, PICTURE_SCALE).expect("draws"));
+    let first = clipboard_image(&render_plot(composed, 0, PICTURE_SCALE).expect("draws"));
+    assert_eq!(
+        copied.last(),
+        Some(&second),
+        "the picture is not the second plot"
+    );
+    assert_ne!(
+        first, second,
+        "the fixture's two plots draw alike, so this proves nothing"
+    );
+}
+
+/// ⌘⇧E saves the plot under the pointer under the spec's name, numbered by its
+/// place on the page when the page has more than one.
+#[test]
+fn the_export_key_saves_the_plot_under_the_pointer_as_a_png() {
+    let dir = temp_dir("chart-picture");
+    let mut win = Window::chart("crossfilter.yaml", Some(dir.clone()));
+    let rects = win.app.composed_plot_rects();
+    win.hover(rects[1].center());
+    win.chord(egui::Key::E);
+    let written = dir.join("crossfilter-2.png");
+    let saved = image::open(&written)
+        .unwrap_or_else(|e| panic!("⌘⇧E wrote no {}: {e}", written.display()))
+        .to_rgba8();
+    let want = render_plot(&win.app.chart_doc().composed, 1, PICTURE_SCALE).expect("draws");
+    assert_eq!(saved.dimensions(), want.dimensions());
+    assert!(
+        saved == want,
+        "the saved file is not the picture of the second plot"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Confirmed from the palette, the picture is of the plot the pointer was on
+/// before the palette opened, not of whatever plot lies under the palette's
+/// row.
+#[test]
+fn a_picture_confirmed_in_the_palette_is_of_the_plot_the_pointer_was_on() {
+    let mut win = Window::chart("crossfilter.yaml", None);
+    let rects = win.app.composed_plot_rects();
+    win.hover(rects[1].center());
+    let press = |key| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    win.run(vec![vec![press(egui::Key::Space)], Vec::new()]);
+    assert_eq!(win.app.open_overlay(), Some("palette"));
+    win.run(vec![
+        Vec::new(),
+        vec![egui::Event::Text("copy-chart-picture".to_owned())],
+        Vec::new(),
+        vec![press(egui::Key::Enter)],
+        Vec::new(),
+    ]);
+    assert_eq!(
+        win.app.open_overlay(),
+        None,
+        "confirming did not close the palette"
+    );
+    let composed = &win.app.chart_doc().composed;
+    let second = clipboard_image(&render_plot(composed, 1, PICTURE_SCALE).expect("draws"));
+    assert_eq!(
+        win.copied().last(),
+        Some(&second),
+        "the palette's copy is not of the plot the pointer was on"
+    );
+}
+
+/// Over a part of the page no pane drew — the gutter between a pane group's
+/// two panes, a header band, the overhang below them — the pointer is over no
+/// chart, and the picture falls back to the plot the keyboard addresses, as
+/// the canvas's own gestures do there.
+#[test]
+fn a_pointer_where_no_pane_drew_the_page_is_over_no_chart() {
+    let dir = temp_dir("chart-picture-panes");
+    let csv = dir.join("harbour.csv");
+    let mut rows = String::from("station,reading,depth,tide\n");
+    for i in 0..40 {
+        let station = ["north", "south", "east", "west"][i % 4];
+        rows.push_str(&format!(
+            "{station},{},{},{}\n",
+            i * 3 % 17,
+            i * 7 % 23,
+            i % 5
+        ));
+    }
+    std::fs::write(&csv, rows).expect("the fixture writes");
+    let boot = Boot::data_file(csv.to_str().expect("utf-8")).expect("the file opens");
+    let mut win = Window {
+        app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light),
+        ctx: egui::Context::default(),
+        screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 560.0)),
+        commands: Vec::new(),
+    };
+    win.run(vec![Vec::new(), Vec::new(), Vec::new()]);
+    let doc = win.app.chart_doc();
+    let page = doc.raster_rect.expect("the dashboard drew its page");
+    let views = doc.pane_views;
+    let rects = win.app.composed_plot_rects();
+    // A point a plot's placed rect covers, past the first plot, where no view
+    // drew the page.
+    let mut spot = None;
+    'scan: for yi in 0..200 {
+        for xi in 0..200 {
+            let at = egui::pos2(
+                page.min.x + page.width() * xi as f32 / 200.0,
+                page.min.y + page.height() * yi as f32 / 200.0,
+            );
+            let placed = rects.iter().position(|r| r.contains(at));
+            let drawn = brightfield_shell::app::page_offset(views, page, None, Some(at));
+            if placed.is_some_and(|k| k > 0) && drawn.is_none() {
+                spot = Some(at);
+                break 'scan;
+            }
+        }
+    }
+    let at = spot.expect("the page has a spot a later plot is placed on and no pane drew");
+    win.hover(at);
+    win.chord(egui::Key::C);
+    let composed = &win.app.chart_doc().composed;
+    let first = clipboard_image(&render_plot(composed, 0, PICTURE_SCALE).expect("draws"));
+    assert_eq!(
+        win.copied().last(),
+        Some(&first),
+        "a pointer where no pane drew the page pictured a plot hidden there"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

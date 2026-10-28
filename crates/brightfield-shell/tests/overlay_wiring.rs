@@ -30,6 +30,9 @@ struct Window {
     app: MeridianApp,
     ctx: egui::Context,
     screen: egui::Rect,
+    /// Every command the frames asked the platform to carry out, oldest first:
+    /// where a clipboard write shows.
+    commands: Vec<egui::OutputCommand>,
 }
 
 impl Window {
@@ -38,6 +41,7 @@ impl Window {
             app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light),
             ctx: egui::Context::default(),
             screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+            commands: Vec::new(),
         }
     }
 
@@ -83,7 +87,8 @@ impl Window {
                 events,
                 ..Default::default()
             };
-            let _ = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+            let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+            self.commands.extend(out.platform_output.commands);
         }
     }
 
@@ -574,6 +579,43 @@ fn every_chart_palette_candidate_actually_dispatches() {
                     1,
                     "run-protocol wrote no run record"
                 );
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+            "copy-chart-picture" => {
+                // What is read back is the picture the frame handed the
+                // clipboard: a verb that reached no handler copies nothing.
+                let mut win = Window::live_chart("scatter.yaml");
+                confirm_chart_verb(&mut win, longname);
+                let copied = win.commands.iter().find_map(|c| match c {
+                    egui::OutputCommand::CopyImage(image) => Some(image.size),
+                    _ => None,
+                });
+                let size = copied.expect("copy-chart-picture put no picture on the clipboard");
+                assert!(size[0] > 0 && size[1] > 0, "the copied picture is empty");
+            }
+            "export-chart-picture" => {
+                // What is read back is the FILE, written into a folder the
+                // test owns in place of the dialog's answer.
+                let dir = save_fixture_dir();
+                let path =
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/scatter.yaml");
+                let (live, composed) =
+                    live_spec(path.to_str().expect("utf-8")).expect("scatter loads live");
+                let mut boot = Boot::charts(composed);
+                boot.live = Some(live);
+                boot.spec_path = Some(path);
+                let mut win = Window {
+                    app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light)
+                        .exporting_pictures_to(dir.clone()),
+                    ..Window::open(Boot::empty())
+                };
+                win.settle();
+                confirm_chart_verb(&mut win, longname);
+                let written = dir.join("scatter.png");
+                let picture = image::open(&written).unwrap_or_else(|e| {
+                    panic!("export-chart-picture wrote no {}: {e}", written.display())
+                });
+                assert!(picture.width() > 0 && picture.height() > 0);
                 let _ = std::fs::remove_dir_all(&dir);
             }
             other => panic!(

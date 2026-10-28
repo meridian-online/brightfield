@@ -506,7 +506,7 @@ fn an_export_fills_the_band_a_legend_hangs_below_the_plot_with_the_chart_surface
     let surface = brightfield_render::ink::ChartInk::for_mode(composed.mode.is_dark())
         .background
         .to_rgba8();
-    let picture = brightfield_shell::capture::render_export(composed, 1.0).expect("renders");
+    let picture = brightfield_shell::capture::render_export(&composed, 1.0).expect("renders");
     assert!(picture.height() > height + 1, "the picture holds the band");
     // The band's bottom-left corner: below the composition, clear of the legend.
     let corner = picture.get_pixel(0, picture.height() - 1).0;
