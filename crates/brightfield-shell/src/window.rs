@@ -2922,7 +2922,7 @@ pub struct MeridianApp {
     picture_bindings: [(Option<&'static str>, &'static str); 2],
     /// A picture the export verb drew, waiting for the save dialog after the
     /// frame: the dialog blocks, so it may not run inside the layout pass. Raised
-    /// only where [`Self::dialogs_allowed`] says a person is there to answer it.
+    /// where [`Self::dialogs_allowed`] says a person is there to answer it.
     picture_to_save: Option<PictureToSave>,
     /// Where the export verb saves without asking, when a suite set it with
     /// [`Self::exporting_pictures_to`]: a folder no dialog is raised over.
@@ -6411,8 +6411,8 @@ impl MeridianApp {
 
     /// Copy or export the chart under the pointer if the registry's
     /// `copy-chart-picture` or `export-chart-picture` keystroke is down this
-    /// frame. Gated as [`Self::home_key`] is, and only where a chart holds the
-    /// canvas: the graph has no chart to picture.
+    /// frame. Gated as [`Self::home_key`] is, and while a chart holds the canvas:
+    /// the graph has no chart to picture.
     fn picture_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
         if graph_on_canvas || self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
             return;

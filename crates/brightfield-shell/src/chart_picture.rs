@@ -111,8 +111,8 @@ pub fn exports_dir(protocol_dir: &Path) -> PathBuf {
 /// dialog can open there.
 ///
 /// The one call here no headless test drives, as `data_file::pick` is the one
-/// in its module: the window raises it only where `dialogs_allowed` says a
-/// person is in front of it.
+/// in its module: the window raises it where `dialogs_allowed` says a person
+/// is in front of it.
 #[must_use]
 pub fn ask_save_path(dir: Option<&Path>, name: &str) -> Option<PathBuf> {
     let mut dialog = rfd::FileDialog::new()
