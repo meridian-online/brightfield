@@ -70,7 +70,7 @@ impl Window {
     }
 
     /// Press ⌘⇧ and `key` as egui-winit delivers it: ⌘⇧C arrives as a copy
-    /// with the modifiers held, since winit turns every ⌘C into `Event::Copy`
+    /// with the modifiers held, since winit turns a ⌘C into `Event::Copy`
     /// and drops the key; any other key as itself.
     fn chord(&mut self, key: egui::Key) {
         let modifiers = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;

@@ -2209,9 +2209,9 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
         "cmd-j" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::J)),
         "cmd-enter" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)),
-        // egui-winit turns every press of C with the command key held, Shift
+        // egui-winit 0.35 turns a press of C with the command key held, Shift
         // or not, into `Event::Copy` and drops the key event, so the chord
-        // arrives as a copy with Shift held; the key form is any other host's.
+        // arrives as a copy with Shift held; the key form is another host's.
         "cmd-shift-c" => ctx.input_mut(|i| {
             let held = i.modifiers.command && i.modifiers.shift;
             let before = i.events.len();
@@ -10416,8 +10416,8 @@ impl MeridianApp {
 
     /// **The plot a picture verb is about**: the one under the pointer, as it
     /// stood before any overlay opened ([`Self::hovered_plot`]), or, with the
-    /// pointer over none, the one the keyboard's navigation verbs address — the
-    /// first, until a gesture moves them to another.
+    /// pointer off the plots, the one the keyboard's navigation verbs address —
+    /// the first, until a gesture moves them to another.
     fn picture_plot(&self) -> usize {
         self.hovered_plot
             .unwrap_or_else(|| self.charts.doc.nav_plot())
