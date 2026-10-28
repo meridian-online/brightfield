@@ -107,8 +107,9 @@ pub fn exports_dir(protocol_dir: &Path) -> PathBuf {
 }
 
 /// Ask where to save a picture, blocking until the user chooses or cancels;
-/// `None` when they cancel. Offers `name` in `dir`, which is made first so the
-/// dialog can open there.
+/// `None` when they cancel. Offers `name` in `dir`, or in the nearest folder
+/// above it that exists: nothing is made until a path is chosen, so a
+/// cancelled dialog leaves no empty `exports/` behind.
 ///
 /// The one call here no headless test drives, as `data_file::pick` is the one
 /// in its module: the window raises it where `dialogs_allowed` says a person
@@ -119,10 +120,8 @@ pub fn ask_save_path(dir: Option<&Path>, name: &str) -> Option<PathBuf> {
         .set_title("Export chart as a picture")
         .add_filter("PNG image", &["png"])
         .set_file_name(name);
-    if let Some(dir) = dir {
-        if std::fs::create_dir_all(dir).is_ok() {
-            dialog = dialog.set_directory(dir);
-        }
+    if let Some(existing) = dir.and_then(|d| d.ancestors().find(|a| a.is_dir())) {
+        dialog = dialog.set_directory(existing);
     }
     dialog.save_file()
 }

@@ -2209,9 +2209,16 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
         "cmd-j" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::J)),
         "cmd-enter" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)),
-        "cmd-shift-c" => {
-            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::C))
-        }
+        // egui-winit turns every press of C with the command key held, Shift
+        // or not, into `Event::Copy` and drops the key event, so the chord
+        // arrives as a copy with Shift held; the key form is any other host's.
+        "cmd-shift-c" => ctx.input_mut(|i| {
+            let held = i.modifiers.command && i.modifiers.shift;
+            let before = i.events.len();
+            i.events
+                .retain(|e| !(held && matches!(e, egui::Event::Copy)));
+            i.events.len() != before || i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::C)
+        }),
         "cmd-shift-e" => {
             ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::E))
         }
@@ -2924,6 +2931,10 @@ pub struct MeridianApp {
     /// frame: the dialog blocks, so it may not run inside the layout pass. Raised
     /// where [`Self::dialogs_allowed`] says a person is there to answer it.
     picture_to_save: Option<PictureToSave>,
+    /// The plot the pointer was on the last frame no overlay was open: what a
+    /// picture verb is about, so one confirmed in the palette is about the plot
+    /// the pointer was on before the palette opened over it.
+    hovered_plot: Option<usize>,
     /// Where the export verb saves without asking, when a suite set it with
     /// [`Self::exporting_pictures_to`]: a folder no dialog is raised over.
     pictures_dir: Option<PathBuf>,
@@ -3348,6 +3359,7 @@ impl MeridianApp {
                 (key, longname)
             }),
             picture_to_save: None,
+            hovered_plot: None,
             pictures_dir: None,
             nav_bindings: navigation_bindings(),
             grid_bindings: grid_bindings(),
@@ -5052,6 +5064,13 @@ impl MeridianApp {
 
         // The grid's foot row's Enter and Esc, ahead of every other handler:
         // while one of its fields is edited, the two keys are the field's.
+        if self.overlay.is_none() {
+            self.hovered_plot = ctx.pointer_hover_pos().and_then(|at| {
+                self.composed_plot_rects()
+                    .iter()
+                    .position(|rect| rect.contains(at))
+            });
+        }
         self.grid_foot_keys(&ctx);
         // The shelf's keys, ahead of every other bare key: while the band or
         // its list holds them, they are not the frame verbs' or an overlay
@@ -10395,16 +10414,12 @@ impl MeridianApp {
         Some(said)
     }
 
-    /// **The plot a picture verb is about**: the one under the pointer, or,
-    /// with the pointer over none, the one the keyboard's navigation verbs
-    /// address — the first, until a gesture moves them to another.
-    fn picture_plot(&self, ctx: &egui::Context) -> usize {
-        ctx.pointer_hover_pos()
-            .and_then(|at| {
-                self.composed_plot_rects()
-                    .iter()
-                    .position(|rect| rect.contains(at))
-            })
+    /// **The plot a picture verb is about**: the one under the pointer, as it
+    /// stood before any overlay opened ([`Self::hovered_plot`]), or, with the
+    /// pointer over none, the one the keyboard's navigation verbs address — the
+    /// first, until a gesture moves them to another.
+    fn picture_plot(&self) -> usize {
+        self.hovered_plot
             .unwrap_or_else(|| self.charts.doc.nav_plot())
     }
 
@@ -10442,7 +10457,7 @@ impl MeridianApp {
     /// it for the save dialog, as `longname` asks. A window with no chart says
     /// so rather than doing nothing.
     fn chart_picture(&mut self, ctx: &egui::Context, longname: &str) {
-        let plot = self.picture_plot(ctx);
+        let plot = self.picture_plot();
         let drawn = crate::chart_picture::render_plot(
             &self.charts.doc.composed,
             plot,

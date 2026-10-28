@@ -69,18 +69,32 @@ impl Window {
         }
     }
 
-    /// Press ⌘⇧ and `key`.
+    /// Press ⌘⇧ and `key` as egui-winit delivers it: ⌘⇧C arrives as a copy
+    /// with the modifiers held, since winit turns every ⌘C into `Event::Copy`
+    /// and drops the key; any other key as itself.
     fn chord(&mut self, key: egui::Key) {
-        self.run(vec![
-            vec![egui::Event::Key {
+        let modifiers = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        let event = if key == egui::Key::C {
+            egui::Event::Copy
+        } else {
+            egui::Event::Key {
                 key,
                 physical_key: None,
                 pressed: true,
                 repeat: false,
-                modifiers: egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-            }],
-            Vec::new(),
-        ]);
+                modifiers,
+            }
+        };
+        for events in [vec![event], Vec::new()] {
+            let raw = egui::RawInput {
+                screen_rect: Some(self.screen),
+                modifiers,
+                events,
+                ..Default::default()
+            };
+            let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+            self.commands.extend(out.platform_output.commands);
+        }
     }
 
     /// The pictures the frames put on the clipboard, oldest first.
@@ -180,4 +194,42 @@ fn the_export_key_saves_the_plot_under_the_pointer_as_a_png() {
         "the saved file is not the picture of the second plot"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Confirmed from the palette, the picture is of the plot the pointer was on
+/// before the palette opened, not of whatever plot lies under the palette's
+/// row.
+#[test]
+fn a_picture_confirmed_in_the_palette_is_of_the_plot_the_pointer_was_on() {
+    let mut win = Window::chart("crossfilter.yaml", None);
+    let rects = win.app.composed_plot_rects();
+    win.hover(rects[1].center());
+    let press = |key| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    win.run(vec![vec![press(egui::Key::Space)], Vec::new()]);
+    assert_eq!(win.app.open_overlay(), Some("palette"));
+    win.run(vec![
+        Vec::new(),
+        vec![egui::Event::Text("copy-chart-picture".to_owned())],
+        Vec::new(),
+        vec![press(egui::Key::Enter)],
+        Vec::new(),
+    ]);
+    assert_eq!(
+        win.app.open_overlay(),
+        None,
+        "confirming did not close the palette"
+    );
+    let composed = &win.app.chart_doc().composed;
+    let second = clipboard_image(&render_plot(composed, 1, PICTURE_SCALE).expect("draws"));
+    assert_eq!(
+        win.copied().last(),
+        Some(&second),
+        "the palette's copy is not of the plot the pointer was on"
+    );
 }
