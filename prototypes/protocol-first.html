@@ -1,0 +1,1345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Protocol-first prototype</title>
+<!--
+  PROTOTYPE — throwaway. One file, no dependencies, nothing touches disk.
+  It asks one question: does a Protocol-first model feel right for opening
+  data in Brightfield? The Protocol is the document; data files and folders
+  are sources added to it through a keyboard-driven sources browser.
+  The logic lives in the ProtocolFirst module (pure, no DOM); the page
+  below it is a thin shell.
+-->
+<style>
+:root {
+  --bg: #f4f3f0;
+  --surface: #ffffff;
+  --surface-2: #f8f7f5;
+  --ink: #1c1d1f;
+  --ink-2: #55585e;
+  --ink-3: #5f636a;
+  --line: #e3e1dc;
+  --line-2: #d4d1ca;
+  --accent: #1f6f8b;
+  --accent-ink: #ffffff;
+  --accent-soft: #e3f0f4;
+  --warn: #9a5b00;
+  --warn-soft: #fbf0dd;
+  --bad: #a3312a;
+  --bad-soft: #fbe5e3;
+  --changed: #fff5c2;
+  --term: #0f1419;
+  --term-2: #151b22;
+  --term-ink: #e6e1cf;
+  --term-ink-2: #8a919a;
+  --term-hl: #e6e1cf;
+  --term-hl-ink: #0f1419;
+  --term-dir: #39bae6;
+  --term-file: #7fd962;
+  --term-proto: #ffb454;
+  --term-line: #2a323c;
+  --shadow: 0 1px 2px rgba(20, 20, 20, .06), 0 8px 24px rgba(20, 20, 20, .08);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #17181a; --surface: #202225; --surface-2: #26282c; --ink: #ecebe8; --ink-2: #b3b5ba; --ink-3: #9a9da3;
+    --line: #33363b; --line-2: #3f434a; --accent: #6cb6cf; --accent-ink: #0d1b20; --accent-soft: #1d3138;
+    --warn: #e7b062; --warn-soft: #3a2d18; --bad: #f08a80; --bad-soft: #3d1f1c; --changed: #3d3714;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+::selection { background: var(--accent-soft); color: var(--ink); }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.page { max-width: 1440px; margin: 0 auto; padding: 28px 24px 64px; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
+
+header.top h1 { font-size: 26px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -0.02em; text-wrap: balance; }
+header.top p { margin: 0; color: var(--ink-2); max-width: 82ch; }
+.howto { margin-top: 10px; color: var(--ink-2); max-width: 90ch; font-size: 14px; }
+.howto b { color: var(--ink); }
+.calls { margin-top: 8px; font-size: 14px; color: var(--ink-2); max-width: 90ch; }
+.calls summary { cursor: pointer; color: var(--ink-3); }
+.calls ul { margin: 6px 0 0; padding-left: 18px; }
+.calls li { margin: 3px 0; }
+
+nav.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 22px 0 0; border-bottom: 1px solid var(--line-2); }
+nav.tabs button { border: 0; background: none; padding: 9px 12px; cursor: pointer; color: var(--ink-2); border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 500; }
+nav.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+
+main.stage { display: grid; grid-template-columns: 250px minmax(0, 1fr) 320px; gap: 22px; margin-top: 18px; align-items: start; }
+.steps-col { position: sticky; top: 12px; }
+.steps-col h2, .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-3); margin: 0 0 8px; font-weight: 600; }
+.blurb { margin: 0 0 8px; font-size: 14px; }
+.watch { margin: 0 0 12px; font-size: 14px; color: var(--ink-2); }
+.watch b { color: var(--ink); }
+ol.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+ol.steps li { counter-increment: step; display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: start; padding: 3px 0; color: var(--ink-3); font-size: 14px; }
+ol.steps li::before { content: counter(step); width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line-2); font-size: 12px; display: grid; place-items: center; margin-top: 4px; }
+ol.steps li.done { color: var(--ink-2); }
+ol.steps li.done::before { content: "✓"; background: var(--surface-2); }
+ol.steps li.current { color: var(--ink); }
+ol.steps li.current::before { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+ol.steps .step-btn { text-align: left; border: 1px solid transparent; background: none; padding: 4px 8px; border-radius: 7px; cursor: default; }
+ol.steps li.current .step-btn { background: var(--accent); color: var(--accent-ink); cursor: pointer; font-weight: 600; }
+ol.steps li.current .step-btn:hover { filter: brightness(1.08); }
+.steps-foot { display: flex; gap: 10px; align-items: center; margin-top: 10px; font-size: 14px; color: var(--ink-2); }
+.linkish { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+
+/* Finder strip */
+.finder { background: var(--surface); border-radius: 10px; box-shadow: var(--shadow); padding: 10px 12px; margin-bottom: 14px; }
+.finder h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-3); font-weight: 600; }
+.finder .items { display: flex; flex-direction: column; gap: 4px; }
+.finder .item { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; font-size: 13px; }
+.finder .item .acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.finder .item .p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.finder .item .p small { color: var(--ink-3); margin-left: 6px; }
+
+.btn { border: 1px solid var(--line-2); background: var(--surface); padding: 4px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+.btn:hover { background: var(--surface-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn kbd { font: 11px/1 -apple-system, system-ui, sans-serif; color: inherit; opacity: .7; margin-left: 4px; }
+.btn.cue { box-shadow: 0 0 0 2px var(--accent); }
+.btn[disabled] { opacity: .45; cursor: default; }
+
+/* the mock window */
+.win { background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; position: relative; height: 640px; display: flex; flex-direction: column; }
+.titlebar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: var(--surface-2); border-bottom: 1px solid var(--line); }
+.lights { display: flex; gap: 6px; }
+.lights i { width: 11px; height: 11px; border-radius: 50%; background: var(--line-2); display: block; }
+.titlebar .title { flex: 1; text-align: center; font-weight: 600; font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.titlebar .title .kept { color: var(--ink-3); font-weight: 400; margin-left: 6px; }
+.titlebar .title .flag { color: var(--bad); font-weight: 600; margin-left: 6px; }
+.app-actions { display: flex; gap: 6px; }
+
+.off { flex: 1; display: grid; place-items: center; text-align: center; padding: 40px; color: var(--ink-2); }
+.off p { margin: 0 0 12px; }
+
+.door { padding: 22px 22px 26px; flex: 1; overflow: auto; }
+.door h2 { margin: 0 0 4px; font-size: 20px; letter-spacing: -0.02em; }
+.door .sub { margin: 0 0 14px; color: var(--ink-2); font-size: 14px; }
+.door .opens { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+.door h3 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-3); margin: 14px 0 6px; }
+.rows { display: flex; flex-direction: column; gap: 6px; }
+.row { display: grid; grid-template-columns: 1fr auto; gap: 2px 14px; text-align: left; border: 1px solid var(--line); background: var(--surface); border-radius: 9px; padding: 9px 12px; cursor: pointer; width: 100%; }
+.row:hover { border-color: var(--accent); }
+.row.cue { box-shadow: 0 0 0 2px var(--accent); }
+.row .name { font-weight: 600; }
+.row .where { color: var(--ink-3); font-size: 13px; grid-column: 1; }
+.row .meta { color: var(--ink-2); font-size: 13px; grid-column: 1; }
+.row .run { grid-column: 2; grid-row: 1 / span 3; align-self: center; font-size: 13px; padding: 3px 8px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--line); white-space: nowrap; }
+.row .run.ran { background: var(--accent-soft); border-color: transparent; }
+.chip { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 5px; margin-left: 6px; vertical-align: 1px; }
+.chip.bad { background: var(--bad-soft); color: var(--bad); }
+.chip.place { background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line); font-weight: 500; }
+.empty { color: var(--ink-3); font-size: 14px; padding: 10px 0; }
+
+/* Protocol view */
+.toolbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--line); align-items: center; }
+.toolbar .where { margin-left: auto; font-size: 12px; color: var(--ink-3); }
+.doc-body { display: grid; grid-template-columns: minmax(300px, 40%) 1fr; flex: 1; min-height: 0; }
+.spine { border-right: 1px solid var(--line); overflow: auto; position: relative; }
+.spine table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.spine th { position: sticky; top: 0; background: var(--surface); text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-3); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); z-index: 1; }
+.spine td { padding: 0 8px; height: 34px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.spine td.g, .spine th.g { width: 34px; min-width: 34px; padding: 0; }
+.spine tr.step { cursor: pointer; }
+.spine tr.step:hover td { background: var(--surface-2); }
+.spine tr.step.sel td { background: var(--accent-soft); }
+.spine td.name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.spine td.kind, .spine td.n { color: var(--ink-3); }
+.spine td.n { text-align: right; }
+.spine td.state .missing { color: var(--bad); font-weight: 600; }
+.spine td.state .ran { color: var(--accent); }
+.spine svg.gutter { position: absolute; left: 0; top: 0; pointer-events: none; }
+.spine .none { padding: 18px 14px; color: var(--ink-3); font-size: 14px; }
+.view { overflow: auto; padding: 14px; min-width: 0; }
+.view h3 { margin: 0; font-size: 15px; }
+.view .path { color: var(--ink-3); font-size: 12.5px; margin: 2px 0 8px; word-break: break-all; }
+.view .lib { font-size: 13px; color: var(--ink-2); margin: 0 0 10px; }
+.view .missing-box { background: var(--bad-soft); color: var(--ink); border-radius: 8px; padding: 10px 12px; margin: 6px 0 12px; font-size: 14px; }
+.view .empty-state { display: grid; place-items: center; height: 100%; text-align: center; color: var(--ink-2); }
+.view .empty-state p { margin: 0 0 10px; }
+
+table.data { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+table.data th, table.data td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.data th { font-weight: 600; }
+table.data th small { display: block; color: var(--ink-3); font-weight: 400; font-size: 11px; }
+table.data td.num { text-align: right; }
+.count { font-size: 12px; color: var(--ink-3); margin-top: 6px; }
+
+/* canvas (dovetail) */
+.canvas { position: relative; }
+.canvas svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.canvas .card { position: absolute; width: 28%; height: 46px; border-radius: 9px; padding: 5px 10px; font-size: 12.5px; overflow: hidden; }
+.canvas .card b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.canvas .card small { opacity: .75; }
+.canvas .join { position: absolute; transform: translateY(-50%); max-width: 38%; overflow: hidden; text-overflow: ellipsis; font-size: 11.5px; border-radius: 6px; padding: 2px 7px; cursor: pointer; white-space: nowrap; border: 1px dashed; }
+.canvas .join.on { border-style: solid; font-weight: 600; }
+.canvas .join.cue { box-shadow: 0 0 0 2px var(--accent); }
+.loose { margin-top: 10px; font-size: 12px; }
+.loose span { display: inline-block; padding: 1px 7px; border-radius: 5px; margin: 0 4px 4px 0; }
+
+/* light canvas inside the window */
+.view .canvas .card { background: var(--surface); box-shadow: var(--shadow); }
+.view .canvas .card small { color: var(--ink-3); }
+.view .canvas .join { background: var(--surface); border-color: var(--line-2); color: var(--ink-2); }
+.view .canvas .join.on { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
+.view .loose span { background: var(--surface-2); border: 1px solid var(--line); }
+
+/* the sources browser (a sheet over the window, yazi-like) */
+.sheet-wrap { position: absolute; inset: 0; background: rgba(15, 20, 25, .35); display: flex; justify-content: center; align-items: stretch; padding: 34px 18px 18px; z-index: 5; }
+.yz { background: var(--term); color: var(--term-ink); border-radius: 10px; box-shadow: 0 20px 50px rgba(0,0,0,.4); width: 100%; display: flex; flex-direction: column; overflow: hidden; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
+.yz-head { display: flex; gap: 12px; align-items: center; padding: 7px 12px; border-bottom: 1px solid var(--term-line); color: var(--term-ink-2); }
+.yz-head .mode { color: var(--term-proto); font-weight: 700; }
+.yz-head .cwd { color: var(--term-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.yz-head input { font: inherit; background: var(--term-2); color: var(--term-ink); border: 1px solid var(--term-line); border-radius: 5px; padding: 3px 7px; width: 230px; }
+.yz-head input:focus { outline: 1px solid var(--term-dir); }
+.yz-cols { flex: 1; display: grid; grid-template-columns: 22% 30% 48%; min-height: 0; }
+.yz-cols.max { grid-template-columns: 100%; }
+.yz-cols.max > .yz-col:not(.prev) { display: none; }
+.yz-col { border-right: 1px solid var(--term-line); overflow: auto; min-width: 0; padding: 4px 0; }
+.yz-col:last-child { border-right: 0; }
+.yz-col.focus { background: var(--term-2); }
+.yz-col .sec { color: var(--term-ink-2); padding: 6px 10px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.yz-ent { display: flex; gap: 6px; padding: 1px 10px; cursor: pointer; white-space: nowrap; align-items: baseline; }
+.yz-ent .nm { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.yz-ent .sz { color: var(--term-ink-2); font-size: 11.5px; }
+.yz-ent.dir .nm { color: var(--term-dir); }
+.yz-ent.file .nm { color: var(--term-file); }
+.yz-ent.other .nm { color: var(--term-ink-2); }
+.yz-ent.proto .nm { color: var(--term-proto); }
+.yz-ent .tag { color: var(--term-proto); font-size: 11px; }
+.yz-ent.marked .nm::before { content: "● "; color: var(--term-proto); }
+.yz-ent.cur { background: var(--term-hl); border-radius: 4px; margin: 0 4px; padding: 1px 6px; }
+.yz-ent.cur .nm, .yz-ent.cur .sz, .yz-ent.cur .tag { color: var(--term-hl-ink); }
+.yz-ent.in { color: var(--term-ink); }
+.yz-col.prev { padding: 8px 10px; }
+.yz-col.prev .ph { color: var(--term-ink-2); margin-bottom: 6px; display: flex; gap: 10px; flex-wrap: wrap; }
+.yz-col.prev .ph b { color: var(--term-ink); font-weight: 600; }
+.yz-col.prev .msg { color: var(--term-ink-2); line-height: 1.6; }
+.yz-col.prev table.data th, .yz-col.prev table.data td { border-bottom: 1px solid var(--term-line); }
+.yz-col.prev table.data th { color: var(--term-dir); }
+.yz-col.prev table.data th small { color: var(--term-ink-2); }
+.yz-col.prev table.data td { color: #c8d0b8; }
+.yz-col.prev table.data td.num { color: #e6b673; }
+.yz-col.prev .count { color: var(--term-ink-2); }
+.yz .canvas .card { background: var(--term-2); border: 1px solid var(--term-line); }
+.yz .canvas .card b { color: var(--term-file); }
+.yz .canvas .card small { color: var(--term-ink-2); }
+.yz .canvas .join { background: var(--term); border-color: var(--term-ink-2); color: var(--term-ink-2); }
+.yz .canvas .join.on { border-color: var(--term-proto); color: var(--term-proto); }
+.yz .loose { color: var(--term-ink-2); }
+.yz .loose span { background: var(--term-2); color: var(--term-file); border: 1px solid var(--term-line); }
+.yz-foot { border-top: 1px solid var(--term-line); padding: 6px 12px; color: var(--term-ink-2); display: flex; gap: 14px; flex-wrap: wrap; }
+.yz-foot kbd { font: inherit; color: var(--term-ink); background: var(--term-2); border: 1px solid var(--term-line); border-radius: 4px; padding: 0 5px; }
+.yz-note { padding: 6px 12px; color: var(--term-proto); border-top: 1px solid var(--term-line); }
+
+/* side panels */
+aside.side { display: flex; flex-direction: column; gap: 16px; }
+.happened { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 14px; }
+.happened .what { font-weight: 600; margin: 0 0 4px; }
+.happened ul { margin: 0; padding-left: 18px; }
+.happened li { margin: 2px 0; }
+.happened .none { color: var(--ink-3); margin: 0; }
+.place { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+.place .ptitle { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+.place .ptitle span { color: var(--ink-3); font-weight: 400; }
+.entry { font-size: 13px; padding: 3px 6px; border-radius: 6px; margin: 0 -6px; }
+.entry .l1 { color: var(--ink); word-break: break-all; }
+.entry .l2 { color: var(--ink-3); font-size: 12px; }
+.entry.nothing .l1 { color: var(--ink-3); }
+.changed { background: var(--changed); }
+.history { font-size: 13px; color: var(--ink-3); }
+.history summary { cursor: pointer; }
+.history ol { margin: 6px 0 0; padding-left: 20px; }
+
+footer { margin-top: 36px; color: var(--ink-3); font-size: 13px; }
+
+@media (max-width: 1280px) {
+  main.stage { grid-template-columns: 230px minmax(0, 1fr); }
+  main.stage aside.side { grid-column: 2; }
+}
+@media (max-width: 860px) {
+  main.stage { grid-template-columns: minmax(0, 1fr); }
+  .steps-col { position: static; }
+  main.stage aside.side { grid-column: auto; }
+  .doc-body { grid-template-columns: 1fr; grid-template-rows: 45% 55%; }
+  .spine { border-right: 0; border-bottom: 1px solid var(--line); }
+  .yz-cols { grid-template-columns: 0 45% 55%; }
+  .yz-cols > .yz-col.places { display: none; }
+  .win { height: 720px; }
+}
+@media (max-width: 560px) {
+  .page { padding: 18px 16px 48px; }
+  .titlebar .app-actions { display: none; }
+  .yz-head input { width: 140px; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <h1>Opening data, Protocol first</h1>
+    <p>A Protocol is what Brightfield opens and keeps. Data files, folders and databases are sources you add to it, through a keyboard-driven sources browser. Drive the cases below and watch what the window, the front door, the source library and the disk say after each one. A throwaway prototype: the data is invented and nothing touches your disk.</p>
+    <p class="howto"><b>How:</b> pick a scenario and press its highlighted step, or do the same thing yourself. In the sources browser the keys work: <b>j k</b> move, <b>h l</b> go up and into folders, <b>Tab</b> switches columns, <b>Space</b> marks a file, <b>/</b> types a glob, <b>g t</b> fills the browser with the preview, <b>v</b> switches a folder's preview between the dovetail canvas and its file list, <b>Enter</b> adds, <b>Esc</b> closes. <b>A</b> opens the browser from a Protocol.</p>
+    <details class="calls">
+      <summary>Calls made in this prototype that you haven't decided</summary>
+      <ul>
+        <li>Dragging a folder onto Brightfield makes a Protocol named after the folder and opens the browser on that folder, so you can accept joins before anything is added.</li>
+        <li>A new Protocol from the front door starts as "Untitled" and takes the name of the first thing you add, while it has never run, so arc has no database to rebuild.</li>
+        <li>A glob comes in as one grouped row on the spine rather than one row per file.</li>
+        <li>Locating a moved file repoints the library entry, so every Protocol that uses it follows.</li>
+        <li>Opening Brightfield again restores the Protocol you had open, as macOS restores windows. Closing the window shows the front door.</li>
+        <li>The row count for a glob fills in after the file count, because counting rows means reading every file.</li>
+      </ul>
+    </details>
+  </header>
+
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Scenarios"></nav>
+
+  <main class="stage">
+    <section class="steps-col" aria-label="Scenario steps">
+      <h2>Steps</h2>
+      <p class="blurb" id="blurb"></p>
+      <p class="watch" id="watch"></p>
+      <ol class="steps" id="steps"></ol>
+      <div class="steps-foot" id="steps-foot"></div>
+    </section>
+
+    <section aria-label="Brightfield">
+      <div class="finder" id="finder"></div>
+      <div class="win" id="win"></div>
+    </section>
+
+    <aside class="side">
+      <section class="panel">
+        <h2>What just happened</h2>
+        <div class="happened" id="happened"></div>
+      </section>
+      <section class="panel">
+        <h2>Source library</h2>
+        <div id="library"></div>
+      </section>
+      <section class="panel">
+        <h2>On disk</h2>
+        <div id="disk"></div>
+        <details class="history" id="history"></details>
+      </section>
+    </aside>
+  </main>
+
+  <footer>Prototype, to drive by hand. Paths and names are working choices, not settled ones.</footer>
+</div>
+
+<script>
+/* ======================================================================
+   ProtocolFirst: the model. Pure: (state, action) => state. No DOM.
+   ====================================================================== */
+const ProtocolFirst = (() => {
+  const PROTOS = '~/Documents/Protocols';
+  const CONFIG = '~/.config/.arcform';
+  const ARC_DB = '~/.arcform/db';
+
+  function hash(s) { let x = 2166136261; for (const c of s) { x ^= c.charCodeAt(0); x = Math.imul(x, 16777619); } return x >>> 0; }
+  const base = p => p.slice(p.lastIndexOf('/') + 1);
+  const parent = p => p.slice(0, p.lastIndexOf('/')) || p;
+  const stem = p => base(p).replace(/\.(csv|tsv|parquet|json)$/, '');
+  const isData = n => n && (n.kind === 'csv' || n.kind === 'parquet' || n.kind === 'table');
+
+  /* ---------- the invented disk ---------- */
+  const FS = {};
+  function dir(path, extra = {}) { FS[path] = Object.assign({ kind: 'dir', children: [] }, FS[path] || {}, extra); const p = parent(path); if (p !== path && FS[p] && !FS[p].children.includes(path)) FS[p].children.push(path); return FS[path]; }
+  function file(path, kind, rows, size, cols) { FS[path] = { kind, rows, size, cols }; const p = parent(path); if (FS[p] && !FS[p].children.includes(path)) FS[p].children.push(path); }
+
+  const COLS = {
+    earthquakes_2024: [['time', 'TIMESTAMP'], ['latitude', 'DOUBLE'], ['longitude', 'DOUBLE'], ['depth_km', 'DOUBLE'], ['mag', 'DOUBLE'], ['mag_type', 'VARCHAR'], ['place', 'VARCHAR']],
+    tides: [['station_id', 'VARCHAR'], ['time', 'TIMESTAMP'], ['height_m', 'DOUBLE']],
+    stations: [['station_id', 'VARCHAR'], ['name', 'VARCHAR'], ['lat', 'DOUBLE'], ['lon', 'DOUBLE']],
+    airports: [['id', 'BIGINT'], ['name', 'VARCHAR'], ['city', 'VARCHAR'], ['country', 'VARCHAR'], ['iata', 'VARCHAR'], ['lat', 'DOUBLE'], ['lon', 'DOUBLE']],
+    countries: [['code', 'VARCHAR'], ['name', 'VARCHAR'], ['continent', 'VARCHAR'], ['population', 'BIGINT']],
+    world_cities: [['city', 'VARCHAR'], ['country', 'VARCHAR'], ['population', 'BIGINT'], ['lat', 'DOUBLE'], ['lon', 'DOUBLE']],
+    us_states: [['code', 'VARCHAR'], ['name', 'VARCHAR'], ['capital', 'VARCHAR']],
+    titanic: [['passenger_id', 'BIGINT'], ['survived', 'BOOLEAN'], ['pclass', 'BIGINT'], ['name', 'VARCHAR'], ['sex', 'VARCHAR'], ['age', 'DOUBLE'], ['fare', 'DOUBLE']],
+    iris: [['sepal_length', 'DOUBLE'], ['sepal_width', 'DOUBLE'], ['petal_length', 'DOUBLE'], ['petal_width', 'DOUBLE'], ['species', 'VARCHAR']],
+    geography_data: [['country_code', 'VARCHAR'], ['region', 'VARCHAR'], ['area_km2', 'DOUBLE']],
+    ecommerce_orders: [['order_id', 'BIGINT'], ['customer_email', 'VARCHAR'], ['total', 'DOUBLE'], ['ordered_at', 'TIMESTAMP']],
+    people_directory: [['id', 'BIGINT'], ['name', 'VARCHAR'], ['email', 'VARCHAR'], ['city', 'VARCHAR']],
+    orders: [['order_id', 'BIGINT'], ['customer_id', 'BIGINT'], ['product_id', 'BIGINT'], ['quantity', 'BIGINT'], ['ordered_at', 'TIMESTAMP']],
+    customers: [['customer_id', 'BIGINT'], ['name', 'VARCHAR'], ['region', 'VARCHAR']],
+    products: [['product_id', 'BIGINT'], ['name', 'VARCHAR'], ['price', 'DOUBLE']],
+  };
+  const GENERIC = [['id', 'BIGINT'], ['name', 'VARCHAR'], ['category', 'VARCHAR'], ['value', 'DOUBLE'], ['updated_at', 'DATE']];
+  const colsFor = path => {
+    const s = stem(path);
+    if (COLS[s]) return COLS[s];
+    const topic = /gittables\/([^/]+)\//.exec(path);
+    if (topic) return [['year', 'BIGINT'], ['region', 'VARCHAR'], [topic[1].replace(/[^a-z_]/g, ''), 'DOUBLE'], ['source', 'VARCHAR']];
+    return GENERIC;
+  };
+
+  const DOC_SETS = [['airports', 7698, '1.1M'], ['books_catalog', 120, '13.0K'], ['codes_and_ids', 210, '18.4K'], ['countries', 250, '20.2K'], ['covid_timeseries', 412, '35.3K'], ['datetime_formats', 140, '12.6K'], ['ecommerce_orders', 180, '14.7K'], ['financial_data', 96, '8.2K'], ['geography_data', 130, '10.7K'], ['iris', 150, '4.5K'], ['medical_records', 64, '5.7K'], ['multilingual', 70, '6.3K'], ['network_logs', 260, '20.2K'], ['people_directory', 170, '14.3K'], ['scientific_measurements', 58, '4.7K'], ['sports_events', 110, '9.2K'], ['tech_systems', 300, '25.8K'], ['titanic', 891, '59.8K'], ['us_states', 51, '873B'], ['world_cities', 26114, '1.2M']];
+  const HOME_SETS = ['airports', 'books_catalog', 'codes_and_ids', 'countries', 'coverage_closure_phase_ab', 'covid_timeseries', 'datetime_coverage', 'datetime_formats', 'datetime_formats_extended', 'earthquakes_2024', 'ecommerce_orders', 'finance_coverage', 'financial_data', 'geography_data', 'iris', 'medical_records', 'multilingual', 'network_logs', 'new_finance', 'new_geography', 'new_identity', 'new_representation', 'new_technology', 'people_directory', 'representation_coverage', 'scientific_measurements', 'sports_events', 'tech_systems', 'technology_coverage', 'titanic', 'us_states', 'world_cities'];
+  const TOPICS = ['abstraction', 'allegro_con_spirito', 'attrition_rate', 'beats_per_minute', 'beauty_sleep', 'bits_per_second', 'cardiac_output', 'cease', 'centripetal_acceleration', 'channel_capacity', 'clotting_time', 'command_processing_overhead_time', 'count_per_minute', 'crime_rate', 'data_rate', 'dead_air', 'dogwatch', 'dose_rate', 'dwarf', 'entr\'acte', 'episcopate', 'erythrocyte_sedimentation_rate', 'escape_velocity', 'fertile_period', 'graveyard_watch', 'growth_rate'];
+  const sizeOf = (rows, ncols) => { const b = rows * ncols * 9; return b > 1e6 ? (b / 1e6).toFixed(1) + 'M' : b > 1e3 ? (b / 1e3).toFixed(1) + 'K' : b + 'B'; };
+
+  dir('~');
+  ['~/Archive', '~/Data', '~/Documents', '~/Downloads', '~/datasets'].forEach(p => dir(p));
+  dir('~/Data/coast');
+  file('~/Data/coast/tides.csv', 'csv', 8760, '214K', COLS.tides);
+  file('~/Data/coast/stations.csv', 'csv', 42, '2.1K', COLS.stations);
+  dir('~/Data/shop.duckdb', { kind: 'db' });
+  file('~/Data/shop.duckdb/orders', 'table', 48210, '', COLS.orders);
+  file('~/Data/shop.duckdb/customers', 'table', 3120, '', COLS.customers);
+  file('~/Data/shop.duckdb/products', 'table', 412, '', COLS.products);
+  file('~/Data/shop.duckdb/_staging_orders_tmp', 'table', 0, '', COLS.orders);
+  dir('~/Documents/datasets');
+  DOC_SETS.forEach(([n, r, sz]) => file(`~/Documents/datasets/${n}.csv`, 'csv', r, sz, colsFor(n)));
+  dir(PROTOS);
+  file('~/Downloads/ghcn_daily_2024.parquet', 'parquet', 1204331, '38.2M', [['station', 'VARCHAR'], ['date', 'DATE'], ['element', 'VARCHAR'], ['value', 'DOUBLE']]);
+  // ~/datasets is itself a Protocol, kept among its data
+  dir('~/datasets', { protocol: true });
+  dir('~/datasets/models'); dir('~/datasets/panels');
+  file('~/datasets/arcform-log.txt', 'txt'); file('~/datasets/arcform.yaml', 'yaml');
+  dir('~/datasets/gittables', { link: '/Volumes/Dev/datasets/gittables' });
+  HOME_SETS.forEach(n => {
+    const known = DOC_SETS.find(d => d[0] === n);
+    const rows = n === 'earthquakes_2024' ? 28412 : known ? known[1] : 40 + hash(n) % 400;
+    file(`~/datasets/${n}.csv`, 'csv', rows, known ? known[2] : sizeOf(rows, colsFor(n).length), colsFor(n));
+  });
+  TOPICS.forEach(t => {
+    const d = `~/datasets/gittables/${t}`; dir(d);
+    const n = 6 + hash(t) % 28;
+    for (let i = 0; i < n; i++) {
+      const id = String(1000 + hash(t + i) % 9000);
+      const rows = 12 + hash(t + 'r' + i) % 640;
+      file(`${d}/GitTables_${id}.csv`, 'csv', rows, sizeOf(rows, 4), colsFor(`${d}/x.csv`));
+    }
+  });
+  dir('gs://meridian-public', { online: true });
+  dir('gs://meridian-public/noaa');
+  file('gs://meridian-public/noaa/ghcn_2024.parquet', 'parquet', 1204331, '38.2M', [['station', 'VARCHAR'], ['date', 'DATE'], ['element', 'VARCHAR'], ['value', 'DOUBLE']]);
+  file('gs://meridian-public/noaa/stations.parquet', 'parquet', 124954, '4.1M', [['station', 'VARCHAR'], ['name', 'VARCHAR'], ['lat', 'DOUBLE'], ['lon', 'DOUBLE']]);
+  dir('gs://meridian-public/census');
+  file('gs://meridian-public/census/acs_2023.parquet', 'parquet', 3221, '1.9M', [['geoid', 'VARCHAR'], ['name', 'VARCHAR'], ['median_income', 'BIGINT'], ['population', 'BIGINT']]);
+  Object.values(FS).forEach(n => n.children && n.children.sort((a, b) => (FS[a].kind === 'dir' || FS[a].kind === 'db' ? 0 : 1) - (FS[b].kind === 'dir' || FS[b].kind === 'db' ? 0 : 1) || base(a).localeCompare(base(b))));
+
+  const PLACES = [
+    { label: 'Home', path: '~' },
+    { label: 'datasets', path: '~/datasets' },
+    { label: 'Documents', path: '~/Documents' },
+    { label: 'Data', path: '~/Data' },
+    { label: 'Downloads', path: '~/Downloads' },
+    { label: 'Archive', path: '~/Archive' },
+    { label: 'Protocols', path: PROTOS },
+    { label: 'meridian-public', path: 'gs://meridian-public', online: true },
+  ];
+
+  // The existing Protocol in ~/datasets, as its arcform.yaml describes it.
+  const EXISTING = {
+    dir: '~/datasets', name: 'datasets', where: 'inplace',
+    sources: ['~/datasets/airports.csv', '~/datasets/countries.csv', '~/datasets/world_cities.csv'].map(p => ({ path: p })),
+    joins: [{ from: 'airports', fromCol: 'country', to: 'countries', toCol: 'name', card: 'N:1' }, { from: 'world_cities', fromCol: 'country', to: 'countries', toCol: 'name', card: 'N:1' }],
+    keptAt: -60 * 24 * 3, runAt: -60 * 24 * 3, panels: 2,
+  };
+
+  /* dovetail's join candidates, by table name */
+  const CANDIDATES = [
+    { from: 'airports', fromCol: 'country', to: 'countries', toCol: 'name', card: 'N:1', conf: 97 },
+    { from: 'world_cities', fromCol: 'country', to: 'countries', toCol: 'name', card: 'N:1', conf: 94 },
+    { from: 'geography_data', fromCol: 'country_code', to: 'countries', toCol: 'code', card: 'N:1', conf: 88 },
+    { from: 'ecommerce_orders', fromCol: 'customer_email', to: 'people_directory', toCol: 'email', card: 'N:1', conf: 61 },
+    { from: 'tides', fromCol: 'station_id', to: 'stations', toCol: 'station_id', card: 'N:1', conf: 99 },
+    { from: 'orders', fromCol: 'customer_id', to: 'customers', toCol: 'customer_id', card: 'N:1', conf: 98 },
+    { from: 'orders', fromCol: 'product_id', to: 'products', toCol: 'product_id', card: 'N:1', conf: 98 },
+  ];
+  const joinId = j => `${j.from}.${j.fromCol}=${j.to}.${j.toCol}`;
+  const candidatesAmong = names => CANDIDATES.filter(c => names.includes(c.from) && names.includes(c.to)).map(c => Object.assign({ id: joinId(c) }, c));
+
+  /* ---------- reading the disk through the state ---------- */
+  function nodeAt(s, path) {
+    if (s.moved[path]) return null;
+    const from = Object.keys(s.moved).find(k => s.moved[k] === path);
+    if (from) return FS[from];
+    if (FS[path]) return FS[path];
+    const p = s.protocols[path];
+    if (p && p.where === 'protocols') return { kind: 'dir', protocol: true, children: [] };
+    return null;
+  }
+  const exists = (s, path) => !!nodeAt(s, path);
+  function listDir(s, path) {
+    const n = nodeAt(s, path);
+    if (!n || !n.children) return [];
+    let kids = n.children.filter(k => !s.moved[k]);
+    Object.entries(s.moved).forEach(([from, to]) => { if (parent(to) === path) kids.push(to); });
+    if (path === PROTOS) kids = kids.concat(Object.values(s.protocols).filter(p => p.where === 'protocols').map(p => p.dir).sort());
+    return kids;
+  }
+  const dataFilesIn = (s, path) => listDir(s, path).filter(k => isData(nodeAt(s, k)));
+  function walk(s, path, out = []) {
+    for (const k of listDir(s, path)) { const n = nodeAt(s, k); if (isData(n)) out.push(k); else if (n.children) walk(s, k, out); }
+    return out;
+  }
+  function globMatches(s, cwd, glob) {
+    if (!glob.trim()) return [];
+    const re = new RegExp('^' + glob.trim().replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]').replace(/\u0000/g, '.*') + '$');
+    return walk(s, cwd).filter(p => re.test(p.slice(cwd.length + 1)));
+  }
+  const rowsOf = (s, path) => (nodeAt(s, path) || {}).rows || 0;
+
+  /* ---------- small helpers ---------- */
+  const clock = m => { const t = 9 * 60 + m; if (t < 0) { const d = Math.ceil(-t / (60 * 24)); return d === 1 ? 'yesterday' : `${d} days ago`; } return `${String(Math.floor(t / 60) % 24).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`; };
+  const fmt = n => n.toLocaleString('en-US');
+  const plural = (n, w, ws) => `${fmt(n)} ${n === 1 ? w : (ws || w + 's')}`;
+  function say(s, what, details = []) { s.events.unshift({ at: s.now, what, details }); s.last = { what, details }; }
+  function slugFree(s, name) {
+    const taken = new Set(Object.values(s.protocols).map(p => p.dir).concat(listDir(s, PROTOS)));
+    let dirp = `${PROTOS}/${name}`, i = 2;
+    while (taken.has(dirp)) dirp = `${PROTOS}/${name}-${i++}`;
+    return dirp;
+  }
+  const sourcePaths = p => p.sources.flatMap(x => x.group ? x.paths : [x.path]);
+  function usedBy(s, path) { return Object.values(s.protocols).filter(p => sourcePaths(p).includes(path)).map(p => p.dir); }
+  function missingIn(s, p) { return sourcePaths(p).filter(x => !exists(s, x)); }
+  function remember(s, dirp) { s.recents = [dirp].concat(s.recents.filter(r => r !== dirp)); }
+  function keep(s, p) { p.keptAt = s.now; }
+
+  function newProtocol(s, name) {
+    const dirp = slugFree(s, name);
+    const p = { dir: dirp, name: base(dirp), where: 'protocols', sources: [], joins: [], keptAt: s.now, runAt: null, createdAt: s.now, untitled: name === 'Untitled' };
+    s.protocols[dirp] = p;
+    remember(s, dirp);
+    return p;
+  }
+  function openWindow(s, dirp) {
+    s.open = dirp; s.screen = 'protocol'; s.modal = null; s.running = true;
+    const p = s.protocols[dirp];
+    s.selected = p.sources.length ? stepId(p.sources[0]) : null;
+    remember(s, dirp);
+  }
+  const stepId = src => src.group ? 'group:' + src.group : 'src:' + src.path;
+
+  function addToLibrary(s, paths) {
+    const fresh = [];
+    for (const path of paths) if (!s.library[path]) { s.library[path] = { path, addedAt: s.now }; fresh.push(path); }
+    return fresh;
+  }
+  function addSources(s, p, items, joins, label) {
+    const before = new Set(sourcePaths(p));
+    const added = [];
+    let paths = [];
+    for (const it of items) {
+      if (it.group) {
+        const fresh = it.paths.filter(x => !before.has(x));
+        if (fresh.length) { p.sources.push({ group: it.group, paths: fresh }); added.push(p.sources[p.sources.length - 1]); paths = paths.concat(fresh); }
+      } else if (!before.has(it.path)) { p.sources.push({ path: it.path }); added.push(p.sources[p.sources.length - 1]); paths.push(it.path); }
+    }
+    const fresh = addToLibrary(s, paths);
+    const newJoins = joins.filter(j => !p.joins.some(k => joinId(k) === joinId(j)));
+    p.joins = p.joins.concat(newJoins.map(({ from, fromCol, to, toCol, card }) => ({ from, fromCol, to, toCol, card })));
+    const details = [];
+    if (!added.length) { say(s, `Nothing new to add: ${label} is already in this Protocol.`); return; }
+    details.push(`${plural(paths.length, 'source')} added to the spine${added.some(a => a.group) ? ', as one grouped row' : ''}.`);
+    details.push(fresh.length === paths.length ? `The library records ${fresh.length === 1 ? 'it' : 'them'} by path, in ${CONFIG}/library.yaml. Nothing is copied.` : `${plural(paths.length - fresh.length, 'source')} ${paths.length - fresh.length === 1 ? 'was' : 'were'} already in the library, so this Protocol points at the same entry as the others that use ${paths.length - fresh.length === 1 ? 'it' : 'them'}.`);
+    if (newJoins.length) details.push(`${plural(newJoins.length, 'accepted join')} became the model step under the sources.`);
+    const wasName = p.name;
+    if (p.untitled && p.runAt === null) {
+      const name = items[0].group ? (label.split('/')[0] || 'glob') : (label.endsWith('/') ? label.slice(0, -1) : stem(items[0].path));
+      const nd = slugFree(s, name.replace(/[^A-Za-z0-9_\-.]/g, '_'));
+      delete s.protocols[p.dir];
+      s.recents = s.recents.map(r => r === p.dir ? nd : r);
+      if (s.open === p.dir) s.open = nd;
+      details.push(`Renamed from ${p.name} to ${base(nd)} and moved to ${nd}. It has never run, so arc has no database to rebuild.`);
+      p.dir = nd; p.name = base(nd); p.untitled = false;
+      s.protocols[nd] = p;
+    }
+    keep(s, p);
+    details.push(`Kept at ${clock(s.now)}: ${p.dir}/arcform.yaml now lists ${plural(sourcePaths(p).length, 'source')}.`);
+    s.selected = stepId(added[0]);
+    say(s, wasName === p.name ? `Added ${label} to ${p.name}.` : `Added ${label} to ${wasName}, which is now ${p.name}.`, details);
+  }
+
+  /* ---------- the sources browser ---------- */
+  function modalAt(mode, cwd, extra = {}) {
+    return Object.assign({ mode, cwd, col: 'list', placeIdx: Math.max(0, PLACES.findIndex(pl => pl.path === cwd)), cursor: 0, marks: [], glob: '', globRows: null, view: 'canvas', max: false, accepted: [], note: '' }, extra);
+  }
+  function entries(s, m) {
+    if (m.mode === 'organise') return [];
+    if (m.glob.trim()) return globMatches(s, m.cwd, m.glob);
+    return listDir(s, m.cwd);
+  }
+  function current(s, m) { const e = entries(s, m); return e[Math.min(m.cursor, e.length - 1)] || null; }
+  function previewTables(s, m) {
+    if (m.mode === 'organise') {
+      const p = s.protocols[s.open];
+      return sourcePaths(p).filter(x => exists(s, x));
+    }
+    const cur = current(s, m);
+    if (!cur) return [];
+    const n = nodeAt(s, cur);
+    if (n && n.children) return dataFilesIn(s, cur);
+    return [];
+  }
+  function previewJoins(s, m) {
+    const tables = previewTables(s, m).map(stem);
+    let c = candidatesAmong(tables);
+    if (m.mode === 'organise') {
+      const p = s.protocols[s.open];
+      c = c.map(j => Object.assign(j, { kept: p.joins.some(k => joinId(k) === j.id) }));
+    }
+    return c;
+  }
+  function cd(s, m, path, focusName) {
+    m.cwd = path; m.glob = ''; m.globRows = null; m.marks = []; m.accepted = [];
+    const e = entries(s, m);
+    m.cursor = Math.max(0, focusName ? e.indexOf(focusName) : 0);
+    const pi = PLACES.findIndex(pl => pl.path === path);
+    if (pi >= 0) m.placeIdx = pi;
+  }
+
+  function modalEnter(s) {
+    const m = s.modal;
+    if (m.mode === 'organise') {
+      const p = s.protocols[s.open];
+      const chosen = previewJoins(s, m).filter(j => m.accepted.includes(j.id) || j.kept);
+      const before = p.joins.length;
+      p.joins = chosen.map(({ from, fromCol, to, toCol, card }) => ({ from, fromCol, to, toCol, card }));
+      keep(s, p);
+      s.modal = null;
+      s.selected = p.joins.length ? 'model' : s.selected;
+      say(s, `dovetail organised ${p.name}: ${plural(p.joins.length, 'join')} in the model.`, [p.joins.length > before ? `${plural(p.joins.length - before, 'join')} added to the model step.` : 'No new joins.', `Kept at ${clock(s.now)}.`]);
+      return;
+    }
+    const cur = current(s, m);
+    if (m.mode === 'protocol') {
+      if (!cur) return;
+      const n = nodeAt(s, cur);
+      if (n && n.protocol) {
+        if (!s.protocols[cur]) s.protocols[cur] = JSON.parse(JSON.stringify(EXISTING));
+        const p = s.protocols[cur];
+        addToLibrary(s, sourcePaths(p));
+        openWindow(s, cur);
+        say(s, `Opened ${p.name} where it is, in ${cur}.`, ['Nothing was moved or copied into ~/Documents/Protocols.', `arc's working database stays keyed to ${cur}, so its last run is still there.`, `Its ${plural(sourcePaths(p).length, 'source')} joined the library, recorded by path.`]);
+        return;
+      }
+      if (n && n.children) { cd(s, m, cur); m.note = ''; return; }
+      m.note = `${base(cur)} isn't a Protocol. Pick a folder with an arcform.yaml in it.`;
+      return;
+    }
+    if (m.mode === 'locate') {
+      if (!cur || !isData(nodeAt(s, cur))) { m.note = 'Pick the file itself.'; return; }
+      const old = m.target;
+      const users = usedBy(s, old);
+      Object.values(s.protocols).forEach(p => p.sources.forEach(src => { if (src.path === old) src.path = cur; if (src.group) src.paths = src.paths.map(x => x === old ? cur : x); }));
+      delete s.library[old]; s.library[cur] = { path: cur, addedAt: s.now };
+      users.forEach(d => keep(s, s.protocols[d]));
+      s.modal = null;
+      s.selected = 'src:' + cur;
+      say(s, `Located ${base(cur)} at ${parent(cur)}.`, [`The library entry now points at ${cur}.`, `${plural(users.length, 'Protocol')} that use${users.length === 1 ? 's' : ''} it follow${users.length === 1 ? 's' : ''}: ${users.map(base).join(', ')}.`]);
+      return;
+    }
+    // mode 'sources'
+    const p = s.protocols[s.open];
+    if (m.glob.trim()) {
+      const hits = globMatches(s, m.cwd, m.glob);
+      if (!hits.length) { m.note = `No files match ${m.glob}.`; return; }
+      const label = `${base(m.cwd)}/${m.glob.trim()}`;
+      s.modal = null;
+      addSources(s, p, [{ group: label, paths: hits }], [], label);
+      return;
+    }
+    if (m.marks.length) {
+      const marks = m.marks.slice();
+      s.modal = null;
+      addSources(s, p, marks.map(path => ({ path })), [], plural(marks.length, 'marked file'));
+      return;
+    }
+    if (!cur) return;
+    const n = nodeAt(s, cur);
+    if (isData(n)) { s.modal = null; addSources(s, p, [{ path: cur }], [], base(cur)); return; }
+    if (n && n.children) {
+      const files = dataFilesIn(s, cur);
+      if (!files.length) {
+        m.note = `No data files at the top of ${base(cur)}. Press l to go in, or / to type a glob such as */*.csv.`;
+        return;
+      }
+      const joins = previewJoins(s, m).filter(j => m.accepted.includes(j.id));
+      s.modal = null;
+      addSources(s, p, files.map(path => ({ path })), joins, base(cur) + '/');
+      return;
+    }
+    m.note = `${base(cur)} isn't data Brightfield can read.`;
+  }
+
+  function modalKey(s, key) {
+    const m = s.modal; if (!m) return;
+    m.note = '';
+    if (key === 'Escape') { s.modal = null; say(s, m.mode === 'protocol' ? 'Closed the Open browser.' : 'Closed the sources browser. Nothing was added.'); return; }
+    if (key === 'gt') { m.max = !m.max; return; }
+    if (key === 'v') { m.view = m.view === 'canvas' ? 'list' : 'canvas'; return; }
+    if (m.mode === 'organise') { if (key === 'Enter') modalEnter(s); return; }
+    if (key === 'Tab') { m.col = m.col === 'places' ? 'list' : 'places'; return; }
+    if (m.col === 'places') {
+      if (key === 'j') m.placeIdx = Math.min(PLACES.length - 1, m.placeIdx + 1);
+      if (key === 'k') m.placeIdx = Math.max(0, m.placeIdx - 1);
+      if (key === 'l' || key === 'Enter') { cd(s, m, PLACES[m.placeIdx].path); m.col = 'list'; }
+      return;
+    }
+    const e = entries(s, m);
+    if (key === 'j') m.cursor = Math.min(e.length - 1, m.cursor + 1);
+    if (key === 'k') m.cursor = Math.max(0, m.cursor - 1);
+    if (key === 'h') { if (m.glob) { m.glob = ''; m.globRows = null; m.cursor = 0; } else if (parent(m.cwd) !== m.cwd && !/^gs:\/\/[^/]+$/.test(m.cwd)) cd(s, m, parent(m.cwd), m.cwd); }
+    if (key === 'l') { const c = current(s, m); const n = c && nodeAt(s, c); if (n && n.children) cd(s, m, c); }
+    if (key === ' ') { const c = current(s, m); if (c && isData(nodeAt(s, c))) { m.marks = m.marks.includes(c) ? m.marks.filter(x => x !== c) : m.marks.concat(c); m.cursor = Math.min(e.length - 1, m.cursor + 1); } }
+    if (key === 'Enter') modalEnter(s);
+  }
+
+  /* ---------- the reducer ---------- */
+  function initial() {
+    return { now: 0, running: true, screen: 'door', open: null, lastOpen: null, selected: null, modal: null, protocols: {}, library: {}, recents: [], moved: {}, events: [], last: null };
+  }
+  function reduce(prev, a) {
+    const s = JSON.parse(JSON.stringify(prev));
+    s.now += 1;
+    s.last = null;
+    const p = s.open ? s.protocols[s.open] : null;
+    switch (a.type) {
+      case 'finderOpen': {
+        const n = nodeAt(s, a.path);
+        const wasRunning = s.running;
+        s.running = true;
+        if (n && n.protocol) {
+          if (!s.protocols[a.path]) s.protocols[a.path] = JSON.parse(JSON.stringify(EXISTING));
+          addToLibrary(s, sourcePaths(s.protocols[a.path]));
+          openWindow(s, a.path);
+          say(s, `Opened the Protocol in ${a.path} where it is.`, ['It is already a Protocol, so nothing was created or moved.']);
+          break;
+        }
+        if (isData(n)) {
+          const np = newProtocol(s, stem(a.path));
+          addSources(s, np, [{ path: a.path }], [], base(a.path));
+          openWindow(s, np.dir);
+          s.selected = 'src:' + a.path;
+          const others = usedBy(s, a.path).filter(d => d !== np.dir);
+          s.last.what = `${wasRunning ? '' : 'Brightfield launched. '}Double-clicking ${base(a.path)} made a new Protocol, ${np.name}.`;
+          s.last.details.unshift(`Created ${np.dir}/ straight away. There is nothing to save before it is real.`);
+          if (others.length) s.last.details.push(`${others.map(base).join(', ')} already use${others.length === 1 ? 's' : ''} this file. This is a second Protocol over it, not a reopen.`);
+          s.events[0] = { at: s.now, what: s.last.what, details: s.last.details };
+          break;
+        }
+        if (n && n.children) {
+          const np = newProtocol(s, base(a.path));
+          openWindow(s, np.dir);
+          s.modal = modalAt('sources', parent(a.path));
+          cd(s, s.modal, parent(a.path), a.path);
+          say(s, `Dropping ${base(a.path)}/ made a new Protocol, ${np.name}, and opened the sources browser on the folder.`, ['Accept any joins on the canvas, then press Enter to add the folder\'s files.', 'Press Esc and the Protocol stays, empty.']);
+          break;
+        }
+        say(s, 'Nothing there to open.');
+        break;
+      }
+      case 'finderMove': {
+        if (a.back) { delete s.moved[a.path]; say(s, `In Finder, moved ${base(a.path)} back to ${parent(a.path)}.`); break; }
+        s.moved[a.path] = a.to;
+        const users = usedBy(s, a.path);
+        say(s, `In Finder, moved ${base(a.path)} to ${parent(a.to)}.`, users.length ? [`The library still points at ${a.path}, so ${plural(users.length, 'Protocol')} lose${users.length === 1 ? 's' : ''} that source: ${users.map(base).join(', ')}.`, 'Nothing was copied, so there is no stale copy to fall back on.'] : ['No Protocol uses it yet.']);
+        break;
+      }
+      case 'newProtocol': {
+        const np = newProtocol(s, 'Untitled');
+        openWindow(s, np.dir);
+        s.modal = modalAt('sources', '~');
+        say(s, `New Protocol: ${np.name}, in ${np.dir}.`, ['The sources browser opened on your home folder.', 'It takes the name of the first thing you add, while it has never run.']);
+        break;
+      }
+      case 'openPicker': {
+        s.modal = modalAt('protocol', a.at || '~');
+        say(s, 'Open… shows the same browser, choosing a Protocol folder instead of a source.');
+        break;
+      }
+      case 'openRow': {
+        openWindow(s, a.dir);
+        const miss = missingIn(s, s.protocols[a.dir]);
+        say(s, `Opened ${s.protocols[a.dir].name}.`, miss.length ? [`${plural(miss.length, 'source')} missing: ${miss.map(base).join(', ')}.`] : []);
+        break;
+      }
+      case 'addSources': {
+        if (!p) break;
+        s.modal = modalAt('sources', a.at || (p.sources.length ? parent(sourcePaths(p)[0]) : '~'));
+        say(s, 'Opened the sources browser.', ['It starts in the folder of this Protocol\'s first source.']);
+        break;
+      }
+      case 'organise': {
+        if (!p) break;
+        s.modal = modalAt('organise', p.dir, { max: true });
+        s.modal.accepted = p.joins.map(joinId);
+        say(s, `dovetail looked at ${p.name}'s ${plural(sourcePaths(p).length, 'source')} for joins.`);
+        break;
+      }
+      case 'locate': {
+        s.modal = modalAt('locate', a.at || '~', { target: a.path });
+        say(s, `Locate ${base(a.path)}: pick where it is now.`);
+        break;
+      }
+      case 'key': modalKey(s, a.key); break;
+      case 'place': { const m = s.modal; if (!m) break; cd(s, m, a.path); m.col = 'list'; break; }
+      case 'cursorTo': { const m = s.modal; if (!m) break; const i = entries(s, m).indexOf(a.path); if (i >= 0) { m.cursor = i; m.col = 'list'; m.note = ''; } break; }
+      case 'glob': { const m = s.modal; if (!m) break; m.glob = a.text; m.globRows = null; m.cursor = 0; m.marks = []; m.note = ''; break; }
+      case 'globCounted': { const m = s.modal; if (!m || m.glob !== a.text) break; m.globRows = globMatches(s, m.cwd, m.glob).reduce((t, x) => t + rowsOf(s, x), 0); s.now -= 1; break; }
+      case 'toggleJoin': { const m = s.modal; if (!m) break; m.accepted = m.accepted.includes(a.id) ? m.accepted.filter(x => x !== a.id) : m.accepted.concat(a.id); break; }
+      case 'select': s.selected = a.id; s.now -= 1; break;
+      case 'run': {
+        if (!p) break;
+        const miss = missingIn(s, p);
+        if (miss.length) { say(s, `Can't run ${p.name}: ${miss.map(base).join(', ')} ${miss.length === 1 ? 'is' : 'are'} missing.`, ['Locate the file, and the run can go ahead.']); break; }
+        p.runAt = s.now; keep(s, p);
+        say(s, `Ran ${p.name}.`, [`arc's working database is ${ARC_DB}/${keyOf(p.dir)}/${p.name}.duckdb, keyed to ${p.dir}.`, 'Run records went to build/.arcform/runs/ inside the Protocol.']);
+        break;
+      }
+      case 'close': {
+        if (s.modal) s.modal = null;
+        s.screen = 'door'; s.open = null; s.lastOpen = null; s.selected = null;
+        say(s, 'Closed the window. The front door lists every Protocol in ~/Documents/Protocols and the ones you opened elsewhere.');
+        break;
+      }
+      case 'quit': {
+        s.lastOpen = s.open; s.running = false; s.modal = null;
+        say(s, 'Quit Brightfield.', [p ? `${p.name} was already kept at ${clock(p.keptAt)}. There was nothing to save.` : 'No Protocol was open.']);
+        break;
+      }
+      case 'relaunch': {
+        s.running = true;
+        if (s.lastOpen && s.protocols[s.lastOpen]) { openWindow(s, s.lastOpen); say(s, `Brightfield opened again on ${s.protocols[s.open].name}, the Protocol you had open.`); }
+        else { s.screen = 'door'; s.open = null; say(s, 'Brightfield opened on the front door.'); }
+        break;
+      }
+    }
+    return s;
+  }
+  const keyOf = d => 'k' + (hash(d) % 0xfffff).toString(16).padStart(5, '0');
+
+  function doorRows(s) {
+    const dirs = new Set(Object.values(s.protocols).filter(p => p.where === 'protocols').map(p => p.dir).concat(s.recents));
+    return [...dirs].filter(d => s.protocols[d]).map(d => {
+      const p = s.protocols[d];
+      const paths = sourcePaths(p);
+      const names = p.sources.map(x => x.group ? x.group : base(x.path));
+      return {
+        dir: d, name: p.name, where: p.where,
+        sources: !paths.length ? 'No sources yet' : names.length <= 2 ? names.join(', ') : `${names.slice(0, 2).join(', ')} and ${fmt(names.length - 2)} more`,
+        count: paths.length, joins: p.joins.length,
+        kept: clock(p.keptAt), keptAt: p.keptAt,
+        run: p.runAt === null ? 'Never run' : `Ran ${clock(p.runAt)}${p.keptAt > p.runAt ? ' · changed since' : ''}`,
+        ran: p.runAt !== null, missing: missingIn(s, p).length,
+      };
+    }).sort((a, b) => b.keptAt - a.keptAt);
+  }
+
+  function spine(s, p) {
+    const rows = p.sources.map(src => {
+      if (src.group) {
+        const miss = src.paths.filter(x => !exists(s, x)).length;
+        return { id: stepId(src), kind: 'Glob', name: src.group, rows: src.paths.reduce((t, x) => t + rowsOf(s, x), 0), detail: plural(src.paths.length, 'file'), missing: miss, stem: null };
+      }
+      const n = nodeAt(s, src.path);
+      return { id: stepId(src), kind: n ? (n.kind === 'table' ? 'Table' : n.kind.toUpperCase()) : 'Source', name: base(src.path), rows: n ? n.rows : null, missing: n ? 0 : 1, stem: stem(src.path) };
+    });
+    if (p.joins.length) rows.push({ id: 'model', kind: 'Model', name: 'Model', rows: null, detail: plural(p.joins.length, 'join'), model: true });
+    if (p.panels) rows.push({ id: 'panels', kind: 'Panels', name: 'Dashboard', rows: null, detail: plural(p.panels, 'panel') });
+    return rows;
+  }
+
+  function disk(s) {
+    const protos = Object.values(s.protocols).filter(p => p.where === 'protocols').sort((a, b) => a.dir.localeCompare(b.dir));
+    const elsewhere = Object.values(s.protocols).filter(p => p.where === 'inplace');
+    const dbs = Object.values(s.protocols).filter(p => p.runAt !== null && p.runAt >= 0);
+    return { protos, elsewhere, dbs, library: Object.keys(s.library).sort(), recents: s.recents.slice() };
+  }
+
+  return { initial, reduce, doorRows, spine, disk, listDir, nodeAt, entries, current, previewTables, previewJoins, globMatches, usedBy, missingIn, sourcePaths, clock, fmt, plural, base, stem, parent, colsFor, hash, keyOf, joinId, rowsOf, PLACES, PROTOS, CONFIG, ARC_DB };
+})();
+
+/* ======================================================================
+   Scenarios: plain data, so they can be replayed outside the page too.
+   ====================================================================== */
+const QUAKES = '~/datasets/earthquakes_2024.csv';
+const SCENARIOS = [
+  {
+    id: 'csv', title: 'Double-click a CSV',
+    blurb: 'You double-click earthquakes_2024.csv in Finder, work a little, quit, and a week later double-click the same file again.',
+    watch: '<b>Watch:</b> the Protocol exists in ~/Documents/Protocols from the first moment, with nothing to save. The second double-click makes a second Protocol, but the library still holds the file once.',
+    steps: [
+      { t: 'In Finder, double-click earthquakes_2024.csv', do: [{ type: 'finderOpen', path: QUAKES }] },
+      { t: 'Run it', do: [{ type: 'run' }] },
+      { t: 'Quit Brightfield', do: [{ type: 'quit' }] },
+      { t: 'Open Brightfield again', do: [{ type: 'relaunch' }] },
+      { t: 'Close the window', do: [{ type: 'close' }] },
+      { t: 'A week later, double-click earthquakes_2024.csv again', do: [{ type: 'finderOpen', path: QUAKES }] },
+      { t: 'Close the window and look at the front door', do: [{ type: 'close' }] },
+    ],
+  },
+  {
+    id: 'second', title: 'Add a second source',
+    blurb: 'You open tides.csv, then add stations.csv from the same folder and let dovetail join them.',
+    watch: '<b>Watch:</b> the browser starts in the first source\'s folder. The join is a model step under the two sources, drawn as an arc in the spine\'s left gutter.',
+    steps: [
+      { t: 'In Finder, double-click tides.csv', do: [{ type: 'finderOpen', path: '~/Data/coast/tides.csv' }] },
+      { t: 'Press A to add sources', do: [{ type: 'addSources' }] },
+      { t: 'Press j to move to stations.csv', do: [{ type: 'cursorTo', path: '~/Data/coast/stations.csv' }] },
+      { t: 'Press Enter', do: [{ type: 'key', key: 'Enter' }] },
+      { t: 'Organise with dovetail', do: [{ type: 'organise' }] },
+      { t: 'Accept tides → stations', do: [{ type: 'toggleJoin', id: 'tides.station_id=stations.station_id' }] },
+      { t: 'Press Enter', do: [{ type: 'key', key: 'Enter' }] },
+    ],
+  },
+  {
+    id: 'folder', title: 'Add a folder, accept joins',
+    blurb: 'From the front door you start a new Protocol and add ~/Documents/datasets, twenty CSVs, accepting two of the joins dovetail proposes.',
+    watch: '<b>Watch:</b> the folder\'s preview is the dovetail canvas, with the unjoined tables listed loose underneath. The Protocol is "Untitled" until the folder arrives, then takes its name.',
+    steps: [
+      { t: 'On the front door, New Protocol', do: [{ type: 'newProtocol' }] },
+      { t: 'Jump to Documents in the places column', do: [{ type: 'place', path: '~/Documents' }] },
+      { t: 'Move to datasets/', do: [{ type: 'cursorTo', path: '~/Documents/datasets' }] },
+      { t: 'Press g t to fill the browser with the canvas', do: [{ type: 'key', key: 'gt' }] },
+      { t: 'Accept airports → countries', do: [{ type: 'toggleJoin', id: 'airports.country=countries.name' }] },
+      { t: 'Accept world_cities → countries', do: [{ type: 'toggleJoin', id: 'world_cities.country=countries.name' }] },
+      { t: 'Press v to see the file list', do: [{ type: 'key', key: 'v' }] },
+      { t: 'Press v again, back to the canvas', do: [{ type: 'key', key: 'v' }] },
+      { t: 'Press Enter', do: [{ type: 'key', key: 'Enter' }] },
+    ],
+  },
+  {
+    id: 'glob', title: 'Glob a big repository',
+    blurb: 'gittables is a folder of folders, thousands of files deep. You start a new Protocol and take every table under the topics ending in _rate.',
+    watch: '<b>Watch:</b> Enter on gittables itself finds nothing at its top level. The glob shows its file count at once and its row count a moment later.',
+    steps: [
+      { t: 'On the front door, New Protocol', do: [{ type: 'newProtocol' }] },
+      { t: 'Jump to datasets in the places column', do: [{ type: 'place', path: '~/datasets' }] },
+      { t: 'Move to gittables/', do: [{ type: 'cursorTo', path: '~/datasets/gittables' }] },
+      { t: 'Press Enter on gittables', do: [{ type: 'key', key: 'Enter' }] },
+      { t: 'Press l to go into gittables', do: [{ type: 'key', key: 'l' }] },
+      { t: 'Type the glob *_rate/*.csv', do: [{ type: 'glob', text: '*_rate/*.csv' }] },
+      { t: 'Press Enter', do: [{ type: 'key', key: 'Enter' }] },
+    ],
+  },
+  {
+    id: 'existing', title: 'Open an existing Protocol',
+    blurb: '~/datasets is a Protocol (arcform.yaml, models/, panels/) that lives among its thirty CSVs. You open it from the front door.',
+    watch: '<b>Watch:</b> it opens where it is. Nothing moves into ~/Documents/Protocols, and arc\'s database stays keyed to ~/datasets.',
+    steps: [
+      { t: 'On the front door, Open…', do: [{ type: 'openPicker' }] },
+      { t: 'Move to datasets/ (marked Protocol)', do: [{ type: 'cursorTo', path: '~/datasets' }] },
+      { t: 'Press Enter', do: [{ type: 'key', key: 'Enter' }] },
+      { t: 'Run it', do: [{ type: 'run' }] },
+      { t: 'Close the window', do: [{ type: 'close' }] },
+    ],
+  },
+  {
+    id: 'moved', title: 'A source file moves',
+    blurb: 'Two Protocols use earthquakes_2024.csv. You tidy up in Finder and move the file into ~/Archive.',
+    watch: '<b>Watch:</b> because the library records the path, both Protocols lose the source at once. Locating it once fixes both.',
+    steps: [
+      { t: 'In Finder, double-click earthquakes_2024.csv', do: [{ type: 'finderOpen', path: QUAKES }] },
+      { t: 'Close the window', do: [{ type: 'close' }] },
+      { t: 'Double-click earthquakes_2024.csv again', do: [{ type: 'finderOpen', path: QUAKES }] },
+      { t: 'In Finder, move it to ~/Archive', do: [{ type: 'finderMove', path: QUAKES, to: '~/Archive/earthquakes_2024.csv' }] },
+      { t: 'Try to run', do: [{ type: 'run' }] },
+      { t: 'Close the window and look at the front door', do: [{ type: 'close' }] },
+      { t: 'Open earthquakes_2024', do: [{ type: 'openRow', dir: '~/Documents/Protocols/earthquakes_2024' }] },
+      { t: 'Locate…', do: [{ type: 'locate', path: QUAKES, at: '~/Archive' }] },
+      { t: 'Press Enter on earthquakes_2024.csv', do: [{ type: 'key', key: 'Enter' }] },
+    ],
+  },
+  {
+    id: 'free', title: 'Free play',
+    blurb: 'No script. Use Finder, the front door and the sources browser in any order. The places column also has an online bucket (meridian-public), and ~/Data holds a DuckDB database whose tables are sources.',
+    watch: '<b>Try:</b> drag ~/Documents/datasets onto Brightfield; mark three files with Space; add shop.duckdb and organise its joins; move a file and locate it.',
+    steps: [],
+  },
+];
+if (typeof module !== 'undefined') module.exports = { ProtocolFirst, SCENARIOS };
+</script>
+
+<script>
+/* ======================================================================
+   The page: a thin shell over ProtocolFirst.
+   ====================================================================== */
+if (typeof document !== 'undefined') (() => {
+  const M = ProtocolFirst;
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  let state = M.initial();
+  let scenario = SCENARIOS[0];
+  let stepIdx = 0;
+  let pendingG = false;
+  let globTimer = null;
+
+  function dispatch(action, fromStep) {
+    state = M.reduce(state, action);
+    if (!fromStep) stepIdx = matchStep(action);
+    if (action.type === 'glob') scheduleCount(action.text);
+    render();
+  }
+  // Doing a scenario's next step yourself advances the scenario too.
+  function matchStep(action) {
+    const st = scenario.steps[stepIdx];
+    if (!st) return stepIdx;
+    const want = st.do[st.do.length - 1];
+    const same = Object.keys(want).every(k => want[k] === action[k]);
+    return same ? stepIdx + 1 : stepIdx;
+  }
+  function scheduleCount(text) {
+    clearTimeout(globTimer);
+    if (!text.trim()) return;
+    globTimer = setTimeout(() => { state = M.reduce(state, { type: 'globCounted', text }); render(); }, 900);
+  }
+  function startScenario(sc) {
+    scenario = sc; stepIdx = 0; state = M.initial();
+    clearTimeout(globTimer);
+    render();
+  }
+  function runStep(i) {
+    if (i !== stepIdx) return;
+    scenario.steps[i].do.forEach(a => { state = M.reduce(state, a); if (a.type === 'glob') scheduleCount(a.text); });
+    stepIdx += 1;
+    render();
+  }
+
+  /* ---------- scenario column ---------- */
+  function renderTabs() {
+    $('tabs').innerHTML = SCENARIOS.map(sc => `<button role="tab" aria-selected="${sc === scenario}" data-sc="${sc.id}">${esc(sc.title)}</button>`).join('');
+  }
+  function renderSteps() {
+    $('blurb').textContent = scenario.blurb;
+    $('watch').innerHTML = scenario.watch;
+    $('steps').innerHTML = scenario.steps.map((st, i) => {
+      const cls = i < stepIdx ? 'done' : i === stepIdx ? 'current' : '';
+      return `<li class="${cls}"><button class="step-btn" data-step="${i}" ${i === stepIdx ? '' : 'tabindex="-1"'}>${esc(st.t)}</button></li>`;
+    }).join('');
+    $('steps-foot').innerHTML = scenario.steps.length && stepIdx >= scenario.steps.length
+      ? `<span>Done.</span> <button class="linkish" data-restart>Run it again</button>`
+      : `<button class="linkish" data-restart>Start over</button>`;
+  }
+  const cueFor = type => { const st = scenario.steps[stepIdx]; return st && st.do.some(a => a.type === type) ? st.do.find(a => a.type === type) : null; };
+
+  /* ---------- Finder strip ---------- */
+  function renderFinder() {
+    const moved = state.moved[QUAKES];
+    const q = cueFor('finderOpen'), mv = cueFor('finderMove');
+    const items = [
+      { p: QUAKES, note: moved ? 'moved to ~/Archive' : 'CSV', acts: moved ? [] : [['Double-click', { type: 'finderOpen', path: QUAKES }], ['Move to ~/Archive', { type: 'finderMove', path: QUAKES, to: '~/Archive/earthquakes_2024.csv' }]] },
+      ...(moved ? [{ p: '~/Archive/earthquakes_2024.csv', note: 'CSV', acts: [['Double-click', { type: 'finderOpen', path: '~/Archive/earthquakes_2024.csv' }], ['Move back', { type: 'finderMove', path: QUAKES, back: true }]] }] : []),
+      { p: '~/Data/coast/tides.csv', note: 'CSV', acts: [['Double-click', { type: 'finderOpen', path: '~/Data/coast/tides.csv' }]] },
+      { p: '~/Documents/datasets/', note: 'folder of 20 CSVs', acts: [['Drag onto Brightfield', { type: 'finderOpen', path: '~/Documents/datasets' }]] },
+      { p: '~/datasets/', note: 'a Protocol', acts: [['Drag onto Brightfield', { type: 'finderOpen', path: '~/datasets' }]] },
+    ];
+    window.__finderActs = [];
+    $('finder').innerHTML = `<h3>Finder</h3><div class="items">${items.map(it => `<div class="item"><span class="p mono">${esc(it.p)}<small>${esc(it.note)}</small></span><span class="acts">${it.acts.map(([label, act]) => {
+      const i = window.__finderActs.push(act) - 1;
+      const cue = (q && act.type === 'finderOpen' && q.path === act.path) || (mv && act.type === 'finderMove' && mv.path === act.path && !act.back);
+      return `<button class="btn${cue ? ' cue' : ''}" data-finder="${i}">${esc(label)}</button>`;
+    }).join('')}</span></div>`).join('')}</div>`;
+  }
+
+  /* ---------- the window ---------- */
+  function renderWin() {
+    const s = state;
+    if (!s.running) {
+      $('win').innerHTML = `${titlebar('Brightfield is not running', '')}<div class="off"><div><p>Brightfield is not running.</p><button class="btn primary${cueFor('relaunch') ? ' cue' : ''}" data-act='{"type":"relaunch"}'>Open Brightfield</button></div></div>`;
+      return;
+    }
+    if (s.screen === 'door') { $('win').innerHTML = titlebar('Brightfield', appActions(false)) + door() + modal(); return; }
+    const p = s.protocols[s.open];
+    const miss = M.missingIn(s, p).length;
+    const title = `${esc(p.name)}<span class="kept">Kept ${M.clock(p.keptAt)}</span>${miss ? `<span class="flag">${M.plural(miss, 'source')} missing</span>` : ''}`;
+    $('win').innerHTML = titlebar(title, appActions(true)) + protocolView(p) + modal();
+  }
+  function titlebar(title, actions) {
+    return `<div class="titlebar"><div class="lights"><i></i><i></i><i></i></div><div class="title">${title}</div><div class="app-actions">${actions}</div></div>`;
+  }
+  function appActions(open) {
+    const c = t => cueFor(t) ? ' cue' : '';
+    return (open ? `<button class="btn${c('close')}" data-act='{"type":"close"}'>Close <kbd>⌘W</kbd></button>` : '') + `<button class="btn${c('quit')}" data-act='{"type":"quit"}'>Quit <kbd>⌘Q</kbd></button>`;
+  }
+
+  function door() {
+    const rows = M.doorRows(state);
+    const c = t => cueFor(t) ? ' cue' : '';
+    const want = cueFor('openRow');
+    return `<div class="door"><h2>Protocols</h2><p class="sub">Everything in ${M.PROTOS}, and the Protocols you opened elsewhere.</p>
+      <div class="opens"><button class="btn primary${c('newProtocol')}" data-act='{"type":"newProtocol"}'>New Protocol <kbd>⌘N</kbd></button><button class="btn${c('openPicker')}" data-act='{"type":"openPicker"}'>Open… <kbd>⌘O</kbd></button></div>
+      ${rows.length ? `<div class="rows">${rows.map(r => `<button class="row${want && want.dir === r.dir ? ' cue' : ''}" data-act='${JSON.stringify({ type: 'openRow', dir: r.dir })}'>
+        <span class="name">${esc(r.name)}${r.where === 'inplace' ? '<span class="chip place">opened in place</span>' : ''}${r.missing ? `<span class="chip bad">${M.plural(r.missing, 'source')} missing</span>` : ''}</span>
+        <span class="where mono">${esc(r.dir)}</span>
+        <span class="meta">${esc(r.sources)}${r.joins ? ` · ${M.plural(r.joins, 'join')}` : ''} · kept ${esc(r.kept)}</span>
+        <span class="run${r.ran ? ' ran' : ''}">${esc(r.run)}</span></button>`).join('')}</div>` : `<p class="empty">No Protocols yet. Double-click a data file in Finder, or start a new Protocol.</p>`}
+    </div>`;
+  }
+
+  function protocolView(p) {
+    const c = t => cueFor(t) ? ' cue' : '';
+    const rows = M.spine(state, p);
+    const sel = state.selected;
+    const ROW_H = 34, HEAD_H = 29;
+    // gutter: a dot per step; arcs from each joined source into the model row
+    const idx = {}; rows.forEach((r, i) => { if (r.stem) idx[r.stem] = i; });
+    const mi = rows.findIndex(r => r.model);
+    const y = i => HEAD_H + i * ROW_H + ROW_H / 2;
+    let paths = '';
+    if (mi >= 0) {
+      const joined = new Set(p.joins.flatMap(j => [j.from, j.to]));
+      [...joined].forEach((st, k) => { if (idx[st] === undefined) return; const x = 6 + (k % 3) * 3; paths += `<path d="M22 ${y(idx[st])} C ${x} ${y(idx[st])}, ${x} ${y(mi)}, 22 ${y(mi)}" fill="none" stroke="var(--accent)" stroke-width="1.5"/>`; });
+    }
+    const dots = rows.map((r, i) => `<circle cx="22" cy="${y(i)}" r="${r.model ? 4.5 : 3.5}" fill="${r.missing ? 'var(--bad)' : r.model ? 'var(--accent)' : 'var(--ink-3)'}"/>`).join('');
+    const h = HEAD_H + rows.length * ROW_H;
+    const spineHtml = rows.length ? `<svg class="gutter" width="34" height="${h}" viewBox="0 0 34 ${h}">${paths}${dots}</svg>
+      <table><thead><tr><th class="g"></th><th>Step</th><th>Kind</th><th>State</th><th style="text-align:right">Rows</th></tr></thead><tbody>
+      ${rows.map(r => `<tr class="step${r.id === sel ? ' sel' : ''}" data-select="${esc(r.id)}"><td class="g"></td><td class="name" title="${esc(r.name)}">${esc(r.name)}</td><td class="kind">${esc(r.kind)}</td>
+        <td class="state">${r.missing ? '<span class="missing">Missing</span>' : r.detail ? esc(r.detail) : p.runAt !== null ? `<span class="ran">Ran ${M.clock(p.runAt)}</span>` : 'Not run'}</td>
+        <td class="n">${r.rows === null ? '' : M.fmt(r.rows)}</td></tr>`).join('')}</tbody></table>`
+      : `<div class="none">No sources yet.</div>`;
+    return `<div class="toolbar"><button class="btn primary${c('addSources')}" data-act='{"type":"addSources"}'>Add sources <kbd>A</kbd></button>
+      <button class="btn${c('organise')}" data-act='{"type":"organise"}' ${M.sourcePaths(p).length > 1 ? '' : 'disabled'}>Organise with dovetail</button>
+      <button class="btn${c('run')}" data-act='{"type":"run"}' ${M.sourcePaths(p).length ? '' : 'disabled'}>Run <kbd>⌘↩</kbd></button>
+      <span class="where mono">${esc(p.dir)}</span></div>
+      <div class="doc-body"><div class="spine">${spineHtml}</div><div class="view">${stepView(p, rows)}</div></div>`;
+  }
+
+  function stepView(p, rows) {
+    const sel = state.selected;
+    if (!rows.length) return `<div class="empty-state"><div><p>This Protocol has no sources yet.</p><button class="btn primary" data-act='{"type":"addSources"}'>Add sources <kbd>A</kbd></button></div></div>`;
+    if (sel === 'model') {
+      const tables = M.sourcePaths(p).map(M.stem);
+      const joins = p.joins.map(j => Object.assign({ id: M.joinId(j), on: true }, j));
+      return `<h3>Model</h3><p class="path">${M.plural(p.joins.length, 'join')}, accepted from dovetail. Organise with dovetail to change them.</p>${canvas(tables, joins, false)}`;
+    }
+    if (sel === 'panels') return `<h3>Dashboard</h3><p class="path">${M.plural(p.panels, 'panel')} in ${esc(p.dir)}/panels/. Not modelled in this prototype.</p>`;
+    if (sel && sel.startsWith('group:')) {
+      const src = p.sources.find(x => x.group === sel.slice(6));
+      if (!src) return '';
+      return `<h3>${esc(src.group)}</h3><p class="path">A glob: ${M.plural(src.paths.length, 'file')}, ${M.fmt(src.paths.reduce((t, x) => t + M.rowsOf(state, x), 0))} rows. Each file is its own source in the library.</p>
+        <table class="data"><thead><tr><th>File</th><th style="text-align:right">Rows</th></tr></thead><tbody>${src.paths.slice(0, 40).map(x => `<tr><td class="mono">${esc(x.split('/gittables/')[1] || M.base(x))}</td><td class="num">${M.fmt(M.rowsOf(state, x))}</td></tr>`).join('')}</tbody></table>
+        ${src.paths.length > 40 ? `<p class="count">and ${M.fmt(src.paths.length - 40)} more</p>` : ''}`;
+    }
+    const path = sel && sel.startsWith('src:') ? sel.slice(4) : M.sourcePaths(p)[0];
+    const users = M.usedBy(state, path).filter(d => d !== p.dir);
+    const missing = !M.nodeAt(state, path);
+    const loc = cueFor('locate');
+    return `<h3>${esc(M.base(path))}</h3><p class="path mono">${esc(path)}</p>
+      <p class="lib">In the library${users.length ? `, shared with ${users.map(d => esc(M.base(d))).join(', ')}` : ', used only by this Protocol'}. This Protocol keeps its own profiling and transforms for it.</p>
+      ${missing ? `<div class="missing-box">There's no file at this path any more. <button class="btn${loc ? ' cue' : ''}" data-act='${JSON.stringify({ type: 'locate', path, at: '~' })}'>Locate…</button></div>` : preview(path, 12)}`;
+  }
+
+  /* ---------- previews shared by the window and the browser ---------- */
+  const SAMPLE = {
+    earthquakes_2024: [['2024-01-01 07:10:09', 37.49, 136.97, 10.0, 7.5, 'mww', 'Noto Peninsula, Japan'], ['2024-01-01 07:18:43', 37.39, 136.85, 10.0, 6.2, 'mww', 'Noto Peninsula, Japan'], ['2024-01-22 18:09:04', 41.26, 78.65, 13.0, 7.0, 'mww', 'Wushi, China'], ['2024-02-08 14:53:12', -6.21, 154.04, 35.0, 5.1, 'mb', 'Bougainville, PNG'], ['2024-04-02 23:58:11', 23.82, 121.56, 34.8, 7.4, 'mww', 'Hualien, Taiwan'], ['2024-04-05 14:23:20', 40.69, -74.75, 4.7, 4.8, 'mwr', 'Whitehouse Station, NJ'], ['2024-05-03 02:11:47', 61.12, -150.22, 42.1, 3.1, 'ml', 'Southern Alaska'], ['2024-07-11 02:13:05', 6.04, 123.21, 640.6, 7.1, 'mww', 'Mindanao, Philippines'], ['2024-08-08 07:42:55', 31.72, 131.55, 30.0, 7.1, 'mww', 'Hyuganada, Japan'], ['2024-08-17 19:10:24', 52.98, 160.06, 51.0, 7.0, 'mww', 'Kamchatka, Russia'], ['2024-12-05 18:44:21', 40.37, -125.02, 10.0, 7.0, 'mww', 'Cape Mendocino, CA'], ['2024-12-17 01:47:26', -17.73, 168.03, 57.1, 7.3, 'mww', 'Port Vila, Vanuatu']],
+    airports: [[1, 'Goroka Airport', 'Goroka', 'Papua New Guinea', 'GKA', -6.08, 145.39], [2, 'Madang Airport', 'Madang', 'Papua New Guinea', 'MAG', -5.21, 145.79], [3, 'Mount Hagen Kagamuga Airport', 'Mount Hagen', 'Papua New Guinea', 'HGU', -5.83, 144.30], [4, 'Nadzab Airport', 'Nadzab', 'Papua New Guinea', 'LAE', -6.57, 146.73], [5, 'Port Moresby Jacksons International Airport', 'Port Moresby', 'Papua New Guinea', 'POM', -9.44, 147.22], [6, 'Wewak International Airport', 'Wewak', 'Papua New Guinea', 'WWK', -3.58, 143.67], [7, 'Narsarsuaq Airport', 'Narssarssuaq', 'Greenland', 'UAK', 61.16, -45.43], [8, 'Godthaab / Nuuk Airport', 'Godthaab', 'Greenland', 'GOH', 64.19, -51.68], [9, 'Kangerlussuaq Airport', 'Sondrestrom', 'Greenland', 'SFJ', 67.01, -50.71], [10, 'Thule Air Base', 'Thule', 'Greenland', 'THU', 76.53, -68.70], [11, 'Akureyri Airport', 'Akureyri', 'Iceland', 'AEY', 65.66, -18.07], [12, 'Egilsstaðir Airport', 'Egilsstadir', 'Iceland', 'EGS', 65.28, -14.40]],
+    tides: [['8443970', '2024-01-01 00:00', 1.42], ['8443970', '2024-01-01 01:00', 2.07], ['8443970', '2024-01-01 02:00', 2.61], ['8443970', '2024-01-01 03:00', 2.88], ['8443970', '2024-01-01 04:00', 2.79], ['8443970', '2024-01-01 05:00', 2.31], ['8443970', '2024-01-01 06:00', 1.58], ['8443970', '2024-01-01 07:00', 0.83], ['8443970', '2024-01-01 08:00', 0.29], ['8443970', '2024-01-01 09:00', 0.12], ['8443970', '2024-01-01 10:00', 0.41], ['8443970', '2024-01-01 11:00', 1.03]],
+    stations: [['8443970', 'Boston', 42.35, -71.05], ['8447930', 'Woods Hole', 41.52, -70.67], ['8452660', 'Newport', 41.50, -71.33], ['8461490', 'New London', 41.36, -72.09], ['8518750', 'The Battery', 40.70, -74.01], ['8531680', 'Sandy Hook', 40.47, -74.01], ['8534720', 'Atlantic City', 39.36, -74.42], ['8557380', 'Lewes', 38.78, -75.12], ['8570283', 'Ocean City Inlet', 38.33, -75.09], ['8574680', 'Baltimore', 39.27, -76.58], ['8594900', 'Washington', 38.87, -77.02], ['8638610', 'Sewells Point', 36.95, -76.33]],
+    countries: [['AF', 'Afghanistan', 'Asia', 41128771], ['AL', 'Albania', 'Europe', 2777689], ['DZ', 'Algeria', 'Africa', 44903225], ['AD', 'Andorra', 'Europe', 79824], ['AO', 'Angola', 'Africa', 35588987], ['AR', 'Argentina', 'South America', 46234830], ['AM', 'Armenia', 'Asia', 2780469], ['AU', 'Australia', 'Oceania', 26177413], ['AT', 'Austria', 'Europe', 8939617], ['AZ', 'Azerbaijan', 'Asia', 10358074], ['BS', 'Bahamas', 'North America', 409984], ['BH', 'Bahrain', 'Asia', 1472233]],
+  };
+  const WORDS = ['north', 'harbour', 'delta', 'amber', 'ridge', 'falcon', 'orbit', 'meadow', 'cobalt', 'summit', 'lumen', 'cedar'];
+  function sampleRows(path, cols, n) {
+    const st = M.stem(path);
+    if (SAMPLE[st]) return SAMPLE[st].slice(0, n);
+    const out = [];
+    for (let i = 0; i < n; i++) out.push(cols.map(([name, ty], j) => {
+      const h = M.hash(path + i + name);
+      if (ty === 'BIGINT') return name === 'year' ? 1990 + h % 34 : name.endsWith('id') ? i + 1 : h % 100000;
+      if (ty === 'DOUBLE') return Number(((h % 100000) / 100).toFixed(2));
+      if (ty === 'BOOLEAN') return h % 2 ? 'true' : 'false';
+      if (ty === 'DATE') return `2024-${String(1 + h % 12).padStart(2, '0')}-${String(1 + h % 28).padStart(2, '0')}`;
+      if (ty === 'TIMESTAMP') return `2024-${String(1 + h % 12).padStart(2, '0')}-${String(1 + h % 28).padStart(2, '0')} ${String(h % 24).padStart(2, '0')}:00`;
+      return WORDS[h % WORDS.length] + (name === 'name' ? ' ' + WORDS[(h >> 4) % WORDS.length] : '');
+    }));
+    return out;
+  }
+  function preview(path, n) {
+    const node = M.nodeAt(state, path);
+    if (!node) return '';
+    const cols = node.cols || M.colsFor(path);
+    const rows = sampleRows(path, cols, Math.min(n, node.rows || n));
+    return `<div style="overflow-x:auto"><table class="data"><thead><tr><th style="text-align:right">#</th>${cols.map(([nm, ty]) => `<th>${esc(nm)}<small>${esc(ty.toLowerCase())}</small></th>`).join('')}</tr></thead>
+      <tbody>${rows.map((r, i) => `<tr><td class="num">${i + 1}</td>${r.map((v, j) => `<td class="${typeof v === 'number' ? 'num' : ''}">${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+      <p class="count">${M.fmt(node.rows || 0)} rows · ${cols.length} columns${node.size ? ' · ' + node.size : ''}</p>`;
+  }
+
+  // A dovetail canvas: joined tables as cards (fact tables left, lookups right), the rest loose underneath.
+  function canvas(tables, joins, interactive, cueId) {
+    const froms = [...new Set(joins.map(j => j.from))], tos = [...new Set(joins.map(j => j.to))].filter(t => !froms.includes(t));
+    const loose = tables.filter(t => !froms.includes(t) && !tos.includes(t));
+    if (!joins.length) return `<p class="msg">dovetail found no join candidates among ${M.plural(tables.length, 'table')}.</p>${loose.length ? `<div class="loose">${loose.map(t => `<span>${esc(t)}</span>`).join('')}</div>` : ''}`;
+    const GAP = 66, CARD = 46;
+    const H = Math.max(froms.length, tos.length) * GAP + 10;
+    const yL = i => 8 + i * GAP + (H - 10 - froms.length * GAP) / 2, yR = i => 8 + i * GAP + (H - 10 - tos.length * GAP) / 2;
+    const fieldsOf = t => (M.colsFor(t + '.csv') || []).length;
+    let svg = '', labels = '';
+    joins.forEach((j, k) => {
+      const a = yL(froms.indexOf(j.from)) + CARD / 2, b = yR(tos.indexOf(j.to)) + CARD / 2;
+      const on = j.on || j.kept;
+      svg += `<path d="M30 ${a} C 48 ${a}, 52 ${b}, 70 ${b}" fill="none" stroke="currentColor" stroke-width="${on ? 1.6 : 1}" stroke-dasharray="${on ? '' : '4 3'}" vector-effect="non-scaling-stroke" opacity="${on ? .9 : .55}"/>`;
+      const ly = a + (b - a) * 0.08; // near its own fact table, so labels into one lookup don't stack
+      const text = `${esc(j.fromCol)} = ${esc(j.toCol)} · ${esc(j.card)}${j.conf && !on ? ` · ${j.conf}%` : ''}`;
+      labels += interactive
+        ? `<button class="join${on ? ' on' : ''}${cueId === j.id ? ' cue' : ''}" style="left:31%;top:${ly}px" data-join="${esc(j.id)}" title="${on ? 'Accepted. Click to drop it.' : 'A candidate. Click to accept it.'}">${on ? '✓ ' : ''}${text}</button>`
+        : `<span class="join on" style="left:31%;top:${ly}px">${text}</span>`;
+    });
+    const card = (t, x, yy) => `<div class="card" style="left:${x}%;top:${yy}px"><b>${esc(t)}</b><small>${fieldsOf(t)} fields</small></div>`;
+    return `<div class="canvas" style="height:${H}px;color:var(--accent)"><svg viewBox="0 0 100 ${H}" preserveAspectRatio="none">${svg}</svg>
+      ${froms.map((t, i) => card(t, 2, yL(i))).join('')}${tos.map((t, i) => card(t, 70, yR(i))).join('')}${labels}</div>
+      ${loose.length ? `<div class="loose">No join found for ${M.plural(loose.length, 'table')}: ${loose.map(t => `<span>${esc(t)}</span>`).join('')}</div>` : ''}`;
+  }
+
+  /* ---------- the sources browser ---------- */
+  function modal() {
+    const m = state.modal;
+    if (!m) return '';
+    const modeLabel = { sources: 'ADD SOURCES', protocol: 'OPEN PROTOCOL', locate: 'LOCATE FILE', organise: 'DOVETAIL' }[m.mode];
+    if (m.mode === 'organise') {
+      const p = state.protocols[state.open];
+      const joins = M.previewJoins(state, m).map(j => Object.assign(j, { on: m.accepted.includes(j.id) }));
+      const want = cueFor('toggleJoin');
+      return `<div class="sheet-wrap"><div class="yz"><div class="yz-head"><span class="mode">${modeLabel}</span><span class="cwd">${esc(p.name)} · ${M.plural(M.sourcePaths(p).length, 'source')}</span></div>
+        <div class="yz-cols max"><div class="yz-col prev">${canvas(M.sourcePaths(p).filter(x => M.nodeAt(state, x)).map(M.stem), joins, true, want && want.id)}</div></div>
+        <div class="yz-foot"><span>click a join to accept it</span><span><kbd>Enter</kbd> apply</span><span><kbd>Esc</kbd> cancel</span></div></div></div>`;
+    }
+    const ents = M.entries(state, m);
+    const cur = M.current(state, m);
+    const curNode = cur && M.nodeAt(state, cur);
+    const placeCue = cueFor('place'), curCue = cueFor('cursorTo');
+    const places = M.PLACES.map((pl, i) => `${pl.online && !M.PLACES[i - 1].online ? '<div class="sec">Online</div>' : ''}<div class="yz-ent dir${m.col === 'places' && i === m.placeIdx ? ' cur' : ''}${pl.path === m.cwd ? ' in' : ''}" data-place="${esc(pl.path)}" style="${placeCue && placeCue.path === pl.path ? 'outline:1px dashed var(--term-proto)' : ''}"><span class="nm">${esc(pl.label)}</span></div>`).join('');
+    const list = ents.length ? ents.map((e, i) => {
+      const n = M.nodeAt(state, e);
+      const kind = n.protocol ? 'proto' : n.children ? 'dir' : (n.kind === 'csv' || n.kind === 'parquet' || n.kind === 'table') ? 'file' : 'other';
+      const name = m.glob ? e.slice(m.cwd.length + 1) : M.base(e) + (n.children ? '/' : '');
+      const sz = n.children ? (n.kind === 'db' ? 'database' : n.link ? '→ ' + n.link : n.protocol ? '' : `${M.listDir(state, e).length}`) : n.kind === 'table' ? M.fmt(n.rows) + ' rows' : (n.size || '');
+      const cue = curCue && curCue.path === e;
+      return `<div class="yz-ent ${kind}${i === m.cursor && m.col === 'list' ? ' cur' : ''}${m.marks.includes(e) ? ' marked' : ''}" data-cursor="${i}" style="${cue ? 'outline:1px dashed var(--term-proto)' : ''}"><span class="nm">${esc(name)}</span>${n.protocol ? '<span class="tag">Protocol</span>' : ''}<span class="sz">${esc(sz)}</span></div>`;
+    }).join('') : `<div class="yz-ent other"><span class="nm">${m.glob ? 'no matches' : 'empty'}</span></div>`;
+
+    let prev = '';
+    if (m.glob.trim()) {
+      const total = ents.length;
+      prev = `<div class="ph"><b>${esc(m.glob)}</b><span>${M.plural(total, 'file')}</span><span>${m.globRows === null ? 'counting rows…' : M.fmt(m.globRows) + ' rows'}</span></div>
+        <p class="msg">Enter adds all ${M.plural(total, 'matching file')} as one grouped source row. h clears the glob.</p>
+        ${cur ? preview(cur, 8) : ''}`;
+    } else if (!cur) prev = '<p class="msg">Nothing here.</p>';
+    else if (curNode.protocol && m.mode === 'protocol') {
+      const files = M.listDir(state, cur).map(M.base);
+      prev = `<div class="ph"><b>${esc(M.base(cur))}</b><span>a Protocol</span></div><p class="msg">Enter opens it where it is.</p><p class="msg">${files.slice(0, 6).map(esc).join('<br>')}${files.length > 6 ? `<br>… and ${files.length - 6} more` : ''}</p>`;
+    } else if (curNode.children) {
+      const tables = M.previewTables(state, m);
+      const kids = M.listDir(state, cur);
+      if (!tables.length) prev = `<div class="ph"><b>${esc(M.base(cur))}/</b><span>${M.plural(kids.length, 'item')}</span></div><p class="msg">No data files at the top of this folder${kids.some(k => M.nodeAt(state, k).children) ? `, only ${M.plural(kids.filter(k => M.nodeAt(state, k).children).length, 'folder')}` : ''}. Go in with l, or type a glob with /.</p>`;
+      else {
+        const joins = M.previewJoins(state, m).map(j => Object.assign(j, { on: m.accepted.includes(j.id) }));
+        const want = cueFor('toggleJoin');
+        const what = curNode.kind === 'db' ? 'tables' : 'data files';
+        prev = `<div class="ph"><b>${esc(M.base(cur))}${curNode.kind === 'db' ? '' : '/'}</b><span>${M.plural(tables.length, what.slice(0, -1), what)}</span><span>${M.fmt(tables.reduce((t, x) => t + M.rowsOf(state, x), 0))} rows</span><span>${m.view === 'canvas' ? 'dovetail canvas' : 'file list'} · v to switch</span></div>
+          ${m.view === 'canvas' ? canvas(tables.map(M.stem), joins, true, want && want.id) : `<table class="data"><thead><tr><th>File</th><th style="text-align:right">Rows</th><th style="text-align:right">Size</th></tr></thead><tbody>${kids.map(k => { const n = M.nodeAt(state, k); return `<tr><td>${esc(M.base(k))}${n.children ? '/' : ''}</td><td class="num">${n.rows !== undefined ? M.fmt(n.rows) : ''}</td><td class="num">${esc(n.size || '')}</td></tr>`; }).join('')}</tbody></table>`}
+          <p class="msg">Enter adds the ${M.plural(tables.length, what.slice(0, -1), what)}${joins.some(j => j.on) ? ` and ${M.plural(joins.filter(j => j.on).length, 'accepted join')}` : ''}.</p>`;
+      }
+    } else if (curNode.kind === 'csv' || curNode.kind === 'parquet' || curNode.kind === 'table') {
+      const users = M.usedBy(state, cur);
+      prev = `${users.length ? `<div class="ph"><span>In the library, used by ${users.map(d => esc(M.base(d))).join(', ')}</span></div>` : ''}${preview(cur, 14)}`;
+    } else prev = `<p class="msg">${esc(M.base(cur))}: not a data file.</p>`;
+
+    const foot = m.mode === 'protocol'
+      ? `<span><kbd>j</kbd><kbd>k</kbd> move</span><span><kbd>h</kbd><kbd>l</kbd> up / into</span><span><kbd>Enter</kbd> open Protocol</span><span><kbd>Esc</kbd> cancel</span>`
+      : `<span><kbd>j</kbd><kbd>k</kbd> move</span><span><kbd>h</kbd><kbd>l</kbd> up / into</span><span><kbd>Tab</kbd> places</span><span><kbd>Space</kbd> mark</span><span><kbd>/</kbd> glob</span><span><kbd>g</kbd><kbd>t</kbd> full preview</span><span><kbd>v</kbd> canvas / list</span><span><kbd>Enter</kbd> add${m.marks.length ? ` ${m.marks.length} marked` : ''}</span><span><kbd>Esc</kbd> close</span>`;
+    return `<div class="sheet-wrap"><div class="yz" id="yz"><div class="yz-head"><span class="mode">${modeLabel}</span><span class="cwd">${esc(m.cwd)}</span>
+      ${m.mode === 'protocol' || m.mode === 'locate' ? '' : `<input id="glob" placeholder="/ glob, e.g. */*.csv" value="${esc(m.glob)}" aria-label="Glob">`}</div>
+      <div class="yz-cols${m.max ? ' max' : ''}"><div class="yz-col places${m.col === 'places' ? ' focus' : ''}">${places}</div><div class="yz-col${m.col === 'list' ? ' focus' : ''}">${list}</div><div class="yz-col prev">${prev}</div></div>
+      ${m.note ? `<div class="yz-note">${esc(m.note)}</div>` : ''}
+      <div class="yz-foot">${foot}</div></div></div>`;
+  }
+
+  /* ---------- side panels ---------- */
+  function renderSide() {
+    const s = state;
+    const last = s.last || (s.events[0] && s.events[0].at === s.now ? s.events[0] : null);
+    $('happened').innerHTML = last ? `<p class="what">${esc(last.what)}</p>${last.details.length ? `<ul>${last.details.map(d => `<li>${esc(d)}</li>`).join('')}</ul>` : ''}` : `<p class="none">${s.events.length ? 'Nothing changed on that step.' : 'Press the first step.'}</p>`;
+    const lib = Object.keys(s.library).sort();
+    $('library').innerHTML = `<div class="place"><div class="ptitle">${M.plural(lib.length, 'source')} <span>· recorded by path</span></div>${lib.length ? lib.slice(0, 14).map(path => {
+      const users = M.usedBy(s, path); const gone = !M.nodeAt(s, path);
+      return `<div class="entry${s.last && s.last.what.includes(M.base(path)) ? ' changed' : ''}"><div class="l1 mono">${esc(path)}${gone ? ' <span class="chip bad">missing</span>' : ''}</div><div class="l2">used by ${users.length ? users.map(M.base).map(esc).join(', ') : 'no Protocol'}</div></div>`;
+    }).join('') + (lib.length > 14 ? `<div class="entry nothing"><div class="l1">and ${lib.length - 14} more</div></div>` : '') : '<div class="entry nothing"><div class="l1">Empty</div></div>'}</div>`;
+    const d = M.disk(s);
+    const protoEntries = d.protos.map(p => `<div class="entry"><div class="l1 mono">${esc(M.base(p.dir))}/</div><div class="l2">arcform.yaml · ${M.plural(M.sourcePaths(p).length, 'source')}${p.joins.length ? `, ${M.plural(p.joins.length, 'join')}` : ''} · kept ${M.clock(p.keptAt)}</div></div>`).join('');
+    const else_ = d.elsewhere.map(p => `<div class="entry"><div class="l1 mono">${esc(p.dir)}/arcform.yaml</div><div class="l2">left where it is · kept ${M.clock(p.keptAt)}</div></div>`).join('');
+    const dbs = s.protocols && Object.values(s.protocols).filter(p => p.runAt !== null).map(p => `<div class="entry"><div class="l1 mono">${M.keyOf(p.dir)}/${esc(p.name)}.duckdb</div><div class="l2">keyed to ${esc(p.dir)}</div></div>`).join('');
+    $('disk').innerHTML = `
+      <div class="place"><div class="ptitle mono">${M.PROTOS}/</div>${protoEntries || '<div class="entry nothing"><div class="l1">Empty</div></div>'}</div>
+      ${else_ ? `<div class="place"><div class="ptitle">Protocols elsewhere</div>${else_}</div>` : ''}
+      <div class="place"><div class="ptitle mono">${M.CONFIG}/</div><div class="entry"><div class="l1 mono">library.yaml</div><div class="l2">${M.plural(d.library.length, 'source path')}</div></div><div class="entry"><div class="l1 mono">recents.json</div><div class="l2">${d.recents.length ? d.recents.map(M.base).map(esc).join(', ') : 'empty'}</div></div></div>
+      <div class="place"><div class="ptitle mono">${M.ARC_DB}/</div>${dbs || '<div class="entry nothing"><div class="l1">No runs yet</div></div>'}</div>`;
+    $('history').innerHTML = s.events.length > 1 ? `<summary>Everything so far (${s.events.length})</summary><ol>${s.events.slice().reverse().map(e => `<li>${M.clock(e.at)} · ${esc(e.what)}</li>`).join('')}</ol>` : '';
+  }
+
+  function render() {
+    renderTabs(); renderSteps(); renderFinder(); renderWin(); renderSide();
+    const g = $('glob');
+    if (g && document.activeElement !== g && window.__focusGlob) { g.focus(); g.setSelectionRange(g.value.length, g.value.length); }
+  }
+
+  /* ---------- events ---------- */
+  document.addEventListener('click', e => {
+    const t = e.target.closest('[data-sc],[data-step],[data-restart],[data-act],[data-finder],[data-select],[data-place],[data-cursor],[data-join]');
+    if (!t) return;
+    if (t.dataset.sc) return startScenario(SCENARIOS.find(x => x.id === t.dataset.sc));
+    if (t.dataset.step !== undefined) return runStep(Number(t.dataset.step));
+    if (t.hasAttribute('data-restart')) return startScenario(scenario);
+    if (t.dataset.act) return dispatch(JSON.parse(t.dataset.act));
+    if (t.dataset.finder !== undefined) return dispatch(window.__finderActs[Number(t.dataset.finder)]);
+    if (t.dataset.select) return dispatch({ type: 'select', id: t.dataset.select });
+    if (t.dataset.place) return dispatch({ type: 'place', path: t.dataset.place });
+    if (t.dataset.join) return dispatch({ type: 'toggleJoin', id: t.dataset.join });
+    if (t.dataset.cursor !== undefined) {
+      const ents = M.entries(state, state.modal);
+      const path = ents[Number(t.dataset.cursor)];
+      if (e.detail === 2) return dispatch({ type: 'key', key: 'Enter' });
+      return dispatch({ type: 'cursorTo', path });
+    }
+  });
+  document.addEventListener('input', e => {
+    if (e.target.id === 'glob') { window.__focusGlob = true; dispatch({ type: 'glob', text: e.target.value }); }
+  });
+  document.addEventListener('keydown', e => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const inGlob = e.target.id === 'glob';
+    if (state.modal) {
+      if (inGlob) {
+        if (e.key === 'Escape') { window.__focusGlob = false; e.target.blur(); e.preventDefault(); return; }
+        if (e.key === 'Enter') { window.__focusGlob = false; e.preventDefault(); dispatch({ type: 'key', key: 'Enter' }); }
+        return;
+      }
+      if (e.target.tagName === 'INPUT') return;
+      let key = e.key;
+      if (key === 'ArrowDown') key = 'j'; if (key === 'ArrowUp') key = 'k'; if (key === 'ArrowLeft') key = 'h'; if (key === 'ArrowRight') key = 'l';
+      if (key === '/') { e.preventDefault(); window.__focusGlob = true; const g = $('glob'); if (g) g.focus(); return; }
+      if (key === 'g') { pendingG = true; e.preventDefault(); return; }
+      if (pendingG) { pendingG = false; if (key === 't') { e.preventDefault(); return dispatch({ type: 'key', key: 'gt' }); } }
+      if (['j', 'k', 'h', 'l', 'v', 'Tab', ' ', 'Enter', 'Escape'].includes(key)) { e.preventDefault(); dispatch({ type: 'key', key }); }
+      return;
+    }
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON' && e.key === 'Enter') return;
+    if ((e.key === 'a' || e.key === 'A') && state.running && state.screen === 'protocol') { e.preventDefault(); dispatch({ type: 'addSources' }); }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
