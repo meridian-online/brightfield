@@ -5065,11 +5065,7 @@ impl MeridianApp {
         // The plot under the pointer, recorded before any key handler can open
         // an overlay over it: what a picture verb is about.
         if self.overlay.is_none() {
-            self.hovered_plot = ctx.pointer_hover_pos().and_then(|at| {
-                self.composed_plot_rects()
-                    .iter()
-                    .position(|rect| rect.contains(at))
-            });
+            self.hovered_plot = ctx.pointer_hover_pos().and_then(|at| self.plot_under(at));
         }
         // The grid's foot row's Enter and Esc, ahead of every other handler:
         // while one of its fields is edited, the two keys are the field's.
@@ -10414,6 +10410,26 @@ impl MeridianApp {
         });
         ctx.request_repaint();
         Some(said)
+    }
+
+    /// The plot whose part of the page is drawn under window point `at`, read
+    /// as the canvas's own gestures read the pointer ([`crate::app::page_offset`]):
+    /// `None` over the header bands, the gutter and the band below the panes,
+    /// which the page reaches and no pane drew.
+    fn plot_under(&self, at: egui::Pos2) -> Option<usize> {
+        let doc = &self.charts.doc;
+        let page = doc.raster_rect?;
+        let by = crate::app::page_offset(doc.pane_views, page, None, Some(at))?;
+        let moved = page.translate(by);
+        if !moved.contains(at) {
+            return None;
+        }
+        let local = at - moved.min;
+        let (x, y) = (f64::from(local.x), f64::from(local.y));
+        doc.composed.plots.iter().position(|plot| {
+            let r = plot.rect;
+            x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height
+        })
     }
 
     /// **The plot a picture verb is about**: the one under the pointer, as it

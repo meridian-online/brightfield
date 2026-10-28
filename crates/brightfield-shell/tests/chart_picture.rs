@@ -233,3 +233,64 @@ fn a_picture_confirmed_in_the_palette_is_of_the_plot_the_pointer_was_on() {
         "the palette's copy is not of the plot the pointer was on"
     );
 }
+
+/// Over a part of the page no pane drew — the gutter between a pane group's
+/// two panes, a header band, the overhang below them — the pointer is over no
+/// chart, and the picture falls back to the plot the keyboard addresses, as
+/// the canvas's own gestures do there.
+#[test]
+fn a_pointer_where_no_pane_drew_the_page_is_over_no_chart() {
+    let dir = temp_dir("chart-picture-panes");
+    let csv = dir.join("harbour.csv");
+    let mut rows = String::from("station,reading,depth,tide\n");
+    for i in 0..40 {
+        let station = ["north", "south", "east", "west"][i % 4];
+        rows.push_str(&format!(
+            "{station},{},{},{}\n",
+            i * 3 % 17,
+            i * 7 % 23,
+            i % 5
+        ));
+    }
+    std::fs::write(&csv, rows).expect("the fixture writes");
+    let boot = Boot::data_file(csv.to_str().expect("utf-8")).expect("the file opens");
+    let mut win = Window {
+        app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light),
+        ctx: egui::Context::default(),
+        screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 560.0)),
+        commands: Vec::new(),
+    };
+    win.run(vec![Vec::new(), Vec::new(), Vec::new()]);
+    let doc = win.app.chart_doc();
+    let page = doc.raster_rect.expect("the dashboard drew its page");
+    let views = doc.pane_views;
+    let rects = win.app.composed_plot_rects();
+    // A point a plot's placed rect covers, past the first plot, where no view
+    // drew the page.
+    let mut spot = None;
+    'scan: for yi in 0..200 {
+        for xi in 0..200 {
+            let at = egui::pos2(
+                page.min.x + page.width() * xi as f32 / 200.0,
+                page.min.y + page.height() * yi as f32 / 200.0,
+            );
+            let placed = rects.iter().position(|r| r.contains(at));
+            let drawn = brightfield_shell::app::page_offset(views, page, None, Some(at));
+            if placed.is_some_and(|k| k > 0) && drawn.is_none() {
+                spot = Some(at);
+                break 'scan;
+            }
+        }
+    }
+    let at = spot.expect("the page has a spot a later plot is placed on and no pane drew");
+    win.hover(at);
+    win.chord(egui::Key::C);
+    let composed = &win.app.chart_doc().composed;
+    let first = clipboard_image(&render_plot(composed, 0, PICTURE_SCALE).expect("draws"));
+    assert_eq!(
+        win.copied().last(),
+        Some(&first),
+        "a pointer where no pane drew the page pictured a plot hidden there"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
