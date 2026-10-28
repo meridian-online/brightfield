@@ -89,6 +89,8 @@ pub const CHART_PALETTE_VERBS: &[&str] = &[
     crate::navigation::verb::ZOOM_OUT,
     crate::navigation::verb::CYCLE_AXIS_LOCK,
     crate::navigation::verb::RESET_EXTENT,
+    crate::window::COPY_CHART_PICTURE,
+    crate::window::EXPORT_CHART_PICTURE,
 ];
 
 /// The verbs a chart window offers **only when it has a Protocol to save** —

@@ -130,6 +130,8 @@ Brightfield never holds that database open, since DuckDB refuses a writer while 
 
 The headless exports read the same snapshot. `export-png` draws one panel as the window draws it, legend included. `export-data` copies the tables the panel reads out of the snapshot as CSV or Parquet. `export-pdf` reads the Protocol's `report.md`, draws each panel its `## Charts` section lists, and hands the Markdown and the pictures to the `brightfield-report` crate. When a table a chart reads has changed since the run the report describes, judged by the content hashes arc records for each table, the PDF says so above the charts.
 
+In the window, `⌘⇧C` copies the chart under the pointer to the clipboard as a picture and `⌘⇧E` saves it as a PNG; both are in the Space palette as `copy-chart-picture` and `export-chart-picture`. With the pointer over no chart they take the one the keyboard's pan and zoom act on. The picture is drawn as `export-png` draws a panel, at twice the window's size, and cut to the chart and its legend, so the hover readout and the focus ring are not in it. The save dialog opens in the Protocol's `exports/` folder, where `export-png` writes, or beside a chart spec opened on its own. Both export PNG only: the window draws with Vello, which rasterises, so an SVG would need a second renderer.
+
 **`brightfield-report`** typesets that Markdown to PDF through Typst, offline, with the fonts bundled with the design system: A4 portrait, numbered pages, tables with numbers kept whole, and each listed chart drawn in its item's place under its title and never split across pages. It knows Markdown, Typst and PNG bytes and nothing of panels, databases or the GPU; the shell renders the charts and passes the pictures in.
 
 ### The front door's starts

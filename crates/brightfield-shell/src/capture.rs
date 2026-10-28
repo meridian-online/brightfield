@@ -858,7 +858,7 @@ pub fn capture_vello_only(
     scale: f32,
     out: &Path,
 ) -> Result<(u32, u32), String> {
-    let img = render_composed(composed, scale)?;
+    let img = render_composed(&composed, scale)?;
     img.save(out)
         .map_err(|e| format!("write {}: {e}", out.display()))?;
     Ok(img.dimensions())
@@ -870,7 +870,7 @@ pub fn capture_vello_only(
 ///
 /// # Errors
 /// Returns a message on GPU failure.
-pub fn render_composed(composed: Composed, scale: f32) -> Result<image::RgbaImage, String> {
+pub fn render_composed(composed: &Composed, scale: f32) -> Result<image::RgbaImage, String> {
     let dev_w = ((composed.width as f32) * scale).round().max(1.0) as u32;
     let dev_h = ((composed.height as f32) * scale).round().max(1.0) as u32;
     let mut scaled = vello::Scene::new();
@@ -905,14 +905,14 @@ pub fn render_composed(composed: Composed, scale: f32) -> Result<image::RgbaImag
 ///
 /// # Errors
 /// Returns a message on GPU failure.
-pub fn render_export(composed: Composed, scale: f32) -> Result<image::RgbaImage, String> {
-    if crate::legend::right_blocks(&composed).is_empty()
-        && crate::legend::below_blocks(&composed).is_empty()
+pub fn render_export(composed: &Composed, scale: f32) -> Result<image::RgbaImage, String> {
+    if crate::legend::right_blocks(composed).is_empty()
+        && crate::legend::below_blocks(composed).is_empty()
     {
         return render_composed(composed, scale);
     }
     let win_w = composed.width as f32;
-    let win_h = composed.height as f32 + crate::legend::below_overhang(&composed).max(0.0);
+    let win_h = composed.height as f32 + crate::legend::below_overhang(composed).max(0.0);
     let (device, queue) = headless_device()?;
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let egui_renderer = new_egui_renderer(&device, format);
@@ -928,8 +928,8 @@ pub fn render_export(composed: Composed, scale: f32) -> Result<image::RgbaImage,
         Vec::new(),
         &std::cell::Cell::new(false),
         |ui| {
-            crate::legend::draw_right(ui, egui::Pos2::ZERO, &composed);
-            crate::legend::draw_below(ui, egui::Pos2::ZERO, &composed, composed.mode);
+            crate::legend::draw_right(ui, egui::Pos2::ZERO, composed);
+            crate::legend::draw_below(ui, egui::Pos2::ZERO, composed, composed.mode);
         },
     );
     let composed_mode = composed.mode;

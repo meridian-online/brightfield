@@ -336,7 +336,7 @@ fn export_png(
         Path::to_path_buf,
     );
     warn_diagnostics(&file, &composed);
-    let image = render_export(composed, scale).map_err(|e| vec![e])?;
+    let image = render_export(&composed, scale).map_err(|e| vec![e])?;
     make_parent(&path)?;
     image.save(&path).map_err(|e| write_problem(&path, &e))?;
     Ok(vec![path])
@@ -590,7 +590,7 @@ pub fn prepare_report(dir: &Path) -> Result<PreparedReport, Vec<String>> {
             .map_err(|p| lines(&tile.file, &[p]))?;
         warn_diagnostics(&tile.file, &composed);
         let note = composed.diagnostics.colours_repeat().map(|n| n.to_string());
-        let image = render_export(composed, PDF_CHART_SCALE)
+        let image = render_export(&composed, PDF_CHART_SCALE)
             .map_err(|e| vec![format!("{}: {e}", tile.file.display())])?;
         let mut png = Vec::new();
         image
