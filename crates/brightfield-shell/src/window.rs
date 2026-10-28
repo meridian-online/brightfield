@@ -10425,11 +10425,10 @@ impl MeridianApp {
             return None;
         }
         let local = at - moved.min;
-        let (x, y) = (f64::from(local.x), f64::from(local.y));
-        doc.composed.plots.iter().position(|plot| {
-            let r = plot.rect;
-            x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height
-        })
+        crate::chart_item::plot_at(
+            &doc.composed.plots,
+            kurbo::Point::new(f64::from(local.x), f64::from(local.y)),
+        )
     }
 
     /// **The plot a picture verb is about**: the one under the pointer, as it
