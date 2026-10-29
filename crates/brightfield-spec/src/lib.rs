@@ -21,8 +21,8 @@ pub mod parse;
 pub mod vocab;
 
 pub use crate::ast::{
-    Component, DataSource, ExpressionNode, Input, Interactor, Mark, Meta, ParamNode, ParamRef,
-    PlotNode, SelectionNode, Spec, SpecValue, ValueOrParamRef,
+    BinOperand, Component, DataSource, ExpressionNode, Input, Interactor, Mark, Meta, ParamNode,
+    ParamRef, PlotNode, SelectionNode, Spec, SpecValue, ValueOrParamRef,
 };
 pub use crate::error::{FrameFault, FrameSide, NameSurface, ParseError, SourceSpan};
 pub use crate::parse::{

@@ -322,9 +322,9 @@ pub(crate) fn spec_value_to_sql_literal(val: &SpecValue) -> String {
         },
         // A positional bin reaching a kwarg/literal position is likewise
         // degenerate — bins belong on a rect's positional channel, consumed by
-        // `RectLowerer`. Render the source column so the output is at least
+        // `RectLowerer`. Render what is binned so the output is at least
         // valid SQL naming the right thing.
-        SpecValue::Bin { column, .. } => format!("\"{column}\""),
+        SpecValue::Bin { operand, .. } => operand.sql(),
         // A `sort:` reaching a kwarg/literal position is degenerate for the
         // same reason — it is a mark option consumed by `BarLowerer`, not a
         // value. Render the ordered column, which is the one identifier in it.

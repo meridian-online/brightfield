@@ -1302,3 +1302,90 @@ plot:
         "x∈{{3,4}} selected under the as-bound highlight"
     );
 }
+
+/// Plot A is a histogram over an EXPRESSION, `"revenue" / 1e9`, carrying an
+/// `intervalX` brush; plot B reads the same rows and is filtered by it.
+const BINNED_EXPRESSION_SPEC: &str = r#"
+params:
+  brush: { select: crossfilter }
+data:
+  t:
+    - { revenue: 300000000, n: 1 }
+    - { revenue: 1200000000, n: 2 }
+    - { revenue: 1500000000, n: 3 }
+    - { revenue: 1700000000, n: 4 }
+    - { revenue: 2400000000, n: 5 }
+    - { revenue: 3900000000, n: 6 }
+hconcat:
+  - plot:
+    - mark: rectY
+      data: { from: t }
+      x: { bin: { sql: '"revenue" / 1e9' } }
+      y: { count: }
+      fill: steelblue
+    - select: intervalX
+      as: $brush
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $brush }
+      x: revenue
+      y: n
+"#;
+
+/// A brush on a binned expression is in the expression's units: the histogram's
+/// axis reads billions, so a sweep of `[1.0, 2.0]` there keeps the rows whose
+/// `revenue / 1e9` lies in it — not the rows whose raw `revenue` does, which
+/// would be none.
+#[test]
+fn brush_over_a_binned_expression_filters_in_its_units() {
+    let spec = parse_spec(BINNED_EXPRESSION_SPEC, Format::Yaml)
+        .expect("spec parses")
+        .spec;
+    let analysis = analyse_spec(&spec).expect("spec analyses");
+    assert_eq!(analysis.brushable_bindings.len(), 1, "plot A's intervalX");
+    assert_eq!(
+        analysis.brushable_bindings[0].channels.x.as_deref(),
+        Some("(\"revenue\" / 1e9)"),
+        "the brush compares against the expression the histogram bins"
+    );
+    let bindings = [BrushBinding::from(&analysis.brushable_bindings[0])];
+
+    let mut session = Engine::new()
+        .load_spec(spec, analysis, None)
+        .expect("spec loads")
+        .session;
+    let baseline = session.execute_all();
+    assert_eq!(
+        total_rows(baseline[1].as_ref().expect("plot B executes")),
+        6,
+        "all 6 rows before any brush"
+    );
+
+    let mut interaction = InteractionState::start_brush(Point::new(1.0, 0.0));
+    interaction.update_brush(Point::new(2.0, 10.0));
+    let (_, aggregated) = commit_brush_release_multi(&interaction, &bindings, &mut session);
+    let (_, results) = &aggregated[0];
+    let (mark_index, result) = &results[0];
+    assert_eq!(*mark_index, 1, "the subscriber is plot B's mark");
+    let filtered = result.as_ref().expect("plot B re-executes under the brush");
+
+    let mut kept: Vec<i64> = Vec::new();
+    for batch in filtered {
+        let n = arrow::compute::cast(
+            batch.column_by_name("n").expect("plot B carries n"),
+            &arrow::datatypes::DataType::Int64,
+        )
+        .expect("n casts to Int64");
+        let n = n
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .expect("cast to Int64");
+        kept.extend(n.iter().flatten());
+    }
+    kept.sort_unstable();
+    assert_eq!(
+        kept,
+        vec![2, 3, 4],
+        "revenue / 1e9 in [1.0, 2.0] keeps 1.2, 1.5 and 1.7 billion"
+    );
+}

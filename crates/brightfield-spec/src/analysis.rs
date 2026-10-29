@@ -9,7 +9,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use indexmap::IndexMap;
 
 use crate::ast::{
-    Component, Input, Interactor, Mark, ParamNode, ParamRef, Spec, SpecValue, ValueOrParamRef,
+    BinOperand, Component, Input, Interactor, Mark, ParamNode, ParamRef, Spec, SpecValue,
+    ValueOrParamRef,
 };
 use crate::error::ParseError;
 use crate::parse::ParseWarning;
@@ -975,7 +976,14 @@ pub fn validate_crossfilter_columns(spec: &Spec) -> Result<(), ParseError> {
             BrushKind::IntervalY | BrushKind::PointY => vec![&b.channels.y],
             BrushKind::IntervalXY | BrushKind::Point => vec![&b.channels.x, &b.channels.y],
         };
-        for col in cols.into_iter().flatten() {
+        // An expression's columns are not read out of its text, so whether a
+        // subscriber exposes them is left to the runtime binder, as it is for
+        // a source whose schema is not known here.
+        for col in cols
+            .into_iter()
+            .flatten()
+            .filter(|c| !is_channel_expression(c))
+        {
             producers
                 .entry(b.selection.clone())
                 .or_default()
@@ -1837,7 +1845,13 @@ fn first_mark_channels(items: &[Component]) -> ChannelColumns {
 
 /// The data column a **positional** channel's pixels invert to: the column
 /// named on the channel, or — when the channel carries a positional bin
-/// transform — the column being binned.
+/// transform — the column being binned, or the binned expression in
+/// parentheses.
+///
+/// A bin over `"revenue" / 1e9` draws an axis in billions, so the clause a
+/// sweep means is on the expression, not on `revenue`: `("revenue" / 1e9) >=
+/// lo`. The parentheses keep the comparison from rebinding the expression's
+/// own operators, and are what [`is_channel_expression`] reads.
 ///
 /// The bin arm is what makes a histogram brushable. A `rectY` with
 /// `x: {bin: power}` draws on an axis whose units are `power`'s own, because
@@ -1852,14 +1866,25 @@ fn first_mark_channels(items: &[Component]) -> ChannelColumns {
 /// would filter rows against a number no row holds. A bin's axis carries
 /// row-level values; an aggregate's does not.
 ///
-/// A literal, a `$param` reference and an expression yield nothing: none of
-/// them is a column a `WHERE` can constrain.
+/// A literal, a `$param` reference and an expression bound to the channel
+/// itself yield nothing: none of them is a column a `WHERE` can constrain.
 fn positional_column(mark: &Mark, key: &str) -> Option<String> {
     match mark.options.get(key)? {
         ValueOrParamRef::Value(SpecValue::String(s)) => Some(s.clone()),
-        ValueOrParamRef::Value(SpecValue::Bin { column, .. }) => Some(column.clone()),
+        ValueOrParamRef::Value(SpecValue::Bin { operand, .. }) => Some(match operand {
+            BinOperand::Column(column) => column.clone(),
+            BinOperand::Expression(_) => operand.sql(),
+        }),
         _ => None,
     }
+}
+
+/// Whether a channel [`positional_column`] resolved is a binned expression
+/// rather than a column name. Only an expression is written there in
+/// parentheses; a column reaches the brush clause bare, so a name that began
+/// with one could never have filtered anything.
+fn is_channel_expression(column: &str) -> bool {
+    column.starts_with('(')
 }
 
 /// The column named on a channel, for the channels where a name is the only

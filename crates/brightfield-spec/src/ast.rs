@@ -486,8 +486,8 @@ pub enum SpecValue {
         column: Option<String>,
     },
     /// A **positional** bin transform, lifted from `x: {bin: col}` /
-    /// `y: {bin: col, steps: n}` on a rect-family mark whose OTHER positional
-    /// channel counts.
+    /// `y: {bin: col, steps: n}` / `x: {bin: {sql: expr}}` on a rect-family
+    /// mark whose OTHER positional channel counts.
     ///
     /// Deliberately a separate variant rather than a widening of
     /// [`Self::Aggregate`]'s channel list: a bin is an interval and an
@@ -500,8 +500,9 @@ pub enum SpecValue {
     /// `sorted-bars.yaml`'s `x: {sum: gold}` over `y: nationality` is the band
     /// idiom `BarLowerer` groups.
     Bin {
-        /// The source column to bin.
-        column: String,
+        /// What is binned: a source column, or an expression over the source's
+        /// columns.
+        operand: BinOperand,
         /// Mosaic's `steps:` bin-count **hint**, when the spec gave one. It
         /// selects the 1/2/5 × 10ⁿ step; it does not fix the bar count — see
         /// `binSpec` in `mosaic-sql`'s `transforms/util/bin-step.ts`.
@@ -530,6 +531,46 @@ pub enum SpecValue {
         /// `limit:`, when the spec wrote one.
         limit: Option<u64>,
     },
+}
+
+/// The values a positional [`SpecValue::Bin`] cuts into bins.
+///
+/// Mosaic's `bin` takes a `TransformField`, which is a column name or a
+/// `SQLExpression` (`{sql: "…"}`) among other forms; these are the two this
+/// parser lifts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BinOperand {
+    /// A column of the mark's source, as written: `bin: delay`.
+    Column(String),
+    /// A SQL expression over the source's columns, as written in the `sql:`
+    /// of `bin: {sql: "\"revenue\" / 1e9"}`.
+    Expression(String),
+}
+
+impl BinOperand {
+    /// The name the binned values carry out of the query: the column's own
+    /// name, or the expression's text.
+    ///
+    /// A column bin's low edge is aliased back to its column, which is what
+    /// names the axis and lets a navigation extent push under the `GROUP BY`.
+    /// An expression has no column to go back to, so its text stands in.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Column(name) | Self::Expression(name) => name,
+        }
+    }
+
+    /// The operand as SQL over the source's rows: the column as a quoted
+    /// identifier, or the expression in parentheses so that an operator
+    /// written around it cannot rebind its terms.
+    #[must_use]
+    pub fn sql(&self) -> String {
+        match self {
+            Self::Column(column) => format!("\"{column}\""),
+            Self::Expression(expr) => format!("({expr})"),
+        }
+    }
 }
 
 impl SpecValue {

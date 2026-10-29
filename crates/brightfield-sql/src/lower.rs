@@ -8,7 +8,7 @@
 use indexmap::IndexMap;
 
 use brightfield_spec::ast::{
-    AggregateFunc, Mark, MarkData, ParamNode, SelectionNode, SpecValue, ValueOrParamRef,
+    AggregateFunc, BinOperand, Mark, MarkData, ParamNode, SelectionNode, SpecValue, ValueOrParamRef,
 };
 use brightfield_spec::layout::{PlotAxis, PlotScales, ScaleType, StackOffset};
 use brightfield_spec::vocab::MarkKind;
@@ -910,7 +910,7 @@ pub struct RectLowerer;
 
 impl MarkLower for RectLowerer {
     fn lower(&self, mark: &Mark, ctx: &LowerCtx<'_>) -> Result<QueryPlan, EmitError> {
-        let Some((axis, column, steps)) = positional_bin(&mark.options) else {
+        let Some((axis, operand, steps)) = positional_bin(&mark.options) else {
             // Pre-aggregated rect — unchanged (rect-histogram.png byte-identical).
             return SimpleLowerer.lower(mark, ctx);
         };
@@ -934,14 +934,13 @@ impl MarkLower for RectLowerer {
         // rows rather than placing them somewhere the reader would read as a
         // value. The same predicate goes on the bin scheme's own extent query
         // below, so the dropped rows cannot set the low edge either.
-        let domain_filter = nonpositive_filter(&column, kind);
+        let value = operand.sql();
+        let domain_filter = nonpositive_filter(&value, kind);
         let filtered = QueryPlan::Filter {
             input: Box::new(QueryPlan::Source {
                 table: source.clone(),
             }),
-            predicate: Predicate::Expr(format!(
-                "\"{column}\" IS NOT NULL{domain_filter}{row_filter}"
-            )),
+            predicate: Predicate::Expr(format!("{value} IS NOT NULL{domain_filter}{row_filter}")),
         };
 
         // The bin scheme is resolved over the WHOLE table and carried alongside
@@ -956,20 +955,32 @@ impl MarkLower for RectLowerer {
         // aggregation (`apply_selection_filter` filters an aggregation's direct
         // input), and the projection passes `*` through, so the brushed column
         // is still in scope where the predicate is applied.
+        //
+        // An expression is computed once here, under its own name, and binned
+        // by that name from then on, as a column would be. The name is what
+        // the low edge is aliased back to, so a navigation extent that pushes
+        // under the GROUP BY lands where that name is in scope.
         let steps = steps.filter(|s| *s > 0).unwrap_or(DEFAULT_BIN_STEPS);
+        let mut columns = vec!["*".to_string()];
+        let binned_value = match &operand {
+            BinOperand::Column(_) => value.clone(),
+            BinOperand::Expression(_) => {
+                let name = quoted_name(operand.name());
+                columns.push(format!("{value} AS {name}"));
+                name
+            }
+        };
+        columns.push(format!(
+            "{} AS {BIN_LO_EXTENT_COL}",
+            bin_spec_field(&source, &value, steps, BinSpecField::Min, kind)
+        ));
+        columns.push(format!(
+            "{} AS {BIN_STEP_COL}",
+            bin_spec_field(&source, &value, steps, BinSpecField::Alpha, kind)
+        ));
         let binned = QueryPlan::Projection {
             input: Box::new(filtered),
-            columns: vec![
-                "*".to_string(),
-                format!(
-                    "{} AS {BIN_LO_EXTENT_COL}",
-                    bin_spec_field(&source, &column, steps, BinSpecField::Min, kind)
-                ),
-                format!(
-                    "{} AS {BIN_STEP_COL}",
-                    bin_spec_field(&source, &column, steps, BinSpecField::Alpha, kind)
-                ),
-            ],
+            columns,
         };
 
         let hi_col = match axis {
@@ -983,17 +994,29 @@ impl MarkLower for RectLowerer {
         // than at draw time — see [`stack_exprs`].
         let group = grouping_fill(&mark.options);
         let mut group_by = vec![
-            format!("{} AS \"{column}\"", bin_edge(&column, BinEdge::Low, kind)),
-            format!("{} AS {hi_col}", bin_edge(&column, BinEdge::High, kind)),
+            format!(
+                "{} AS {binned_value}",
+                bin_edge(&binned_value, BinEdge::Low, kind)
+            ),
+            format!(
+                "{} AS {hi_col}",
+                bin_edge(&binned_value, BinEdge::High, kind)
+            ),
         ];
         let mut aggregates = vec![density_count_expr()];
         // Deterministic row order — the same reason the density lowerers order:
         // GROUP BY output order is unspecified in DuckDB and the renderer draws
         // in row order.
-        let mut keys = vec![(format!("\"{column}\""), SortDir::Asc)];
+        let mut keys = vec![(binned_value.clone(), SortDir::Asc)];
         if let Some(fill) = group {
             group_by.push(format!("\"{fill}\""));
-            aggregates.extend(stack_exprs(&column, fill, kind, axis, ctx.stack_offset));
+            aggregates.extend(stack_exprs(
+                &binned_value,
+                fill,
+                kind,
+                axis,
+                ctx.stack_offset,
+            ));
             keys.push((format!("\"{fill}\""), SortDir::Asc));
         }
         Ok(QueryPlan::Order {
@@ -1032,16 +1055,21 @@ impl BinEdge {
     }
 }
 
-/// The positional bin a rect carries, as `(axis, column, steps hint)`.
+/// The positional bin a rect carries, as `(axis, operand, steps hint)`.
 fn positional_bin(
     options: &IndexMap<String, ValueOrParamRef<SpecValue>>,
-) -> Option<(BinAxis, String, Option<i64>)> {
+) -> Option<(BinAxis, BinOperand, Option<i64>)> {
     for (key, axis) in [("x", BinAxis::X), ("y", BinAxis::Y)] {
-        if let Some(ValueOrParamRef::Value(SpecValue::Bin { column, steps })) = options.get(key) {
-            return Some((axis, column.clone(), *steps));
+        if let Some(ValueOrParamRef::Value(SpecValue::Bin { operand, steps })) = options.get(key) {
+            return Some((axis, operand.clone(), *steps));
         }
     }
     None
+}
+
+/// `name` as a quoted SQL identifier, with any `"` inside it doubled.
+fn quoted_name(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 /// The column a binned rect's `fill:` splits each bin by, when it names one.
@@ -1091,13 +1119,13 @@ fn grouping_fill(options: &IndexMap<String, ValueOrParamRef<SpecValue>>) -> Opti
 /// A bin with no rows produces no row here, so the divisor is positive wherever
 /// it is evaluated and there is no zero to guard.
 fn stack_exprs(
-    bin_column: &str,
+    bin_value: &str,
     group: &str,
     kind: ScaleType,
     axis: BinAxis,
     offset: StackOffset,
 ) -> Vec<AggregateExpr> {
-    let partition = bin_edge(bin_column, BinEdge::Low, kind);
+    let partition = bin_edge(bin_value, BinEdge::Low, kind);
     let count = "CAST(COUNT(*) AS DOUBLE)";
     let running = format!("SUM({count}) OVER (PARTITION BY {partition} ORDER BY \"{group}\")");
     let divisor = match offset {
@@ -1122,9 +1150,10 @@ fn stack_exprs(
     ]
 }
 
-/// One edge of the bin containing `col`, in data units, as Mosaic's
-/// `binHistogram` writes it: `b.min + alpha * FLOOR((col - b.min) / alpha)`,
-/// with the high edge taking the same expression at bin offset 1.
+/// One edge of the bin containing `value` (SQL: a quoted column), in data
+/// units, as Mosaic's `binHistogram` writes it:
+/// `b.min + alpha * FLOOR((value - b.min) / alpha)`, with the high edge taking
+/// the same expression at bin offset 1.
 ///
 /// **There is deliberately no top-bin fold here**, and its absence is the
 /// difference between this and `equiwidth_bin_centre` above. The density
@@ -1134,8 +1163,8 @@ fn stack_exprs(
 /// where the raw maximum does fall exactly on a step boundary, Mosaic puts it
 /// in a bin of its own. Clamping would be a silent divergence from the
 /// reference on a shape the vendored corpus contains.
-fn bin_edge(col: &str, edge: BinEdge, kind: ScaleType) -> String {
-    let value = bin_space_expr(col, kind);
+fn bin_edge(value: &str, edge: BinEdge, kind: ScaleType) -> String {
+    let value = bin_space_expr(value, kind);
     let index = format!("floor(({value} - {BIN_LO_EXTENT_COL}) / CAST({BIN_STEP_COL} AS DOUBLE))");
     let index = match edge.offset() {
         0 => index,
@@ -1148,7 +1177,8 @@ fn bin_edge(col: &str, edge: BinEdge, kind: ScaleType) -> String {
     )
 }
 
-/// The column as the bin scheme sees it — **the space the bins are cut in**.
+/// The binned value (SQL: a quoted column or a parenthesised expression) as
+/// the bin scheme sees it — **the space the bins are cut in**.
 ///
 /// Mosaic's bin transform applies the scale's transform to the column before
 /// it picks a bin scheme, so a log axis's bins are equal ratios rather than
@@ -1166,11 +1196,11 @@ fn bin_edge(col: &str, edge: BinEdge, kind: ScaleType) -> String {
 /// Symlog takes d3's own transform, `sign(v) · ln(1 + |v|/C)` with `C` = 1,
 /// natural log included, because `brightfield_render::scale`'s symlog arm uses
 /// exactly that and the two have to agree for a bar to stand on its edge.
-fn bin_space_expr(col: &str, kind: ScaleType) -> String {
+fn bin_space_expr(value: &str, kind: ScaleType) -> String {
     match kind {
-        ScaleType::Linear => format!("\"{col}\""),
-        ScaleType::Log => format!("(ln(\"{col}\") / {JS_LN10})"),
-        ScaleType::Symlog => format!("(sign(\"{col}\") * ln(1 + abs(\"{col}\")))"),
+        ScaleType::Linear => value.to_string(),
+        ScaleType::Log => format!("(ln({value}) / {JS_LN10})"),
+        ScaleType::Symlog => format!("(sign({value}) * ln(1 + abs({value})))"),
     }
 }
 
@@ -1190,9 +1220,9 @@ fn from_bin_space_expr(expr: &str, kind: ScaleType) -> String {
 /// Only `log` forces one: its transform is undefined at and below zero, and
 /// Mosaic drops those rows. Symlog is defined everywhere, which is the reason
 /// a spec is offered both.
-fn nonpositive_filter(col: &str, kind: ScaleType) -> String {
+fn nonpositive_filter(value: &str, kind: ScaleType) -> String {
     if kind.drops_nonpositive() {
-        format!(" AND \"{col}\" > 0")
+        format!(" AND {value} > 0")
     } else {
         String::new()
     }
@@ -1214,7 +1244,7 @@ enum BinSpecField {
 /// which is what `bmin = 0`, `alpha = 1` reproduces exactly.
 fn bin_spec_field(
     table: &str,
-    col: &str,
+    value: &str,
     steps: i64,
     field: BinSpecField,
     kind: ScaleType,
@@ -1227,7 +1257,7 @@ fn bin_spec_field(
     };
     format!(
         "(SELECT {projection} FROM ({}) AS _bs)",
-        bin_spec_query(table, col, steps, kind)
+        bin_spec_query(table, value, steps, kind)
     )
 }
 
@@ -1247,7 +1277,7 @@ fn bin_spec_field(
 ///
 /// `minstep` is 0 throughout (brightfield exposes no such knob), so `binStep`'s
 /// two `v >= minstep` guards are vacuous and are not emitted.
-fn bin_spec_query(table: &str, col: &str, steps: i64, kind: ScaleType) -> String {
+fn bin_spec_query(table: &str, value: &str, steps: i64, kind: ScaleType) -> String {
     // `Math.ceil(Math.log(steps) / Math.LN10)`. `steps` is a spec literal, so
     // this is a plan-time constant rather than more SQL.
     let level = ((steps as f64).ln() / std::f64::consts::LN_10).ceil();
@@ -1269,8 +1299,8 @@ fn bin_spec_query(table: &str, col: &str, steps: i64, kind: ScaleType) -> String
          SELECT lo, hi, nullif(hi - lo, 0) AS span FROM (\
          SELECT min({value}) AS lo, max({value}) AS hi FROM \"{table}\"{domain_filter}\
          ) AS _b0) AS _b1) AS _b2) AS _b3) AS _b4) AS _b5) AS _b6",
-        value = bin_space_expr(col, kind),
-        domain_filter = match nonpositive_filter(col, kind).strip_prefix(" AND ") {
+        value = bin_space_expr(value, kind),
+        domain_filter = match nonpositive_filter(value, kind).strip_prefix(" AND ") {
             Some(predicate) => format!(" WHERE {predicate}"),
             None => String::new(),
         },
@@ -2773,7 +2803,7 @@ mod tests {
         options.insert(
             bin_channel.into(),
             ValueOrParamRef::Value(SpecValue::Bin {
-                column: "delay".into(),
+                operand: BinOperand::Column("delay".into()),
                 steps,
             }),
         );

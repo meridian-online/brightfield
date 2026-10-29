@@ -315,3 +315,60 @@ fn the_emitted_columns_carry_the_reserved_names() {
          under the reserved names `ChannelMap::from_mark` synthesises"
     );
 }
+
+/// A bin over an expression bins the expression's values. `revenue` held in
+/// units and binned as `"revenue" / 1e9` must give exactly the bins the same
+/// numbers give when they are already held in billions — so the division
+/// reaches every place the bin scheme reads the value: the extent the step is
+/// cut from, the edges, and the axis the low edge is named for.
+#[test]
+fn binned_expression_query_divides() {
+    let billions: [f64; 6] = [0.3, 1.2, 1.5, 1.7, 2.4, 3.9];
+    let rows: Vec<String> = billions
+        .iter()
+        .map(|b| format!("  - {{ revenue: {} }}", (b * 1e9).round() as i64))
+        .collect();
+    let spec_yaml = format!(
+        "data:\n  t:\n{}\nplot:\n- mark: rectY\n  data: {{ from: t }}\n  \
+         x: {{ bin: {{ sql: '\"revenue\" / 1e9' }} }}\n  y: {{ count: }}\n  fill: steelblue\n",
+        rows.join("\n")
+    );
+
+    let parsed = parse_spec(&spec_yaml, Format::Yaml).expect("spec parses");
+    let query = emit_all_queries(&parsed.spec, None)
+        .into_iter()
+        .next()
+        .expect("one mark")
+        .expect("mark lowers");
+    assert!(
+        query.sql.contains("(\"revenue\" / 1e9)"),
+        "the emitted SQL bins the parenthesised expression: {}",
+        query.sql
+    );
+
+    let found = histogram(&spec_yaml);
+    let expected = histogram(&binned_rect_spec(&billions, None));
+    assert_bins(&found, &expected, "binned_expression");
+
+    let conn = Connection::open_in_memory().expect("duckdb opens");
+    for ddl in emit_sources(&parsed.spec, None)
+        .expect("sources emit")
+        .statements
+    {
+        conn.execute_batch(&ddl.sql).expect("ddl runs");
+    }
+    let mut stmt = conn
+        .prepare(&format!("DESCRIBE {}", query.sql))
+        .expect("describe prepares");
+    let names: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .expect("describe runs")
+        .collect::<Result<_, _>>()
+        .expect("names read");
+    assert_eq!(
+        names,
+        vec!["\"revenue\" / 1e9", "__bf_bin_x2", "__bf_count"],
+        "the low edge carries the expression's text, which is the name the \
+         renderer binds the channel to"
+    );
+}
