@@ -20,7 +20,7 @@ The principle, as Hugh put it: make the most of the frameworks Brightfield has c
 
 ## Goals
 
-1. **A file opens with its numbers and dates formatted from each column's type**, on tile axes, in the grid and in the tooltip, all from one decision per column so the three never disagree.
+1. **A file opens with its numbers and dates formatted from each column's type**, on tile axes, in the grid and in the tooltip. On a generated tile the three come from one decision per column and agree. On any chart, the tooltip follows the format the chart's axis actually drew (section 3), so a tooltip never contradicts the axis beside it.
 2. **The formats are written into the chart file** as `xTickFormat` / `yTickFormat`, axis titles, domains and grid settings, so another Mosaic tool draws the generated chart the way Brightfield does.
 3. **A lone CSV is cast** on open, as a workbook sheet already is, so a currency or percentage column written as text becomes a number with a number axis.
 4. **A column's type is remembered.** Its label is kept in the source's `datapackage.json` and read back, so a cast column keeps the label that says what it was.
@@ -95,8 +95,8 @@ The source's `datapackage.json` is the record of what the source taught Brightfi
 
   `written` holds how the source wrote the column. `prefer` holds an analyst's preferred representation for the column, over FineType's default, so a preference follows the column into every chart, the grid and the tooltip. *Hugh's call: analysts have preferences beyond FineType's defaults and they need a home.* The representation rule reads `prefer` first. This design reads it and tests it; the control that sets it is separate work.
 - **What belongs in the package.** Facts and preferences about the source and its columns: how it is written, its accepted labels, an analyst's column formats. What belongs to a view (a chart's layout, a dashboard's choices, a grid's column widths) stays in the chart file or the workspace. *My call, to keep `datapackage.json` from becoming Brightfield's settings file, which Hugh raised as a risk.*
-- **Read back on open.** Every open reads the record before profiling. A single sheet's cast copy takes its labels from the record, not from a fresh profile, so a cast currency column stays a currency column.
-- **A lone CSV's record** lives in Brightfield's own data folder, beside the own-files Protocol folders, keyed by the file's absolute path, not beside the analyst's file. *My call: Brightfield does not write into folders the analyst did not ask it to write to.*
+- **Read back on open.** Every open reads the record before profiling. A single sheet's cast copy takes its labels from the record, not from a fresh profile, so a cast currency column stays a currency column. The link: the copy is written inside its Protocol folder, so the flat route recognises a file whose folder chain holds an own-files Protocol's `arcform.yaml`, reads that Protocol's `packages/` record for the table, takes its labels as given and opens the file as already cast. `open_any`'s one-part branch passes the same facts directly.
+- **A lone CSV's record** lives in Brightfield's own data folder, beside the own-files Protocol folders, keyed by the file's canonical path, not beside the analyst's file. *My call: Brightfield does not write into folders the analyst did not ask it to write to.* The record stores the file's size and modification time. When they differ on open, the inferred labels and `written` are derived again, and `nominated` and `prefer` are kept, so an edited or re-exported file keeps the analyst's choices. A record whose file no longer exists must not accumulate indefinitely; how it is pruned is left to the builder.
 
 ### 2. Casting a lone CSV
 
@@ -119,10 +119,11 @@ One function in the shell takes a column (its label, the display block FineType 
 
 How the data refines FineType's block:
 
-- **Scale.** A money column, or a size in bytes, whose profiled magnitude reaches a thousand or more is divided by 10³, 10⁶ or 10⁹, chosen so most ticks have one or two leading digits. The axis is titled with the unit. File sizes use binary units (2²⁰ → `MiB`), which d3-format cannot express as a format. Other numbers are not scaled. *My call: the thresholds; the builder sets them so the fixture's ticks read naturally.*
+- **Scale.** A money column whose profiled magnitude reaches a thousand or more is divided by 10³, 10⁶ or 10⁹ (`k`, `m`, `bn`), chosen so most ticks have one or two leading digits. A size in bytes is divided by 2¹⁰, 2²⁰ or 2³⁰ (`KiB`, `MiB`, `GiB`), which d3-format cannot express as a format. The axis is titled with the unit. Other numbers are not scaled. *My call: the thresholds; the builder sets them so the fixture's ticks read naturally.*
 - **Where the division lives.** In the tile's bin, as an expression: Mosaic's `bin` transform takes "a data column or expression" (`Transform.ts` in Mosaic's spec), so a Mosaic tool bins `revenue / 1e9` the same way, and a brush over it publishes a range in the same units its predicate tests. Brightfield's spec parser takes only a bare column name in `bin` today (`bin_transform` in `crates/brightfield-spec/src/parse.rs`), so it learns the expression form, in the spelling Mosaic's spec uses. The first task verifies that spelling against Mosaic's spec types before anything is written to depend on it.
 - **Precision.** A percentage's precision comes from its profiled spread: the fewest decimals at which the ticks are distinct (`.0%` for 0–80%, `.1%` for 4.1–4.6%). Money keeps two decimals in cells; on axes it keeps the decimals the ticks need.
-- **The tooltip** prints one form, compact, matching the axis: `revenue: £2.4 bn`, with a no-break space (U+00A0) between the number and the unit word so it never wraps. A percent sign stays attached (`45%`). The exact value is in the grid. *Hugh's call.*
+- **The tooltip follows the axis the chart drew.** It formats a value with that axis's tick format and the scale the chart's bin applies, adding the recorded currency symbol and unit word. On a generated tile that is the rule's own choice. On a chart the analyst wrote, or one whose format they typed over, it is theirs, and a chart with no format prints the grouped default, unscaled. The rule applies directly only where there is no axis: the grid. *My call, so a tooltip never contradicts the axis beside it.*
+- **On a generated tile the tooltip** prints one form, compact, matching the axis: `revenue: £2.4 bn`, with a no-break space (U+00A0) between the number and the unit word so it never wraps. A percent sign stays attached (`45%`). The exact value is in the grid. *Hugh's call.*
 - **The grid** formats only columns whose label has a display block; an unlabelled column, or one whose label has none, keeps today's display. That keeps an unlabelled identifier from being grouped as `1,234,567`. *My call.* A labelled column prints full values in the file's convention: `1,234.50`, `(1,234.50)` for an accounting column, `45%`. The header carries the unit (`revenue · £`, `share · %`). Hovering a formatted cell shows the stored value, extending what the grid already does for a rounded double.
 - **Only `$` reaches a tick.** A dollar column may write `$` in its tick format. Any other currency writes the format without a symbol and names the symbol in the title. The grid and tooltip print the recorded symbol, since they are Brightfield's own surfaces.
 
@@ -140,17 +141,17 @@ A `datetime.component.year` column draws as counts per year in time order, using
 
 - The tile writes `xTickFormat: d`, because Plot's default number format groups thousands and would print 2,024.
 - The tile writes the full run of years from the profiled minimum to maximum as its x domain, so a year with no rows shows as an empty slot, not as a missing one. Above a ceiling on the run's length, the domain is left to the data. *My call: the ceiling; the builder picks one that keeps a slot wide enough to see.*
-- The renderer applies a number format to a band whose categories are all whole numbers, and sorts those categories numerically.
+- The renderer applies a number format to a band whose categories are all whole numbers. Their order still comes from the query: the counts-per-date tile writes no `sort:`, and `BarLowerer` orders an unsorted band by its column, which is numeric for an integer column. A ranked-bars tile's `sort:` keeps its count order.
 
 ### 6. Brightfield's own default number format
 
-`format_number` groups thousands: `12,000`, `1,234.5`. Plot's default does the same, so an unformatted axis now reads the same in Brightfield and in Mosaic. This moves most committed PNG snapshots once, in a commit that changes nothing else.
+`format_number` groups thousands: `12,000`, `1,234.5`. Plot's default does the same, so an unformatted axis now reads the same in Brightfield and in Mosaic. A committed chart that puts a year on a number axis with no format would then print 2,018, so the same commit adds `xTickFormat: d` to each such chart (`examples/line-y.yaml`, and `tests/fixtures/agent-protocols/co2-per-capita/panels/co2_per_capita_since_1990.yaml` if it lacks one). *My call: the file says what it means, as Mosaic needs it to; the renderer does not guess years from a hand-written chart.* Otherwise the commit moves PNG snapshots and changes nothing else.
 
 ### 7. The inspector
 
 The axis **format** row's "auto" now means "chosen from the column's type", and shows the specifier the rule chose, so the analyst can see it and type over it. A typed format is written to the chart file as today and is no longer "auto".
 
-The file holds a specifier either way, and no marker says which kind it is. The inspector shows "auto" when the file's specifier equals what the rule gives now. The generated dashboard is generated again on each open, so it always follows the current label. A chart the analyst has saved keeps the specifier it was saved with: a label changing later shows as that row no longer reading "auto", and nothing rewrites a saved file. *My call: a saved file is the analyst's document, and a writer-only marker would be a Brightfield-only attribute.*
+The file holds a specifier either way, and no marker says which kind it is. The inspector shows "auto" when the file's specifier equals what the rule gives now. When the file holds no specifier (a hand-written chart), the row reads "default" and shows the rule's specifier as a suggestion the analyst can take. The generated dashboard is generated again on each open, so it always follows the current label. A chart the analyst has saved keeps the specifier it was saved with: a label changing later shows as that row no longer reading "auto", and nothing rewrites a saved file. *My call: a saved file is the analyst's document, and a writer-only marker would be a Brightfield-only attribute.*
 
 ## Testing
 
@@ -165,5 +166,5 @@ The file holds a specifier either way, and no marker says which kind it is. The 
 - The reserved name for a cast column's raw text, and how the grid hides it.
 - The scale thresholds and the year-run ceiling (within the rules above).
 - How the representation rule is exposed to the grid and the tooltip, which live in different modules.
-- How the record is keyed for a lone CSV (path plus size and modification time is one option), and what happens when the file moves.
+- How stale records are pruned, and what happens when a file moves.
 - The order of work, provided the column record and cast land before representation, and the percentage format lands last since it waits on FineType's cast change.
