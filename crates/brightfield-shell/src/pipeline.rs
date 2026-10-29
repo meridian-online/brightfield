@@ -71,7 +71,7 @@ use brightfield_render::selection::{
 };
 use brightfield_render::{grow_margins_at, resolve_titles};
 use brightfield_spec::analysis::{
-    analyse_spec, build_brushable_bindings, BrushKind, ComponentPath,
+    analyse_spec, build_brushable_bindings, BrushKind, ChannelField, ComponentPath,
 };
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::edit::{colour_legend_placement, LegendPlacement};
@@ -505,10 +505,11 @@ pub struct GestureBinding {
     pub contributor: ComponentPath,
     /// Which gesture the interactor declared (interval axes / point toggle).
     pub kind: BrushKind,
-    /// The x channel's column expression, when the first mark names one.
-    pub x_column: Option<String>,
-    /// The y channel's column expression, when the first mark names one.
-    pub y_column: Option<String>,
+    /// The x channel's field — a column, or a binned expression — when the
+    /// first mark names one.
+    pub x_field: Option<ChannelField>,
+    /// The y channel's field, when the first mark names one.
+    pub y_field: Option<ChannelField>,
 }
 
 /// One spec-declared scalar parameter with a slider widget behind it: what the
@@ -2038,14 +2039,37 @@ fn channel_slot<'a>(
     column: &str,
     held: &'a mut CommittedSelection,
 ) -> Option<&'a mut Option<Selected>> {
-    let name = crate::sql_ident::name_of(column);
-    if plot.x_column.as_deref() == Some(name.as_ref()) && held.x.is_none() {
+    let gesture = plot.gesture.as_ref();
+    let x_field = gesture.and_then(|g| g.x_field.as_ref());
+    if clause_names_axis(column, plot.x_column.as_deref(), x_field) && held.x.is_none() {
         return Some(&mut held.x);
     }
-    if plot.y_column.as_deref() == Some(name.as_ref()) && held.y.is_none() {
+    let y_field = gesture.and_then(|g| g.y_field.as_ref());
+    if clause_names_axis(column, plot.y_column.as_deref(), y_field) && held.y.is_none() {
         return Some(&mut held.y);
     }
     None
+}
+
+/// Whether a clause's `column` is what a plot draws on one axis, given the
+/// name the axis was bound to and the field the plot's own gesture sweeps there.
+///
+/// A binned expression is matched on the spelling its gesture writes,
+/// `("revenue" / 1e9)`, against the plot whose axis carries that expression's
+/// text — the name its bin is aliased to. Only a plot whose own gesture sweeps
+/// the expression can hold such a clause, since a plot draws only the clause it
+/// contributed ([`plot_selection`]). Every other axis is matched on the
+/// column's name, as above.
+fn clause_names_axis(column: &str, drawn: Option<&str>, swept: Option<&ChannelField>) -> bool {
+    let Some(drawn) = drawn else {
+        return false;
+    };
+    match swept {
+        Some(field @ ChannelField::Expression(expr)) => {
+            expr == drawn && field.clause(crate::sql_ident::quote) == column
+        }
+        _ => crate::sql_ident::name_of(column) == drawn,
+    }
 }
 
 /// A bound's position in the units its scale reads — microseconds for the two
@@ -2863,8 +2887,8 @@ fn compose_from_results(
                     selection: b.selection.clone(),
                     contributor: b.parent_plot.clone(),
                     kind: b.kind,
-                    x_column: b.channels.x.clone(),
-                    y_column: b.channels.y.clone(),
+                    x_field: b.channels.x.clone(),
+                    y_field: b.channels.y.clone(),
                 });
             let hover = hover_layer(&drawn, &marks, &channel_maps, &scales);
             plots.push(PlotHandle {

@@ -1237,9 +1237,11 @@ fn click_on_band(plot: &PlotHandle, value: &str) -> Interaction {
          is a point selection on y"
     );
     let column = gesture
-        .y_column
-        .clone()
-        .expect("the gesture names the band column it picks from");
+        .y_field
+        .as_ref()
+        .and_then(|f| f.column())
+        .expect("the gesture names the band column it picks from")
+        .to_string();
     Interaction::Select {
         name: gesture.selection.clone(),
         contributor: gesture.contributor.clone(),

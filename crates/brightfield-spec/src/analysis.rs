@@ -971,7 +971,7 @@ pub fn validate_crossfilter_columns(spec: &Spec) -> Result<(), ParseError> {
     // Producer columns per selection, from brush interactors and bound legends.
     let mut producers: HashMap<String, Vec<ProducerColumn>> = HashMap::new();
     for b in build_brushable_bindings(spec) {
-        let cols: Vec<&Option<String>> = match b.kind {
+        let cols: Vec<&Option<ChannelField>> = match b.kind {
             BrushKind::IntervalX | BrushKind::PointX => vec![&b.channels.x],
             BrushKind::IntervalY | BrushKind::PointY => vec![&b.channels.y],
             BrushKind::IntervalXY | BrushKind::Point => vec![&b.channels.x, &b.channels.y],
@@ -979,17 +979,13 @@ pub fn validate_crossfilter_columns(spec: &Spec) -> Result<(), ParseError> {
         // An expression's columns are not read out of its text, so whether a
         // subscriber exposes them is left to the runtime binder, as it is for
         // a source whose schema is not known here.
-        for col in cols
-            .into_iter()
-            .flatten()
-            .filter(|c| !is_channel_expression(c))
-        {
+        for col in cols.into_iter().flatten().filter_map(ChannelField::column) {
             producers
                 .entry(b.selection.clone())
                 .or_default()
                 .push(ProducerColumn {
                     plot: b.parent_plot.0.clone(),
-                    column: col.clone(),
+                    column: col.to_string(),
                 });
         }
     }
@@ -1696,18 +1692,77 @@ impl BrushKind {
     }
 }
 
-/// Mirror of `brightfield_ui::brush::ChannelColumns`. The plot-resolved x/y
-/// SQL column expressions that a brush's coordinates compare against.
+/// What a brush's coordinates on one axis compare against: a column of the
+/// plot's source, or an expression over its columns.
 ///
-/// A channel bound to a column name gives that name; a channel carrying a
-/// positional **bin** transform gives the column being binned. The private
-/// `positional_column` in this module states why those two and nothing else.
+/// Kept as two cases rather than one SQL string because each consumer spells a
+/// column its own way — the shell's clauses quote it as an identifier, the
+/// string adapters in `brightfield_ui::brush` write it bare — while an
+/// expression is written the same way everywhere, and because matching a
+/// committed clause back to the plot that drew it has to know which it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelField {
+    /// A column, by name.
+    Column(String),
+    /// A SQL expression over the source's columns — a positional bin's
+    /// `{sql: …}` operand, as written.
+    Expression(String),
+}
+
+impl ChannelField {
+    /// The column's name, or `None` for an expression.
+    #[must_use]
+    pub fn column(&self) -> Option<&str> {
+        match self {
+            Self::Column(name) => Some(name),
+            Self::Expression(_) => None,
+        }
+    }
+
+    /// The name the plot's rows carry this field under: the column's own, or
+    /// the expression's text, which is the name a bin over it is aliased to
+    /// (see [`BinOperand::name`]).
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Column(name) | Self::Expression(name) => name,
+        }
+    }
+
+    /// The field as the operand of a clause: a column spelled by `column`, or
+    /// the expression in parentheses, so a comparison written around it cannot
+    /// rebind the expression's own operators.
+    #[must_use]
+    pub fn clause(&self, column: impl FnOnce(&str) -> String) -> String {
+        match self {
+            Self::Column(name) => column(name),
+            Self::Expression(expr) => format!("({expr})"),
+        }
+    }
+}
+
+impl From<&BinOperand> for ChannelField {
+    fn from(operand: &BinOperand) -> Self {
+        match operand {
+            BinOperand::Column(name) => Self::Column(name.clone()),
+            BinOperand::Expression(expr) => Self::Expression(expr.clone()),
+        }
+    }
+}
+
+/// Mirror of `brightfield_ui::brush::ChannelColumns`. The plot-resolved x/y
+/// fields that a brush's coordinates compare against.
+///
+/// A channel bound to a column name gives that column; a channel carrying a
+/// positional **bin** transform gives what is binned, a column or an
+/// expression. The private `positional_column` in this module states why those
+/// and nothing else.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChannelColumns {
-    /// Column expression for the x channel (the first child mark's `x:` slot).
-    pub x: Option<String>,
-    /// Column expression for the y channel (the first child mark's `y:` slot).
-    pub y: Option<String>,
+    /// Field for the x channel (the first child mark's `x:` slot).
+    pub x: Option<ChannelField>,
+    /// Field for the y channel (the first child mark's `y:` slot).
+    pub y: Option<ChannelField>,
 }
 
 /// A brushable interactor binding — one entry per `(plot, brushable interactor)`
@@ -1843,15 +1898,13 @@ fn first_mark_channels(items: &[Component]) -> ChannelColumns {
     ChannelColumns::default()
 }
 
-/// The data column a **positional** channel's pixels invert to: the column
+/// The data field a **positional** channel's pixels invert to: the column
 /// named on the channel, or — when the channel carries a positional bin
-/// transform — the column being binned, or the binned expression in
-/// parentheses.
+/// transform — what is binned, a column or an expression.
 ///
 /// A bin over `"revenue" / 1e9` draws an axis in billions, so the clause a
 /// sweep means is on the expression, not on `revenue`: `("revenue" / 1e9) >=
-/// lo`. The parentheses keep the comparison from rebinding the expression's
-/// own operators, and are what [`is_channel_expression`] reads.
+/// lo`.
 ///
 /// The bin arm is what makes a histogram brushable. A `rectY` with
 /// `x: {bin: power}` draws on an axis whose units are `power`'s own, because
@@ -1868,23 +1921,12 @@ fn first_mark_channels(items: &[Component]) -> ChannelColumns {
 ///
 /// A literal, a `$param` reference or an expression bound to the channel
 /// itself is not a column a `WHERE` can constrain, so each yields `None`.
-fn positional_column(mark: &Mark, key: &str) -> Option<String> {
+fn positional_column(mark: &Mark, key: &str) -> Option<ChannelField> {
     match mark.options.get(key)? {
-        ValueOrParamRef::Value(SpecValue::String(s)) => Some(s.clone()),
-        ValueOrParamRef::Value(SpecValue::Bin { operand, .. }) => Some(match operand {
-            BinOperand::Column(column) => column.clone(),
-            BinOperand::Expression(_) => operand.sql(),
-        }),
+        ValueOrParamRef::Value(SpecValue::String(s)) => Some(ChannelField::Column(s.clone())),
+        ValueOrParamRef::Value(SpecValue::Bin { operand, .. }) => Some(operand.into()),
         _ => None,
     }
-}
-
-/// Whether a channel [`positional_column`] resolved is a binned expression
-/// rather than a column name. Only an expression is written there in
-/// parentheses; a column reaches the brush clause bare, so a name that began
-/// with one could never have filtered anything.
-fn is_channel_expression(column: &str) -> bool {
-    column.starts_with('(')
 }
 
 /// The column named on a channel, for the channels where a name is the only
@@ -3725,8 +3767,14 @@ plot:
         );
         assert_eq!(bb.selection, "brush");
         assert_eq!(bb.kind, BrushKind::IntervalXY);
-        assert_eq!(bb.channels.x.as_deref(), Some("speed"));
-        assert_eq!(bb.channels.y.as_deref(), Some("delay"));
+        assert_eq!(
+            bb.channels.x,
+            Some(ChannelField::Column("speed".to_string()))
+        );
+        assert_eq!(
+            bb.channels.y,
+            Some(ChannelField::Column("delay".to_string()))
+        );
     }
 
     /// Sub-clause c — spec-side property: a plot containing only
@@ -3779,7 +3827,13 @@ plot:
         let kinds: Vec<(BrushKind, Option<&str>, Option<&str>)> = analysis
             .brushable_bindings
             .iter()
-            .map(|b| (b.kind, b.channels.x.as_deref(), b.channels.y.as_deref()))
+            .map(|b| {
+                (
+                    b.kind,
+                    b.channels.x.as_ref().map(ChannelField::name),
+                    b.channels.y.as_ref().map(ChannelField::name),
+                )
+            })
             .collect();
         assert_eq!(
             kinds,

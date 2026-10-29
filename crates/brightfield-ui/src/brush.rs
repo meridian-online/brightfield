@@ -15,7 +15,7 @@ use brightfield_render::nearest::{
     band_category_at, column_typed_value_at, find_nearest, NearestMode, SelectionValue,
 };
 use brightfield_render::scale::{Scale, ScaleSet};
-use brightfield_spec::analysis::{BrushableBinding, ComponentPath};
+use brightfield_spec::analysis::{BrushableBinding, ChannelField, ComponentPath};
 use brightfield_sql::ir::{ClauseMeta, Predicate, ScalarValue};
 use kurbo::Rect;
 
@@ -44,33 +44,33 @@ pub enum BrushKind {
     PointY,
 }
 
-/// Channel column names bound by the brushing plot — i.e. the SQL
-/// column expressions that the brush coordinates compare against.
+/// The fields bound by the brushing plot — the columns, or binned
+/// expressions, that the brush coordinates compare against.
 ///
 /// `x` is required for `IntervalX`/`IntervalXY`; `y` is required for
 /// `IntervalY`/`IntervalXY`. A missing channel for the kind in question
 /// causes the adapter to fall back to `Predicate::True` (no-op brush).
 #[derive(Debug, Clone, Default)]
 pub struct ChannelColumns {
-    /// Column expression for the x channel.
-    pub x: Option<String>,
-    /// Column expression for the y channel.
-    pub y: Option<String>,
+    /// Field for the x channel.
+    pub x: Option<ChannelField>,
+    /// Field for the y channel.
+    pub y: Option<ChannelField>,
 }
 
 impl ChannelColumns {
     /// Construct a ChannelColumns with both x and y bound.
     pub fn xy(x: impl Into<String>, y: impl Into<String>) -> Self {
         Self {
-            x: Some(x.into()),
-            y: Some(y.into()),
+            x: Some(ChannelField::Column(x.into())),
+            y: Some(ChannelField::Column(y.into())),
         }
     }
 
     /// Construct a ChannelColumns with only the x channel bound.
     pub fn x_only(x: impl Into<String>) -> Self {
         Self {
-            x: Some(x.into()),
+            x: Some(ChannelField::Column(x.into())),
             y: None,
         }
     }
@@ -79,8 +79,20 @@ impl ChannelColumns {
     pub fn y_only(y: impl Into<String>) -> Self {
         Self {
             x: None,
-            y: Some(y.into()),
+            y: Some(ChannelField::Column(y.into())),
         }
+    }
+
+    /// The x field as these adapters write it into a clause: a column bare,
+    /// an expression in parentheses.
+    fn x_operand(&self) -> Option<String> {
+        self.x.as_ref().map(|f| f.clause(str::to_string))
+    }
+
+    /// The y field as these adapters write it into a clause. See
+    /// [`Self::x_operand`].
+    fn y_operand(&self) -> Option<String> {
+        self.y.as_ref().map(|f| f.clause(str::to_string))
     }
 }
 
@@ -101,15 +113,18 @@ pub fn brush_rect_to_predicate(
     channels: &ChannelColumns,
 ) -> Predicate {
     match kind {
-        BrushKind::IntervalX => match channels.x.as_deref() {
+        BrushKind::IntervalX => match channels.x_operand().as_deref() {
             Some(col) => x_range_predicate(col, rect.x0, rect.x1),
             None => Predicate::True,
         },
-        BrushKind::IntervalY => match channels.y.as_deref() {
+        BrushKind::IntervalY => match channels.y_operand().as_deref() {
             Some(col) => y_range_predicate(col, rect.y0, rect.y1),
             None => Predicate::True,
         },
-        BrushKind::IntervalXY => match (channels.x.as_deref(), channels.y.as_deref()) {
+        BrushKind::IntervalXY => match (
+            channels.x_operand().as_deref(),
+            channels.y_operand().as_deref(),
+        ) {
             (Some(xc), Some(yc)) => {
                 let x_pred = x_range_predicate(xc, rect.x0, rect.x1);
                 let y_pred = y_range_predicate(yc, rect.y0, rect.y1);
@@ -151,12 +166,12 @@ pub fn point_to_predicate(
     channels: &ChannelColumns,
 ) -> Predicate {
     let column = match kind {
-        BrushKind::PointX => channels.x.as_deref(),
-        BrushKind::PointY => channels.y.as_deref(),
+        BrushKind::PointX => channels.x_operand(),
+        BrushKind::PointY => channels.y_operand(),
         _ => None,
     };
     match column {
-        Some(col) => point_predicate(col, &value.literal()),
+        Some(col) => point_predicate(&col, &value.literal()),
         None => Predicate::True,
     }
 }
@@ -227,15 +242,18 @@ pub fn brush_rect_to_structured(
     y_meta: Option<ClauseMeta>,
 ) -> Predicate {
     match kind {
-        BrushKind::IntervalX => match channels.x.as_deref() {
+        BrushKind::IntervalX => match channels.x_operand().as_deref() {
             Some(col) => interval_clause(col, rect.x0, rect.x1, x_meta),
             None => Predicate::True,
         },
-        BrushKind::IntervalY => match channels.y.as_deref() {
+        BrushKind::IntervalY => match channels.y_operand().as_deref() {
             Some(col) => interval_clause(col, rect.y0, rect.y1, y_meta),
             None => Predicate::True,
         },
-        BrushKind::IntervalXY => match (channels.x.as_deref(), channels.y.as_deref()) {
+        BrushKind::IntervalXY => match (
+            channels.x_operand().as_deref(),
+            channels.y_operand().as_deref(),
+        ) {
             (Some(xc), Some(yc)) => Predicate::And(vec![
                 interval_clause(xc, rect.x0, rect.x1, x_meta),
                 interval_clause(yc, rect.y0, rect.y1, y_meta),
@@ -258,13 +276,13 @@ pub fn point_to_structured(
     meta: Option<ClauseMeta>,
 ) -> Predicate {
     let column = match kind {
-        BrushKind::PointX => channels.x.as_deref(),
-        BrushKind::PointY => channels.y.as_deref(),
+        BrushKind::PointX => channels.x_operand(),
+        BrushKind::PointY => channels.y_operand(),
         _ => None,
     };
     match column {
-        Some(col) => Predicate::Point {
-            column: col.to_string(),
+        Some(column) => Predicate::Point {
+            column,
             values: vec![scalar_value_from(value)],
             meta,
         },
@@ -969,8 +987,8 @@ fn resolve_point_value(
     mode: NearestMode,
 ) -> Option<SelectionValue> {
     let (column, axis, cursor_on_axis) = match binding.kind {
-        BrushKind::PointX => (binding.channels.x.as_deref()?, Channel::X, click_px.x),
-        BrushKind::PointY => (binding.channels.y.as_deref()?, Channel::Y, click_px.y),
+        BrushKind::PointX => (binding.channels.x.as_ref()?.name(), Channel::X, click_px.x),
+        BrushKind::PointY => (binding.channels.y.as_ref()?.name(), Channel::Y, click_px.y),
         _ => return None,
     };
 
@@ -1547,8 +1565,8 @@ mod commit_tests {
             selection: "brush".to_string(),
             kind: brightfield_spec::analysis::BrushKind::IntervalXY,
             channels: brightfield_spec::analysis::ChannelColumns {
-                x: Some("speed".to_string()),
-                y: Some("delay".to_string()),
+                x: Some(ChannelField::Column("speed".to_string())),
+                y: Some(ChannelField::Column("delay".to_string())),
             },
         };
 
@@ -1561,8 +1579,14 @@ mod commit_tests {
             "contributor = parent_plot"
         );
         assert_eq!(ui_binding.kind, BrushKind::IntervalXY);
-        assert_eq!(ui_binding.channels.x.as_deref(), Some("speed"));
-        assert_eq!(ui_binding.channels.y.as_deref(), Some("delay"));
+        assert_eq!(
+            ui_binding.channels.x.as_ref().map(ChannelField::name),
+            Some("speed")
+        );
+        assert_eq!(
+            ui_binding.channels.y.as_ref().map(ChannelField::name),
+            Some("delay")
+        );
     }
 
     #[test]

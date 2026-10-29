@@ -2918,15 +2918,35 @@ fn bin_transform(m: &serde_yaml::Mapping) -> Option<(BinOperand, Option<i64>)> {
 
 /// The value of a `bin:` key as a [`BinOperand`]: a column name, or a map
 /// whose one key is `sql:`.
+///
+/// An expression that is one bare identifier, `{sql: revenue}`, is that column
+/// and lifts as one. Kept as an expression it would be projected under its own
+/// text, `(revenue) AS "revenue"`, beside the source's `revenue`, and the bins
+/// would name a column the query holds twice.
 fn bin_operand(v: &serde_yaml::Value) -> Option<BinOperand> {
     match v {
         serde_yaml::Value::String(column) => Some(BinOperand::Column(column.clone())),
         serde_yaml::Value::Mapping(m) if m.len() == 1 => {
             let expr = m.get(serde_yaml::Value::String("sql".to_string()))?;
-            Some(BinOperand::Expression(expr.as_str()?.to_string()))
+            let expr = expr.as_str()?.to_string();
+            Some(if is_bare_identifier(&expr) {
+                BinOperand::Column(expr)
+            } else {
+                BinOperand::Expression(expr)
+            })
         }
         _ => None,
     }
+}
+
+/// Whether `text` is an unquoted SQL identifier: a letter or `_`, then letters,
+/// digits and `_`.
+fn is_bare_identifier(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Whether a channel map is exactly `{count:}` — the corpus writes it both
@@ -5049,6 +5069,21 @@ plot:
             mark_channel(src, "x"),
             ValueOrParamRef::Value(SpecValue::Bin {
                 operand: BinOperand::Expression("\"revenue\" / 1e9".to_string()),
+                steps: None,
+            })
+        );
+    }
+
+    /// An expression that is one bare column name is that column. Lifted as
+    /// an expression, the bin would project a second `revenue` beside the
+    /// source's own.
+    #[test]
+    fn an_expression_naming_one_column_bins_that_column() {
+        let src = "mark: rectY\nx: { bin: { sql: revenue } }\ny: { count: }\n";
+        assert_eq!(
+            mark_channel(src, "x"),
+            ValueOrParamRef::Value(SpecValue::Bin {
+                operand: BinOperand::Column("revenue".to_string()),
                 steps: None,
             })
         );

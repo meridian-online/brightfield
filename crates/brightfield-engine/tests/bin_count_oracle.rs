@@ -372,3 +372,38 @@ fn binned_expression_query_divides() {
          renderer binds the channel to"
     );
 }
+
+/// `{sql: v}` is the column `v` written as an expression, and bins as the
+/// column does: the same bins, and one `v` among the statement's columns rather
+/// than the source's beside a projected copy.
+#[test]
+fn an_expression_naming_one_column_bins_as_that_column() {
+    let values = [1.0, 3.0, 4.0, 12.0, 17.0, 26.0];
+    let column = binned_rect_spec(&values, None);
+    let expression = column.replace("bin: v", "bin: { sql: v }");
+    assert_ne!(column, expression, "the fixture is rewritten");
+    assert_eq!(histogram(&expression), histogram(&column));
+
+    let parsed = parse_spec(&expression, Format::Yaml).expect("spec parses");
+    let conn = Connection::open_in_memory().expect("duckdb opens");
+    for ddl in emit_sources(&parsed.spec, None)
+        .expect("sources emit")
+        .statements
+    {
+        conn.execute_batch(&ddl.sql).expect("ddl runs");
+    }
+    let query = emit_all_queries(&parsed.spec, None)
+        .into_iter()
+        .next()
+        .expect("one mark")
+        .expect("mark lowers");
+    let mut stmt = conn
+        .prepare(&format!("DESCRIBE {}", query.sql))
+        .expect("describe prepares");
+    let names: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .expect("describe runs")
+        .collect::<Result<_, _>>()
+        .expect("names read");
+    assert_eq!(names, vec!["v", "__bf_bin_x2", "__bf_count"]);
+}

@@ -56,7 +56,7 @@ use brightfield_render::canvas_host::{Color, OverlayPainter, SurfaceCursor};
 use brightfield_render::channel::Channel;
 use brightfield_render::mark::Projection;
 use brightfield_render::scale::Scale;
-use brightfield_spec::analysis::BrushKind;
+use brightfield_spec::analysis::{BrushKind, ChannelField};
 use brightfield_spec::layout::{PlotAxis, ScaleType, StackOffset};
 use brightfield_spec::vocab::MarkKind;
 use brightfield_sql::ir::ScalarValue;
@@ -2165,10 +2165,10 @@ fn interval_predicate(
 ) -> Option<SqlPredicate> {
     let mut clauses = Vec::new();
     if matches!(binding.kind, BrushKind::IntervalX | BrushKind::IntervalXY) {
-        let column = binding.x_column.as_deref()?;
+        let field = binding.x_field.as_ref()?;
         let scale = plot.scales.get(Channel::X)?;
         clauses.push(axis_interval(
-            column,
+            field,
             scale,
             plot.scales.projection(),
             Channel::X,
@@ -2177,10 +2177,10 @@ fn interval_predicate(
         )?);
     }
     if matches!(binding.kind, BrushKind::IntervalY | BrushKind::IntervalXY) {
-        let column = binding.y_column.as_deref()?;
+        let field = binding.y_field.as_ref()?;
         let scale = plot.scales.get(Channel::Y)?;
         clauses.push(axis_interval(
-            column,
+            field,
             scale,
             plot.scales.projection(),
             Channel::Y,
@@ -2198,11 +2198,12 @@ fn interval_predicate(
 /// One axis's structured interval: two plot-local pixels inverted through the
 /// displayed scale, ordered into inclusive `[lo, hi]` bounds.
 ///
-/// The clause names the column as a SQL **identifier** rather than by the
+/// The clause names a column as a SQL **identifier** rather than by the
 /// spelling the binding carries — see [`crate::sql_ident`], and
 /// `point_predicate` below for the failure that made it matter. Both clause
 /// producers on this path quote, because a file column named with a space is as
-/// legal in an interval as in a point.
+/// legal in an interval as in a point. A binned expression is not a name and is
+/// not quoted: it is written in parentheses, as the histogram's query bins it.
 ///
 /// # The second inversion a projected plot needs
 ///
@@ -2223,7 +2224,7 @@ fn interval_predicate(
 /// The inversion runs BEFORE the bounds are ordered, because `reflect-y`'s
 /// inverse decreases: ordering first would name a `lo` above its `hi`.
 fn axis_interval(
-    column: &str,
+    field: &ChannelField,
     scale: &Scale,
     projection: Option<Projection>,
     axis: Channel,
@@ -2243,7 +2244,7 @@ fn axis_interval(
         _ => ScalarValue::Float(v),
     };
     Some(SqlPredicate::Interval {
-        column: crate::sql_ident::quote(column),
+        column: field.clause(crate::sql_ident::quote),
         lo: bound(lo),
         hi: bound(hi),
         meta: None,
@@ -2268,13 +2269,13 @@ fn point_predicate(
     plot: &PlotHandle,
     p: kurbo::Point,
 ) -> Option<SqlPredicate> {
-    let (column, channel, pixel) = match binding.kind {
-        BrushKind::PointY => (binding.y_column.clone()?, Channel::Y, p.y - plot.rect.y),
-        _ => (binding.x_column.clone()?, Channel::X, p.x - plot.rect.x),
+    let (field, channel, pixel) = match binding.kind {
+        BrushKind::PointY => (binding.y_field.as_ref()?, Channel::Y, p.y - plot.rect.y),
+        _ => (binding.x_field.as_ref()?, Channel::X, p.x - plot.rect.x),
     };
     let category = band_category(plot.scales.get(channel)?, pixel)?;
     Some(SqlPredicate::Point {
-        column: crate::sql_ident::quote(&column),
+        column: field.clause(crate::sql_ident::quote),
         values: vec![ScalarValue::Text(category)],
         meta: None,
     })
@@ -2338,8 +2339,8 @@ mod tests {
                 selection: "brush".to_string(),
                 contributor: ComponentPath("root".to_string()),
                 kind,
-                x_column: Some("x".to_string()),
-                y_column: Some("y".to_string()),
+                x_field: Some(ChannelField::Column("x".to_string())),
+                y_field: Some(ChannelField::Column("y".to_string())),
             }),
             x_column: Some("x".to_string()),
             y_column: Some("y".to_string()),
@@ -2819,8 +2820,8 @@ mod tests {
             selection: "brush".to_string(),
             contributor: ComponentPath("root".to_string()),
             kind,
-            x_column: Some("temp".to_string()),
-            y_column: Some("power".to_string()),
+            x_field: Some(ChannelField::Column("temp".to_string())),
+            y_field: Some(ChannelField::Column("power".to_string())),
         });
         plot
     }
@@ -3123,5 +3124,102 @@ mod tests {
                 card.rect
             );
         }
+    }
+
+    /// A sweep over a histogram that bins an EXPRESSION, driven through the
+    /// clause builder the pointer uses and committed to a live dashboard.
+    ///
+    /// Two things have to hold, and each failed while the clause quoted the
+    /// expression as if it were a column name: the tile filtered by the brush
+    /// still runs and keeps the rows inside the swept billions, and the
+    /// committed band is drawn back on the histogram's own x axis.
+    #[test]
+    fn a_sweep_over_a_binned_expression_filters_and_draws_its_band() {
+        const SPEC: &str = r#"
+params:
+  brush: { select: crossfilter }
+data:
+  t:
+    - { revenue: 300000000, n: 1 }
+    - { revenue: 1200000000, n: 2 }
+    - { revenue: 1500000000, n: 3 }
+    - { revenue: 1700000000, n: 4 }
+    - { revenue: 2400000000, n: 5 }
+    - { revenue: 3900000000, n: 6 }
+hconcat:
+  - plot:
+    - mark: rectY
+      data: { from: t }
+      x: { bin: { sql: '"revenue" / 1e9' } }
+      y: { count: }
+      fill: steelblue
+    - select: intervalX
+      as: $brush
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $brush }
+      x: revenue
+      y: n
+"#;
+        let mut live = crate::pipeline::LiveDashboard::load_str(SPEC, None).expect("loads");
+        let composed = live.present().expect("presents");
+        let histogram = composed
+            .plots
+            .iter()
+            .find(|p| p.gesture.is_some())
+            .expect("the histogram carries the brush");
+        let binding = histogram.gesture.clone().expect("bound");
+        let scale = histogram.scales.get(Channel::X).expect("an x scale");
+        let at = |v: f64| kurbo::Point::new(histogram.rect.x + scale.map_f64(v), histogram.rect.y);
+        let predicate =
+            interval_predicate(&binding, histogram, at(1.0), at(2.0)).expect("a sweep inverts");
+        let SqlPredicate::Interval { column, .. } = &predicate else {
+            panic!("expected one interval clause, got {predicate:?}");
+        };
+        assert_eq!(
+            column, "(\"revenue\" / 1e9)",
+            "the expression is written as SQL, not quoted as a name"
+        );
+
+        let composed = live
+            .apply(Interaction::Select {
+                name: binding.selection.clone(),
+                contributor: binding.contributor.clone(),
+                predicate,
+            })
+            .expect("the dashboard re-presents under the brush");
+        let results = live.coordinator().session_mut().execute_all();
+        let filtered = results[1].as_ref().expect("the filtered tile executes");
+        let mut kept: Vec<i64> = Vec::new();
+        for batch in filtered {
+            let n = arrow::compute::cast(
+                batch.column_by_name("n").expect("the tile carries n"),
+                &arrow::datatypes::DataType::Int64,
+            )
+            .expect("n casts to Int64");
+            let n = n
+                .as_any()
+                .downcast_ref::<arrow::array::Int64Array>()
+                .expect("cast to Int64");
+            kept.extend(n.iter().flatten());
+        }
+        kept.sort_unstable();
+        assert_eq!(
+            kept,
+            vec![2, 3, 4],
+            "revenue / 1e9 in [1.0, 2.0] keeps 1.2, 1.5 and 1.7 billion"
+        );
+
+        let band = composed
+            .plots
+            .iter()
+            .find(|p| p.path == histogram.path)
+            .and_then(|p| p.committed_rect)
+            .expect("the committed band is drawn on the histogram");
+        let swept = (at(1.0).x, at(2.0).x);
+        assert!(
+            (band.x - swept.0).abs() < 1.0 && (band.x + band.width - swept.1).abs() < 1.0,
+            "the band spans the swept x range {swept:?}, got {band:?}"
+        );
     }
 }

@@ -26,7 +26,7 @@ use brightfield_render::mark::{count_scene_paths, default_renderers, find_render
 use brightfield_render::nearest::SelectionValue;
 use brightfield_render::scale::infer_scales;
 use brightfield_render::scene::{build_multi_mark_scene, ChartData};
-use brightfield_spec::analysis::analyse_spec;
+use brightfield_spec::analysis::{analyse_spec, ChannelField};
 use brightfield_spec::{parse_spec, Format};
 use brightfield_sql::collect_marks;
 use brightfield_ui::brush::{
@@ -190,7 +190,7 @@ fn crossfilter_brush_in_plot_a_filters_plot_b() {
         spec_binding.parent_plot.0
     );
     assert_eq!(
-        spec_binding.channels.x.as_deref(),
+        spec_binding.channels.x.as_ref().map(ChannelField::name),
         Some("x"),
         "x channel resolved from plot A's dot mark"
     );
@@ -310,7 +310,7 @@ fn crossfilter_brush_interval_y_filters_downstream() {
 
     let spec_binding = &analysis.brushable_bindings[0];
     assert_eq!(
-        spec_binding.channels.y.as_deref(),
+        spec_binding.channels.y.as_ref().map(ChannelField::name),
         Some("y"),
         "y channel resolved from plot A's dot mark"
     );
@@ -353,8 +353,14 @@ fn crossfilter_brush_interval_xy_filters_downstream() {
     let analysis = analyse_spec(&spec).expect("spec analyses");
 
     let spec_binding = &analysis.brushable_bindings[0];
-    assert_eq!(spec_binding.channels.x.as_deref(), Some("x"));
-    assert_eq!(spec_binding.channels.y.as_deref(), Some("y"));
+    assert_eq!(
+        spec_binding.channels.x.as_ref().map(ChannelField::name),
+        Some("x")
+    );
+    assert_eq!(
+        spec_binding.channels.y.as_ref().map(ChannelField::name),
+        Some("y")
+    );
     let bindings = [BrushBinding::from(spec_binding)];
 
     let engine = Engine::new();
@@ -471,7 +477,10 @@ fn crossfilter_point_toggle_x_filters_downstream() {
 
     let ui_binding = BrushBinding::from(&analysis.brushable_bindings[0]);
     assert_eq!(ui_binding.kind, BrushKind::PointX, "toggleX → PointX");
-    assert_eq!(ui_binding.channels.x.as_deref(), Some("x"));
+    assert_eq!(
+        ui_binding.channels.x.as_ref().map(ChannelField::name),
+        Some("x")
+    );
 
     let engine = Engine::new();
     let mut session = engine
@@ -809,7 +818,7 @@ fn crossfilter_categorical_point_click_selects_clicked_category() {
     let binding = BrushBinding::from(&analysis.brushable_bindings[0]);
     assert_eq!(binding.kind, BrushKind::PointX, "toggleX → PointX");
     assert_eq!(
-        binding.channels.x.as_deref(),
+        binding.channels.x.as_ref().map(ChannelField::name),
         Some("cat"),
         "x is the string column"
     );
@@ -1344,8 +1353,8 @@ fn brush_over_a_binned_expression_filters_in_its_units() {
     let analysis = analyse_spec(&spec).expect("spec analyses");
     assert_eq!(analysis.brushable_bindings.len(), 1, "plot A's intervalX");
     assert_eq!(
-        analysis.brushable_bindings[0].channels.x.as_deref(),
-        Some("(\"revenue\" / 1e9)"),
+        analysis.brushable_bindings[0].channels.x,
+        Some(ChannelField::Expression("\"revenue\" / 1e9".to_string())),
         "the brush compares against the expression the histogram bins"
     );
     let bindings = [BrushBinding::from(&analysis.brushable_bindings[0])];

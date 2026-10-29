@@ -4536,7 +4536,14 @@ hconcat:
         );
         let binding: BrushBinding = (&analysis.brushable_bindings[0]).into();
         assert_eq!(binding.selection_name, "brush");
-        assert_eq!(binding.channels.x.as_deref(), Some("temp"));
+        assert_eq!(
+            binding
+                .channels
+                .x
+                .as_ref()
+                .map(brightfield_spec::analysis::ChannelField::name),
+            Some("temp")
+        );
         let contributor = binding.contributor.0.clone();
 
         let engine = Engine::new();
