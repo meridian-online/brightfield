@@ -1425,17 +1425,16 @@ mod tests {
         );
     }
 
-    /// AC5 at the axis: no format draws the text every axis drew before a
-    /// format could be asked for, integers as integers and other values to one
-    /// decimal place.
+    /// With no format a tick reads as `format_number` prints it: thousands
+    /// grouped, other values to one decimal place.
     #[test]
-    fn no_format_draws_the_text_an_axis_always_drew() {
+    fn no_format_draws_the_text_format_number_prints() {
         for scale in [linear(0.0, 2000.0), linear(0.0, 1.0), linear(-3.0, 4.0)] {
             for tick in compute_ticks_formatted(&scale, 5, None) {
                 assert_eq!(
                     tick.label,
                     format_number(tick.value),
-                    "with no format a tick reads as the axis has always read it"
+                    "with no format a tick reads as `format_number` prints it"
                 );
             }
         }
