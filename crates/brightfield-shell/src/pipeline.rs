@@ -2056,10 +2056,10 @@ fn channel_slot<'a>(
 ///
 /// A binned expression is matched on the spelling its gesture writes,
 /// `("revenue" / 1e9)`, against the plot whose axis carries that expression's
-/// text — the name its bin is aliased to. Only a plot whose own gesture sweeps
-/// the expression can hold such a clause, since a plot draws only the clause it
-/// contributed ([`plot_selection`]). Every other axis is matched on the
-/// column's name, as above.
+/// text — the name its bin is aliased to. A plot draws the clause it
+/// contributed ([`plot_selection`]), so the gesture that wrote such a clause is
+/// this plot's own; `a_sweep_over_a_binned_expression_filters_and_draws_its_band`
+/// draws one. Every other axis is matched on the column's name, as above.
 fn clause_names_axis(column: &str, drawn: Option<&str>, swept: Option<&ChannelField>) -> bool {
     let Some(drawn) = drawn else {
         return false;

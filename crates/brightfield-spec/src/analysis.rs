@@ -1755,8 +1755,7 @@ impl From<&BinOperand> for ChannelField {
 ///
 /// A channel bound to a column name gives that column; a channel carrying a
 /// positional **bin** transform gives what is binned, a column or an
-/// expression. The private `positional_column` in this module states why those
-/// and nothing else.
+/// expression. The private `positional_column` in this module states why.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChannelColumns {
     /// Field for the x channel (the first child mark's `x:` slot).
