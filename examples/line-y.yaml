@@ -30,5 +30,6 @@ plot:
     y: v
     stroke: country
   - legend: color
+xTickFormat: d
 width: 640
 height: 400

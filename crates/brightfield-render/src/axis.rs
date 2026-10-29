@@ -693,11 +693,13 @@ pub(crate) fn nice_linear_domain(min: f64, max: f64, target_count: usize) -> (f6
 
 /// Format a number for tick labels.
 pub(crate) fn format_number(value: f64) -> String {
-    if (value - value.round()).abs() < 1e-9 {
-        format!("{}", value.round() as i64)
+    let spec = if (value - value.round()).abs() < 1e-9 {
+        ","
     } else {
-        format!("{value:.1}")
-    }
+        ",.1f"
+    };
+    let format = NumberFormat::parse(spec).expect("a grouping specifier parses");
+    format.format(if spec == "," { value.round() } else { value })
 }
 
 /// Horizontal clearance a drawn tick label must keep from its neighbour's, in
@@ -1195,6 +1197,17 @@ pub(crate) fn render_graticule_labels(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With no format the axis groups thousands as Plot's default does, so a
+    /// chart that puts a year on a number axis names `d` to keep it whole.
+    #[test]
+    fn default_numbers_group_thousands() {
+        assert_eq!(format_number(2024.0), "2,024");
+        assert_eq!(format_number(12000.0), "12,000");
+        assert_eq!(format_number(1234.5), "1,234.5");
+        assert_eq!(format_number(-1500.0), "\u{2212}1,500");
+        assert_eq!(format_number(999.0), "999");
+    }
 
     /// A title that fits is set at the heading size on one line; a wider one
     /// wraps to two lines at the heading size, and only one too wide for two

@@ -452,7 +452,7 @@ fn each_preset_reads_back_as_its_own_name() {
 fn the_sample_is_the_top_drawn_tick_under_the_preset_and_not_the_columns_maximum() {
     let drawn = drawn_to(5565.0);
     let cases = [
-        ("", "5000"),
+        ("", "5,000"),
         ("xTickFormat: ',f'", "5,000"),
         ("xTickFormat: '~s'", "5k"),
         ("xTickFormat: '%'", "500000%"),
