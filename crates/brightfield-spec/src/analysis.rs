@@ -1866,8 +1866,8 @@ fn first_mark_channels(items: &[Component]) -> ChannelColumns {
 /// would filter rows against a number no row holds. A bin's axis carries
 /// row-level values; an aggregate's does not.
 ///
-/// A literal, a `$param` reference and an expression bound to the channel
-/// itself yield nothing: none of them is a column a `WHERE` can constrain.
+/// A literal, a `$param` reference or an expression bound to the channel
+/// itself is not a column a `WHERE` can constrain, so each yields `None`.
 fn positional_column(mark: &Mark, key: &str) -> Option<String> {
     match mark.options.get(key)? {
         ValueOrParamRef::Value(SpecValue::String(s)) => Some(s.clone()),
