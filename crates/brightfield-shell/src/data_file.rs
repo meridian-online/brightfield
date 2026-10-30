@@ -348,8 +348,8 @@ pub struct OpenTrace {
     /// [`OpenOptions::already_cast`], or found by [`settled`].
     pub already_cast: bool,
     /// What the cast of the file's copy read, statement by statement: the copy and the
-    /// aggregates over it. Empty when [`open_traced`] was not asked to count, or when nothing was
-    /// cast.
+    /// aggregates over it. Empty unless [`open_traced`] was asked to count and the copy cast a
+    /// column; `cast_open_reads_the_file_once` reads it.
     pub cast: ScanTally,
 }
 
@@ -892,8 +892,8 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
     ))
 }
 
-/// The dashboard [`Dashboard::of`] chooses for `columns`, or the sentence that says why there is
-/// nothing to draw.
+/// The dashboard [`Dashboard::of`] chooses for `columns`, or, when it has no tile, the sentence
+/// that names each column it left out and why.
 fn dashboard_for(path: &Path, columns: &[ColumnProfile]) -> Result<Dashboard, String> {
     let dashboard = Dashboard::of(path, columns);
     if dashboard.tiles().is_empty() {

@@ -797,7 +797,7 @@ fn type_of(opened: &mut OpenedFile, column: &str) -> String {
         .unwrap_or_else(|| panic!("no column {column}"))
 }
 
-/// The kind of the tile drawn of `column`, or `None` when it has none.
+/// The kind of the tile drawn of `column`, or `None` when the dashboard left it out.
 fn tile_kind(opened: &OpenedFile, column: &str) -> Option<String> {
     opened
         .dashboard
