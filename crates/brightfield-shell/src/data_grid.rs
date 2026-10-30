@@ -1250,25 +1250,35 @@ fn tabulate(batches: &[RecordBatch]) -> (Vec<GridColumn>, Vec<Vec<CellText>>) {
         return (Vec::new(), Vec::new());
     };
     let schema = first.schema();
-    let columns: Vec<GridColumn> = schema
+    // The text a cast column was read from is kept beside it in the copy, so the cast can be
+    // undone; it is not one of the file's columns, and the grid does not list it.
+    let shown: Vec<usize> = schema
         .fields()
         .iter()
-        .map(|f| GridColumn {
-            name: f.name().clone(),
-            numeric: f.data_type().is_numeric(),
+        .enumerate()
+        .filter(|(_, f)| !f.name().starts_with(crate::data_file::RAW_PREFIX))
+        .map(|(at, _)| at)
+        .collect();
+    let columns: Vec<GridColumn> = shown
+        .iter()
+        .map(|&at| {
+            let f = schema.field(at);
+            GridColumn {
+                name: f.name().clone(),
+                numeric: f.data_type().is_numeric(),
+            }
         })
         .collect();
-    let fractional: Vec<bool> = schema
-        .fields()
+    let fractional: Vec<bool> = shown
         .iter()
-        .map(|f| is_fractional(f.data_type()))
+        .map(|&at| is_fractional(schema.field(at).data_type()))
         .collect();
 
     let mut rows: Vec<Vec<CellText>> = Vec::new();
     for batch in batches {
-        let as_text: Vec<Option<StringArray>> = batch
-            .columns()
+        let as_text: Vec<Option<StringArray>> = shown
             .iter()
+            .map(|&at| batch.column(at))
             .map(|col| {
                 cast(col, &DataType::Utf8)
                     .ok()

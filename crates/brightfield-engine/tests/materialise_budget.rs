@@ -295,3 +295,121 @@ fn a_copy_that_fitted_leaves_the_session_able_to_spend_more_than_the_budget() {
          max_temp_directory_size reads {rendered}"
     );
 }
+
+/// The `(name, type)` of each column `relation` has, in order.
+fn described(session: &mut Session, relation: &str) -> Vec<(String, String)> {
+    use duckdb::arrow::array::StringArray;
+    let batches = session
+        .execute_uncached(&format!(
+            "SELECT column_name, column_type FROM (DESCRIBE \"{relation}\")"
+        ))
+        .expect("the relation describes");
+    let mut out = Vec::new();
+    for batch in &batches {
+        let text = |at: usize| {
+            batch
+                .column(at)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("DESCRIBE answers text")
+                .clone()
+        };
+        let (names, types) = (text(0), text(1));
+        for row in 0..batch.num_rows() {
+            out.push((names.value(row).to_string(), types.value(row).to_string()));
+        }
+    }
+    out
+}
+
+/// Five rows whose `s` is a whole number written as text.
+const TEXT_NUMBERS: &str =
+    "data:\n  t:\n    query: \"SELECT i AS n, i::VARCHAR AS s FROM range(5) r(i)\"\n";
+
+/// **A copy can cast as it reads, and a cast it should not have made can be put back** with the
+/// column as read standing where it stood.
+#[test]
+fn a_materialised_projection_casts_and_puts_back_in_place() {
+    let mut live = session(TEXT_NUMBERS);
+    live.materialise_source_with(
+        "t",
+        GENEROUS,
+        &[
+            "\"n\"".to_string(),
+            "TRY_CAST(\"s\" AS BIGINT) AS \"s\"".to_string(),
+            "\"s\" AS \"raw_s\"".to_string(),
+        ],
+    )
+    .expect("the projection copies");
+    assert_eq!(
+        described(&mut live, "t"),
+        [
+            ("n".to_string(), "BIGINT".to_string()),
+            ("s".to_string(), "BIGINT".to_string()),
+            ("raw_s".to_string(), "VARCHAR".to_string()),
+        ]
+    );
+    assert_eq!(
+        count_of(&mut live, "SELECT sum(\"s\")::BIGINT FROM \"t\""),
+        10
+    );
+
+    live.put_back_columns("t", &[("s".to_string(), "raw_s".to_string())])
+        .expect("the cast is put back");
+    assert_eq!(
+        described(&mut live, "t"),
+        [
+            ("n".to_string(), "BIGINT".to_string()),
+            ("s".to_string(), "VARCHAR".to_string()),
+        ]
+    );
+}
+
+/// **The columns of a materialised copy profile as a source's do**, with the caller's own
+/// aggregates answered by the same statement.
+#[test]
+fn a_materialised_copy_profiles_some_columns_with_extra_terms() {
+    let mut live = session(TEXT_NUMBERS);
+    live.materialise_source_with(
+        "t",
+        GENEROUS,
+        &[
+            "\"n\"".to_string(),
+            "TRY_CAST(\"s\" AS BIGINT) AS \"s\"".to_string(),
+            "\"s\" AS \"raw_s\"".to_string(),
+        ],
+    )
+    .expect("the projection copies");
+    let (columns, extras) = live
+        .profile_columns_with(
+            "t",
+            &["s".to_string(), "missing".to_string()],
+            &["count(\"raw_s\")".to_string(), "NULL".to_string()],
+        )
+        .expect("the columns profile");
+    assert_eq!(columns.len(), 1, "a name the source lacks is left out");
+    let s = &columns[0];
+    assert_eq!((s.name.as_str(), s.type_name.as_str()), ("s", "BIGINT"));
+    assert_eq!(
+        (s.non_null, s.min.as_deref(), s.max.as_deref()),
+        (5, Some("0"), Some("4"))
+    );
+    let moments = s.moments.as_ref().expect("a numeric column has moments");
+    assert_eq!(moments.mean, 2.0);
+    assert_eq!(extras, [Some("5".to_string()), None]);
+}
+
+/// **A source copied before its derived columns were known can derive them over the copy**, as
+/// the two views a deriving spec declares.
+#[test]
+fn a_materialised_source_derives_columns_over_the_copy() {
+    let mut live = session(TEXT_NUMBERS);
+    live.materialise_source("t", GENEROUS).expect("the copy");
+    live.derive_source("t", "t_rows", &["\"n\" * 2 AS \"twice\"".to_string()])
+        .expect("the columns derive");
+    assert_eq!(
+        count_of(&mut live, "SELECT sum(\"twice\")::BIGINT FROM \"t\""),
+        20
+    );
+    assert_eq!(count_of(&mut live, "SELECT count(*) FROM \"t_rows\""), 5);
+}

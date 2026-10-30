@@ -92,19 +92,43 @@ fn literal(s: &str) -> String {
 /// This is FineType's own five-branch projection with the cast wrapped in `TRY`: no label, a
 /// label the contracts do not define, or a VARCHAR label passes the column through; a label with a
 /// transform takes it with `{col}` replaced; any other is a `TRY_CAST` to its type.
-fn cast_expr(
+#[must_use]
+pub fn cast_expr(
     column: &str,
     finetype: Option<&str>,
     transforms: &FinetypeTransforms,
 ) -> Option<String> {
+    cast_of(&quoted(column), finetype, transforms)
+}
+
+/// [`cast_expr`] over `column` read as text ([`as_text`]), the way a silver table's source reads
+/// a column it casts, for a select that reads the column as DuckDB typed it.
+#[must_use]
+pub fn cast_expr_over_text(
+    column: &str,
+    finetype: Option<&str>,
+    transforms: &FinetypeTransforms,
+) -> Option<String> {
+    cast_of(&as_text(column), finetype, transforms)
+}
+
+/// `column` read as text, so a column DuckDB typed on load (a date, say) meets a transform
+/// written for text.
+#[must_use]
+pub fn as_text(column: &str) -> String {
+    let col = quoted(column);
+    format!("CAST({col} AS VARCHAR)")
+}
+
+/// The projection [`cast_expr`] describes, with `col` as the SQL the transform reads.
+fn cast_of(col: &str, finetype: Option<&str>, transforms: &FinetypeTransforms) -> Option<String> {
     let label = finetype?;
     let ty = transforms.duckdb_type(label)?;
     if ty == "VARCHAR" {
         return None;
     }
-    let col = quoted(column);
     Some(match transforms.transform(label) {
-        Some(transform) => format!("TRY({})", transform.replace("{col}", &col)),
+        Some(transform) => format!("TRY({})", transform.replace("{col}", col)),
         None => format!("TRY_CAST({col} AS {ty})"),
     })
 }
@@ -135,7 +159,7 @@ fn source(d: &Dataset, transforms: &FinetypeTransforms) -> String {
     for f in &d.fields {
         let col = quoted(&f.name);
         if cast_expr(&f.name, f.meta.finetype.as_deref(), transforms).is_some() {
-            columns.push(format!("CAST({col} AS VARCHAR) AS {col}"));
+            columns.push(format!("{} AS {col}", as_text(&f.name)));
         } else {
             columns.push(col);
         }

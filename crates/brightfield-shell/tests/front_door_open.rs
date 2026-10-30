@@ -600,5 +600,5 @@ fn nominated_label_is_not_asked() {
     assert_eq!(*asked.lock().unwrap(), ["region"]);
     assert_eq!(semantic_of(&opened, "amount"), given(CURRENCY));
     assert_eq!(semantic_of(&opened, "region").label(), Some("stub.label"));
-    assert!(!trace.already_cast, "a lone file is not cast yet");
+    assert!(!trace.already_cast, "a lone file is not already cast");
 }

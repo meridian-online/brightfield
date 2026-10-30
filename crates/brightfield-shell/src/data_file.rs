@@ -171,6 +171,9 @@ use brightfield_engine::{ColumnProfile, Engine, LoadOptions, ProfileOutcome, Sca
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
 
+use brightfield_protocol::silver::{cast_expr_over_text, FinetypeTransforms};
+
+use crate::column_record::{Negatives, Written};
 use crate::dashboard::Dashboard;
 use crate::pipeline::{Composed, LiveDashboard};
 
@@ -267,6 +270,10 @@ pub const MATERIALISE_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
 /// window is titled from the file name.
 pub const SOURCE: &str = "opened";
 
+/// The prefix of the name a cast column's text, as the file wrote it, is kept under in the copy:
+/// `__raw__revenue` beside `revenue`. The grid does not list these columns.
+pub const RAW_PREFIX: &str = "__raw__";
+
 /// Everything opening a file produced: the live session over it, the first
 /// composition, the dashboard that was chosen for it, and where the generated
 /// spec was written for the reader.
@@ -340,6 +347,10 @@ pub struct OpenTrace {
     /// Whether the open took the file as already cast: asked for in
     /// [`OpenOptions::already_cast`], or found by [`settled`].
     pub already_cast: bool,
+    /// What the cast of the file's copy read, statement by statement: the copy and the
+    /// aggregates over it. Empty when [`open_traced`] was not asked to count, or when nothing was
+    /// cast.
+    pub cast: ScanTally,
 }
 
 // ---------------------------------------------------------------------------
@@ -688,9 +699,9 @@ pub struct OpenOptions {
     /// [`open_traced`] also sets it for a file it recognises as such (see
     /// [`settled`]).
     ///
-    /// Nothing casts on the flat route yet. The cast a lone file's copy is
-    /// to make when it is read into memory is what will read this, and skip
-    /// itself for a file that is already cast.
+    /// A lone file's copy casts each column FineType's projection casts as
+    /// it is read into memory (see `CastPlan`); an already-cast file's copy
+    /// casts nothing, so a rate is not divided by 100 twice.
     pub already_cast: bool,
 }
 
@@ -734,68 +745,111 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
     options.already_cast |= found.already_cast;
     let options = &options;
     let columns = columns_of(&path, options)?;
-    let dashboard = Dashboard::of(&path, &columns);
-    if dashboard.tiles().is_empty() {
-        let left: Vec<String> = dashboard
-            .omitted()
-            .iter()
-            .map(|o| format!("{}: {}", o.column, o.because))
-            .collect();
-        return Err(format!(
-            "{}: opened, but there is nothing here to draw — no column in it \
-             admits a picture this build can make. {}",
-            path.display(),
-            if left.is_empty() {
-                "It declares no columns at all.".to_string()
-            } else {
-                left.join("; ")
-            }
-        ));
-    }
-    let spec = dashboard.to_spec();
-    let mut live =
-        LiveDashboard::load_str(&spec, None).map_err(|e| format!("{}: {e}", path.display()))?;
-    // The one read. What the composition issues after this scans a table, so
-    // the tile count stops multiplying the cost of a read — see the module
-    // header for the measurement that decided it.
-    //
-    // TWO conditions, in two units, and they are not interchangeable.
-    // `materialise_under_bytes` is on disk and decides whether the copy is
-    // worth attempting; `materialise_budget_bytes` is the memory the copy may
-    // cost and is enforced inside `materialise_source`, which returns `Err`
-    // when the table does not fit it.
-    //
-    // A file DuckDB will not copy is not a file that failed to open: the view
-    // is still there and still correct, so a refusal here costs the old slow
-    // open and nothing else. That is the branch a table larger than the budget
-    // takes, and `a_file_whose_table_exceeds_the_budget_opens_off_the_view`
-    // drives it.
-    //
     // A path that cannot be stat-ed reads as `u64::MAX`, which is over any
     // threshold, so an unreadable size declines the copy rather than assuming
     // one is safe.
     let bytes = std::fs::metadata(&path)
         .map(|m| m.len())
         .unwrap_or(u64::MAX);
+    let copying = bytes <= options.materialise_under_bytes;
+    // The columns the copy casts as it reads them. None for a file already
+    // cast, and none for a file that will not be copied: a file over the
+    // threshold opens off the view, as it did before anything was cast.
+    let plan = if options.already_cast || !copying {
+        CastPlan::default()
+    } else {
+        CastPlan::of(&columns, &FinetypeTransforms::vendored())
+    };
     let mut materialised = false;
     let mut materialise_ms = 0.0;
     let mut materialise_bytes = None;
-    if bytes <= options.materialise_under_bytes {
-        let at = std::time::Instant::now();
-        match live.materialise_source(SOURCE, options.materialise_budget_bytes) {
-            Ok(()) => {
-                materialised = true;
-                materialise_ms = at.elapsed().as_secs_f64() * 1000.0;
-                materialise_bytes = live.coordinator().session().in_memory_table_bytes();
-            }
+    let mut cast = ScanTally::default();
+
+    // A file with something to cast is opened in the order the cast needs:
+    // the copy with its casts, one aggregate over the copy, and only then the
+    // dashboard, chosen from the cast columns' profiles. The spec is swapped
+    // into the session that holds the copy, so the file is still read once.
+    // A file with nothing to cast takes the order below, which draws the same
+    // dashboard either way, because the copy changes no column.
+    let mut cast_open = None;
+    if !plan.is_empty() {
+        match cast_copy(&path, &columns, &plan, options) {
+            Ok(done) => cast_open = Some(done),
             Err(e) => eprintln!(
-                "warning: {}: composing from the file directly, because it \
-                 could not be read into memory within {} bytes: {e}",
+                "warning: {}: composing from the file directly, uncast, because its \
+                 cast copy within {} bytes of memory could not be made: {e}",
                 path.display(),
                 options.materialise_budget_bytes
             ),
         }
     }
+    let attempted_cast = !plan.is_empty();
+    let (mut live, columns, dashboard, spec) = if let Some(done) = cast_open {
+        let CastCopy {
+            mut live,
+            columns,
+            tally,
+            ms,
+            written,
+        } = done;
+        let dashboard = dashboard_for(&path, &columns)?;
+        let spec = dashboard.to_spec();
+        live.reload_str(&spec)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let derived = dashboard.derived_columns();
+        if !derived.is_empty() {
+            live.coordinator()
+                .session_mut()
+                .derive_source(SOURCE, ROWS, &derived)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+        record_written(&path, &written);
+        materialised = true;
+        materialise_ms = ms;
+        materialise_bytes = live.coordinator().session().in_memory_table_bytes();
+        cast = tally;
+        (live, columns, dashboard, spec)
+    } else {
+        let dashboard = dashboard_for(&path, &columns)?;
+        let spec = dashboard.to_spec();
+        let mut live =
+            LiveDashboard::load_str(&spec, None).map_err(|e| format!("{}: {e}", path.display()))?;
+        // The one read. What the composition issues after this scans a table,
+        // so the tile count stops multiplying the cost of a read — see the
+        // module header for the measurement that decided it.
+        //
+        // TWO conditions, in two units, and they are not interchangeable.
+        // `materialise_under_bytes` is on disk and decides whether the copy is
+        // worth attempting; `materialise_budget_bytes` is the memory the copy
+        // may cost and is enforced inside `materialise_source`, which returns
+        // `Err` when the table does not fit it.
+        //
+        // A file DuckDB will not copy is not a file that failed to open: the
+        // view is still there and still correct, so a refusal here costs the
+        // old slow open and nothing else. That is the branch a table larger
+        // than the budget takes, and
+        // `a_file_whose_table_exceeds_the_budget_opens_off_the_view` drives it.
+        //
+        // A cast copy that was refused is not tried again uncast: the refusal
+        // was the budget's, and a second read would only spend it again.
+        if copying && !attempted_cast {
+            let at = std::time::Instant::now();
+            match live.materialise_source(SOURCE, options.materialise_budget_bytes) {
+                Ok(()) => {
+                    materialised = true;
+                    materialise_ms = at.elapsed().as_secs_f64() * 1000.0;
+                    materialise_bytes = live.coordinator().session().in_memory_table_bytes();
+                }
+                Err(e) => eprintln!(
+                    "warning: {}: composing from the file directly, because it \
+                     could not be read into memory within {} bytes: {e}",
+                    path.display(),
+                    options.materialise_budget_bytes
+                ),
+            }
+        }
+        (live, columns, dashboard, spec)
+    };
 
     let at = std::time::Instant::now();
     let (composed, composition) = if options.count_scans {
@@ -833,8 +887,305 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
             bytes,
             materialise_bytes,
             already_cast: options.already_cast,
+            cast,
         },
     ))
+}
+
+/// The dashboard [`Dashboard::of`] chooses for `columns`, or the sentence that says why there is
+/// nothing to draw.
+fn dashboard_for(path: &Path, columns: &[ColumnProfile]) -> Result<Dashboard, String> {
+    let dashboard = Dashboard::of(path, columns);
+    if dashboard.tiles().is_empty() {
+        let left: Vec<String> = dashboard
+            .omitted()
+            .iter()
+            .map(|o| format!("{}: {}", o.column, o.because))
+            .collect();
+        return Err(format!(
+            "{}: opened, but there is nothing here to draw — no column in it \
+             admits a picture this build can make. {}",
+            path.display(),
+            if left.is_empty() {
+                "It declares no columns at all.".to_string()
+            } else {
+                left.join("; ")
+            }
+        ));
+    }
+    Ok(dashboard)
+}
+
+// ---------------------------------------------------------------------------
+// The cast a lone file's copy makes
+// ---------------------------------------------------------------------------
+
+/// The columns a lone file's copy casts as it reads them, and the SQL each is cast by.
+///
+/// A column is a candidate when its label is trusted (its values do not contradict it), FineType's
+/// own projection casts it ([`cast_expr_over_text`], which passes through a label FineType types as
+/// VARCHAR, as it does twelve currency and rate labels whose transforms return numbers), and DuckDB
+/// did not already store it as the type the label casts to. Whether the cast stands is decided
+/// after the copy, from the values: see [`cast_copy`].
+#[derive(Debug, Default)]
+struct CastPlan {
+    /// Each candidate column, and the cast that reads it, over the column read as text.
+    casts: Vec<(String, String)>,
+}
+
+impl CastPlan {
+    /// The candidates among `columns`, in the file's order.
+    fn of(columns: &[ColumnProfile], transforms: &FinetypeTransforms) -> Self {
+        let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+        let casts = columns
+            .iter()
+            .filter_map(|c| {
+                if !c.semantic.is_usable() {
+                    return None;
+                }
+                let label = c.semantic.label()?;
+                let target = transforms.duckdb_type(label)?;
+                if base_type(&c.type_name) == base_type(target) {
+                    return None;
+                }
+                // A file that already has a column under the raw name keeps its own column.
+                if names.contains(&raw_name(&c.name).as_str()) {
+                    return None;
+                }
+                let expr = cast_expr_over_text(&c.name, Some(label), transforms)?;
+                Some((c.name.clone(), expr))
+            })
+            .collect();
+        Self { casts }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.casts.is_empty()
+    }
+
+    fn cast_of(&self, column: &str) -> Option<&str> {
+        self.casts
+            .iter()
+            .find(|(c, _)| c == column)
+            .map(|(_, expr)| expr.as_str())
+    }
+
+    /// The copy's select list: every column of `columns` in order, a candidate as cast and then,
+    /// beside it, as read under its raw name, so a cast put back leaves the column where it was.
+    fn projection(&self, columns: &[ColumnProfile]) -> Vec<String> {
+        columns
+            .iter()
+            .flat_map(|c| {
+                let q = sql_ident(&c.name);
+                match self.cast_of(&c.name) {
+                    Some(expr) => vec![
+                        format!("{expr} AS {q}"),
+                        format!("{q} AS {}", sql_ident(&raw_name(&c.name))),
+                    ],
+                    None => vec![q],
+                }
+            })
+            .collect()
+    }
+}
+
+/// The name a cast column's text is kept under in the copy.
+fn raw_name(column: &str) -> String {
+    format!("{RAW_PREFIX}{column}")
+}
+
+/// `name` as a SQL identifier.
+fn sql_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// A DuckDB type name without its parameters, so `DECIMAL(18,2)` is the `DECIMAL` a label casts
+/// to.
+fn base_type(type_name: &str) -> String {
+    type_name
+        .split('(')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_uppercase()
+}
+
+/// What casting a lone file's copy produced.
+struct CastCopy {
+    /// The session holding the copy, with its source-only spec.
+    live: LiveDashboard,
+    /// The file's columns, a cast one profiled as cast.
+    columns: Vec<ColumnProfile>,
+    /// The copy and the aggregates over it, when the open counts.
+    tally: ScanTally,
+    /// The copy's clock, milliseconds.
+    ms: f64,
+    /// Each column that was cast, its label and how its source wrote it.
+    written: Vec<CastWritten>,
+}
+
+/// A column that was cast, the label it was cast for, and how the file wrote it.
+type CastWritten = (String, String, Written);
+
+/// Read `path` once into memory, casting each of `plan`'s candidates as it is read, and keep a
+/// cast only where every non-null value cast.
+///
+/// One aggregate over the copy decides each candidate (a cast that turned a value into NULL has
+/// fewer non-null values than the text it was read from), profiles the cast columns, and reads
+/// from a currency column's text the symbol its values share and how its negatives are written.
+/// A candidate that did not cast is put back as it was read.
+///
+/// # Errors
+///
+/// Why the copy or the aggregate failed; the session is then the caller's to drop.
+fn cast_copy(
+    path: &Path,
+    columns: &[ColumnProfile],
+    plan: &CastPlan,
+    options: &OpenOptions,
+) -> Result<CastCopy, String> {
+    let mut live = LiveDashboard::load_str(&source_spec(path), None)?;
+    if options.count_scans {
+        live.coordinator().session().begin_scan_tally();
+    }
+    let at = std::time::Instant::now();
+    let copied = live.materialise_source_with(
+        SOURCE,
+        options.materialise_budget_bytes,
+        &plan.projection(columns),
+    );
+    let ms = at.elapsed().as_secs_f64() * 1000.0;
+    let decided = copied.and_then(|()| decide_casts(&mut live, columns, plan));
+    let tally = live.coordinator().session().take_scan_tally();
+    let (columns, written) = decided?;
+    Ok(CastCopy {
+        live,
+        columns,
+        tally,
+        ms,
+        written,
+    })
+}
+
+/// Decide each of `plan`'s candidates in the copy `live` holds, from one aggregate over it, and
+/// put back those that did not cast: `columns` with each cast column's profile replaced by the
+/// cast one's, and what the file wrote each cast column with.
+fn decide_casts(
+    live: &mut LiveDashboard,
+    columns: &[ColumnProfile],
+    plan: &CastPlan,
+) -> Result<(Vec<ColumnProfile>, Vec<CastWritten>), String> {
+    let label_of = |column: &str| {
+        columns
+            .iter()
+            .find(|c| c.name == column)
+            .and_then(|c| c.semantic.label())
+            .unwrap_or_default()
+            .to_string()
+    };
+    // Per candidate: the raw text's non-null count, then, for a currency column, the symbol its
+    // values share and how its negatives are written.
+    let mut extra = Vec::new();
+    let mut asked = Vec::new();
+    for (column, _) in &plan.casts {
+        let raw = sql_ident(&raw_name(column));
+        extra.push(format!("count({raw})"));
+        let currency = label_of(column).starts_with("finance.currency.");
+        if currency {
+            let text = format!("CAST({raw} AS VARCHAR)");
+            let symbol = format!("nullif(regexp_extract({text}, '\\p{{Sc}}', 0), '')");
+            extra.push(format!(
+                "CASE WHEN count(DISTINCT {symbol}) = 1 AND count({symbol}) = count({raw}) \
+                 THEN min({symbol}) END"
+            ));
+            extra.push(format!(
+                "CASE WHEN count_if(trim({text}) LIKE '(%)') > 0 THEN 'parentheses' \
+                 WHEN count_if(contains({text}, '-')) > 0 THEN 'minus' END"
+            ));
+        }
+        asked.push(currency);
+    }
+    let names: Vec<String> = plan.casts.iter().map(|(c, _)| c.clone()).collect();
+    let (profiled, answers) = live
+        .coordinator()
+        .session()
+        .profile_columns_with(SOURCE, &names, &extra)?;
+    let mut answers = answers.into_iter();
+    let mut out = columns.to_vec();
+    let mut put_back = Vec::new();
+    let mut written = Vec::new();
+    for ((column, _), currency) in plan.casts.iter().zip(asked) {
+        let raw_count: Option<u64> = answers.next().flatten().and_then(|n| n.parse().ok());
+        let (symbol, negatives) = if currency {
+            (answers.next().flatten(), answers.next().flatten())
+        } else {
+            (None, None)
+        };
+        let cast = profiled.iter().find(|p| &p.name == column);
+        let stands = matches!((cast, raw_count), (Some(p), Some(n)) if p.non_null == n);
+        let Some(at) = out.iter().position(|c| &c.name == column) else {
+            continue;
+        };
+        match cast.filter(|_| stands) {
+            Some(cast) => {
+                let label = label_of(column);
+                out[at] = ColumnProfile {
+                    semantic: out[at].semantic.clone(),
+                    ..cast.clone()
+                };
+                written.push((
+                    column.clone(),
+                    label,
+                    Written {
+                        currency_symbol: symbol,
+                        negatives: match negatives.as_deref() {
+                            Some("parentheses") => Some(Negatives::Parentheses),
+                            Some("minus") => Some(Negatives::Minus),
+                            _ => None,
+                        },
+                    },
+                ));
+            }
+            None => put_back.push((column.clone(), raw_name(column))),
+        }
+    }
+    if !put_back.is_empty() {
+        live.coordinator()
+            .session_mut()
+            .put_back_columns(SOURCE, &put_back)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok((out, written))
+}
+
+/// Keep what casting `path` read from it in its column record: for each cast column, its label
+/// (unless an analyst's accepted label is already there) and how the file wrote it.
+///
+/// A record that cannot be read or written is reported and otherwise ignored: the open does not
+/// depend on it.
+fn record_written(path: &Path, written: &[CastWritten]) {
+    if written.is_empty() {
+        return;
+    }
+    let kept = (|| {
+        let package = crate::column_record::flat_record_path(path)?;
+        let mut record = crate::column_record::read_record(&package, SOURCE)?.unwrap_or_default();
+        crate::column_record::refresh_if_changed(&mut record, path)?;
+        for (column, label, how) in written {
+            let field = record.fields.entry(column.clone()).or_default();
+            if !field.nominated {
+                field.label = Some(label.clone());
+            }
+            field.written = how.clone();
+        }
+        crate::column_record::write_record(&package, SOURCE, &record)
+    })();
+    if let Err(e) = kept {
+        eprintln!(
+            "warning: {}: what its columns were written with was not recorded: {e}",
+            path.display()
+        );
+    }
 }
 
 /// The directory generated specs are written to, per process.

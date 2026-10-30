@@ -1488,6 +1488,53 @@ impl LiveDashboard {
             .map_err(|e| e.to_string())
     }
 
+    /// [`LiveDashboard::materialise_source`], with the copy selecting
+    /// `projection` in place of `*` — see
+    /// [`brightfield_engine::Session::materialise_source_with`].
+    ///
+    /// # Errors
+    ///
+    /// As [`LiveDashboard::materialise_source`].
+    pub fn materialise_source_with(
+        &mut self,
+        name: &str,
+        budget_bytes: u64,
+        projection: &[String],
+    ) -> Result<(), String> {
+        self.coordinator
+            .session_mut()
+            .materialise_source_with(name, budget_bytes, projection)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Compose `source` from here on, over this dashboard's session and the
+    /// views it already holds: the spec is parsed, analysed and swapped into
+    /// the session ([`brightfield_engine::Session::reload_spec`]) with no new
+    /// DuckDB connection, so a copy already made stays made.
+    ///
+    /// The diagnostics become the new spec's, and an automatic sample is
+    /// decided again, since it depends on the marks.
+    ///
+    /// # Errors
+    ///
+    /// The parse or analysis error, in which case nothing changed.
+    pub fn reload_str(&mut self, source: &str) -> Result<(), String> {
+        let parsed = parse_spec(source, Format::Yaml).map_err(|e| format!("parse error: {e}"))?;
+        let spec = parsed.spec;
+        let analysis = analyse_spec(&spec).map_err(|e| format!("analysis error: {e}"))?;
+        self.diagnostics =
+            LoadDiagnostics::collect(None, &spec, &parsed.warnings, &analysis.warnings);
+        self.coordinator
+            .session_mut()
+            .reload_spec(spec.clone(), analysis);
+        self.spec = spec;
+        if self.sample_is_automatic {
+            let rate = automatic_sample(self.coordinator.session());
+            self.coordinator.session_mut().set_sample(rate);
+        }
+        Ok(())
+    }
+
     /// [`LiveDashboard::present`], with DuckDB asked to explain each statement
     /// the composition issues and the leaves of those plans counted.
     ///

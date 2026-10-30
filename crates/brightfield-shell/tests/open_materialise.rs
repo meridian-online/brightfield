@@ -16,10 +16,13 @@
 use std::path::{Path, PathBuf};
 
 use arrow::util::pretty::pretty_format_batches;
-use brightfield_engine::MATERIALISE_BUDGET_FLOOR_BYTES;
+use brightfield_engine::{RowsAudience, RowsView, MATERIALISE_BUDGET_FLOOR_BYTES};
+use brightfield_shell::chart_kinds;
+use brightfield_shell::column_record;
 use brightfield_shell::data_file::{
-    self, OpenOptions, MATERIALISE_BUDGET_BYTES, MATERIALISE_UNDER_BYTES,
+    self, OpenOptions, OpenTrace, OpenedFile, MATERIALISE_BUDGET_BYTES, MATERIALISE_UNDER_BYTES,
 };
+use brightfield_shell::data_grid::fetch_page;
 
 /// A fixture with one column of each kind the dashboard draws a tile from: two
 /// measures (one bounded, so both branches of the histogram's own device are
@@ -128,12 +131,18 @@ fn drawn_rows(path: &Path, options: &OpenOptions) -> (Vec<String>, bool, usize) 
 fn every_mark_draws_the_same_rows_down_both_branches_of_the_threshold() {
     let path = fixture("rows");
 
-    let (materialised, was_materialised, tiles) = drawn_rows(&path, &OpenOptions::default());
+    // Without a type source, so no column is labelled. A labelled column is cast in the copy and
+    // only there, which the cast's own tests below cover; here the copy must change nothing.
+    let unlabelled = OpenOptions {
+        type_source: None,
+        ..OpenOptions::default()
+    };
+    let (materialised, was_materialised, tiles) = drawn_rows(&path, &unlabelled);
     let (direct, was_direct, direct_tiles) = drawn_rows(
         &path,
         &OpenOptions {
             materialise_under_bytes: 0,
-            ..OpenOptions::default()
+            ..unlabelled.clone()
         },
     );
 
@@ -661,4 +670,391 @@ fn a_file_of_exactly_the_threshold_is_copied_and_one_byte_under_it_is_not() {
          comparison admits a file larger than the threshold",
         bytes - 1
     );
+}
+
+// ---------------------------------------------------------------------------
+// The copy casts what FineType's projection casts
+// ---------------------------------------------------------------------------
+//
+// A lone file's copy casts each column whose label FineType's projection casts, when every value
+// casts. The labels here come from a column record that nominates them, as an analyst who accepted
+// them would have, so no FineType bundle is needed; the casts come from the transforms vendored
+// into `brightfield-protocol`.
+
+/// The committed fixture: sterling amounts with accounting negatives, dollar prices, percentages,
+/// rates, years, counts, ISO dates and free text, written by `data/typed_formats.py`.
+const TYPED_FORMATS: &str = include_str!("data/typed_formats.csv");
+
+/// The label each of the fixture's columns is given. `notes` has none.
+const TYPED_LABELS: &[(&str, &str)] = &[
+    ("revenue", "finance.currency.amount"),
+    ("price_usd", "finance.currency.amount"),
+    ("share", "representation.numeric.percentage"),
+    ("yield", "finance.rate.yield"),
+    ("year", "datetime.component.year"),
+    ("downloads", "representation.numeric.integer_number"),
+    ("day", "datetime.date.iso"),
+];
+
+/// Point the config folder, where a lone file's column record is kept, at a scratch folder of
+/// this process's, once and before any test reads it.
+fn scratch_config() {
+    use std::sync::OnceLock;
+    static CONFIG: OnceLock<PathBuf> = OnceLock::new();
+    CONFIG.get_or_init(|| {
+        let dir =
+            std::env::temp_dir().join(format!("bf-materialise-config-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch config folder");
+        std::env::set_var(brightfield_shell::startup::CONFIG_DIR_VAR, &dir);
+        dir
+    });
+}
+
+/// `text` written as a CSV in a folder named `name`, with a record nominating [`TYPED_LABELS`].
+fn typed(name: &str, text: &str) -> PathBuf {
+    scratch_config();
+    let dir = std::env::temp_dir()
+        .join(format!("bf-typed-formats-{}", std::process::id()))
+        .join(name);
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let path = dir.join("typed_formats.csv");
+    std::fs::write(&path, text).expect("write fixture");
+    let mut record = column_record::SourceRecord::default();
+    for (column, label) in TYPED_LABELS {
+        record.fields.insert(
+            (*column).to_string(),
+            column_record::FieldRecord {
+                label: Some((*label).to_string()),
+                nominated: true,
+                ..column_record::FieldRecord::default()
+            },
+        );
+    }
+    let package = column_record::flat_record_path(&path).expect("a record path");
+    column_record::write_record(&package, data_file::SOURCE, &record).expect("write record");
+    path
+}
+
+/// The options these opens take: no type source, so a bundle beside the test binary changes
+/// nothing, and the labels are the record's alone.
+fn unbundled() -> OpenOptions {
+    OpenOptions {
+        type_source: None,
+        ..OpenOptions::default()
+    }
+}
+
+fn open_typed(path: &Path, options: &OpenOptions) -> (OpenedFile, OpenTrace) {
+    data_file::open_traced(&path.to_string_lossy(), options).expect("the fixture opens")
+}
+
+/// Every row `sql` returns from the opened file's session, each cell as text.
+fn rows_of(opened: &mut OpenedFile, sql: &str) -> Vec<Vec<Option<String>>> {
+    use arrow::array::{Array, StringArray};
+    let batches = opened
+        .live
+        .coordinator()
+        .session_mut()
+        .execute_uncached(sql)
+        .unwrap_or_else(|e| panic!("{sql}: {e}"));
+    let mut out = Vec::new();
+    for batch in &batches {
+        let text: Vec<StringArray> = batch
+            .columns()
+            .iter()
+            .map(|c| {
+                arrow::compute::cast(c, &arrow::datatypes::DataType::Utf8)
+                    .expect("a cell casts to text")
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("text")
+                    .clone()
+            })
+            .collect();
+        for row in 0..batch.num_rows() {
+            out.push(
+                text.iter()
+                    .map(|c| (!c.is_null(row)).then(|| c.value(row).to_string()))
+                    .collect(),
+            );
+        }
+    }
+    out
+}
+
+/// The type the opened copy holds `column` as.
+fn type_of(opened: &mut OpenedFile, column: &str) -> String {
+    let rows = rows_of(
+        opened,
+        &format!(
+            "SELECT column_type FROM (DESCRIBE \"{}\") WHERE column_name = '{column}'",
+            data_file::SOURCE
+        ),
+    );
+    rows.first()
+        .and_then(|r| r[0].clone())
+        .unwrap_or_else(|| panic!("no column {column}"))
+}
+
+/// The kind of the tile drawn of `column`, or `None` when it has none.
+fn tile_kind(opened: &OpenedFile, column: &str) -> Option<String> {
+    opened
+        .dashboard
+        .tiles()
+        .iter()
+        .find(|t| t.column() == column)
+        .map(|t| t.kind().to_string())
+}
+
+/// The record kept for `path` after it opened.
+fn record_of(path: &Path) -> column_record::SourceRecord {
+    let package = column_record::flat_record_path(path).expect("a record path");
+    column_record::read_record(&package, data_file::SOURCE)
+        .expect("the record reads")
+        .expect("there is a record")
+}
+
+#[test]
+fn flat_open_casts_a_currency_column() {
+    let path = typed("casts", TYPED_FORMATS);
+    let (mut opened, trace) = open_typed(&path, &unbundled());
+    assert!(trace.materialised, "the fixture was not copied");
+    assert!(
+        type_of(&mut opened, "revenue").starts_with("DECIMAL"),
+        "revenue is {}",
+        type_of(&mut opened, "revenue")
+    );
+    assert_eq!(
+        tile_kind(&opened, "revenue").as_deref(),
+        Some(chart_kinds::BINNED_HISTOGRAM.to_string().as_str())
+    );
+    // The profile the dashboard was chosen from is the cast column's.
+    let revenue = opened
+        .protocol
+        .profiles
+        .iter()
+        .find(|c| c.name == "revenue")
+        .expect("revenue is listed");
+    assert!(revenue.type_name.starts_with("DECIMAL"), "{revenue:?}");
+}
+
+#[test]
+fn raw_text_survives_the_cast() {
+    let path = typed("raw", TYPED_FORMATS);
+    let (mut opened, _) = open_typed(&path, &unbundled());
+    let raw = format!("{}revenue", data_file::RAW_PREFIX);
+    let rows = rows_of(
+        &mut opened,
+        &format!("SELECT \"{raw}\", \"revenue\" FROM \"opened\" WHERE \"{raw}\" LIKE '(%'"),
+    );
+    assert!(!rows.is_empty(), "no parenthesised raw value survived");
+    assert_eq!(rows[0][0].as_deref(), Some("(£12.00)"));
+    assert_eq!(rows[0][1].as_deref(), Some("-12.00"));
+
+    let page = fetch_page(
+        opened.live.coordinator().session(),
+        0,
+        0..5,
+        RowsAudience::Reader,
+        &RowsView::default(),
+    )
+    .expect("the grid reads");
+    let names: Vec<&str> = page.columns.iter().map(|c| c.name.as_str()).collect();
+    assert!(names.contains(&"revenue"), "{names:?}");
+    assert!(
+        names.iter().all(|n| !n.starts_with(data_file::RAW_PREFIX)),
+        "the grid lists a raw column: {names:?}"
+    );
+    assert_eq!(page.rows[0].len(), names.len());
+}
+
+#[test]
+fn one_bad_value_keeps_the_column_text() {
+    let text = TYPED_FORMATS.replacen("$12.50", "n/a", 1);
+    assert_ne!(text, TYPED_FORMATS);
+    let path = typed("bad-value", &text);
+    let (mut cast, _) = open_typed(&path, &unbundled());
+    assert_eq!(type_of(&mut cast, "price_usd"), "VARCHAR");
+    // Its neighbours still cast.
+    assert!(type_of(&mut cast, "revenue").starts_with("DECIMAL"));
+    // The column is back in its place, read as it was.
+    let rows = rows_of(&mut cast, "SELECT \"price_usd\" FROM \"opened\" LIMIT 1");
+    assert_eq!(rows[0][0].as_deref(), Some("n/a"));
+    let names: Vec<String> = rows_of(&mut cast, "SELECT column_name FROM (DESCRIBE \"opened\")")
+        .into_iter()
+        .filter_map(|r| r[0].clone())
+        .filter(|n| !n.starts_with(data_file::RAW_PREFIX))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "revenue",
+            "price_usd",
+            "share",
+            "yield",
+            "year",
+            "downloads",
+            "day",
+            "notes"
+        ]
+    );
+
+    // Its tile is the one it got before the flat route cast anything.
+    let (uncast, _) = open_typed(
+        &path,
+        &OpenOptions {
+            already_cast: true,
+            ..unbundled()
+        },
+    );
+    assert_eq!(
+        tile_kind(&cast, "price_usd"),
+        tile_kind(&uncast, "price_usd")
+    );
+}
+
+#[test]
+fn mixed_symbols_record_none() {
+    let text = TYPED_FORMATS.replacen("£200,000,000.00", "$200,000,000.00", 1);
+    assert_ne!(text, TYPED_FORMATS);
+    let path = typed("mixed-symbols", &text);
+    let (mut opened, _) = open_typed(&path, &unbundled());
+    assert!(type_of(&mut opened, "revenue").starts_with("DECIMAL"));
+    let record = record_of(&path);
+    assert_eq!(record.fields["revenue"].written.currency_symbol, None);
+    assert_eq!(
+        record.fields["price_usd"]
+            .written
+            .currency_symbol
+            .as_deref(),
+        Some("$")
+    );
+}
+
+#[test]
+fn parentheses_are_recorded() {
+    let path = typed("parentheses", TYPED_FORMATS);
+    let _ = open_typed(&path, &unbundled());
+    let record = record_of(&path);
+    let revenue = &record.fields["revenue"];
+    assert_eq!(
+        revenue.written.negatives,
+        Some(column_record::Negatives::Parentheses)
+    );
+    assert_eq!(revenue.written.currency_symbol.as_deref(), Some("£"));
+    // The accepted label is still the accepted label.
+    assert!(revenue.nominated);
+    assert_eq!(revenue.label.as_deref(), Some("finance.currency.amount"));
+    assert!(
+        record.source.is_some(),
+        "the record is stamped with the file it was read from"
+    );
+}
+
+#[test]
+fn over_budget_file_is_not_cast() {
+    let path = typed("not-copied", TYPED_FORMATS);
+    let (mut opened, trace) = open_typed(
+        &path,
+        &OpenOptions {
+            materialise_under_bytes: 0,
+            ..unbundled()
+        },
+    );
+    assert!(!trace.materialised);
+    assert_eq!(type_of(&mut opened, "revenue"), "VARCHAR");
+    assert!(trace.cast.statements.is_empty());
+    let record = record_of(&path);
+    assert_eq!(
+        record.fields["revenue"].written,
+        column_record::Written::default()
+    );
+}
+
+#[test]
+fn cast_open_reads_the_file_once() {
+    let path = typed("read-once", TYPED_FORMATS);
+    let (_, trace) = open_typed(
+        &path,
+        &OpenOptions {
+            count_scans: true,
+            ..unbundled()
+        },
+    );
+    let statements = &trace.cast.statements;
+    let copies: Vec<_> = statements
+        .iter()
+        .filter(|s| s.sql.starts_with("CREATE TEMP TABLE"))
+        .collect();
+    assert_eq!(copies.len(), 1, "{statements:#?}");
+    assert_eq!(copies[0].file_reads, Some(1), "{:?}", copies[0]);
+    // Every statement after the copy reads the copy. A `DESCRIBE` is left out of the count: the
+    // plan of one is a column-data scan, which the tally counts as a file read whatever it
+    // describes (see `plan_file_reads` in the engine's profile module).
+    let after: Vec<_> = statements
+        .iter()
+        .filter(|s| !s.sql.starts_with("CREATE TEMP TABLE") && !s.sql.starts_with("DESCRIBE"))
+        .collect();
+    assert!(
+        after.iter().any(|s| s.sql.contains("__raw__revenue")),
+        "no aggregate over the copy was counted: {statements:#?}"
+    );
+    for s in after {
+        assert_eq!(s.file_reads, Some(0), "{s:?}");
+    }
+}
+
+#[test]
+fn typed_dates_survive() {
+    let path = typed("dates", TYPED_FORMATS);
+    let (mut opened, _) = open_typed(&path, &unbundled());
+    assert_eq!(type_of(&mut opened, "day"), "DATE");
+    let raw = format!("{}day", data_file::RAW_PREFIX);
+    let rows = rows_of(
+        &mut opened,
+        &format!("SELECT count(*) FROM (DESCRIBE \"opened\") WHERE column_name = '{raw}'"),
+    );
+    assert_eq!(
+        rows[0][0].as_deref(),
+        Some("0"),
+        "a DATE column was cast again"
+    );
+}
+
+/// A cast file whose timestamp is drawn through a derived bucket column still draws every mark,
+/// off the copy.
+#[test]
+fn a_cast_file_still_derives_a_bucket_column() {
+    let mut text = String::from("revenue,at\n");
+    for i in 0..240 {
+        text.push_str(&format!(
+            "\"£{},{:03}.50\",2020-01-01 00:{:02}:{:02}\n",
+            i + 1,
+            (i * 7) % 1000,
+            i / 60,
+            i % 60
+        ));
+    }
+    let path = typed("derived", &text);
+    let (mut opened, trace) = open_typed(&path, &unbundled());
+    assert!(trace.materialised);
+    assert!(type_of(&mut opened, "revenue").starts_with("DECIMAL"));
+    assert!(
+        opened
+            .dashboard
+            .tiles()
+            .iter()
+            .any(|t| t.resampled().is_some()),
+        "the timestamp was not resampled, so nothing was derived"
+    );
+    let marks = opened.live.coordinator().session().mark_count();
+    for index in 0..marks {
+        opened
+            .live
+            .coordinator()
+            .session_mut()
+            .execute_mark(index)
+            .unwrap_or_else(|e| panic!("mark {index}: {e}"));
+    }
 }

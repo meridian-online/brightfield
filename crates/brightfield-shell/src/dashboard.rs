@@ -773,7 +773,7 @@ impl Dashboard {
     /// Empty for a dashboard whose columns all draw as they stand, which is
     /// what keeps the data block a single `file:` entry for a table carrying no
     /// timestamp.
-    fn derived_columns(&self) -> Vec<String> {
+    pub(crate) fn derived_columns(&self) -> Vec<String> {
         self.tiles
             .iter()
             .filter_map(|tile| {

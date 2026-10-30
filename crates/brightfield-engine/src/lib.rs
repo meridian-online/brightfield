@@ -3335,9 +3335,34 @@ impl Session {
     /// the view. In the first two cases the source is untouched — the budget
     /// and the copy both run before the view does.
     pub fn materialise_source(&mut self, name: &str, budget_bytes: u64) -> Result<(), EngineError> {
+        self.materialise_source_with(name, budget_bytes, &[])
+    }
+
+    /// [`Session::materialise_source`], with the copy selecting `projection` from the source in
+    /// place of `*`: each entry one item of the select list, written over the source's own
+    /// columns. An empty `projection` copies `*`.
+    ///
+    /// This is how a copy can cast as it reads: the file is still read once, and the casts are
+    /// computed on the way into memory. The budget, the refusal and what is put back are those of
+    /// [`Session::materialise_source`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Session::materialise_source`]; a projection DuckDB will not bind is a refused copy.
+    pub fn materialise_source_with(
+        &mut self,
+        name: &str,
+        budget_bytes: u64,
+        projection: &[String],
+    ) -> Result<(), EngineError> {
         let quoted = name.replace('"', "\"\"");
         let table = format!("{name}{MATERIALISED_SUFFIX}").replace('"', "\"\"");
-        let copy = format!("CREATE TEMP TABLE \"{table}\" AS SELECT * FROM \"{quoted}\"");
+        let select = if projection.is_empty() {
+            "*".to_string()
+        } else {
+            projection.join(", ")
+        };
+        let copy = format!("CREATE TEMP TABLE \"{table}\" AS SELECT {select} FROM \"{quoted}\"");
         self.record_scan(&copy);
 
         // No baseline, no copy. Narrowing a limit this session cannot put back
@@ -3377,6 +3402,74 @@ impl Session {
         let repoint = format!("CREATE OR REPLACE VIEW \"{quoted}\" AS SELECT * FROM \"{table}\"");
         self.conn
             .execute_batch(&repoint)
+            .map_err(|cause| EngineError::ConnectionFailed { cause })?;
+        self.invalidate_derived_state();
+        Ok(())
+    }
+
+    /// Undo part of a copy [`Session::materialise_source_with`] made of `name`: for each
+    /// `(column, kept)`, the copy's `column` is dropped and its `kept` column is renamed to
+    /// `column`, which then stands where `kept` stood. The view is pointed at the copy again, since
+    /// its columns changed under it.
+    ///
+    /// For a copy that selected a column twice, once cast and once as read, and found the cast
+    /// should not stand: the column is put back as it was read.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB's, when `name` has no copy or a column is not in it.
+    pub fn put_back_columns(
+        &mut self,
+        name: &str,
+        columns: &[(String, String)],
+    ) -> Result<(), EngineError> {
+        let quoted = escape_ident(name);
+        let table = escape_ident(&format!("{name}{MATERIALISED_SUFFIX}"));
+        let mut sql = String::new();
+        for (column, kept) in columns {
+            let column = escape_ident(column);
+            let kept = escape_ident(kept);
+            sql.push_str(&format!(
+                "ALTER TABLE \"{table}\" DROP COLUMN \"{column}\"; \
+                 ALTER TABLE \"{table}\" RENAME COLUMN \"{kept}\" TO \"{column}\"; "
+            ));
+        }
+        sql.push_str(&format!(
+            "CREATE OR REPLACE VIEW \"{quoted}\" AS SELECT * FROM \"{table}\";"
+        ));
+        self.conn
+            .execute_batch(&sql)
+            .map_err(|cause| EngineError::ConnectionFailed { cause })?;
+        self.invalidate_derived_state();
+        Ok(())
+    }
+
+    /// Rename the view `name` to `rows` and declare `name` again over it with `derived` columns
+    /// projected beside its own: `SELECT *, <derived> FROM rows`, the shape a spec that derives
+    /// columns declares its two sources in.
+    ///
+    /// For a session whose source was declared, and copied, before the columns it derives were
+    /// known: a spec swapped in by [`Session::reload_spec`] names both views, and this is what
+    /// makes them exist over the copy rather than over a second read of the file.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB's, when `name` is not a view, `rows` is taken, or a projection does not bind.
+    pub fn derive_source(
+        &mut self,
+        name: &str,
+        rows: &str,
+        derived: &[String],
+    ) -> Result<(), EngineError> {
+        let quoted = escape_ident(name);
+        let rows = escape_ident(rows);
+        let sql = format!(
+            "ALTER VIEW \"{quoted}\" RENAME TO \"{rows}\"; \
+             CREATE VIEW \"{quoted}\" AS SELECT *, {} FROM \"{rows}\";",
+            derived.join(", ")
+        );
+        self.conn
+            .execute_batch(&sql)
             .map_err(|cause| EngineError::ConnectionFailed { cause })?;
         self.invalidate_derived_state();
         Ok(())
@@ -3509,10 +3602,52 @@ impl Session {
             Ok(c) => c,
             Err(e) => return ProfileOutcome::Failed(e),
         };
-        let mut outcome = match self.aggregate_source(name, &columns) {
-            Ok(outcome) => outcome,
-            Err(e) => return ProfileOutcome::Failed(e),
-        };
+        match self.profile_described(name, &columns, &[]) {
+            Ok((outcome, _)) => outcome,
+            Err(e) => ProfileOutcome::Failed(e),
+        }
+    }
+
+    /// The profiles of `columns` in the source `name`, with each of `extra`, a SQL aggregate
+    /// over the source, answered as text by the same aggregate: the profile pass of
+    /// [`Session::profile_sources`] for some of a source's columns, with questions of the
+    /// caller's riding the one read.
+    ///
+    /// The columns come back in the source's order, whatever order they are asked in, and a name
+    /// the source does not have is left out. Each profile's [`ColumnProfile::semantic`] is what
+    /// this session's type source and given labels say, which for a session loaded with neither
+    /// is [`SemanticType::NotAsked`].
+    ///
+    /// # Errors
+    ///
+    /// DuckDB's words, when the source cannot be described or an aggregate does not bind.
+    pub fn profile_columns_with(
+        &self,
+        name: &str,
+        columns: &[String],
+        extra: &[String],
+    ) -> Result<(Vec<ColumnProfile>, Vec<Option<String>>), String> {
+        let described: Vec<(String, String)> = self
+            .describe_columns(name)?
+            .into_iter()
+            .filter(|(column, _)| columns.contains(column))
+            .collect();
+        match self.profile_described(name, &described, extra)? {
+            (ProfileOutcome::Profiled { columns, .. }, extras) => Ok((columns, extras)),
+            (ProfileOutcome::Failed(reason), _) => Err(reason),
+            (ProfileOutcome::Unsupported, _) => Err("the source cannot be profiled".to_string()),
+        }
+    }
+
+    /// The aggregate pass over `columns` of `name` with `extra` riding it, then the
+    /// distributions.
+    fn profile_described(
+        &self,
+        name: &str,
+        columns: &[(String, String)],
+        extra: &[String],
+    ) -> Result<(ProfileOutcome, Vec<Option<String>>), String> {
+        let (mut outcome, extras) = self.aggregate_source(name, columns, extra)?;
         // The second pass, and the reason it is a second one: which shape a
         // column's distribution takes is decided by the EXACT distinct count,
         // which the aggregate above is what produces. ONE `GROUP BY` for every
@@ -3530,11 +3665,11 @@ impl Session {
                             }
                         }
                     }
-                    Err(e) => return ProfileOutcome::Failed(e.to_string()),
+                    Err(e) => return Err(e.to_string()),
                 }
             }
         }
-        outcome
+        Ok((outcome, extras))
     }
 
     /// A column's `min` and `max`, spelled for the bucket expression so the
@@ -3702,7 +3837,8 @@ impl Session {
         &self,
         name: &str,
         columns: &[(String, String)],
-    ) -> Result<ProfileOutcome, String> {
+        extra: &[String],
+    ) -> Result<(ProfileOutcome, Vec<Option<String>>), String> {
         let mut selects: Vec<String> = vec!["CAST(count(*) AS BIGINT)".to_string()];
         // Per column: whether it contributed min/max cells, and what the type
         // source asked for. Both drive the read back below, which walks the
@@ -3765,6 +3901,7 @@ impl Session {
                 },
             });
         }
+        selects.extend(extra.iter().map(|e| format!("CAST(({e}) AS VARCHAR)")));
         let sql = format!(
             "SELECT {} FROM \"{}\"",
             selects.join(", "),
@@ -3848,10 +3985,16 @@ impl Session {
                 moments,
             });
         }
-        Ok(ProfileOutcome::Profiled {
-            row_count,
-            columns: out,
-        })
+        let extras = (idx..idx + extra.len())
+            .map(|at| profile::read_text(&batch, at))
+            .collect();
+        Ok((
+            ProfileOutcome::Profiled {
+                row_count,
+                columns: out,
+            },
+            extras,
+        ))
     }
 
     /// Run a raw read-only query and collect its Arrow batches — the profiling
