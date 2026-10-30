@@ -97,6 +97,7 @@ pub mod chart_item;
 pub mod chart_kinds;
 pub mod chart_picture;
 pub mod column_header;
+pub mod column_record;
 pub mod dashboard;
 pub mod data_file;
 pub mod data_grid;

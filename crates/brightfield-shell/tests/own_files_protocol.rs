@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use brightfield_engine::{ProfileOutcome, SemanticType};
-use brightfield_shell::own_files;
 use brightfield_shell::run::Runner;
+use brightfield_shell::{column_record, own_files};
 
 /// The scratch root every test in this file shares, with the environment pointed into it.
 fn scratch() -> &'static Path {
@@ -159,6 +159,29 @@ fn packages_name_each_field() {
             .is_ok(),
         "{path}"
     );
+}
+
+#[test]
+fn protocol_package_carries_x_brightfield() {
+    let (p, _) = packaged("x_brightfield");
+    let path = p.dir.join("packages/orders/datapackage.json");
+    let mut record = column_record::read_record(&path, "orders")
+        .unwrap()
+        .unwrap();
+    let total = record.fields.get_mut("total").unwrap();
+    total.written.currency_symbol = Some("£".into());
+    total.prefer.number_format = Some(",.0f".into());
+    column_record::write_record(&path, "orders", &record).unwrap();
+
+    // Writing the packages again, as a later open of the Protocol does, keeps what was placed.
+    own_files::write_packages(&p).unwrap();
+
+    let again = column_record::read_record(&path, "orders")
+        .unwrap()
+        .unwrap();
+    let total = &again.fields["total"];
+    assert_eq!(total.written.currency_symbol.as_deref(), Some("£"));
+    assert_eq!(total.prefer.number_format.as_deref(), Some(",.0f"));
 }
 
 #[test]
