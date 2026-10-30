@@ -18,7 +18,7 @@ pub mod semantic;
 pub mod sources;
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // Re-export duckdb's Arrow types so consumers don't need a separate arrow dep.
@@ -841,6 +841,7 @@ impl Engine {
             given_labels: options.given_labels.clone(),
             scan_tally: RefCell::new(None),
             copy_budget_baseline,
+            hidden_columns: BTreeSet::new(),
         };
 
         Ok(LoadResult {
@@ -1017,6 +1018,8 @@ pub struct Session {
     /// `None` where DuckDB would not answer, and then the copy is declined: a
     /// budget that cannot be lifted afterwards is worse than a slow open.
     copy_budget_baseline: Option<(String, String)>,
+    /// See [`Session::hidden_columns`].
+    hidden_columns: BTreeSet<String>,
 }
 
 /// One navigable axis of a navigation extent: the column the gesture moved
@@ -3335,34 +3338,9 @@ impl Session {
     /// the view. In the first two cases the source is untouched — the budget
     /// and the copy both run before the view does.
     pub fn materialise_source(&mut self, name: &str, budget_bytes: u64) -> Result<(), EngineError> {
-        self.materialise_source_with(name, budget_bytes, &[])
-    }
-
-    /// [`Session::materialise_source`], with the copy selecting `projection` from the source in
-    /// place of `*`: each entry one item of the select list, written over the source's own
-    /// columns. An empty `projection` copies `*`.
-    ///
-    /// This is how a copy can cast as it reads: the file is still read once, and the casts are
-    /// computed on the way into memory. The budget, the refusal and what is put back are those of
-    /// [`Session::materialise_source`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Session::materialise_source`]; a projection DuckDB will not bind is a refused copy.
-    pub fn materialise_source_with(
-        &mut self,
-        name: &str,
-        budget_bytes: u64,
-        projection: &[String],
-    ) -> Result<(), EngineError> {
         let quoted = name.replace('"', "\"\"");
         let table = format!("{name}{MATERIALISED_SUFFIX}").replace('"', "\"\"");
-        let select = if projection.is_empty() {
-            "*".to_string()
-        } else {
-            projection.join(", ")
-        };
-        let copy = format!("CREATE TEMP TABLE \"{table}\" AS SELECT {select} FROM \"{quoted}\"");
+        let copy = format!("CREATE TEMP TABLE \"{table}\" AS SELECT * FROM \"{quoted}\"");
         self.record_scan(&copy);
 
         // No baseline, no copy. Narrowing a limit this session cannot put back
@@ -3407,72 +3385,67 @@ impl Session {
         Ok(())
     }
 
-    /// Undo part of a copy [`Session::materialise_source_with`] made of `name`: for each
-    /// `(column, kept)`, the copy's `column` is dropped and its `kept` column is renamed to
-    /// `column`, which then stands where `kept` stood. The view is pointed at the copy again, since
-    /// its columns changed under it.
+    /// Point the view `name` at its copy ([`Session::materialise_source`])
+    /// again, reshaped: for each `(column, kept)` of `put_back`, `kept` is read
+    /// in `column`'s place and is not listed under its own name; then each of
+    /// `derived` is projected beside the columns, as a spec that derives
+    /// columns declares them.
     ///
-    /// For a copy that selected a column twice, once cast and once as read, and found the cast
-    /// should not stand: the column is put back as it was read.
+    /// For a copy whose source cast a column and also kept the text it was
+    /// cast from: a cast that should not stand is put back as the text, where
+    /// the column stood, without a second read of the file. The copy itself is
+    /// not changed.
     ///
     /// # Errors
     ///
-    /// DuckDB's, when `name` has no copy or a column is not in it.
-    pub fn put_back_columns(
+    /// DuckDB's, when `name` has no copy, a column is not in it, or a
+    /// projection does not bind.
+    pub fn reshape_copy(
         &mut self,
         name: &str,
-        columns: &[(String, String)],
+        put_back: &[(String, String)],
+        derived: &[String],
     ) -> Result<(), EngineError> {
         let quoted = escape_ident(name);
         let table = escape_ident(&format!("{name}{MATERIALISED_SUFFIX}"));
-        let mut sql = String::new();
-        for (column, kept) in columns {
-            let column = escape_ident(column);
-            let kept = escape_ident(kept);
-            sql.push_str(&format!(
-                "ALTER TABLE \"{table}\" DROP COLUMN \"{column}\"; \
-                 ALTER TABLE \"{table}\" RENAME COLUMN \"{kept}\" TO \"{column}\"; "
-            ));
+        let mut rows = format!("SELECT * FROM \"{table}\"");
+        if !put_back.is_empty() {
+            let kept: Vec<String> = put_back
+                .iter()
+                .map(|(_, kept)| format!("\"{}\"", escape_ident(kept)))
+                .collect();
+            let replaced: Vec<String> = put_back
+                .iter()
+                .map(|(column, kept)| {
+                    format!("\"{}\" AS \"{}\"", escape_ident(kept), escape_ident(column))
+                })
+                .collect();
+            rows = format!(
+                "SELECT * EXCLUDE ({}) REPLACE ({}) FROM \"{table}\"",
+                kept.join(", "),
+                replaced.join(", ")
+            );
         }
-        sql.push_str(&format!(
-            "CREATE OR REPLACE VIEW \"{quoted}\" AS SELECT * FROM \"{table}\";"
-        ));
+        if !derived.is_empty() {
+            rows = format!("SELECT *, {} FROM ({rows})", derived.join(", "));
+        }
         self.conn
-            .execute_batch(&sql)
+            .execute_batch(&format!("CREATE OR REPLACE VIEW \"{quoted}\" AS {rows};"))
             .map_err(|cause| EngineError::ConnectionFailed { cause })?;
         self.invalidate_derived_state();
         Ok(())
     }
 
-    /// Rename the view `name` to `rows` and declare `name` again over it with `derived` columns
-    /// projected beside its own: `SELECT *, <derived> FROM rows`, the shape a spec that derives
-    /// columns declares its two sources in.
-    ///
-    /// For a session whose source was declared, and copied, before the columns it derives were
-    /// known: a spec swapped in by [`Session::reload_spec`] names both views, and this is what
-    /// makes them exist over the copy rather than over a second read of the file.
-    ///
-    /// # Errors
-    ///
-    /// DuckDB's, when `name` is not a view, `rows` is taken, or a projection does not bind.
-    pub fn derive_source(
-        &mut self,
-        name: &str,
-        rows: &str,
-        derived: &[String],
-    ) -> Result<(), EngineError> {
-        let quoted = escape_ident(name);
-        let rows = escape_ident(rows);
-        let sql = format!(
-            "ALTER VIEW \"{quoted}\" RENAME TO \"{rows}\"; \
-             CREATE VIEW \"{quoted}\" AS SELECT *, {} FROM \"{rows}\";",
-            derived.join(", ")
-        );
-        self.conn
-            .execute_batch(&sql)
-            .map_err(|cause| EngineError::ConnectionFailed { cause })?;
-        self.invalidate_derived_state();
-        Ok(())
+    /// Columns a reader of this session's rows is not shown: the grid leaves
+    /// them out. Empty unless [`Session::set_hidden_columns`] named some.
+    #[must_use]
+    pub fn hidden_columns(&self) -> &BTreeSet<String> {
+        &self.hidden_columns
+    }
+
+    /// Name the columns [`Session::hidden_columns`] reports.
+    pub fn set_hidden_columns(&mut self, columns: BTreeSet<String>) {
+        self.hidden_columns = columns;
     }
 
     /// Put `memory_limit` and `max_temp_directory_size` back to the values

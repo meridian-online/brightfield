@@ -1225,7 +1225,7 @@ pub fn fetch_page(
     let limit = window.end.saturating_sub(window.start);
     let batches =
         session.execute_step_rows_window_view(mark_index, window.start, limit, audience, view)?;
-    let (columns, rows) = tabulate(&batches);
+    let (columns, rows) = tabulate(&batches, session.hidden_columns());
     let held = window.start..window.start + rows.len() as u64;
     Ok(GridPage {
         window: held,
@@ -1245,18 +1245,23 @@ pub fn fetch_page(
 /// range uses, so `21.63157894736842` shows as `21.63` and a whole `10.0` as
 /// `10`; the cast text is kept as the cell's [`CellText::exact`]. Integers,
 /// dates and everything else show the cast text as it is.
-fn tabulate(batches: &[RecordBatch]) -> (Vec<GridColumn>, Vec<Vec<CellText>>) {
+///
+/// A column named in `hidden` is left out.
+fn tabulate(
+    batches: &[RecordBatch],
+    hidden: &std::collections::BTreeSet<String>,
+) -> (Vec<GridColumn>, Vec<Vec<CellText>>) {
     let Some(first) = batches.first() else {
         return (Vec::new(), Vec::new());
     };
     let schema = first.schema();
-    // The text a cast column was read from is kept beside it in the copy, so the cast can be
-    // undone; it is not one of the file's columns, and the grid does not list it.
+    // A column the session hides is not one of the table's own: the text a cast column was read
+    // from, kept beside it so the cast can be undone (`Session::hidden_columns`).
     let shown: Vec<usize> = schema
         .fields()
         .iter()
         .enumerate()
-        .filter(|(_, f)| !f.name().starts_with(crate::data_file::RAW_PREFIX))
+        .filter(|(_, f)| !hidden.contains(f.name()))
         .map(|(at, _)| at)
         .collect();
     let columns: Vec<GridColumn> = shown
@@ -2078,7 +2083,7 @@ fn read_preview(
 /// The first page of a preview, tabulated from the batches its read returned.
 #[must_use]
 pub fn page_of(batches: &[RecordBatch]) -> GridPage {
-    let (columns, rows) = tabulate(batches);
+    let (columns, rows) = tabulate(batches, &std::collections::BTreeSet::new());
     GridPage {
         window: 0..rows.len() as u64,
         columns,
@@ -3150,7 +3155,7 @@ mod tests {
             Arc::new(Int64Array::from(vec![Some(2024), None, None, None])),
         ];
         let batch = RecordBatch::try_new(schema, columns).expect("a batch");
-        let (columns, rows) = tabulate(&[batch]);
+        let (columns, rows) = tabulate(&[batch], &std::collections::BTreeSet::new());
 
         assert_eq!(
             columns.iter().map(|c| c.numeric).collect::<Vec<_>>(),

@@ -23,6 +23,7 @@ use brightfield_shell::data_file::{
     self, OpenOptions, OpenTrace, OpenedFile, MATERIALISE_BUDGET_BYTES, MATERIALISE_UNDER_BYTES,
 };
 use brightfield_shell::data_grid::fetch_page;
+use brightfield_shell::pipeline::LiveDashboard;
 
 /// A fixture with one column of each kind the dashboard draws a tile from: two
 /// measures (one bounded, so both branches of the histogram's own device are
@@ -713,6 +714,11 @@ fn scratch_config() {
 
 /// `text` written as a CSV in a folder named `name`, with a record nominating [`TYPED_LABELS`].
 fn typed(name: &str, text: &str) -> PathBuf {
+    typed_with(name, text, TYPED_LABELS)
+}
+
+/// `text` written as a CSV in a folder named `name`, with a record nominating `labels`.
+fn typed_with(name: &str, text: &str, labels: &[(&str, &str)]) -> PathBuf {
     scratch_config();
     let dir = std::env::temp_dir()
         .join(format!("bf-typed-formats-{}", std::process::id()))
@@ -721,7 +727,7 @@ fn typed(name: &str, text: &str) -> PathBuf {
     let path = dir.join("typed_formats.csv");
     std::fs::write(&path, text).expect("write fixture");
     let mut record = column_record::SourceRecord::default();
-    for (column, label) in TYPED_LABELS {
+    for (column, label) in labels {
         record.fields.insert(
             (*column).to_string(),
             column_record::FieldRecord {
@@ -750,10 +756,9 @@ fn open_typed(path: &Path, options: &OpenOptions) -> (OpenedFile, OpenTrace) {
 }
 
 /// Every row `sql` returns from the opened file's session, each cell as text.
-fn rows_of(opened: &mut OpenedFile, sql: &str) -> Vec<Vec<Option<String>>> {
+fn rows_of(live: &mut LiveDashboard, sql: &str) -> Vec<Vec<Option<String>>> {
     use arrow::array::{Array, StringArray};
-    let batches = opened
-        .live
+    let batches = live
         .coordinator()
         .session_mut()
         .execute_uncached(sql)
@@ -784,9 +789,9 @@ fn rows_of(opened: &mut OpenedFile, sql: &str) -> Vec<Vec<Option<String>>> {
 }
 
 /// The type the opened copy holds `column` as.
-fn type_of(opened: &mut OpenedFile, column: &str) -> String {
+fn type_of(live: &mut LiveDashboard, column: &str) -> String {
     let rows = rows_of(
-        opened,
+        live,
         &format!(
             "SELECT column_type FROM (DESCRIBE \"{}\") WHERE column_name = '{column}'",
             data_file::SOURCE
@@ -821,9 +826,9 @@ fn flat_open_casts_a_currency_column() {
     let (mut opened, trace) = open_typed(&path, &unbundled());
     assert!(trace.materialised, "the fixture was not copied");
     assert!(
-        type_of(&mut opened, "revenue").starts_with("DECIMAL"),
+        type_of(&mut opened.live, "revenue").starts_with("DECIMAL"),
         "revenue is {}",
-        type_of(&mut opened, "revenue")
+        type_of(&mut opened.live, "revenue")
     );
     assert_eq!(
         tile_kind(&opened, "revenue").as_deref(),
@@ -845,7 +850,7 @@ fn raw_text_survives_the_cast() {
     let (mut opened, _) = open_typed(&path, &unbundled());
     let raw = format!("{}revenue", data_file::RAW_PREFIX);
     let rows = rows_of(
-        &mut opened,
+        &mut opened.live,
         &format!("SELECT \"{raw}\", \"revenue\" FROM \"opened\" WHERE \"{raw}\" LIKE '(%'"),
     );
     assert!(!rows.is_empty(), "no parenthesised raw value survived");
@@ -875,17 +880,23 @@ fn one_bad_value_keeps_the_column_text() {
     assert_ne!(text, TYPED_FORMATS);
     let path = typed("bad-value", &text);
     let (mut cast, _) = open_typed(&path, &unbundled());
-    assert_eq!(type_of(&mut cast, "price_usd"), "VARCHAR");
+    assert_eq!(type_of(&mut cast.live, "price_usd"), "VARCHAR");
     // Its neighbours still cast.
-    assert!(type_of(&mut cast, "revenue").starts_with("DECIMAL"));
+    assert!(type_of(&mut cast.live, "revenue").starts_with("DECIMAL"));
     // The column is back in its place, read as it was.
-    let rows = rows_of(&mut cast, "SELECT \"price_usd\" FROM \"opened\" LIMIT 1");
+    let rows = rows_of(
+        &mut cast.live,
+        "SELECT \"price_usd\" FROM \"opened\" LIMIT 1",
+    );
     assert_eq!(rows[0][0].as_deref(), Some("n/a"));
-    let names: Vec<String> = rows_of(&mut cast, "SELECT column_name FROM (DESCRIBE \"opened\")")
-        .into_iter()
-        .filter_map(|r| r[0].clone())
-        .filter(|n| !n.starts_with(data_file::RAW_PREFIX))
-        .collect();
+    let names: Vec<String> = rows_of(
+        &mut cast.live,
+        "SELECT column_name FROM (DESCRIBE \"opened\")",
+    )
+    .into_iter()
+    .filter_map(|r| r[0].clone())
+    .filter(|n| !n.starts_with(data_file::RAW_PREFIX))
+    .collect();
     assert_eq!(
         names,
         [
@@ -901,7 +912,7 @@ fn one_bad_value_keeps_the_column_text() {
     );
 
     // Its tile is the one it got before the flat route cast anything.
-    let (uncast, _) = open_typed(
+    let (mut uncast, _) = open_typed(
         &path,
         &OpenOptions {
             already_cast: true,
@@ -912,6 +923,8 @@ fn one_bad_value_keeps_the_column_text() {
         tile_kind(&cast, "price_usd"),
         tile_kind(&uncast, "price_usd")
     );
+    // An open taken as already cast casts nothing.
+    assert_eq!(type_of(&mut uncast.live, "revenue"), "VARCHAR");
 }
 
 #[test]
@@ -920,7 +933,7 @@ fn mixed_symbols_record_none() {
     assert_ne!(text, TYPED_FORMATS);
     let path = typed("mixed-symbols", &text);
     let (mut opened, _) = open_typed(&path, &unbundled());
-    assert!(type_of(&mut opened, "revenue").starts_with("DECIMAL"));
+    assert!(type_of(&mut opened.live, "revenue").starts_with("DECIMAL"));
     let record = record_of(&path);
     assert_eq!(record.fields["revenue"].written.currency_symbol, None);
     assert_eq!(
@@ -963,7 +976,7 @@ fn over_budget_file_is_not_cast() {
         },
     );
     assert!(!trace.materialised);
-    assert_eq!(type_of(&mut opened, "revenue"), "VARCHAR");
+    assert_eq!(type_of(&mut opened.live, "revenue"), "VARCHAR");
     assert!(trace.cast.statements.is_empty());
     let record = record_of(&path);
     assert_eq!(
@@ -1009,10 +1022,10 @@ fn cast_open_reads_the_file_once() {
 fn typed_dates_survive() {
     let path = typed("dates", TYPED_FORMATS);
     let (mut opened, _) = open_typed(&path, &unbundled());
-    assert_eq!(type_of(&mut opened, "day"), "DATE");
+    assert_eq!(type_of(&mut opened.live, "day"), "DATE");
     let raw = format!("{}day", data_file::RAW_PREFIX);
     let rows = rows_of(
-        &mut opened,
+        &mut opened.live,
         &format!("SELECT count(*) FROM (DESCRIBE \"opened\") WHERE column_name = '{raw}'"),
     );
     assert_eq!(
@@ -1039,7 +1052,7 @@ fn a_cast_file_still_derives_a_bucket_column() {
     let path = typed("derived", &text);
     let (mut opened, trace) = open_typed(&path, &unbundled());
     assert!(trace.materialised);
-    assert!(type_of(&mut opened, "revenue").starts_with("DECIMAL"));
+    assert!(type_of(&mut opened.live, "revenue").starts_with("DECIMAL"));
     assert!(
         opened
             .dashboard
@@ -1057,4 +1070,114 @@ fn a_cast_file_still_derives_a_bucket_column() {
             .execute_mark(index)
             .unwrap_or_else(|e| panic!("mark {index}: {e}"));
     }
+}
+
+/// The grid's column names for the first page `live` shows.
+fn grid_names(live: &mut LiveDashboard) -> Vec<String> {
+    fetch_page(
+        live.coordinator().session(),
+        0,
+        0..5,
+        RowsAudience::Reader,
+        &RowsView::default(),
+    )
+    .expect("the grid reads")
+    .columns
+    .into_iter()
+    .map(|c| c.name)
+    .collect()
+}
+
+/// **A session loaded again from the dashboard's spec reads the columns as cast**: the spec
+/// declares the cast, so a tile switch's or a shelf edit's rebuild, and the written spec opened
+/// again, see `revenue` as the number the tiles were chosen for.
+#[test]
+fn a_spec_loaded_again_reads_the_cast_columns() {
+    let path = typed("reloaded", TYPED_FORMATS);
+    let (opened, _) = open_typed(&path, &unbundled());
+
+    // The rebuild a tile switch and the shelf take: a new session over the live spec.
+    let mut rebuilt = LiveDashboard::load(opened.live.spec().clone(), opened.live.base_dir())
+        .expect("the spec loads again");
+    assert!(
+        type_of(&mut rebuilt, "revenue").starts_with("DECIMAL"),
+        "a rebuild reads revenue as {}",
+        type_of(&mut rebuilt, "revenue")
+    );
+    assert_eq!(type_of(&mut rebuilt, "price_usd").get(..7), Some("DECIMAL"));
+    let names = grid_names(&mut rebuilt);
+    assert!(names.contains(&"revenue".to_string()), "{names:?}");
+    assert!(
+        names.iter().all(|n| !n.starts_with(data_file::RAW_PREFIX)),
+        "the rebuilt grid lists a raw column: {names:?}"
+    );
+    rebuilt.present().expect("the rebuilt dashboard composes");
+
+    // The spec written for the editor, opened on its own.
+    let written = opened.spec_file.as_ref().expect("the spec was written");
+    let text = std::fs::read_to_string(written).expect("the spec reads");
+    let mut reloaded = LiveDashboard::load_str(&text, None).expect("the written spec loads");
+    assert!(type_of(&mut reloaded, "revenue").starts_with("DECIMAL"));
+    reloaded.present().expect("the written spec composes");
+}
+
+/// **A column DuckDB already read as a number is not cast through its text**, which would turn
+/// `1e16` into `116.00` and round `123.456`.
+#[test]
+fn a_stored_number_keeps_its_values() {
+    let path = typed_with(
+        "stored-number",
+        "amount,region\n123.456,North\n1e16,South\n7.5,East\n",
+        &[("amount", "finance.currency.amount")],
+    );
+    let (mut opened, _) = open_typed(&path, &unbundled());
+    assert_eq!(type_of(&mut opened.live, "amount"), "DOUBLE");
+    let rows = rows_of(
+        &mut opened.live,
+        "SELECT count(*) FROM \"opened\" WHERE \"amount\" IN (123.456, 1e16, 7.5)",
+    );
+    assert_eq!(rows[0][0].as_deref(), Some("3"));
+}
+
+/// **A file's own column is kept whatever it is called**: one named like an engine column survives
+/// the cast copy, and one named like a raw column is listed by the grid.
+#[test]
+fn a_files_own_columns_survive_whatever_their_names() {
+    let path = typed_with(
+        "own-names",
+        "revenue,__bf_extra,__raw__note\n\"£1,234.50\",a,x\n(£12.00),b,y\n£7.75,c,z\n",
+        &[("revenue", "finance.currency.amount")],
+    );
+    let (mut opened, _) = open_typed(&path, &unbundled());
+    assert!(type_of(&mut opened.live, "revenue").starts_with("DECIMAL"));
+    assert_eq!(type_of(&mut opened.live, "__bf_extra"), "VARCHAR");
+    let names = grid_names(&mut opened.live);
+    assert!(names.contains(&"__raw__note".to_string()), "{names:?}");
+    assert!(!names.contains(&"__raw__revenue".to_string()), "{names:?}");
+}
+
+/// **A changed file loses what was read from its old values**, cast or not: the record is checked
+/// against the file on every open.
+#[test]
+fn a_changed_file_loses_what_was_read_from_it() {
+    let path = typed("changed", TYPED_FORMATS);
+    let _ = open_typed(&path, &unbundled());
+    assert_eq!(
+        record_of(&path).fields["revenue"].written.negatives,
+        Some(column_record::Negatives::Parentheses)
+    );
+    let mut longer = TYPED_FORMATS.to_string();
+    longer.push_str("\"£1.00\",$1.00,1%,4.1%,2001,1,2024-12-31,one more\n");
+    std::fs::write(&path, longer).expect("the file changes");
+    // Not copied, so not cast: only the check against the file can clear the record.
+    let _ = open_typed(
+        &path,
+        &OpenOptions {
+            materialise_under_bytes: 0,
+            ..unbundled()
+        },
+    );
+    let revenue = &record_of(&path).fields["revenue"];
+    assert_eq!(revenue.written, column_record::Written::default());
+    assert!(revenue.nominated, "the accepted label is kept");
 }

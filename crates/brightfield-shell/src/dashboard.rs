@@ -104,7 +104,7 @@ use brightfield_engine::{ColumnProfile, SemanticType};
 use brightfield_workbench::registry::{ChartKind, ChartKindId, Field, FieldType};
 
 use crate::chart_kinds;
-use crate::data_file::{file_label, source_spec_deriving, SOURCE};
+use crate::data_file::{file_label, SOURCE};
 use crate::ranked_bars::RankedCategoryBars;
 use crate::resample::{self, Step};
 
@@ -549,6 +549,10 @@ pub struct Dashboard {
     path: std::path::PathBuf,
     tiles: Vec<Tile>,
     omitted: Vec<Omitted>,
+    /// The columns the source casts as it reads the file, each with the SQL
+    /// that casts it — see [`crate::flat_cast`]. Empty for a file read as it
+    /// is.
+    casts: Vec<(String, String)>,
 }
 
 impl Dashboard {
@@ -602,7 +606,17 @@ impl Dashboard {
             path: path.to_path_buf(),
             tiles,
             omitted,
+            casts: Vec::new(),
         }
+    }
+
+    /// This dashboard over a source that casts `casts` — each a column and
+    /// the SQL that casts it — as it reads the file, so the spec declares the
+    /// cast and any session loaded from it reads the columns as cast.
+    #[must_use]
+    pub(crate) fn with_casts(mut self, casts: Vec<(String, String)>) -> Self {
+        self.casts = casts;
+        self
     }
 
     /// The tiles, in the table's own column order.
@@ -736,7 +750,11 @@ impl Dashboard {
         let _ = writeln!(out, "  title: {}", yaml_string(&file_label(&self.path)));
         let _ = writeln!(out, "params:");
         let _ = writeln!(out, "  {SELECTION}: {{ select: crossfilter }}");
-        out.push_str(&source_spec_deriving(&self.path, &self.derived_columns()));
+        out.push_str(&crate::flat_cast::source_spec_casting(
+            &self.path,
+            &self.casts,
+            &self.derived_columns(),
+        ));
         let Some(hero) = self.hero_index() else {
             let _ = writeln!(out, "vconcat:");
             for row in self.tiles.chunks(TILES_PER_ROW) {

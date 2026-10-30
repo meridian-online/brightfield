@@ -322,30 +322,24 @@ fn described(session: &mut Session, relation: &str) -> Vec<(String, String)> {
     out
 }
 
-/// Five rows whose `s` is a whole number written as text.
-const TEXT_NUMBERS: &str =
-    "data:\n  t:\n    query: \"SELECT i AS n, i::VARCHAR AS s FROM range(5) r(i)\"\n";
+/// Five rows whose `s` is cast from text, with the text kept beside it as `raw_s`, and a
+/// trailing column after both.
+const CAST_NUMBERS: &str =
+    "data:\n  t:\n    query: \"SELECT i AS n, TRY_CAST(i::VARCHAR AS BIGINT) \
+     AS s, 'x' AS tail, i::VARCHAR AS raw_s FROM range(5) r(i)\"\n";
 
-/// **A copy can cast as it reads, and a cast it should not have made can be put back** with the
-/// column as read standing where it stood.
+/// **A materialised copy can be read with a cast put back**, the text in the cast column's place,
+/// and with columns derived beside it, without the copy being made again.
 #[test]
-fn a_materialised_projection_casts_and_puts_back_in_place() {
-    let mut live = session(TEXT_NUMBERS);
-    live.materialise_source_with(
-        "t",
-        GENEROUS,
-        &[
-            "\"n\"".to_string(),
-            "TRY_CAST(\"s\" AS BIGINT) AS \"s\"".to_string(),
-            "\"s\" AS \"raw_s\"".to_string(),
-        ],
-    )
-    .expect("the projection copies");
+fn a_materialised_copy_reshapes_without_a_second_copy() {
+    let mut live = session(CAST_NUMBERS);
+    live.materialise_source("t", GENEROUS).expect("the copy");
     assert_eq!(
         described(&mut live, "t"),
         [
             ("n".to_string(), "BIGINT".to_string()),
             ("s".to_string(), "BIGINT".to_string()),
+            ("tail".to_string(), "VARCHAR".to_string()),
             ("raw_s".to_string(), "VARCHAR".to_string()),
         ]
     );
@@ -354,14 +348,32 @@ fn a_materialised_projection_casts_and_puts_back_in_place() {
         10
     );
 
-    live.put_back_columns("t", &[("s".to_string(), "raw_s".to_string())])
-        .expect("the cast is put back");
+    live.reshape_copy(
+        "t",
+        &[("s".to_string(), "raw_s".to_string())],
+        &["\"n\" * 2 AS \"twice\"".to_string()],
+    )
+    .expect("the copy reshapes");
     assert_eq!(
         described(&mut live, "t"),
         [
             ("n".to_string(), "BIGINT".to_string()),
             ("s".to_string(), "VARCHAR".to_string()),
+            ("tail".to_string(), "VARCHAR".to_string()),
+            ("twice".to_string(), "BIGINT".to_string()),
         ]
+    );
+    assert_eq!(
+        count_of(&mut live, "SELECT sum(\"twice\")::BIGINT FROM \"t\""),
+        20
+    );
+    assert_eq!(
+        count_of(
+            &mut live,
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = 't__bf_materialised'"
+        ),
+        1,
+        "the copy is still the one table"
     );
 }
 
@@ -369,17 +381,8 @@ fn a_materialised_projection_casts_and_puts_back_in_place() {
 /// aggregates answered by the same statement.
 #[test]
 fn a_materialised_copy_profiles_some_columns_with_extra_terms() {
-    let mut live = session(TEXT_NUMBERS);
-    live.materialise_source_with(
-        "t",
-        GENEROUS,
-        &[
-            "\"n\"".to_string(),
-            "TRY_CAST(\"s\" AS BIGINT) AS \"s\"".to_string(),
-            "\"s\" AS \"raw_s\"".to_string(),
-        ],
-    )
-    .expect("the projection copies");
+    let mut live = session(CAST_NUMBERS);
+    live.materialise_source("t", GENEROUS).expect("the copy");
     let (columns, extras) = live
         .profile_columns_with(
             "t",
@@ -397,19 +400,4 @@ fn a_materialised_copy_profiles_some_columns_with_extra_terms() {
     let moments = s.moments.as_ref().expect("a numeric column has moments");
     assert_eq!(moments.mean, 2.0);
     assert_eq!(extras, [Some("5".to_string()), None]);
-}
-
-/// **A source copied before its derived columns were known can derive them over the copy**, as
-/// the two views a deriving spec declares.
-#[test]
-fn a_materialised_source_derives_columns_over_the_copy() {
-    let mut live = session(TEXT_NUMBERS);
-    live.materialise_source("t", GENEROUS).expect("the copy");
-    live.derive_source("t", "t_rows", &["\"n\" * 2 AS \"twice\"".to_string()])
-        .expect("the columns derive");
-    assert_eq!(
-        count_of(&mut live, "SELECT sum(\"twice\")::BIGINT FROM \"t\""),
-        20
-    );
-    assert_eq!(count_of(&mut live, "SELECT count(*) FROM \"t_rows\""), 5);
 }

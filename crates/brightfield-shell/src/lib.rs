@@ -105,6 +105,7 @@ pub mod devtools;
 pub mod discovery;
 pub mod editor;
 pub mod export;
+pub(crate) mod flat_cast;
 pub mod gallery;
 pub mod generated;
 pub mod grid_foot;

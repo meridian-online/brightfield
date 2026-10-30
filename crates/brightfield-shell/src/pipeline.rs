@@ -1202,7 +1202,7 @@ impl LiveDashboard {
         let diagnostics = LoadDiagnostics::collect(None, &spec, &[], &analysis.warnings);
         let coordinator = Coordinator::load(spec.clone(), analysis, spec_dir)
             .map_err(|e| format!("engine error: {e}"))?;
-        Ok(Self::sampled_by_policy(Self {
+        Ok(Self::sampled_by_policy(Self::raw_hidden(Self {
             coordinator,
             spec,
             diagnostics,
@@ -1213,7 +1213,20 @@ impl LiveDashboard {
             viewport: Rect::zero(),
             sample_is_automatic: false,
             mode: Mode::Light,
-        }))
+        })))
+    }
+
+    /// `dash`, with the text its source's casts keep beside each cast column
+    /// hidden from the grid — see [`crate::flat_cast::raw_columns_declared`].
+    fn raw_hidden(mut dash: Self) -> Self {
+        dash.hide_raw_columns();
+        dash
+    }
+
+    /// Hide from the grid the raw columns this dashboard's spec declares.
+    fn hide_raw_columns(&mut self) {
+        let raw = crate::flat_cast::raw_columns_declared(&self.spec);
+        self.coordinator.session_mut().set_hidden_columns(raw);
     }
 
     /// Put the automatic rate on a freshly-loaded dashboard, before anything
@@ -1249,7 +1262,7 @@ impl LiveDashboard {
             LoadDiagnostics::collect(source, &spec, &parsed.warnings, &analysis.warnings);
         let coordinator = Coordinator::load(spec.clone(), analysis, spec_dir)
             .map_err(|e| format!("engine error: {e}"))?;
-        Ok(Self::sampled_by_policy(Self {
+        Ok(Self::sampled_by_policy(Self::raw_hidden(Self {
             coordinator,
             spec,
             diagnostics,
@@ -1260,7 +1273,7 @@ impl LiveDashboard {
             viewport: Rect::zero(),
             sample_is_automatic: false,
             mode: Mode::Light,
-        }))
+        })))
     }
 
     /// Load from spec text (mirrors [`compose_spec_str`]).
@@ -1488,25 +1501,6 @@ impl LiveDashboard {
             .map_err(|e| e.to_string())
     }
 
-    /// [`LiveDashboard::materialise_source`], with the copy selecting
-    /// `projection` in place of `*` — see
-    /// [`brightfield_engine::Session::materialise_source_with`].
-    ///
-    /// # Errors
-    ///
-    /// As [`LiveDashboard::materialise_source`].
-    pub fn materialise_source_with(
-        &mut self,
-        name: &str,
-        budget_bytes: u64,
-        projection: &[String],
-    ) -> Result<(), String> {
-        self.coordinator
-            .session_mut()
-            .materialise_source_with(name, budget_bytes, projection)
-            .map_err(|e| e.to_string())
-    }
-
     /// Compose `source` from here on, over this dashboard's session and the
     /// views it already holds: the spec is parsed, analysed and swapped into
     /// the session ([`brightfield_engine::Session::reload_spec`]) with no new
@@ -1528,6 +1522,7 @@ impl LiveDashboard {
             .session_mut()
             .reload_spec(spec.clone(), analysis);
         self.spec = spec;
+        self.hide_raw_columns();
         if self.sample_is_automatic {
             let rate = automatic_sample(self.coordinator.session());
             self.coordinator.session_mut().set_sample(rate);
