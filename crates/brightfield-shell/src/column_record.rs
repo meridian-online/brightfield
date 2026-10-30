@@ -146,6 +146,7 @@ pub fn write_record(package: &Path, resource: &str, record: &SourceRecord) -> Re
             "resources": [],
         })
     });
+    check_shape(&doc, package)?;
     let resources = array_at(&mut doc, "resources")?;
     let at = match resources.iter().position(|r| r["name"] == resource) {
         Some(at) => at,
@@ -186,6 +187,37 @@ pub fn write_record(package: &Path, resource: &str, record: &SourceRecord) -> Re
     let partial = package.with_extension("json.partial");
     std::fs::write(&partial, text + "\n").map_err(|e| format!("{}: {e}", partial.display()))?;
     std::fs::rename(&partial, package).map_err(|e| format!("{}: {e}", package.display()))
+}
+
+/// Refuse a package whose shape this module cannot edit, naming what is wrong, so an edit never
+/// has to index into a value of the wrong kind.
+fn check_shape(doc: &Value, package: &Path) -> Result<(), String> {
+    let wrong = |what: &str| Err(format!("{}: {what}", package.display()));
+    let Some(root) = doc.as_object() else {
+        return wrong("the package is not a JSON object");
+    };
+    let Some(resources) = root.get("resources") else {
+        return Ok(());
+    };
+    let Some(resources) = resources.as_array() else {
+        return wrong("`resources` is not a list");
+    };
+    for res in resources {
+        let Some(res) = res.as_object() else {
+            return wrong("a resource is not an object");
+        };
+        match res.get("schema") {
+            None => {}
+            Some(Value::Object(schema)) => match schema.get("fields") {
+                None => {}
+                Some(Value::Array(_)) => {}
+                Some(_) => return wrong("a resource's `fields` is not a list"),
+            },
+            // A schema of the wrong kind is replaced by an empty one on write.
+            Some(_) => {}
+        }
+    }
+    Ok(())
 }
 
 fn array_at<'a>(parent: &'a mut Value, key: &str) -> Result<&'a mut Vec<Value>, String> {
@@ -286,12 +318,17 @@ fn read_package(package: &Path) -> Result<Option<Value>, String> {
 /// and fields of the same names. Nothing else of the old package is kept: the profile's reading
 /// of the columns is the new one.
 ///
-/// # Errors
-///
-/// The reason when the existing package cannot be read.
-pub(crate) fn carry_over(mut fresh: Value, existing: &Path) -> Result<Value, String> {
-    let Some(old) = read_package(existing)? else {
-        return Ok(fresh);
+/// A field the analyst nominated keeps its nominated marker and its recorded label, not the
+/// profile's.
+pub(crate) fn carry_over(mut fresh: Value, existing: &Path) -> Value {
+    // A package that is missing, does not parse or has the wrong shape carries nothing over: the
+    // fresh one replaces it, as a write always did before records were kept.
+    let Some(old) = read_package(existing)
+        .ok()
+        .flatten()
+        .filter(|old| check_shape(old, existing).is_ok())
+    else {
+        return fresh;
     };
     let old_resources = old["resources"].as_array().cloned().unwrap_or_default();
     for res in fresh["resources"].as_array_mut().into_iter().flatten() {
@@ -302,16 +339,24 @@ pub(crate) fn carry_over(mut fresh: Value, existing: &Path) -> Result<Value, Str
             res[SOURCE] = stamp.clone();
         }
         for field in res["schema"]["fields"].as_array_mut().into_iter().flatten() {
-            let kept = old_res["schema"]["fields"]
+            let Some(old_field) = old_res["schema"]["fields"]
                 .as_array()
                 .and_then(|fs| fs.iter().find(|f| f["name"] == field["name"]))
-                .and_then(|f| f.get(BRIGHTFIELD));
-            if let Some(kept) = kept {
+            else {
+                continue;
+            };
+            if let Some(kept) = old_field.get(BRIGHTFIELD) {
                 field[BRIGHTFIELD] = kept.clone();
+            }
+            if old_field.get(NOMINATED).and_then(Value::as_bool) == Some(true) {
+                field[NOMINATED] = Value::Bool(true);
+                if let Some(label) = old_field.get(LABEL) {
+                    field[LABEL] = label.clone();
+                }
             }
         }
     }
-    Ok(fresh)
+    fresh
 }
 
 /// Where a lone file's record lives: `records/<key>/datapackage.json` under Brightfield's data
@@ -345,8 +390,9 @@ pub fn stamp(file: &Path) -> Result<SourceStamp, String> {
     let modified = meta
         .modified()
         .map_err(|e| format!("{}: {e}", file.display()))?
+        // A time before the epoch is taken as the epoch; it still differs from any later edit.
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| format!("{}: {e}", file.display()))?;
+        .unwrap_or_default();
     Ok(SourceStamp {
         size: meta.len(),
         modified: u64::try_from(modified.as_nanos()).unwrap_or(u64::MAX),
@@ -510,6 +556,58 @@ mod tests {
             !refresh_if_changed(&mut record, &file).unwrap(),
             "restamped"
         );
+    }
+
+    #[test]
+    fn write_refuses_a_package_of_the_wrong_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("datapackage.json");
+        for (text, what) in [
+            ("[1]", "not a JSON object"),
+            (r#"{"resources":{}}"#, "`resources` is not a list"),
+            (r#"{"resources":[3]}"#, "a resource is not an object"),
+            (
+                r#"{"resources":[{"name":"t","schema":{"fields":{}}}]}"#,
+                "`fields` is not a list",
+            ),
+        ] {
+            std::fs::write(&path, text).unwrap();
+            let err = write_record(&path, "t", &revenue()).unwrap_err();
+            assert!(err.contains(what), "{err}");
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                text,
+                "left as it was"
+            );
+        }
+    }
+
+    #[test]
+    fn carry_over_keeps_nominations_and_drops_a_broken_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("datapackage.json");
+        std::fs::write(
+            &path,
+            r#"{"resources":[{"name":"t","schema":{"fields":[
+                {"name":"a","x-finetype-label":"mine.label","x-finetype-nominated":true},
+                {"name":"b","x-finetype-label":"old.label"}]}}]}"#,
+        )
+        .unwrap();
+        let fresh = || {
+            json!({"resources":[{"name":"t","schema":{"fields":[
+                {"name":"a","x-finetype-label":"profile.label"},
+                {"name":"b","x-finetype-label":"profile.label"}]}}]})
+        };
+        let got = carry_over(fresh(), &path);
+        let fields = &got["resources"][0]["schema"]["fields"];
+        assert_eq!(fields[0]["x-finetype-label"], "mine.label");
+        assert_eq!(fields[0]["x-finetype-nominated"], true);
+        assert_eq!(fields[1]["x-finetype-label"], "profile.label");
+        assert!(fields[1].get("x-finetype-nominated").is_none());
+        for broken in ["{\"resources\": [", "[1]", r#"{"resources":{}}"#] {
+            std::fs::write(&path, broken).unwrap();
+            assert_eq!(carry_over(fresh(), &path), fresh(), "{broken}");
+        }
     }
 
     #[test]

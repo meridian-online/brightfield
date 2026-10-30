@@ -185,6 +185,42 @@ fn protocol_package_carries_x_brightfield() {
 }
 
 #[test]
+fn protocol_package_keeps_a_nominated_label() {
+    let (p, _) = packaged("nominated");
+    let path = p.dir.join("packages/customers/datapackage.json");
+    let mut record = column_record::read_record(&path, "customers")
+        .unwrap()
+        .unwrap();
+    let name = record.fields.get_mut("name").unwrap();
+    name.label = Some("identity.person.full_name".into());
+    name.nominated = true;
+    column_record::write_record(&path, "customers", &record).unwrap();
+
+    own_files::write_packages(&p).unwrap();
+
+    let again = column_record::read_record(&path, "customers")
+        .unwrap()
+        .unwrap();
+    assert!(again.fields["name"].nominated);
+    assert_eq!(
+        again.fields["name"].label.as_deref(),
+        Some("identity.person.full_name")
+    );
+    assert!(!again.fields["email"].nominated);
+}
+
+#[test]
+fn broken_package_is_regenerated() {
+    let (p, _) = packaged("broken_package");
+    let path = p.dir.join("packages/customers/datapackage.json");
+    std::fs::write(&path, "{\"resources\": [").unwrap();
+    own_files::write_packages(&p).unwrap();
+    let package: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(package["resources"][0]["name"], "customers");
+}
+
+#[test]
 fn profile_labels_email_column() {
     let (p, _) = packaged("labels");
     let customers = p.profiles.iter().find(|s| s.name == "customers").unwrap();

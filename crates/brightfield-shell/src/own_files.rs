@@ -371,7 +371,7 @@ pub fn write_packages(p: &OwnProtocol) -> Result<Vec<PathBuf>, String> {
         let path = package_dir.join("datapackage.json");
         // What Brightfield recorded on these fields before (`x-brightfield`) is not the profile's
         // to rewrite, so it is carried into the package this writes.
-        let package = crate::column_record::carry_over(package, &path)?;
+        let package = crate::column_record::carry_over(package, &path);
         let text = serde_json::to_string_pretty(&package).map_err(|e| e.to_string())?;
         std::fs::write(&path, text + "\n").map_err(|e| format!("{}: {e}", path.display()))?;
         written.push(path);
