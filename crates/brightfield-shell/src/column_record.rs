@@ -179,11 +179,20 @@ pub fn write_record(package: &Path, resource: &str, record: &SourceRecord) -> Re
         };
         write_field(&mut fields[at], field_record);
     }
-    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    write_package(package, &doc)
+}
+
+/// Write `doc` to the `datapackage.json` at `package`, creating its folder. It is written beside
+/// the package and renamed over it, so a crash never leaves half a file for the next open.
+///
+/// # Errors
+///
+/// The reason when the folder or the file cannot be written.
+pub(crate) fn write_package(package: &Path, doc: &Value) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(doc).map_err(|e| e.to_string())?;
     if let Some(dir) = package.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    // Written beside the package and renamed over it, so a reader never sees half a file.
     let partial = package.with_extension("json.partial");
     std::fs::write(&partial, text + "\n").map_err(|e| format!("{}: {e}", partial.display()))?;
     std::fs::rename(&partial, package).map_err(|e| format!("{}: {e}", package.display()))
