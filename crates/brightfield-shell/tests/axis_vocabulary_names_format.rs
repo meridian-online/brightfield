@@ -52,11 +52,13 @@ ATTRS
 "#;
 
 /// Names that read as numbers, spelled as text, on the x axis: a column of
-/// `VARCHAR`, so the axis is a band and not a number axis.
+/// zero-padded `VARCHAR` identifiers, so the axis is a band of names and not a
+/// number axis. (A column of text that spells whole numbers without padding is
+/// a number axis for its tick text; see `whole_number_ids_take_a_number_format`.)
 const NUMBER_NAMES_ON_X: &str = r#"
 data:
   d:
-    query: "SELECT CAST(i AS VARCHAR) AS id, i * 10 AS n FROM range(1, 5) t(i)"
+    query: "SELECT lpad(CAST(i AS VARCHAR), 2, '0') AS id, i * 10 AS n FROM range(1, 5) t(i)"
 plot:
   - mark: dot
     data: { from: d }
@@ -248,18 +250,18 @@ fn a_tick_format_on_an_axis_of_names_is_named_and_the_names_are_drawn() {
 }
 
 /// **Whether or not the names read as numbers.** A column of text that spells
-/// `1` to `4` is a band of names and not a number axis, so a number format on it
-/// does not format them as numbers, and says so.
+/// `01` to `04` is a band of names and not a number axis, so a number format on
+/// it does not format them as numbers, and says so.
 #[test]
 fn a_number_format_on_names_that_read_as_numbers_is_named_too() {
     let plain = compose(NUMBER_NAMES_ON_X, "");
-    assert_eq!(painted_x(&plain), strs(&["1", "2", "3", "4"]));
+    assert_eq!(painted_x(&plain), strs(&["01", "02", "03", "04"]));
     assert!(said(&plain).is_empty(), "{:?}", said(&plain));
 
     let asked = compose(NUMBER_NAMES_ON_X, "xTickFormat: '.2f'");
     assert_eq!(
         painted_x(&asked),
-        strs(&["1", "2", "3", "4"]),
+        strs(&["01", "02", "03", "04"]),
         "the names are drawn as spelled, not as `1.00`"
     );
     let lines = said(&asked);
@@ -336,4 +338,76 @@ fn a_repaint_says_a_format_on_names_once() {
     let second = live.present().expect("composes again");
     assert_eq!(said(&first).len(), 1, "{:?}", said(&first));
     assert_eq!(said(&second), said(&first));
+}
+
+// ---------------------------------------------------------------------------
+// A band of whole numbers
+// ---------------------------------------------------------------------------
+
+/// Text that spells whole numbers, without padding, as a column of `VARCHAR`.
+const WHOLE_NUMBER_IDS_ON_X: &str = r#"
+data:
+  d:
+    query: "SELECT CAST(i * 1000 AS VARCHAR) AS id, i * 10 AS n FROM range(1, 4) t(i)"
+plot:
+  - mark: dot
+    data: { from: d }
+    x: id
+    y: n
+name: probe
+width: 600
+height: 300
+ATTRS
+"#;
+
+/// **A band whose categories are all whole numbers takes a number format**, so
+/// the text is formatted and the banner has nothing to say; with no format the
+/// categories print as spelled, not grouped.
+#[test]
+fn whole_number_ids_take_a_number_format() {
+    let plain = compose(WHOLE_NUMBER_IDS_ON_X, "");
+    assert_eq!(painted_x(&plain), strs(&["1000", "2000", "3000"]));
+    assert!(said(&plain).is_empty(), "{:?}", said(&plain));
+
+    let asked = compose(WHOLE_NUMBER_IDS_ON_X, "xTickFormat: ',d'");
+    assert_eq!(painted_x(&asked), strs(&["1,000", "2,000", "3,000"]));
+    assert!(said(&asked).is_empty(), "{:?}", said(&asked));
+}
+
+/// Three years whose value order, count order and text order all differ, drawn
+/// as bars standing on the x axis.
+const YEARS_ON_X: &str = r#"
+data:
+  t:
+    - { year: 2024, v: 1 }
+    - { year: 999, v: 1 }
+    - { year: 1000, v: 1 }
+    - { year: 1000, v: 1 }
+    - { year: 1000, v: 1 }
+    - { year: 999, v: 1 }
+plot:
+  - mark: barY
+    data: { from: t }
+    x: year
+    y: { sum: v }
+name: probe
+width: 600
+height: 300
+ATTRS
+"#;
+
+/// **Counts per year over `999`, `1000` and `2024`, unsorted, draw in value
+/// order**: not in text order (`1000`, `2024`, `999`) and not in the order the
+/// rows arrive. A format on the band changes the text and never this order.
+#[test]
+fn unsorted_integer_band_is_in_value_order() {
+    let spec = YEARS_ON_X;
+    assert_eq!(
+        painted_x(&compose(spec, "")),
+        strs(&["999", "1000", "2024"])
+    );
+    assert_eq!(
+        painted_x(&compose(spec, "xTickFormat: d")),
+        strs(&["999", "1000", "2024"])
+    );
 }

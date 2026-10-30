@@ -183,7 +183,8 @@ pub fn compute_ticks(scale: &Scale, target_count: usize) -> Vec<Tick> {
 /// `yTickFormat` can be for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AxisKind {
-    /// A linear, log or symlog axis: numbers, and a d3-format specifier.
+    /// A linear, log or symlog axis: numbers, and a d3-format specifier. A band
+    /// whose categories are all whole numbers reads as one too, for its text.
     Number,
     /// A timestamp axis, or a band of calendar days: dates, and a
     /// d3-time-format specifier.
@@ -212,7 +213,10 @@ impl AxisKind {
 /// `YYYY-MM-DD`, and this build has no other record of that: a band is a date
 /// axis when each of its categories is such a day and a band of names when one
 /// is not, as `a_format_crosses_an_axis_of_the_other_kind_and_no_other` holds, so
-/// a text column of ISO dates reads as a date axis too.
+/// a text column of ISO dates reads as a date axis too. Likewise a band whose
+/// categories are all whole numbers ([`whole_categories`]) is a number axis for
+/// its text: it takes a number format, and its order, which comes from the query,
+/// is untouched.
 #[must_use]
 pub fn axis_kind(scale: &Scale) -> Option<AxisKind> {
     match scale {
@@ -220,6 +224,8 @@ pub fn axis_kind(scale: &Scale) -> Option<AxisKind> {
         Scale::Time { .. } => Some(AxisKind::Date),
         Scale::Band { categories, .. } => Some(if day_categories(categories).is_some() {
             AxisKind::Date
+        } else if whole_categories(categories).is_some() {
+            AxisKind::Number
         } else {
             AxisKind::Category
         }),
@@ -270,11 +276,27 @@ fn day_categories(categories: &[String]) -> Option<Vec<i64>> {
     categories.iter().map(|c| iso_date_micros(c)).collect()
 }
 
+/// The value each category names, when every category is a whole number spelled
+/// the way `i64` prints it: digits with an optional leading `-` and no `+`, no
+/// leading zero and no blank. Text that merely parses (`"02134"`, `"+7"`, `""`)
+/// is an identifier or a gap and stays a name, so a format never rewrites it. A
+/// value past 2^53 prints as the nearest `f64`, as any number axis would.
+fn whole_categories(categories: &[String]) -> Option<Vec<i64>> {
+    if categories.is_empty() {
+        return None;
+    }
+    categories
+        .iter()
+        .map(|c| c.parse::<i64>().ok().filter(|n| n.to_string() == *c))
+        .collect()
+}
+
 /// Whether the axis `scale` draws has text a plot's `xTickFormat` /
 /// `yTickFormat` can set: a number axis (linear, log or symlog) and a date axis
-/// (a time scale, or a band of calendar days). A band of names prints its names,
-/// whatever format is asked of it and whether or not the names read as numbers,
-/// so a format on one changes nothing, and Mosaic's own band axis prints the
+/// (a time scale, or a band of calendar days), and a band of whole numbers takes
+/// a number format. A band of names prints its names, whatever format is asked of
+/// it and even when they read as numbers without being whole ones (`"02134"`), so
+/// a format on one changes nothing, and Mosaic's own band axis prints the
 /// names too.
 ///
 /// The composition warns through it, as through [`tick_count_applies`], and
@@ -345,7 +367,7 @@ pub fn compute_ticks_formatted(
             range_start,
             range_end,
             padding,
-        } => compute_band_ticks(categories, *range_start, *range_end, *padding, date),
+        } => compute_band_ticks(categories, *range_start, *range_end, *padding, number, date),
         Scale::Time {
             domain_min_us,
             domain_max_us,
@@ -526,16 +548,19 @@ fn compute_linear_ticks(
     ticks
 }
 
-/// A band's ticks: one per category, at its centre. `date` is a date format
-/// the plot asked for. It sets the text when each category is a calendar day
-/// (see [`axis_kind`]), and the categories print as they are when one is not,
-/// as `a_date_format_prints_a_time_axis_and_a_band_of_days_and_leaves_names_alone`
-/// holds.
+/// A band's ticks: one per category, at its centre. `number` and `date` are the
+/// formats the plot asked for. A date format sets the text when each category is
+/// a calendar day and a number format when each is a whole number (see
+/// [`axis_kind`]); the categories print as they are when one is not, or when the
+/// plot asked for no format, as
+/// `a_date_format_prints_a_time_axis_and_a_band_of_days_and_leaves_names_alone`
+/// and `whole_number_band_is_a_number_axis` hold.
 fn compute_band_ticks(
     categories: &[String],
     range_start: f64,
     range_end: f64,
     padding: f64,
+    number: Option<NumberFormat>,
     date: Option<&DateFormat>,
 ) -> Vec<Tick> {
     let n = categories.len() as f64;
@@ -545,6 +570,7 @@ fn compute_band_ticks(
     let total = range_end - range_start;
     let band = total / n;
     let days = date.and_then(|format| day_categories(categories).map(|days| (format, days)));
+    let wholes = number.and_then(|format| whole_categories(categories).map(|ns| (format, ns)));
 
     categories
         .iter()
@@ -556,9 +582,11 @@ fn compute_band_ticks(
                 + band * (1.0 - padding) / 2.0;
             Tick {
                 value: i as f64,
-                label: days
-                    .as_ref()
-                    .map_or_else(|| cat.clone(), |(format, days)| format.format(days[i])),
+                label: match (&days, &wholes) {
+                    (Some((format, days)), _) => format.format(days[i]),
+                    (None, Some((format, wholes))) => format.format(wholes[i] as f64),
+                    (None, None) => cat.clone(),
+                },
                 position: centre,
             }
         })
@@ -1566,6 +1594,80 @@ mod tests {
         );
     }
 
+    /// A band whose categories are all whole numbers is a number axis for its
+    /// text: `d` prints a year without the thousands separator an unformatted
+    /// number axis would group, and the ticks stay where they were. With no
+    /// format its categories print as spelled (`2024`, not `2,024`).
+    #[test]
+    fn whole_number_band_is_a_number_axis() {
+        let years = band(&["2019", "2020", "2024"]);
+        assert_eq!(axis_kind(&years), Some(AxisKind::Number));
+        assert!(tick_format_applies(&years));
+        assert_eq!(labels_under(&years, Some("d")), ["2019", "2020", "2024"]);
+        assert_eq!(
+            labels_under(&years, Some(",d")),
+            ["2,019", "2,020", "2,024"]
+        );
+        assert_eq!(
+            labels_under(&years, Some(".1f")),
+            ["2019.0", "2020.0", "2024.0"]
+        );
+        assert_eq!(labels_under(&years, None), ["2019", "2020", "2024"]);
+        assert_eq!(
+            compute_ticks_formatted(&years, 5, None)
+                .iter()
+                .map(|t| t.position)
+                .collect::<Vec<_>>(),
+            compute_ticks_formatted(&years, 5, Some(&number_format(",d")))
+                .iter()
+                .map(|t| t.position)
+                .collect::<Vec<_>>(),
+            "a format changes the text and never the place"
+        );
+        assert!(tick_format_crosses_axis(&years, &date("%b")));
+        assert!(!tick_format_crosses_axis(&years, &number_format("d")));
+
+        let negative = band(&["-5", "0", "12"]);
+        assert_eq!(axis_kind(&negative), Some(AxisKind::Number));
+    }
+
+    fn number_format(spec: &str) -> AxisFormat {
+        AxisFormat::Number(NumberFormat::parse(spec).expect("a number format"))
+    }
+
+    /// One name among the numbers makes it a band of names, as one among days
+    /// does, and text that only parses as a number is a name: an identifier with
+    /// a leading zero, a signed spelling and an empty string are not rewritten.
+    #[test]
+    fn mixed_band_is_still_names() {
+        for categories in [
+            &["2019", "n/a"][..],
+            &["02134", "10001"],
+            &["007", "8"],
+            &["+7", "8"],
+            &["1.5", "2"],
+            &["", "2"],
+            &["-0", "1"],
+            &[],
+        ] {
+            let scale = band(categories);
+            assert_eq!(
+                axis_kind(&scale),
+                Some(AxisKind::Category),
+                "{categories:?}"
+            );
+            assert!(!tick_format_applies(&scale), "{categories:?}");
+            assert_eq!(
+                labels_under(&scale, Some("d")),
+                categories
+                    .iter()
+                    .map(|c| (*c).to_string())
+                    .collect::<Vec<_>>(),
+                "{categories:?}"
+            );
+        }
+    }
+
     /// The judge the axis draws through and the composition warns through: a
     /// number format crosses a date axis and a date format crosses a number
     /// axis, and nothing else crosses: not a format on its own kind of axis, not
@@ -1764,8 +1866,9 @@ mod tests {
             ("band of names", band(&["north", "south", "east", "west"])),
             (
                 "band of names that read as numbers",
-                band(&["1", "2", "3", "4"]),
+                band(&["01", "02", "03", "04"]),
             ),
+            ("band of whole numbers", band(&["1", "2", "3", "4"])),
             (
                 "band of days",
                 band(&["2024-03-01", "2024-04-01", "2024-05-01"]),
