@@ -34,7 +34,7 @@ const INERT: &str = "changes nothing on";
 const TEMPLATE: &str = r#"
 data:
   d:
-    query: "SELECT i + 1 AS n, TIMESTAMP '2024-03-01 14:00:00' + to_minutes(CAST(i AS INTEGER)) AS at, DATE '2024-03-01' + CAST(i AS INTEGER) AS day, 'g' || CAST(i AS VARCHAR) AS name, -120.0 + i AS lon, 30.0 + i AS lat FROM range(11) t(i)"
+    query: "SELECT i + 1 AS n, TIMESTAMP '2024-03-01 14:00:00' + to_minutes(CAST(i AS INTEGER)) AS at, DATE '2024-03-01' + CAST(i AS INTEGER) AS day, 'g' || CAST(i AS VARCHAR) AS name, CAST(2000 + i AS VARCHAR) AS year, -120.0 + i AS lon, 30.0 + i AS lat FROM range(11) t(i)"
 plot:
   - mark: dot
     data: { from: d }
@@ -184,6 +184,7 @@ fn an_ends_instruction_on_an_axis_that_is_not_linear_is_named_and_the_plot_draws
         ("day", "n", "", "xZero: true", "date"),
         ("name", "n", "", "xNice: true", "category"),
         ("n", "name", "", "yZero: true", "category"),
+        ("year", "n", "", "xNice: true", "category"),
     ] {
         assert_named(x, y, axes, key, axis);
     }
@@ -219,6 +220,9 @@ fn a_tick_count_on_an_axis_that_takes_none_is_named_and_the_plot_draws_without_i
     for (x, y, axes, key, axis) in [
         ("name", "n", "", "xTicks: 4", "category"),
         ("day", "n", "", "xTicks: 4", "date"),
+        // Text that spells whole numbers takes a number format, but it is still
+        // a band, so a count is named against a category axis.
+        ("year", "n", "", "xTicks: 4", "category"),
         ("n", "n", "xScale: log\n", "xTicks: 4", "log"),
         ("n", "n", "xScale: symlog\n", "xTicks: 4", "symlog"),
         ("n", "name", "", "yTicks: 4", "category"),

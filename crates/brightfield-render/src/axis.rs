@@ -239,15 +239,23 @@ pub fn axis_kind(scale: &Scale) -> Option<AxisKind> {
 /// The word the warning banner uses for the axis a scale draws, finer than
 /// [`AxisKind::word`]: a linear, a log and a symlog axis read as a number axis
 /// there, and an instruction that one takes and another does not has to name
-/// which it met. `None` for a colour ramp, which draws no positional axis.
+/// which it met. A band is a date axis when it is a band of days and a category
+/// axis otherwise, a band of whole numbers included: it takes a number format,
+/// but it has no ends and no tick count to set, as
+/// `the_word_for_an_axis_tells_a_log_axis_from_a_linear_one` holds.
+/// `None` for a colour ramp, which draws no positional axis.
 #[must_use]
 pub fn axis_scale_word(scale: &Scale) -> Option<&'static str> {
     match scale {
         Scale::Linear { .. } => Some("linear"),
         Scale::Log { .. } => Some("log"),
         Scale::Symlog { .. } => Some("symlog"),
+        Scale::Band { .. } => Some(if matches!(axis_kind(scale), Some(AxisKind::Date)) {
+            AxisKind::Date.word()
+        } else {
+            AxisKind::Category.word()
+        }),
         Scale::Time { .. }
-        | Scale::Band { .. }
         | Scale::Colour { .. }
         | Scale::Sequential { .. }
         | Scale::Diverging { .. }
@@ -1748,6 +1756,11 @@ mod tests {
         assert_eq!(axis_scale_word(&time), Some("date"));
         assert_eq!(axis_scale_word(&band(&["2024-03-01"])), Some("date"));
         assert_eq!(axis_scale_word(&band(&["north"])), Some("category"));
+        assert_eq!(
+            axis_scale_word(&band(&["2019", "2024"])),
+            Some("category"),
+            "a band of whole numbers takes a number format and is still a band"
+        );
     }
 
     /// The judge the composition warns through is the axis's own behaviour: a
