@@ -2,10 +2,12 @@
 //!
 //! A column whose trusted label FineType's projection casts is read through the label's transform,
 //! as a Protocol's silver table reads it. The cast is declared in the spec itself, as plain DuckDB
-//! SQL over the file's view: the file is read under [`ROWS`] and [`SOURCE`] selects its columns
-//! from it (`a_files_own_columns_survive_whatever_their_names`), a cast one through its transform and, beside the columns, its text as the file wrote it
-//! under [`RAW_PREFIX`]. So any session loaded from the spec (a tile switch's rebuild, the written
-//! spec opened again, another Mosaic tool) reads the columns as cast.
+//! SQL over the file's view: the file is read under [`ROWS`], and [`SOURCE`] selects its columns
+//! from it, a cast one through its transform, with each cast column's text as the file wrote it
+//! after them under [`RAW_PREFIX`]. A file's own columns are all kept, whatever they are called
+//! (`a_files_own_columns_survive_whatever_their_names`). So any session loaded from the spec (a
+//! tile switch's rebuild, the written spec opened again, another Mosaic tool) reads the columns as
+//! cast.
 //!
 //! Whether a cast stands is decided once, on open, from the values: the in-memory copy of the
 //! casting source is made, one aggregate over it compares each cast column's non-null count with
@@ -157,9 +159,39 @@ pub(crate) fn source_spec_casting(
         sql = format!("SELECT *, {} FROM ({sql})", derived.join(", "));
     }
     format!(
-        "data:\n  {ROWS}:\n    file: {file}\n  {SOURCE}: {}\n",
-        yaml_quoted(&sql)
+        "data:\n  {ROWS}:\n    file: {file}\n  {SOURCE}: {}",
+        yaml_block(&sql, 4)
     )
+}
+
+/// `text` as a YAML literal block scalar whose lines are indented by `indent` spaces, ending in a
+/// line break, so every character of it, line breaks included, reads back as written.
+///
+/// A quoted scalar cannot carry a line break (YAML folds one to a space), and FineType's
+/// transforms hold line breaks: `identity.person.height`'s is a multi-line `CASE`, which
+/// `a_multi_line_transform_round_trips_through_the_written_spec` writes and reads back. The
+/// chomping indicator keeps the text's own final line breaks: none (`-`) or all (`+`). The text
+/// starts with `SELECT`, never a space, so its indentation needs no indicator.
+fn yaml_block(text: &str, indent: usize) -> String {
+    let pad = " ".repeat(indent);
+    let chomp = if text.ends_with('\n') { '+' } else { '-' };
+    let mut out = format!("|{chomp}\n");
+    for line in text.trim_end_matches('\n').split('\n') {
+        if line.is_empty() {
+            out.push('\n');
+        } else {
+            out.push_str(&pad);
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    // The last line's own break is the first of the text's final breaks; `+` keeps the rest as
+    // empty lines.
+    let trailing = text.len() - text.trim_end_matches('\n').len();
+    for _ in 1..trailing {
+        out.push('\n');
+    }
+    out
 }
 
 /// The raw columns the sources of `spec` declare: each name a source's SQL selects a column as
@@ -423,6 +455,20 @@ mod tests {
         .expect("the plain spec parses")
         .spec;
         assert!(raw_columns_declared(&plain).is_empty());
+    }
+
+    #[test]
+    fn a_block_scalar_reads_back_as_written() {
+        for text in [
+            "SELECT 1",
+            "SELECT CASE\n  WHEN x THEN 'a''b'\nEND\n",
+            "SELECT\n\n  1\n\n",
+        ] {
+            let yaml = format!("k: {}", yaml_block(text, 2));
+            let back: std::collections::BTreeMap<String, String> =
+                serde_yaml::from_str(&yaml).expect("the block parses");
+            assert_eq!(back["k"], text, "{yaml}");
+        }
     }
 
     #[test]

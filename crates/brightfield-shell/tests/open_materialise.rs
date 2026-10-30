@@ -1181,3 +1181,38 @@ fn a_changed_file_loses_what_was_read_from_it() {
     assert_eq!(revenue.written, column_record::Written::default());
     assert!(revenue.nominated, "the accepted label is kept");
 }
+
+/// **A transform that spans lines is written into the spec as it is**: the spec stays valid YAML
+/// and its SQL reads back byte for byte, line breaks included.
+#[test]
+fn a_multi_line_transform_round_trips_through_the_written_spec() {
+    const HEIGHT: &str = "identity.person.height";
+    let path = typed_with(
+        "multi-line",
+        "height,name\n180cm,a\n175cm,b\n162cm,c\n",
+        &[("height", HEIGHT)],
+    );
+    let (mut opened, _) = open_typed(&path, &unbundled());
+    assert_eq!(type_of(&mut opened.live, "height"), "DOUBLE");
+
+    let expr = brightfield_protocol::silver::cast_expr_over_text(
+        "height",
+        Some(HEIGHT),
+        &brightfield_protocol::silver::FinetypeTransforms::vendored(),
+    )
+    .expect("FineType casts a height");
+    assert!(expr.contains('\n'), "the transform no longer spans lines");
+
+    let written = opened.spec_file.as_ref().expect("the spec was written");
+    let text = std::fs::read_to_string(written).expect("the spec reads");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&text).expect("the spec is YAML");
+    let sql = doc["data"][data_file::SOURCE]
+        .as_str()
+        .expect("the source is SQL");
+    assert!(
+        sql.contains(&format!("{expr} AS \"height\"")),
+        "the transform did not read back as written:\n{sql}"
+    );
+    let mut reloaded = LiveDashboard::load_str(&text, None).expect("the written spec loads");
+    assert_eq!(type_of(&mut reloaded, "height"), "DOUBLE");
+}

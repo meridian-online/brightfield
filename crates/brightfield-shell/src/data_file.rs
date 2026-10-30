@@ -269,7 +269,9 @@ pub const MATERIALISE_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
 pub const SOURCE: &str = "opened";
 
 /// The prefix of the name a cast column's text, as the file wrote it, is kept under in the copy:
-/// `__raw__revenue` beside `revenue`. The grid does not list these columns.
+/// `__raw__revenue` beside `revenue`. The grid does not list these columns. It goes by the name
+/// a spec's source SQL gives a column, so a hand-written spec that aliases a column into this
+/// prefix also has it hidden from the grid.
 pub const RAW_PREFIX: &str = "__raw__";
 
 /// Everything opening a file produced: the live session over it, the first
