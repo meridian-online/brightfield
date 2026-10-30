@@ -162,6 +162,7 @@
 //! `sales<LF>2026.csv` would come back as `sales 2026.csv` and open that file
 //! instead. It is refused in the same place and for the same reason.
 
+use std::collections::BTreeMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
@@ -336,6 +337,9 @@ pub struct OpenTrace {
     /// it spent beside what it was allowed to spend, and neither number has to
     /// be inferred from the file's size on disk.
     pub materialise_bytes: Option<u64>,
+    /// Whether the open took the file as already cast: asked for in
+    /// [`OpenOptions::already_cast`], or found by [`settled`].
+    pub already_cast: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -674,6 +678,20 @@ pub struct OpenOptions {
     /// per test makes the test carry its own cache, so a warm machine can no
     /// longer answer a question the code is supposed to.
     pub extension_directory: Option<PathBuf>,
+    /// Labels already settled for the file's columns, column name to label,
+    /// handed to the profile as [`LoadOptions::given_labels`] so the type
+    /// source is not asked about them. [`open_traced`] adds to these what it
+    /// finds for the file itself (see [`settled`]); one named here wins.
+    pub given_labels: BTreeMap<String, String>,
+    /// The file's columns were cast from their labels when it was written,
+    /// as a Protocol's grid copy is, so the open must not cast them again.
+    /// [`open_traced`] also sets it for a file it recognises as such (see
+    /// [`settled`]).
+    ///
+    /// Nothing casts on the flat route yet. The cast a lone file's copy is
+    /// to make when it is read into memory is what will read this, and skip
+    /// itself for a file that is already cast.
+    pub already_cast: bool,
 }
 
 impl Default for OpenOptions {
@@ -684,6 +702,8 @@ impl Default for OpenOptions {
             materialise_budget_bytes: MATERIALISE_BUDGET_BYTES,
             type_source: LoadOptions::packaged().type_source,
             extension_directory: None,
+            given_labels: BTreeMap::new(),
+            already_cast: false,
         }
     }
 }
@@ -706,6 +726,13 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
              workbook or database opens as a model of its tables from the front door."
         ));
     }
+    let mut options = options.clone();
+    let found = settled(&path);
+    for (column, label) in found.given_labels {
+        options.given_labels.entry(column).or_insert(label);
+    }
+    options.already_cast |= found.already_cast;
+    let options = &options;
     let columns = columns_of(&path, options)?;
     let dashboard = Dashboard::of(&path, &columns);
     if dashboard.tiles().is_empty() {
@@ -805,6 +832,7 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
             materialise_ms,
             bytes,
             materialise_bytes,
+            already_cast: options.already_cast,
         },
     ))
 }
@@ -910,6 +938,7 @@ fn columns_of(path: &Path, options: &OpenOptions) -> Result<Vec<ColumnProfile>, 
     let load_options = LoadOptions {
         type_source: options.type_source.clone(),
         extension_directory: options.extension_directory.clone(),
+        given_labels: options.given_labels.clone(),
         ..LoadOptions::default()
     };
     let load = Engine::new()
@@ -937,6 +966,104 @@ fn columns_of(path: &Path, options: &OpenOptions) -> Result<Vec<ColumnProfile>, 
     }
 }
 
+/// What an open takes as settled about a file before profiling it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Settled {
+    /// Labels taken as given, column name to label.
+    pub given_labels: BTreeMap<String, String>,
+    /// Whether the file's columns were already cast from their labels.
+    pub already_cast: bool,
+}
+
+/// What is already known about the columns of the file at `path`, from the record kept for it.
+///
+/// A file in the `.grid/` folder of a Protocol (a folder holding an `arcform.yaml`) was written
+/// from the Protocol's silver tables, so it is already cast. When its stem names a resource in
+/// the Protocol's `packages/`, it is the grid copy of that table and every label recorded on the
+/// resource is given: the copy was cast from those labels, and asking the classifier about the
+/// cast values would lose them. Any other file, including a raw `.profile/` snapshot, is a lone
+/// file: the labels an analyst accepted (`nominated`) in its record under
+/// [`crate::column_record::flat_record_path`] are given, and it is not cast.
+///
+/// A record that cannot be read is reported and treated as empty; it never stops an open.
+#[must_use]
+pub fn settled(path: &Path) -> Settled {
+    if let Some(protocol) = grid_folder_protocol(path) {
+        let resource = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        return Settled {
+            given_labels: protocol_labels(&protocol, &resource),
+            already_cast: true,
+        };
+    }
+    let record = crate::column_record::flat_record_path(path)
+        .and_then(|package| crate::column_record::read_record(&package, SOURCE));
+    let given_labels = match record {
+        Ok(record) => record
+            .into_iter()
+            .flat_map(|r| r.fields)
+            .filter(|(_, f)| f.nominated)
+            .filter_map(|(column, f)| Some((column, f.label?)))
+            .collect(),
+        Err(e) => {
+            eprintln!(
+                "warning: {}: its column record was not read, so its columns are profiled \
+                 afresh: {e}",
+                path.display()
+            );
+            BTreeMap::new()
+        }
+    };
+    Settled {
+        given_labels,
+        already_cast: false,
+    }
+}
+
+/// The Protocol folder `path` is a grid snapshot of: the parent of the `.grid/` folder `path` is
+/// in, when that parent holds an `arcform.yaml`.
+fn grid_folder_protocol(path: &Path) -> Option<PathBuf> {
+    let folder = path.parent()?;
+    if folder.file_name()? != crate::model_inspector::GRID_DIR {
+        return None;
+    }
+    let protocol = folder.parent()?;
+    protocol
+        .join("arcform.yaml")
+        .is_file()
+        .then(|| protocol.to_path_buf())
+}
+
+/// Every label recorded on the resource `resource` in the data packages under `protocol`'s
+/// `packages/`, column name to label. Empty when no package names the resource.
+fn protocol_labels(protocol: &Path, resource: &str) -> BTreeMap<String, String> {
+    let Ok(folders) = std::fs::read_dir(protocol.join("packages")) else {
+        return BTreeMap::new();
+    };
+    let mut packages: Vec<PathBuf> = folders
+        .flatten()
+        .map(|e| e.path().join("datapackage.json"))
+        .filter(|p| p.is_file())
+        .collect();
+    packages.sort();
+    for package in packages {
+        match crate::column_record::read_record(&package, resource) {
+            Ok(Some(record)) => {
+                return record
+                    .fields
+                    .into_iter()
+                    .filter_map(|(column, f)| Some((column, f.label?)))
+                    .collect();
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("warning: {e}"),
+        }
+    }
+    BTreeMap::new()
+}
+
 // ---------------------------------------------------------------------------
 // Opening anything the door accepts
 // ---------------------------------------------------------------------------
@@ -957,7 +1084,8 @@ pub enum Opened {
 /// A path whose tables come to exactly one flat file takes today's route, [`open`], unchanged.
 /// One sheet of a workbook or one table of a database lands where a flat file does too, on its
 /// grid and dashboard: its Protocol is made and run as below, with no model written, and the
-/// silver table is opened through [`open`] from a Parquet copy in the Protocol folder. Anything
+/// silver table is opened on the flat route from a Parquet copy in the Protocol folder, as already
+/// cast and with the labels its data package records (see [`settled`]). Anything
 /// else takes the own-files flow: the Protocol is made and run, the raw tables are
 /// profiled, a model is discovered from the sample pass and written beside the Protocol, and the
 /// silver steps for it are run. The full pass is the model pane's to run once it opens
@@ -995,7 +1123,13 @@ pub fn open_any(path: &Path, runner: &crate::run::Runner) -> Result<Opened, Stri
     match one_part {
         Some(name) => {
             let rows = own::grid_copy(&protocol, &name)?;
-            open(&rows.to_string_lossy()).map(Opened::OneTable)
+            // The copy was cast from the labels the Protocol's package records for it.
+            let options = OpenOptions {
+                given_labels: protocol_labels(&protocol.dir, &name),
+                already_cast: true,
+                ..OpenOptions::default()
+            };
+            open_traced(&rows.to_string_lossy(), &options).map(|(o, _)| Opened::OneTable(o))
         }
         None => Ok(Opened::Model(protocol)),
     }

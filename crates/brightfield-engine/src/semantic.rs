@@ -154,6 +154,12 @@ pub enum ValueCheck {
     /// schema of `{"type": "string"}` would pass by construction and report a
     /// check that tested nothing.
     NoConstraint,
+    /// The label was given to the profile rather than asked of the type
+    /// source — see [`LoadOptions::given_labels`] — so neither the classifier
+    /// nor a validator looked at the values.
+    ///
+    /// [`LoadOptions::given_labels`]: crate::LoadOptions::given_labels
+    Given,
     /// Values went through the label's declared constraint.
     Checked {
         /// How many non-null values were checked (bounded — see
@@ -168,9 +174,10 @@ pub enum ValueCheck {
 impl ValueCheck {
     /// Whether any value was actually put through a validator.
     ///
-    /// `false` for both [`ValueCheck::NoEntry`] and [`ValueCheck::NoConstraint`]
-    /// — the two ways of arriving at a label nothing tested. A caller deciding
-    /// how much to trust a label wants this, not a match on one variant.
+    /// `false` for [`ValueCheck::NoEntry`], [`ValueCheck::NoConstraint`] and
+    /// [`ValueCheck::Given`] — the ways of arriving at a label nothing tested.
+    /// A caller deciding how much to trust a label wants this, not a match on
+    /// one variant.
     #[must_use]
     pub fn is_verified(&self) -> bool {
         matches!(self, ValueCheck::Checked { checked, .. } if *checked > 0)

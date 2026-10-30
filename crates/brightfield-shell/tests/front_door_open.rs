@@ -5,8 +5,11 @@
 //! before anything reads them, so no Protocol lands under the developer's real data directory.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
+use brightfield_engine::semantic::{OpenTypeSource, TypeSource, TypeSourceSpec};
+use brightfield_engine::SemanticType;
+use brightfield_shell::column_record;
 use brightfield_shell::data_file::{self, Opened};
 use brightfield_shell::run::Runner;
 use brightfield_shell::window::{names_a_data_file, Boot};
@@ -323,4 +326,279 @@ fn a_folder_member_named_with_pattern_syntax_is_left_out_not_read_as_another_fil
         ),
         "{rows:?}"
     );
+}
+
+/// A one-sheet workbook whose sheet holds `amount` written as `values`, or `None` when the excel
+/// extension cannot be had here.
+fn workbook(name: &str, values: &[&str]) -> Option<PathBuf> {
+    let book = input(name).join("book.xlsx");
+    let rows: Vec<String> = values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| format!("({i}, '{v}')"))
+        .collect();
+    let conn = duckdb::Connection::open_in_memory().unwrap();
+    let made = conn
+        .execute_batch("INSTALL excel; LOAD excel;")
+        .and_then(|()| {
+            conn.execute_batch(&format!(
+                "COPY (SELECT * FROM (VALUES {}) t(id, amount)) TO '{}' (FORMAT xlsx, HEADER true, SHEET 'Sales')",
+                rows.join(", "),
+                book.display()
+            ))
+        });
+    match made {
+        Ok(()) => Some(book),
+        Err(e) => {
+            eprintln!("skipped: the excel extension is not available here: {e}");
+            None
+        }
+    }
+}
+
+/// The Protocol folder a grid copy at `copy` (`<protocol>/.grid/<table>.parquet`) belongs to.
+fn protocol_of(copy: &Path) -> PathBuf {
+    copy.parent().unwrap().parent().unwrap().to_path_buf()
+}
+
+/// The label the Protocol's data package records for `column` of the table `copy` is a grid copy
+/// of.
+fn package_label(copy: &Path, column: &str) -> Option<String> {
+    let resource = copy.file_stem().unwrap().to_string_lossy().into_owned();
+    std::fs::read_dir(protocol_of(copy).join("packages"))
+        .unwrap()
+        .flatten()
+        .find_map(|e| {
+            column_record::read_record(&e.path().join("datapackage.json"), &resource).unwrap()
+        })
+        .and_then(|r| r.fields.get(column).and_then(|f| f.label.clone()))
+}
+
+fn semantic_of(opened: &data_file::OpenedFile, column: &str) -> SemanticType {
+    opened
+        .protocol
+        .profiles
+        .iter()
+        .find(|c| c.name == column)
+        .unwrap_or_else(|| panic!("no column {column}"))
+        .semantic
+        .clone()
+}
+
+const CURRENCY: &str = "finance.currency.amount";
+
+fn given(label: &str) -> SemanticType {
+    SemanticType::Labelled {
+        label: label.to_string(),
+        confidence: 1.0,
+        check: brightfield_engine::ValueCheck::Given,
+    }
+}
+
+#[test]
+fn single_sheet_cast_copy_keeps_its_currency_label() {
+    let Some(book) = workbook(
+        "cast-label",
+        &[
+            "$1,234.50",
+            "$12.00",
+            "$980.25",
+            "$45.10",
+            "$3,210.00",
+            "$7.75",
+        ],
+    ) else {
+        return;
+    };
+    let Opened::OneTable(opened) = data_file::open_any(&book, &runner()).expect("it opens") else {
+        panic!("a workbook of one sheet opens on the grid");
+    };
+    // The label comes from FineType when the Protocol is profiled; without a bundle beside the
+    // test binary there is none to keep.
+    let recorded = package_label(&opened.protocol.data, "amount");
+    if recorded.as_deref() != Some(CURRENCY) {
+        eprintln!("skipping: the Protocol's package labels amount {recorded:?}, not {CURRENCY}");
+        return;
+    }
+    assert_eq!(semantic_of(&opened, "amount"), given(CURRENCY));
+}
+
+#[test]
+fn cast_copy_is_not_cast_again() {
+    let Some(book) = workbook(
+        "cast-again",
+        &[
+            "£1,234.50",
+            "(£12.00)",
+            "£980.25",
+            "£45.10",
+            "£3,210.00",
+            "£7.75",
+        ],
+    ) else {
+        return;
+    };
+    let Opened::OneTable(opened) = data_file::open_any(&book, &runner()).expect("it opens") else {
+        panic!("a workbook of one sheet opens on the grid");
+    };
+    let copy = opened.protocol.data.clone();
+    let recorded = package_label(&copy, "amount");
+    if recorded.as_deref() != Some(CURRENCY) {
+        eprintln!("skipping: the Protocol's package labels amount {recorded:?}, not {CURRENCY}");
+        return;
+    }
+    drop(opened);
+    // Reopened as a recent file is: the copy's own path, on the flat route.
+    let (again, trace) =
+        data_file::open_traced(&copy.to_string_lossy(), &data_file::OpenOptions::default())
+            .expect("the cast copy opens again");
+    assert!(trace.already_cast);
+    let amount = again
+        .protocol
+        .profiles
+        .iter()
+        .find(|c| c.name == "amount")
+        .unwrap();
+    assert_eq!(amount.min.as_deref(), Some("-12.00"), "{amount:?}");
+}
+
+#[test]
+fn copy_inside_a_protocol_folder_is_recognised() {
+    let path = database(
+        "duck-recognised",
+        "sales.duckdb",
+        "CREATE TABLE sales AS SELECT * FROM (VALUES (1, 12.50, 'North'), (2, 980.00, 'South'), \
+         (3, 45.10, 'East')) t(id, amount, region);",
+    );
+    let Opened::OneTable(opened) = data_file::open_any(&path, &runner()).expect("it opens") else {
+        panic!("a database of one table opens on the grid");
+    };
+    let copy = opened.protocol.data.clone();
+    drop(opened);
+    // The Protocol's package records a label for `amount`, as FineType would have written it.
+    let resource = copy.file_stem().unwrap().to_string_lossy().into_owned();
+    let package = std::fs::read_dir(protocol_of(&copy).join("packages"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path().join("datapackage.json"))
+        .find(|p| column_record::read_record(p, &resource).unwrap().is_some())
+        .expect("a package naming the table");
+    let mut record = column_record::read_record(&package, &resource)
+        .unwrap()
+        .unwrap();
+    let amount = record.fields.get_mut("amount").unwrap();
+    amount.label = Some(CURRENCY.into());
+    amount.nominated = false;
+    column_record::write_record(&package, &resource, &record).unwrap();
+
+    let options = data_file::OpenOptions {
+        type_source: None,
+        ..data_file::OpenOptions::default()
+    };
+    let (reopened, trace) =
+        data_file::open_traced(&copy.to_string_lossy(), &options).expect("the copy opens");
+    assert!(trace.already_cast);
+    assert_eq!(semantic_of(&reopened, "amount"), given(CURRENCY));
+
+    // Another file in the grid folder, such as a join preview, is built from cast tables: already
+    // cast, with no labels given.
+    let preview = copy.with_file_name("preview.parquet");
+    std::fs::copy(&copy, &preview).unwrap();
+    let (other, trace) =
+        data_file::open_traced(&preview.to_string_lossy(), &options).expect("a preview opens");
+    assert!(trace.already_cast);
+    assert_eq!(
+        semantic_of(&other, "amount"),
+        SemanticType::NotAsked,
+        "a preview is not the table's copy"
+    );
+
+    // The raw snapshot the Protocol was profiled from is not cast.
+    let raw = protocol_of(&copy)
+        .join(".profile")
+        .join(format!("{resource}.parquet"));
+    let (_, trace) =
+        data_file::open_traced(&raw.to_string_lossy(), &options).expect("the snapshot opens");
+    assert!(!trace.already_cast);
+}
+
+/// A type source that answers `stub.label` for every column and remembers which it was asked.
+struct Recording(Arc<Mutex<Vec<String>>>);
+
+impl TypeSource for Recording {
+    fn name(&self) -> &str {
+        "recording"
+    }
+    fn typing_expr(&self, column: &str, _duckdb_type: &str) -> Result<String, String> {
+        self.0.lock().unwrap().push(column.to_string());
+        let c = column.replace('"', "\"\"");
+        Ok(format!(
+            "any_value('stub.label') FILTER (WHERE \"{c}\" IS NOT NULL)"
+        ))
+    }
+    fn read_and_check(
+        &self,
+        _conn: &duckdb::Connection,
+        _view: &str,
+        _column: &str,
+        _cell: &dyn duckdb::arrow::array::Array,
+        _row: usize,
+    ) -> SemanticType {
+        SemanticType::Labelled {
+            label: "stub.label".to_string(),
+            confidence: 1.0,
+            check: brightfield_engine::ValueCheck::NoConstraint,
+        }
+    }
+}
+
+struct OpenRecording(Arc<Mutex<Vec<String>>>);
+
+impl OpenTypeSource for OpenRecording {
+    fn open(&self, _conn: &duckdb::Connection) -> Result<Box<dyn TypeSource>, String> {
+        Ok(Box::new(Recording(Arc::clone(&self.0))))
+    }
+}
+
+#[test]
+fn nominated_label_is_not_asked() {
+    let csv = input("nominated").join("sales.csv");
+    std::fs::write(
+        &csv,
+        "amount,region\n1234.50,North\n12.00,South\n980.25,East\n",
+    )
+    .unwrap();
+    // The record nominates `amount`; `region`'s label is only inferred, so it is asked again.
+    let mut record = column_record::SourceRecord::default();
+    record.fields.insert(
+        "amount".into(),
+        column_record::FieldRecord {
+            label: Some(CURRENCY.into()),
+            nominated: true,
+            ..column_record::FieldRecord::default()
+        },
+    );
+    record.fields.insert(
+        "region".into(),
+        column_record::FieldRecord {
+            label: Some("geography.location.region".into()),
+            ..column_record::FieldRecord::default()
+        },
+    );
+    let package = column_record::flat_record_path(&csv).unwrap();
+    column_record::write_record(&package, data_file::SOURCE, &record).unwrap();
+
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let options = data_file::OpenOptions {
+        type_source: Some(TypeSourceSpec::Other(Arc::new(OpenRecording(Arc::clone(
+            &asked,
+        ))))),
+        ..data_file::OpenOptions::default()
+    };
+    let (opened, trace) =
+        data_file::open_traced(&csv.to_string_lossy(), &options).expect("the csv opens");
+    assert_eq!(*asked.lock().unwrap(), ["region"]);
+    assert_eq!(semantic_of(&opened, "amount"), given(CURRENCY));
+    assert_eq!(semantic_of(&opened, "region").label(), Some("stub.label"));
+    assert!(!trace.already_cast, "a lone file is not cast yet");
 }

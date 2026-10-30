@@ -18,7 +18,7 @@ pub mod semantic;
 pub mod sources;
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // Re-export duckdb's Arrow types so consumers don't need a separate arrow dep.
@@ -355,6 +355,17 @@ pub struct LoadOptions {
     /// A source that loads nothing native — the default — declares `false` and
     /// costs the session nothing.
     pub type_source: Option<semantic::TypeSourceSpec>,
+    /// Labels already settled for columns of the source a flat open loads,
+    /// column name to label: one an analyst accepted, or one a cast copy was
+    /// made from.
+    ///
+    /// A column named here is not asked of [`LoadOptions::type_source`]: the
+    /// profile issues no typing term for it, and its
+    /// [`ColumnProfile::semantic`] is [`SemanticType::Labelled`] with this
+    /// label and [`ValueCheck::Given`]. That holds with no type source at
+    /// all, since a given label needs no classifier. A name that is not a
+    /// column of the source is ignored.
+    pub given_labels: BTreeMap<String, String>,
 }
 
 impl LoadOptions {
@@ -827,6 +838,7 @@ impl Engine {
             facts_cache: HashMap::new(),
             type_source,
             type_source_error,
+            given_labels: options.given_labels.clone(),
             scan_tally: RefCell::new(None),
             copy_budget_baseline,
         };
@@ -978,6 +990,9 @@ pub struct Session {
     /// and refused" and "no bundle was asked for" — the two look identical
     /// from a column profile, and only one of them is a packaging bug.
     type_source_error: Option<String>,
+    /// [`LoadOptions::given_labels`]: columns the profile labels without
+    /// asking the type source.
+    given_labels: BTreeMap<String, String>,
     /// Where [`Session::profile_sources_counting_scans`] and
     /// [`Session::begin_scan_tally`] collect what the statements they enclose
     /// cost. `None` — the state a caller that did not ask to count leaves it
@@ -3728,9 +3743,20 @@ impl Session {
             // `ft_profile` is a true DuckDB aggregate, so one extra term per
             // column costs one extra accumulator on the same pass over the
             // same rows.
-            typed.push(match &self.type_source {
-                None => Err(SemanticType::NotAsked),
-                Some(src) => match src.typing_expr(col, ty) {
+            // A label already settled is not asked again, so no typing term
+            // is issued for its column.
+            let given = self
+                .given_labels
+                .get(col)
+                .map(|label| SemanticType::Labelled {
+                    label: label.clone(),
+                    confidence: 1.0,
+                    check: ValueCheck::Given,
+                });
+            typed.push(match (given, &self.type_source) {
+                (Some(given), _) => Err(given),
+                (None, None) => Err(SemanticType::NotAsked),
+                (None, Some(src)) => match src.typing_expr(col, ty) {
                     Ok(expr) => {
                         selects.push(expr);
                         Ok(())
@@ -5032,6 +5058,7 @@ plot:
             network: NetworkPolicy::Disabled,
             extension_directory: Some(ext_dir.clone()),
             type_source: None,
+            ..LoadOptions::default()
         };
         let mut session = Engine::new()
             .load_spec_with(spec, analysis, None, &options)
@@ -5071,6 +5098,7 @@ plot:
             network: NetworkPolicy::Disabled,
             extension_directory: Some(ext_dir.clone()),
             type_source: None,
+            ..LoadOptions::default()
         };
         let err = Engine::new()
             .load_spec_with(spec, analysis, None, &options)
@@ -5133,6 +5161,7 @@ plot:
             network: NetworkPolicy::Disabled,
             extension_directory: Some(ext_dir.clone()),
             type_source: None,
+            ..LoadOptions::default()
         };
         let err = Engine::new()
             .load_spec_with(spec, analysis, None, &options)

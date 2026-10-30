@@ -75,6 +75,7 @@ fn session_with(bundle: &std::path::Path) -> Session {
         network: NetworkPolicy::Disabled,
         extension_directory: None,
         type_source: Some(TypeSourceSpec::Bundle(bundle.to_path_buf())),
+        ..LoadOptions::default()
     };
     let load = Engine::new()
         .load_spec_with(parsed.spec, analysis, None, &options)

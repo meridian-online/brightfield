@@ -30,7 +30,7 @@ pub const PREVIEW_ROWS: usize = 20;
 pub const INSPECTOR_WIDTH: f32 = 360.0;
 
 /// The folder inside the Protocol that holds the snapshots opened in the grid.
-const GRID_DIR: &str = ".grid";
+pub(crate) const GRID_DIR: &str = ".grid";
 
 /// The roles in the order the role picker lists them.
 pub const ROLES: [Role; 6] = [

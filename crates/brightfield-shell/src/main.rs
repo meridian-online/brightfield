@@ -924,6 +924,7 @@ plot:
         network: NetworkPolicy::Disabled,
         extension_directory: Some(ext_dir),
         type_source: Some(TypeSourceSpec::Bundle(bundle.clone())),
+        ..LoadOptions::default()
     };
     let session = match Engine::new().load_spec_with(parsed.spec, analysis, None, &options) {
         Ok(load) => load.session,

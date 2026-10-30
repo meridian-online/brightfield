@@ -86,6 +86,7 @@ fn a_packaged_artifact_resolves_its_own_bundle_and_types_a_column() {
         network: NetworkPolicy::Disabled,
         extension_directory: None,
         type_source: Some(TypeSourceSpec::Bundle(bundle.clone())),
+        ..LoadOptions::default()
     };
     let session = Engine::new()
         .load_spec_with(parsed.spec, analysis, None, &options)
