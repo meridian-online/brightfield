@@ -171,7 +171,7 @@ pub(crate) fn source_spec_casting(
 /// transforms hold line breaks: `identity.person.height`'s is a multi-line `CASE`, which
 /// `a_multi_line_transform_round_trips_through_the_written_spec` writes and reads back. The
 /// chomping indicator keeps the text's own final line breaks: none (`-`) or all (`+`). The text
-/// starts with `SELECT`, never a space, so its indentation needs no indicator.
+/// starts with `SELECT`, not a space, so its indentation needs no indicator.
 fn yaml_block(text: &str, indent: usize) -> String {
     let pad = " ".repeat(indent);
     let chomp = if text.ends_with('\n') { '+' } else { '-' };
