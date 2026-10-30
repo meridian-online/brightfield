@@ -141,7 +141,7 @@ A `datetime.component.year` column draws as counts per year in time order, using
 
 - The tile writes `xTickFormat: d`, because Plot's default number format groups thousands and would print 2,024.
 - The tile writes the full run of years from the profiled minimum to maximum as its x domain, so a year with no rows shows as an empty slot, not as a missing one. Above a ceiling on the run's length, the domain is left to the data. *My call: the ceiling; the builder picks one that keeps a slot wide enough to see.*
-- The renderer applies a number format to a band whose categories are all whole numbers. Their order still comes from the query: the counts-per-date tile writes no `sort:`, and `BarLowerer` orders an unsorted band by its column, which is numeric for an integer column. A ranked-bars tile's `sort:` keeps its count order for text categories. A band over a numeric column is laid out in value order by the renderer whatever `sort:` says; that is known and separate from this work.
+- The renderer applies a number format to a band whose categories are all whole numbers. A text band's order comes from the query (a lifted `sort:`, or `BarLowerer`'s `ORDER BY`), and a ranked-bars tile's `sort:` keeps its count order. A band over a numeric column is laid out in value order by the renderer whatever `sort:` says, which is known and separate from this work; the counts-per-date tile relies on that value order and writes no `sort:`.
 
 ### 6. Brightfield's own default number format
 
