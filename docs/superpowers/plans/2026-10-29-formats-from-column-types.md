@@ -90,9 +90,9 @@ Tasks 1–6 can land and ship before FineType's release; each leaves the app wor
 - Modify: `crates/brightfield-render/src/axis.rs` (`axis_kind`, ~211–286)
 - Test: in-module tests
 
-- [ ] **Step 1: Write the failing tests.** `whole_number_band_is_a_number_axis`: a band with categories `["2019","2020","2024"]` has `axis_kind == Some(AxisKind::Number)` and `xTickFormat: d` prints `2024`. `mixed_band_is_still_names`: `["2019","n/a"]` takes no format. `ranked_integer_bars_keep_count_order`: ranked bars over a BIGINT category with `sort: { y: -x }` draw in count order, not by value. `unsorted_integer_band_is_in_value_order`: counts per year over `999`, `1000`, `2024` draw in that order, from `BarLowerer`'s `ORDER BY` on the integer column.
+- [ ] **Step 1: Write the failing tests.** `whole_number_band_is_a_number_axis`: a band with categories `["2019","2020","2024"]` has `axis_kind == Some(AxisKind::Number)` and `xTickFormat: d` prints `2024`. `mixed_band_is_still_names`: `["2019","n/a"]` takes no format. `unsorted_integer_band_is_in_value_order`: counts per year over `999`, `1000`, `2024` draw in that order, from `BarLowerer`'s `ORDER BY` on the integer column.
 - [ ] **Step 2: Run them to see them fail.**
-- [ ] **Step 3: Implement.** A band whose every category parses as an `i64` is a number axis for formatting; its category order is untouched and still comes from the query (a lifted `sort:`, or `BarLowerer`'s `ORDER BY` on the column). The ISO-day rule is unchanged.
+- [ ] **Step 3: Implement.** A band whose every category parses as an `i64` is a number axis for formatting; its category order is untouched. A numeric column on a band is laid out in value order by the renderer whatever `sort:` says, which is separate from this work. The ISO-day rule is unchanged.
 - [ ] **Step 4: Run** `cargo test -p brightfield-render axis` → PASS.
 - [ ] **Step 5: Commit** — "A band of whole numbers takes a number format".
 
