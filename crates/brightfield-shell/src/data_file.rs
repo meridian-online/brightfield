@@ -347,7 +347,7 @@ pub struct OpenTrace {
     pub already_cast: bool,
     /// What the cast copy cost, statement by statement: the copy through the casting source and
     /// the aggregates over it. Filled when [`open_traced`] was asked to count and made a cast
-    /// copy, including one whose every cast was then put back; empty otherwise.
+    /// copy, even one whose casts were then all put back; empty otherwise.
     /// `cast_open_reads_the_file_once` reads it.
     pub cast: ScanTally,
 }

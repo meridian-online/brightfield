@@ -2,8 +2,8 @@
 //!
 //! A column whose trusted label FineType's projection casts is read through the label's transform,
 //! as a Protocol's silver table reads it. The cast is declared in the spec itself, as plain DuckDB
-//! SQL over the file's view: the file is read under [`ROWS`] and [`SOURCE`] selects every column
-//! from it, a cast one through its transform and, beside the columns, its text as the file wrote it
+//! SQL over the file's view: the file is read under [`ROWS`] and [`SOURCE`] selects its columns
+//! from it (`a_files_own_columns_survive_whatever_their_names`), a cast one through its transform and, beside the columns, its text as the file wrote it
 //! under [`RAW_PREFIX`]. So any session loaded from the spec (a tile switch's rebuild, the written
 //! spec opened again, another Mosaic tool) reads the columns as cast.
 //!
@@ -116,8 +116,8 @@ fn is_number_type(type_name: &str) -> bool {
     )
 }
 
-/// The select that reads [`ROWS`] with `casts` applied: every column of the file in its own
-/// order, a cast one replaced by its cast, and each cast column's text after them under its raw
+/// The select that reads [`ROWS`] with `casts` applied: the file's columns (`SELECT *`) in its
+/// own order, a cast one replaced by its cast, and each cast column's text after them under its raw
 /// name.
 fn cast_select(casts: &[(String, String)]) -> String {
     let replaced: Vec<String> = casts
@@ -139,7 +139,7 @@ fn cast_select(casts: &[(String, String)]) -> String {
 /// The root-less spec that declares `path` as a source with `casts` applied and `derived` columns
 /// projected beside its own.
 ///
-/// With nothing to cast this is [`source_spec_deriving`] exactly. With casts, the file is read
+/// With no casts this is [`source_spec_deriving`]'s spec. With casts, the file is read
 /// under [`ROWS`] and [`SOURCE`] is [`cast_select`] over it, with the derived columns projected
 /// over the cast ones, so a column derived from a cast one sees it cast.
 #[must_use]
