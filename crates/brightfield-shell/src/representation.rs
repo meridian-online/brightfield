@@ -46,7 +46,7 @@ const MONEY_SCALES: [Scale; 3] = [
 
 /// The magnitude at which a size in bytes is scaled, and the binary scales, largest first.
 const BYTES_SCALED_FROM: f64 = 1_048_576.0;
-/// No `KiB`: a column is scaled only from a mebibyte, so `MiB` always fits first.
+/// No `KiB`: scaling starts at a mebibyte, where `MiB` already fits.
 const BYTE_SCALES: [Scale; 2] = [
     Scale {
         divisor: 1_073_741_824.0,
