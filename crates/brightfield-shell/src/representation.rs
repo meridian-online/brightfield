@@ -46,7 +46,8 @@ const MONEY_SCALES: [Scale; 3] = [
 
 /// The magnitude at which a size in bytes is scaled, and the binary scales, largest first.
 const BYTES_SCALED_FROM: f64 = 1_048_576.0;
-const BYTE_SCALES: [Scale; 3] = [
+/// No `KiB`: a column is scaled only from a mebibyte, so `MiB` always fits first.
+const BYTE_SCALES: [Scale; 2] = [
     Scale {
         divisor: 1_073_741_824.0,
         unit: "GiB",
@@ -54,10 +55,6 @@ const BYTE_SCALES: [Scale; 3] = [
     Scale {
         divisor: 1_048_576.0,
         unit: "MiB",
-    },
-    Scale {
-        divisor: 1024.0,
-        unit: "KiB",
     },
 ];
 
@@ -80,13 +77,14 @@ pub struct Representation {
     /// The divisor a tile's bin applies, and the unit it leaves the values in.
     pub scale: Option<Scale>,
     /// What the axis title names: the currency symbol the ticks do not print, the scale's unit,
-    /// both (`£bn`), or `%`.
+    /// both (`£bn`), or `%`. A label that fixes a currency, on a column with no recorded symbol,
+    /// names the currency's ISO code here and nowhere else (`CHF bn`).
     pub title_unit: Option<String>,
     /// The specifier the grid prints a full value with. A money column's carries no currency
     /// symbol; [`format_cell`] adds [`Representation::symbol`].
     pub cell_format: Option<String>,
-    /// The specifier the tooltip prints a scaled value with; [`format_compact`] adds the symbol
-    /// and the unit word.
+    /// The specifier the tooltip prints a value with; [`format_compact`] adds the symbol and the
+    /// unit word, and on a scaled column raises the precision for a value that needs more.
     pub compact_format: Option<String>,
     /// The currency symbol the source wrote, which the grid and the tooltip print.
     pub symbol: Option<String>,
@@ -96,7 +94,7 @@ pub struct Representation {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Scale {
     pub divisor: f64,
-    /// `k`, `m` or `bn` for money; `KiB`, `MiB` or `GiB` for bytes.
+    /// `k`, `m` or `bn` for money; `MiB` or `GiB` for bytes.
     pub unit: &'static str,
 }
 
@@ -111,6 +109,10 @@ pub struct Scale {
 /// A number format is given only to a column stored as a number, and a date format only to a
 /// date, time or timestamp column. A label FineType types as text keeps its values text, so a
 /// text column under a rate label gets nothing.
+///
+/// On a money column a `$` in the analyst's preferred format is dropped from the tick format
+/// unless the record holds `$`, since only a recorded `$` reaches a tick; the grid and the
+/// tooltip print the recorded symbol instead.
 #[must_use]
 pub fn representation_of(
     column: &ColumnProfile,
@@ -186,7 +188,11 @@ fn number_representation(
             let scale = range.and_then(|r| {
                 scale_of(
                     r,
-                    if money { &MONEY_SCALES } else { &BYTE_SCALES },
+                    if money {
+                        &MONEY_SCALES[..]
+                    } else {
+                        &BYTE_SCALES[..]
+                    },
                     if money {
                         MONEY_SCALED_FROM
                     } else {
@@ -211,7 +217,7 @@ fn number_representation(
             let cell = parts.with_dollar(false);
             let compact = if scale.is_some() {
                 Parts {
-                    rest: &format!("{comma}.1f"),
+                    rest: &format!("{comma}.1~f"),
                     ..parts
                 }
                 .with_dollar(false)
@@ -236,11 +242,18 @@ fn number_representation(
         if !(symbol == "$" && Parts::of(&tick).dollar) {
             unit.push_str(symbol);
         }
+    } else if let Some(code) = block.and_then(|d| d.currency.as_deref()).filter(|_| money) {
+        unit.push_str(code);
+        if scale.is_some() {
+            unit.push(' ');
+        }
     }
     if let Some(scale) = scale {
         unit.push_str(scale.unit);
     }
-    if fraction {
+    // A preference is drawn as written, so the title says `%` only where its format prints one;
+    // the rule's own formats print `%` for a fraction and attach it for percentage points.
+    if fraction && preferred.is_none_or(|f| f.ends_with('%')) {
         unit.push('%');
     }
     Representation {
@@ -264,19 +277,56 @@ pub fn format_cell(rep: &Representation, value: f64) -> String {
 }
 
 /// `value` printed compactly, as the tooltip shows it: divided by the scale, with the currency
-/// symbol, a percent sign attached, and the unit word after a no-break space (`£2.4 bn`).
+/// symbol, a percent sign attached, and the unit word after a no-break space (`£2.4 bn`, or
+/// `(£0.3 bn)` for an accounting negative).
+///
+/// The scale is the column's, which the tile's bin applies, so a value far below the column's
+/// magnitude is printed with the decimals it needs for two significant digits: £40m on a column
+/// in billions reads `£0.04 bn`, not `£0.0 bn`.
 #[must_use]
 pub fn format_compact(rep: &Representation, value: f64) -> String {
     let Some(scale) = rep.scale else {
         return finish(rep, rep.compact_format.as_deref(), value);
     };
-    let mut text = finish(rep, rep.compact_format.as_deref(), value / scale.divisor);
+    let scaled = value / scale.divisor;
+    let spec = rep.compact_format.as_deref().map(|spec| {
+        let parts = Parts::of(spec);
+        let comma = if parts.rest.contains(',') { "," } else { "" };
+        let decimals = significant_decimals(scaled);
+        Parts {
+            rest: &format!("{comma}.{decimals}~f"),
+            ..parts
+        }
+        .with_dollar(parts.dollar)
+    });
+    let mut text = finish(rep, spec.as_deref(), scaled);
+    let closing = text.ends_with(')');
+    if closing {
+        text.pop();
+    }
     text.push(NO_BREAK_SPACE);
     text.push_str(scale.unit);
+    if closing {
+        text.push(')');
+    }
     text
 }
 
+/// The decimals `value` needs to print at least two significant digits, and at least one.
+// The clamp keeps the float within `1..=12` before the cast.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn significant_decimals(value: f64) -> usize {
+    if value == 0.0 || !value.is_finite() {
+        return 1;
+    }
+    (1.0 - value.abs().log10().floor()).clamp(1.0, 12.0) as usize
+}
+
 /// `value` through `spec`, with the representation's symbol and percent sign.
+///
+/// The sign is attached only to a column of percentage points: its title says `%` and its format
+/// does not print one. A fraction's format prints its own, and a preference that prints none
+/// leaves `%` out of the title.
 fn finish(rep: &Representation, spec: Option<&str>, value: f64) -> String {
     let format = spec
         .and_then(NumberFormat::parse)
@@ -315,7 +365,7 @@ fn range_of(column: &ColumnProfile) -> Option<(f64, f64)> {
 }
 
 /// The largest of `scales` not above the column's magnitude, once the magnitude reaches `from`.
-fn scale_of((min, max): (f64, f64), scales: &[Scale; 3], from: f64) -> Option<Scale> {
+fn scale_of((min, max): (f64, f64), scales: &[Scale], from: f64) -> Option<Scale> {
     let magnitude = min.abs().max(max.abs());
     if magnitude < from {
         return None;
@@ -479,6 +529,59 @@ mod tests {
         assert_eq!(rep.symbol.as_deref(), Some("£"));
         assert_eq!(format_compact(&rep, 2.412e9), "£2.4\u{a0}bn");
         assert_eq!(format_cell(&rep, 2_412_345_000.0), "£2,412,345,000.00");
+        assert_eq!(format_compact(&rep, 4e7), "£0.04\u{a0}bn");
+        assert_eq!(format_compact(&rep, -3e7), "\u{2212}£0.03\u{a0}bn");
+        assert_eq!(format_compact(&rep, 0.0), "£0\u{a0}bn");
+    }
+
+    #[test]
+    fn a_scaled_accounting_tooltip_keeps_its_unit_inside_the_parentheses() {
+        let record = FieldRecord {
+            written: Written {
+                currency_symbol: Some("£".to_string()),
+                negatives: Some(Negatives::Parentheses),
+            },
+            ..FieldRecord::default()
+        };
+        let rep = representation_of(
+            &column("DOUBLE", -3e8, 2.1e9),
+            Some(&display("finance.currency.amount")),
+            Some(&record),
+            true,
+        );
+        assert_eq!(format_compact(&rep, -3e8), "(£0.3\u{a0}bn)");
+        assert_eq!(format_compact(&rep, 2.1e9), "£2.1\u{a0}bn");
+    }
+
+    #[test]
+    fn a_label_that_fixes_its_currency_names_it_only_in_the_title() {
+        let rep = representation_of(
+            &column("DOUBLE", 2e8, 3.1e9),
+            Some(&display("finance.currency.amount_apostrophe")),
+            None,
+            true,
+        );
+        assert_eq!(rep.title_unit.as_deref(), Some("CHF bn"));
+        assert_eq!(rep.symbol, None);
+        for format in formats(&rep) {
+            assert!(!format.contains("CHF"), "{format:?} names the currency");
+        }
+        assert_eq!(format_compact(&rep, 2.412e9), "2.4\u{a0}bn");
+        assert_eq!(format_cell(&rep, 12.0), "12.00");
+        let unscaled = representation_of(
+            &column("DOUBLE", 1.0, 900.0),
+            Some(&display("finance.currency.amount_apostrophe")),
+            None,
+            true,
+        );
+        assert_eq!(unscaled.title_unit.as_deref(), Some("CHF"));
+        let recorded = representation_of(
+            &column("DOUBLE", 1.0, 900.0),
+            Some(&display("finance.currency.amount_apostrophe")),
+            Some(&written("Fr.")),
+            true,
+        );
+        assert_eq!(recorded.title_unit.as_deref(), Some("Fr."));
     }
 
     #[test]
@@ -606,6 +709,7 @@ mod tests {
         );
         assert_eq!(rep.title_unit.as_deref(), Some("GiB"));
         assert_eq!(format_compact(&rep, 2_684_354_560.0), "2.5\u{a0}GiB");
+        assert_eq!(format_compact(&rep, 41_943_040.0), "0.039\u{a0}GiB");
         assert_eq!(format_cell(&rep, 5e9), "5,000,000,000");
     }
 
@@ -754,6 +858,43 @@ mod tests {
         let cast = representation_of(&column("DOUBLE", 0.12, 0.78), Some(&percentage), None, true);
         assert_eq!(cast.cell_format.as_deref(), Some(".0%"));
         assert_eq!(format_cell(&cast, 0.45), "45%");
+    }
+
+    #[test]
+    fn a_preference_on_a_fraction_attaches_no_percent_sign() {
+        let prefer = |format: &str| FieldRecord {
+            prefer: Prefer {
+                number_format: Some(format.to_string()),
+                date_format: None,
+            },
+            ..FieldRecord::default()
+        };
+        let percentage = display("representation.numeric.percentage");
+        let plain = representation_of(
+            &column("DOUBLE", 0.12, 0.78),
+            Some(&percentage),
+            Some(&prefer(",.2f")),
+            true,
+        );
+        assert_eq!(plain.title_unit, None);
+        assert_eq!(format_cell(&plain, 0.45), "0.45");
+        assert_eq!(format_compact(&plain, 0.45), "0.45");
+        let percent = representation_of(
+            &column("DOUBLE", 0.12, 0.78),
+            Some(&percentage),
+            Some(&prefer(".1%")),
+            true,
+        );
+        assert_eq!(percent.title_unit.as_deref(), Some("%"));
+        assert_eq!(format_cell(&percent, 0.45), "45.0%");
+        let points = representation_of(
+            &column("DOUBLE", 12.0, 78.0),
+            Some(&percentage),
+            Some(&prefer(",.1f")),
+            false,
+        );
+        assert_eq!(points.title_unit, None);
+        assert_eq!(format_cell(&points, 45.0), "45.0");
     }
 
     #[test]
