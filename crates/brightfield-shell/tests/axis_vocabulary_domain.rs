@@ -731,3 +731,107 @@ fn a_plot_defaults_domain_reaches_each_plot_and_a_bad_one_is_named_at_each() {
     );
     assert_ne!(named[0], named[1], "the two lines name different plots");
 }
+
+// ---------------------------------------------------------------------------
+// A listed domain: the order of a band, and nothing on any other axis
+// ---------------------------------------------------------------------------
+
+/// Bars counted over a column of years, one row a year, with no row for 2003.
+const YEAR_BARS: &str = r"
+data:
+  t:
+    - { year: 2001 }
+    - { year: 2002 }
+    - { year: 2004 }
+plot:
+  - mark: barY
+    data: { from: t }
+    x: year
+    y: { count: }
+name: probe
+width: 600
+height: 300
+ATTRS
+";
+
+/// A rule across the plot at each `b`, which binds no x, so the x axis has no
+/// scale.
+const NO_X: &str = r"
+data:
+  pts:
+    - { b: 3 }
+    - { b: 60 }
+plot:
+  - mark: ruleY
+    data: { from: pts }
+    y: b
+name: probe
+width: 600
+height: 300
+ATTRS
+";
+
+/// The lines a composition said that name a domain key.
+fn domain_lines(composed: &Composed) -> Vec<String> {
+    said(composed)
+        .into_iter()
+        .filter(|line| line.contains("Domain"))
+        .collect()
+}
+
+/// **A list of categories on a linear axis is named once**, with the warning
+/// a domain that is not two numbers gets, however many axes `xyDomain` lands
+/// it on, and the plot draws as it does without it.
+#[test]
+fn a_listed_domain_on_a_linear_axis_is_named_once() {
+    let unset = dots("");
+    for key in ["xDomain", "yDomain", "xyDomain"] {
+        let asked = dots(&format!("{key}: [0, 50, 100]"));
+        assert_eq!(
+            points(&asked),
+            points(&unset),
+            "{key} changes what is painted"
+        );
+        let lines = domain_lines(&asked);
+        assert_eq!(lines.len(), 1, "{key}: {lines:?}");
+        assert!(
+            lines[0].contains(&format!("`{key}: [0, 50, 100]`"))
+                && lines[0].contains("list of categories on an axis of names"),
+            "{:?}",
+            lines[0]
+        );
+    }
+}
+
+/// **A list of years on a band of years is its order, and says nothing**: the
+/// band holds every listed year, 2003 among them with no bar, in the order the
+/// file lists them.
+#[test]
+fn a_listed_domain_on_a_band_is_quiet() {
+    let asked = compose_str(&YEAR_BARS.replace("ATTRS", "xDomain: [2001, 2002, 2003, 2004]"));
+    assert!(said(&asked).is_empty(), "{:?}", said(&asked));
+    match asked.plots[0].scales.get(Channel::X) {
+        Some(Scale::Band { categories, .. }) => {
+            assert_eq!(categories, &["2001", "2002", "2003", "2004"]);
+        }
+        other => panic!("expected a band, got {other:?}"),
+    }
+}
+
+/// **An axis with no scale says nothing of a list**, as it says nothing of two
+/// numbers: it has no kind of axis to judge either against.
+#[test]
+fn a_listed_domain_on_an_axis_with_no_scale_is_quiet() {
+    for attrs in ["xDomain: [0, 50, 100]", "xDomain: [0, 100]"] {
+        let asked = compose_str(&NO_X.replace("ATTRS", attrs));
+        assert!(
+            asked.plots[0].scales.get(Channel::X).is_none(),
+            "fixture check: no x scale"
+        );
+        assert!(
+            domain_lines(&asked).is_empty(),
+            "{attrs}: {:?}",
+            said(&asked)
+        );
+    }
+}

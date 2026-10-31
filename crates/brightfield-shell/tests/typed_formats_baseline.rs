@@ -213,7 +213,7 @@ fn year_tile_counts_in_time_order() {
     assert_eq!(tile(&dash, "year").kind(), chart_kinds::COUNTS_OVER_TIME);
     assert_ne!(tile(&dash, "year").kind(), ranked_bars::KIND_ID);
     let block = block_of(&yaml, "year");
-    assert!(block.contains("xTickFormat: d\n"), "{block}");
+    assert!(block.contains("xTickFormat: \"d\"\n"), "{block}");
     let years: Vec<String> = (2001..=2024).map(|y| y.to_string()).collect();
     assert!(
         block.contains(&format!("xDomain: [{}]\n", years.join(", "))),
@@ -241,7 +241,7 @@ fn long_year_run_leaves_domain_to_data() {
     assert_eq!(tile(&dash, "year").kind(), chart_kinds::COUNTS_OVER_TIME);
     let block = block_of(&yaml, "year");
     assert!(!block.contains("xDomain"), "{block}");
-    assert!(block.contains("xTickFormat: d\n"), "{block}");
+    assert!(block.contains("xTickFormat: \"d\"\n"), "{block}");
 }
 
 /// **Every tile writes the gridlines Brightfield draws**, since Observable Plot draws none by

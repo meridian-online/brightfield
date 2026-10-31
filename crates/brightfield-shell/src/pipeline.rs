@@ -3267,12 +3267,14 @@ fn inert_axis_instructions(
         ),
     ] {
         // A list of categories orders a band and nothing else: on any other
-        // axis it is a domain that is not two numbers, and is named as one.
-        if let DomainReading::Categories { key, value, .. } = written.axis(plot_axis(channel)) {
-            let taken = !projected
-                && scales.get(channel).is_some_and(|scale| {
-                    written_domain_applies(written.axis(plot_axis(channel)), scale)
-                });
+        // axis it is a domain that is not two numbers, and is named as one. An
+        // axis with no scale (a layer that drew no rows) has no kind to judge
+        // it against, and says nothing, as two numbers there do.
+        if let (DomainReading::Categories { key, value, .. }, Some(scale)) =
+            (written.axis(plot_axis(channel)), scales.get(channel))
+        {
+            let taken =
+                !projected && written_domain_applies(written.axis(plot_axis(channel)), scale);
             if !taken && !unread_lists.contains(&(*key, value.as_str())) {
                 unread_lists.push((key, value));
                 out.push(ParseWarning::UnreadAxisEnds {

@@ -585,12 +585,17 @@ pub enum ParseWarning {
     },
 
     /// A plot's `xDomain`, `yDomain` or `xyDomain` held a value that is not two
-    /// numbers with the low end first: `[100, 0]`, `[0, "high"]`, `[0]`. The
-    /// axis draws as if the key were absent, with the domain its rows give, and
-    /// this names the key, the value as written and the plot. `Fixed` and a
-    /// `null` are not this: `Fixed` is Mosaic's own word and is read elsewhere.
+    /// numbers with the low end first: `[100, 0]`, `[0, "high"]`, `[0]`; or a
+    /// list of categories (`[2001, 2002, 2003]`, `[a, b]`) on an axis that is
+    /// not a band, the one kind of axis a list orders. The axis draws as if the
+    /// key were absent, with the domain its rows give, and this names the key,
+    /// the value as written and the plot. `Fixed` and a `null` are not this:
+    /// `Fixed` is Mosaic's own word and is read elsewhere.
     ///
-    /// Raised by analysis, after the whole spec is built, because a `$param`
+    /// A list of categories is known to land on the wrong kind of axis only
+    /// once the data has typed it, so for a list this is raised by the shell's
+    /// composition, where the scales are found, and not at parse time. Any
+    /// other value is raised by analysis, after the whole spec is built, because a `$param`
     /// cannot be read before `params:` has been parsed and a plot inherits
     /// `plotDefaults:` only once it is built: a `$param` holding two numbers
     /// draws them and says nothing, one holding a bad literal is named as the
@@ -1079,7 +1084,7 @@ impl fmt::Display for ParseWarning {
                 plot,
             } => write!(
                 f,
-                "plot {plot} sets `{attribute}: {value}`, which is not two numbers with the low end first — the axis draws the ends its rows give"
+                "plot {plot} sets `{attribute}: {value}`, which is not two numbers with the low end first, nor a list of categories on an axis of names — the axis draws the ends its rows give"
             ),
             Self::AxisEndsOnFixedAxis { attribute, plot } => write!(
                 f,

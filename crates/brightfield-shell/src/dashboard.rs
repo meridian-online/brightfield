@@ -660,6 +660,11 @@ impl Dashboard {
     /// before it was opened, on each column whose label FineType's projection casts.
     #[must_use]
     pub fn representation(&self, column: &str) -> Representation {
+        self.representation_from(column, self.records.get(column))
+    }
+
+    /// [`Self::representation`] with `record` in place of the column's own record.
+    fn representation_from(&self, column: &str, record: Option<&FieldRecord>) -> Representation {
         let Some(profile) = self.columns.iter().find(|c| c.name == column) else {
             return Representation::default();
         };
@@ -671,9 +676,23 @@ impl Dashboard {
         representation_of(
             profile,
             label.and_then(|l| vendored_displays().get(l)),
-            self.records.get(column),
+            record,
             cast,
         )
+    }
+
+    /// Whether `column`'s recorded preference changed how it is shown: a preference the rule
+    /// passed over (one that does not parse, or a date format on a number column) chose nothing.
+    fn preference_used(&self, column: &str) -> bool {
+        let Some(record) = self.records.get(column) else {
+            return false;
+        };
+        let without = FieldRecord {
+            prefer: crate::column_record::Prefer::default(),
+            ..record.clone()
+        };
+        self.representation_from(column, Some(record))
+            != self.representation_from(column, Some(&without))
     }
 
     /// What `tile` writes of how its column's values are shown: the rule's tick format on the
@@ -717,11 +736,7 @@ impl Dashboard {
         if shown.tick_format.is_none() && shown.scale.is_none() {
             return None;
         }
-        let preferred = self
-            .records
-            .get(tile.column())
-            .is_some_and(|r| r.prefer.number_format.is_some() || r.prefer.date_format.is_some());
-        let by = if preferred {
+        let by = if self.preference_used(tile.column()) {
             "its recorded preference chose its format".to_string()
         } else {
             let profile = self.columns.iter().find(|c| c.name == tile.column)?;
@@ -1068,6 +1083,11 @@ fn year_tile_for(column: &ColumnProfile, role: ColumnRole) -> Result<Tile, Omiss
 /// than [`YEAR_RUN_CEILING`]: the x domain that keeps a year with no rows as an empty slot.
 /// `None` for a longer run, which is left to the data, or for a column whose ends are not years.
 fn year_run(column: &ColumnProfile) -> Option<Vec<i64>> {
+    // A year stored as text draws a band of words, which another Mosaic tool matches against a
+    // listed domain by value: the number 2001 is not the word "2001", and every bar would go.
+    if !crate::flat_cast::is_number_type(&column.type_name) {
+        return None;
+    }
     let end = |text: &Option<String>| -> Option<i64> {
         let value: f64 = text.as_deref()?.trim().parse().ok()?;
         (value.fract() == 0.0 && value.abs() < 1e6).then_some(value as i64)
@@ -1401,6 +1421,14 @@ fn tile_yaml(tile: &Tile, look: &Look, indent: usize, width: u32, height: u32) -
             let mut out = RankedCategoryBars::new(tile.drawn_column())
                 .with_size(width, height)
                 .plot_yaml(SOURCE, SELECTION, indent);
+            // The category's title, with its unit when the rule gives one.
+            let pad = " ".repeat(indent + 2);
+            let bare = yaml_string(tile.drawn_column());
+            out = out.replacen(
+                &format!("{pad}yLabel: {bare}\n"),
+                &format!("{pad}yLabel: {}\n", look.title_or(&bare)),
+                1,
+            );
             // The category runs along y, so its format is y's; the count's axis writes none.
             out.push_str(&look.axis_lines(&" ".repeat(indent + 2), "y"));
             out
@@ -1455,7 +1483,7 @@ impl Look {
     fn axis_lines(&self, pad: &str, axis: &str) -> String {
         let mut out = String::new();
         if let Some(format) = &self.tick_format {
-            let _ = writeln!(out, "{pad}{axis}TickFormat: {}", format_scalar(format));
+            let _ = writeln!(out, "{pad}{axis}TickFormat: {}", yaml_string(format));
         }
         if self.grid {
             let _ = writeln!(out, "{pad}xGrid: true");
@@ -1488,24 +1516,6 @@ fn divisor_text(divisor: f64) -> String {
         format!("1e{exponent}")
     } else {
         format!("{divisor:.0}")
-    }
-}
-
-/// A format specifier as a YAML scalar: bare where YAML reads it back as the same string (`d`,
-/// `.1f`), and quoted where it starts with an indicator such as `,`, `%`, `(` or `$`.
-fn format_scalar(format: &str) -> String {
-    let bare = format.starts_with(|c: char| c.is_ascii_alphanumeric())
-        && format
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '~'))
-        && !matches!(
-            format,
-            "y" | "n" | "on" | "no" | "yes" | "off" | "true" | "false" | "null"
-        );
-    if bare {
-        format.to_string()
-    } else {
-        yaml_string(format)
     }
 }
 
@@ -2875,7 +2885,7 @@ mod tests {
         assert_eq!(year_run(&year("2001.5", "2003", 3)), None);
         let source = of(&[year("2001", "2003", 3)]).to_spec();
         assert!(source.contains("xDomain: [2001, 2002, 2003]\n"), "{source}");
-        assert!(source.contains("xTickFormat: d\n"), "{source}");
+        assert!(source.contains("xTickFormat: \"d\"\n"), "{source}");
         assert!(parse_spec(&source, Format::Yaml).is_ok(), "{source}");
     }
 
@@ -2902,19 +2912,104 @@ mod tests {
         assert!(!source.contains("chose its format"), "{source}");
     }
 
-    /// **A format specifier is written so YAML reads it back as written**: bare
-    /// where it can be, quoted where it starts with an indicator.
+    /// **A year stored as text lists no domain.** Its band is of words, and
+    /// another Mosaic tool matches a listed domain by value, so the number
+    /// 2001 would match no bar; the run is left to the data.
+    #[test]
+    fn a_year_stored_as_text_lists_no_domain() {
+        let text_year = ColumnProfile {
+            min: Some("2001".to_string()),
+            max: Some("2003".to_string()),
+            ..labelled("year", "VARCHAR", 3, YEAR_LABEL)
+        };
+        assert_eq!(year_run(&text_year), None);
+        let dash = of(&[text_year]);
+        assert_eq!(dash.tiles()[0].kind(), chart_kinds::COUNTS_OVER_TIME);
+        let source = dash.to_spec();
+        assert!(!source.contains("xDomain: ["), "{source}");
+    }
+
+    /// **A recorded preference is credited only when it chose the format.** One
+    /// the rule passed over (it does not parse, or it is a date format on a
+    /// number column) leaves the label credited.
+    #[test]
+    fn a_preference_is_credited_only_when_it_is_used() {
+        let amount = ColumnProfile {
+            min: Some("10".to_string()),
+            max: Some("900".to_string()),
+            ..labelled("amount", "DOUBLE", 900, "finance.currency.amount")
+        };
+        let comment = |prefer: crate::column_record::Prefer| {
+            let fields = BTreeMap::from([(
+                "amount".to_string(),
+                FieldRecord {
+                    prefer,
+                    ..FieldRecord::default()
+                },
+            )]);
+            let dash = of(std::slice::from_ref(&amount)).with_records(fields, false);
+            let source = dash.to_spec();
+            source
+                .lines()
+                .find(|l| l.contains("# amount:"))
+                .unwrap_or_default()
+                .to_string()
+        };
+        let used = comment(crate::column_record::Prefer {
+            number_format: Some(",.0f".to_string()),
+            ..Default::default()
+        });
+        assert!(
+            used.contains("its recorded preference chose its format"),
+            "{used}"
+        );
+        for prefer in [
+            crate::column_record::Prefer {
+                number_format: Some("not a format {".to_string()),
+                ..Default::default()
+            },
+            crate::column_record::Prefer {
+                date_format: Some("%Y".to_string()),
+                ..Default::default()
+            },
+        ] {
+            let passed_over = comment(prefer);
+            assert!(
+                passed_over.contains("finance.currency.amount chose its format"),
+                "{passed_over}"
+            );
+        }
+    }
+
+    /// **A ranked category's title carries its unit** when the rule gives one.
+    #[test]
+    fn a_ranked_tile_titles_its_category_with_its_unit() {
+        let dash = of(&[column("region", "VARCHAR", 4)]);
+        let tile = &dash.tiles()[0];
+        assert_eq!(tile.kind(), crate::ranked_bars::KIND_ID);
+        let look = Look {
+            title: Some("region (£)".to_string()),
+            ..Look::default()
+        };
+        let yaml = tile_yaml(tile, &look, 4, TILE_WIDTH, TILE_HEIGHT);
+        assert!(yaml.contains("      yLabel: \"region (£)\"\n"), "{yaml}");
+        let plain = tile_yaml(tile, &Look::default(), 4, TILE_WIDTH, TILE_HEIGHT);
+        assert!(plain.contains("      yLabel: \"region\"\n"), "{plain}");
+    }
+
+    /// **A tick format is written quoted, so YAML reads it back as the string
+    /// it is**, whatever it looks like: a number, a word YAML reads as a
+    /// boolean or a null, or a specifier that starts with an indicator.
     #[test]
     fn a_format_reads_back_as_written() {
         for format in [
-            "d", ".1f", ",~f", "(,~f", "$,.2f", "%Y-%m-%d", ".0%", "~s", "y",
+            "d", ".1f", ",~f", "(,~f", "$,.2f", "%Y-%m-%d", ".0%", "~s", "y", "10", "True", "NULL",
         ] {
-            let yaml = format!("k: {}", format_scalar(format));
+            let yaml = format!("k: {}", yaml_string(format));
             let back: std::collections::BTreeMap<String, String> =
                 serde_yaml::from_str(&yaml).expect("the scalar parses");
             assert_eq!(back["k"], format, "{yaml}");
         }
-        assert_eq!(format_scalar("d"), "d");
         assert_eq!(divisor_text(1e9), "1e9");
         assert_eq!(divisor_text(1_048_576.0), "1048576");
     }
