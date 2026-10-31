@@ -1442,8 +1442,9 @@ fn represented_cell(cast: &str, print: impl Fn(f64) -> String) -> CellText {
 const MOST_CELL_DECIMALS: usize = 4;
 
 /// `spec` with the precision a cell needs to keep the decimals of the stored value `cast`, up
-/// to [`MOST_CELL_DECIMALS`], or `None` where `spec`'s own precision already does, or `spec` has
-/// none to widen. A percentage prints two fewer decimals than the fraction it is read from has.
+/// to [`MOST_CELL_DECIMALS`]; `None` when `spec`'s own precision already keeps them, or `spec`
+/// has no precision to widen. A percentage prints two fewer decimals than the fraction it is read from
+/// has; `a_cell_format_is_widened_to_the_stored_decimals_and_no_further` holds each case.
 fn widened(spec: &str, cast: &str) -> Option<String> {
     let dot = spec.find('.')?;
     let digits = spec[dot + 1..]
