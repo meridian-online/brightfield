@@ -68,8 +68,10 @@ const SPREAD_TICKS: u32 = 5;
 
 /// How one column's values are shown on each surface.
 ///
-/// Every field is `None` for a column the rule has nothing to say about, which each surface draws
-/// as it did before: an unlabelled column, a label with no display block, or a text column.
+/// A column the rule has nothing to say about (an unlabelled column, a label with no display
+/// block, or a text column) gets [`Representation::default`], which each surface draws as it did
+/// before; `unlabelled_column_has_no_representation` and
+/// `a_text_column_under_a_fraction_label_stays_text` hold it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Representation {
     /// The d3-format or d3-time-format specifier a tile writes as `xTickFormat` / `yTickFormat`.
