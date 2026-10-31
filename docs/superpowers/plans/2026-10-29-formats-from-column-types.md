@@ -17,7 +17,7 @@
 - Brightfield keeps no table of how a label is shown; that comes from FineType's vendored display export (Task 7).
 - Brightfield's additions to a `datapackage.json` field live in one object, `x-brightfield`, with `written` and `prefer` members, exactly as the spec's example. View state never goes in the package.
 - The tooltip's number–unit separator is U+00A0; a percent sign is attached (`45%`).
-- A column is cast only when its label is trusted, FineType's projection casts it, and every non-null value casts.
+- A column is cast only when its label is trusted, FineType's projection casts it to a type a format needs (an integer, float or decimal type, DATE, TIME, a TIMESTAMP form or BOOLEAN), and every non-null value casts. A label whose cast targets anything else (JSON, UUID, INTERVAL, the coordinates struct) is read as it is: such a cast may not even bind, and one cast that fails to bind would leave the whole copy uncast.
 - The public repo rule: no private planning identifiers in code, comments, commits, branch names or PR text.
 - On this Mac: one cargo build at a time. Before each commit: `cargo xtask ci --step fmt`, `cargo xtask ci --step clippy`, and the tests the task names. After each commit: `cargo xtask ci --step comment-citations`. Never `cargo fmt --all`.
 
@@ -41,15 +41,16 @@
 | 4. The column record | — | no |
 | 5. Given labels skip the classifier | 4 | no |
 | 6. Cast the flat copy | 4, 5 | no |
+| 6b. Protocol columns record how they were written; stale records are pruned | 4, 6 | no |
 | 7. Vendor FineType's display export | — | **yes**: display blocks, and the percentage cast storing a fraction |
-| 8. The representation rule | 4, 7 | via 7 |
-| 9. Tiles write their representation | 1, 3, 6, 8 | via 7 |
+| 8. The representation rule | 4, 6, 6b, 7 | via 7 |
+| 9. Tiles write their representation | 1, 3, 6, 8 (and a band domain read from a list, Step 0) | via 7 |
 | 10. The grid formats labelled columns | 8 | via 7 |
 | 11. The tooltip formats compactly | 8 | via 7 |
 | 12. The inspector's "auto" | 8, 9 | via 7 |
 | 13. Fold into the architecture docs | all | — |
 
-Tasks 1–6 can land and ship before FineType's release; each leaves the app working. Tasks 8–12 start once Task 7's vendored release is on the branch.
+Tasks 1–6 and 6b can land and ship before FineType's release; each leaves the app working. Tasks 8–12 start once Task 7's vendored release is on the branch.
 
 ---
 
@@ -142,7 +143,7 @@ Tasks 1–6 can land and ship before FineType's release; each leaves the app wor
 
 **Interfaces:**
 - Consumes: `read_record`, `flat_record_path` (Task 4).
-- Produces: `LoadOptions::given_labels: BTreeMap<String, String>` (column → label) for the one source a flat open loads; a given column's `ColumnProfile::semantic` is `Labelled` with that label and no `ft_profile` term is issued for it. `OpenOptions::already_cast: bool`.
+- Produces: `LoadOptions::given_labels: BTreeMap<String, String>` (column → label), keyed by bare column name, so a label applies to a column of that name in every source the session loads (a flat open loads one source); a given column's `ColumnProfile::semantic` is `Labelled` with that label and no `ft_profile` term is issued for it. `OpenOptions::already_cast: bool`.
 
 - [ ] **Step 1: Write the failing tests.** `nominated_label_is_not_asked`: with a record nominating `amount` as `finance.currency.amount`, the profile's SQL has no `ft_profile` term for `amount` and its semantic label is the nominated one. `single_sheet_cast_copy_keeps_its_currency_label`: opening a one-sheet workbook whose sheet has a `$1,234.50` column gives the grid's source a column labelled `finance.currency.amount`, read from the Protocol's package, not re-profiled. `cast_copy_is_not_cast_again`: a one-sheet workbook whose `finance.currency.amount` column holds `(£12.00)` reopens with `-12.00` in its cast copy, and the open succeeds (casting the DECIMAL again would fail or change it). `copy_inside_a_protocol_folder_is_recognised`: opening the grid copy's Parquet path directly, as a recent file, also takes the Protocol's labels and opens as already cast.
 - [ ] **Step 2: Run them to see them fail.**
@@ -169,7 +170,7 @@ Tasks 1–6 can land and ship before FineType's release; each leaves the app wor
   pub const RAW_PREFIX: &str = "__raw__";
   struct CastPlan { casts: Vec<(String /*column*/, String /*expr*/)> }
   ```
-  The file is read once. The copy projects, for each candidate column, `TRY(<transform over CAST("c" AS VARCHAR)>) AS "c"` and `"c" AS "__raw__c"`, as `silver::source` reads cast columns as text first. One aggregate over the in-memory copy then decides each candidate (`count("__raw__c") = count("c")`), measures the cast columns' `min`, `max` and `moments`, and reads `written` from the raw values. A candidate that failed is put back: its cast column is dropped and its raw column renamed to `c`. `Dashboard::of` runs on the updated profiles; `written` is saved with `write_record`.
+  A candidate's label must cast to a type a format needs (see Global Constraints); `CastPlan::of` reads any other label's column as it is, and `a_label_no_format_needs_is_read_as_it_is` holds a JSON and a UUID column beside a cast `revenue` to that. The file is read once. The copy projects, for each candidate column, `TRY(<transform over CAST("c" AS VARCHAR)>) AS "c"` and `"c" AS "__raw__c"`, as `silver::source` reads cast columns as text first. One aggregate over the in-memory copy then decides each candidate (`count("__raw__c") = count("c")`), measures the cast columns' `min`, `max` and `moments`, and reads `written` from the raw values. A candidate that failed is put back: its cast column is dropped and its raw column renamed to `c`. `Dashboard::of` runs on the updated profiles; `written` is saved with `write_record`.
 
 - [ ] **Step 1: Write the fixture.** `typed_formats.csv`, 200 rows: `revenue` (sterling amounts written `£1,234.50`, some `(£12.00)`, spanning roughly £0.2bn to £3.1bn), `price_usd` (`$12.50`…`$980.00`), `share` (`12%`…`78%`), `yield` (`4.1%`…`4.6%`), `year` (2001–2024 with 2009 absent), `downloads` (integers up to 4,000,000), `day` (ISO dates), `notes` (free text). Keep it generated by a short committed script beside it, so the values are reproducible.
 - [ ] **Step 2: Write the failing tests.** `flat_open_casts_a_currency_column`: `revenue` is DECIMAL in the copy and its tile is a histogram. `raw_text_survives_the_cast`: `__raw__revenue` holds `(£12.00)` and the grid lists no `__raw__` column. `one_bad_value_keeps_the_column_text` (Review Focus 2): with one `n/a` added to `price_usd`, it is not cast and its tile matches the pre-change kind. `mixed_symbols_record_none` (Review Focus 1): with one `$` row in `revenue`, it is cast and its record's `currency_symbol` is `None`. `parentheses_are_recorded`: `revenue`'s record has `Negatives::Parentheses`. `over_budget_file_is_not_cast`: with a budget of 1 byte, nothing is cast. `cast_open_reads_the_file_once`: the copy and the deciding aggregate record their statements in a tally `open_traced` exposes (for example `OpenTrace::cast: ScanTally`, since `OpenTrace::composition` covers only the first composition); the aggregate's `file_reads` is 0 and the copy reads the file exactly once. `typed_dates_survive`: the ISO `day` column, which DuckDB loads as DATE, opens and stays DATE.
@@ -177,6 +178,37 @@ Tasks 1–6 can land and ship before FineType's release; each leaves the app wor
 - [ ] **Step 4: Implement** as the Interfaces block says. Expose from `silver.rs` one helper that gives the cast over `CAST(col AS VARCHAR)`, so the flat route and `silver::source` share it. A column DuckDB already stored as the label's target type is not a candidate. Columns FineType's projection passes through (including the twelve labels FineType types as VARCHAR) stay text: follow FineType, do not second-guess it.
 - [ ] **Step 5: Run** `cargo test -p brightfield-shell --test open_materialise` and `cargo test -p brightfield-engine materialise` → PASS.
 - [ ] **Step 6: Commit** — "Cast a lone CSV's columns in the copy it is opened from".
+
+### Task 6b: Protocol columns record how they were written; stale records are pruned
+
+Does not wait on FineType. It lands before Task 8, whose rule reads `written` for every route.
+
+A Protocol (a folder, workbook or database) casts in its silver table, and the spec reads `written` "when the column is cast", but nothing fills it there: `carry_over` keeps an `x-brightfield` object across `write_packages`, the one-part open arrives `already_cast`, and `keep_record` runs on the lone-file route only. So a workbook's sterling column would reach the representation rule with no symbol and no negatives. Separately, a lone file's record under `records/` is never removed when its file goes, and the spec says such records must not accumulate indefinitely.
+
+**Files:**
+- Modify: `crates/brightfield-shell/src/own_files.rs` (`write_packages`, ~327: read `written` from each cast column's raw values as the package is written)
+- Modify: `crates/brightfield-shell/src/flat_cast.rs` (move the per-column `written` terms of `decide_casts` into a helper both routes call)
+- Modify: `crates/brightfield-shell/src/column_record.rs` (stamp the file's canonical path on a lone file's record; `prune_records`)
+- Modify: the first flat open of a process, or startup, to call `prune_records` once
+- Test: `crates/brightfield-shell/tests/own_files_protocol.rs`; in-module tests in `column_record.rs`
+
+**Interfaces:**
+- Consumes: `Written`, `Negatives`, `write_record` (Task 4); the cast list `decide_casts` builds (Task 6).
+- Produces:
+  ```rust
+  // flat_cast.rs: the aggregate terms that read a currency column's symbol and negatives from its text
+  pub(crate) fn written_terms(raw: &str) -> [String; 2];
+  pub(crate) fn written_from(symbol: Option<String>, negatives: Option<String>) -> Written;
+  // column_record.rs
+  pub fn prune_records(datasets: &Path) -> Result<usize, String>; // records removed
+  ```
+  `SourceStamp` gains `path: Option<PathBuf>`, the canonical path the record's key was hashed from.
+
+- [ ] **Step 1: Write the failing tests.** `protocol_package_records_how_a_column_was_written` in `own_files_protocol.rs`: a one-sheet workbook whose `amount` column holds `£1,234.50` and `(£12.00)` writes a package whose `amount` field carries `x-brightfield.written` with `currency_symbol: "£"` and `negatives: "parentheses"`; a column the silver table does not cast carries no `written`. `protocol_written_is_read_from_the_raw_table`: the values are read from the raw table the silver cast reads, not from the cast column, whose text no longer holds a symbol. `a_record_whose_file_is_gone_is_pruned`: a record stamped with a path that no longer exists, inside a folder that does, is removed by `prune_records`; a record whose file exists is kept; a record whose file's folder is missing (an unmounted drive) is kept.
+- [ ] **Step 2: Run them to see them fail.**
+- [ ] **Step 3: Implement.** `write_packages` runs one aggregate per source table over its raw table, with `written_terms` for each column the silver cast casts with a `finance.currency.` label, and writes the answers through `written_from` into each field's `x-brightfield.written`, keeping `prefer` as `carry_over` does. A lone file's record is stamped with its canonical path when `keep_record` writes it. `prune_records` walks `records/`, reads each record's stamped path, and removes the record's folder when that path is missing and its parent folder exists; a record with no stamped path is kept (records written before the stamp carried a path refresh it on their next open).
+- [ ] **Step 4: Run** `cargo test -p brightfield-shell column_record`, `cargo test -p brightfield-shell --test own_files_protocol` and `cargo test -p brightfield-shell --test open_materialise` → PASS.
+- [ ] **Step 5: Commit** — "A workbook's cast columns record how they were written, and a gone file's record is pruned".
 
 ### Task 7: Vendor FineType's display export
 
@@ -218,7 +250,7 @@ Tasks 1–6 can land and ship before FineType's release; each leaves the app wor
 - Test: in-module tests
 
 **Interfaces:**
-- Consumes: `ColumnProfile`, `Display` (Task 7), `FieldRecord` (Task 4).
+- Consumes: `ColumnProfile`, `Display` (Task 7), `FieldRecord` (Task 4), and whether the label's cast ran on this column: from the session's cast list (`Dashboard::casts` on the flat route), or, for a Protocol's copy, which holds the silver table, whether `cast_expr` gives a cast for the column's label. The record does not say which columns were cast, and a column DuckDB stored as a number is never cast (Task 6), so a DOUBLE `45.0` labelled percentage holds 45, not the fraction 0.45 the percentage cast stores.
 - Produces:
   ```rust
   pub struct Representation {
@@ -230,7 +262,7 @@ Tasks 1–6 can land and ship before FineType's release; each leaves the app wor
       pub symbol: Option<String>,        // printed by grid and tooltip only
   }
   pub struct Scale { pub divisor: f64, pub unit: &'static str } // "k","m","bn" or "KiB","MiB","GiB"
-  pub fn representation_of(column: &ColumnProfile, display: Option<&Display>, record: Option<&FieldRecord>) -> Representation;
+  pub fn representation_of(column: &ColumnProfile, display: Option<&Display>, record: Option<&FieldRecord>, cast: bool) -> Representation;
   pub fn format_cell(rep: &Representation, value: f64) -> String;
   pub fn format_compact(rep: &Representation, value: f64) -> String;
   ```
@@ -245,6 +277,8 @@ Tasks 1–6 can land and ship before FineType's release; each leaves the app wor
   - `bytes_scale_binary`: bytes, max 5e9 → `Scale { divisor: 1073741824.0, unit: "GiB" }`.
   - `preference_wins`: `prefer.number_format == ",.0f"` → `tick_format == ",.0f"` and `cell_format == ",.0f"`, whatever FineType's display says.
   - `unlabelled_column_has_no_representation`: no display, no record → all `None`.
+  - `money_with_no_recorded_symbol_never_prints_dollars`: money, no recorded symbol (a column whose values mixed `£` and `$`, or a Protocol column before Task 6b) → `symbol == None`, no tick, cell or compact format contains `$`, and `title_unit` names no symbol.
+  - `uncast_percentage_is_not_multiplied`: fraction, `cast == false`, a DOUBLE column with min 12.0 and max 78.0 → no `%` specifier (which multiplies by 100), `format_cell(45.0) == "45%"` with the `%` attached, never `"4500%"`. With `cast == true` and 0.45 the same cell prints `45%` through `.0%`.
 - [ ] **Step 2: Run them to see them fail.**
 - [ ] **Step 3: Implement.** Scale: the largest of 10³, 10⁶, 10⁹ (or 2¹⁰, 2²⁰, 2³⁰) not above the larger of `|min|`, `|max|`, applied when that magnitude is at least 10⁴ (bytes: 2²⁰). Precision for a fraction: the fewest decimals (0–3) at which five evenly spaced ticks across the spread print distinctly.
 - [ ] **Step 4: Run** `cargo test -p brightfield-shell representation` → PASS.
@@ -255,12 +289,15 @@ Tasks 1–6 can land and ship before FineType's release; each leaves the app wor
 **Files:**
 - Modify: `crates/brightfield-shell/src/dashboard.rs` (`tile_for` ~830, `histogram_tile_sized` 1237, `time_bars_tile_sized` 1365, `tile_comment` 1398, the year route)
 - Modify: `crates/brightfield-shell/tests/dashboard_baseline.rs`
+- Modify: `crates/brightfield-spec/src/layout.rs` (`read_domains_in`, ~943: read a list longer than two ends, and a two-item list on a band, as a categorical domain)
+- Modify: `crates/brightfield-render/src/scale.rs` and `crates/brightfield-render/src/scene.rs` (apply a categorical domain as a band's order; `axis_ends_apply`, 846, stays linear-only)
 - Create: `crates/brightfield-shell/tests/typed_formats_baseline.rs`, its committed YAML snapshot and light and dark PNGs
 
 **Interfaces:**
 - Consumes: `representation_of` (Task 8), `BinOperand::Expression` spelling (Task 1).
 - Produces: generated YAML per tile with `xTickFormat`, `xLabel: "<column> (<unit>)"`, a bin over `"<column>" / <divisor>` when scaled, `xGrid: true` / `yGrid: true`, and a tile comment naming the label that chose the format.
 
+- [ ] **Step 0: A band reads its domain from a list.** The year tile's `xDomain` cannot be written in a form the renderer reads today: `read_domains_in` accepts only two numeric ends and refuses any other list, and `axis_ends_apply` is for a linear axis, while the counts-per-date tile draws a band. Add a categorical positional domain: `read_domains_in` reads a list into `DomainReading::Categories { key, values }` (a two-item list stays `Ends` on a continuous axis and becomes categories on a band); the renderer turns each number into the band's category text (`2009` → `"2009"`, the text the band's categories carry) and applies the list as the band's order, keeping a listed category with no rows as an empty slot. Test in `layout.rs` and the render crate: `a_listed_domain_orders_the_band`: `xDomain: [2001, …, 2024]` over a band of years with 2009 absent parses with no warning, and the band draws 2001–2024 in that order with an empty slot at 2009. `a_listed_domain_on_a_linear_axis_is_refused`: a three-item list on a linear axis is still refused with the existing warning. Run `cargo test -p brightfield-spec domain` and `cargo test -p brightfield-render domain` → PASS; commit — "A band takes its order from a listed domain".
 - [ ] **Step 1: Write the failing tests** in `typed_formats_baseline.rs` over `typed_formats.csv`: `generated_yaml_matches_snapshot` (the committed YAML; this is the baseline that reddens when a label's format changes); `revenue_tile_is_scaled`: its block contains `xLabel: "revenue (£bn)"` and the expression bin; `year_tile_counts_in_time_order`: `year` gets the counts-per-date kind, `xTickFormat: d`, and an `xDomain` of 2001–2024 including 2009; `long_year_run_leaves_domain_to_data` (Review Focus 4): a run of 400 years writes no domain; `every_tile_writes_its_grid`; `light_and_dark_pngs_match`.
 - [ ] **Step 2: Run them to see them fail.**
 - [ ] **Step 3: Implement.** The `datetime.component.year` route goes to the counts-per-date kind whatever the category ceiling says; the year-run ceiling is 120. The count axis writes no format.
@@ -289,9 +326,9 @@ Tasks 1–6 can land and ship before FineType's release; each leaves the app wor
 - Modify: `crates/brightfield-shell/src/chart_item.rs` (`hover_read`, 842)
 - Test: the existing hover tests beside it
 
-- [ ] **Step 1: Write the failing tests.** `tooltip_reads_compact`: resting on the generated `revenue` histogram's bar for £2.0–2.5bn gives a line `revenue: £2.0\u{a0}bn–£2.5\u{a0}bn`; on an unlabelled column the line is unchanged. `tooltip_follows_a_hand_written_axis`: on a chart the analyst wrote over `revenue` with no format and no scale, the line prints the grouped default (`£2,412,345,000`), not the rule's scaled form.
+- [ ] **Step 1: Write the failing tests.** The line names the column, not the bin's SQL: an expression bin's axis is named for its expression's text, and the tooltip must never print that text (`"revenue" / 1e9:`). `tooltip_names_the_column_not_the_expression`: on the generated `revenue` tile, the hover line starts `revenue:` and contains no `1e9` and no `"`. `tooltip_reads_compact`: resting on the generated `revenue` histogram's bar for £2.0–2.5bn gives a line `revenue: £2.0\u{a0}bn–£2.5\u{a0}bn`; on an unlabelled column the line is unchanged. `tooltip_follows_a_hand_written_axis`: on a chart the analyst wrote over `revenue` with no format and no scale, the line prints the grouped default (`£2,412,345,000`), not the rule's scaled form.
 - [ ] **Step 2: Run it to see it fail.**
-- [ ] **Step 3: Implement.** Format with the hovered axis's tick format and the scale its bin applies, plus the record's symbol and unit word; on a generated tile that is `format_compact`'s output.
+- [ ] **Step 3: Implement.** Name the line from the axis label's column (or the bin's source column), not from the expression text the low edge is aliased to. Format with the hovered axis's tick format and the scale its bin applies, plus the record's symbol and unit word; on a generated tile that is `format_compact`'s output.
 - [ ] **Step 4: Run** `cargo test -p brightfield-shell hover` → PASS.
 - [ ] **Step 5: Commit** — "The tooltip reads a value in its column's unit".
 
@@ -309,7 +346,9 @@ Tasks 1–6 can land and ship before FineType's release; each leaves the app wor
 
 ### Task 13: Fold the design into the architecture docs
 
-- [ ] **Step 1:** Write the outcome into the repo's architecture docs on this branch: the column record and its `x-brightfield` object, the flat cast, the representation rule and what FineType owns versus Brightfield.
+- [ ] **Step 1:** Write the outcome into the repo's architecture docs on this branch: the column record and its `x-brightfield` object, the flat cast, the representation rule and what FineType owns versus Brightfield. Include two notes:
+  - A lone file's casts are declared in its spec as `TRY` casts over the file's view, so a rebuild (a tile switch, the written spec opened again) re-runs them on each query over the file. A file that gains a bad value after it was opened reads that value as NULL until the next open decides again and puts the column back as text.
+  - A band of whole numbers with no format prints its category text ungrouped (`2024`), while Plot's band prints `toLocaleString` (`2,024`). Generated tiles avoid the difference by writing `d`; a hand-written spec over a numeric band without a format draws differently in the two.
 - [ ] **Step 2:** Delete this plan and the spec from the branch.
 - [ ] **Step 3: Commit** — "Fold the column-format design into the architecture docs".
 
