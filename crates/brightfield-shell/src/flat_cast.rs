@@ -30,8 +30,14 @@ use crate::pipeline::LiveDashboard;
 ///
 /// A column is a candidate when its label is trusted (its values do not contradict it), FineType's
 /// own projection casts it ([`cast_expr_over_text`], which passes through a label FineType types as
-/// VARCHAR, as it does twelve currency and rate labels whose transforms return numbers), and DuckDB
-/// stored it as neither a number nor the type the label casts to. A number is never cast through
+/// VARCHAR, as it does twelve currency and rate labels whose transforms return numbers) to a type a
+/// format is chosen for ([`is_formatted_type`]), and DuckDB stored it as neither a number nor the
+/// type the label casts to.
+///
+/// A label cast to any other type (JSON, UUID, INTERVAL, the coordinates struct) is read as it is.
+/// No format reads it, and its cast may not even bind: `JSON` is a type only where DuckDB's JSON
+/// extension loads. `TRY` catches a value that fails to cast, not a cast that fails to bind, and
+/// one such cast fails the whole copy, which then casts nothing. A number is never cast through
 /// its text: DuckDB renders a large double as `1e+16`, which a currency transform reads as `116`,
 /// and rounds `123.456` to `123.46` on the way to a DECIMAL(18,2), with no NULL to show for either.
 #[derive(Debug, Default)]
@@ -52,7 +58,7 @@ impl CastPlan {
                 }
                 let label = c.semantic.label()?;
                 let target = transforms.duckdb_type(label)?;
-                if base_type(&c.type_name) == base_type(target) {
+                if !is_formatted_type(target) || base_type(&c.type_name) == base_type(target) {
                     return None;
                 }
                 // A file that already has a column under the raw name keeps its own column.
@@ -116,6 +122,24 @@ fn is_number_type(type_name: &str) -> bool {
             | "DOUBLE"
             | "DECIMAL"
     )
+}
+
+/// Whether a cast to `type_name` gives values a number or date format is chosen for: a number, a
+/// date, a time, a timestamp, or a boolean.
+fn is_formatted_type(type_name: &str) -> bool {
+    is_number_type(type_name)
+        || matches!(
+            base_type(type_name).as_str(),
+            "DATE"
+                | "TIME"
+                | "TIMESTAMP"
+                | "TIMESTAMP WITH TIME ZONE"
+                | "TIMESTAMPTZ"
+                | "TIMESTAMP_S"
+                | "TIMESTAMP_MS"
+                | "TIMESTAMP_NS"
+                | "BOOLEAN"
+        )
 }
 
 /// The select that reads [`ROWS`] with `casts` applied: the file's columns (`SELECT *`) in its
@@ -478,6 +502,38 @@ mod tests {
         }
         for ty in ["VARCHAR", "DATE", "TIMESTAMP"] {
             assert!(!is_number_type(ty), "{ty}");
+        }
+    }
+
+    #[test]
+    fn only_a_type_a_format_reads_is_cast_to() {
+        for ty in [
+            "BIGINT",
+            "SMALLINT",
+            "DOUBLE",
+            "DECIMAL",
+            "DECIMAL(18,2)",
+            "DATE",
+            "TIME",
+            "TIMESTAMP",
+            "TIMESTAMP WITH TIME ZONE",
+            "BOOLEAN",
+        ] {
+            assert!(is_formatted_type(ty), "{ty}");
+        }
+        for ty in ["JSON", "UUID", "INTERVAL", "POINT", "VARCHAR"] {
+            assert!(!is_formatted_type(ty), "{ty}");
+        }
+        // Every target the vendored transforms name is one or the other, so a new type in a
+        // FineType release is decided here rather than cast by default.
+        let transforms = FinetypeTransforms::vendored();
+        for label in transforms.labels() {
+            let ty = transforms.duckdb_type(label).unwrap_or_default();
+            assert!(
+                is_formatted_type(ty)
+                    || ["JSON", "UUID", "INTERVAL", "POINT", "VARCHAR"].contains(&ty),
+                "{label} casts to {ty}, which neither list names"
+            );
         }
     }
 }

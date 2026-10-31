@@ -1216,3 +1216,41 @@ fn a_multi_line_transform_round_trips_through_the_written_spec() {
     let mut reloaded = LiveDashboard::load_str(&text, None).expect("the written spec loads");
     assert_eq!(type_of(&mut reloaded, "height"), "DOUBLE");
 }
+
+/// **A label whose cast no format needs is not cast, so it cannot stop the others**: a JSON
+/// column's cast may not even bind (a DuckDB without its JSON extension has no such type), and a
+/// copy that fails to bind casts nothing. The JSON and UUID columns are read as they are, and
+/// `revenue` beside them is still cast.
+#[test]
+fn a_label_no_format_needs_is_read_as_it_is() {
+    let path = typed_with(
+        "unformatted-labels",
+        "revenue,payload,id\n\
+         \"£1,234.50\",\"{\"\"a\"\": 1}\",0b6c1f8e-6f0e-4a7c-9a52-0c7f1a3f8e11\n\
+         (£12.00),\"{\"\"a\"\": 2}\",5d3c2b1a-1111-4222-8333-944455556666\n\
+         £7.75,\"{\"\"a\"\": 3}\",9e8d7c6b-aaaa-4bbb-8ccc-dddddddddddd\n",
+        &[
+            ("revenue", "finance.currency.amount"),
+            ("payload", "container.object.json"),
+            ("id", "representation.identifier.uuid"),
+        ],
+    );
+    let (mut opened, _) = open_typed(&path, &unbundled());
+    assert!(
+        type_of(&mut opened.live, "revenue").starts_with("DECIMAL"),
+        "revenue is {}",
+        type_of(&mut opened.live, "revenue")
+    );
+    assert_eq!(type_of(&mut opened.live, "payload"), "VARCHAR");
+    assert_eq!(type_of(&mut opened.live, "id"), "VARCHAR");
+    let names = grid_names(&mut opened.live);
+    assert!(
+        names.iter().all(|n| !n.starts_with(data_file::RAW_PREFIX)),
+        "a column no format needs kept a raw twin: {names:?}"
+    );
+    let rows = rows_of(
+        &mut opened.live,
+        "SELECT \"payload\" FROM \"opened\" LIMIT 1",
+    );
+    assert_eq!(rows[0][0].as_deref(), Some("{\"a\": 1}"));
+}
