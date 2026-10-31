@@ -107,7 +107,7 @@ fn base_type(type_name: &str) -> String {
 }
 
 /// Whether DuckDB stored a column of `type_name` as a number: an integer, a float or a decimal.
-fn is_number_type(type_name: &str) -> bool {
+pub(crate) fn is_number_type(type_name: &str) -> bool {
     matches!(
         base_type(type_name).as_str(),
         "TINYINT"

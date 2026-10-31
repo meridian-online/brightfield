@@ -128,6 +128,7 @@ pub mod protocol;
 pub mod protocol_panels;
 pub mod ranked_bars;
 pub mod remote;
+pub mod representation;
 pub mod resample;
 pub mod run;
 pub mod shelf;

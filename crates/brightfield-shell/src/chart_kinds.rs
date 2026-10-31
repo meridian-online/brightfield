@@ -842,7 +842,7 @@ fn is_date_type(duckdb_type: &str) -> bool {
 /// category list, where they would otherwise be offered a band axis they put no
 /// ink on. `DATETIME` is DuckDB's own alias for `TIMESTAMP`, and the
 /// suffixed forms are its other precisions.
-fn is_temporal_type(duckdb_type: &str) -> bool {
+pub(crate) fn is_temporal_type(duckdb_type: &str) -> bool {
     matches!(
         type_base(duckdb_type).as_str(),
         "DATE"
