@@ -1441,7 +1441,7 @@ fn represented_cell(cast: &str, print: impl Fn(f64) -> String) -> CellText {
 /// The most decimals a grid cell is widened to.
 const MOST_CELL_DECIMALS: usize = 4;
 
-/// `spec` with the precision a cell needs to keep every decimal of the stored value `cast`, up
+/// `spec` with the precision a cell needs to keep the decimals of the stored value `cast`, up
 /// to [`MOST_CELL_DECIMALS`], or `None` where `spec`'s own precision already does, or `spec` has
 /// none to widen. A percentage prints two fewer decimals than the fraction it is read from has.
 fn widened(spec: &str, cast: &str) -> Option<String> {
