@@ -653,8 +653,8 @@ impl Dashboard {
     }
 
     /// How `column`'s values are shown, from FineType's display block for its trusted label, its
-    /// profile, its record and whether its label's cast ran on it — or nothing for a column this
-    /// dashboard was not given.
+    /// profile, its record and whether its label's cast ran on it. A column this dashboard was
+    /// not given gets [`Representation::default`].
     ///
     /// The cast ran on a column the source casts as it reads the file, and, on a file cast
     /// before it was opened, on each column whose label FineType's projection casts.
@@ -684,18 +684,17 @@ impl Dashboard {
             // A map's x and y are a projection's, which takes no axis keys.
             return Look::default();
         }
-        let shown = self.representation(tile.column());
+        let mut shown = self.representation(tile.column());
+        // A resampled column is drawn through its bucket, which its label's format does not
+        // describe.
+        if tile.resampled.is_some() {
+            shown.tick_format = None;
+        }
         let profile = self.columns.iter().find(|c| c.name == tile.column);
         let year =
             matches!(tile.chosen_by(), ChosenBy::Meaning { label, .. } if label == YEAR_LABEL);
         Look {
-            // A resampled column is drawn through its bucket, which its label's format does not
-            // describe.
-            tick_format: if tile.resampled.is_some() {
-                None
-            } else {
-                shown.tick_format.clone()
-            },
+            tick_format: shown.tick_format.clone(),
             scale: shown.scale,
             title: shown
                 .title_unit
@@ -2851,8 +2850,8 @@ mod tests {
     }
 
     /// **A year column counts per year in time order, whatever the category
-    /// ceiling says**, and lists its run of years as its domain only while the
-    /// run is no longer than [`YEAR_RUN_CEILING`].
+    /// ceiling says**, and lists its run of years as its domain while the run is
+    /// no longer than [`YEAR_RUN_CEILING`].
     #[test]
     fn a_year_counts_in_time_order_and_lists_a_short_run() {
         let year = |min: &str, max: &str, distinct: u64| ColumnProfile {
@@ -2878,6 +2877,29 @@ mod tests {
         assert!(source.contains("xDomain: [2001, 2002, 2003]\n"), "{source}");
         assert!(source.contains("xTickFormat: d\n"), "{source}");
         assert!(parse_spec(&source, Format::Yaml).is_ok(), "{source}");
+    }
+
+    /// **A resampled timestamp writes no format and claims none**: its tile is
+    /// drawn through the bucket column, which its label's format does not
+    /// describe.
+    #[test]
+    fn a_resampled_timestamp_writes_no_format() {
+        let at = ColumnProfile {
+            semantic: labelled("at", "TIMESTAMP", 900, "datetime.timestamp.ctime").semantic,
+            ..stamped("at", "2020-01-01 00:00:00", "2020-06-01 00:00:00", 900)
+        };
+        let dash = of(&[at]);
+        assert!(
+            dash.tiles()[0].resampled().is_some(),
+            "fixture check: resampled"
+        );
+        assert!(
+            dash.representation("at").tick_format.is_some(),
+            "fixture check: a format"
+        );
+        let source = dash.to_spec();
+        assert!(!source.contains("TickFormat"), "{source}");
+        assert!(!source.contains("chose its format"), "{source}");
     }
 
     /// **A format specifier is written so YAML reads it back as written**: bare
