@@ -1443,9 +1443,13 @@ const MOST_CELL_DECIMALS: usize = 4;
 
 /// `spec` with the precision a cell needs to keep the decimals of the stored value `cast`, up
 /// to [`MOST_CELL_DECIMALS`]; `None` when `spec`'s own precision already keeps them, or `spec`
-/// has no precision to widen. A percentage prints two fewer decimals than the fraction it is read from
-/// has; `a_cell_format_is_widened_to_the_stored_decimals_and_no_further` holds each case.
+/// has no precision to widen. A percentage prints two fewer decimals than the fraction it is read
+/// from has; `a_cell_format_is_widened_to_the_stored_decimals_and_no_further` holds each case.
 fn widened(spec: &str, cast: &str) -> Option<String> {
+    // Only fixed-point types count decimals; `s`, `e`, `g` and `r` count significant digits.
+    if !spec.ends_with(['f', '%']) {
+        return None;
+    }
     let dot = spec.find('.')?;
     let digits = spec[dot + 1..]
         .chars()
@@ -1455,9 +1459,7 @@ fn widened(spec: &str, cast: &str) -> Option<String> {
         return None;
     }
     let have: usize = spec[dot + 1..dot + 1 + digits].parse().ok()?;
-    let stored = cast
-        .split_once('.')
-        .map_or(0, |(_, f)| f.trim_end_matches('0').len());
+    let stored = stored_decimals(cast.parse().ok()?);
     let needed = if spec.ends_with('%') {
         stored.saturating_sub(2)
     } else {
@@ -1465,6 +1467,26 @@ fn widened(spec: &str, cast: &str) -> Option<String> {
     }
     .min(MOST_CELL_DECIMALS);
     (needed > have).then(|| format!("{}{needed}{}", &spec[..=dot], &spec[dot + 1 + digits..]))
+}
+
+/// The decimals `value` has once floating-point noise past its twelfth significant digit is
+/// set aside: 0.011000000000000001 has three, 1481.3999999999999 has one.
+fn stored_decimals(value: f64) -> usize {
+    if value == 0.0 || !value.is_finite() {
+        return 0;
+    }
+    let text = format!("{value:.11e}");
+    let Some((mantissa, exponent)) = text.split_once('e') else {
+        return 0;
+    };
+    let digits = mantissa
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect::<String>()
+        .trim_end_matches('0')
+        .len() as i64;
+    let exponent: i64 = exponent.parse().unwrap_or(0);
+    usize::try_from(digits - 1 - exponent).unwrap_or(0)
 }
 
 /// A cell showing `text`, with `cast` kept as its exact value where the two differ.
@@ -1786,6 +1808,7 @@ impl PreviewRequest {
             && self.data == other.data
             && self.root_table == other.root_table
             && self.chain == other.chain
+            && self.shown == other.shown
     }
 
     /// How the Run verb is named in a sentence: with its key, when it has one.
@@ -1812,7 +1835,7 @@ enum PreviewShown {
 /// What a read is kept under: the rows asked for, the data file as it stood
 /// when it was read (so a file changed on disk is read again), and the size
 /// limit it was read under.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 struct PreviewKey {
     step: String,
     data: std::path::PathBuf,
@@ -1821,6 +1844,7 @@ struct PreviewKey {
     modified: Option<std::time::SystemTime>,
     len: Option<u64>,
     limit: u64,
+    shown: Shown,
 }
 
 impl PreviewKey {
@@ -1834,6 +1858,7 @@ impl PreviewKey {
             modified: meta.as_ref().and_then(|m| m.modified().ok()),
             len: meta.map(|m| m.len()),
             limit,
+            shown: request.shown.clone(),
         }
     }
 }
@@ -2112,6 +2137,7 @@ impl GridPreview {
             modified: None,
             len: None,
             limit: 0,
+            shown: Shown::new(),
         };
         Self {
             request,
@@ -3193,6 +3219,30 @@ impl Item<ChartDoc> for DataGridItem {
 mod tests {
     use super::*;
 
+    /// A kept preview page was tabulated under the representations of its time, so a request
+    /// under others is another read.
+    #[test]
+    fn a_preview_under_other_representations_is_not_the_kept_read() {
+        let request = PreviewRequest {
+            step: "s".to_string(),
+            data: std::path::PathBuf::new(),
+            root_table: "t".to_string(),
+            chain: Vec::new(),
+            fields: [String::new(), String::new()],
+            ran: false,
+            recorded: false,
+            run_key: None,
+            shown: Shown::new(),
+        };
+        let mut labelled = request.clone();
+        labelled
+            .shown
+            .insert("share".to_string(), Representation::default());
+        assert!(request.same_rows(&request.clone()));
+        assert!(!request.same_rows(&labelled));
+        assert_ne!(PreviewKey::of(&request, 1), PreviewKey::of(&labelled, 1));
+    }
+
     #[test]
     fn a_cell_format_is_widened_to_the_stored_decimals_and_no_further() {
         assert_eq!(widened(".0%", "0.455").as_deref(), Some(".1%"));
@@ -3202,6 +3252,26 @@ mod tests {
         assert_eq!(widened(",.2f", "1.123456789").as_deref(), Some(",.4f"));
         assert_eq!(widened(",", "1.5"), None);
         assert_eq!(widened(".1f", "45.25").as_deref(), Some(".2f"));
+        // Floating-point noise past the twelfth significant digit is not a stored decimal.
+        assert_eq!(widened(".1%", "0.011000000000000001"), None);
+        assert_eq!(widened(",.2f", "1481.3999999999999"), None);
+        assert_eq!(
+            widened(".0%", "0.011000000000000001").as_deref(),
+            Some(".1%")
+        );
+        let printed = |spec: &str, stored: &str| {
+            let rep = Representation {
+                cell_format: Some(spec.to_string()),
+                ..Representation::default()
+            };
+            Look::Number(&rep).cell(stored).text
+        };
+        assert_eq!(printed(".1%", "0.011000000000000001"), "1.1%");
+        assert_eq!(printed(",.2f", "1481.3999999999999"), "1,481.40");
+        // Precision of the other d3 types counts significant digits, not decimals.
+        assert_eq!(widened(".3s", "1.23456"), None);
+        assert_eq!(widened(".2e", "1.23456"), None);
+        assert_eq!(widened(".2g", "1.23456"), None);
     }
 
     /// The table-scope feature declaration is exactly the token pair, from
