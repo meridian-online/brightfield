@@ -974,10 +974,11 @@ fn domain_value_text(value: &SpecValue) -> String {
 /// A pure spec reading, mirroring [`resolve_fixed_domains`], which reads the
 /// other thing these keys take, Mosaic's `Fixed`. Two numbers with the low end
 /// first are [`DomainReading::Ends`]; three or more numbers, or two or more
-/// words, are [`DomainReading::Categories`], the order a band draws in; a value
-/// that is none of those nor `Fixed` nor `null` is [`DomainReading::Refused`],
-/// so a file that writes `[100, 0]`
-/// draws as one without the key and the reading keeps the value to name. The
+/// words, are [`DomainReading::Categories`], the order a band draws in
+/// (`a_list_of_words_or_of_three_numbers_is_categories`); any other value but
+/// `Fixed` or `null` is [`DomainReading::Refused`], so a file that writes
+/// `[100, 0]` draws as one without the key and the reading keeps the value to
+/// name. The
 /// high end first is refused and not read as a reversal, because `xReverse` is
 /// the key that turns an axis.
 ///

@@ -1497,7 +1497,7 @@ pub fn written_domain_applies(reading: &DomainReading, scale: &Scale) -> bool {
 
 /// `scale` re-domained onto `pin`, which the file `written` as two numbers
 /// when it is set. Two numbers written on a band of numbers are its two
-/// categories, low first, named as the band names a number; every other pin
+/// categories, low first, named as the band names a number; any other pin
 /// lands through [`PinnedDomain::applied_to`].
 fn pinned_onto(pin: &PinnedDomain, written: bool, scale: &Scale) -> Option<Scale> {
     match (pin, scale) {
