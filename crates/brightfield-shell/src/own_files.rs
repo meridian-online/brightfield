@@ -374,7 +374,7 @@ pub fn write_packages(p: &OwnProtocol) -> Result<Vec<PathBuf>, String> {
         // to rewrite, so it is carried into the package this writes; how each column was written
         // is read again from the values.
         let mut package = crate::column_record::carry_over(package, &path);
-        record_written(p, &mut raw, &mut package);
+        record_written(p, &mut raw, &mut package, &path);
         crate::column_record::write_package(&path, &package)?;
         written.push(path);
     }
@@ -432,14 +432,17 @@ impl Drop for RawTables {
 /// with one aggregate per table from the raw table the cast reads, whose text still holds them.
 ///
 /// The cast is the one [`silver_sql`] makes from the field's label as the package now records it,
-/// an analyst's nominated label included. A table whose aggregate fails is reported and its fields
-/// are left with no `written`: the open does not depend on it.
-fn record_written(p: &OwnProtocol, raw: &mut RawTables, package: &mut Value) {
+/// an analyst's nominated label included. Only a column the raw table holds as text is read: a
+/// number stored as a number has no symbol, and its text is DuckDB's, not the source's. A table
+/// whose aggregate fails is reported and its fields keep the `written` the package at `existing`
+/// recorded: the open does not depend on it.
+fn record_written(p: &OwnProtocol, raw: &mut RawTables, package: &mut Value, existing: &Path) {
     let transforms = FinetypeTransforms::vendored();
     for res in package["resources"].as_array_mut().into_iter().flatten() {
         let Some(table) = res["name"].as_str().map(str::to_string) else {
             continue;
         };
+        let text = text_columns(p, &table);
         let Some(fields) = res["schema"]["fields"].as_array_mut() else {
             continue;
         };
@@ -452,7 +455,8 @@ fn record_written(p: &OwnProtocol, raw: &mut RawTables, package: &mut Value) {
                 else {
                     return false;
                 };
-                label.starts_with("finance.currency.")
+                text.contains(name)
+                    && label.starts_with("finance.currency.")
                     && cast_expr(name, Some(label), &transforms).is_some()
             })
             .map(|(at, _)| at)
@@ -477,11 +481,36 @@ fn record_written(p: &OwnProtocol, raw: &mut RawTables, package: &mut Value) {
                     crate::column_record::put_written(&mut fields[at], &how);
                 }
             }
-            Err(e) => eprintln!(
-                "warning: {table}: how its currency columns were written was not read: {e}"
-            ),
+            Err(e) => {
+                eprintln!(
+                    "warning: {table}: how its currency columns were written was not read, so \
+                     what was recorded before is kept: {e}"
+                );
+                let names: Vec<String> = cast
+                    .iter()
+                    .filter_map(|&at| fields[at]["name"].as_str().map(str::to_string))
+                    .collect();
+                crate::column_record::keep_old_written(res, existing, &names);
+            }
         }
     }
+}
+
+/// The columns of `table` its profile found stored as text (VARCHAR).
+fn text_columns(p: &OwnProtocol, table: &str) -> HashSet<String> {
+    let Some(ProfileOutcome::Profiled { columns, .. }) = p
+        .profiles
+        .iter()
+        .find(|s| s.name == table)
+        .map(|s| &s.outcome)
+    else {
+        return HashSet::new();
+    };
+    columns
+        .iter()
+        .filter(|c| c.type_name.trim().eq_ignore_ascii_case("VARCHAR"))
+        .map(|c| c.name.clone())
+        .collect()
 }
 
 /// One Frictionless resource for `table`, its fields typed from the profile.

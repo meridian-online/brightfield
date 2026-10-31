@@ -624,3 +624,60 @@ fn silver_steps_are_rewritten_not_accumulated() {
     assert!(!p.dir.join("models/02_failed_notes.sql").exists());
     assert!(p.dir.join("models/02_silver_events.sql").exists());
 }
+
+#[test]
+fn a_currency_column_stored_as_a_number_records_no_written() {
+    let dir = scratch().join("input").join("written_numeric");
+    std::fs::create_dir_all(&dir).unwrap();
+    let conn = duckdb::Connection::open_in_memory().unwrap();
+    conn.execute_batch(&format!(
+        "COPY (SELECT * FROM (VALUES (1, 1234.5::DOUBLE), (2, -12.0::DOUBLE)) t(id, amount)) \
+         TO '{}' (FORMAT parquet)",
+        dir.join("ledger.parquet").display()
+    ))
+    .unwrap();
+    drop(conn);
+    let mut p = own_files::create(&dir).unwrap();
+    own_files::run_loads(&p, &runner()).unwrap();
+    own_files::profile(&mut p).unwrap();
+    own_files::write_packages(&p).unwrap();
+    let package = p.dir.join("packages/ledger/datapackage.json");
+    nominate(&package, "ledger", "amount", Some(CURRENCY), None);
+    own_files::write_packages(&p).unwrap();
+    let amount = written_of(&package, "ledger", "amount");
+    assert_eq!(amount.label.as_deref(), Some(CURRENCY));
+    // DuckDB's `-12.0` is not how a source wrote a negative.
+    assert_eq!(amount.written, column_record::Written::default());
+}
+
+#[test]
+fn a_raw_table_that_cannot_be_read_keeps_the_written_recorded() {
+    let mut p = own_files::create(&sterling_folder("written_unread")).unwrap();
+    own_files::run_loads(&p, &runner()).unwrap();
+    own_files::profile(&mut p).unwrap();
+    own_files::write_packages(&p).unwrap();
+    let package = p.dir.join("packages/sales/datapackage.json");
+    nominate(&package, "sales", "amount", Some(CURRENCY), None);
+    own_files::write_packages(&p).unwrap();
+    assert_eq!(
+        written_of(&package, "sales", "amount")
+            .written
+            .currency_symbol
+            .as_deref(),
+        Some("£")
+    );
+
+    // The raw table is gone, so the aggregate fails; that is no news about the column.
+    let db = arc::spec::protocol_db_path(&p.dir).unwrap();
+    duckdb::Connection::open(&db)
+        .unwrap()
+        .execute_batch("DROP TABLE raw_sales")
+        .unwrap();
+    own_files::write_packages(&p).unwrap();
+    let amount = written_of(&package, "sales", "amount");
+    assert_eq!(amount.written.currency_symbol.as_deref(), Some("£"));
+    assert_eq!(
+        amount.written.negatives,
+        Some(column_record::Negatives::Parentheses)
+    );
+}

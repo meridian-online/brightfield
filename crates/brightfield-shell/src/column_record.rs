@@ -477,8 +477,8 @@ pub fn stamp(file: &Path) -> Result<SourceStamp, String> {
 /// Remove each lone file's record under `datasets` (`records/<key>/`) whose stamped file no longer
 /// exists, and answer how many were removed.
 ///
-/// A record is removed only when its file is missing and the folder that held the file is there:
-/// a file on a drive that is not mounted keeps its record. A record with no stamped path is kept;
+/// A record is removed only when its file is missing and the folder that held the file is there
+/// and holds something ([`is_gone`]): a file on a drive that is not mounted keeps its record. A record with no stamped path is kept;
 /// its next open stamps one. A record that cannot be read is left alone.
 ///
 /// # Errors
@@ -503,16 +503,76 @@ pub fn prune_records(datasets: &Path) -> Result<usize, String> {
             .flatten()
             .filter_map(|r| r[SOURCE]["path"].as_str().map(PathBuf::from))
             .collect();
-        let gone = !paths.is_empty()
-            && paths
-                .iter()
-                .all(|p| !p.exists() && p.parent().is_some_and(Path::is_dir));
+        let gone = !paths.is_empty() && paths.iter().all(|p| is_gone(p));
         if gone {
             std::fs::remove_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
             removed += 1;
         }
     }
     Ok(removed)
+}
+
+/// Whether the file at `path` has gone from a folder that is still there: the file reads as not
+/// found, and its folder reads as a folder with something in it. An empty folder is kept as a
+/// doubt, since a mount point whose drive is not mounted is one; a file or folder that cannot be
+/// read for any other reason (a permission, say) is not taken as gone.
+fn is_gone(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        _ => return false,
+    }
+    let Some(folder) = path.parent() else {
+        return false;
+    };
+    if !std::fs::metadata(folder).is_ok_and(|m| m.is_dir()) {
+        return false;
+    }
+    std::fs::read_dir(folder).is_ok_and(|mut entries| entries.next().is_some())
+}
+
+/// Put back on each field of `resource` in `fresh` that `fields` names the `written` the package
+/// at `existing` recorded for it, for a table whose values could not be read again: a failure to
+/// read is not news that the column changed.
+pub(crate) fn keep_old_written(fresh: &mut Value, existing: &Path, fields: &[String]) {
+    let Some(old) = read_package(existing).ok().flatten() else {
+        return;
+    };
+    let Some(name) = fresh["name"].as_str() else {
+        return;
+    };
+    let Some(old_res) = old["resources"]
+        .as_array()
+        .and_then(|rs| rs.iter().find(|r| r["name"] == name))
+    else {
+        return;
+    };
+    for field in fresh["schema"]["fields"]
+        .as_array_mut()
+        .into_iter()
+        .flatten()
+    {
+        let Some(column) = field["name"].as_str() else {
+            continue;
+        };
+        if !fields.iter().any(|f| f == column) {
+            continue;
+        }
+        let old_written = old_res["schema"]["fields"]
+            .as_array()
+            .and_then(|fs| fs.iter().find(|f| f["name"] == column))
+            .and_then(|f| f.get(BRIGHTFIELD))
+            .and_then(|own| own.get("written"))
+            .cloned();
+        if let (Some(written), Some(object)) = (old_written, field.as_object_mut()) {
+            let own = object
+                .entry(BRIGHTFIELD)
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !own.is_object() {
+                *own = Value::Object(Map::new());
+            }
+            own["written"] = written;
+        }
+    }
 }
 
 /// [`prune_records`] over Brightfield's data folder, the first time it is called in this process;
@@ -804,6 +864,9 @@ mod tests {
             Some(&dir.path().join("no-such-drive").join("a.csv")),
         );
         let unstamped = stamped_record(&datasets, "unstamped", None);
+        let empty = dir.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let in_empty = stamped_record(&datasets, "in_empty", Some(&empty.join("a.csv")));
 
         // The stamp's path reads back as it was written.
         let read = read_record(&kept.join("datapackage.json"), "source")
@@ -822,7 +885,38 @@ mod tests {
             "a file whose folder is missing keeps its record"
         );
         assert!(unstamped.exists(), "a record with no stamped path is kept");
+        assert!(
+            in_empty.exists(),
+            "a file whose folder is empty, as an unmounted mount point is, keeps its record"
+        );
         assert_eq!(prune_records(&dir.path().join("none")).unwrap(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_cannot_be_read_keeps_its_record() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let datasets = dir.path().join("datasets");
+        let locked = dir.path().join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        let file = locked.join("a.csv");
+        std::fs::write(&file, "x\n1\n").unwrap();
+        let record = stamped_record(&datasets, "locked", Some(&file));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // A user the mode does not stop (root) can still read the file, so there is no error.
+        let refused = std::fs::symlink_metadata(&file).is_err();
+        let pruned = prune_records(&datasets);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !refused {
+            eprintln!("skipping: a folder of mode 000 is still readable here");
+            return;
+        }
+        assert_eq!(pruned.unwrap(), 0);
+        assert!(
+            record.exists(),
+            "a file that cannot be read is not taken as gone"
+        );
     }
 
     #[test]
