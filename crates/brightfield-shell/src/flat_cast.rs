@@ -445,9 +445,10 @@ fn decide_casts(
 /// depend on it.
 ///
 /// Returns the record's fields as this open leaves them, whether or not the write succeeded, so
-/// the dashboard is shown as the record now says. When bringing the record up to date fails
-/// before that (the file cannot be stamped), it returns the fields as they were read; it is empty
-/// for a file with no record, or one whose record cannot be read.
+/// the dashboard is shown as the record now says. Once the record has been checked against the
+/// file, a later failure (the file's path cannot be resolved for its stamp) returns the fields as
+/// that check left them; a failure in the check itself returns the fields as they were read. It is
+/// empty for a file with no record, or one whose record cannot be read.
 pub(crate) fn keep_record(
     path: &Path,
     written: &[CastWritten],
@@ -463,6 +464,9 @@ pub(crate) fn keep_record(
         kept_fields = record.fields.clone();
         let before = record.source.clone();
         column_record::refresh_if_changed(&mut record, path)?;
+        // A changed file has lost its old labels and spelling here, so a later failure returns
+        // what the refresh left rather than what was read.
+        kept_fields = record.fields.clone();
         // The stamp names the file, so a record whose file has gone can be pruned.
         if let Some(stamp) = record.source.as_mut() {
             stamp.path = Some(
