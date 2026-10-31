@@ -959,8 +959,9 @@ fn parentheses_are_recorded() {
     // The accepted label is still the accepted label.
     assert!(revenue.nominated);
     assert_eq!(revenue.label.as_deref(), Some("finance.currency.amount"));
-    assert!(
-        record.source.is_some(),
+    assert_eq!(
+        record.source.and_then(|s| s.path),
+        Some(path.canonicalize().unwrap()),
         "the record is stamped with the file it was read from"
     );
 }

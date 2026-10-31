@@ -20,7 +20,7 @@ use brightfield_engine::{ColumnProfile, Engine, LoadOptions, ProfileOutcome, Sou
 // The lineage columns every raw table carries describe where a row came from, not what it holds,
 // so neither the profile nor the data packages list them.
 use brightfield_ossie::{Model, LINEAGE};
-use brightfield_protocol::silver::{failed_sql, silver_sql, FinetypeTransforms};
+use brightfield_protocol::silver::{cast_expr, failed_sql, silver_sql, FinetypeTransforms};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
 use serde_json::{json, Value};
@@ -334,6 +334,7 @@ pub fn write_packages(p: &OwnProtocol) -> Result<Vec<PathBuf>, String> {
     }
     let mut taken: HashSet<String> = HashSet::new();
     let mut written = Vec::new();
+    let mut raw = RawTables::default();
     for (file, tables) in by_file {
         let stem = file
             .file_stem()
@@ -370,12 +371,117 @@ pub fn write_packages(p: &OwnProtocol) -> Result<Vec<PathBuf>, String> {
             .map_err(|e| format!("{}: {e}", package_dir.display()))?;
         let path = package_dir.join("datapackage.json");
         // What Brightfield recorded on these fields before (`x-brightfield`) is not the profile's
-        // to rewrite, so it is carried into the package this writes.
-        let package = crate::column_record::carry_over(package, &path);
+        // to rewrite, so it is carried into the package this writes; how each column was written
+        // is read again from the values.
+        let mut package = crate::column_record::carry_over(package, &path);
+        record_written(p, &mut raw, &mut package);
         crate::column_record::write_package(&path, &package)?;
         written.push(path);
     }
     Ok(written)
+}
+
+/// A connection to the Protocol's database, attached read-only as `__run` once something asks for
+/// it, for [`record_written`]'s aggregates over the raw tables.
+#[derive(Default)]
+struct RawTables(Option<duckdb::Connection>);
+
+impl RawTables {
+    /// One row of `terms`, aggregates over the raw table of `table`, each answer as text.
+    fn aggregate(
+        &mut self,
+        p: &OwnProtocol,
+        table: &str,
+        terms: &[String],
+    ) -> Result<Vec<Option<String>>, String> {
+        if self.0.is_none() {
+            let db = arc::spec::protocol_db_path(&p.dir).map_err(|e| e.to_string())?;
+            let conn = duckdb::Connection::open_in_memory().map_err(|e| e.to_string())?;
+            conn.execute_batch(&format!(
+                "ATTACH {} AS __run (READ_ONLY)",
+                literal(&db.to_string_lossy())
+            ))
+            .map_err(|e| format!("{}: {e}", db.display()))?;
+            self.0 = Some(conn);
+        }
+        let conn = self.0.as_ref().expect("connected above");
+        let sql = format!(
+            "SELECT {} FROM __run.main.{}",
+            terms.join(", "),
+            quoted(&format!("raw_{table}"))
+        );
+        conn.query_row(&sql, [], |row| {
+            (0..terms.len())
+                .map(|i| row.get::<_, Option<String>>(i))
+                .collect()
+        })
+        .map_err(|e| format!("raw_{table}: {e}"))
+    }
+}
+
+impl Drop for RawTables {
+    fn drop(&mut self) {
+        if let Some(conn) = &self.0 {
+            let _ = conn.execute_batch("DETACH __run");
+        }
+    }
+}
+
+/// Put on each currency field of `package` that the silver cast casts how its source wrote it
+/// (`x-brightfield.written`): the symbol its values share and how its negatives are written, read
+/// with one aggregate per table from the raw table the cast reads, whose text still holds them.
+///
+/// The cast is the one [`silver_sql`] makes from the field's label as the package now records it,
+/// an analyst's nominated label included. A table whose aggregate fails is reported and its fields
+/// are left with no `written`: the open does not depend on it.
+fn record_written(p: &OwnProtocol, raw: &mut RawTables, package: &mut Value) {
+    let transforms = FinetypeTransforms::vendored();
+    for res in package["resources"].as_array_mut().into_iter().flatten() {
+        let Some(table) = res["name"].as_str().map(str::to_string) else {
+            continue;
+        };
+        let Some(fields) = res["schema"]["fields"].as_array_mut() else {
+            continue;
+        };
+        let cast: Vec<usize> = fields
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| {
+                let (Some(name), Some(label)) =
+                    (f["name"].as_str(), f["x-finetype-label"].as_str())
+                else {
+                    return false;
+                };
+                label.starts_with("finance.currency.")
+                    && cast_expr(name, Some(label), &transforms).is_some()
+            })
+            .map(|(at, _)| at)
+            .collect();
+        if cast.is_empty() {
+            continue;
+        }
+        let terms: Vec<String> = cast
+            .iter()
+            .flat_map(|&at| {
+                crate::flat_cast::written_terms(&quoted(fields[at]["name"].as_str().unwrap_or("")))
+            })
+            .collect();
+        match raw.aggregate(p, &table, &terms) {
+            Ok(answers) => {
+                let mut answers = answers.into_iter();
+                for &at in &cast {
+                    let how = crate::flat_cast::written_from(
+                        answers.next().flatten(),
+                        answers.next().flatten(),
+                    );
+                    crate::column_record::put_written(&mut fields[at], &how);
+                }
+            }
+            Err(e) => eprintln!(
+                "warning: {table}: how its currency columns were written was not read: {e}"
+            ),
+        }
+    }
 }
 
 /// One Frictionless resource for `table`, its fields typed from the profile.

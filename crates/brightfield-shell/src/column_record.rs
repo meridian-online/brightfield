@@ -5,7 +5,8 @@
 //! `written` is how the source wrote the column (the currency symbol its values share, whether
 //! its negatives are in parentheses) and `prefer` is the analyst's preferred number and date
 //! format. A resource carries `x-brightfield-source`, the size and modification time of the file
-//! the record was derived from, so an edited file is noticed.
+//! the record was derived from, so an edited file is noticed, and for a lone file its canonical
+//! path, so a record whose file has gone is pruned ([`prune_records`]).
 //!
 //! The package is edited as JSON, so a property this module does not model (such as
 //! `x-finetype-confidence`) survives a write.
@@ -55,11 +56,14 @@ pub struct FieldRecord {
 }
 
 /// The size and modification time of the file a record was derived from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceStamp {
     pub size: u64,
     /// Nanoseconds since the Unix epoch.
     pub modified: u64,
+    /// The canonical path a lone file's record key was hashed from, so [`prune_records`] can tell
+    /// when the file has gone. None on a record written before the stamp carried it.
+    pub path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -96,6 +100,7 @@ pub fn read_record(package: &Path, resource: &str) -> Result<Option<SourceRecord
             Some(SourceStamp {
                 size: s.get("size")?.as_u64()?,
                 modified: s.get("modified")?.as_u64()?,
+                path: s.get("path").and_then(Value::as_str).map(PathBuf::from),
             })
         }),
         ..SourceRecord::default()
@@ -156,8 +161,13 @@ pub fn write_record(package: &Path, resource: &str, record: &SourceRecord) -> Re
         }
     };
     let res = &mut resources[at];
-    match record.source {
-        Some(s) => res[SOURCE] = json!({ "size": s.size, "modified": s.modified }),
+    match &record.source {
+        Some(s) => {
+            res[SOURCE] = json!({ "size": s.size, "modified": s.modified });
+            if let Some(path) = &s.path {
+                res[SOURCE]["path"] = Value::String(path.to_string_lossy().into_owned());
+            }
+        }
         None => {
             if let Some(o) = res.as_object_mut() {
                 o.remove(SOURCE);
@@ -286,13 +296,10 @@ fn write_field(field: &mut Value, record: &FieldRecord) {
             ("currency_symbol", record.written.currency_symbol.clone()),
             (
                 "negatives",
-                record.written.negatives.map(|n| {
-                    match n {
-                        Negatives::Minus => "minus",
-                        Negatives::Parentheses => "parentheses",
-                    }
-                    .to_string()
-                }),
+                record
+                    .written
+                    .negatives
+                    .map(|n| negatives_name(n).to_string()),
             ),
         ],
     );
@@ -311,6 +318,41 @@ fn write_field(field: &mut Value, record: &FieldRecord) {
     );
 }
 
+fn negatives_name(negatives: Negatives) -> &'static str {
+    match negatives {
+        Negatives::Minus => "minus",
+        Negatives::Parentheses => "parentheses",
+    }
+}
+
+/// Put `written` on `field`, a `datapackage.json` field, as its `x-brightfield.written`, leaving
+/// the rest of `x-brightfield` as it is. An empty `Written` puts nothing.
+pub(crate) fn put_written(field: &mut Value, written: &Written) {
+    let mut section = Map::new();
+    if let Some(symbol) = &written.currency_symbol {
+        section.insert("currency_symbol".into(), Value::String(symbol.clone()));
+    }
+    if let Some(negatives) = written.negatives {
+        section.insert(
+            "negatives".into(),
+            Value::String(negatives_name(negatives).into()),
+        );
+    }
+    if section.is_empty() {
+        return;
+    }
+    let Some(object) = field.as_object_mut() else {
+        return;
+    };
+    let own = object
+        .entry(BRIGHTFIELD)
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !own.is_object() {
+        *own = Value::Object(Map::new());
+    }
+    own["written"] = Value::Object(section);
+}
+
 fn read_package(package: &Path) -> Result<Option<Value>, String> {
     let text = match std::fs::read_to_string(package) {
         Ok(t) => t,
@@ -322,10 +364,12 @@ fn read_package(package: &Path) -> Result<Option<Value>, String> {
         .map_err(|e| format!("{}: {e}", package.display()))
 }
 
-/// `fresh`, a package built from a profile, with the `x-brightfield` objects and
-/// `x-brightfield-source` stamps of the package already at `existing` put back on the resources
-/// and fields of the same names. Nothing else of the old package is kept: the profile's reading
-/// of the columns is the new one.
+/// `fresh`, a package built from a profile, with what the package already at `existing` recorded
+/// put back on the resources and fields of the same names: each resource's `x-brightfield-source`
+/// stamp, and each member of a field's `x-brightfield` but `written` (an analyst's `prefer`, say).
+/// `written` is taken from the fresh field alone, as it was read from the values just written, so
+/// a fresh field with none clears the old one. Nothing else of the old package is kept: the
+/// profile's reading of the columns is the new one.
 ///
 /// A field the analyst nominated keeps its nominated marker and its recorded label, not the
 /// profile's.
@@ -354,9 +398,7 @@ pub(crate) fn carry_over(mut fresh: Value, existing: &Path) -> Value {
             else {
                 continue;
             };
-            if let Some(kept) = old_field.get(BRIGHTFIELD) {
-                field[BRIGHTFIELD] = kept.clone();
-            }
+            merge_own(field, old_field.get(BRIGHTFIELD));
             if old_field.get(NOMINATED).and_then(Value::as_bool) == Some(true) {
                 field[NOMINATED] = Value::Bool(true);
                 if let Some(label) = old_field.get(LABEL) {
@@ -366,6 +408,29 @@ pub(crate) fn carry_over(mut fresh: Value, existing: &Path) -> Value {
         }
     }
     fresh
+}
+
+/// Merge `old`, a field's earlier `x-brightfield`, into `field`'s: every member of `old` but
+/// `written` is kept, and `field`'s own `written`, or its absence, stands.
+fn merge_own(field: &mut Value, old: Option<&Value>) {
+    let Some(old) = old.and_then(Value::as_object) else {
+        return;
+    };
+    let Some(object) = field.as_object_mut() else {
+        return;
+    };
+    let mut own = match object.remove(BRIGHTFIELD) {
+        Some(Value::Object(o)) => o,
+        _ => Map::new(),
+    };
+    for (key, value) in old {
+        if key != "written" {
+            own.insert(key.clone(), value.clone());
+        }
+    }
+    if !own.is_empty() {
+        object.insert(BRIGHTFIELD.to_string(), Value::Object(own));
+    }
 }
 
 /// Where a lone file's record lives: `records/<key>/datapackage.json` under Brightfield's data
@@ -405,7 +470,61 @@ pub fn stamp(file: &Path) -> Result<SourceStamp, String> {
     Ok(SourceStamp {
         size: meta.len(),
         modified: u64::try_from(modified.as_nanos()).unwrap_or(u64::MAX),
+        path: None,
     })
+}
+
+/// Remove each lone file's record under `datasets` (`records/<key>/`) whose stamped file no longer
+/// exists, and answer how many were removed.
+///
+/// A record is removed only when its file is missing and the folder that held the file is there:
+/// a file on a drive that is not mounted keeps its record. A record with no stamped path is kept;
+/// its next open stamps one. A record that cannot be read is left alone.
+///
+/// # Errors
+///
+/// The reason when `records/` cannot be listed or a record cannot be removed.
+pub fn prune_records(datasets: &Path) -> Result<usize, String> {
+    let records = datasets.join("records");
+    let entries = match std::fs::read_dir(&records) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(format!("{}: {e}", records.display())),
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let folder = entry.path();
+        let Ok(Some(doc)) = read_package(&folder.join("datapackage.json")) else {
+            continue;
+        };
+        let paths: Vec<PathBuf> = doc["resources"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r[SOURCE]["path"].as_str().map(PathBuf::from))
+            .collect();
+        let gone = !paths.is_empty()
+            && paths
+                .iter()
+                .all(|p| !p.exists() && p.parent().is_some_and(Path::is_dir));
+        if gone {
+            std::fs::remove_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// [`prune_records`] over Brightfield's data folder, the first time it is called in this process;
+/// the flat route calls it on its first open. A failure is reported and otherwise ignored.
+pub(crate) fn prune_once() {
+    static PRUNED: std::sync::Once = std::sync::Once::new();
+    PRUNED.call_once(|| {
+        let datasets = crate::starts::datasets_dir();
+        if let Err(e) = prune_records(&datasets) {
+            eprintln!("warning: stale column records were not pruned: {e}");
+        }
+    });
 }
 
 /// Compare the record's stamp with `file` now. A record never stamped takes the file's stamp
@@ -417,9 +536,14 @@ pub fn stamp(file: &Path) -> Result<SourceStamp, String> {
 ///
 /// The reason when the file cannot be read.
 pub fn refresh_if_changed(record: &mut SourceRecord, file: &Path) -> Result<bool, String> {
-    let now = stamp(file)?;
-    let before = record.source.replace(now);
-    if before.is_none_or(|b| b == now) {
+    let mut now = stamp(file)?;
+    let before = record.source.take();
+    now.path = before.as_ref().and_then(|b| b.path.clone());
+    let changed = before
+        .as_ref()
+        .is_some_and(|b| (b.size, b.modified) != (now.size, now.modified));
+    record.source = Some(now);
+    if !changed {
         return Ok(false);
     }
     for field in record.fields.values_mut() {
@@ -617,6 +741,103 @@ mod tests {
             std::fs::write(&path, broken).unwrap();
             assert_eq!(carry_over(fresh(), &path), fresh(), "{broken}");
         }
+    }
+
+    #[test]
+    fn carry_over_takes_written_from_the_fresh_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("datapackage.json");
+        std::fs::write(
+            &path,
+            r#"{"resources":[{"name":"t","schema":{"fields":[
+                {"name":"a","x-brightfield":{
+                    "written":{"currency_symbol":"£","negatives":"parentheses"},
+                    "prefer":{"number_format":",.0f"}}},
+                {"name":"b","x-brightfield":{"written":{"currency_symbol":"£"}}}]}}]}"#,
+        )
+        .unwrap();
+        let fresh = json!({"resources":[{"name":"t","schema":{"fields":[
+            {"name":"a","x-brightfield":{"written":{"currency_symbol":"$","negatives":"minus"}}},
+            {"name":"b"}]}}]});
+        let got = carry_over(fresh, &path);
+        let fields = &got["resources"][0]["schema"]["fields"];
+        assert_eq!(
+            fields[0]["x-brightfield"],
+            json!({
+                "written": { "currency_symbol": "$", "negatives": "minus" },
+                "prefer": { "number_format": ",.0f" },
+            })
+        );
+        // A fresh field with no `written` clears the old one.
+        assert!(fields[1].get("x-brightfield").is_none(), "{}", fields[1]);
+    }
+
+    /// A record under `datasets` stamped with `file`, its key folder named `key`.
+    fn stamped_record(datasets: &Path, key: &str, file: Option<&Path>) -> PathBuf {
+        let package = datasets.join("records").join(key).join("datapackage.json");
+        let record = SourceRecord {
+            source: Some(SourceStamp {
+                size: 1,
+                modified: 1,
+                path: file.map(Path::to_path_buf),
+            }),
+            ..revenue()
+        };
+        write_record(&package, "source", &record).unwrap();
+        package.parent().unwrap().to_path_buf()
+    }
+
+    #[test]
+    fn a_record_whose_file_is_gone_is_pruned() {
+        let dir = tempfile::tempdir().unwrap();
+        let datasets = dir.path().join("datasets");
+        let here = dir.path().join("here");
+        std::fs::create_dir_all(&here).unwrap();
+        let kept_file = here.join("kept.csv");
+        std::fs::write(&kept_file, "x\n1\n").unwrap();
+
+        let gone = stamped_record(&datasets, "gone", Some(&here.join("deleted.csv")));
+        let kept = stamped_record(&datasets, "kept", Some(&kept_file));
+        let unmounted = stamped_record(
+            &datasets,
+            "unmounted",
+            Some(&dir.path().join("no-such-drive").join("a.csv")),
+        );
+        let unstamped = stamped_record(&datasets, "unstamped", None);
+
+        // The stamp's path reads back as it was written.
+        let read = read_record(&kept.join("datapackage.json"), "source")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            read.source.unwrap().path.as_deref(),
+            Some(kept_file.as_path())
+        );
+
+        assert_eq!(prune_records(&datasets).unwrap(), 1);
+        assert!(!gone.exists(), "a gone file's record is removed");
+        assert!(kept.exists(), "a file that exists keeps its record");
+        assert!(
+            unmounted.exists(),
+            "a file whose folder is missing keeps its record"
+        );
+        assert!(unstamped.exists(), "a record with no stamped path is kept");
+        assert_eq!(prune_records(&dir.path().join("none")).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_restamp_keeps_the_path_and_ignores_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sales.csv");
+        std::fs::write(&file, "revenue\n1\n").unwrap();
+        let mut record = SourceRecord::default();
+        refresh_if_changed(&mut record, &file).unwrap();
+        record.source.as_mut().unwrap().path = Some(file.clone());
+        assert!(
+            !refresh_if_changed(&mut record, &file).unwrap(),
+            "the path is not part of the comparison"
+        );
+        assert_eq!(record.source.unwrap().path, Some(file));
     }
 
     #[test]

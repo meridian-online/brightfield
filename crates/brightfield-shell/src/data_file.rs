@@ -738,6 +738,8 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
              workbook or database opens as a model of its tables from the front door."
         ));
     }
+    // The first flat open of a process clears the records of lone files that have gone.
+    crate::column_record::prune_once();
     let mut options = options.clone();
     let found = settled(&path);
     for (column, label) in found.given_labels {

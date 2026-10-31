@@ -334,6 +334,37 @@ struct Decided {
     written: Vec<CastWritten>,
 }
 
+/// The two aggregate terms that read how a currency column was written from `raw`, the SQL of its
+/// text as the source wrote it: the symbol every non-null value carries, when they all carry the
+/// same one, and `'parentheses'` when any negative is written in parentheses, else `'minus'` when
+/// any value holds a minus sign. [`written_from`] reads their answers.
+pub(crate) fn written_terms(raw: &str) -> [String; 2] {
+    let text = format!("CAST({raw} AS VARCHAR)");
+    let symbol = format!("nullif(regexp_extract({text}, '\\p{{Sc}}', 0), '')");
+    [
+        format!(
+            "CASE WHEN count(DISTINCT {symbol}) = 1 AND count({symbol}) = count({raw}) \
+             THEN min({symbol}) END"
+        ),
+        format!(
+            "CASE WHEN count_if(trim({text}) LIKE '(%)') > 0 THEN 'parentheses' \
+             WHEN count_if(contains({text}, '-')) > 0 THEN 'minus' END"
+        ),
+    ]
+}
+
+/// How a column was written, from the answers to its [`written_terms`].
+pub(crate) fn written_from(symbol: Option<String>, negatives: Option<String>) -> Written {
+    Written {
+        currency_symbol: symbol,
+        negatives: match negatives.as_deref() {
+            Some("parentheses") => Some(Negatives::Parentheses),
+            Some("minus") => Some(Negatives::Minus),
+            _ => None,
+        },
+    }
+}
+
 /// Decide each of `plan`'s candidates in the copy `live` holds, from one aggregate over it.
 fn decide_casts(
     live: &mut LiveDashboard,
@@ -357,16 +388,7 @@ fn decide_casts(
         extra.push(format!("count({raw})"));
         let currency = label_of(column).starts_with("finance.currency.");
         if currency {
-            let text = format!("CAST({raw} AS VARCHAR)");
-            let symbol = format!("nullif(regexp_extract({text}, '\\p{{Sc}}', 0), '')");
-            extra.push(format!(
-                "CASE WHEN count(DISTINCT {symbol}) = 1 AND count({symbol}) = count({raw}) \
-                 THEN min({symbol}) END"
-            ));
-            extra.push(format!(
-                "CASE WHEN count_if(trim({text}) LIKE '(%)') > 0 THEN 'parentheses' \
-                 WHEN count_if(contains({text}, '-')) > 0 THEN 'minus' END"
-            ));
+            extra.extend(written_terms(&raw));
         }
         asked.push(currency);
     }
@@ -407,14 +429,7 @@ fn decide_casts(
         decided.written.push((
             column.clone(),
             label_of(column),
-            Written {
-                currency_symbol: symbol,
-                negatives: match negatives.as_deref() {
-                    Some("parentheses") => Some(Negatives::Parentheses),
-                    Some("minus") => Some(Negatives::Minus),
-                    _ => None,
-                },
-            },
+            written_from(symbol, negatives),
         ));
     }
     Ok(decided)
@@ -422,9 +437,9 @@ fn decide_casts(
 
 /// Bring the column record of the lone file at `path` up to date: the record is checked against
 /// the file ([`column_record::refresh_if_changed`]), so a changed file loses what was read from
-/// its old values; then each cast column takes its label (unless an analyst's accepted label is
-/// already there) and how the file wrote it. Nothing is written for a file with no record that
-/// cast nothing.
+/// its old values, and the stamp takes the file's canonical path; then each cast column takes its
+/// label (unless an analyst's accepted label is already there) and how the file wrote it. Nothing
+/// is written for a file with no record that cast nothing.
 ///
 /// A record that cannot be read or written is reported and otherwise ignored: the open does not
 /// depend on it.
@@ -436,8 +451,15 @@ pub(crate) fn keep_record(path: &Path, written: &[CastWritten]) {
             return Ok(());
         }
         let mut record = existing.unwrap_or_default();
-        let before = record.source;
+        let before = record.source.clone();
         column_record::refresh_if_changed(&mut record, path)?;
+        // The stamp names the file, so a record whose file has gone can be pruned.
+        if let Some(stamp) = record.source.as_mut() {
+            stamp.path = Some(
+                path.canonicalize()
+                    .map_err(|e| format!("{}: {e}", path.display()))?,
+            );
+        }
         if written.is_empty() && record.source == before {
             return Ok(());
         }
