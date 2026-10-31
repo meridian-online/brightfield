@@ -326,7 +326,7 @@ fn negatives_name(negatives: Negatives) -> &'static str {
 }
 
 /// Put `written` on `field`, a `datapackage.json` field, as its `x-brightfield.written`, leaving
-/// the rest of `x-brightfield` as it is. An empty `Written` puts nothing.
+/// the rest of `x-brightfield` as it is. An empty `Written` leaves the field as it was.
 pub(crate) fn put_written(field: &mut Value, written: &Written) {
     let mut section = Map::new();
     if let Some(symbol) = &written.currency_symbol {
