@@ -443,7 +443,14 @@ fn decide_casts(
 ///
 /// A record that cannot be read or written is reported and otherwise ignored: the open does not
 /// depend on it.
-pub(crate) fn keep_record(path: &Path, written: &[CastWritten]) {
+///
+/// Returns the record's fields as this open leaves them, whether or not the write succeeded, so
+/// the dashboard is shown as the record now says; empty for a file with no record.
+pub(crate) fn keep_record(
+    path: &Path,
+    written: &[CastWritten],
+) -> std::collections::BTreeMap<String, column_record::FieldRecord> {
+    let mut kept_fields = std::collections::BTreeMap::new();
     let kept = (|| {
         let package = column_record::flat_record_path(path)?;
         let existing = column_record::read_record(&package, SOURCE)?;
@@ -461,6 +468,7 @@ pub(crate) fn keep_record(path: &Path, written: &[CastWritten]) {
             );
         }
         if written.is_empty() && record.source == before {
+            kept_fields = record.fields;
             return Ok(());
         }
         for (column, label, how) in written {
@@ -470,6 +478,7 @@ pub(crate) fn keep_record(path: &Path, written: &[CastWritten]) {
             }
             field.written = how.clone();
         }
+        kept_fields = record.fields.clone();
         column_record::write_record(&package, SOURCE, &record)
     })();
     if let Err(e) = kept {
@@ -478,6 +487,7 @@ pub(crate) fn keep_record(path: &Path, written: &[CastWritten]) {
             path.display()
         );
     }
+    kept_fields
 }
 
 #[cfg(test)]

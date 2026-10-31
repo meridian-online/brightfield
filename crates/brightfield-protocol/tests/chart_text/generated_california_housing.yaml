@@ -47,6 +47,8 @@ hconcat:
       xLabel: "median_income"
       width: 380
       height: 100
+      xGrid: true
+      yGrid: true
     # house_age: no trusted label, and DuckDB stored it as BIGINT → binned-histogram
     - plot:
       - mark: rectY
@@ -64,6 +66,8 @@ hconcat:
       xLabel: "house_age"
       width: 380
       height: 100
+      xGrid: true
+      yGrid: true
     # avg_rooms: no trusted label, and DuckDB stored it as DOUBLE → binned-histogram
     - plot:
       - mark: rectY
@@ -81,6 +85,8 @@ hconcat:
       xLabel: "avg_rooms"
       width: 380
       height: 100
+      xGrid: true
+      yGrid: true
     # avg_bedrooms: no trusted label, and DuckDB stored it as DOUBLE → binned-histogram
     - plot:
       - mark: rectY
@@ -98,6 +104,8 @@ hconcat:
       xLabel: "avg_bedrooms"
       width: 380
       height: 100
+      xGrid: true
+      yGrid: true
     # population: no trusted label, and DuckDB stored it as BIGINT → binned-histogram
     - plot:
       - mark: rectY
@@ -115,6 +123,8 @@ hconcat:
       xLabel: "population"
       width: 380
       height: 100
+      xGrid: true
+      yGrid: true
     # avg_occupancy: no trusted label, and DuckDB stored it as DOUBLE → binned-histogram
     - plot:
       - mark: rectY
@@ -132,6 +142,8 @@ hconcat:
       xLabel: "avg_occupancy"
       width: 380
       height: 100
+      xGrid: true
+      yGrid: true
     # latitude: no trusted label, and DuckDB stored it as DOUBLE → binned-histogram
     - plot:
       - mark: rectY
@@ -149,6 +161,8 @@ hconcat:
       xLabel: "latitude"
       width: 380
       height: 100
+      xGrid: true
+      yGrid: true
     # longitude: no trusted label, and DuckDB stored it as DOUBLE → binned-histogram
     - plot:
       - mark: rectY
@@ -166,6 +180,8 @@ hconcat:
       xLabel: "longitude"
       width: 380
       height: 100
+      xGrid: true
+      yGrid: true
     # median_house_value: no trusted label, and DuckDB stored it as DOUBLE → binned-histogram
     - plot:
       - mark: rectY
@@ -183,3 +199,5 @@ hconcat:
       xLabel: "median_house_value"
       width: 380
       height: 100
+      xGrid: true
+      yGrid: true

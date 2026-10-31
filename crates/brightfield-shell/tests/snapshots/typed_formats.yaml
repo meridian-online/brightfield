@@ -1,0 +1,152 @@
+# Brightfield wrote this dashboard by walking typed_formats.csv's own columns: one
+# tile per column, each chosen from what that column holds, and every
+# tile brushing into one shared crossfilter selection. Nobody authored
+# it — and it is an ordinary spec, so change anything in it.
+#
+# Columns with no tile, and why:
+#   notes: no chart in this build fits it
+meta:
+  title: "typed_formats.csv"
+params:
+  sel: { select: crossfilter }
+data:
+  opened_rows:
+    file: '<folder>/typed_formats.csv'
+  opened: |-
+    SELECT * REPLACE (TRY(CAST(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(CASE WHEN CAST("revenue" AS VARCHAR) LIKE '(%' THEN '-' || REPLACE(REPLACE(CAST("revenue" AS VARCHAR), '(', ''), ')', '') ELSE CAST("revenue" AS VARCHAR) END, '^[^0-9\-]+', ''), '[^0-9\.\-]', '', 'g'), ',', '', 'g'), '\s+', '', 'g') AS DECIMAL(18,2))) AS "revenue", TRY(CAST(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(CASE WHEN CAST("price_usd" AS VARCHAR) LIKE '(%' THEN '-' || REPLACE(REPLACE(CAST("price_usd" AS VARCHAR), '(', ''), ')', '') ELSE CAST("price_usd" AS VARCHAR) END, '^[^0-9\-]+', ''), '[^0-9\.\-]', '', 'g'), ',', '', 'g'), '\s+', '', 'g') AS DECIMAL(18,2))) AS "price_usd", TRY(CAST(REGEXP_EXTRACT(CAST("share" AS VARCHAR), '^%?(-?[0-9]+(\.[0-9]+)?)', 1) || 'e-2' AS DOUBLE)) AS "share"), "revenue" AS "__raw__revenue", "price_usd" AS "__raw__price_usd", "share" AS "__raw__share" FROM "opened_rows"
+hconcat:
+  - vconcat:
+    # revenue: finance.currency.amount is a measure → binned-histogram; finance.currency.amount chose its format, and its scale (bn)
+    - plot:
+      - mark: rectY
+        data: { from: "opened" }
+        x: { bin: { sql: '"revenue" / 1e9' } }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: "opened", filterBy: $sel }
+        x: { bin: { sql: '"revenue" / 1e9' } }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      xDomain: Fixed
+      xLabel: "revenue (£bn)"
+      width: 620
+      height: 620
+      xTickFormat: "(,~f"
+      xGrid: true
+      yGrid: true
+    - vspace: 0
+  - hspace: 42
+  - vconcat:
+    # price_usd: finance.currency.amount is a measure → binned-histogram; finance.currency.amount chose its format
+    - plot:
+      - mark: rectY
+        data: { from: "opened" }
+        x: { bin: "price_usd" }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: "opened", filterBy: $sel }
+        x: { bin: "price_usd" }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      xDomain: Fixed
+      xLabel: "price_usd"
+      width: 380
+      height: 100
+      xTickFormat: "$,~f"
+      xGrid: true
+      yGrid: true
+    # share: representation.numeric.percentage is a measure → binned-histogram; representation.numeric.percentage chose its format
+    - plot:
+      - mark: rectY
+        data: { from: "opened" }
+        x: { bin: "share" }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: "opened", filterBy: $sel }
+        x: { bin: "share" }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      xDomain: Fixed
+      xLabel: "share (%)"
+      width: 380
+      height: 100
+      xTickFormat: ".0%"
+      xGrid: true
+      yGrid: true
+    # yield: finance.rate.yield is a measure → ranked-category-bars
+    - plot:
+      - mark: barX
+        data: { from: "opened" }
+        x: { count: }
+        y: "yield"
+        sort: { y: -x, limit: 10 }
+        label: count
+      - select: toggleY
+        as: $sel
+      - select: highlight
+        by: $sel
+      yLabel: "yield"
+      width: 380
+      height: 100
+      marginLeft: 90
+      xGrid: true
+      yGrid: true
+    # year: datetime.component.year is a category → counts-over-time; datetime.component.year chose its format
+    - plot:
+      - mark: barY
+        data: { from: "opened" }
+        x: "year"
+        y: { count: }
+      - select: toggleX
+        as: $sel
+      - select: highlight
+        by: $sel
+      xLabel: "year"
+      width: 380
+      height: 100
+      xDomain: [2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
+      xTickFormat: d
+      xGrid: true
+      yGrid: true
+    # downloads: representation.numeric.integer_number is a measure → binned-histogram; representation.numeric.integer_number chose its format
+    - plot:
+      - mark: rectY
+        data: { from: "opened" }
+        x: { bin: "downloads" }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: "opened", filterBy: $sel }
+        x: { bin: "downloads" }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      xDomain: Fixed
+      xLabel: "downloads"
+      width: 380
+      height: 100
+      xTickFormat: ",d"
+      xGrid: true
+      yGrid: true
+    # day: datetime.date.iso is a category → counts-over-time; datetime.date.iso chose its format
+    - plot:
+      - mark: barY
+        data: { from: "opened" }
+        x: "day"
+        y: { count: }
+      - select: toggleX
+        as: $sel
+      - select: highlight
+        by: $sel
+      xLabel: "day"
+      width: 380
+      height: 100
+      xTickFormat: "%Y-%m-%d"
+      xGrid: true
+      yGrid: true

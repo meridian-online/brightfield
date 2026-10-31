@@ -792,7 +792,19 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
             ),
         }
     }
-    let mut written = Vec::new();
+    // A lone file's record is checked against the file on every open, cast or not, so a changed
+    // file does not keep what was read from its old values; it is brought up to date before the
+    // dashboard is chosen, which shows each column as the record says. A file cast before it was
+    // opened is shown as the record its casts were made from says.
+    let fields = if options.already_cast {
+        found.fields
+    } else {
+        let written = cast_open
+            .as_ref()
+            .map(|done| done.written.clone())
+            .unwrap_or_default();
+        crate::flat_cast::keep_record(&path, &written)
+    };
     let (mut live, columns, dashboard, spec) = if let Some(done) = cast_open {
         let CastCopy {
             mut live,
@@ -801,9 +813,11 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
             put_back,
             tally,
             ms,
-            written: read,
+            written: _,
         } = done;
-        let dashboard = dashboard_for(&path, &columns)?.with_casts(stood);
+        let dashboard = dashboard_for(&path, &columns)?
+            .with_casts(stood)
+            .with_records(fields, options.already_cast);
         let spec = dashboard.to_spec();
         live.reload_str(&spec)
             .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -818,14 +832,13 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
                 .reshape_copy(SOURCE, &put_back, &derived)
                 .map_err(|e| format!("{}: {e}", path.display()))?;
         }
-        written = read;
         materialised = true;
         materialise_ms = ms;
         materialise_bytes = live.coordinator().session().in_memory_table_bytes();
         cast = tally;
         (live, columns, dashboard, spec)
     } else {
-        let dashboard = dashboard_for(&path, &columns)?;
+        let dashboard = dashboard_for(&path, &columns)?.with_records(fields, options.already_cast);
         let spec = dashboard.to_spec();
         let mut live =
             LiveDashboard::load_str(&spec, None).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -866,11 +879,6 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
         }
         (live, columns, dashboard, spec)
     };
-    // A lone file's record is checked against the file on every open, cast or
-    // not, so a changed file does not keep what was read from its old values.
-    if !options.already_cast {
-        crate::flat_cast::keep_record(&path, &written);
-    }
 
     let at = std::time::Instant::now();
     let (composed, composition) = if options.count_scans {
@@ -1073,6 +1081,10 @@ pub struct Settled {
     pub given_labels: BTreeMap<String, String>,
     /// Whether the file's columns were already cast from their labels.
     pub already_cast: bool,
+    /// The record's fields for a file already cast, column name to field: what its casts were
+    /// made from, and how its source wrote each column. Empty for a lone file, whose record the
+    /// open itself brings up to date.
+    pub fields: BTreeMap<String, crate::column_record::FieldRecord>,
 }
 
 /// What is already known about the columns of the file at `path`, from the record kept for it.
@@ -1093,9 +1105,11 @@ pub fn settled(path: &Path) -> Settled {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let fields = protocol_fields(&protocol, &resource);
         return Settled {
-            given_labels: protocol_labels(&protocol, &resource),
+            given_labels: labels_of(&fields),
             already_cast: true,
+            fields,
         };
     }
     let record = crate::column_record::flat_record_path(path)
@@ -1119,6 +1133,7 @@ pub fn settled(path: &Path) -> Settled {
     Settled {
         given_labels,
         already_cast: false,
+        fields: BTreeMap::new(),
     }
 }
 
@@ -1136,9 +1151,22 @@ fn grid_folder_protocol(path: &Path) -> Option<PathBuf> {
         .then(|| protocol.to_path_buf())
 }
 
-/// Every label recorded on the resource `resource` in the data packages under `protocol`'s
-/// `packages/`, column name to label. Empty when no package names the resource.
-fn protocol_labels(protocol: &Path, resource: &str) -> BTreeMap<String, String> {
+/// The label each of `fields` records, column name to label.
+fn labels_of(
+    fields: &BTreeMap<String, crate::column_record::FieldRecord>,
+) -> BTreeMap<String, String> {
+    fields
+        .iter()
+        .filter_map(|(column, f)| Some((column.clone(), f.label.clone()?)))
+        .collect()
+}
+
+/// Every field recorded on the resource `resource` in the data packages under `protocol`'s
+/// `packages/`, column name to field. Empty when no package names the resource.
+fn protocol_fields(
+    protocol: &Path,
+    resource: &str,
+) -> BTreeMap<String, crate::column_record::FieldRecord> {
     let Ok(folders) = std::fs::read_dir(protocol.join("packages")) else {
         return BTreeMap::new();
     };
@@ -1150,13 +1178,7 @@ fn protocol_labels(protocol: &Path, resource: &str) -> BTreeMap<String, String> 
     packages.sort();
     for package in packages {
         match crate::column_record::read_record(&package, resource) {
-            Ok(Some(record)) => {
-                return record
-                    .fields
-                    .into_iter()
-                    .filter_map(|(column, f)| Some((column, f.label?)))
-                    .collect();
-            }
+            Ok(Some(record)) => return record.fields,
             Ok(None) => {}
             Err(e) => eprintln!("warning: {e}"),
         }
@@ -1225,7 +1247,7 @@ pub fn open_any(path: &Path, runner: &crate::run::Runner) -> Result<Opened, Stri
             let rows = own::grid_copy(&protocol, &name)?;
             // The copy was cast from the labels the Protocol's package records for it.
             let options = OpenOptions {
-                given_labels: protocol_labels(&protocol.dir, &name),
+                given_labels: labels_of(&protocol_fields(&protocol.dir, &name)),
                 already_cast: true,
                 ..OpenOptions::default()
             };
