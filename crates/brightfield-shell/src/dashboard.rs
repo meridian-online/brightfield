@@ -682,7 +682,8 @@ impl Dashboard {
     }
 
     /// Whether `column`'s recorded preference changed how it is shown: a preference the rule
-    /// passed over (one that does not parse, or a date format on a number column) chose nothing.
+    /// passed over (one that does not parse, or a date format on a number column) is not used
+    /// (`a_preference_is_credited_only_when_it_is_used`).
     fn preference_used(&self, column: &str) -> bool {
         let Some(record) = self.records.get(column) else {
             return false;
