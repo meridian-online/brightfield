@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Write the transformation contract of every FineType label at the pinned tag into
-# crates/brightfield-protocol/vendor/finetype/transforms.json.
+# crates/brightfield-protocol/vendor/finetype/transforms.json, and the display block of every
+# label that has one into displays.json beside it.
 #
 #   scripts/vendor-finetype-transforms.sh            # fetch labels/definitions_*.yaml at the pin
 #   scripts/vendor-finetype-transforms.sh --from DIR # read them from a checkout's labels/ folder
@@ -11,6 +12,10 @@
 # an HTTP client and a C crypto build into the crate for a table of strings, so the table is
 # vendored instead and scripts/check-finetype-pin.sh refuses it when its tag is not the pin.
 #
+# The display blocks (how a label's numbers and dates are shown) come from the same definitions:
+# FineType publishes no separate file for them, so they are vendored the way `transform` is. Each
+# block is copied as FineType writes it, under FineType's own key names.
+#
 # `broad_type` is mapped to the DuckDB type name exactly as `DdlInfo::duckdb_type_from_broad_type`
 # does at that tag. Needs `gh` (or --from) and python3 with PyYAML (`-s -E` ignores the user site
 # and PYTHON* variables, so PyYAML must be installed system-wide or in the active environment).
@@ -19,6 +24,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "${HERE}/.." && pwd)
 OUT="${ROOT}/crates/brightfield-protocol/vendor/finetype/transforms.json"
+DISPLAYS="${ROOT}/crates/brightfield-protocol/vendor/finetype/displays.json"
 TAG=$("${HERE}/finetype-pin.sh" --tag)
 REPO=meridian-online/finetype
 
@@ -34,11 +40,11 @@ else
   done
 fi
 
-python3 -s -E - "$SRC" "$TAG" "$OUT" <<'PY'
+python3 -s -E - "$SRC" "$TAG" "$OUT" "$DISPLAYS" <<'PY'
 import glob, json, os, sys
 import yaml
 
-src, tag, out = sys.argv[1:4]
+src, tag, out, displays_out = sys.argv[1:5]
 types = {
     "VARCHAR": "VARCHAR", "DOUBLE": "DOUBLE", "BIGINT": "BIGINT", "SMALLINT": "SMALLINT",
     "DECIMAL": "DECIMAL", "DATE": "DATE", "TIMESTAMP": "TIMESTAMP",
@@ -47,6 +53,7 @@ types = {
     "STRUCT": "STRUCT", "LIST": "LIST", "ENUM": "VARCHAR",
 }
 labels = {}
+displays = {}
 files = sorted(glob.glob(os.path.join(src, "definitions_*.yaml")))
 if not files:
     sys.exit("vendor-finetype-transforms: no definitions_*.yaml found")
@@ -57,6 +64,11 @@ for f in files:
             "duckdb_type": types.get(d.get("broad_type"), "VARCHAR"),
             "transform": transform if isinstance(transform, str) else None,
         }
+        display = d.get("display")
+        if display is not None:
+            if not isinstance(display, dict):
+                sys.exit(f"vendor-finetype-transforms: {label} has a display that is not a mapping")
+            displays[label] = display
 doc = {
     "tag": tag,
     "source": "https://github.com/meridian-online/finetype/blob/<tag>/labels/definitions_*.yaml",
@@ -66,4 +78,13 @@ with open(out, "w") as fh:
     json.dump(doc, fh, indent=1, sort_keys=True, ensure_ascii=False)
     fh.write("\n")
 print(f"vendor-finetype-transforms: {len(labels)} labels at {tag} -> {out}")
+doc = {
+    "tag": tag,
+    "source": "https://github.com/meridian-online/finetype/blob/<tag>/labels/definitions_*.yaml",
+    "labels": dict(sorted(displays.items())),
+}
+with open(displays_out, "w") as fh:
+    json.dump(doc, fh, indent=1, sort_keys=True, ensure_ascii=False)
+    fh.write("\n")
+print(f"vendor-finetype-transforms: {len(displays)} display blocks at {tag} -> {displays_out}")
 PY

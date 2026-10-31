@@ -2,7 +2,7 @@
 # Print a field of the FineType pin. THE one reader of
 # packaging/finetype-pin.env.
 #
-#   scripts/finetype-pin.sh              -> v0.6.64            (the tag)
+#   scripts/finetype-pin.sh              -> v0.6.67            (the tag)
 #   scripts/finetype-pin.sh --revision   -> 9ae2112f3…         (the model revision)
 #
 # Three consumers call this and none of them parses the file itself, which is
