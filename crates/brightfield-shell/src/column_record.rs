@@ -477,9 +477,10 @@ pub fn stamp(file: &Path) -> Result<SourceStamp, String> {
 /// Remove each lone file's record under `datasets` (`records/<key>/`) whose stamped file no longer
 /// exists, and answer how many were removed.
 ///
-/// A record is removed only when its file is missing and the folder that held the file is there
-/// and holds something ([`is_gone`]): a file on a drive that is not mounted keeps its record. A record with no stamped path is kept;
-/// its next open stamps one. A record that cannot be read is left alone.
+/// A record is removed when its file is missing and the folder that held the file is there and
+/// holds something ([`is_gone`]); a file on a drive that is not mounted, a file in an empty folder
+/// and a record with no stamped path keep theirs (`a_record_whose_file_is_gone_is_pruned`). A
+/// record that cannot be read is left alone.
 ///
 /// # Errors
 ///
