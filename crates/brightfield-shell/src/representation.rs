@@ -90,6 +90,25 @@ pub struct Representation {
     pub symbol: Option<String>,
 }
 
+impl Representation {
+    /// What the grid's column header names after the column: the currency symbol the source
+    /// wrote, an ISO code for a fixed currency with no recorded symbol, or `%`. The grid shows
+    /// full values, so it never names a scale (`bn`) or a byte unit: the header says the symbol
+    /// even where a `$` tick prints it itself.
+    #[must_use]
+    pub fn grid_unit(&self) -> Option<String> {
+        let title = self.title_unit.as_deref().unwrap_or("");
+        let named = match self.scale {
+            Some(scale) => title.strip_suffix(scale.unit).unwrap_or(title).trim_end(),
+            None => title,
+        };
+        if !named.is_empty() {
+            return Some(named.to_owned());
+        }
+        self.symbol.clone()
+    }
+}
+
 /// A divisor and the unit word the divided values are in.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Scale {
@@ -507,6 +526,58 @@ mod tests {
             .into_iter()
             .filter_map(|f| f.as_deref())
             .collect()
+    }
+
+    /// The grid shows full values, so its header names the symbol or the percent sign and
+    /// never the scale a tile's axis title carries.
+    #[test]
+    fn the_grid_unit_names_a_symbol_or_a_percent_sign_and_never_a_scale() {
+        let rep = representation_of(
+            &column("DOUBLE", 2e8, 3.1e9),
+            Some(&display("finance.currency.amount")),
+            Some(&written("£")),
+            true,
+        );
+        assert_eq!(rep.title_unit.as_deref(), Some("£bn"));
+        assert_eq!(rep.grid_unit().as_deref(), Some("£"));
+        assert_eq!(Representation::default().grid_unit(), None);
+
+        let percent = Representation {
+            title_unit: Some("%".to_owned()),
+            ..Representation::default()
+        };
+        assert_eq!(percent.grid_unit().as_deref(), Some("%"));
+
+        let code = Representation {
+            title_unit: Some("CHF bn".to_owned()),
+            scale: Some(Scale {
+                divisor: 1e9,
+                unit: "bn",
+            }),
+            ..Representation::default()
+        };
+        assert_eq!(code.grid_unit().as_deref(), Some("CHF"));
+
+        let bytes = Representation {
+            title_unit: Some("MiB".to_owned()),
+            scale: Some(Scale {
+                divisor: 1_048_576.0,
+                unit: "MiB",
+            }),
+            ..Representation::default()
+        };
+        assert_eq!(
+            bytes.grid_unit(),
+            None,
+            "a byte scale is not a unit of the values"
+        );
+
+        // A `$` tick prints its own symbol, so the axis title omits it; the header still names it.
+        let dollars = Representation {
+            symbol: Some("$".to_owned()),
+            ..Representation::default()
+        };
+        assert_eq!(dollars.grid_unit().as_deref(), Some("$"));
     }
 
     #[test]

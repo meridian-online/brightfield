@@ -156,9 +156,19 @@ pub struct ColumnFacts {
     pub title: Option<String>,
     /// The catalogue's icon for [`Self::label`], when its entry names one.
     pub icon: Option<String>,
+    /// How the column's values are shown: the grid prints each cell by it and names its unit in
+    /// the header. [`Representation::default`] for an unlabelled column.
+    pub representation: crate::representation::Representation,
 }
 
 impl ColumnFacts {
+    /// The header text the grid draws for the column: its name, then ` · ` and its unit where
+    /// the representation names one (`revenue · £`).
+    #[must_use]
+    pub fn header_name(&self) -> String {
+        header_name(&self.column, self.representation.grid_unit().as_deref())
+    }
+
     /// The label if there is one, else the storage type — what the inspector
     /// shows on its `finetype` row.
     #[must_use]
@@ -920,7 +930,14 @@ fn build_facts(
         moments: profile.moments.clone(),
         title: None,
         icon: None,
+        representation: dashboard.representation(&profile.name),
     }
+}
+
+/// `name` with ` · ` and `unit` after it, where there is a unit.
+#[must_use]
+pub fn header_name(name: &str, unit: Option<&str>) -> String {
+    unit.map_or_else(|| name.to_owned(), |unit| format!("{name} · {unit}"))
 }
 
 /// The columns the composition's **plots** draw, in the composition's own plot

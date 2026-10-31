@@ -125,6 +125,7 @@ use brightfield_engine::error::EngineError;
 use brightfield_engine::{RecordBatch, RowsAudience, RowsView, Session};
 use brightfield_keys::BindingContext;
 use brightfield_protocol::{sheet, StepRow};
+use brightfield_spec::date_format::DateFormat;
 use brightfield_workbench::registry::Slot;
 use brightfield_workbench::subject::Affordance;
 use brightfield_workbench::{
@@ -143,6 +144,7 @@ use crate::column_header::{
 use crate::design::Mode;
 use crate::grid_foot::{foot_band, FOOT_BAND_HEIGHT};
 use crate::pipeline::LiveDashboard;
+use crate::representation::{format_cell, Representation};
 
 // ---------------------------------------------------------------------------
 // Cell chrome — the table-scope typography and geometry.
@@ -171,7 +173,22 @@ pub struct GridColumn {
     pub name: String,
     /// Whether cells right-align and sit in the tabular-numeral scope.
     pub numeric: bool,
+    /// What the header names after the name (`revenue · £`): the currency symbol or `%` of a
+    /// column shown as its label implies. `None` for a column shown as it is stored.
+    pub unit: Option<String>,
 }
+
+impl GridColumn {
+    /// The header text: the name, and ` · ` and the unit where there is one.
+    #[must_use]
+    pub fn header_text(&self) -> String {
+        crate::one_step::header_name(&self.name, self.unit.as_deref())
+    }
+}
+
+/// How each column of a table is shown, by column name: what [`fetch_page_shown`] prints the
+/// cells of a labelled column by. A column with no entry is shown as it is stored.
+pub type Shown = std::collections::BTreeMap<String, Representation>;
 
 /// Which ink a cell's text takes, resolved against the mode's semantic set at
 /// draw time — data in primary, supporting columns in secondary, absence
@@ -900,7 +917,11 @@ fn natural_widths(
             .x
     };
     let held = source.held_rows();
-    let mut widths: Vec<f32> = source.columns().iter().map(|c| width_of(&c.name)).collect();
+    let mut widths: Vec<f32> = source
+        .columns()
+        .iter()
+        .map(|c| width_of(&c.header_text()))
+        .collect();
     for row in held {
         for (col, width) in widths.iter_mut().enumerate() {
             if let Some(cell) = source.cell_text(row, col) {
@@ -1123,6 +1144,7 @@ impl MeridianTableDelegate<'_> {
             return;
         };
         let (name, numeric) = (column.name.clone(), column.numeric);
+        let text = column.header_text();
         // The band, where this table has one and the table's column is one the
         // profile knows. Painted against the cell's own box rather than laid
         // out, because `egui_table` gives a header cell a centred
@@ -1144,7 +1166,7 @@ impl MeridianTableDelegate<'_> {
         let sem = semantic(self.mode.is_dark());
         self.cell_layout(ui, numeric, |ui| {
             ui.label(
-                egui::RichText::new(name)
+                egui::RichText::new(text)
                     .font(cell_font())
                     .color(chrome::colour(sem.text.muted)),
             );
@@ -1222,10 +1244,28 @@ pub fn fetch_page(
     audience: RowsAudience,
     view: &RowsView,
 ) -> Result<GridPage, EngineError> {
+    fetch_page_shown(session, mark_index, window, audience, view, &Shown::new())
+}
+
+/// [`fetch_page`], with each column in `shown` printed the way its representation says: money
+/// with the symbol its source wrote, a rate as a percentage, a date in its format.
+///
+/// # Errors
+///
+/// As [`Session::execute_step_rows_window`].
+#[allow(clippy::result_large_err)]
+pub fn fetch_page_shown(
+    session: &Session,
+    mark_index: usize,
+    window: Range<u64>,
+    audience: RowsAudience,
+    view: &RowsView,
+    shown: &Shown,
+) -> Result<GridPage, EngineError> {
     let limit = window.end.saturating_sub(window.start);
     let batches =
         session.execute_step_rows_window_view(mark_index, window.start, limit, audience, view)?;
-    let (columns, rows) = tabulate(&batches, session.hidden_columns());
+    let (columns, rows) = tabulate(&batches, session.hidden_columns(), shown);
     let held = window.start..window.start + rows.len() as u64;
     Ok(GridPage {
         window: held,
@@ -1247,9 +1287,16 @@ pub fn fetch_page(
 /// dates and everything else show the cast text as it is.
 ///
 /// A column named in `hidden` is left out.
+///
+/// A column with an entry in `shown` is printed the way its representation says. A number goes
+/// through [`format_cell`], so a sterling column reads `(£12.00)` and a rate `45%`; a date goes
+/// through its date format. The stored value is kept as the cell's [`CellText::exact`] where the
+/// two differ, and the representation's unit is named in the column's header. A column with no
+/// entry, or whose representation has no format, is shown as above.
 fn tabulate(
     batches: &[RecordBatch],
     hidden: &std::collections::BTreeSet<String>,
+    shown: &Shown,
 ) -> (Vec<GridColumn>, Vec<Vec<CellText>>) {
     let Some(first) = batches.first() else {
         return (Vec::new(), Vec::new());
@@ -1257,31 +1304,35 @@ fn tabulate(
     let schema = first.schema();
     // A column the session hides is not one of the table's own: the text a cast column was read
     // from, kept beside it so the cast can be undone (`Session::hidden_columns`).
-    let shown: Vec<usize> = schema
+    let kept: Vec<usize> = schema
         .fields()
         .iter()
         .enumerate()
         .filter(|(_, f)| !hidden.contains(f.name()))
         .map(|(at, _)| at)
         .collect();
-    let columns: Vec<GridColumn> = shown
+    let columns: Vec<GridColumn> = kept
         .iter()
         .map(|&at| {
             let f = schema.field(at);
             GridColumn {
                 name: f.name().clone(),
                 numeric: f.data_type().is_numeric(),
+                unit: shown.get(f.name()).and_then(Representation::grid_unit),
             }
         })
         .collect();
-    let fractional: Vec<bool> = shown
+    let looks: Vec<Look> = kept
         .iter()
-        .map(|&at| is_fractional(schema.field(at).data_type()))
+        .map(|&at| {
+            let field = schema.field(at);
+            Look::of(field.data_type(), shown.get(field.name()))
+        })
         .collect();
 
     let mut rows: Vec<Vec<CellText>> = Vec::new();
     for batch in batches {
-        let as_text: Vec<Option<StringArray>> = shown
+        let as_text: Vec<Option<StringArray>> = kept
             .iter()
             .map(|&at| batch.column(at))
             .map(|col| {
@@ -1293,11 +1344,10 @@ fn tabulate(
         for row in 0..batch.num_rows() {
             let cells: Vec<CellText> = as_text
                 .iter()
-                .zip(&fractional)
-                .map(|(col, &fractional)| match col {
+                .zip(&looks)
+                .map(|(col, look)| match col {
                     Some(col) if col.is_null(row) => CellText::muted("NULL"),
-                    Some(col) if fractional => number_cell(col.value(row)),
-                    Some(col) => CellText::primary(col.value(row)),
+                    Some(col) => look.cell(col.value(row)),
                     // A column whose type would not cast to text — display
                     // its absence honestly rather than guessing at bytes.
                     None => CellText::muted("?"),
@@ -1307,6 +1357,77 @@ fn tabulate(
         }
     }
     (columns, rows)
+}
+
+/// How one column's cast text becomes its cell.
+enum Look<'a> {
+    /// A column of fractional numbers: rounded by [`format_value`].
+    Fractional,
+    /// A number printed by its representation.
+    Number(&'a Representation),
+    /// A date printed by its date format.
+    Date(DateFormat),
+    /// The cast text as it is.
+    Plain,
+}
+
+impl<'a> Look<'a> {
+    fn of(data_type: &DataType, shown: Option<&'a Representation>) -> Self {
+        if let Some(rep) = shown.filter(|r| r.cell_format.is_some()) {
+            if data_type.is_numeric() {
+                return Self::Number(rep);
+            }
+            // A timestamp's text carries a time of day this format does not read back, so only
+            // a date is formatted.
+            if matches!(data_type, DataType::Date32 | DataType::Date64) {
+                if let Some(format) = rep
+                    .cell_format
+                    .as_deref()
+                    .and_then(|f| DateFormat::parse(f).ok())
+                {
+                    return Self::Date(format);
+                }
+            }
+        }
+        if is_fractional(data_type) {
+            Self::Fractional
+        } else {
+            Self::Plain
+        }
+    }
+
+    fn cell(&self, cast: &str) -> CellText {
+        match self {
+            Self::Fractional => number_cell(cast),
+            Self::Number(rep) => represented_cell(cast, |v| format_cell(rep, v)),
+            Self::Date(format) => match format.format_iso_date(cast) {
+                Some(text) => with_exact(text, cast),
+                None => CellText::primary(cast),
+            },
+            Self::Plain => CellText::primary(cast),
+        }
+    }
+}
+
+/// `cast` read back as a finite number and printed by `print`, with `cast` kept as the exact
+/// value; text that is not a finite number, or an integer too large for a double to hold, is
+/// shown as it is.
+fn represented_cell(cast: &str, print: impl Fn(f64) -> String) -> CellText {
+    /// The largest magnitude at which every integer is a double.
+    const EXACT_INTEGER: f64 = 9_007_199_254_740_992.0;
+    match cast.parse::<f64>() {
+        Ok(v) if v.is_finite() && v.abs() <= EXACT_INTEGER => with_exact(print(v), cast),
+        _ => CellText::primary(cast),
+    }
+}
+
+/// A cell showing `text`, with `cast` kept as its exact value where the two differ.
+fn with_exact(text: String, cast: &str) -> CellText {
+    let mut cell = CellText::primary(text);
+    if cell.text != cast {
+        cell.exact = Some(cast.to_owned());
+    }
+    cell
 }
 
 /// Whether a column of `data_type` holds fractional numbers, the cells
@@ -1382,6 +1503,8 @@ pub struct GridCache {
     window: Range<u64>,
     /// The held cells — bounded by the viewport plus scroll margin.
     rows: Vec<Vec<CellText>>,
+    /// How the held cells were printed, so a change to it reads the window again.
+    shown: Shown,
     /// The last read failure, shown under the table until a read succeeds.
     error: Option<String>,
 }
@@ -1410,6 +1533,7 @@ pub struct EngineRows<'a> {
     mark_index: usize,
     generation: u64,
     view: &'a RowsView,
+    shown: &'a Shown,
     cache: &'a mut GridCache,
 }
 
@@ -1428,12 +1552,14 @@ impl<'a> EngineRows<'a> {
         mark_index: usize,
         generation: u64,
         view: &'a RowsView,
+        shown: &'a Shown,
         cache: &'a mut GridCache,
     ) -> Self {
         if cache.instance != Some(instance)
             || cache.generation != Some(generation)
             || cache.mark != Some(mark_index)
             || cache.view != *view
+            || cache.shown != *shown
         {
             match session.step_rows_count_view(mark_index, RowsAudience::Reader, view) {
                 Ok(total) => {
@@ -1452,6 +1578,7 @@ impl<'a> EngineRows<'a> {
             cache.generation = Some(generation);
             cache.mark = Some(mark_index);
             cache.view = view.clone();
+            cache.shown.clone_from(shown);
         }
         // The schema has to exist before the table can lay out at all — the
         // column count is the table's shape — and it only arrives with a
@@ -1459,12 +1586,13 @@ impl<'a> EngineRows<'a> {
         // window [`RowSource::prepare`] asks for replaces this immediately
         // when the scroll position is elsewhere.
         if cache.error.is_none() && cache.columns.is_empty() && cache.total > 0 {
-            match fetch_page(
+            match fetch_page_shown(
                 session,
                 mark_index,
                 0..cache.total.min(PAGE_PAD),
                 RowsAudience::Reader,
                 view,
+                shown,
             ) {
                 Ok(page) => {
                     cache.window = page.window;
@@ -1482,6 +1610,7 @@ impl<'a> EngineRows<'a> {
             mark_index,
             generation,
             view,
+            shown,
             cache,
         }
     }
@@ -1513,12 +1642,13 @@ impl RowSource for EngineRows<'_> {
         if start >= end {
             return; // an empty materialisation has no window to fetch
         }
-        match fetch_page(
+        match fetch_page_shown(
             self.session,
             self.mark_index,
             start..end,
             RowsAudience::Reader,
             self.view,
+            self.shown,
         ) {
             Ok(page) => {
                 self.cache.window = page.window;
@@ -2083,7 +2213,7 @@ fn read_preview(
 /// The first page of a preview, tabulated from the batches its read returned.
 #[must_use]
 pub fn page_of(batches: &[RecordBatch]) -> GridPage {
-    let (columns, rows) = tabulate(batches, &std::collections::BTreeSet::new());
+    let (columns, rows) = tabulate(batches, &std::collections::BTreeSet::new(), &Shown::new());
     GridPage {
         window: 0..rows.len() as u64,
         columns,
@@ -2340,6 +2470,7 @@ impl<'a> StepSheetRows<'a> {
             .map(|(i, name)| GridColumn {
                 name: (*name).to_string(),
                 numeric: i == 0,
+                unit: None,
             })
             .collect();
         Self {
@@ -2915,8 +3046,15 @@ impl Item<ChartDoc> for DataGridItem {
                 let generation = coordinator.generation();
                 let instance = coordinator.serial();
                 let session = coordinator.session();
-                let mut source =
-                    EngineRows::new(session, instance, mark, generation, &view, &mut self.cache);
+                let mut source = EngineRows::new(
+                    session,
+                    instance,
+                    mark,
+                    generation,
+                    &view,
+                    facts.shown(),
+                    &mut self.cache,
+                );
                 drawn = Some(draw(ui, &mut source));
                 names = source.columns().iter().map(|c| c.name.clone()).collect();
             }
@@ -3155,7 +3293,7 @@ mod tests {
             Arc::new(Int64Array::from(vec![Some(2024), None, None, None])),
         ];
         let batch = RecordBatch::try_new(schema, columns).expect("a batch");
-        let (columns, rows) = tabulate(&[batch], &std::collections::BTreeSet::new());
+        let (columns, rows) = tabulate(&[batch], &std::collections::BTreeSet::new(), &Shown::new());
 
         assert_eq!(
             columns.iter().map(|c| c.numeric).collect::<Vec<_>>(),
