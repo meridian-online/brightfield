@@ -77,8 +77,8 @@ impl FinetypeDisplays {
         &self.tag
     }
 
-    /// The display block of `label`, or `None` for a label with none or one FineType does not
-    /// define.
+    /// The display block of `label`, or `None` for a label without a block, such as a text label
+    /// (`vendored_displays_read` reads one), or a label FineType does not define.
     #[must_use]
     pub fn get(&self, label: &str) -> Option<&Display> {
         self.labels.get(label)
