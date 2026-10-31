@@ -34,12 +34,15 @@ use crate::pipeline::LiveDashboard;
 /// format is chosen for ([`is_formatted_type`]), and DuckDB stored it as neither a number nor the
 /// type the label casts to.
 ///
-/// A label cast to any other type (JSON, UUID, INTERVAL, the coordinates struct) is read as it is.
-/// No format reads it, and its cast may not even bind: `JSON` is a type only where DuckDB's JSON
-/// extension loads. `TRY` catches a value that fails to cast, not a cast that fails to bind, and
-/// one such cast fails the whole copy, which then casts nothing. A number is never cast through
-/// its text: DuckDB renders a large double as `1e+16`, which a currency transform reads as `116`,
-/// and rounds `123.456` to `123.46` on the way to a DECIMAL(18,2), with no NULL to show for either.
+/// A label cast to any other type (JSON, UUID, INTERVAL, the coordinates struct) is read as it is
+/// (`a_label_no_format_needs_is_read_as_it_is`). No format reads it, and its cast may not even
+/// bind: DuckDB knows `JSON` as a type when its JSON extension loads, which the bundled build does
+/// not carry. `TRY` catches a value that fails to cast, not a cast that fails to bind, and one such
+/// cast fails the whole copy, which then casts no column.
+///
+/// A number is never cast through its text: DuckDB renders a large double as `1e+16`, which a
+/// currency transform reads as `116`, and rounds `123.456` to `123.46` on the way to a
+/// DECIMAL(18,2), with no NULL to show for either.
 #[derive(Debug, Default)]
 pub(crate) struct CastPlan {
     /// Each candidate column, and the cast that reads it, over the column read as text.
