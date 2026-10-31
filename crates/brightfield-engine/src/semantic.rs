@@ -132,12 +132,12 @@ impl SemanticType {
 
 /// What checking a column's values against its label found.
 ///
-/// Three variants because there are three situations, and two of them are ways
-/// of NOT having checked. Collapsing them loses the difference between a
-/// classifier that named a type this bundle has never heard of — which is what
-/// a model and a schema catalogue from different FineType versions looks like,
-/// one column at a time — and a type whose definition simply carries nothing a
-/// value could fail.
+/// One variant per situation, and three of the four are ways of NOT having
+/// checked. Collapsing them loses the difference between a classifier that
+/// named a type this bundle has never heard of — which is what a model and a
+/// schema catalogue from different FineType versions looks like, one column at
+/// a time — a type whose definition simply carries nothing a value could fail,
+/// and a label given to the profile, which nothing was asked to check.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValueCheck {
     /// The catalogue holds no entry for this label at all.

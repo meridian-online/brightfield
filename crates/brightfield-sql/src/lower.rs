@@ -2932,6 +2932,27 @@ mod tests {
         );
     }
 
+    /// The same holds for a bin over an expression: its low edge is aliased to
+    /// the expression's text, the name the axis carries, so an extent on that
+    /// axis also lands beneath the `GROUP BY`.
+    #[test]
+    fn a_binned_expression_pushes_navigation_under_the_group_by() {
+        let mut mark = binned_rect(MarkKind::RectY, "x", None);
+        mark.options.insert(
+            "x".into(),
+            ValueOrParamRef::Value(SpecValue::Bin {
+                operand: BinOperand::Expression("\"delay\" / 60".into()),
+                steps: None,
+            }),
+        );
+        let plan = RectLowerer.lower(&mark, &make_ctx()).expect("lowers");
+        assert_eq!(
+            crate::navigation_filter_pass::axis_pushdown(&plan, "\"delay\" / 60"),
+            crate::navigation_filter_pass::Pushdown::UnderGroupBy,
+            "the low edge aliases to the expression's text, so the extent is pushable"
+        );
+    }
+
     /// A rect with no positional bin delegates to [`SimpleLowerer`] and the
     /// shipped explicit-interval path is untouched — `rect-histogram.yaml` and
     /// `rect-cells.yaml` emit exactly what they emitted before.

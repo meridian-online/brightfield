@@ -2067,10 +2067,12 @@ fn gather_selected(predicate: &Predicate, plot: &PlotHandle, held: &mut Committe
 /// The channel slot `column` occupies on this plot, when the plot draws that
 /// column on a positional channel and has not already taken the slot.
 ///
-/// Matched against the plot's OWN channel columns rather than the gesture
-/// binding's, so a clause a plot did not draw an axis for gets no band.
+/// Matched against the columns the plot itself draws on each axis, so a
+/// clause a plot did not draw an axis for gets no band. A binned expression is
+/// matched there through the field the plot's own gesture sweeps, on the
+/// spelling that gesture writes ([`clause_names_axis`]).
 ///
-/// On the column's NAME rather than on its spelling. A clause carries the
+/// Any other column is matched on its NAME rather than on its spelling. A clause carries the
 /// column as a SQL identifier (`"observed by hour"`) because that is what a
 /// WHERE has to say; a plot handle carries the name the mark was bound to
 /// (`observed by hour`). Comparing the two strings directly matched neither the

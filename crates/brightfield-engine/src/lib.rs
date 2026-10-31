@@ -355,16 +355,19 @@ pub struct LoadOptions {
     /// A source that loads nothing native — the default — declares `false` and
     /// costs the session nothing.
     pub type_source: Option<semantic::TypeSourceSpec>,
-    /// Labels already settled for columns of the source a flat open loads,
-    /// column name to label: one an analyst accepted, or one a cast copy was
-    /// made from.
+    /// Labels already settled, column name to label: one an analyst accepted,
+    /// or one a cast copy was made from.
+    ///
+    /// The names are bare column names, not keyed by source: a label here
+    /// applies to a column of that name in every source the session loads.
+    /// A flat open loads one source, so there it labels that source alone.
     ///
     /// A column named here is not asked of [`LoadOptions::type_source`]: the
     /// profile issues no typing term for it, and its
     /// [`ColumnProfile::semantic`] is [`SemanticType::Labelled`] with this
     /// label and [`ValueCheck::Given`]. That holds with no type source at
     /// all, since a given label needs no classifier. A name that is not a
-    /// column of the source is ignored.
+    /// column of a source is ignored for that source.
     pub given_labels: BTreeMap<String, String>,
 }
 
