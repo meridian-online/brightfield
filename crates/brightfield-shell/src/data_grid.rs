@@ -1311,22 +1311,28 @@ fn tabulate(
         .filter(|(_, f)| !hidden.contains(f.name()))
         .map(|(at, _)| at)
         .collect();
-    let columns: Vec<GridColumn> = kept
-        .iter()
-        .map(|&at| {
-            let f = schema.field(at);
-            GridColumn {
-                name: f.name().clone(),
-                numeric: f.data_type().is_numeric(),
-                unit: shown.get(f.name()).and_then(Representation::grid_unit),
-            }
-        })
-        .collect();
     let looks: Vec<Look> = kept
         .iter()
         .map(|&at| {
             let field = schema.field(at);
             Look::of(field.data_type(), shown.get(field.name()))
+        })
+        .collect();
+    // A unit is named only over cells printed by the representation: a column read as text
+    // (a preview of the file as it was written) shows its cells as the file wrote them.
+    let columns: Vec<GridColumn> = kept
+        .iter()
+        .zip(&looks)
+        .map(|(&at, look)| {
+            let f = schema.field(at);
+            GridColumn {
+                name: f.name().clone(),
+                numeric: f.data_type().is_numeric(),
+                unit: match look {
+                    Look::Number(rep) => rep.grid_unit(),
+                    _ => None,
+                },
+            }
         })
         .collect();
 
@@ -1399,7 +1405,18 @@ impl<'a> Look<'a> {
     fn cell(&self, cast: &str) -> CellText {
         match self {
             Self::Fractional => number_cell(cast),
-            Self::Number(rep) => represented_cell(cast, |v| format_cell(rep, v)),
+            Self::Number(rep) => represented_cell(cast, |v| {
+                match rep.cell_format.as_deref().and_then(|f| widened(f, cast)) {
+                    Some(spec) => format_cell(
+                        &Representation {
+                            cell_format: Some(spec),
+                            ..(*rep).clone()
+                        },
+                        v,
+                    ),
+                    None => format_cell(rep, v),
+                }
+            }),
             Self::Date(format) => match format.format_iso_date(cast) {
                 Some(text) => with_exact(text, cast),
                 None => CellText::primary(cast),
@@ -1419,6 +1436,34 @@ fn represented_cell(cast: &str, print: impl Fn(f64) -> String) -> CellText {
         Ok(v) if v.is_finite() && v.abs() <= EXACT_INTEGER => with_exact(print(v), cast),
         _ => CellText::primary(cast),
     }
+}
+
+/// The most decimals a grid cell is widened to.
+const MOST_CELL_DECIMALS: usize = 4;
+
+/// `spec` with the precision a cell needs to keep every decimal of the stored value `cast`, up
+/// to [`MOST_CELL_DECIMALS`], or `None` where `spec`'s own precision already does, or `spec` has
+/// none to widen. A percentage prints two fewer decimals than the fraction it is read from has.
+fn widened(spec: &str, cast: &str) -> Option<String> {
+    let dot = spec.find('.')?;
+    let digits = spec[dot + 1..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .count();
+    if digits == 0 {
+        return None;
+    }
+    let have: usize = spec[dot + 1..dot + 1 + digits].parse().ok()?;
+    let stored = cast
+        .split_once('.')
+        .map_or(0, |(_, f)| f.trim_end_matches('0').len());
+    let needed = if spec.ends_with('%') {
+        stored.saturating_sub(2)
+    } else {
+        stored
+    }
+    .min(MOST_CELL_DECIMALS);
+    (needed > have).then(|| format!("{}{needed}{}", &spec[..=dot], &spec[dot + 1 + digits..]))
 }
 
 /// A cell showing `text`, with `cast` kept as its exact value where the two differ.
@@ -1707,7 +1752,7 @@ const PREVIEW_PAGES_KEPT: usize = 8;
 
 /// **What the window asks the grid to preview**: a generated step, and the
 /// chain from the data file that makes it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PreviewRequest {
     /// The step's name, which is also its table's.
     pub step: String,
@@ -1728,6 +1773,8 @@ pub struct PreviewRequest {
     pub recorded: bool,
     /// The key that runs the Protocol, when one is bound.
     pub run_key: Option<String>,
+    /// How the applied grid shows each column, so the preview's cells and header agree with it.
+    pub shown: Shown,
 }
 
 impl PreviewRequest {
@@ -2054,6 +2101,7 @@ impl GridPreview {
             ran: false,
             recorded: false,
             run_key: None,
+            shown: Shown::new(),
         };
         let key = PreviewKey {
             step: request.step.clone(),
@@ -2207,13 +2255,13 @@ fn read_preview(
         PREVIEW_ROWS,
         limit,
     )?;
-    Ok(page_of(&batches))
+    Ok(page_of(&batches, &request.shown))
 }
 
 /// The first page of a preview, tabulated from the batches its read returned.
 #[must_use]
-pub fn page_of(batches: &[RecordBatch]) -> GridPage {
-    let (columns, rows) = tabulate(batches, &std::collections::BTreeSet::new(), &Shown::new());
+pub fn page_of(batches: &[RecordBatch], shown: &Shown) -> GridPage {
+    let (columns, rows) = tabulate(batches, &std::collections::BTreeSet::new(), shown);
     GridPage {
         window: 0..rows.len() as u64,
         columns,
@@ -3143,6 +3191,17 @@ impl Item<ChartDoc> for DataGridItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cell_format_is_widened_to_the_stored_decimals_and_no_further() {
+        assert_eq!(widened(".0%", "0.455").as_deref(), Some(".1%"));
+        assert_eq!(widened(".0%", "0.45"), None);
+        assert_eq!(widened(",.2f", "1234.50"), None);
+        assert_eq!(widened(",.2f", "1234.5678").as_deref(), Some(",.4f"));
+        assert_eq!(widened(",.2f", "1.123456789").as_deref(), Some(",.4f"));
+        assert_eq!(widened(",", "1.5"), None);
+        assert_eq!(widened(".1f", "45.25").as_deref(), Some(".2f"));
+    }
 
     /// The table-scope feature declaration is exactly the token pair, from
     /// the token layer — tabular numerals plus slashed zero, nothing else,

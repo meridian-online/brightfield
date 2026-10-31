@@ -7728,6 +7728,7 @@ impl MeridianApp {
             steps,
             order: self.charts.doc.grid_view().order.clone(),
             runner: self.runner.clone(),
+            shown: self.charts.doc.column_facts().shown().clone(),
         })
     }
 
@@ -7998,6 +7999,7 @@ impl MeridianApp {
                     steps: Vec::new(),
                     order: None,
                     runner: None,
+                    shown: crate::data_grid::Shown::new(),
                 },
                 chain.clone(),
                 move || wake.request_repaint(),
@@ -10273,6 +10275,7 @@ impl MeridianApp {
             ran: model.step_ran(&step.name),
             recorded: !model.is_typed(&step.name),
             run_key: self.run_binding.map(str::to_owned),
+            shown: self.charts.doc.column_facts().shown().clone(),
         })
     }
 

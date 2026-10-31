@@ -198,6 +198,8 @@ pub struct TypedSource {
     pub order: Option<String>,
     /// The program arc runs as, when there is one to ask.
     pub runner: Option<Runner>,
+    /// How the applied grid shows each column, so a page read here agrees with its header.
+    pub shown: crate::data_grid::Shown,
 }
 
 /// What a read of a typed statement found.
@@ -518,7 +520,7 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
         PREVIEW_DEADLINE,
         stop,
     ) {
-        Ok(batches) => page_of(&batches),
+        Ok(batches) => page_of(&batches, &source.shown),
         Err(PreviewRefusal::Superseded) => return None,
         Err(refusal) => return Some(Err((text.to_string(), refusal.to_string()))),
     };
@@ -571,7 +573,7 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
                 PREVIEW_DEADLINE,
                 stop,
             ) {
-                Ok(batches) => Some(page_of(&batches)),
+                Ok(batches) => Some(page_of(&batches, &source.shown)),
                 Err(PreviewRefusal::Superseded) => return None,
                 Err(_) => None,
             };

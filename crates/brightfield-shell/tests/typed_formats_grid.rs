@@ -15,7 +15,7 @@ use brightfield_shell::app::ChartDoc;
 use brightfield_shell::column_header::ColumnBandFacts;
 use brightfield_shell::column_record;
 use brightfield_shell::data_file::{self, OpenOptions, OpenedFile};
-use brightfield_shell::data_grid::{fetch_page_shown, DataGridItem, GridPage, PAGE_PAD};
+use brightfield_shell::data_grid::{fetch_page_shown, page_of, DataGridItem, GridPage, PAGE_PAD};
 use brightfield_shell::design::Mode;
 use brightfield_workbench::{Item, ItemCtx, PaneKey};
 
@@ -196,6 +196,44 @@ fn a_date_columns_cells_are_unchanged_or_in_its_format() {
     assert_eq!(booked.exact.as_deref(), Some("2024-01-05"));
     let column = page.columns.iter().find(|c| c.name == "booked").unwrap();
     assert_eq!(column.unit, None);
+}
+
+/// A grid cell keeps the decimals the stored value has: 0.455 prints `45.5%` where the column's
+/// own precision is whole percentages, and 0.45 still prints `45%`.
+#[test]
+fn a_cell_keeps_the_decimals_of_the_stored_value() {
+    let csv = "share\n45.5%\n45%\n3%\n80%\n";
+    let mut opened = open(&fixture(
+        csv,
+        &[("share", "representation.numeric.percentage")],
+    ));
+    let page = page(&mut opened);
+    assert_eq!(cell(&page, "share", "0.455").text, "45.5%");
+    assert_eq!(cell(&page, "share", "0.45").text, "45%");
+    assert_eq!(cell(&page, "share", "0.03").text, "3%");
+}
+
+/// A preview of typed rows is tabulated with the applied grid's representations, so the header's
+/// unit sits over cells printed by it.
+#[test]
+fn a_preview_page_agrees_with_its_header() {
+    let mut opened = open(&fixture(GRID_CSV, LABELS));
+    let facts = ColumnBandFacts::new(&opened.protocol.columns);
+    let mark = opened.live.rows_mark();
+    let batches = opened
+        .live
+        .coordinator()
+        .session()
+        .execute_step_rows_window_view(mark, 0, 10, RowsAudience::Reader, &RowsView::default())
+        .expect("rows");
+    let page = page_of(&batches, facts.shown());
+    let share = page.columns.iter().position(|c| c.name == "share").unwrap();
+    assert_eq!(page.columns[share].header_text(), "share · %");
+    assert!(page.rows.iter().any(|r| r[share].text == "45%"));
+    // Without the representations the page is as stored, and its header names no unit.
+    let bare = page_of(&batches, &Default::default());
+    assert_eq!(bare.columns[share].header_text(), "share");
+    assert!(bare.rows.iter().any(|r| r[share].text == "0.45"));
 }
 
 /// The grid pane over the fixture, drawn the way the window draws it.
