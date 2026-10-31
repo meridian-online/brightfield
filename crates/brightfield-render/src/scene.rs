@@ -3550,6 +3550,164 @@ mod tests {
         );
     }
 
+    /// The scales one plot draws over `batch`'s `x` and `y` with `renderer`,
+    /// against the domain the file wrote for x.
+    fn drawn_with_x_domain(
+        batch: &RecordBatch,
+        renderer: &dyn crate::mark::MarkRenderer,
+        band: bool,
+        x: brightfield_spec::layout::DomainReading,
+    ) -> ScaleSet {
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        if band {
+            cm.set_wants_band(Channel::X);
+        }
+        let data = ChartData {
+            batch,
+            channel_map: &cm,
+            renderer,
+            layout: ChartLayout::new(600.0, 300.0),
+            view_extent: None,
+            highlight: None,
+            sample: None,
+            beyond_frame: false,
+        };
+        let pins =
+            PinnedDomains::default().with_written_ends(&brightfield_spec::layout::DomainReadings {
+                x,
+                y: brightfield_spec::layout::DomainReading::Absent,
+            });
+        build_multi_mark_scene_pinned(
+            &[&data],
+            false,
+            &ResolvedTitles::default(),
+            &UnsampledDomains::default(),
+            &pins,
+            TickCounts::default(),
+            TickFormats::default(),
+            GridLines::default(),
+            AxisEnds::default(),
+            AxisReverse::default(),
+            &ColourOverride::default(),
+            false,
+            ChartInk::LIGHT,
+        )
+        .1
+    }
+
+    /// The years 2001 to 2024 with no row for 2009, one count each.
+    fn years_but_2009() -> RecordBatch {
+        use arrow::array::Int64Array;
+        let years: Vec<i64> = (2001..=2024).filter(|y| *y != 2009).collect();
+        let counts: Vec<i64> = years.iter().map(|y| y - 2000).collect();
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("x", DataType::Int64, false),
+                Field::new("y", DataType::Int64, false),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(years)),
+                Arc::new(Int64Array::from(counts)),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// **A listed domain orders the band.** A bar over a column of years,
+    /// 2001 to 2024 with no row for 2009, drawn against a listed domain of
+    /// every year: the band holds the 24 years in the file's order, 2009 among
+    /// them as an empty slot, and each drawn year keeps the slot its place in
+    /// the list gives it. The spec crate's test of the same name reads the
+    /// list.
+    #[test]
+    fn a_listed_domain_orders_the_band() {
+        use brightfield_spec::layout::DomainReading;
+        let years: Vec<String> = (2001..=2024).map(|y| y.to_string()).collect();
+        let batch = years_but_2009();
+        let bar = BarRenderer { axis: BarAxis::Y };
+        let unlisted = drawn_with_x_domain(&batch, &bar, true, DomainReading::Absent);
+        assert!(
+            !band_categories(&unlisted).contains(&"2009".to_string()),
+            "fixture check: the rows alone leave 2009 out"
+        );
+        let mut listed_in_reverse = years.clone();
+        listed_in_reverse.reverse();
+        for order in [years.clone(), listed_in_reverse] {
+            let scales = drawn_with_x_domain(
+                &batch,
+                &bar,
+                true,
+                DomainReading::Categories {
+                    key: "xDomain",
+                    values: order.clone(),
+                    value: String::new(),
+                },
+            );
+            assert_eq!(
+                band_categories(&scales),
+                order,
+                "the band draws the file's order"
+            );
+        }
+        // Two numbers on a band of numbers are its two categories.
+        let two = drawn_with_x_domain(
+            &batch,
+            &bar,
+            true,
+            DomainReading::Ends {
+                key: "xDomain",
+                lo: 2023.0,
+                hi: 2024.0,
+            },
+        );
+        assert_eq!(band_categories(&two), vec!["2023", "2024"]);
+    }
+
+    /// **A listed domain on a linear axis is refused.** Dots over the same
+    /// years draw a linear x axis, which a list of categories does not fix: the
+    /// axis runs over its rows, as it does with no domain written. The shell's
+    /// composition names the list with the warning a refused domain gets.
+    #[test]
+    fn a_listed_domain_on_a_linear_axis_is_refused() {
+        use brightfield_spec::layout::DomainReading;
+        let batch = years_but_2009();
+        let dot = DotRenderer::default();
+        let unset = drawn_with_x_domain(&batch, &dot, false, DomainReading::Absent);
+        let listed = drawn_with_x_domain(
+            &batch,
+            &dot,
+            false,
+            DomainReading::Categories {
+                key: "xDomain",
+                values: vec!["2001".into(), "2005".into(), "2024".into()],
+                value: "[2001, 2005, 2024]".into(),
+            },
+        );
+        assert!(
+            matches!(listed.get(Channel::X), Some(Scale::Linear { .. })),
+            "{:?}",
+            listed.get(Channel::X)
+        );
+        assert_eq!(
+            listed.get(Channel::X).and_then(Scale::domain_min),
+            unset.get(Channel::X).and_then(Scale::domain_min)
+        );
+        assert_eq!(
+            listed.get(Channel::X).and_then(Scale::domain_max),
+            unset.get(Channel::X).and_then(Scale::domain_max)
+        );
+        assert!(!crate::scale::written_domain_applies(
+            &DomainReading::Categories {
+                key: "xDomain",
+                values: vec![],
+                value: String::new(),
+            },
+            unset.get(Channel::X).unwrap()
+        ));
+    }
+
     /// A band scale to hang the band assertions on.
     fn band_scale(categories: &[&str]) -> Scale {
         Scale::Band {

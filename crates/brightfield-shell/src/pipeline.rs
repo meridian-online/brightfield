@@ -57,8 +57,8 @@ use brightfield_render::past_ends::{
 use brightfield_render::sample_notice::{sample_band_margins, SampleFact};
 use brightfield_render::sample_policy;
 use brightfield_render::scale::{
-    written_ends_apply, ColourOverride, ColourScale, PinnedDomains, Scale, ScaleSet,
-    SequentialScheme, ViewExtent,
+    written_domain_applies, written_ends_apply, ColourOverride, ColourScale, PinnedDomains, Scale,
+    ScaleSet, SequentialScheme, ViewExtent,
 };
 use brightfield_render::scene::{
     axis_ends_apply, axis_keys_apply, colour_categories_apply, colour_override_applies,
@@ -3243,6 +3243,9 @@ fn inert_axis_instructions(
     let grid_asked =
         |key: &str| literal_attribute(node, &spec.params, key).and_then(grid_switch) == Some(true);
     let mut out = Vec::new();
+    // A listed domain this plot's axis does not take, named once however many
+    // axes `xyDomain` landed it on, as the spec's own refusal is.
+    let mut unread_lists: Vec<(&str, &str)> = Vec::new();
     for (channel, zero, nice, ticks, format, grid, reversed) in [
         (
             Channel::X,
@@ -3263,6 +3266,22 @@ fn inert_axis_instructions(
             ("yReverse", reverse.y),
         ),
     ] {
+        // A list of categories orders a band and nothing else: on any other
+        // axis it is a domain that is not two numbers, and is named as one.
+        if let DomainReading::Categories { key, value, .. } = written.axis(plot_axis(channel)) {
+            let taken = !projected
+                && scales.get(channel).is_some_and(|scale| {
+                    written_domain_applies(written.axis(plot_axis(channel)), scale)
+                });
+            if !taken && !unread_lists.contains(&(*key, value.as_str())) {
+                unread_lists.push((key, value));
+                out.push(ParseWarning::UnreadAxisEnds {
+                    attribute: (*key).to_string(),
+                    value: value.clone(),
+                    plot: plot.to_string(),
+                });
+            }
+        }
         if projected {
             for (key, set) in [zero, nice, ticks, format, grid, reversed] {
                 if set {
@@ -3281,9 +3300,10 @@ fn inert_axis_instructions(
             // is named as `xZero` is on the same axis. Where they do fix the
             // ends, `xZero` and `xNice` have no effect beside them.
             let ends_fixed = match written.axis(plot_axis(channel)) {
-                DomainReading::Ends { key, lo, hi } => {
-                    let applies = written_ends_apply(scale);
-                    if !applies {
+                reading @ DomainReading::Ends { key, lo, hi } => {
+                    // Two numbers on a band of numbers are its two categories,
+                    // which fix no ends for `xZero` or `xNice` to yield to.
+                    if !written_domain_applies(reading, scale) {
                         out.push(ParseWarning::AxisAttributeOnWrongAxis {
                             attribute: (*key).to_string(),
                             plot: plot.to_string(),
@@ -3292,6 +3312,7 @@ fn inert_axis_instructions(
                     }
                     // A log axis takes no ends through zero, which the draw leaves
                     // through the same judge: the axis runs over its rows.
+                    let applies = written_ends_apply(scale);
                     let refused = applies
                         && matches!(scale, brightfield_render::scale::Scale::Log { .. })
                         && brightfield_render::scale::log_ends_refused(*lo);
@@ -3304,7 +3325,9 @@ fn inert_axis_instructions(
                     }
                     applies && !refused
                 }
-                DomainReading::Absent | DomainReading::Refused { .. } => false,
+                DomainReading::Absent
+                | DomainReading::Refused { .. }
+                | DomainReading::Categories { .. } => false,
             };
             for (key, set, applies) in [
                 (zero.0, zero.1, axis_ends_apply(scale)),

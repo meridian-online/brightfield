@@ -13,7 +13,7 @@ use arrow::record_batch::RecordBatch;
 use brightfield_spec::ast::{ParamNode, PlotNode};
 use brightfield_spec::layout::{
     resolve_colour_domain, resolve_colour_range, resolve_colour_scale_quantize,
-    resolve_colour_steps, ColourDomain, DomainReadings, FixedDomains, ScaleType,
+    resolve_colour_steps, ColourDomain, DomainReading, DomainReadings, FixedDomains, ScaleType,
     DEFAULT_COLOUR_STEPS,
 };
 use indexmap::IndexMap;
@@ -1399,7 +1399,9 @@ impl PinnedDomains {
     }
 
     /// These pins with each axis the file wrote two numbers for pinned to those
-    /// ends, over any domain held for it.
+    /// ends, and each axis it listed categories for pinned to that order, over
+    /// any domain held for it. A listed order is not marked as written ends: it
+    /// fixes a band, which has no ends for a row to fall past.
     ///
     /// Taken afresh each composition from [`brightfield_spec::layout::read_domains_in`]
     /// and not stored with the pins a plot holds between compositions, so a
@@ -1414,6 +1416,8 @@ impl PinnedDomains {
             if let Some((lo, hi)) = reading.ends() {
                 *pin = Some(PinnedDomain::Linear(lo, hi));
                 *written = true;
+            } else if let DomainReading::Categories { values, .. } = reading {
+                *pin = Some(PinnedDomain::Band(values.clone()));
             }
         }
         self
@@ -1468,18 +1472,68 @@ pub fn written_ends_apply(scale: &Scale) -> bool {
     PinnedDomain::Linear(1.0, 2.0).applied_to(scale).is_some()
 }
 
+/// Whether every category of the band `scale` draws is a number: the band a
+/// bar over a number column stands on.
+fn is_number_band(scale: &Scale) -> bool {
+    matches!(scale, Scale::Band { categories, .. }
+        if !categories.is_empty() && categories.iter().all(|c| c.parse::<f64>().is_ok()))
+}
+
+/// Whether what a file wrote as an axis's domain changes the axis `scale`
+/// draws. Two numbers fix the ends of a linear, log or symlog axis
+/// ([`written_ends_apply`]), and are the two categories of a band of numbers;
+/// a listed order fixes a band's order; nothing else applies.
+///
+/// It is the judge [`apply_pinned_domains`] draws through and the composition
+/// warns through, so a domain the draw leaves unread is a domain that was named.
+#[must_use]
+pub fn written_domain_applies(reading: &DomainReading, scale: &Scale) -> bool {
+    match reading {
+        DomainReading::Ends { .. } => written_ends_apply(scale) || is_number_band(scale),
+        DomainReading::Categories { .. } => matches!(scale, Scale::Band { .. }),
+        DomainReading::Absent | DomainReading::Refused { .. } => false,
+    }
+}
+
+/// `scale` re-domained onto `pin`, which the file `written` as two numbers
+/// when it is set. Two numbers written on a band of numbers are its two
+/// categories, low first, named as the band names a number; every other pin
+/// lands through [`PinnedDomain::applied_to`].
+fn pinned_onto(pin: &PinnedDomain, written: bool, scale: &Scale) -> Option<Scale> {
+    match (pin, scale) {
+        (
+            PinnedDomain::Linear(lo, hi),
+            Scale::Band {
+                range_start,
+                range_end,
+                padding,
+                ..
+            },
+        ) if written && is_number_band(scale) => Some(Scale::Band {
+            categories: vec![lo.to_string(), hi.to_string()],
+            range_start: *range_start,
+            range_end: *range_end,
+            padding: *padding,
+        }),
+        _ => pin.applied_to(scale),
+    }
+}
+
 /// Re-domain `scales`' positional channels onto `pins`, in place.
 ///
 /// A channel with no pin, or whose freshly-inferred scale is a different kind
 /// from its pin, is left exactly as inference produced it — so an empty
 /// [`PinnedDomains`] leaves the whole set untouched.
 pub fn apply_pinned_domains(scales: &mut ScaleSet, pins: &PinnedDomains) {
-    for (pin, channel) in [(&pins.x, Channel::X), (&pins.y, Channel::Y)] {
+    for (pin, written, channel) in [
+        (&pins.x, pins.x_written, Channel::X),
+        (&pins.y, pins.y_written, Channel::Y),
+    ] {
         let Some(pin) = pin else { continue };
         let Some(scale) = scales.get(channel) else {
             continue;
         };
-        if let Some(pinned) = pin.applied_to(scale) {
+        if let Some(pinned) = pinned_onto(pin, written, scale) {
             scales.insert(channel, pinned);
         }
     }
