@@ -1808,7 +1808,6 @@ impl PreviewRequest {
             && self.data == other.data
             && self.root_table == other.root_table
             && self.chain == other.chain
-            && self.shown == other.shown
     }
 
     /// How the Run verb is named in a sentence: with its key, when it has one.
@@ -3220,7 +3219,7 @@ mod tests {
     use super::*;
 
     /// A kept preview page was tabulated under the representations of its time, so a request
-    /// under others is another read.
+    /// under others is another read; it previews the same rows, so the cursor stays.
     #[test]
     fn a_preview_under_other_representations_is_not_the_kept_read() {
         let request = PreviewRequest {
@@ -3239,7 +3238,7 @@ mod tests {
             .shown
             .insert("share".to_string(), Representation::default());
         assert!(request.same_rows(&request.clone()));
-        assert!(!request.same_rows(&labelled));
+        assert!(request.same_rows(&labelled));
         assert_ne!(PreviewKey::of(&request, 1), PreviewKey::of(&labelled, 1));
     }
 
