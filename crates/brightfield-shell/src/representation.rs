@@ -338,9 +338,9 @@ pub fn format_compact(rep: &Representation, value: f64) -> String {
 /// column ([`Representation::tick_format`]) is the rule's own choice and prints compactly
 /// ([`format_compact`]). Any other written format prints as it is written, with the currency
 /// symbol and a percent sign added where it printed none. An axis with no format prints the
-/// grouped default, unscaled, for a column with a symbol or a percent unit; `None` is the answer
-/// for any other column, whose text is left as the engine wrote it, so a representation that says
-/// nothing about a column changes nothing about its line.
+/// grouped default, unscaled, for a column with a symbol or a percent unit. `None` is the answer
+/// for a default representation, whose column keeps the engine's text
+/// (`a_percent_column_is_read_on_an_axis_with_its_sign_attached`).
 #[must_use]
 pub fn format_on_axis(
     rep: &Representation,
