@@ -634,7 +634,15 @@ fn a_symlog_axis_across_zero_is_ticked_at_zero_and_the_negative_decades() {
          ±1000 for the seven labels below to be the whole axis"
     );
 
-    let characters = "-0123456789.";
+    // A negative label is signed with d3-format's minus, U+2212, as Plot's
+    // axis prints it, and the bundled face must carry that glyph: a face
+    // without it would paint glyph 0, the missing-glyph box.
+    let characters = "\u{2212}0123456789.";
+    assert_ne!(
+        label_glyph('\u{2212}'),
+        0,
+        "the bundled label face has no glyph for the minus sign U+2212"
+    );
     let glyphs: Vec<(u32, char)> = characters.chars().map(|c| (label_glyph(c), c)).collect();
     let decode = |id: u32| {
         glyphs
@@ -670,13 +678,24 @@ fn a_symlog_axis_across_zero_is_ticked_at_zero_and_the_negative_decades() {
     let labels: Vec<&str> = painted.iter().map(|(_, text)| text.as_str()).collect();
     assert_eq!(
         labels,
-        ["-100", "-10", "-1", "0", "1", "10", "100"],
+        [
+            "\u{2212}100",
+            "\u{2212}10",
+            "\u{2212}1",
+            "0",
+            "1",
+            "10",
+            "100"
+        ],
         "the x-axis band paints the signed decades with zero among them, left \
          to right"
     );
 
     for (x0, text) in &painted {
-        let value: f64 = text.parse().expect("a numeric label");
+        let value: f64 = text
+            .replace('\u{2212}', "-")
+            .parse()
+            .expect("a numeric label");
         let width = brightfield_render::text::measure_width(text, label_size);
         let expected_x0 = plot.rect.x + scale.map_f64(value) - width / 2.0;
         assert!(
