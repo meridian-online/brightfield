@@ -680,7 +680,7 @@ pub const STARTS: &[Start] = &[
         data: None,
         protocol: Some(ShippedProtocol {
             dir_name: EPOCH_AI_MODELS,
-            revision: 1,
+            revision: 2,
             files: EPOCH_AI_MODELS_FILES,
         }),
     },

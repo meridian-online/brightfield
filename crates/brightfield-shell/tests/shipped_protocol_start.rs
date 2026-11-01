@@ -963,8 +963,8 @@ const SHIPPED_FOLDER_HASHES: &[(&str, u32, &str)] = &[
     ),
     (
         starts::EPOCH_AI_MODELS,
-        1,
-        "64562e7e18ceb65c19b6d12a289d6188e32548b72fc8630fd5ac5619d1781866",
+        2,
+        "e0b32a200e4641a74767c5e266a33bda069b2d3b92596ec32fbcb2c4ae1232e0",
     ),
 ];
 
