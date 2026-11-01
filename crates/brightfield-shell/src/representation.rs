@@ -334,12 +334,19 @@ pub fn format_compact(rep: &Representation, value: f64) -> String {
 /// `value` printed as a tooltip prints a number read on an axis that was drawn with `axis` (the
 /// plot's written tick format, if any).
 ///
-/// The tooltip follows the axis it sits beside. The format the rule would have written for the
-/// column ([`Representation::tick_format`]) is the rule's own choice and prints compactly
-/// ([`format_compact`]). Any other written format prints as it is written, with the currency
-/// symbol and a percent sign added where it printed none. An axis with no format prints the
-/// grouped default, unscaled, for a column with a symbol or a percent unit. `None` is the answer
-/// for a default representation, whose column keeps the engine's text
+/// The tooltip follows the axis it sits beside.
+///
+/// - The format the rule would have written for the column ([`Representation::tick_format`]) is
+///   the rule's own choice and prints compactly ([`format_compact`]).
+/// - Any other written format prints as it is written, with the currency symbol added where it
+///   printed none. A percent sign is attached only to a column of percentage points: a stored
+///   fraction printed through a format with no `%` reads as that format reads it.
+/// - An axis with no format prints the grouped default, unscaled, with the symbol; a stored
+///   fraction is multiplied by 100 and given its `%`, and a column whose own tick format is not
+///   grouped (a year's `d`) prints with that format.
+///
+/// `None` is the answer only for a default representation, which has nothing to say about the
+/// column, so its line keeps the engine's text
 /// (`a_percent_column_is_read_on_an_axis_with_its_sign_attached`).
 #[must_use]
 pub fn format_on_axis(
@@ -350,11 +357,14 @@ pub fn format_on_axis(
     if *rep == Representation::default() {
         return None;
     }
+    // The rule's own formats print a stored fraction's `%` themselves.
+    let stored_fraction = rep.tick_format.as_deref().is_some_and(|f| f.ends_with('%'));
+    let points = rep.title_unit.as_deref() == Some("%") && !stored_fraction;
     let decorate = |mut text: String| {
         if let Some(symbol) = rep.symbol.as_deref().filter(|s| !text.contains(*s)) {
             text = with_symbol(&text, symbol);
         }
-        if rep.title_unit.as_deref() == Some("%") && !text.ends_with('%') {
+        if points && !text.ends_with('%') {
             text.push('%');
         }
         text
@@ -366,10 +376,19 @@ pub fn format_on_axis(
             Some(format_compact(rep, value))
         }
         Some(format) => Some(decorate(format.format(value))),
-        None => {
-            let unit_named = rep.symbol.is_some() || rep.title_unit.as_deref() == Some("%");
+        None if stored_fraction => {
             let grouped = NumberFormat::parse(",").expect("`,` is a d3-format specifier");
-            unit_named.then(|| decorate(grouped.format(value)))
+            Some(format!("{}%", grouped.format(value * 100.0)))
+        }
+        None => {
+            let own = rep
+                .tick_format
+                .as_deref()
+                .filter(|f| !f.contains(','))
+                .and_then(NumberFormat::parse);
+            let format = own
+                .unwrap_or_else(|| NumberFormat::parse(",").expect("`,` is a d3-format specifier"));
+            Some(decorate(format.format(value)))
         }
     }
 }
@@ -532,6 +551,26 @@ mod tests {
             Some("12.0%")
         );
         assert_eq!(format_on_axis(&Representation::default(), None, 12.0), None);
+    }
+
+    #[test]
+    fn a_stored_fraction_is_read_as_its_axis_reads_it() {
+        let rep = Representation {
+            tick_format: Some(".0%".to_string()),
+            title_unit: Some("%".to_string()),
+            ..Representation::default()
+        };
+        assert_eq!(format_on_axis(&rep, None, 0.45).as_deref(), Some("45%"));
+        let plain = NumberFormat::parse(".1f").expect("a format");
+        assert_eq!(
+            format_on_axis(&rep, Some(&plain), 0.45).as_deref(),
+            Some("0.5")
+        );
+        let percent = NumberFormat::parse(".1%").expect("a format");
+        assert_eq!(
+            format_on_axis(&rep, Some(&percent), 0.45).as_deref(),
+            Some("45.0%")
+        );
     }
 
     /// A profiled column of `type_name` whose values run from `min` to `max`, as the profile

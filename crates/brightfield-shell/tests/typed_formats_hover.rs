@@ -16,12 +16,12 @@ use brightfield_shell::window::{Boot, MeridianApp};
 
 const NBSP: char = '\u{a0}';
 
-/// Three rows: a sterling amount, a percentage, and a count nobody labels.
+/// Three rows: a sterling amount, a percentage, a count, a year and a download count nobody labels.
 const CSV: &str = "\
-revenue,share,downloads
-\"£2,412,345,000.00\",45%,1234567
-\"£500,000,000.00\",10%,10
-\"£3,100,000,000.00\",80%,900
+revenue,share,downloads,count,year
+\"£2,412,345,000.00\",45%,1234567,1234567,2001
+\"£500,000,000.00\",10%,10,10,2002
+\"£3,100,000,000.00\",80%,900,900,2003
 ";
 
 const SCREEN: egui::Rect = egui::Rect {
@@ -42,7 +42,7 @@ fn scratch_config() {
 }
 
 /// The fixture written in a folder of the calling test's own, with a record nominating labels
-/// for `revenue` and `share` and none for `downloads`.
+/// for every column but `downloads`.
 fn fixture() -> PathBuf {
     scratch_config();
     let thread = std::thread::current();
@@ -56,6 +56,8 @@ fn fixture() -> PathBuf {
     for (column, label) in [
         ("revenue", "finance.currency.amount"),
         ("share", "representation.numeric.percentage"),
+        ("count", "representation.numeric.integer_number"),
+        ("year", "datetime.component.year"),
     ] {
         record.fields.insert(
             column.to_string(),
@@ -204,7 +206,23 @@ fn tooltip_leaves_an_unlabelled_column_alone() {
 fn tooltip_follows_a_hand_written_axis() {
     let (mut app, _) = window("revenue", "share", "");
     let lines = lines_at(&mut app, 2_412_345_000.0, 0.45);
-    assert_eq!(lines[0], "revenue: £2,412,345,000");
+    assert_eq!(lines, vec!["revenue: £2,412,345,000", "share: 45%"]);
+}
+
+/// **A stored fraction is read as the axis the analyst wrote reads it**, with no `%` of its own.
+#[test]
+fn tooltip_follows_a_written_format_on_a_fraction() {
+    let (mut app, _) = window("revenue", "share", "yTickFormat: \".1f\"\n");
+    let lines = lines_at(&mut app, 2_412_345_000.0, 0.45);
+    assert_eq!(lines[1], "share: 0.5");
+}
+
+/// **A labelled count is grouped and a labelled year is not**, on an axis with no format.
+#[test]
+fn tooltip_groups_a_count_and_not_a_year_on_a_bare_axis() {
+    let (mut app, _) = window("year", "count", "");
+    let lines = lines_at(&mut app, 2001.0, 1_234_567.0);
+    assert_eq!(lines, vec!["year: 2001", "count: 1,234,567"]);
 }
 
 /// **A format the analyst wrote is the one the tooltip prints with**, with the symbol added.

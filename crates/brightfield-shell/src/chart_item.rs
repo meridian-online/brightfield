@@ -843,28 +843,23 @@ fn hover_read(doc: &mut ChartDoc, p: kurbo::Point, at: egui::Pos2) -> Option<Hov
     // The plot's own facts are taken first and the borrow released, because
     // the read that follows needs the document mutably. Both are cheap: a
     // handful of column names and four floats.
-    let (mark, probe) = {
+    let (layer, probe) = {
         let plot = doc.composed.plots.get(plot_at(&doc.composed.plots, p)?)?;
-        let layer = plot.hover.as_ref()?;
-        (layer.mark, hover_probe(plot, layer, p)?)
+        let layer = plot.hover.clone()?;
+        let probe = hover_probe(plot, &layer, p)?;
+        (layer, probe)
     };
-    let read = doc.nearest_row(mark, &probe)?;
+    let read = doc.nearest_row(layer.mark, &probe)?;
     if read.cells.is_empty() {
         return None;
     }
     let facts = doc.column_facts();
-    let layer = doc
-        .composed
-        .plots
-        .get(plot_at(&doc.composed.plots, p)?)?
-        .hover
-        .as_ref()?;
     Some(HoverReadout {
         at,
         lines: read
             .cells
             .iter()
-            .map(|cell| hover_line(facts.shown(), layer, &cell.column, &cell.value))
+            .map(|cell| hover_line(facts.shown(), &layer, &cell.column, &cell.value))
             .collect(),
     })
 }
@@ -875,8 +870,9 @@ fn hover_read(doc: &mut ChartDoc, p: kurbo::Point, at: egui::Pos2) -> Option<Hov
 /// was drawn ([`crate::representation::format_on_axis`]). A column the file's facts do not
 /// know, an unlabelled one among them, and a value that is not a number keep the engine's text.
 /// A name that is an expression's text, as a bin over an expression is aliased to, is replaced by
-/// the column the expression reads, and its value is left as the engine wrote it, since the
-/// expression may have changed its unit.
+/// the column the expression reads when it quotes exactly one known column, and its value is left
+/// as the engine wrote it, since the expression may have changed its unit. An expression that
+/// quotes several or none keeps its text.
 fn hover_line(
     shown: &crate::data_grid::Shown,
     layer: &HoverLayer,
@@ -884,10 +880,10 @@ fn hover_line(
     value: &str,
 ) -> String {
     let Some(rep) = shown.get(column) else {
-        let source = shown
+        let mut quoted = shown
             .keys()
-            .filter(|name| column.contains(&format!("\"{name}\"")))
-            .max_by_key(|name| name.len());
+            .filter(|name| column.contains(&format!("\"{name}\"")));
+        let source = quoted.next().filter(|_| quoted.next().is_none());
         return format!("{}: {value}", source.map_or(column, String::as_str));
     };
     let axis = [Channel::X, Channel::Y]
@@ -2386,6 +2382,10 @@ mod tests {
             "revenue: 2.4"
         );
         assert_eq!(hover_line(&shown, &layer, "other", "x"), "other: x");
+        assert_eq!(
+            hover_line(&shown, &layer, "\"revenue\" / \"price\"", "2"),
+            "\"revenue\" / \"price\": 2"
+        );
     }
 
     use brightfield_render::layout::ChartLayout;
