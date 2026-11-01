@@ -1245,13 +1245,11 @@ pub fn open_any(path: &Path, runner: &crate::run::Runner) -> Result<Opened, Stri
     match one_part {
         Some(name) => {
             let rows = own::grid_copy(&protocol, &name)?;
-            // The copy was cast from the labels the Protocol's package records for it.
-            let options = OpenOptions {
-                given_labels: labels_of(&protocol_fields(&protocol.dir, &name)),
-                already_cast: true,
-                ..OpenOptions::default()
-            };
-            open_traced(&rows.to_string_lossy(), &options).map(|(o, _)| Opened::OneTable(o))
+            // The copy is under the Protocol's `.grid/` folder, so `settled` finds the labels the
+            // Protocol's package records for it and opens it as already cast, reading the
+            // packages once.
+            open_traced(&rows.to_string_lossy(), &OpenOptions::default())
+                .map(|(o, _)| Opened::OneTable(o))
         }
         None => Ok(Opened::Model(protocol)),
     }
