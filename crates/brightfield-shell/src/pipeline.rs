@@ -367,6 +367,9 @@ pub struct HoverLayer {
     /// the data, and a `{count:}` or a `{bin:}` names a column the step's own
     /// rows do not carry.
     pub channels: Vec<(Channel, String)>,
+    /// The tick formats the plot wrote for its positional axes, which a readout prints a value
+    /// on that axis with.
+    pub tick_formats: brightfield_spec::layout::TickFormats,
 }
 
 impl HoverLayer {
@@ -475,6 +478,7 @@ fn hover_layer(
     marks: &[&brightfield_spec::ast::Mark],
     maps: &[ChannelMap],
     scales: &ScaleSet,
+    tick_formats: &brightfield_spec::layout::TickFormats,
 ) -> Option<HoverLayer> {
     for channel in [Channel::X, Channel::Y] {
         scales.get(channel).and_then(units_per_pixel)?;
@@ -490,7 +494,11 @@ fn hover_layer(
         .iter()
         .filter(|(c, _)| matches!(c, Channel::X | Channel::Y))
         .count();
-    (positional == 2).then_some(HoverLayer { mark, channels })
+    (positional == 2).then(|| HoverLayer {
+        mark,
+        channels,
+        tick_formats: tick_formats.clone(),
+    })
 }
 
 /// A plot's declared interaction, resolved from the spec's brushable-interactor
@@ -2934,7 +2942,7 @@ fn compose_from_results(
                     x_field: b.channels.x.clone(),
                     y_field: b.channels.y.clone(),
                 });
-            let hover = hover_layer(&drawn, &marks, &channel_maps, &scales);
+            let hover = hover_layer(&drawn, &marks, &channel_maps, &scales, &tick_formats);
             plots.push(PlotHandle {
                 path: plot.path.clone(),
                 rect,

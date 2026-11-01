@@ -331,6 +331,49 @@ pub fn format_compact(rep: &Representation, value: f64) -> String {
     text
 }
 
+/// `value` printed as a tooltip prints a number read on an axis that was drawn with `axis` (the
+/// plot's written tick format, if any).
+///
+/// The tooltip follows the axis it sits beside. The format the rule would have written for the
+/// column ([`Representation::tick_format`]) is the rule's own choice and prints compactly
+/// ([`format_compact`]). Any other written format prints as it is written, with the currency
+/// symbol and a percent sign added where it printed none. An axis with no format prints the
+/// grouped default, unscaled, for a column with a symbol or a percent unit; `None` is the answer
+/// for any other column, whose text is left as the engine wrote it, so a representation that says
+/// nothing about a column changes nothing about its line.
+#[must_use]
+pub fn format_on_axis(
+    rep: &Representation,
+    axis: Option<&NumberFormat>,
+    value: f64,
+) -> Option<String> {
+    if *rep == Representation::default() {
+        return None;
+    }
+    let decorate = |mut text: String| {
+        if let Some(symbol) = rep.symbol.as_deref().filter(|s| !text.contains(*s)) {
+            text = with_symbol(&text, symbol);
+        }
+        if rep.title_unit.as_deref() == Some("%") && !text.ends_with('%') {
+            text.push('%');
+        }
+        text
+    };
+    match axis {
+        Some(format)
+            if rep.tick_format.as_deref().and_then(NumberFormat::parse) == Some(*format) =>
+        {
+            Some(format_compact(rep, value))
+        }
+        Some(format) => Some(decorate(format.format(value))),
+        None => {
+            let unit_named = rep.symbol.is_some() || rep.title_unit.as_deref() == Some("%");
+            let grouped = NumberFormat::parse(",").expect("`,` is a d3-format specifier");
+            unit_named.then(|| decorate(grouped.format(value)))
+        }
+    }
+}
+
 /// The decimals `value` needs to print at least two significant digits, and at least one.
 // The clamp keeps the float within `1..=12` before the cast.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -475,6 +518,21 @@ mod tests {
 
     use super::*;
     use crate::column_record::{Negatives, Prefer, Written};
+
+    #[test]
+    fn a_percent_column_is_read_on_an_axis_with_its_sign_attached() {
+        let rep = Representation {
+            title_unit: Some("%".to_string()),
+            ..Representation::default()
+        };
+        assert_eq!(format_on_axis(&rep, None, 12.0).as_deref(), Some("12%"));
+        let written = NumberFormat::parse(".1f").expect("a format");
+        assert_eq!(
+            format_on_axis(&rep, Some(&written), 12.0).as_deref(),
+            Some("12.0%")
+        );
+        assert_eq!(format_on_axis(&Representation::default(), None, 12.0), None);
+    }
 
     /// A profiled column of `type_name` whose values run from `min` to `max`, as the profile
     /// renders them.

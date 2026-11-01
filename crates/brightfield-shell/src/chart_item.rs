@@ -852,14 +852,61 @@ fn hover_read(doc: &mut ChartDoc, p: kurbo::Point, at: egui::Pos2) -> Option<Hov
     if read.cells.is_empty() {
         return None;
     }
+    let facts = doc.column_facts();
+    let layer = doc
+        .composed
+        .plots
+        .get(plot_at(&doc.composed.plots, p)?)?
+        .hover
+        .as_ref()?;
     Some(HoverReadout {
         at,
         lines: read
             .cells
             .iter()
-            .map(|cell| format!("{}: {}", cell.column, cell.value))
+            .map(|cell| hover_line(facts.shown(), layer, &cell.column, &cell.value))
             .collect(),
     })
+}
+
+/// One readout line: the column a cell is of, and its value in that column's unit.
+///
+/// A cell is read on the axes of `layer` that its column is on, and printed the way that axis
+/// was drawn ([`crate::representation::format_on_axis`]). A column the file's facts do not
+/// know, an unlabelled one among them, and a value that is not a number keep the engine's text.
+/// A name that is an expression's text, as a bin over an expression is aliased to, is replaced by
+/// the column the expression reads, and its value is left as the engine wrote it, since the
+/// expression may have changed its unit.
+fn hover_line(
+    shown: &crate::data_grid::Shown,
+    layer: &HoverLayer,
+    column: &str,
+    value: &str,
+) -> String {
+    let Some(rep) = shown.get(column) else {
+        let source = shown
+            .keys()
+            .filter(|name| column.contains(&format!("\"{name}\"")))
+            .max_by_key(|name| name.len());
+        return format!("{}: {value}", source.map_or(column, String::as_str));
+    };
+    let axis = [Channel::X, Channel::Y]
+        .into_iter()
+        .find(|c| layer.column(*c) == Some(column))
+        .and_then(|c| match c {
+            Channel::X => layer.tick_formats.x.as_ref(),
+            _ => layer.tick_formats.y.as_ref(),
+        });
+    let axis = match axis {
+        Some(brightfield_spec::layout::AxisFormat::Number(format)) => Some(format),
+        _ => None,
+    };
+    let text = match value.parse::<f64>() {
+        Ok(number) => crate::representation::format_on_axis(rep, axis, number)
+            .unwrap_or_else(|| value.to_string()),
+        Err(_) => value.to_string(),
+    };
+    format!("{column}: {text}")
 }
 
 /// The probe a rest at `p` (page-local logical pixels) on `plot` means.
@@ -2314,6 +2361,33 @@ fn band_category(scale: &Scale, pixel: f64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_readout_never_names_a_column_by_an_expressions_text() {
+        let shown: crate::data_grid::Shown = [
+            (
+                "revenue".to_string(),
+                crate::representation::Representation::default(),
+            ),
+            (
+                "price".to_string(),
+                crate::representation::Representation::default(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let layer = HoverLayer {
+            mark: 0,
+            channels: Vec::new(),
+            tick_formats: brightfield_spec::layout::TickFormats::default(),
+        };
+        assert_eq!(
+            hover_line(&shown, &layer, "\"revenue\" / 1e9", "2.4"),
+            "revenue: 2.4"
+        );
+        assert_eq!(hover_line(&shown, &layer, "other", "x"), "other: x");
+    }
+
     use brightfield_render::layout::ChartLayout;
     use brightfield_render::scale::ScaleSet;
     use brightfield_spec::analysis::ComponentPath;
@@ -2352,6 +2426,7 @@ mod tests {
             hover: Some(HoverLayer {
                 mark: 0,
                 channels: vec![(Channel::X, "x".to_string()), (Channel::Y, "y".to_string())],
+                tick_formats: brightfield_spec::layout::TickFormats::default(),
             }),
             navigated_empty: false,
             committed_rect: None,
