@@ -55,13 +55,18 @@ fn scratch_config() {
 /// `text` written as `typed_grid.csv` in a folder of the calling test's own, with a record
 /// nominating `labels` and the format chosen for `booked`.
 fn fixture(text: &str, labels: &[(&str, &str)]) -> PathBuf {
+    fixture_named(text, labels, "typed_grid.csv")
+}
+
+/// [`fixture`], with the file called `name`.
+fn fixture_named(text: &str, labels: &[(&str, &str)], name: &str) -> PathBuf {
     scratch_config();
     let thread = std::thread::current();
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join("typed_formats_grid")
         .join(thread.name().unwrap_or("main").replace("::", "-"));
     std::fs::create_dir_all(&dir).expect("fixture dir");
-    let path = dir.join("typed_grid.csv");
+    let path = dir.join(name);
     std::fs::write(&path, text).expect("write fixture");
     let mut record = column_record::SourceRecord::default();
     for (column, label) in labels {
@@ -305,23 +310,24 @@ const TYPED_LABELS: &[(&str, &str)] = &[
     ("day", "datetime.date.iso"),
 ];
 
-/// A typed filter's preview reads the file through the casts the session reads it through, so
-/// `share > 0.4` keeps the rows the applied `where` keeps and pages them the same way.
-#[test]
-fn a_typed_filter_previews_the_rows_the_applied_where_keeps() {
+/// The answer a typed read of `statement` over the typed fixture, written as `name`, comes back
+/// with, beside the file opened as the window opens it.
+fn typed_answer(
+    name: &str,
+    statement: impl Fn(&str) -> String,
+) -> (OpenedFile, brightfield_shell::typed_sql::TypedAnswer) {
     use brightfield_engine::FileReader;
     use brightfield_shell::run::Runner;
     use brightfield_shell::typed_sql::{TypedReads, TypedSource, TYPED_PAUSE};
     use std::time::{Duration, Instant};
 
     brightfield_shell::data_grid::use_own_preview_gate_on_this_thread();
-    let path = fixture(include_str!("data/typed_formats.csv"), TYPED_LABELS);
-    let mut opened = open(&path);
+    let path = fixture_named(include_str!("data/typed_formats.csv"), TYPED_LABELS, name);
+    let opened = open(&path);
     assert!(
         opened.protocol.casts.iter().any(|(c, _)| c == "share"),
         "fixture check: share is cast on open"
     );
-    let condition = "share > 0.4";
     let facts = ColumnBandFacts::new(&opened.protocol.columns);
     let source = TypedSource {
         data: path.clone(),
@@ -334,8 +340,7 @@ fn a_typed_filter_previews_the_rows_the_applied_where_keeps() {
         casts: opened.protocol.casts.clone(),
     };
     let mut reads = TypedReads::new(source, TYPED_PAUSE, || {});
-    let text = format!("select * from {} where {condition}", opened.protocol.name);
-    reads.edit(&text, Instant::now());
+    reads.edit(&statement(&opened.protocol.name), Instant::now());
     reads.read_now();
     let until = Instant::now() + Duration::from_secs(60);
     while reads.current().is_none() && reads.refusal().is_none() {
@@ -347,6 +352,31 @@ fn a_typed_filter_previews_the_rows_the_applied_where_keeps() {
         .current()
         .unwrap_or_else(|| panic!("refused: {:?}", reads.refusal()))
         .clone();
+    (opened, answer)
+}
+
+/// The headers of `page`'s columns.
+fn headers(page: &GridPage) -> Vec<String> {
+    page.columns.iter().map(|c| c.header_text()).collect()
+}
+
+/// A typed filter's preview reads the file through the casts the session reads it through, so
+/// `share > 0.4` keeps the rows the applied `where` keeps and pages them the same way, and neither
+/// the filter's page nor the statement's own shows the raw text the grid hides.
+#[test]
+fn a_typed_filter_previews_the_rows_the_applied_where_keeps() {
+    let condition = "share > 0.4";
+    let (mut opened, answer) = typed_answer("typed_grid.csv", |table| {
+        format!("select * from {table} where {condition}")
+    });
+    assert!(
+        headers(&answer.page)
+            .iter()
+            .all(|h| !h.starts_with(brightfield_shell::data_file::RAW_PREFIX)),
+        "the statement's page shows raw text: {:?}",
+        headers(&answer.page)
+    );
+    let facts = ColumnBandFacts::new(&opened.protocol.columns);
     let preview = answer
         .filter_page
         .expect("a filter of the root table is paged");
@@ -374,9 +404,7 @@ fn a_typed_filter_previews_the_rows_the_applied_where_keeps() {
         "fixture check: the applied page holds every row the condition keeps"
     );
     assert_eq!(answer.filter_rows, Some(applied.rows.len() as u64));
-    let names =
-        |page: &GridPage| -> Vec<String> { page.columns.iter().map(|c| c.header_text()).collect() };
-    assert_eq!(names(&preview), names(&applied));
+    assert_eq!(headers(&preview), headers(&applied));
     let cells = |page: &GridPage| -> Vec<Vec<String>> {
         page.rows
             .iter()
@@ -384,4 +412,26 @@ fn a_typed_filter_previews_the_rows_the_applied_where_keeps() {
             .collect()
     };
     assert_eq!(cells(&preview), cells(&applied));
+}
+
+/// A file called `opened_rows.csv`, the name the casts read the file's rows under, still previews:
+/// the rows load under a name the root table does not have.
+#[test]
+fn a_file_named_as_the_raw_rows_still_previews() {
+    let (opened, answer) = typed_answer("opened_rows.csv", |table| {
+        format!("select * from {table} order by year")
+    });
+    assert_eq!(opened.protocol.name, "opened_rows", "fixture check");
+    assert!(!answer.page.rows.is_empty(), "the statement read rows");
+    let share = answer
+        .page
+        .columns
+        .iter()
+        .position(|c| c.name == "share")
+        .expect("a share column");
+    assert!(
+        answer.page.rows[0][share].text.ends_with('%'),
+        "share is read as the cast fraction and shown as a percentage: {:?}",
+        answer.page.rows[0][share]
+    );
 }

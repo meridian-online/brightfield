@@ -150,6 +150,11 @@ fn is_formatted_type(type_name: &str) -> bool {
 /// own order, a cast one replaced by its cast, and each cast column's text after them under its raw
 /// name.
 pub(crate) fn cast_select(casts: &[(String, String)]) -> String {
+    cast_select_from(casts, ROWS)
+}
+
+/// [`cast_select`] reading the file's rows from the table `rows` in place of [`ROWS`].
+pub(crate) fn cast_select_from(casts: &[(String, String)], rows: &str) -> String {
     let replaced: Vec<String> = casts
         .iter()
         .map(|(column, expr)| format!("{expr} AS {}", sql_ident(column)))
@@ -162,7 +167,7 @@ pub(crate) fn cast_select(casts: &[(String, String)]) -> String {
         "SELECT * REPLACE ({}), {} FROM {}",
         replaced.join(", "),
         raw.join(", "),
-        sql_ident(ROWS)
+        sql_ident(rows)
     )
 }
 
