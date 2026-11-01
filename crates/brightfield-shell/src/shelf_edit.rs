@@ -124,8 +124,8 @@ impl std::error::Error for ShelfRefusal {}
 /// A column that is already where it is put yields no edits and leaves the
 /// spec equal.
 ///
-/// This is [`put_column_over`] with nothing known of what the rule wrote for
-/// the column the axis held, so the axis's format and title stay as they are.
+/// This is [`put_column_over`] with an empty [`RuleWritten`] for the column
+/// the axis held, so the axis's format and title stay as they are.
 ///
 /// # Errors
 ///
@@ -159,11 +159,14 @@ pub struct RuleWritten {
 /// **[`put_column`], taking out what the rule wrote for the old column.**
 ///
 /// After the edits [`put_column`] lists, and in the same list so one `u` takes
-/// all of them back, the axis's tick format (`xTickFormat` / `yTickFormat`)
+/// them back together
+/// (`a_column_put_on_the_scaled_tile_drops_the_unit_and_one_undo_puts_everything_back`),
+/// the axis's tick format (`xTickFormat` / `yTickFormat`)
 /// comes out when it equals `old.tick_format`, and its title (`xLabel` /
 /// `yLabel`) when it equals one of `old.titles`. A format or title that differs
-/// from those is the analyst's and stays. Nothing comes out when the column is
-/// already where it is put.
+/// from those is the analyst's and stays
+/// (`a_format_the_analyst_typed_stays_when_the_column_changes`). A column
+/// already where it is put yields no edits.
 ///
 /// # Errors
 ///
