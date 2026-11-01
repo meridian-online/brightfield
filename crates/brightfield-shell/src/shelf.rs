@@ -1318,8 +1318,8 @@ pub const CUSTOM_FORMAT: &str = "custom";
 pub const DEFAULT_FORMAT: &str = "default";
 
 /// The presets the format row steps through, in the order `l` steps them, and
-/// the specifier each writes. `default` writes none: it takes the key out.
-/// `auto` writes none here either, because its specifier is the rule's for the
+/// the specifier each writes. `default` takes the key out and writes no specifier.
+/// `auto` has no fixed one in this table either, because its specifier is the rule's for the
 /// row's own column ([`FormatFacts::rule`]), so [`SettingRow::step_to`] resolves
 /// it per row. Custom is last and has no specifier of its own: it is the field's.
 ///
@@ -1964,8 +1964,8 @@ impl ChannelSettings {
     }
 
     /// These rows with the format each axis's column gets from its type
-    /// (`x` and `y`, the rule's tick format, `None` for a column it has nothing
-    /// to say about). A format row whose file holds exactly that specifier reads
+    /// (`x` and `y`, the rule's tick format, `None` for a column the rule gives
+    /// no format). A format row whose file holds exactly that specifier reads
     /// `auto`, and every format row carries it for `auto` to write and for the
     /// row to suggest. A saved chart is not rewritten: its row reads `auto` only
     /// while the rule still gives what it holds.
