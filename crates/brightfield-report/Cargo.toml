@@ -23,8 +23,8 @@ typst-render = "=0.15.1"
 typst-layout = "=0.15.1"
 # CommonMark with GitHub's tables, which is what an agent writes report.md in.
 # The default features add a command-line binary's argument parser and an HTML
-# writer, neither of which this crate uses. 0.13.4 was released on 2026-05-20.
-pulldown-cmark = { version = "=0.13.4", default-features = false }
+# writer, neither of which this crate uses. 0.13.6 was released on 2026-10-30.
+pulldown-cmark = { version = "=0.13.6", default-features = false }
 # The bundled Inter and JetBrains Mono: the only fonts the report is set in.
 meridian-design = { workspace = true }
 
