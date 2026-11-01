@@ -113,7 +113,7 @@ fn page(opened: &mut OpenedFile) -> GridPage {
 
 /// The cell of `column` whose stored value is `stored`: the grid reads rows in no promised order,
 /// so a row is found by what it holds.
-fn cell<'a>(
+fn cell_holding<'a>(
     page: &'a GridPage,
     column: &str,
     stored: &str,
@@ -138,23 +138,23 @@ fn labelled_cells_use_the_file_convention() {
     let mut opened = open(&fixture(GRID_CSV, LABELS));
     let page = page(&mut opened);
 
-    let big = cell(&page, "revenue", "1234.50");
+    let big = cell_holding(&page, "revenue", "1234.50");
     assert_eq!(big.text, "£1,234.50");
     assert_eq!(big.exact.as_deref(), Some("1234.50"));
-    let negative = cell(&page, "revenue", "-12.00");
+    let negative = cell_holding(&page, "revenue", "-12.00");
     assert_eq!(negative.text, "(£12.00)");
     assert_eq!(negative.exact.as_deref(), Some("-12.00"));
-    let share = cell(&page, "share", "0.45");
+    let share = cell_holding(&page, "share", "0.45");
     assert_eq!(share.text, "45%");
     assert_eq!(share.exact.as_deref(), Some("0.45"));
-    assert_eq!(cell(&page, "share", "0.03").text, "3%");
+    assert_eq!(cell_holding(&page, "share", "0.03").text, "3%");
 }
 
 #[test]
 fn unlabelled_columns_are_unchanged() {
     let mut opened = open(&fixture(GRID_CSV, LABELS));
     let page = page(&mut opened);
-    let count = cell(&page, "count", "1234567");
+    let count = cell_holding(&page, "count", "1234567");
     assert_eq!(count.text, "1234567");
     assert_eq!(count.exact, None);
     let column = page.columns.iter().find(|c| c.name == "count").unwrap();
@@ -193,10 +193,10 @@ fn header_carries_the_unit() {
 fn a_date_columns_cells_are_unchanged_or_in_its_format() {
     let mut opened = open(&fixture(GRID_CSV, LABELS));
     let page = page(&mut opened);
-    let day = cell(&page, "day", "2024-01-05");
+    let day = cell_holding(&page, "day", "2024-01-05");
     assert_eq!(day.text, "2024-01-05");
     assert_eq!(day.exact, None);
-    let booked = cell(&page, "booked", "2024-01-05");
+    let booked = cell_holding(&page, "booked", "2024-01-05");
     assert_eq!(booked.text, "05 Jan 2024");
     assert_eq!(booked.exact.as_deref(), Some("2024-01-05"));
     let column = page.columns.iter().find(|c| c.name == "booked").unwrap();
@@ -213,9 +213,9 @@ fn a_cell_keeps_the_decimals_of_the_stored_value() {
         &[("share", "representation.numeric.percentage")],
     ));
     let page = page(&mut opened);
-    assert_eq!(cell(&page, "share", "0.455").text, "45.5%");
-    assert_eq!(cell(&page, "share", "0.45").text, "45%");
-    assert_eq!(cell(&page, "share", "0.03").text, "3%");
+    assert_eq!(cell_holding(&page, "share", "0.455").text, "45.5%");
+    assert_eq!(cell_holding(&page, "share", "0.45").text, "45%");
+    assert_eq!(cell_holding(&page, "share", "0.03").text, "3%");
 }
 
 /// A preview of typed rows is tabulated with the applied grid's representations, so the header's
