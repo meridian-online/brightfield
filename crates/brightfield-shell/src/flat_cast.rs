@@ -236,7 +236,7 @@ fn unblockable(c: char) -> bool {
 }
 
 /// `text` as a YAML double-quoted scalar on one line, with its quotes, backslashes, line feeds,
-/// tabs and every [`unblockable`] character escaped.
+/// tabs and [`unblockable`] characters escaped (`a_block_scalar_reads_back_as_written`).
 fn yaml_double_quoted(text: &str) -> String {
     let mut out = String::from("\"");
     for c in text.chars() {
