@@ -33,7 +33,7 @@ use brightfield_shell::pipeline::Composed;
 use brightfield_shell::shelf::{
     foot_sentence, format_preset, format_specifier, Binding, ChannelSettings, ColumnList,
     ColumnListRequest, ListColumn, ListReport, ListTab, RowEdit, RowField, SettingRow,
-    SettingValue, ShelfChannels, AUTO, FORMAT_PRESETS, FORMAT_ROW, TITLE_ROW,
+    SettingValue, ShelfChannels, DEFAULT_FORMAT, FORMAT_PRESETS, FORMAT_ROW, TITLE_ROW,
 };
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -427,7 +427,7 @@ fn each_preset_reads_back_as_its_own_name() {
     let names: Vec<&str> = FORMAT_PRESETS.iter().map(|(name, _)| *name).collect();
     assert_eq!(
         names,
-        ["auto", "number", "short", "percent", "currency", "custom"]
+        ["default", "auto", "number", "short", "percent", "currency", "custom"]
     );
     for (name, written) in FORMAT_PRESETS {
         if let Some(written) = written {
@@ -441,7 +441,7 @@ fn each_preset_reads_back_as_its_own_name() {
         }
     }
     let row = format_row("", &ScaleSet::new());
-    assert_eq!((row.value.as_str(), row.set), (AUTO, false));
+    assert_eq!((row.value.as_str(), row.set), (DEFAULT_FORMAT, false));
 }
 
 /// **AC2.** The sample is what the axis's top drawn tick prints as under the row's
@@ -805,7 +805,7 @@ impl Window {
 fn l_writes_each_preset_to_the_plot_and_the_axis_repaints_under_it() {
     let mut win = Window::housing("presets");
     assert_eq!(win.attribute("xTickFormat"), None);
-    assert_eq!(win.row().value, AUTO);
+    assert_eq!(win.row().value, DEFAULT_FORMAT);
     let plain = win.x_tick_glyphs();
     assert_eq!(
         plain,

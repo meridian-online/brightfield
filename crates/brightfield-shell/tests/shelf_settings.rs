@@ -26,8 +26,8 @@
 use brightfield_shell::design::{self, Mode};
 use brightfield_shell::shelf::{
     Binding, ChannelSettings, ColumnList, ColumnListRequest, ListColumn, ListDrawn, ListReport,
-    ListTab, SettingRow, SettingRowDrawn, ShelfChannels, AUTO, FORMAT_ROW, NO_TITLE, RANGE_ROW,
-    SCALE_ROW, TICKS_ROW, TITLE_ROW,
+    ListTab, SettingRow, SettingRowDrawn, ShelfChannels, AUTO, DEFAULT_FORMAT, FORMAT_ROW,
+    NO_TITLE, RANGE_ROW, SCALE_ROW, TICKS_ROW, TITLE_ROW,
 };
 use brightfield_shell::text_ink::{self, DrawnText};
 use brightfield_spec::edit::plot_at_path;
@@ -728,7 +728,7 @@ fn a_row_is_set_by_value_so_a_written_linear_reads_auto_and_a_log_reads_set() {
             "Residents",
             true,
         ),
-        ("", ShelfChannel::X, FORMAT_ROW, AUTO, false),
+        ("", ShelfChannel::X, FORMAT_ROW, DEFAULT_FORMAT, false),
         (
             "xTickFormat: ',d'",
             ShelfChannel::X,
@@ -797,7 +797,7 @@ fn an_auto_row_draws_muted_ink_and_a_ring_and_a_set_row_draws_full_ink_and_a_dot
             (drawn_row(&frame, TITLE_ROW), true, &["Residents"][..]),
             (drawn_row(&frame, SCALE_ROW), true, &["log"][..]),
             (drawn_row(&frame, RANGE_ROW), false, &[][..]),
-            (drawn_row(&frame, FORMAT_ROW), false, &[AUTO][..]),
+            (drawn_row(&frame, FORMAT_ROW), false, &[DEFAULT_FORMAT][..]),
         ] {
             let name = row.name;
             assert_eq!(
@@ -832,7 +832,11 @@ fn an_auto_row_draws_muted_ink_and_a_ring_and_a_set_row_draws_full_ink_and_a_dot
                         "{mode:?} {name}: auto is muted"
                     );
                 }
-                None => assert!(set, "{mode:?} {name}: an auto row does not say auto"),
+                // The format row reads default or auto in its own value.
+                None => assert!(
+                    set || name == FORMAT_ROW,
+                    "{mode:?} {name}: an auto row does not say auto"
+                ),
             }
         }
     }
@@ -891,7 +895,10 @@ fn a_format_row_agrees_with_the_reader_over_what_is_a_format() {
                 }
             );
             if !reader_takes {
-                assert_eq!(row.value, AUTO, "`{attrs}`: a refused format reads auto");
+                assert_eq!(
+                    row.value, DEFAULT_FORMAT,
+                    "`{attrs}`: a refused format reads default"
+                );
             }
             // The other axis's row is untouched by this key.
             let other = if channel == ShelfChannel::X {
@@ -939,7 +946,7 @@ fn the_foot_carries_one_sentence_for_the_row_under_the_cursor() {
         ),
         (
             FORMAT_ROW,
-            "How a tick's number or date is written, which auto leaves to the axis's own tick text. Takes: auto, number, short, percent, currency, custom.",
+            "How a tick's number or date is written, which auto takes from the column's type and default leaves to the axis's own tick text. Takes: default, auto, number, short, percent, currency, custom.",
         ),
     ];
     for (row, said) in sentences {
