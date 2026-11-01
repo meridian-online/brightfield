@@ -214,9 +214,9 @@ impl AxisKind {
 /// axis when each of its categories is such a day and a band of names when one
 /// is not, as `a_format_crosses_an_axis_of_the_other_kind_and_no_other` holds, so
 /// a text column of ISO dates reads as a date axis too. Likewise a band of
-/// whole numbers ([`whole_categories`]) is a number axis for its text, as
-/// `whole_number_band_is_a_number_axis` holds: it takes a number format, and the
-/// order of its categories is untouched.
+/// whole numbers, each spelled the way an integer prints, is a number axis for
+/// its text, as `whole_number_band_is_a_number_axis` holds: it takes a number
+/// format, and the order of its categories is untouched.
 #[must_use]
 pub fn axis_kind(scale: &Scale) -> Option<AxisKind> {
     match scale {

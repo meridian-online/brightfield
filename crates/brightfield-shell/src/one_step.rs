@@ -157,7 +157,7 @@ pub struct ColumnFacts {
     /// The catalogue's icon for [`Self::label`], when its entry names one.
     pub icon: Option<String>,
     /// How the column's values are shown: the grid prints each cell by it and names its unit in
-    /// the header. [`Representation::default`] for an unlabelled column.
+    /// the header. [`crate::representation::Representation::default`] for an unlabelled column.
     pub representation: crate::representation::Representation,
 }
 

@@ -701,7 +701,7 @@ pub struct OpenOptions {
     /// [`settled`]).
     ///
     /// A lone file's source casts each column FineType's projection casts
-    /// (see [`crate::flat_cast`]); an already-cast file's casts nothing, so a
+    /// (see `docs/column-formats.md`); an already-cast file's casts nothing, so a
     /// rate is not divided by 100 twice.
     pub already_cast: bool,
 }
