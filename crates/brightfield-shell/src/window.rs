@@ -13552,18 +13552,8 @@ fn hero_axis_settings(
         _ => None,
     };
     // The format the rule gives each axis's column from its type, which a format row
-    // holding exactly it reads as auto. An axis of a bin or other expression over the
-    // tile's column follows that column's.
-    let facts = doc.column_facts();
-    let tile = doc.tile_columns().get(HERO_PLOT).map(|c| c.column.as_str());
-    let rule = |axis: &Binding, key: &str| {
-        let column = match axis {
-            Binding::Column(name) => Some(name.as_str()),
-            Binding::Expression => tile.filter(|t| expression_mentions(plot, key, t)),
-            Binding::Unset => None,
-        }?;
-        facts.get(column)?.representation.tick_format.clone()
-    };
+    // holding exactly it reads as auto.
+    let (x, y) = doc.rule_formats(HERO_PLOT, plot, channels);
     Some(
         ChannelSettings::of_plot_profiled(
             spec,
@@ -13574,29 +13564,8 @@ fn hero_axis_settings(
             &hero.marks,
             moments,
         )
-        .with_rule_formats(
-            rule(&channels.x, "x").as_deref(),
-            rule(&channels.y, "y").as_deref(),
-        ),
+        .with_rule_formats(x.as_deref(), y.as_deref()),
     )
-}
-
-/// Whether a mark of `plot` binds `channel` to an expression that names `column` as a whole
-/// word: `{ bin: { sql: '"revenue" / 1e9' } }` names `revenue`, and `{ count: }` names nothing.
-fn expression_mentions(
-    plot: &brightfield_spec::ast::PlotNode,
-    channel: &str,
-    column: &str,
-) -> bool {
-    crate::shelf_edit::marks_of(plot).iter().any(|mark| {
-        let text = format!("{:?}", mark.options.get(channel));
-        text.match_indices(column).any(|(at, _)| {
-            let word = |c: char| c.is_alphanumeric() || c == '_';
-            let before = text[..at].chars().next_back();
-            let after = text[at + column.len()..].chars().next();
-            !before.is_some_and(word) && !after.is_some_and(word)
-        })
-    })
 }
 
 /// Draw the grid pane's layout switch on `band`, record it on the document and

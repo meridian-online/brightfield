@@ -8,7 +8,10 @@
 //!
 //! The labels are nominated through a column record, as an analyst who accepted them would have,
 //! so no FineType bundle is needed. The stepper is driven on the list alone; the rows a window
-//! hands it, and the file a saved chart leaves alone, are read through a window.
+//! hands it, and the spec file a window leaves as it was while its format is edited, are read
+//! through a window over the data file. A hand-written spec cannot be opened that way: the
+//! shelf's settings list belongs to a data-file window's protocol model, so a saved chart whose
+//! label later changed is held on the rows alone.
 
 use std::path::PathBuf;
 
@@ -292,6 +295,56 @@ fn rule_matching_a_preset_does_not_trap_the_stepper() {
     );
 }
 
+#[test]
+fn reset_puts_a_type_chosen_format_back_to_auto() {
+    let mut list = list_on_format("xTickFormat: ',d'", Some("(,~f"));
+    let reports = list.feed_events(&[key_event(egui::Key::Backspace)]);
+    assert_eq!(
+        reports,
+        [ListReport::Set(RowEdit {
+            channel: ShelfChannel::X,
+            row: FORMAT_ROW,
+            value: SettingValue::Text("(,~f".to_string()),
+        })],
+        "reset writes the rule's specifier, so the row reads auto"
+    );
+    let mut list = list_on_format("xTickFormat: ',d'", None);
+    let reports = list.feed_events(&[key_event(egui::Key::Backspace)]);
+    assert_eq!(
+        reports,
+        [ListReport::Set(RowEdit {
+            channel: ShelfChannel::X,
+            row: FORMAT_ROW,
+            value: SettingValue::Auto,
+        })],
+        "with no rule to write, reset takes the key out"
+    );
+}
+
+#[test]
+fn the_foot_lists_the_presets_the_row_steps_through() {
+    use brightfield_shell::shelf::foot_sentence;
+    let takes = |attrs: &str, rule: Option<&str>| {
+        let foot = foot_sentence(&format_row(attrs, rule));
+        let at = foot.find("Takes: ").expect("the foot lists the presets") + 7;
+        foot[at..].split('.').next().unwrap_or_default().to_string()
+    };
+    assert_eq!(
+        takes("", None),
+        "default, number, short, percent, currency, custom",
+        "no rule, no auto"
+    );
+    assert_eq!(
+        takes("", Some("(,~f")),
+        "default, auto, number, short, percent, currency, custom"
+    );
+    assert_eq!(
+        takes("", Some("~s")),
+        "default, auto, number, percent, currency, custom",
+        "the preset auto already writes is left out"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The window: the rows it hands the list, and the file a saved chart leaves alone.
 // ---------------------------------------------------------------------------
@@ -345,6 +398,26 @@ fn x_format_row(app: &mut MeridianApp, ctx: &egui::Context) -> SettingRow {
         .clone()
 }
 
+fn press_letter(app: &mut MeridianApp, ctx: &egui::Context, key: egui::Key, letter: &str) {
+    frame(
+        app,
+        ctx,
+        vec![key_event(key), egui::Event::Text(letter.to_string())],
+    );
+    frame(app, ctx, Vec::new());
+}
+
+fn format_row_of(app: &MeridianApp) -> SettingRow {
+    app.protocol_model()
+        .column_list()
+        .expect("x's list is open")
+        .settings()
+        .iter()
+        .find(|row| row.name == FORMAT_ROW)
+        .expect("x has a format row")
+        .clone()
+}
+
 #[test]
 fn the_generated_revenue_tile_reads_auto() {
     let (path, rule) = opened();
@@ -377,9 +450,6 @@ fn saved_chart_keeps_its_format() {
     let spec = format!(
         "{data}\nplot:\n  - mark: dot\n    data: {{ from: \"opened\" }}\n    x: \"revenue\"\n    y: \"share\"\nxTickFormat: \"{saved}\"\nwidth: 600\nheight: 400\n"
     );
-    let spec_path = path.with_file_name("saved_chart.yaml");
-    std::fs::write(&spec_path, &spec).expect("write the chart");
-    let before = std::fs::read(&spec_path).expect("read the chart");
     let parsed = parse_spec(&spec, Format::Yaml)
         .expect("the saved chart parses")
         .spec;
@@ -401,9 +471,62 @@ fn saved_chart_keeps_its_format() {
         Some(saved),
         "the row shows the specifier the chart was saved with"
     );
+}
+
+/// Editing the format in a window changes the picture and not the spec file the window was
+/// opened on: the row reads the edit, and the file's bytes are the ones it was opened with.
+#[test]
+fn editing_the_format_leaves_the_spec_file_as_it_was() {
+    let (path, _) = opened();
+    let boot = Boot::data_file_with(&path.to_string_lossy(), &unbundled()).expect("the file opens");
+    let mut app = MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light);
+    let ctx = egui::Context::default();
+    let spec_file = app
+        .chart_doc()
+        .spec_path
+        .clone()
+        .expect("a data file's generated spec is on disk");
+    let before = std::fs::read(&spec_file).expect("read the spec");
+    assert_eq!(x_format_row(&mut app, &ctx).value, AUTO);
+    for _ in 0..3 {
+        press_letter(&mut app, &ctx, egui::Key::J, "j");
+    }
+    press_letter(&mut app, &ctx, egui::Key::L, "l");
+    settle(&mut app, &ctx);
+    let row = format_row_of(&app);
+    assert_eq!(row.value, "number", "`l` from auto steps to number");
     assert_eq!(
-        std::fs::read(&spec_path).expect("read the chart"),
+        row.format.and_then(|f| f.specifier).as_deref(),
+        Some(",f"),
+        "the row holds what the edit wrote, which is not the rule's"
+    );
+    assert_eq!(
+        std::fs::read(&spec_file).expect("read the spec"),
         before,
-        "nothing rewrites the saved file"
+        "an edit is not a save: the file is as it was opened"
+    );
+}
+
+/// The command log names the row's value as the inspector reads it: stepping off `auto` says
+/// `auto`, not `default`.
+#[test]
+fn the_command_log_names_auto_as_the_inspector_reads_it() {
+    let (path, _) = opened();
+    let boot = Boot::data_file_with(&path.to_string_lossy(), &unbundled()).expect("the file opens");
+    let mut app = MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light);
+    let ctx = egui::Context::default();
+    assert_eq!(x_format_row(&mut app, &ctx).value, AUTO);
+    for _ in 0..3 {
+        press_letter(&mut app, &ctx, egui::Key::J, "j");
+    }
+    press_letter(&mut app, &ctx, egui::Key::L, "l");
+    let said = app
+        .chart_doc()
+        .last_shelf_edit()
+        .expect("the edit is logged")
+        .to_string();
+    assert!(
+        said.contains("auto") && said.contains("number"),
+        "the log names the step from auto to number: {said}"
     );
 }

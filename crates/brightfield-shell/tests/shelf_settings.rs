@@ -842,6 +842,43 @@ fn an_auto_row_draws_muted_ink_and_a_ring_and_a_set_row_draws_full_ink_and_a_dot
     }
 }
 
+/// **A format row the rule chose, or one it offers, draws the rule's specifier after its
+/// value.** `auto` and `default` each carry `· (,~f` beside the word.
+#[test]
+fn the_format_row_draws_the_rules_specifier_beside_auto_and_default() {
+    let stage = Stage::new(Mode::Light);
+    for (attrs, value) in [("xTickFormat: '(,~f'", AUTO), ("", DEFAULT_FORMAT)] {
+        let mut list = ColumnList::new(ColumnListRequest {
+            tile: "hero".to_string(),
+            channel: ShelfChannel::X,
+            channels: channels(),
+            columns: columns(),
+        });
+        list.set_settings(settings_of(attrs, &channels()).with_rule_formats(Some("(,~f"), None));
+        let frame = stage.settings(&mut list);
+        let row = drawn_row(&frame, FORMAT_ROW);
+        assert_eq!(
+            texts_in(&frame, row.value_rect),
+            [value],
+            "the row reads {value}"
+        );
+        let beside: Vec<_> = frame
+            .texts
+            .iter()
+            .filter(|t| t.text == "\u{b7} (,~f" && row.rect.contains(t.ink.center()))
+            .collect();
+        assert_eq!(
+            beside.len(),
+            1,
+            "the rule's specifier is drawn once on the {value} row"
+        );
+        assert!(
+            beside[0].ink.left() > row.value_rect.right(),
+            "and after the value, not over it"
+        );
+    }
+}
+
 /// **`xLabel: null` draws the title row as set, with the word for no text.**
 #[test]
 fn a_title_the_file_takes_away_draws_as_set_with_no_text() {
@@ -946,7 +983,7 @@ fn the_foot_carries_one_sentence_for_the_row_under_the_cursor() {
         ),
         (
             FORMAT_ROW,
-            "How a tick's number or date is written, which auto takes from the column's type and default leaves to the axis's own tick text. Takes: default, auto, number, short, percent, currency, custom.",
+            "How a tick's number or date is written, which auto takes from the column's type and default leaves to the axis's own tick text. Takes: default, number, short, percent, currency, custom.",
         ),
     ];
     for (row, said) in sentences {

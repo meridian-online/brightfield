@@ -269,7 +269,9 @@ fn the_foot_names_the_specifier_the_file_gets() {
             "the foot over `{attrs}` names the key and the specifier: {foot}"
         );
     }
-    for name in ["auto", "number", "short", "percent", "currency", "custom"] {
+    for name in [
+        "default", "number", "short", "percent", "currency", "custom",
+    ] {
         assert!(auto.contains(name), "the foot lists {name}: {auto}");
     }
 }

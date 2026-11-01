@@ -1364,10 +1364,10 @@ fn reachable_presets(rule: Option<&str>) -> Vec<(&'static str, Option<&'static s
 }
 
 /// The names of the presets, as the foot lists them: `default, auto, number, ...`.
-fn format_preset_names() -> String {
-    FORMAT_PRESETS
-        .iter()
-        .map(|(name, _)| *name)
+fn format_preset_names(rule: Option<&str>) -> String {
+    reachable_presets(rule)
+        .into_iter()
+        .map(|(name, _)| name)
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -3425,6 +3425,14 @@ impl ColumnList {
                     .and_then(Number::new)?,
             ),
             (ShelfChannel::Colour, STEPS_ROW) => SettingValue::Count(DEFAULT_COLOUR_STEPS),
+            // A format the column's type chose is put back by writing it, so the
+            // row reads auto and the type's format is kept; with none to write,
+            // the key comes out.
+            (_, FORMAT_ROW) => row
+                .format
+                .as_ref()
+                .and_then(|facts| facts.rule.clone())
+                .map_or(SettingValue::Auto, SettingValue::Text),
             _ => SettingValue::Auto,
         };
         Some(RowEdit {
@@ -4996,7 +5004,11 @@ pub fn foot_sentence(row: &SettingRow) -> String {
 /// through, the specifier the file gets, and for a specifier no preset writes, what
 /// `h` and `l` would do to it.
 fn format_foot(row: &SettingRow, facts: &FormatFacts) -> String {
-    let mut foot = format!("{} Takes: {}.", row.says, format_preset_names());
+    let mut foot = format!(
+        "{} Takes: {}.",
+        row.says,
+        format_preset_names(facts.rule.as_deref())
+    );
     let Some(specifier) = &facts.specifier else {
         return foot;
     };
