@@ -341,8 +341,10 @@ pub fn format_compact(rep: &Representation, value: f64) -> String {
 ///
 /// The tooltip follows the axis it sits beside.
 ///
-/// - The format the rule would have written for the column ([`Representation::tick_format`]) is
-///   the rule's own choice and prints compactly ([`format_compact`]).
+/// - The format the rule would have written for an unscaled column
+///   ([`Representation::tick_format`]) is the rule's own choice and prints compactly
+///   ([`format_compact`]). On a scaled column the same format is drawn over the raw values on a
+///   dot chart, so it prints as any other written format does.
 /// - Any other written format prints as it is written, with the currency symbol added where it
 ///   printed none. A percent sign is attached only to a column of percentage points: a stored
 ///   fraction printed through a format with no `%` reads as that format reads it.
@@ -375,8 +377,12 @@ pub fn format_on_axis(
         text
     };
     match axis {
+        // Only an unscaled column's axis reads as the compact reading does: a scaled column's
+        // rule format is drawn over the scaled bin, and the same format on the raw column prints
+        // whole values, which the tooltip then prints as the axis does.
         Some(format)
-            if rep.tick_format.as_deref().and_then(NumberFormat::parse) == Some(*format) =>
+            if rep.scale.is_none()
+                && rep.tick_format.as_deref().and_then(NumberFormat::parse) == Some(*format) =>
         {
             Some(format_compact(rep, value))
         }
@@ -575,6 +581,32 @@ mod tests {
         assert_eq!(
             format_on_axis(&rep, Some(&percent), 0.45).as_deref(),
             Some("45.0%")
+        );
+    }
+
+    #[test]
+    fn the_rules_format_reads_compactly_only_on_an_unscaled_column() {
+        let rule = NumberFormat::parse(",~f").expect("a format");
+        let unscaled = Representation {
+            tick_format: Some(",~f".to_string()),
+            compact_format: Some(",.1~f".to_string()),
+            symbol: Some("£".to_string()),
+            ..Representation::default()
+        };
+        assert_eq!(
+            format_on_axis(&unscaled, Some(&rule), 2_412.5).as_deref(),
+            Some("£2,412.5")
+        );
+        let scaled = Representation {
+            scale: Some(Scale {
+                divisor: 1e9,
+                unit: "bn",
+            }),
+            ..unscaled
+        };
+        assert_eq!(
+            format_on_axis(&scaled, Some(&rule), 2_412_345_000.0).as_deref(),
+            Some("£2,412,345,000")
         );
     }
 

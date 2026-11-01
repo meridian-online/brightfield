@@ -14,8 +14,6 @@ use brightfield_shell::data_file::{self, OpenOptions};
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::{Boot, MeridianApp};
 
-const NBSP: char = '\u{a0}';
-
 /// Three rows: a sterling amount, a percentage, a count, a year and a download count nobody labels.
 const CSV: &str = "\
 revenue,share,downloads,count,year
@@ -170,10 +168,11 @@ fn lines_at(app: &mut MeridianApp, x: f64, y: f64) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// **On an axis that wears the rule's own format, a value reads compactly**: `£2.4 bn` with a
-/// no-break space, and a percent sign attached to a rate.
+/// **A raw axis that wears the rule's own format reads its value unscaled**, as its ticks do: only
+/// a bin over the scaled column is drawn in billions. A rate, which has no scale, keeps its
+/// attached percent sign.
 #[test]
-fn tooltip_reads_compact() {
+fn tooltip_reads_a_raw_axis_unscaled() {
     let (mut app, _) = window(
         "revenue",
         "share",
@@ -182,7 +181,10 @@ fn tooltip_reads_compact() {
     let lines = lines_at(&mut app, 2_412_345_000.0, 0.45);
     assert_eq!(
         lines,
-        vec![format!("revenue: £2.4{NBSP}bn"), "share: 45%".to_string()]
+        vec![
+            "revenue: £2,412,345,000".to_string(),
+            "share: 45%".to_string()
+        ]
     );
 }
 
@@ -194,7 +196,7 @@ fn tooltip_leaves_an_unlabelled_column_alone() {
     assert_eq!(
         lines,
         vec![
-            format!("revenue: £2.4{NBSP}bn"),
+            "revenue: £2,412,345,000".to_string(),
             "downloads: 1234567".to_string()
         ]
     );
