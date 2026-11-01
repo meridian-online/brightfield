@@ -2576,11 +2576,14 @@ impl ChartDoc {
         };
         let mut spec = kept_spec;
         let put = match channel {
-            ShelfChannel::X => {
-                crate::shelf_edit::put_column(&mut spec, &path, PlotAxis::X, column, table)
-            }
-            ShelfChannel::Y => {
-                crate::shelf_edit::put_column(&mut spec, &path, PlotAxis::Y, column, table)
+            ShelfChannel::X | ShelfChannel::Y => {
+                let axis = if channel == ShelfChannel::X {
+                    PlotAxis::X
+                } else {
+                    PlotAxis::Y
+                };
+                let old = self.rule_written(plot, &spec, &path, axis);
+                crate::shelf_edit::put_column_over(&mut spec, &path, axis, column, table, &old)
             }
             ShelfChannel::Colour => crate::shelf_edit::put_colour(&mut spec, &path, column, table),
             ShelfChannel::Mark => return false,
@@ -3120,13 +3123,8 @@ impl ChartDoc {
         node: &brightfield_spec::ast::PlotNode,
         channels: &ShelfChannels,
     ) -> (Option<String>, Option<String>) {
-        let tile = self.tile_columns().get(plot).map(|c| c.column.as_str());
         let rule = |axis: &Binding, key: &str| {
-            let column = match axis {
-                Binding::Column(name) => Some(name.as_str()),
-                Binding::Expression => tile.filter(|t| expression_names_only(node, key, t)),
-                Binding::Unset => None,
-            }?;
+            let column = self.rule_column(plot, node, axis, key)?;
             self.column_facts
                 .get(column)?
                 .representation
@@ -3134,6 +3132,61 @@ impl ChartDoc {
                 .clone()
         };
         (rule(&channels.x, "x"), rule(&channels.y, "y"))
+    }
+
+    /// The column the rule reads for an axis of `node`, the page's plot number `plot`, that
+    /// holds `binding` under the channel `key`: the held column, or, for an expression, the
+    /// tile column when the expression names that column and no other.
+    fn rule_column<'a>(
+        &'a self,
+        plot: usize,
+        node: &brightfield_spec::ast::PlotNode,
+        binding: &'a Binding,
+        key: &str,
+    ) -> Option<&'a str> {
+        match binding {
+            Binding::Column(name) => Some(name.as_str()),
+            Binding::Expression => self
+                .tile_columns()
+                .get(plot)
+                .map(|c| c.column.as_str())
+                .filter(|t| expression_names_only(node, key, t)),
+            Binding::Unset => None,
+        }
+    }
+
+    /// What a generated tile writes on `axis` of the plot at `path` in `spec`, the page's plot
+    /// number `plot`, for the column the axis holds: the rule's tick format for it, and its name
+    /// with and without the rule's unit. Empty where the axis holds no column the rule reads.
+    fn rule_written(
+        &self,
+        plot: usize,
+        spec: &brightfield_spec::ast::Spec,
+        path: &ComponentPath,
+        axis: PlotAxis,
+    ) -> crate::shelf_edit::RuleWritten {
+        let Some(node) = edit::plot_at_path(spec, &path.0) else {
+            return crate::shelf_edit::RuleWritten::default();
+        };
+        let Some(channels) = ShelfChannels::of_plot(node) else {
+            return crate::shelf_edit::RuleWritten::default();
+        };
+        let (binding, key) = match axis {
+            PlotAxis::X => (&channels.x, "x"),
+            PlotAxis::Y => (&channels.y, "y"),
+        };
+        let Some(column) = self.rule_column(plot, node, binding, key) else {
+            return crate::shelf_edit::RuleWritten::default();
+        };
+        let shown = self.column_facts.get(column).map(|f| &f.representation);
+        let mut titles = vec![column.to_string()];
+        if let Some(unit) = shown.and_then(|r| r.title_unit.as_ref()) {
+            titles.push(format!("{column} ({unit})"));
+        }
+        crate::shelf_edit::RuleWritten {
+            tick_format: shown.and_then(|r| r.tick_format.clone()),
+            titles,
+        }
     }
 
     /// **The shelf's words for putting `column` on `channel`**, from the spec

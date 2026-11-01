@@ -321,6 +321,25 @@ fn reset_puts_a_type_chosen_format_back_to_auto() {
     );
 }
 
+/// Reset means back to Brightfield's choice, so on a labelled column's unset row it writes the
+/// rule's format, which the row then reads as `auto`.
+#[test]
+fn reset_on_an_unset_row_of_a_labelled_column_writes_the_rule_format() {
+    let mut list = list_on_format("", Some("(,~f"));
+    assert_eq!(format_row("", Some("(,~f")).value, DEFAULT_FORMAT);
+    let reports = list.feed_events(&[key_event(egui::Key::Backspace)]);
+    assert_eq!(
+        reports,
+        [ListReport::Set(RowEdit {
+            channel: ShelfChannel::X,
+            row: FORMAT_ROW,
+            value: SettingValue::Text("(,~f".to_string()),
+        })],
+        "reset on default writes the rule's specifier"
+    );
+    assert_eq!(format_row("xTickFormat: '(,~f'", Some("(,~f")).value, AUTO);
+}
+
 #[test]
 fn the_foot_lists_the_presets_the_row_steps_through() {
     use brightfield_shell::shelf::foot_sentence;
