@@ -200,6 +200,36 @@ pub struct TypedSource {
     pub runner: Option<Runner>,
     /// How the applied grid shows each column, so a page read here agrees with its header.
     pub shown: crate::data_grid::Shown,
+    /// The casts the window's session reads the file through, each a column and the SQL that
+    /// casts it. A read here makes the root table through the same casts, so a condition reads
+    /// `share` as the fraction the applied grid's `where` reads, not the file's `45%`.
+    pub casts: Vec<(String, String)>,
+}
+
+impl TypedSource {
+    /// The table the file loads as and the steps after it, for a read of `chain` over the root
+    /// table as the session reads it: with no casts, the root table and `chain`; with casts, the
+    /// file loads as the session's raw rows and the root table is made from them, cast, as the
+    /// first step.
+    fn read_over(&self, chain: Vec<(String, PreviewOp)>) -> (&str, Vec<(String, PreviewOp)>) {
+        if self.casts.is_empty() {
+            return (&self.root_table, chain);
+        }
+        let mut cast = vec![(
+            self.root_table.clone(),
+            PreviewOp::Statement(crate::flat_cast::cast_select(&self.casts)),
+        )];
+        cast.extend(chain);
+        (crate::data_file::ROWS, cast)
+    }
+
+    /// The columns the casts keep each cast column's text under, which the applied grid hides.
+    fn raw_columns(&self) -> std::collections::BTreeSet<String> {
+        self.casts
+            .iter()
+            .map(|(column, _)| crate::flat_cast::raw_name(column))
+            .collect()
+    }
 }
 
 /// What a read of a typed statement found.
@@ -469,11 +499,12 @@ pub fn spawn_row_count(
     let (send, answer) = channel();
     let hooks = PreviewHooks::default();
     std::thread::spawn(move || {
+        let (root, chain) = source.read_over(chain);
         let count = hooks.read_inside(|| {
             preview_row_count_stoppable(
                 &source.data,
                 source.reader,
-                &source.root_table,
+                root,
                 &chain,
                 PREVIEW_FILE_LIMIT_BYTES,
                 PREVIEW_DEADLINE,
@@ -510,10 +541,11 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
         free_step_name(&source.root_table, &chain),
         PreviewOp::Statement(text.to_string()),
     ));
+    let (root, chain) = source.read_over(chain);
     let page = match preview_first_page_stoppable(
         &source.data,
         source.reader,
-        &source.root_table,
+        root,
         &chain,
         PREVIEW_ROWS,
         PREVIEW_FILE_LIMIT_BYTES,
@@ -542,11 +574,12 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
                 free_step_name(&source.root_table, &[]),
                 PreviewOp::Where(condition.clone()),
             )];
+            let (root, counted) = source.read_over(filter.clone());
             let rows = match preview_row_count_stoppable(
                 &source.data,
                 source.reader,
-                &source.root_table,
-                &filter,
+                root,
+                &counted,
                 PREVIEW_FILE_LIMIT_BYTES,
                 PREVIEW_DEADLINE,
                 stop,
@@ -563,17 +596,22 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
                     PreviewOp::OrderBy(order.clone()),
                 ));
             }
+            let (root, filter) = source.read_over(filter);
             let page = match preview_first_page_stoppable(
                 &source.data,
                 source.reader,
-                &source.root_table,
+                root,
                 &filter,
                 PREVIEW_ROWS,
                 PREVIEW_FILE_LIMIT_BYTES,
                 PREVIEW_DEADLINE,
                 stop,
             ) {
-                Ok(batches) => Some(page_of(&batches, &source.shown)),
+                Ok(batches) => Some(crate::data_grid::page_of_hiding(
+                    &batches,
+                    &source.shown,
+                    &source.raw_columns(),
+                )),
                 Err(PreviewRefusal::Superseded) => return None,
                 Err(_) => None,
             };

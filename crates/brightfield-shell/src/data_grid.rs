@@ -2287,7 +2287,18 @@ fn read_preview(
 /// The first page of a preview, tabulated from the batches its read returned.
 #[must_use]
 pub fn page_of(batches: &[RecordBatch], shown: &Shown) -> GridPage {
-    let (columns, rows) = tabulate(batches, &std::collections::BTreeSet::new(), shown);
+    page_of_hiding(batches, shown, &std::collections::BTreeSet::new())
+}
+
+/// [`page_of`], leaving out each column named in `hidden`, as the applied grid leaves out the
+/// columns its session hides.
+#[must_use]
+pub fn page_of_hiding(
+    batches: &[RecordBatch],
+    shown: &Shown,
+    hidden: &std::collections::BTreeSet<String>,
+) -> GridPage {
+    let (columns, rows) = tabulate(batches, hidden, shown);
     GridPage {
         window: 0..rows.len() as u64,
         columns,

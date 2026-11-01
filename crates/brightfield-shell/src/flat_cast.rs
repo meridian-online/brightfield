@@ -81,7 +81,7 @@ impl CastPlan {
 }
 
 /// The name a cast column's text is kept under.
-fn raw_name(column: &str) -> String {
+pub(crate) fn raw_name(column: &str) -> String {
     format!("{RAW_PREFIX}{column}")
 }
 
@@ -148,7 +148,7 @@ fn is_formatted_type(type_name: &str) -> bool {
 /// The select that reads [`ROWS`] with `casts` applied: the file's columns (`SELECT *`) in its
 /// own order, a cast one replaced by its cast, and each cast column's text after them under its raw
 /// name.
-fn cast_select(casts: &[(String, String)]) -> String {
+pub(crate) fn cast_select(casts: &[(String, String)]) -> String {
     let replaced: Vec<String> = casts
         .iter()
         .map(|(column, expr)| format!("{expr} AS {}", sql_ident(column)))

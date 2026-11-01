@@ -7729,6 +7729,7 @@ impl MeridianApp {
             order: self.charts.doc.grid_view().order.clone(),
             runner: self.runner.clone(),
             shown: self.charts.doc.column_facts().shown().clone(),
+            casts: source.casts.clone(),
         })
     }
 
@@ -8000,6 +8001,7 @@ impl MeridianApp {
                     order: None,
                     runner: None,
                     shown: crate::data_grid::Shown::new(),
+                    casts: source.casts.clone(),
                 },
                 chain.clone(),
                 move || wake.request_repaint(),

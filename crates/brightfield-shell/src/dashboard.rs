@@ -758,6 +758,13 @@ impl Dashboard {
         self
     }
 
+    /// The columns the source casts as it reads the file, each with the SQL that casts it: the
+    /// casts that stood on open. Empty for a file read as it is.
+    #[must_use]
+    pub(crate) fn casts(&self) -> &[(String, String)] {
+        &self.casts
+    }
+
     /// The tiles, in the table's own column order.
     #[must_use]
     pub fn tiles(&self) -> &[Tile] {

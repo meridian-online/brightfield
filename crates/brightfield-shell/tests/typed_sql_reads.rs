@@ -30,6 +30,7 @@ fn housing_source() -> TypedSource {
         order: None,
         runner: Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))),
         shown: Default::default(),
+        casts: Vec::new(),
     }
 }
 
@@ -146,6 +147,7 @@ fn an_unordered_filter_previews_the_page_the_applied_view_reads() {
         order: None,
         runner: Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))),
         shown: Default::default(),
+        casts: Vec::new(),
     };
     let mut r = TypedReads::new(source, TYPED_PAUSE, || {});
     answer(&mut r, "select * from tally where v > 100");

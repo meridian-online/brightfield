@@ -211,6 +211,10 @@ pub struct OneStepProtocol {
     /// Kept rather than profiled again, so the pair the shelf finds is the one
     /// the generator drew the map from.
     pub profiles: Vec<ColumnProfile>,
+    /// The columns the window's session casts as it reads the file, each with the SQL that casts
+    /// it, so a read of the file outside the session, such as a typed statement's preview, reads
+    /// the columns as the session does. Empty for a file read as it is.
+    pub casts: Vec<(String, String)>,
 }
 
 impl OneStepProtocol {
@@ -234,6 +238,7 @@ impl OneStepProtocol {
             columns: facts(columns, dashboard),
             tiles: tiles_in_plot_order(columns, dashboard),
             profiles: columns.to_vec(),
+            casts: dashboard.casts().to_vec(),
             name,
             data: path.to_path_buf(),
             dir,

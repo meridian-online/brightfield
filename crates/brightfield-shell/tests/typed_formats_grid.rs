@@ -293,3 +293,95 @@ fn typed_grid_light_snapshot() {
 fn typed_grid_dark_snapshot() {
     pane(Mode::Dark).snapshot("typed_grid_dark");
 }
+
+/// The labels of the committed typed fixture's columns. `notes` has none.
+const TYPED_LABELS: &[(&str, &str)] = &[
+    ("revenue", "finance.currency.amount"),
+    ("price_usd", "finance.currency.amount"),
+    ("share", "representation.numeric.percentage"),
+    ("yield", "finance.rate.yield"),
+    ("year", "datetime.component.year"),
+    ("downloads", "representation.numeric.integer_number"),
+    ("day", "datetime.date.iso"),
+];
+
+/// A typed filter's preview reads the file through the casts the session reads it through, so
+/// `share > 0.4` keeps the rows the applied `where` keeps and pages them the same way.
+#[test]
+fn a_typed_filter_previews_the_rows_the_applied_where_keeps() {
+    use brightfield_engine::FileReader;
+    use brightfield_shell::run::Runner;
+    use brightfield_shell::typed_sql::{TypedReads, TypedSource, TYPED_PAUSE};
+    use std::time::{Duration, Instant};
+
+    brightfield_shell::data_grid::use_own_preview_gate_on_this_thread();
+    let path = fixture(include_str!("data/typed_formats.csv"), TYPED_LABELS);
+    let mut opened = open(&path);
+    assert!(
+        opened.protocol.casts.iter().any(|(c, _)| c == "share"),
+        "fixture check: share is cast on open"
+    );
+    let condition = "share > 0.4";
+    let facts = ColumnBandFacts::new(&opened.protocol.columns);
+    let source = TypedSource {
+        data: path.clone(),
+        reader: FileReader::Csv,
+        root_table: opened.protocol.name.clone(),
+        steps: Vec::new(),
+        order: None,
+        runner: Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))),
+        shown: facts.shown().clone(),
+        casts: opened.protocol.casts.clone(),
+    };
+    let mut reads = TypedReads::new(source, TYPED_PAUSE, || {});
+    let text = format!("select * from {} where {condition}", opened.protocol.name);
+    reads.edit(&text, Instant::now());
+    reads.read_now();
+    let until = Instant::now() + Duration::from_secs(60);
+    while reads.current().is_none() && reads.refusal().is_none() {
+        assert!(Instant::now() < until, "no answer");
+        reads.poll();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let answer = reads
+        .current()
+        .unwrap_or_else(|| panic!("refused: {:?}", reads.refusal()))
+        .clone();
+    let preview = answer
+        .filter_page
+        .expect("a filter of the root table is paged");
+
+    let mark = opened.live.rows_mark();
+    let session = opened.live.coordinator().session();
+    let applied = fetch_page_shown(
+        session,
+        mark,
+        0..PAGE_PAD,
+        RowsAudience::Reader,
+        &RowsView {
+            condition: Some(condition.to_string()),
+            order: None,
+        },
+        facts.shown(),
+    )
+    .expect("the applied grid reads its page");
+    assert!(
+        !applied.rows.is_empty(),
+        "fixture check: some shares are over 40%"
+    );
+    assert!(
+        (applied.rows.len() as u64) < PAGE_PAD,
+        "fixture check: the applied page holds every row the condition keeps"
+    );
+    assert_eq!(answer.filter_rows, Some(applied.rows.len() as u64));
+    let names =
+        |page: &GridPage| -> Vec<String> { page.columns.iter().map(|c| c.header_text()).collect() };
+    assert_eq!(names(&preview), names(&applied));
+    let cells = |page: &GridPage| -> Vec<Vec<String>> {
+        page.rows
+            .iter()
+            .map(|row| row.iter().map(|c| c.text.clone()).collect())
+            .collect()
+    };
+    assert_eq!(cells(&preview), cells(&applied));
+}
