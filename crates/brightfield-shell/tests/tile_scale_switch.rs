@@ -813,7 +813,7 @@ fn the_log_tile_re_bins_and_the_others_stand_still() {
     let labels = x_tick_labels(live.doc(), switch.plot);
     let values: Vec<f64> = labels
         .iter()
-        .filter_map(|l| l.parse::<f64>().ok())
+        .filter_map(|l| l.replace(',', "").parse::<f64>().ok())
         .collect();
     assert!(
         values.len() >= 3,
@@ -1255,7 +1255,7 @@ fn a_file_opened_by_a_relative_path_keeps_its_picture_through_a_switch() {
     let labels = x_tick_labels(live.doc(), switch.plot);
     let values: Vec<f64> = labels
         .iter()
-        .filter_map(|l| l.parse::<f64>().ok())
+        .filter_map(|l| l.replace(',', "").parse::<f64>().ok())
         .collect();
     assert!(
         values.len() >= 3,
