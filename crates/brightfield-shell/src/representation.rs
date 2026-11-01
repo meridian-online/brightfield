@@ -260,6 +260,11 @@ fn number_representation(
     if let Some(symbol) = &symbol {
         if !(symbol == "$" && Parts::of(&tick).dollar) {
             unit.push_str(symbol);
+            // A symbol that ends in a letter or a point, `$US` or `Fr.`, is kept apart from the
+            // scale word, as a currency code is.
+            if scale.is_some() && symbol.ends_with(|c: char| c.is_alphabetic() || c == '.') {
+                unit.push(' ');
+            }
         }
     } else if let Some(code) = block.and_then(|d| d.currency.as_deref()).filter(|_| money) {
         unit.push_str(code);
@@ -750,6 +755,31 @@ mod tests {
             true,
         );
         assert_eq!(recorded.title_unit.as_deref(), Some("Fr."));
+    }
+
+    #[test]
+    fn a_dollar_inside_a_longer_symbol_stays_in_the_title() {
+        for (symbol, title) in [("A$", "A$bn"), ("US$", "US$bn"), ("$US", "$US bn")] {
+            let rep = representation_of(
+                &column("DOUBLE", 2e8, 3.1e9),
+                Some(&display("finance.currency.amount")),
+                Some(&written(symbol)),
+                true,
+            );
+            assert!(
+                !rep.tick_format.as_deref().unwrap_or("$").contains('$'),
+                "{symbol}: only a bare `$` reaches a tick, {:?}",
+                rep.tick_format
+            );
+            assert_eq!(rep.title_unit.as_deref(), Some(title));
+        }
+        let francs = representation_of(
+            &column("DOUBLE", 2e8, 3.1e9),
+            Some(&display("finance.currency.amount")),
+            Some(&written("Fr.")),
+            true,
+        );
+        assert_eq!(francs.title_unit.as_deref(), Some("Fr. bn"));
     }
 
     #[test]

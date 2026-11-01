@@ -946,6 +946,47 @@ fn mixed_symbols_record_none() {
 }
 
 #[test]
+fn a_lettered_dollar_is_recorded_whole_and_stays_off_the_ticks() {
+    let text = TYPED_FORMATS.replace(",$", ",A$");
+    assert_ne!(text, TYPED_FORMATS);
+    let path = typed("lettered-dollar", &text);
+    let (opened, _) = open_typed(&path, &unbundled());
+    let record = record_of(&path);
+    assert_eq!(
+        record.fields["price_usd"]
+            .written
+            .currency_symbol
+            .as_deref(),
+        Some("A$")
+    );
+    let price = opened
+        .protocol
+        .columns
+        .iter()
+        .find(|c| c.column == "price_usd")
+        .expect("price_usd is a column");
+    assert!(
+        !price
+            .representation
+            .tick_format
+            .as_deref()
+            .unwrap_or("$")
+            .contains('$'),
+        "an Australian dollar is not drawn as `$`: {:?}",
+        price.representation.tick_format
+    );
+
+    let mixed = TYPED_FORMATS.replacen(",$", ",US$", 1).replace(",$", ",A$");
+    let path = typed("mixed-lettered-dollars", &mixed);
+    let _ = open_typed(&path, &unbundled());
+    assert_eq!(
+        record_of(&path).fields["price_usd"].written.currency_symbol,
+        None,
+        "US$ and A$ are two currencies"
+    );
+}
+
+#[test]
 fn parentheses_are_recorded() {
     let path = typed("parentheses", TYPED_FORMATS);
     let _ = open_typed(&path, &unbundled());

@@ -338,9 +338,13 @@ struct Decided {
 /// text as the source wrote it: the symbol every non-null value carries, when they all carry the
 /// same one, and `'parentheses'` when any negative is written in parentheses, else `'minus'` when
 /// any value holds a minus sign. [`written_from`] reads their answers.
+///
+/// A symbol is the currency sign with the letters written against it on either side, so `A$`,
+/// `HK$` and `US$` are recorded whole and only a bare `$` is `$`. A column that mixes `US$` and
+/// `A$` holds two symbols and records none.
 pub(crate) fn written_terms(raw: &str) -> [String; 2] {
     let text = format!("CAST({raw} AS VARCHAR)");
-    let symbol = format!("nullif(regexp_extract({text}, '\\p{{Sc}}', 0), '')");
+    let symbol = format!("nullif(regexp_extract({text}, '\\p{{L}}*\\p{{Sc}}\\p{{L}}*', 0), '')");
     [
         format!(
             "CASE WHEN count(DISTINCT {symbol}) = 1 AND count({symbol}) = count({raw}) \
