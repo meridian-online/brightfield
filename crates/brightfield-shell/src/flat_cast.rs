@@ -16,6 +16,7 @@
 //! kept in the file's column record.
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::path::Path;
 
 use brightfield_engine::{ColumnProfile, ScanTally};
@@ -194,12 +195,19 @@ pub(crate) fn source_spec_casting(
 /// `text` as a YAML literal block scalar whose lines are indented by `indent` spaces, ending in a
 /// line break, so every character of it, line breaks included, reads back as written.
 ///
-/// A quoted scalar cannot carry a line break (YAML folds one to a space), and FineType's
+/// A plain quoted scalar cannot carry a line break (YAML folds one to a space), and FineType's
 /// transforms hold line breaks: `identity.person.height`'s is a multi-line `CASE`, which
 /// `a_multi_line_transform_round_trips_through_the_written_spec` writes and reads back. The
 /// chomping indicator keeps the text's own final line breaks: none (`-`) or all (`+`). The text
 /// starts with `SELECT`, not a space, so its indentation needs no indicator.
+///
+/// A block holds printable text only, and YAML reads a lone carriage return in one as a line
+/// break, so text holding a control character other than a tab or a line feed, which a CSV
+/// header can, is written instead as a double-quoted scalar with each such character escaped.
 fn yaml_block(text: &str, indent: usize) -> String {
+    if text.chars().any(unblockable) {
+        return format!("{}\n", yaml_double_quoted(text));
+    }
     let pad = " ".repeat(indent);
     let chomp = if text.ends_with('\n') { '+' } else { '-' };
     let mut out = format!("|{chomp}\n");
@@ -218,6 +226,33 @@ fn yaml_block(text: &str, indent: usize) -> String {
     for _ in 1..trailing {
         out.push('\n');
     }
+    out
+}
+
+/// Whether `c` cannot stand as itself in a YAML block scalar: a control character other than a
+/// tab or a line feed, a line or paragraph separator, or a byte-order mark.
+fn unblockable(c: char) -> bool {
+    (c.is_control() && c != '\t' && c != '\n') || matches!(c, '\u{2028}' | '\u{2029}' | '\u{feff}')
+}
+
+/// `text` as a YAML double-quoted scalar on one line, with its quotes, backslashes, line feeds,
+/// tabs and every [`unblockable`] character escaped.
+fn yaml_double_quoted(text: &str) -> String {
+    let mut out = String::from("\"");
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if unblockable(c) => {
+                let _ = write!(out, "\\u{:04X}", u32::from(c));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
     out
 }
 
@@ -533,6 +568,8 @@ mod tests {
             "SELECT 1",
             "SELECT CASE\n  WHEN x THEN 'a''b'\nEND\n",
             "SELECT\n\n  1\n\n",
+            "SELECT \"a\rb\" AS \"x\\y\"\n  FROM t",
+            "SELECT \"\u{1}\tc\u{2028}\"",
         ] {
             let yaml = format!("k: {}", yaml_block(text, 2));
             let back: std::collections::BTreeMap<String, String> =
