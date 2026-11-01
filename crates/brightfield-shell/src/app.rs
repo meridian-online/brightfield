@@ -1372,27 +1372,54 @@ fn columns_named(value: &SpecValue, out: &mut BTreeSet<String>) {
     }
 }
 
-/// The column names an SQL expression reads: each quoted identifier, and each bare word
-/// that is not a function call, a keyword or a type. Text in single quotes is a literal.
+/// The column names an SQL expression reads, as near as a scan without a parser can say: each
+/// quoted identifier, with `""` read as a quote inside it, and each bare word, except a function
+/// call (a word before `(`), a table's name before a `.`, the type after `::` or `AS`, and the
+/// SQL keywords and type names in its list. Text in single quotes is a literal, and a number,
+/// exponent and all, is no column.
 fn sql_columns(sql: &str, out: &mut BTreeSet<String>) {
-    const WORDS: [&str; 14] = [
-        "and", "or", "not", "null", "case", "when", "then", "else", "end", "as", "cast", "double",
-        "integer", "bigint",
+    const WORDS: [&str; 34] = [
+        "and", "or", "not", "null", "case", "when", "then", "else", "end", "as", "cast", "is",
+        "true", "false", "like", "ilike", "in", "between", "distinct", "interval", "exists",
+        "similar", "glob", "escape", "double", "float", "real", "integer", "bigint", "smallint",
+        "tinyint", "hugeint", "decimal", "varchar",
     ];
     let chars: Vec<char> = sql.chars().collect();
+    let next_is = |from: usize, want: char| {
+        chars[from.min(chars.len())..]
+            .iter()
+            .find(|c| !c.is_whitespace())
+            == Some(&want)
+    };
     let mut at = 0;
+    // The word after `::` or `AS` is a type.
+    let mut typed = false;
     while at < chars.len() {
         match chars[at] {
             quote @ ('"' | '\'') => {
-                let start = at + 1;
-                at = start;
-                while at < chars.len() && chars[at] != quote {
+                let mut text = String::new();
+                at += 1;
+                while at < chars.len() {
+                    if chars[at] == quote {
+                        if chars.get(at + 1) == Some(&quote) {
+                            text.push(quote);
+                            at += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    text.push(chars[at]);
                     at += 1;
                 }
-                if quote == '"' {
-                    out.insert(chars[start..at.min(chars.len())].iter().collect());
-                }
                 at += 1;
+                if quote == '"' && !next_is(at, '.') {
+                    out.insert(text);
+                }
+                typed = false;
+            }
+            ':' if chars.get(at + 1) == Some(&':') => {
+                typed = true;
+                at += 2;
             }
             c if c.is_alphabetic() || c == '_' => {
                 let start = at;
@@ -1400,18 +1427,26 @@ fn sql_columns(sql: &str, out: &mut BTreeSet<String>) {
                     at += 1;
                 }
                 let word: String = chars[start..at].iter().collect();
-                let call = chars[at..].iter().find(|c| !c.is_whitespace()) == Some(&'(');
-                if !call && !WORDS.contains(&word.to_lowercase().as_str()) {
+                let lower = word.to_lowercase();
+                let named = !typed && !next_is(at, '(') && !next_is(at, '.');
+                if named && !WORDS.contains(&lower.as_str()) {
                     out.insert(word);
                 }
+                typed = lower == "as";
             }
             c if c.is_ascii_digit() => {
                 // A number, with its exponent: `1e9` is no column.
                 while at < chars.len() && (chars[at].is_alphanumeric() || chars[at] == '.') {
                     at += 1;
                 }
+                typed = false;
             }
-            _ => at += 1,
+            c => {
+                at += 1;
+                if !c.is_whitespace() {
+                    typed = false;
+                }
+            }
         }
     }
 }
@@ -4880,5 +4915,34 @@ vconcat:
             "a ratio of two columns is neither's"
         );
         assert!(!names_only("{ count: }", "revenue"));
+    }
+
+    fn columns_of(sql: &str) -> Vec<String> {
+        let mut out = BTreeSet::new();
+        sql_columns(sql, &mut out);
+        out.into_iter().collect()
+    }
+
+    /// The scan reads a quote escaped inside an identifier, as the generator writes one, and
+    /// counts no type, keyword or table name as a column.
+    #[test]
+    fn an_sql_expression_names_its_columns_and_no_keyword_type_or_table() {
+        assert_eq!(columns_of(r#""a""b" / 1e9"#), [r#"a"b"#]);
+        assert!(names_only(r#"{ bin: { sql: '"a""b" / 1e9' } }"#, r#"a"b"#));
+        assert_eq!(columns_of("revenue::FLOAT / 1e9"), ["revenue"]);
+        assert_eq!(columns_of("CAST(revenue AS VARCHAR)"), ["revenue"]);
+        assert_eq!(columns_of("CAST(revenue AS DECIMAL(18, 2))"), ["revenue"]);
+        assert_eq!(
+            columns_of("revenue IS NOT NULL AND flag = TRUE"),
+            ["flag", "revenue"]
+        );
+        assert_eq!(columns_of("t.revenue / 1e9"), ["revenue"]);
+        assert_eq!(columns_of(r#""t"."revenue" / 1e9"#), ["revenue"]);
+        assert_eq!(columns_of("'it''s' || name"), ["name"]);
+        assert_eq!(
+            columns_of(r#""rev"#),
+            ["rev"],
+            "an unclosed quote ends the text"
+        );
     }
 }
