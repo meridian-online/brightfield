@@ -118,20 +118,22 @@ pub fn read_hand_edit(
             .partition(|r| tables.contains(&r.from) && tables.contains(&r.to));
     model.relationships = acted;
     keep_measurements(current, &mut model);
-    mark_changed(current, &mut model);
+    mark_changed(current, base, &mut model);
     hold_deletions(current, base, sources, &mut model, &unjoined);
     // A table the edit deleted is held, left out, so a join to it names a table of the model
     // again and is acted on rather than set aside
     // (`a_table_deleted_by_hand_keeps_its_joins_in_the_model`).
     let tables: Vec<String> = model.datasets.iter().map(|d| d.name.clone()).collect();
-    let (rejoined, unjoined): (Vec<Relationship>, Vec<Relationship>) = unjoined
+    let (mut rejoined, unjoined): (Vec<Relationship>, Vec<Relationship>) = unjoined
         .into_iter()
         .partition(|r| tables.contains(&r.from) && tables.contains(&r.to));
     if !rejoined.is_empty() {
+        // Only these are new to the model: marking all of it again would take what
+        // `hold_deletions` added from `current` for the analyst's, as `base` does not hold it.
+        mark_relationships(current, base, &mut rejoined);
         model.relationships.extend(rejoined);
-        // Both read `current` alone, so running them again leaves what they already did as it is.
+        // This reads `current` alone, so running it again leaves what it already did as it is.
         keep_measurements(current, &mut model);
-        mark_changed(current, &mut model);
     }
     // A host the edit left out, folded or deleted strands what is folded into it, as a reshape
     // would (`deleting_a_fold_host_by_hand_is_refused`).
@@ -418,24 +420,61 @@ fn keep_measurements(current: &Model, edited: &mut Model) {
     }
 }
 
-/// Mark as the analyst's each element of `edited` that `current` does not hold as it is.
-fn mark_changed(current: &Model, edited: &mut Model) {
-    for d in &mut edited.datasets {
-        let before = current.datasets.iter().find(|c| c.name == d.name);
-        if before.is_none_or(|c| !same_dataset(c, d)) {
-            d.meta.decided_by = DecidedBy::Analyst;
+/// Settle who decided each dataset, field and relationship of `edited`. One the text left equal to
+/// `base`, the model of the text the edit started from, is not the analyst's: it takes `current`'s
+/// version, which a discovery pass may have changed while the editor held older text, or is
+/// dropped when `current` no longer holds it. One that differs from `base`, or that `base` did not
+/// hold, is marked the analyst's. A dataset is compared bare, its fields one by one.
+fn mark_changed(current: &Model, base: &Model, edited: &mut Model) {
+    let datasets = std::mem::take(&mut edited.datasets);
+    for mut d in datasets {
+        let held = base.datasets.iter().find(|b| b.name == d.name);
+        let now = current.datasets.iter().find(|c| c.name == d.name);
+        let untouched = held.is_some_and(|b| same_dataset(b, &d));
+        if untouched && now.is_none() {
+            continue;
         }
-        for f in &mut d.fields {
-            let was = before.and_then(|c| c.fields.iter().find(|cf| cf.name == f.name));
-            if was.is_none_or(|cf| !same_field(cf, f)) {
+        let fields = std::mem::take(&mut d.fields);
+        d = match now {
+            Some(c) if untouched => Dataset {
+                fields: Vec::new(),
+                ..c.clone()
+            },
+            _ => {
+                d.meta.decided_by = DecidedBy::Analyst;
+                d
+            }
+        };
+        for mut f in fields {
+            let was = held.and_then(|b| b.fields.iter().find(|bf| bf.name == f.name));
+            let now = now.and_then(|c| c.fields.iter().find(|cf| cf.name == f.name));
+            if was.is_some_and(|bf| same_field(bf, &f)) {
+                if let Some(cf) = now {
+                    d.fields.push(cf.clone());
+                }
+            } else {
                 f.meta.decided_by = DecidedBy::Analyst;
+                d.fields.push(f);
             }
         }
+        edited.datasets.push(d);
     }
-    for r in &mut edited.relationships {
-        let was = current.relationships.iter().find(|c| c.name == r.name);
-        if was.is_none_or(|c| !same_relationship(c, r)) {
+    mark_relationships(current, base, &mut edited.relationships);
+}
+
+/// `mark_changed` for relationships alone, which the second pass over joins the edit set aside
+/// needs: the rest of the model has been through `hold_deletions` by then, and what that added
+/// from `current` is not `base`'s to compare.
+fn mark_relationships(current: &Model, base: &Model, relationships: &mut Vec<Relationship>) {
+    for mut r in std::mem::take(relationships) {
+        let held = base.relationships.iter().find(|b| b.name == r.name);
+        if held.is_some_and(|b| same_relationship(b, &r)) {
+            if let Some(c) = current.relationships.iter().find(|c| c.name == r.name) {
+                relationships.push(c.clone());
+            }
+        } else {
             r.meta.decided_by = DecidedBy::Analyst;
+            relationships.push(r);
         }
     }
 }

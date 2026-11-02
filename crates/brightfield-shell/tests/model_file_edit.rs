@@ -1227,3 +1227,86 @@ fn the_inspector_reads_the_run_a_hand_edit_owed() {
         "the inspector reads the database the run wrote"
     );
 }
+
+/// `model` read back from `text`, as the file view hands it to a hand edit.
+fn hand_edited(current: &Model, base: &Model, text: &str) -> Model {
+    brightfield_shell::model_file::read_hand_edit(current, base, &[], text)
+        .expect("the text reads")
+        .model
+}
+
+/// The retail model with its first join graded `possible`, the join's name, and the same model
+/// as a full discovery pass would leave it, the join graded `likely`.
+fn graded_apart() -> (Model, Model, String) {
+    let mut base = retail_model();
+    let join = base.relationships[0].name.clone();
+    base.relationships[0].meta.grade = brightfield_ossie::Grade::Possible;
+    let mut current = base.clone();
+    current.relationships[0].meta.grade = brightfield_ossie::Grade::Likely;
+    (base, current, join)
+}
+
+#[test]
+fn an_edit_against_stale_text_keeps_what_a_pass_changed() {
+    let (base, current, join) = graded_apart();
+    let mut typed = base.clone();
+    let described = typed
+        .datasets
+        .iter_mut()
+        .find(|d| !current.relationships.iter().any(|r| r.from == d.name))
+        .expect("a dataset no join starts from");
+    described.description = Some("typed by hand".to_string());
+    let name = described.name.clone();
+    let edited = hand_edited(&current, &base, &brightfield_ossie::write(&typed));
+
+    let kept = edited
+        .relationships
+        .iter()
+        .find(|r| r.name == join)
+        .unwrap();
+    assert_eq!(kept.meta.grade, brightfield_ossie::Grade::Likely);
+    assert_eq!(kept.meta.decided_by, DecidedBy::Dovetail);
+    let dataset = edited.datasets.iter().find(|d| d.name == name).unwrap();
+    assert_eq!(dataset.meta.decided_by, DecidedBy::Analyst);
+}
+
+#[test]
+fn an_edit_of_the_join_itself_is_the_analysts() {
+    let (base, current, join) = graded_apart();
+    let mut typed = base.clone();
+    typed.relationships[0].meta.cardinality = "1:1".to_string();
+    let edited = hand_edited(&current, &base, &brightfield_ossie::write(&typed));
+
+    let r = edited
+        .relationships
+        .iter()
+        .find(|r| r.name == join)
+        .unwrap();
+    assert_eq!(r.meta.cardinality, "1:1");
+    assert_eq!(r.meta.decided_by, DecidedBy::Analyst);
+}
+
+#[test]
+fn a_field_the_text_left_as_it_was_takes_the_current_field() {
+    let mut base = retail_model();
+    base.datasets[0].fields[0].meta.finetype = Some("representation.text.word".to_string());
+    let mut current = base.clone();
+    current.datasets[0].fields[0].meta.finetype = Some("identifier.person.username".to_string());
+    let (dataset, field) = (
+        base.datasets[0].name.clone(),
+        base.datasets[0].fields[0].name.clone(),
+    );
+    let edited = hand_edited(&current, &base, &brightfield_ossie::write(&base));
+
+    let f = edited
+        .datasets
+        .iter()
+        .find(|d| d.name == dataset)
+        .and_then(|d| d.fields.iter().find(|f| f.name == field))
+        .unwrap();
+    assert_eq!(
+        f.meta.finetype.as_deref(),
+        Some("identifier.person.username")
+    );
+    assert_eq!(f.meta.decided_by, DecidedBy::Dovetail);
+}
