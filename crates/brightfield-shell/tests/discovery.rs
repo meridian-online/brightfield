@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
-use brightfield_ossie::{DecidedBy, Edit, Model, Role};
+use brightfield_ossie::{CombinationKind, DecidedBy, Edit, Model, Role};
 use brightfield_shell::data_file::{self, Opened};
 use brightfield_shell::discovery::{
     proposal_file, Cancel, Discovery, Dovetail, Pass, StandIn, PROPOSALS_DIR,
@@ -529,6 +529,46 @@ fn a_cancelled_pass_kills_its_child_and_leaves_no_files() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_pass_removes_the_run_files_a_process_that_has_ended_left() {
+    let protocol = dovetail_protocol("dovetail-orphans");
+    let proposals = protocol.dir.join(PROPOSALS_DIR);
+    std::fs::create_dir_all(&proposals).unwrap();
+    // A process that has ended, as a Brightfield that crashed during a pass has, and one still
+    // running, as another Brightfield in the middle of a pass is.
+    let mut ended = std::process::Command::new("true").spawn().unwrap();
+    let dead = ended.id();
+    ended.wait().unwrap();
+    let mut running = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let live = running.id();
+    let left = [
+        format!("run-{dead}-0.duckdb"),
+        format!("run-{dead}-0.duckdb.wal"),
+        format!("run-{dead}-0.sample.ossie.yaml"),
+    ];
+    let kept = format!("run-{live}-0.duckdb");
+    for name in left.iter().chain([&kept]) {
+        std::fs::write(proposals.join(name), "a copy").unwrap();
+    }
+
+    let answered = Dovetail::new(&runner()).discover(&protocol, Pass::Sample);
+    let _ = running.kill();
+    let _ = running.wait();
+    answered.expect("the sample pass answers");
+    let files = proposals_folder(&protocol);
+    for name in &left {
+        assert!(!files.contains(name), "{name} is removed: {files:?}");
+    }
+    assert!(
+        files.contains(&kept),
+        "a running process's files stay: {files:?}"
+    );
+}
+
 #[test]
 fn the_child_reads_the_database_log_beside_the_copy() {
     let protocol = dovetail_protocol("dovetail-wal");
@@ -770,4 +810,123 @@ fn a_save_during_a_full_pass_runs_the_protocol() {
         .find(|d| d.name == "promo_codes")
         .unwrap();
     assert!(promo.meta.excluded, "the exclusion survived the fold");
+}
+
+/// A folder of three CSVs, as dovetail's own retail fixture builds them: products, each of which
+/// names a supplier, and the suppliers split into `suppliers_north` and `suppliers_south`, a
+/// partition pair with the same columns and keys that do not overlap.
+fn partitioned_suppliers(name: &str) -> PathBuf {
+    let dir = scratch().join("input").join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut products = String::from("sku,name,unit_price,supplier_id\n");
+    for i in 1..=120 {
+        let supplier = if i % 2 == 0 { i % 30 + 1 } else { i % 30 + 101 };
+        let price = 2.0 + f64::from(i % 37) * 0.75;
+        products.push_str(&format!("BEV-{i:03},Product {i},{price:.2},{supplier}\n"));
+    }
+    std::fs::write(dir.join("products.csv"), products).unwrap();
+    for (file, side, country, ids) in [
+        ("suppliers_north.csv", "North", "UK", 1..=30),
+        ("suppliers_south.csv", "South", "ES", 101..=130),
+    ] {
+        let mut text = String::from("supplier_id,name,country\n");
+        for i in ids {
+            text.push_str(&format!("{i},{side} Supplier {i},{country}\n"));
+        }
+        std::fs::write(dir.join(file), text).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn an_open_combines_a_partition_pair_into_one_table_that_joins_are_measured_on() {
+    let root = partitioned_suppliers("dovetail-partition");
+    let opened = {
+        let _held = folder_lock();
+        data_file::open_any(&root, &runner()).expect("the folder opens")
+    };
+    let Opened::Model(protocol) = opened else {
+        panic!("several tables are a model");
+    };
+    let text = std::fs::read_to_string(protocol.dir.join("model.ossie.yaml")).unwrap();
+    let model = brightfield_ossie::read(&text).unwrap();
+    let dataset = |name: &str| {
+        model
+            .datasets
+            .iter()
+            .find(|d| d.name == name)
+            .unwrap_or_else(|| panic!("the model has {name}: {text}"))
+    };
+
+    let combination = dataset("suppliers")
+        .meta
+        .combination
+        .clone()
+        .expect("suppliers is combined");
+    assert_eq!(combination.kind, CombinationKind::Partition);
+    assert_eq!(
+        combination.parts,
+        ["suppliers_north".to_string(), "suppliers_south".to_string()]
+    );
+    for part in &combination.parts {
+        assert_eq!(
+            dataset(part).meta.combined_into.as_deref(),
+            Some("suppliers")
+        );
+    }
+
+    let tables = brightfield_shell::model_inspector::query(
+        &protocol.dir,
+        "SELECT table_name FROM duckdb_tables() ORDER BY table_name",
+    )
+    .unwrap();
+    let names: Vec<&str> = tables
+        .rows
+        .iter()
+        .filter_map(|row| row.first().and_then(Option::as_deref))
+        .collect();
+    assert!(names.contains(&"suppliers"), "{names:?}");
+    for part in &combination.parts {
+        assert!(
+            !names.contains(&part.as_str()),
+            "{part} has no silver table: {names:?}"
+        );
+    }
+    let rows =
+        brightfield_shell::model_inspector::query(&protocol.dir, "SELECT count(*) FROM suppliers")
+            .unwrap();
+    assert_eq!(rows.rows[0][0].as_deref(), Some("60"));
+
+    // The join to the combined table is measured over its silver table: evidence wiped here comes
+    // back as the data has it.
+    let join = model
+        .relationships
+        .iter()
+        .find(|r| r.from == "products" && r.to == "suppliers")
+        .unwrap_or_else(|| panic!("products joins suppliers: {text}"))
+        .name
+        .clone();
+    let mut wiped = model.clone();
+    for r in &mut wiped.relationships {
+        r.meta.evidence.value_overlap = 0.0;
+        r.meta.evidence.child_rows = 0;
+        r.meta.evidence.orphans = 99;
+    }
+    let measured = brightfield_shell::model_pane::measure_joins(&protocol.dir, &wiped).unwrap();
+    let evidence = &measured
+        .relationships
+        .iter()
+        .find(|r| r.name == join)
+        .unwrap()
+        .meta
+        .evidence;
+    assert_eq!(
+        (
+            evidence.value_overlap,
+            evidence.child_rows,
+            evidence.orphans
+        ),
+        (1.0, 120, 0)
+    );
 }

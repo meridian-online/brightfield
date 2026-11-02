@@ -55,6 +55,8 @@ pub const DOVETAIL_ENV: &str = "BRIGHTFIELD_RUN_AS_DOVETAIL";
 /// any other code with 1: the parent reads only success or failure, and the reason from stderr.
 pub fn serve_as_dovetail_if_asked() {
     if std::env::var_os(DOVETAIL_ENV).is_some() {
+        #[cfg(unix)]
+        end_with_the_parent();
         let code = if dovetail::cli_main() == std::process::ExitCode::SUCCESS {
             0
         } else {
@@ -63,6 +65,25 @@ pub fn serve_as_dovetail_if_asked() {
         std::process::exit(code);
     }
 }
+
+/// End this process once its parent has gone, looked at every [`PARENT_POLL`] on a thread of its
+/// own. A Brightfield that quits or crashes during a pass cannot kill its child, and a child left
+/// running would read its database copy to the end for nothing; once the parent is gone the child
+/// is handed to another process, so its parent's id changes.
+#[cfg(unix)]
+fn end_with_the_parent() {
+    let parent = std::os::unix::process::parent_id();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(PARENT_POLL);
+        if std::os::unix::process::parent_id() != parent {
+            std::process::exit(1);
+        }
+    });
+}
+
+/// How often a dovetail child looks to see whether its parent has gone.
+#[cfg(unix)]
+const PARENT_POLL: Duration = Duration::from_millis(200);
 
 /// The file a child discoverer writes `pass`'s proposal to, in the Protocol folder `dir`:
 /// `.discovery/sample.ossie.yaml` or `.discovery/full.ossie.yaml`.
@@ -312,6 +333,49 @@ impl Drop for RunFiles {
     }
 }
 
+/// Remove the run files in `proposals` that a Brightfield which has since ended left behind: each
+/// `run-<pid>-...` file whose process id is not this process's and names no process still
+/// running. A process that quits or crashes during a pass never drops its [`RunFiles`], and its
+/// database copy is as large as the Protocol's database
+/// (`a_pass_removes_the_run_files_a_process_that_has_ended_left`).
+fn remove_orphaned_runs(proposals: &Path) {
+    let Ok(entries) = std::fs::read_dir(proposals) else {
+        return;
+    };
+    let own = std::process::id();
+    let mut alive = HashMap::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("run-"))
+            .and_then(|n| n.split_once('-'))
+            .and_then(|(pid, _)| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid != own && !*alive.entry(pid).or_insert_with(|| is_running(pid)) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Whether a process with id `pid` is running, asked of `kill -0`, which signals nothing. Where
+/// that cannot be asked, the process is taken to be running, so its files are left alone.
+fn is_running(pid: u32) -> bool {
+    if !cfg!(unix) {
+        return true;
+    }
+    Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_or(true, |status| status.success())
+}
+
 /// `path` with `suffix` added to its file name.
 fn beside(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
@@ -337,6 +401,7 @@ impl Dovetail {
         let dir = &protocol.dir;
         let proposals = dir.join(PROPOSALS_DIR);
         std::fs::create_dir_all(&proposals).map_err(|e| format!("{}: {e}", proposals.display()))?;
+        remove_orphaned_runs(&proposals);
         let files = RunFiles::new(dir, pass);
         copy_database(dir, &files.copy)?;
         if cancel.requested() {
