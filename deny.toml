@@ -91,11 +91,12 @@ ignore = [
   # fonts bundled with meridian-design. No safe upgrade exists.
   "RUSTSEC-2026-0206",
   "RUSTSEC-2026-0192",
-  # zip 6.0.0 — three advisories in `ZipArchive::extract` and
+  # zip 6.0.0 — four advisories in `ZipArchive::extract` and
   # `ZipStreamReader::extract`: SUID/SGID bits kept on extraction, symbolic
-  # links whose targets leave the destination, and permissions applied through
-  # such links. Fixed in zip 9, which nothing in this graph can take yet: zip 6
-  # is required by libduckdb-sys's build script and by arcform's `arc` crate.
+  # links whose targets leave the destination, permissions applied through
+  # such links, and a symbolic link's declared size reserved before it is read,
+  # which aborts the process on a size no memory holds. Fixed in zip 9, which
+  # nothing in this graph can take yet: zip 6 is required by libduckdb-sys's build script and by arcform's `arc` crate.
   # Neither reaches the affected code with untrusted input. libduckdb-sys calls
   # `extract` only when built without its `bundled` feature and with
   # DUCKDB_DOWNLOAD_LIB set, on a prebuilt libduckdb zip it downloads; this
@@ -107,6 +108,7 @@ ignore = [
   "RUSTSEC-2026-0367",
   "RUSTSEC-2026-0368",
   "RUSTSEC-2026-0369",
+  "RUSTSEC-2026-0429",
   # The two below arrive with dovetail, through finetype-core, which dovetail uses to
   # type columns. Both are unmaintained-crate NOTICES, not vulnerabilities, and neither has a
   # safe upgrade. Drop each when finetype-core moves off the crate.
@@ -119,4 +121,12 @@ ignore = [
   # hf-hub, which finetype-core's tokenizers dependency pulls in. It formats numbers it is
   # given and reads nothing from outside.
   "RUSTSEC-2025-0119",
+  # thrift 0.17.0 — a vulnerability: `read_bytes` in its binary protocol sizes a
+  # buffer from a length on the wire before reading it. It arrives with dovetail
+  # through parquet 53, which dovetail uses only in `survey`'s format detection
+  # to read a Parquet file's metadata. Brightfield runs dovetail only as
+  # `dovetail model`, over a DuckDB database, so the parquet reader is never
+  # called. Fixed in thrift 0.23; drop this when dovetail moves to a parquet
+  # that takes it.
+  "RUSTSEC-2026-0435",
 ]
