@@ -182,34 +182,72 @@ pub struct DatasetMeta {
     pub other: serde_json::Map<String, serde_json::Value>,
 }
 
-/// The score of each role for a table, in dovetail's order.
+/// The score of each role for a table, in dovetail's order. A role dovetail did not score reads
+/// as 0, and a role Brightfield does not know is kept in `other`, so scores from a newer dovetail
+/// still read and are written back as they came.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleScores {
+    #[serde(default)]
     pub entity: f64,
+    #[serde(default)]
     pub event: f64,
+    #[serde(default)]
     pub reference: f64,
+    #[serde(default)]
     pub bridge: f64,
+    #[serde(default)]
     pub snapshot: f64,
+    #[serde(default)]
     pub unclear: f64,
+    /// Roles Brightfield does not type, carried through a read and write unchanged.
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
-/// How the parts of a combined table relate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+/// How the parts of a combined table relate. A kind Brightfield does not know reads as
+/// [`Self::Other`] with its text, and is written back as it came.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
 pub enum CombinationKind {
     Partition,
     Snapshot,
     Duplicate,
+    Other(String),
+}
+
+impl From<String> for CombinationKind {
+    fn from(text: String) -> Self {
+        match text.as_str() {
+            "partition" => Self::Partition,
+            "snapshot" => Self::Snapshot,
+            "duplicate" => Self::Duplicate,
+            _ => Self::Other(text),
+        }
+    }
+}
+
+impl From<CombinationKind> for String {
+    fn from(kind: CombinationKind) -> Self {
+        match kind {
+            CombinationKind::Partition => "partition".to_string(),
+            CombinationKind::Snapshot => "snapshot".to_string(),
+            CombinationKind::Duplicate => "duplicate".to_string(),
+            CombinationKind::Other(text) => text,
+        }
+    }
 }
 
 /// A table dovetail built from several files that share one shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Combination {
     pub kind: CombinationKind,
     pub parts: Vec<String>,
     /// The column that holds what told the parts apart, such as a year taken from the file name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_column: Option<String>,
+    /// Keys Brightfield does not type, carried through a read and write unchanged.
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -237,6 +275,9 @@ pub struct Evidence {
     /// per child row finds several for these.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub parent_duplicates: u64,
+    /// Keys Brightfield does not type, carried through a read and write unchanged.
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes a reference

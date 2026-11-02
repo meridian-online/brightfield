@@ -55,6 +55,7 @@ fn dovetails_new_keys_are_typed() {
             kind: CombinationKind::Snapshot,
             parts: vec!["members_2024".to_string(), "members_2025".to_string()],
             token_column: Some("year".to_string()),
+            other: serde_json::Map::new(),
         })
     );
     assert_eq!(
@@ -93,4 +94,48 @@ fn an_unknown_meridian_key_survives() {
         .into_iter()
         .any(|(_, v)| v.get("zz_new") == Some(&Value::from(1)));
     assert!(kept);
+}
+
+#[test]
+fn values_a_newer_dovetail_writes_read_and_are_written_back() {
+    let marked = SAMPLE
+        .replacen(
+            "\"combination\":{\"kind\":\"snapshot\",",
+            "\"combination\":{\"kind\":\"merged\",\"zz_how\":\"by name\",",
+            1,
+        )
+        .replacen("\"unclear\":0.0}", "\"unclear\":0.0,\"ledger\":0.4}", 1)
+        .replacen(
+            "\"name_similarity\":0.9}",
+            "\"name_similarity\":0.9,\"zz_sampled\":true}",
+            1,
+        );
+    for new in ["merged", "ledger", "zz_sampled"] {
+        assert!(marked.contains(new), "{new} was not marked in");
+    }
+    let m = read(&marked).expect("a newer dovetail's values read");
+    assert!(m.datasets.iter().any(|d| d
+        .meta
+        .combination
+        .as_ref()
+        .is_some_and(|c| c.kind == CombinationKind::Other("merged".to_string()))));
+
+    let before = meridian_data(&marked);
+    let after = meridian_data(&write(&m));
+    for (path, value) in &before {
+        let kept = after.iter().find(|(p, _)| p == path);
+        assert_eq!(kept.map(|(_, v)| v), Some(value), "{path}");
+    }
+}
+
+#[test]
+fn role_scores_without_a_role_read_it_as_zero() {
+    let marked = SAMPLE.replacen(",\"unclear\":0.0}", "}", 1);
+    assert_ne!(marked, SAMPLE);
+    let m = read(&marked).expect("scores without a role read");
+    assert!(m
+        .datasets
+        .iter()
+        .filter_map(|d| d.meta.role_scores.as_ref())
+        .all(|s| s.unclear == 0.0));
 }

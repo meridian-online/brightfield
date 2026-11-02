@@ -1565,6 +1565,7 @@ fn an_edit_of_a_dataset_from_older_text_keeps_the_role_scores_current_holds() {
         bridge: 0.0,
         snapshot: 0.0,
         unclear: 0.0,
+        other: serde_json::Map::new(),
     };
     // The text the editor holds carries the scores a first pass wrote; a later pass has rescored.
     let mut older = base.clone();
@@ -1592,6 +1593,7 @@ fn rescoring_alone_does_not_make_a_dataset_the_analysts() {
         bridge: 0.0,
         snapshot: 0.0,
         unclear: 0.0,
+        other: serde_json::Map::new(),
     });
     let edited = hand_edited(&base, &older, &brightfield_ossie::write(&older));
 

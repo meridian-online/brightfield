@@ -138,6 +138,7 @@ pub fn apply(model: &Model, edit: &Edit) -> Result<Model, EditError> {
                         types_agree: false,
                         name_similarity: 0.0,
                         parent_duplicates: 0,
+                        other: serde_json::Map::new(),
                     },
                     cardinality: "N:1".to_string(),
                     verified: Verified::Unmeasured,

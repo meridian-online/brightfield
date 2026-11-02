@@ -333,6 +333,7 @@ fn default_relationship_meta() -> RelationshipMeta {
             types_agree: false,
             name_similarity: 0.0,
             parent_duplicates: 0,
+            other: serde_json::Map::new(),
         },
         cardinality: "N:1".to_string(),
         verified: Verified::Unmeasured,
