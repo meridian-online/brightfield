@@ -241,6 +241,14 @@ pub fn drop_unmade_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> 
         return Ok(());
     }
     let transforms = FinetypeTransforms::vendored();
+    let conn = duckdb::Connection::open(&db).map_err(|e| format!("{}: {e}", db.display()))?;
+    let state: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = '_arcform_state'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("{}: {e}", db.display()))?;
     // A part of a combination is a source table that has no silver table; a combined dataset or a
     // part left out of the model keeps none either, so what an earlier model made of them goes.
     let mut candidates: Vec<String> = p.sources.tables.iter().map(|t| t.name.clone()).collect();
@@ -250,6 +258,22 @@ pub fn drop_unmade_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> 
             candidates.push(d.name.clone());
         }
     }
+    // A dataset the model no longer has, such as a combination a later pass stopped making, is
+    // known only by the silver step arc recorded for it.
+    if state > 0 {
+        let mut stmt = conn
+            .prepare("SELECT step_name FROM _arcform_state WHERE step_name LIKE 'silver\\_%' ESCAPE '\\'")
+            .map_err(|e| format!("{}: {e}", db.display()))?;
+        let steps = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("{}: {e}", db.display()))?;
+        for step in steps.flatten() {
+            let name = step[SILVER_STEP.len()..].to_string();
+            if !candidates.contains(&name) {
+                candidates.push(name);
+            }
+        }
+    }
     let unmade: Vec<String> = candidates
         .into_iter()
         .filter(|name| silver_sql(model, name, &transforms).is_empty())
@@ -257,14 +281,6 @@ pub fn drop_unmade_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> 
     if unmade.is_empty() {
         return Ok(());
     }
-    let conn = duckdb::Connection::open(&db).map_err(|e| format!("{}: {e}", db.display()))?;
-    let state: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM duckdb_tables() WHERE table_name = '_arcform_state'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("{}: {e}", db.display()))?;
     let mut sql = String::new();
     for name in &unmade {
         let _ = write!(

@@ -149,7 +149,8 @@ pub fn cast_projection(
 
 /// A dataset gets silver tables unless it is excluded, folded into another, or one part of a
 /// combined dataset, whose silver table reads the parts' raw tables through its own query.
-fn has_silver(d: &Dataset) -> bool {
+#[must_use]
+pub fn has_silver(d: &Dataset) -> bool {
     !d.meta.excluded && d.meta.folded_into.is_none() && d.meta.combined_into.is_none()
 }
 

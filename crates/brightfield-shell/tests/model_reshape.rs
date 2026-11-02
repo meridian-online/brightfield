@@ -635,6 +635,33 @@ fn a_combination_left_out_loses_its_table() {
 }
 
 #[test]
+fn a_combination_that_leaves_the_model_loses_its_table() {
+    let (protocol, mut model) = combined("combination-removed", false);
+    assert_eq!(
+        count_tables(&protocol.dir, &["ab", "ab__failed"]),
+        [true, true]
+    );
+    // A later pass stops combining: the parts are plain datasets again and `ab` is gone.
+    model.datasets.retain(|d| d.name != "ab");
+    for d in &mut model.datasets {
+        d.meta.combined_into = None;
+    }
+    brightfield_shell::own_files::write_silver(&protocol, &model).unwrap();
+    brightfield_shell::own_files::drop_unmade_silver(&protocol, &model).unwrap();
+    assert_eq!(
+        count_tables(&protocol.dir, &["ab", "ab__failed"]),
+        [false, false]
+    );
+}
+
+#[test]
+fn a_part_is_not_materialised() {
+    let (_, model) = combined("combination-parts", false);
+    assert!(!model_inspector::materialised(&model, "a"));
+    assert!(model_inspector::materialised(&model, "ab"));
+}
+
+#[test]
 fn the_pickers_change_keys_and_retype_a_column() {
     let mut pane = opened(retail_model());
     // Change keys… opens on the join's own columns, chosen from each side's.

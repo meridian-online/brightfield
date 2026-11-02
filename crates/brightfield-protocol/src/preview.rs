@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 
 use brightfield_ossie::{Model, LINEAGE};
 
-use crate::silver::{cast_rows_sql, FinetypeTransforms};
+use crate::silver::{cast_rows_sql, has_silver, FinetypeTransforms};
 
 /// `name` as a SQL identifier.
 fn quoted(name: &str) -> String {
@@ -33,7 +33,7 @@ fn transforms() -> &'static FinetypeTransforms {
 /// raw table when it has none.
 fn rows_of(model: &Model, dataset: &str) -> String {
     match model.datasets.iter().find(|d| d.name == dataset) {
-        Some(d) if !d.meta.excluded && d.meta.folded_into.is_none() => quoted(dataset),
+        Some(d) if has_silver(d) => quoted(dataset),
         Some(d) => format!("({})", cast_rows_sql(d, transforms())),
         None => quoted(dataset),
     }
