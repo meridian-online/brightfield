@@ -286,8 +286,12 @@ pub fn read(yaml: &str) -> Result<Model, ReadError> {
 fn default_model_meta() -> ModelMeta {
     ModelMeta {
         generator: "hand-written".to_string(),
+        pass: None,
+        typing: None,
+        sample_rows: None,
         rejected: Vec::new(),
         skipped_sources: Vec::new(),
+        other: serde_json::Map::new(),
     }
 }
 
@@ -295,12 +299,17 @@ fn default_dataset_meta(source: &str) -> DatasetMeta {
     DatasetMeta {
         role: Role::Unclear,
         role_evidence: Vec::new(),
+        role_scores: None,
         folded_into: None,
+        fold_column: None,
+        combined_into: None,
+        combination: None,
         excluded: false,
         decided_by: DecidedBy::Analyst,
         source_file: source.to_string(),
         source_part: None,
         rows: None,
+        other: serde_json::Map::new(),
     }
 }
 
@@ -308,6 +317,7 @@ fn default_field_meta() -> FieldMeta {
     FieldMeta {
         finetype: None,
         decided_by: DecidedBy::Analyst,
+        other: serde_json::Map::new(),
     }
 }
 
@@ -323,11 +333,13 @@ fn default_relationship_meta() -> RelationshipMeta {
             types_agree: false,
             name_similarity: 0.0,
             parent_duplicates: 0,
+            other: serde_json::Map::new(),
         },
         cardinality: "N:1".to_string(),
         verified: Verified::Unmeasured,
         decided_by: DecidedBy::Analyst,
         warning: None,
+        other: serde_json::Map::new(),
     }
 }
 

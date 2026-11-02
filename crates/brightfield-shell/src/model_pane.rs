@@ -67,7 +67,7 @@ use meridian_design::{semantic, spacing};
 
 use crate::canvas::EguiCanvasHost;
 use crate::design::Mode;
-use crate::discovery::{sample_pass, write_model_file, Discovery, FullPass, StandIn, MODEL_FILE};
+use crate::discovery::{sample_pass, write_model_file, Discovery, Dovetail, FullPass, MODEL_FILE};
 use crate::editor::Access;
 use crate::model_file::{self, Kept};
 use crate::model_inspector::{self, Inspected, InspectorDrawn, ModelAction, ModelPicker};
@@ -530,6 +530,7 @@ impl ModelPane {
         let result = match model_file::read_hand_edit(
             &self.model,
             &self.file_base,
+            &self.kept.relationships,
             &sources,
             &self.file_draft,
         ) {
@@ -681,8 +682,9 @@ impl ModelPane {
     /// answer what came of it; `None` when `longname` is neither.
     pub fn perform_reshape(&mut self, longname: &str) -> Option<Dispatched> {
         if longname == REDISCOVER_MODEL {
-            // The stand-in is the discoverer the open uses ([`crate::data_file::open_any`]).
-            return Some(self.rediscover(StandIn));
+            // The same discoverer the open uses ([`crate::data_file::open_any`]).
+            let dovetail = Dovetail::new(&self.runner);
+            return Some(self.rediscover(dovetail));
         }
         Some(match self.reshape_action(longname)? {
             Ok(action) => self.dispatch(action),
@@ -805,7 +807,8 @@ impl ModelPane {
 
     /// Run `discovery` over the Protocol again and fold what it proposes into the model: what the
     /// analyst decided stays as it is, and what Dovetail decided takes the fresh pass. The sample
-    /// pass is folded in and saved, as an action's model is, before this answers; the full pass
+    /// pass is folded in and saved, as an action's model is, before this answers, so the window
+    /// waits for the sample pass's child to finish; the full pass
     /// then runs on a worker, in place of any still running, which is told to stop, and lands
     /// through [`Self::poll_discovery`]. The full pass starts only once the sample's save is
     /// written, so it reads the folder as the save left it. What came of it stands in the status
@@ -942,7 +945,7 @@ impl ModelPane {
             Selection::Dataset(name) => {
                 if !model_inspector::materialised(&self.model, name) {
                     return Err(format!(
-                        "{name} has no table of its own: it is left out or folded into another"
+                        "{name} has no table of its own: it is left out, folded into another or a part of a combination"
                     ));
                 }
                 (name.clone(), model_inspector::silver_rows_sql(name))

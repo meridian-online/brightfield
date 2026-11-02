@@ -110,18 +110,46 @@ pub fn create(opened: &Path) -> Result<OwnProtocol, String> {
     })
 }
 
+/// Held by the own-files flow's writes to a Protocol's database, [`run_loads`] and
+/// [`drop_unmade_silver`], for their whole run, and by a discovery pass while it copies the
+/// database for its child, so the copy is not taken part way through one of those writes. The
+/// window's own runs start `arc` without it: they run the workbench's Protocols, and an own-files
+/// Protocol is run through this module. The lock is this process's, so another process writing the
+/// same folder is not held off. A writer that panicked left the database as an interrupted run
+/// would, so the lock is taken again rather than refused.
+pub fn database_lock() -> std::sync::MutexGuard<'static, ()> {
+    static DATABASE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    DATABASE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Run the Protocol's steps with `runner`, which makes the raw tables, and wait for it.
 ///
 /// # Errors
 ///
 /// What `arc` printed, when the run did not succeed.
 pub fn run_loads(p: &OwnProtocol, runner: &Runner) -> Result<(), String> {
+    let _writing = database_lock();
     let finished: Finished = Run::begin(runner, &p.dir, || {}).wait();
     if finished.succeeded {
         Ok(())
     } else {
         Err(finished.log)
     }
+}
+
+/// The datasets that may have a silver table: the source tables, then each dataset of `model` with
+/// a combination, in model order and without repeats. A combined dataset has no source table of
+/// its own, because it is built from its parts' raw tables by a query.
+fn silver_datasets(model: &Model, sources: &[&str]) -> Vec<String> {
+    let mut names: Vec<String> = sources.iter().map(|s| (*s).to_string()).collect();
+    for d in &model.datasets {
+        if d.meta.combination.is_some() && !names.contains(&d.name) {
+            names.push(d.name.clone());
+        }
+    }
+    names
 }
 
 /// Write the silver steps for `model`: for each dataset that has a silver table, a step that casts
@@ -156,24 +184,25 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
     });
 
     let mut written: HashSet<String> = HashSet::new();
-    for table in &p.sources.tables {
-        let silver = silver_sql(model, &table.name, &transforms);
+    let sources: Vec<&str> = p.sources.tables.iter().map(|t| t.name.as_str()).collect();
+    for name in silver_datasets(model, &sources) {
+        let silver = silver_sql(model, &name, &transforms);
         if silver.is_empty() {
             continue;
         }
-        let failed = failed_sql(model, &table.name, &transforms);
+        let failed = failed_sql(model, &name, &transforms);
         for (step, file, sql, produces) in [
             (
-                format!("{SILVER_STEP}{}", table.name),
-                format!("models/{SILVER_FILE}{}.sql", table.name),
+                format!("{SILVER_STEP}{}", name),
+                format!("models/{SILVER_FILE}{}.sql", name),
                 silver,
-                table.name.clone(),
+                name.clone(),
             ),
             (
-                format!("{FAILED_STEP}{}", table.name),
-                format!("models/{FAILED_FILE}{}.sql", table.name),
+                format!("{FAILED_STEP}{}", name),
+                format!("models/{FAILED_FILE}{}.sql", name),
                 failed,
-                format!("{}__failed", table.name),
+                format!("{}__failed", name),
             ),
         ] {
             std::fs::write(p.dir.join(&file), format!("{sql};\n"))
@@ -222,21 +251,12 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
 ///
 /// The reason when the database cannot be opened or a table cannot be dropped.
 pub fn drop_unmade_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
+    let _writing = database_lock();
     let db = arc::spec::protocol_db_path(&p.dir).map_err(|e| e.to_string())?;
     if !db.is_file() {
         return Ok(());
     }
     let transforms = FinetypeTransforms::vendored();
-    let unmade: Vec<&str> = p
-        .sources
-        .tables
-        .iter()
-        .filter(|t| silver_sql(model, &t.name, &transforms).is_empty())
-        .map(|t| t.name.as_str())
-        .collect();
-    if unmade.is_empty() {
-        return Ok(());
-    }
     let conn = duckdb::Connection::open(&db).map_err(|e| format!("{}: {e}", db.display()))?;
     let state: i64 = conn
         .query_row(
@@ -245,8 +265,40 @@ pub fn drop_unmade_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> 
             |row| row.get(0),
         )
         .map_err(|e| format!("{}: {e}", db.display()))?;
+    // A part of a combination is a source table that has no silver table; a combined dataset or a
+    // part left out of the model keeps none either, so what an earlier model made of them goes.
+    let mut candidates: Vec<String> = p.sources.tables.iter().map(|t| t.name.clone()).collect();
+    for d in &model.datasets {
+        let combined = d.meta.combination.is_some() || d.meta.combined_into.is_some();
+        if combined && !candidates.contains(&d.name) {
+            candidates.push(d.name.clone());
+        }
+    }
+    // A dataset the model no longer has, such as a combination a later pass stopped making, is
+    // known only by the silver step arc recorded for it.
+    if state > 0 {
+        let mut stmt = conn
+            .prepare("SELECT step_name FROM _arcform_state WHERE step_name LIKE 'silver\\_%' ESCAPE '\\'")
+            .map_err(|e| format!("{}: {e}", db.display()))?;
+        let steps = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("{}: {e}", db.display()))?;
+        for step in steps.flatten() {
+            let name = step[SILVER_STEP.len()..].to_string();
+            if !candidates.contains(&name) {
+                candidates.push(name);
+            }
+        }
+    }
+    let unmade: Vec<String> = candidates
+        .into_iter()
+        .filter(|name| silver_sql(model, name, &transforms).is_empty())
+        .collect();
+    if unmade.is_empty() {
+        return Ok(());
+    }
     let mut sql = String::new();
-    for name in unmade {
+    for name in &unmade {
         let _ = write!(
             sql,
             "DROP TABLE IF EXISTS {}; DROP TABLE IF EXISTS {};",

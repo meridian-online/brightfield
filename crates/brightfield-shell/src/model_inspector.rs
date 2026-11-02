@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 use brightfield_engine::semantic::SchemaCatalogue;
 use brightfield_ossie::{DecidedBy, Edit, Grade, Model, Role, Verified, LINEAGE};
+use brightfield_protocol::silver::has_silver;
 use brightfield_render::model_scene::Selection;
 use brightfield_workbench::chrome;
 use meridian_design::{control, semantic, spacing};
@@ -100,14 +101,14 @@ impl ModelAction {
     }
 }
 
-/// Whether `dataset` has tables of its own in the Protocol's database: it is neither left out nor
-/// folded into another.
+/// Whether `dataset` has tables of its own in the Protocol's database: it is neither left out,
+/// folded into another nor a part of a combination.
 #[must_use]
 pub fn materialised(model: &Model, dataset: &str) -> bool {
     model
         .datasets
         .iter()
-        .any(|d| d.name == dataset && !d.meta.excluded && d.meta.folded_into.is_none())
+        .any(|d| d.name == dataset && has_silver(d))
 }
 
 /// The buttons a join's inspector offers, in order. Keep is offered for a possible join the

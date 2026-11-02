@@ -1219,6 +1219,19 @@ pub enum Opened {
 /// The reason the path was refused (see [`accept`]), held no table Brightfield reads, or a step
 /// of the flow failed. Each carries the path or the folder it concerns.
 pub fn open_any(path: &Path, runner: &crate::run::Runner) -> Result<Opened, String> {
+    open_any_with(path, runner, &crate::discovery::Dovetail::new(runner))
+}
+
+/// [`open_any`] with the discoverer for several tables named, so a test can make it fail.
+///
+/// # Errors
+///
+/// As [`open_any`]; a failed sample pass is not one, as the stand-in's sample is used instead.
+pub fn open_any_with(
+    path: &Path,
+    runner: &crate::run::Runner,
+    dovetail: &dyn crate::discovery::Discovery,
+) -> Result<Opened, String> {
     let path = accept(&path.to_string_lossy())?;
     let found = brightfield_engine::sources::discover(&path)?;
     let one_part = match found.tables.as_slice() {
@@ -1234,7 +1247,20 @@ pub fn open_any(path: &Path, runner: &crate::run::Runner) -> Result<Opened, Stri
     own::run_loads(&protocol, runner)?;
     own::profile(&mut protocol)?;
     own::write_packages(&protocol)?;
-    let model = crate::discovery::sample_pass(&crate::discovery::StandIn, &protocol, None)?;
+    // A single table has nothing to relate, so dovetail is not asked about it. When dovetail's
+    // sample pass fails, the open still shows the tables, each unclear with no joins, rather than
+    // leaving the Protocol folder behind with no window; the pane's full pass runs dovetail again
+    // and says why in the status line if it fails too.
+    let stand_in = crate::discovery::StandIn;
+    let model = if one_part.is_none() {
+        crate::discovery::sample_pass(dovetail, &protocol, None).or_else(|e| {
+            eprintln!("dovetail's sample pass failed, so the tables open unclear: {e}");
+            crate::discovery::sample_pass(&stand_in, &protocol, None)
+        })?
+    } else {
+        // The stand-in is the discoverer here, so its failure is the open's, not one to retry.
+        crate::discovery::sample_pass(&stand_in, &protocol, None)?
+    };
     // A single table has nothing to relate, so no model is written for it, and its folder is not
     // one the door lists as an own-files Protocol.
     if one_part.is_none() {

@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use jsonschema::Validator;
 
-const SCHEMA: &str = include_str!("../vendor/ossie/osi-schema.json");
+const SCHEMA: &str = include_str!("../vendor/ossie/ossie-schema.json");
 
 /// One place where a document breaks the schema.
 #[derive(Debug, Clone, PartialEq, Eq)]

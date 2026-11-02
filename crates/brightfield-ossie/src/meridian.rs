@@ -10,8 +10,9 @@ use crate::VENDOR;
 pub fn encode<T: Serialize>(meta: &T) -> Extension {
     Extension {
         vendor_name: VENDOR.to_string(),
-        // Total for these types: their only free-form parts are the extras of
-        // rejected relationships, which `write` first gives string keys and finite floats.
+        // Total for these types: their free-form parts are the extras of rejected
+        // relationships, which `write` first gives string keys and finite floats, and the `other`
+        // and `typing` values, which were read from JSON and so have string keys and finite numbers.
         data: serde_json::to_string(meta).expect("meridian metadata serialises"),
     }
 }

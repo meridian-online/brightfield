@@ -52,6 +52,15 @@ brightfield-sql = { path = "crates/brightfield-sql" }
 # dependency". The package is named `arcform` upstream; `package =` keeps the
 # crate `arc` in this workspace's source.
 arc = { package = "arcform", git = "https://github.com/meridian-online/arcform", rev = "631c587cb24f30f796b801d904fef7fb678a1a65", default-features = false, features = ["http-fetch"] }
+# The modelling layer, dovetail: the own-files flow's discoverer. Rev-pinned like `arc`
+# (pre-1.0, so every bump is deliberate). `default-features = false` leaves out its
+# `finetype-guided` typer, the candle ML stack, which this binary does not carry. It pins the
+# same DuckDB as this workspace (`duckdb = "=1.20000.0"`, bundled), so DuckDB stays one build.
+# finetype-core arrives through dovetail at a tag (v0.6.64; Cargo.lock records its commit), and
+# brings tokenizers and hf-hub into the binary even with dovetail's ML typer off.
+# Its `cli_main` reads the calling process's argv, so `brightfield-shell` hands a child process
+# of its own binary to it, as it does for `arc`.
+dovetail = { git = "https://github.com/meridian-online/dovetail", rev = "c5c1a4f229d9186feeaa7dd13b7e2d841e9b28b7", default-features = false }
 arrow = { version = "60", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # `bundled` builds DuckDB from source, so no member needs a system libduckdb. One

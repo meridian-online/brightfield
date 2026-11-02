@@ -19,6 +19,16 @@ pub(crate) fn same_join(a: &Relationship, b: &Relationship) -> bool {
 pub fn merge_discovery(current: &Model, proposed: &Model) -> Model {
     let mut out = current.clone();
     out.meta.skipped_sources = proposed.meta.skipped_sources.clone();
+    // The pass describes the data the proposal was measured on, so it replaces the model's.
+    // The generator stays the caller's own.
+    out.meta.pass.clone_from(&proposed.meta.pass);
+    out.meta.typing.clone_from(&proposed.meta.typing);
+    out.meta.sample_rows = proposed.meta.sample_rows;
+    // Key by key, so a key the proposal does not write, such as one a newer Brightfield or an
+    // earlier pass put there, is not lost; the proposal's own keys win.
+    for (key, value) in &proposed.meta.other {
+        out.meta.other.insert(key.clone(), value.clone());
+    }
 
     let mut datasets = Vec::new();
     for cur in &current.datasets {

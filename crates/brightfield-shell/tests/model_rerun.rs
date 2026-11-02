@@ -340,14 +340,18 @@ fn rediscover_is_a_durable_verb_of_the_model() {
     assert!(model_pane::is_model_verb(REDISCOVER_MODEL));
     assert!(model_pane::model_palette_verbs().contains(&REDISCOVER_MODEL));
 
-    // With the stand-in discoverer, which proposes the model on disk, nothing changes.
+    // The verb runs dovetail over the Protocol, so the file is its proposal's, folded around the
+    // retail model the pane was opened on, and no longer the retail model's text.
     let mut pane = opened(&retail_copy("retail-rediscover-verb", ""), retail_model());
     let text = pane.file_text().to_string();
     let done = pane
         .perform_reshape(REDISCOVER_MODEL)
         .expect("a model verb");
     assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
-    assert_eq!(pane.file_text(), text);
+    assert_ne!(pane.file_text(), text, "dovetail's proposal was written");
+    // The generator is not checked: a fold keeps the held model's own, so only an open, which
+    // holds nothing, writes dovetail's.
+    brightfield_ossie::read(pane.file_text()).expect("the written file reads");
 }
 
 #[test]
@@ -391,6 +395,9 @@ fn a_hand_edit_never_claims_measured_evidence() {
     frame(&mut pane, vec![egui::Event::PointerMoved(at), button(true)]);
     frame(&mut pane, vec![button(false)]);
 
+    // The editor's text before the measurement, which is the text the edit starts from.
+    let stale = pane.file_draft().to_string();
+
     // The written model runs and is measured while the editor holds the keyboard: the file on
     // disk warns, and the editor still holds text without the warning.
     pane.save_model(retail_model())
@@ -405,10 +412,13 @@ fn a_hand_edit_never_claims_measured_evidence() {
 
     // An unrelated hand edit to the text from before the measurement: promo_codes made a
     // reference table.
-    let stale = brightfield_ossie::write(&retail_model());
     let promo = r#"data: '{"role":"unclear""#;
-    assert_eq!(stale.matches(promo).count(), 1, "{stale}");
-    let typed = stale.replacen(promo, r#"data: '{"role":"reference""#, 1);
+    let at = stale
+        .find("- name: promo_codes")
+        .expect("the promo_codes table");
+    let role = at + stale[at..].find(promo).expect("its role");
+    let mut typed = stale.clone();
+    typed.replace_range(role..role + promo.len(), r#"data: '{"role":"reference""#);
     pane.set_file_draft(typed.clone());
     frame(&mut pane, Vec::new());
     assert_eq!(pane.tick_file_edit(0), None);

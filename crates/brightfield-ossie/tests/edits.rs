@@ -1,5 +1,5 @@
 use brightfield_ossie::{
-    apply, merge_discovery, read, DecidedBy, Edit, Grade, Model, Role, Verified,
+    apply, merge_discovery, read, stranded_parts, DecidedBy, Edit, Grade, Model, Role, Verified,
 };
 
 const STAND_IN: &str = include_str!("../fixtures/retail_extract/model.ossie.yaml");
@@ -545,4 +545,139 @@ fn discovered_fold_keeps_its_join_after_an_edit() {
         .retain(|r| r.name != "products_categories");
     let merged = merge_discovery(&current, &proposed);
     assert!(rel(&merged, "products_categories").is_some());
+}
+
+#[test]
+fn a_merge_takes_the_pass_of_the_proposal_and_keeps_its_own_generator() {
+    let mut current = model();
+    current.meta.generator = "brightfield".to_string();
+    current.meta.pass = Some("sample".to_string());
+    current.meta.sample_rows = Some(50000);
+    let mut proposed = model();
+    proposed.meta.generator = "dovetail".to_string();
+    proposed.meta.pass = Some("full".to_string());
+    proposed.meta.sample_rows = None;
+    proposed.meta.typing = Some(serde_json::json!({"source": "packages"}));
+    proposed
+        .meta
+        .other
+        .insert("zz_new".to_string(), serde_json::json!(1));
+    let merged = merge_discovery(&current, &proposed);
+
+    assert_eq!(merged.meta.generator, "brightfield");
+    assert_eq!(merged.meta.pass.as_deref(), Some("full"));
+    assert_eq!(merged.meta.sample_rows, None);
+    assert_eq!(merged.meta.typing, proposed.meta.typing);
+    assert_eq!(merged.meta.other, proposed.meta.other);
+}
+
+#[test]
+fn a_merge_takes_the_proposals_model_keys_and_keeps_the_ones_it_lacks() {
+    let mut current = model();
+    current
+        .meta
+        .other
+        .insert("zz_mine".to_string(), serde_json::json!("kept"));
+    current
+        .meta
+        .other
+        .insert("zz_both".to_string(), serde_json::json!("old"));
+    let mut proposed = model();
+    proposed
+        .meta
+        .other
+        .insert("zz_both".to_string(), serde_json::json!("new"));
+    proposed
+        .meta
+        .other
+        .insert("zz_new".to_string(), serde_json::json!(1));
+    let merged = merge_discovery(&current, &proposed);
+
+    assert_eq!(merged.meta.other["zz_mine"], serde_json::json!("kept"));
+    assert_eq!(merged.meta.other["zz_both"], serde_json::json!("new"));
+    assert_eq!(merged.meta.other["zz_new"], serde_json::json!(1));
+}
+
+#[test]
+fn leaving_out_a_combined_table_is_refused_while_its_parts_are_kept() {
+    // members is combined from members_2024 and members_2025, which have no silver tables of
+    // their own: leaving members out would leave their rows in none.
+    let m = read(include_str!(
+        "../fixtures/dovetail/retail.sample.ossie.yaml"
+    ))
+    .unwrap();
+    let e = apply(
+        &m,
+        &Edit::Exclude {
+            dataset: "members".into(),
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        e.contains("members_2024 and members_2025 are combined into members"),
+        "{e}"
+    );
+    // Once both parts are left out too, nothing is stranded.
+    let parts_out = ["members_2024", "members_2025"]
+        .into_iter()
+        .try_fold(m, |m, part| {
+            apply(
+                &m,
+                &Edit::Exclude {
+                    dataset: part.into(),
+                },
+            )
+        })
+        .unwrap();
+    let out = apply(
+        &parts_out,
+        &Edit::Exclude {
+            dataset: "members".into(),
+        },
+    )
+    .unwrap();
+    assert!(dataset(&out, "members").meta.excluded);
+}
+
+#[test]
+fn folding_a_combined_table_into_a_host_with_a_table_succeeds() {
+    // A folded combination's rows reach the host's silver table, so its parts are not stranded.
+    let m = read(include_str!(
+        "../fixtures/dovetail/retail.sample.ossie.yaml"
+    ))
+    .unwrap();
+    let m = apply(
+        &m,
+        &Edit::AddJoin {
+            from: "members".into(),
+            from_columns: vec!["member_id".into()],
+            to: "customers".into(),
+            to_columns: vec!["customer_id".into()],
+        },
+    )
+    .unwrap();
+    let folded = apply(
+        &m,
+        &Edit::Fold {
+            dataset: "members".into(),
+            into: "customers".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        dataset(&folded, "members").meta.folded_into.as_deref(),
+        Some("customers")
+    );
+    assert!(stranded_parts(&folded).is_empty());
+    // Leaving the host out would leave the combination's rows in no table.
+    let e = apply(
+        &folded,
+        &Edit::Exclude {
+            dataset: "customers".into(),
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("members"), "{e}");
 }

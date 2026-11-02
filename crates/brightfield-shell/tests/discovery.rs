@@ -1,15 +1,17 @@
 //! The discovery seam: its stand-in, the full pass that runs on a worker and folds into the model
 //! as it stands when it lands, starts only once the sample's save is written, and is stopped when a
-//! newer pass supersedes it, and the dovetail child that is not built in yet.
+//! newer pass supersedes it, and the dovetail child that runs each pass over a copy of the database.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
-use brightfield_ossie::{DecidedBy, Edit, Model, Role};
+use brightfield_ossie::{CombinationKind, DecidedBy, Edit, Model, Role};
 use brightfield_shell::data_file::{self, Opened};
-use brightfield_shell::discovery::{proposal_file, Cancel, Discovery, Dovetail, Pass, StandIn};
+use brightfield_shell::discovery::{
+    proposal_file, Cancel, Discovery, Dovetail, Pass, StandIn, PROPOSALS_DIR,
+};
 use brightfield_shell::model_inspector::ModelAction;
 use brightfield_shell::model_pane::{Dispatched, ModelPane};
 use brightfield_shell::own_files::{self, OwnProtocol};
@@ -373,11 +375,10 @@ fn full_pass_waits_for_a_file_edit_to_be_read() {
     assert_eq!(role_of(&pane.model, "promo_codes"), Role::Reference);
 }
 
-#[test]
-#[ignore = "dovetail is not built into Brightfield until dovetail's DuckDB 2.0 release ships, \
-            with Ossie output, table roles and the sample and full passes"]
-fn dovetail_child_writes_valid_ossie() {
-    let root = retail_copy("dovetail");
+/// The retail extract copied into `name` and made a Protocol a dovetail child can read: its raw
+/// tables loaded, profiled and described in data packages.
+fn dovetail_protocol(name: &str) -> OwnProtocol {
+    let root = retail_copy(name);
     let mut protocol = {
         let _held = folder_lock();
         let protocol = own_files::create(&root).unwrap();
@@ -386,13 +387,31 @@ fn dovetail_child_writes_valid_ossie() {
     };
     own_files::profile(&mut protocol).unwrap();
     own_files::write_packages(&protocol).unwrap();
+    protocol
+}
+
+/// The names in the Protocol's proposals folder, or none when it is not there.
+fn proposals_folder(protocol: &OwnProtocol) -> Vec<String> {
+    std::fs::read_dir(protocol.dir.join(PROPOSALS_DIR))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn dovetail_child_writes_valid_ossie() {
+    let protocol = dovetail_protocol("dovetail");
     // The model the analyst holds, which the child must leave alone.
     let model_file = protocol.dir.join("model.ossie.yaml");
     let held = brightfield_ossie::write(&StandIn.discover(&protocol, Pass::Sample).unwrap());
     std::fs::write(&model_file, &held).unwrap();
 
     for pass in [Pass::Sample, Pass::Full] {
-        let answered = Dovetail
+        let answered = Dovetail::new(&runner())
             .discover(&protocol, pass)
             .expect("the dovetail child runs");
         let text = std::fs::read_to_string(proposal_file(&protocol.dir, pass))
@@ -422,7 +441,193 @@ fn dovetail_child_writes_valid_ossie() {
             held,
             "the child never writes model.ossie.yaml"
         );
+        let left: Vec<String> = proposals_folder(&protocol)
+            .into_iter()
+            .filter(|f| f.starts_with("run-"))
+            .collect();
+        assert!(left.is_empty(), "the run's own files are removed: {left:?}");
     }
+    assert!(
+        !proposal_file(&protocol.dir, Pass::Sample).exists(),
+        "the full pass removes the sample proposal it verified"
+    );
+}
+
+/// The process id of the dovetail child reading a copy of `protocol`'s database, once one is
+/// running: a process whose command line passes `--db` a run file in the Protocol's proposals
+/// folder.
+#[cfg(unix)]
+fn running_child(protocol: &OwnProtocol) -> Option<u32> {
+    let copies = protocol.dir.join(PROPOSALS_DIR).join("run-");
+    let pattern = format!("model --db {}", copies.display());
+    let out = std::process::Command::new("pgrep")
+        .arg("-f")
+        .arg(pattern)
+        .output()
+        .expect("pgrep runs");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .and_then(|pid| pid.trim().parse().ok())
+}
+
+/// Whether a process `pid` is there, a zombie not yet waited for included.
+#[cfg(unix)]
+fn process_is_there(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("kill runs")
+        .success()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_cancelled_pass_kills_its_child_and_leaves_no_files() {
+    let protocol = dovetail_protocol("dovetail-cancelled");
+    let cancel = Cancel::default();
+    let (send, answer) = mpsc::channel();
+    {
+        let (protocol, cancel) = (protocol.clone(), cancel.clone());
+        std::thread::spawn(move || {
+            let _ =
+                send.send(Dovetail::new(&runner()).discover_until(&protocol, Pass::Full, &cancel));
+        });
+    }
+
+    // Cancelled once its child is running over the copy, which takes seconds to model.
+    let due = Instant::now() + Duration::from_secs(30);
+    let child = loop {
+        if let Some(pid) = running_child(&protocol) {
+            break pid;
+        }
+        assert!(Instant::now() < due, "the pass never started its child");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    cancel.request();
+    let answered = answer
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the cancelled pass answers within 5 s");
+    assert_eq!(
+        answered,
+        Err("the discovery pass was superseded".to_string())
+    );
+    assert!(
+        !process_is_there(child),
+        "the child {child} was killed and waited for"
+    );
+    let left = proposals_folder(&protocol);
+    assert!(
+        !left.iter().any(|f| f.starts_with("run-")),
+        "the run's files are removed: {left:?}"
+    );
+    assert!(
+        !proposal_file(&protocol.dir, Pass::Full).exists(),
+        "a cancelled pass proposes nothing"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pass_removes_the_run_files_a_process_that_has_ended_left() {
+    let protocol = dovetail_protocol("dovetail-orphans");
+    let proposals = protocol.dir.join(PROPOSALS_DIR);
+    std::fs::create_dir_all(&proposals).unwrap();
+    // A process that has ended, as a Brightfield that crashed during a pass has, and one still
+    // running, as another Brightfield in the middle of a pass is.
+    let mut ended = std::process::Command::new("true").spawn().unwrap();
+    let dead = ended.id();
+    ended.wait().unwrap();
+    let mut running = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let live = running.id();
+    let left = [
+        format!("run-{dead}-0.duckdb"),
+        format!("run-{dead}-0.duckdb.wal"),
+        format!("run-{dead}-0.sample.ossie.yaml"),
+    ];
+    let kept = format!("run-{live}-0.duckdb");
+    for name in left.iter().chain([&kept]) {
+        std::fs::write(proposals.join(name), "a copy").unwrap();
+    }
+
+    let answered = Dovetail::new(&runner()).discover(&protocol, Pass::Sample);
+    let _ = running.kill();
+    let _ = running.wait();
+    answered.expect("the sample pass answers");
+    let files = proposals_folder(&protocol);
+    for name in &left {
+        assert!(!files.contains(name), "{name} is removed: {files:?}");
+    }
+    assert!(
+        files.contains(&kept),
+        "a running process's files stay: {files:?}"
+    );
+}
+
+#[test]
+fn the_child_reads_the_database_log_beside_the_copy() {
+    let protocol = dovetail_protocol("dovetail-wal");
+    let db = arc::spec::protocol_db_path(&protocol.dir).unwrap();
+    // Rows written to the log and not yet checkpointed into the database, held there by a
+    // connection left open while the pass copies.
+    let conn = duckdb::Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "SET checkpoint_threshold = '1GB'; INSERT INTO raw_stores SELECT * FROM raw_stores;",
+    )
+    .unwrap();
+    let rows: u64 = conn
+        .query_row("SELECT count(*) FROM raw_stores", [], |row| row.get(0))
+        .unwrap();
+    let mut wal = db.clone().into_os_string();
+    wal.push(".wal");
+    assert!(Path::new(&wal).is_file(), "the insert is in the log");
+
+    let model = Dovetail::new(&runner())
+        .discover(&protocol, Pass::Full)
+        .expect("the dovetail child runs");
+    drop(conn);
+    let stores = model.datasets.iter().find(|d| d.name == "stores").unwrap();
+    assert_eq!(
+        stores.meta.rows,
+        Some(rows),
+        "the child read the logged rows"
+    );
+}
+
+/// A Protocol dovetail cannot model, since its data packages were removed before the pass.
+fn protocol_without_packages(name: &str) -> OwnProtocol {
+    let protocol = dovetail_protocol(name);
+    std::fs::remove_dir_all(protocol.dir.join("packages")).unwrap();
+    protocol
+}
+
+#[test]
+fn a_failing_child_answers_its_stderr() {
+    let protocol = protocol_without_packages("dovetail-failing");
+    let answered = Dovetail::new(&runner()).discover(&protocol, Pass::Sample);
+    let reason = answered.expect_err("the child cannot read the packages");
+    assert!(reason.contains("dovetail model:"), "{reason}");
+}
+
+#[test]
+fn a_failed_sample_pass_leaves_no_proposal_to_verify() {
+    let protocol = protocol_without_packages("dovetail-stale-sample");
+    // An earlier sample pass's proposal, which a failed pass must not leave for the full pass.
+    let stale = proposal_file(&protocol.dir, Pass::Sample);
+    std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+    std::fs::write(&stale, "stale").unwrap();
+
+    let answered = Dovetail::new(&runner()).discover(&protocol, Pass::Sample);
+    assert!(answered.is_err(), "{answered:?}");
+    assert!(
+        !stale.exists(),
+        "a failed sample pass leaves no proposal to verify"
+    );
 }
 
 #[test]
@@ -505,4 +710,223 @@ fn a_rediscover_whose_save_fails_still_runs_the_full_pass() {
     assert!(pane.discovering(), "the full pass runs after a failed save");
     release.send(stores_as_reference()).unwrap();
     assert!(pane.finish_discovery().is_some(), "the full pass lands");
+}
+
+#[test]
+fn opening_related_tables_proposes_dovetails_joins() {
+    let opened = {
+        let _held = folder_lock();
+        data_file::open_any(&retail_copy("joins"), &runner()).expect("it opens")
+    };
+    let Opened::Model(protocol) = opened else {
+        panic!("several tables are a model");
+    };
+    let text = std::fs::read_to_string(protocol.dir.join("model.ossie.yaml"))
+        .expect("the open wrote the model");
+    let model = brightfield_ossie::read(&text).expect("the model reads");
+    assert!(
+        model
+            .relationships
+            .iter()
+            .any(|r| r.meta.decided_by == DecidedBy::Dovetail),
+        "dovetail proposed at least one join: {:?}",
+        model.relationships
+    );
+    assert!(
+        model.meta.generator.starts_with("dovetail "),
+        "generator is {:?}",
+        model.meta.generator
+    );
+}
+
+/// A discoverer whose every pass fails.
+struct Failing;
+
+impl Discovery for Failing {
+    fn discover(&self, _protocol: &OwnProtocol, _pass: Pass) -> Result<Model, String> {
+        Err("dovetail could not run".to_string())
+    }
+}
+
+#[test]
+fn a_failed_dovetail_sample_opens_the_stand_ins_model() {
+    let opened = {
+        let _held = folder_lock();
+        data_file::open_any_with(&retail_copy("failed-sample-open"), &runner(), &Failing)
+            .expect("the open still succeeds")
+    };
+    let Opened::Model(protocol) = opened else {
+        panic!("several tables are a model");
+    };
+    let text = std::fs::read_to_string(protocol.dir.join("model.ossie.yaml")).unwrap();
+    let model = brightfield_ossie::read(&text).unwrap();
+    assert!(model.relationships.is_empty(), "no joins are proposed");
+    assert!(!model.datasets.is_empty());
+    assert!(
+        model.datasets.iter().all(|d| d.meta.role == Role::Unclear),
+        "every table is unclear"
+    );
+}
+
+/// Whether a dovetail run file is in the Protocol's proposals folder.
+fn run_file_there(protocol: &OwnProtocol) -> bool {
+    proposals_folder(protocol)
+        .iter()
+        .any(|f| f.starts_with("run-") && f.ends_with(".duckdb"))
+}
+
+#[test]
+fn a_save_during_a_full_pass_runs_the_protocol() {
+    let mut pane = retail_pane("save-during-full");
+    pane.start_full_pass(Dovetail::new(&runner()));
+
+    // The save overlaps a running child: wait until the pass has made its copy.
+    let due = Instant::now() + Duration::from_secs(30);
+    while !run_file_there(&pane.protocol) {
+        assert!(
+            Instant::now() < due,
+            "the full pass never started its child"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let done = pane.dispatch(ModelAction::Edit(Edit::Exclude {
+        dataset: "promo_codes".into(),
+    }));
+    assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
+
+    let due = Instant::now() + Duration::from_secs(120);
+    let landed = loop {
+        if let Some(landed) = pane.poll_discovery() {
+            break landed;
+        }
+        assert!(Instant::now() < due, "the full pass never landed");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(!matches!(landed, Dispatched::Failed(_)), "{landed:?}");
+    let promo = pane
+        .model
+        .datasets
+        .iter()
+        .find(|d| d.name == "promo_codes")
+        .unwrap();
+    assert!(promo.meta.excluded, "the exclusion survived the fold");
+}
+
+/// A folder of three CSVs, as dovetail's own retail fixture builds them: products, each of which
+/// names a supplier, and the suppliers split into `suppliers_north` and `suppliers_south`, a
+/// partition pair with the same columns and keys that do not overlap.
+fn partitioned_suppliers(name: &str) -> PathBuf {
+    let dir = scratch().join("input").join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut products = String::from("sku,name,unit_price,supplier_id\n");
+    for i in 1..=120 {
+        let supplier = if i % 2 == 0 { i % 30 + 1 } else { i % 30 + 101 };
+        let price = 2.0 + f64::from(i % 37) * 0.75;
+        products.push_str(&format!("BEV-{i:03},Product {i},{price:.2},{supplier}\n"));
+    }
+    std::fs::write(dir.join("products.csv"), products).unwrap();
+    for (file, side, country, ids) in [
+        ("suppliers_north.csv", "North", "UK", 1..=30),
+        ("suppliers_south.csv", "South", "ES", 101..=130),
+    ] {
+        let mut text = String::from("supplier_id,name,country\n");
+        for i in ids {
+            text.push_str(&format!("{i},{side} Supplier {i},{country}\n"));
+        }
+        std::fs::write(dir.join(file), text).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn an_open_combines_a_partition_pair_into_one_table_that_joins_are_measured_on() {
+    let root = partitioned_suppliers("dovetail-partition");
+    let opened = {
+        let _held = folder_lock();
+        data_file::open_any(&root, &runner()).expect("the folder opens")
+    };
+    let Opened::Model(protocol) = opened else {
+        panic!("several tables are a model");
+    };
+    let text = std::fs::read_to_string(protocol.dir.join("model.ossie.yaml")).unwrap();
+    let model = brightfield_ossie::read(&text).unwrap();
+    let dataset = |name: &str| {
+        model
+            .datasets
+            .iter()
+            .find(|d| d.name == name)
+            .unwrap_or_else(|| panic!("the model has {name}: {text}"))
+    };
+
+    let combination = dataset("suppliers")
+        .meta
+        .combination
+        .clone()
+        .expect("suppliers is combined");
+    assert_eq!(combination.kind, CombinationKind::Partition);
+    assert_eq!(
+        combination.parts,
+        ["suppliers_north".to_string(), "suppliers_south".to_string()]
+    );
+    for part in &combination.parts {
+        assert_eq!(
+            dataset(part).meta.combined_into.as_deref(),
+            Some("suppliers")
+        );
+    }
+
+    let tables = brightfield_shell::model_inspector::query(
+        &protocol.dir,
+        "SELECT table_name FROM duckdb_tables() ORDER BY table_name",
+    )
+    .unwrap();
+    let names: Vec<&str> = tables
+        .rows
+        .iter()
+        .filter_map(|row| row.first().and_then(Option::as_deref))
+        .collect();
+    assert!(names.contains(&"suppliers"), "{names:?}");
+    for part in &combination.parts {
+        assert!(
+            !names.contains(&part.as_str()),
+            "{part} has no silver table: {names:?}"
+        );
+    }
+    let rows =
+        brightfield_shell::model_inspector::query(&protocol.dir, "SELECT count(*) FROM suppliers")
+            .unwrap();
+    assert_eq!(rows.rows[0][0].as_deref(), Some("60"));
+
+    // The join to the combined table is measured over its silver table: evidence wiped here comes
+    // back as the data has it.
+    let join = model
+        .relationships
+        .iter()
+        .find(|r| r.from == "products" && r.to == "suppliers")
+        .unwrap_or_else(|| panic!("products joins suppliers: {text}"))
+        .name
+        .clone();
+    let mut wiped = model.clone();
+    for r in &mut wiped.relationships {
+        r.meta.evidence.value_overlap = 0.0;
+        r.meta.evidence.child_rows = 0;
+        r.meta.evidence.orphans = 99;
+    }
+    let measured = brightfield_shell::model_pane::measure_joins(&protocol.dir, &wiped).unwrap();
+    let evidence = &measured
+        .relationships
+        .iter()
+        .find(|r| r.name == join)
+        .unwrap()
+        .meta
+        .evidence;
+    assert_eq!(
+        (
+            evidence.value_overlap,
+            evidence.child_rows,
+            evidence.orphans
+        ),
+        (1.0, 120, 0)
+    );
 }

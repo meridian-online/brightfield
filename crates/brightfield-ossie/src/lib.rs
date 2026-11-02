@@ -17,14 +17,15 @@ mod validate;
 mod verify;
 mod wire;
 
-pub use edit::{apply, refuse_new_strands, stranded_folds, Edit, EditError};
+pub use edit::{apply, refuse_new_strands, stranded_folds, stranded_parts, Edit, EditError};
 pub use layout::{
     edge_text, is_proposal, layout, list_rows, summary, Band, Card, EdgeLabel, ListRow, ModelLayout,
 };
 pub use merge::merge_discovery;
 pub use model::{
-    Dataset, DatasetMeta, Datatype, DecidedBy, Evidence, Extension, Field, FieldMeta, Grade, Model,
-    ModelMeta, Relationship, RelationshipMeta, Role, SkippedSource, Verified,
+    Combination, CombinationKind, Dataset, DatasetMeta, Datatype, DecidedBy, Evidence, Extension,
+    Field, FieldMeta, Grade, Model, ModelMeta, Relationship, RelationshipMeta, Role, RoleScores,
+    SkippedSource, Verified,
 };
 pub use validate::{validate, SchemaIssue};
 pub use verify::{apply_evidence, evidence_sql};

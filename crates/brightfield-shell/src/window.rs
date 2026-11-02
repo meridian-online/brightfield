@@ -9756,11 +9756,12 @@ impl MeridianApp {
         full_pass: bool,
     ) {
         let dir = protocol.dir.clone();
+        let discoverer = crate::discovery::Dovetail::new(&runner);
         let doc = match crate::model_pane::ModelPane::open(protocol, runner) {
             Ok(mut doc) => {
                 // The open wrote the sample pass's model; the full pass lands while it shows.
                 if full_pass {
-                    doc.start_full_pass(crate::discovery::StandIn);
+                    doc.start_full_pass(discoverer);
                 }
                 doc
             }

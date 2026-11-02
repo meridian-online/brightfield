@@ -138,11 +138,13 @@ pub fn apply(model: &Model, edit: &Edit) -> Result<Model, EditError> {
                         types_agree: false,
                         name_similarity: 0.0,
                         parent_duplicates: 0,
+                        other: serde_json::Map::new(),
                     },
                     cardinality: "N:1".to_string(),
                     verified: Verified::Unmeasured,
                     decided_by: DecidedBy::Analyst,
                     warning: None,
+                    other: serde_json::Map::new(),
                 },
                 extras: Default::default(),
                 other_extensions: Vec::new(),
@@ -250,24 +252,77 @@ pub(crate) fn unique_name(base: &str, kept: &[Relationship], rejected: &[Relatio
     name
 }
 
-/// Why `after` strands a folded table that `before` did not, if it does: see [`stranded_folds`].
+/// Why `after` strands a folded table or a combination's parts that `before` did not, if it does:
+/// see [`stranded_folds`] and [`stranded_parts`].
 ///
 /// # Errors
 ///
-/// The first newly stranded fold, naming the table to unfold and its host.
+/// The first newly stranded fold, naming the table to unfold and its host; or else the parts of
+/// the first combination whose rows `after` leaves in no table, naming each part.
 pub fn refuse_new_strands(before: &Model, after: &Model) -> Result<(), EditError> {
     let had = stranded_folds(before);
-    match stranded_folds(after).into_iter().find(|s| !had.contains(s)) {
-        Some((inner, host)) => err(format!(
+    if let Some((inner, host)) = stranded_folds(after).into_iter().find(|s| !had.contains(s)) {
+        return err(format!(
             "{inner} is folded into {host}, which would have no table of its own: \
              unfold {inner} from {host} first"
-        )),
-        None => Ok(()),
+        ));
+    }
+    let had = stranded_parts(before);
+    let new: Vec<_> = stranded_parts(after)
+        .into_iter()
+        .filter(|s| !had.contains(s))
+        .collect();
+    let Some((_, combined)) = new.first() else {
+        return Ok(());
+    };
+    let parts: Vec<&str> = new
+        .iter()
+        .filter(|(_, c)| c == combined)
+        .map(|(part, _)| part.as_str())
+        .collect();
+    // The last clause names what to undo: a removal, a leaving-out, or the host's.
+    let host = |h: &str| match after.datasets.iter().find(|d| d.name == h) {
+        Some(d) if d.meta.excluded => format!("bring {h} back first"),
+        _ => format!("keep {h} in the model"),
+    };
+    let (why, remedy) = match after.datasets.iter().find(|d| d.name == *combined) {
+        Some(d) if d.meta.excluded => (
+            "which would have no table of its own".to_string(),
+            format!("bring {combined} back first"),
+        ),
+        Some(d) => match d.meta.folded_into.as_deref() {
+            Some(h) => (
+                format!("which is folded into {h}, which would have no table of its own"),
+                host(h),
+            ),
+            None => (
+                "which would have no table of its own".to_string(),
+                format!("keep {combined} in the model"),
+            ),
+        },
+        None => (
+            "which would have no table of its own".to_string(),
+            format!("keep {combined} in the model"),
+        ),
+    };
+    err(format!(
+        "{} {} combined into {combined}, {why}, so their rows would reach no table: {remedy}",
+        and_list(&parts),
+        if parts.len() == 1 { "is" } else { "are" },
+    ))
+}
+
+/// `names` as prose: `a`, `a and b`, or `a, b and c`.
+fn and_list(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 
 /// Each kept table folded into a host that has no silver table of its own, as `(table, host)`:
-/// a host left out, folded itself, or not in the model. Only a host with its own silver table
+/// a host left out, folded itself, one part of a combination, or not in the model. Only a host with its own silver table
 /// joins its folds in, so a stranded table's columns and failed values reach no silver table.
 #[must_use]
 pub fn stranded_folds(m: &Model) -> Vec<(String, String)> {
@@ -276,13 +331,45 @@ pub fn stranded_folds(m: &Model) -> Vec<(String, String)> {
         .filter(|d| !d.meta.excluded)
         .filter_map(|d| {
             let host = d.meta.folded_into.as_deref()?;
-            let own_table = m
-                .datasets
-                .iter()
-                .any(|h| h.name == host && !h.meta.excluded && h.meta.folded_into.is_none());
-            (!own_table).then(|| (d.name.clone(), host.to_string()))
+            (!has_own_table(m, host)).then(|| (d.name.clone(), host.to_string()))
         })
         .collect()
+}
+
+/// Each kept part of a combination whose rows reach no silver table, as `(part, combined)`: the
+/// combined table is left out or not in the model, or is folded into a host with no table of its
+/// own. A part has no silver table, and its rows reach one only through the combined table's or,
+/// when the combined table is folded, through its host's, so a stranded part's rows reach none.
+#[must_use]
+pub fn stranded_parts(m: &Model) -> Vec<(String, String)> {
+    m.datasets
+        .iter()
+        .filter(|d| !d.meta.excluded)
+        .filter_map(|d| {
+            let combined = d.meta.combined_into.as_deref()?;
+            (!reaches_a_table(m, combined)).then(|| (d.name.clone(), combined.to_string()))
+        })
+        .collect()
+}
+
+/// Whether the rows of the dataset `name` land in a silver table: its own, or the host's it is
+/// folded into.
+fn reaches_a_table(m: &Model, name: &str) -> bool {
+    m.datasets.iter().any(|d| {
+        d.name == name
+            && !d.meta.excluded
+            && match d.meta.folded_into.as_deref() {
+                Some(host) => has_own_table(m, host),
+                None => d.has_own_table(),
+            }
+    })
+}
+
+/// Whether `m` has a dataset named `name` with a silver table of its own.
+fn has_own_table(m: &Model, name: &str) -> bool {
+    m.datasets
+        .iter()
+        .any(|d| d.name == name && d.has_own_table())
 }
 
 fn dataset_index(m: &Model, name: &str) -> Result<usize, EditError> {

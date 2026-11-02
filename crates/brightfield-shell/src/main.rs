@@ -1141,6 +1141,8 @@ fn main() -> Result<(), String> {
     // strip's Run control is `arc`, not a window, and `run` is its argument
     // rather than a file to open. `brightfield_shell::run` says why the runner
     // is this binary.
+    // Likewise for dovetail, the own-files discoverer, under its own variable.
+    brightfield_shell::discovery::serve_as_dovetail_if_asked();
     brightfield_shell::run::serve_as_runner_if_asked();
     // Answered before any window work: print to stdout, exit 0, open nothing.
     // Nothing below this match — the layout read, the spec boot, the viewport,

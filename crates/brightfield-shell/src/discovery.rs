@@ -7,20 +7,25 @@
 //! [`sample_pass`] answers the sample's model at once, and [`FullPass`] runs the full pass on a
 //! worker, whose answer the holder folds into its model as that stands when the answer lands,
 //! edits made in the meantime included. A pass that is superseded is told to stop, and its answer
-//! goes nowhere. [`discover_model`] runs both passes in turn on the calling thread.
+//! goes nowhere. [`discover_with`] runs both passes in turn on the calling thread.
 //!
 //! Brightfield writes `model.ossie.yaml` itself, whole ([`write_model_file`]), so a pass that
 //! reads it finds the file as a save left it (`full_pass_reads_the_file_the_sample_save_wrote`).
 //! A discoverer run as a child writes its proposal to a file of its own ([`proposal_file`]).
 //!
-//! [`StandIn`] is what runs until a real discoverer is wired in: it returns the model already in
-//! the Protocol folder, or else lists each table as unclear with no joins. [`Dovetail`] is where
-//! dovetail will run, once it is built in.
+//! [`Dovetail`] is the discoverer: it runs dovetail as a child of this binary, one child per
+//! pass. [`StandIn`] serves a single table, which has no second table to join, and the open's sample
+//! pass when dovetail's fails: it returns the model already in the Protocol folder, or else lists
+//! the tables as unclear with no joins.
 
+use std::collections::HashMap;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::Duration;
 
 use brightfield_engine::ProfileOutcome;
 use brightfield_ossie::{
@@ -28,7 +33,8 @@ use brightfield_ossie::{
     Role, SkippedSource, LINEAGE,
 };
 
-use crate::own_files::OwnProtocol;
+use crate::own_files::{self, OwnProtocol};
+use crate::run::{Runner, RUNNER_ENV};
 
 /// The model's file in the Protocol folder.
 pub const MODEL_FILE: &str = "model.ossie.yaml";
@@ -36,6 +42,48 @@ pub const MODEL_FILE: &str = "model.ossie.yaml";
 /// The hidden folder in the Protocol where a discoverer that runs as a child writes what each pass
 /// proposes.
 pub const PROPOSALS_DIR: &str = ".discovery";
+
+/// The environment variable that makes a process of this binary dovetail instead of a window.
+/// The binary runs dovetail as a child of itself because dovetail's entry point reads the
+/// process's argv, and the window's process has argv of its own.
+pub const DOVETAIL_ENV: &str = "BRIGHTFIELD_RUN_AS_DOVETAIL";
+
+/// Become dovetail if [`DOVETAIL_ENV`] is set: run its command line and end the process, so `main`
+/// opens no window and reads no file to open (`the_binary_serves_as_dovetail_under_its_variable`).
+///
+/// Dovetail reads the argv itself and returns an exit code. A success ends this process with 0 and
+/// any other code with 1: the parent reads only success or failure, and the reason from stderr.
+pub fn serve_as_dovetail_if_asked() {
+    if std::env::var_os(DOVETAIL_ENV).is_some() {
+        #[cfg(unix)]
+        end_with_the_parent();
+        let code = if dovetail::cli_main() == std::process::ExitCode::SUCCESS {
+            0
+        } else {
+            1
+        };
+        std::process::exit(code);
+    }
+}
+
+/// End this process once its parent has gone, which a thread of its own looks for each
+/// [`PARENT_POLL`]. A Brightfield that quits or crashes during a pass cannot kill its child, and a
+/// child left running would read its database copy to the end for nothing; once the parent is
+/// gone the child is handed to another process, so its parent's id changes.
+#[cfg(unix)]
+fn end_with_the_parent() {
+    let parent = std::os::unix::process::parent_id();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(PARENT_POLL);
+        if std::os::unix::process::parent_id() != parent {
+            std::process::exit(1);
+        }
+    });
+}
+
+/// How often a dovetail child looks to see whether its parent has gone.
+#[cfg(unix)]
+const PARENT_POLL: Duration = Duration::from_millis(200);
 
 /// The file a child discoverer writes `pass`'s proposal to, in the Protocol folder `dir`:
 /// `.discovery/sample.ossie.yaml` or `.discovery/full.ossie.yaml`.
@@ -62,7 +110,7 @@ pub fn write_model_file(dir: &Path, text: &str) -> Result<(), String> {
 }
 
 /// How much of the data a pass reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Pass {
     /// A quick look at a sample, so a first model can be shown early.
     Sample,
@@ -109,7 +157,9 @@ impl Cancel {
         self.0.load(Ordering::SeqCst)
     }
 
-    fn request(&self) {
+    /// Ask the pass to stop: what the pass's owner calls when it supersedes the pass or lets it
+    /// go. A pass that has already answered is not affected.
+    pub fn request(&self) {
         self.0.store(true, Ordering::SeqCst);
     }
 }
@@ -127,33 +177,364 @@ impl Discovery for StandIn {
     }
 }
 
-/// Dovetail, run as a child process over the Protocol folder: it reads the data packages in
-/// `packages/` and the raw tables, and writes what the pass proposes to that pass's own file,
-/// [`proposal_file`] (`.discovery/full.ossie.yaml` for the full pass). Brightfield reads that file
-/// as the pass's answer and folds it into the model; the child never writes `model.ossie.yaml`,
-/// which holds the analyst's decisions and is Brightfield's alone to write.
+/// Dovetail, run as a child of this binary over the Protocol folder, one child per pass: it reads
+/// the data packages in `packages/` and the raw tables, and writes what the pass proposes. The
+/// child never writes `model.ossie.yaml`, which holds the analyst's decisions and is Brightfield's
+/// alone to write; it is handed that file as `--base`, so the analyst's decisions carry through.
 ///
-/// A pass may be superseded while its child runs, by a new pass or by the pane letting it go. The
-/// child is then killed: the real implementation overrides [`Discovery::discover_until`] and kills
-/// the child once `cancel` is requested, and its proposal file is not read.
+/// The child reads a copy of the Protocol's database, taken under [`own_files::database_lock`],
+/// which the own-files flow's writes to that database hold, so the copy waits for a write in
+/// progress to finish. The lock is let go before the child starts, so a run waits on a pass while
+/// it copies and not while its child runs. Each pass has files of its own, a copy named for the run
+/// and an out file beside it, so a superseded child being killed and its successor write separate
+/// files. Once the child exits 0, its out file is renamed to the pass's [`proposal_file`], and that
+/// is the pass's answer. A pass removes its proposal file before it runs, and a sample pass the
+/// full one too, so a proposal on disk is always the latest pass's own. The full pass is given the
+/// sample proposal to verify when there is one, and removes it once it has run, unless a newer
+/// sample pass has started since, whose proposal is its successor's to verify.
 ///
-/// It is not built into this Brightfield yet. It waits on dovetail's DuckDB 2.0 release, which
-/// is also to bring Ossie output, table roles and the sample and full passes, and until then each
-/// pass answers why it cannot run. Nothing calls it yet.
+/// A pass may be superseded while its child runs, by a new pass or by the pane letting it go.
+/// [`Discovery::discover_until`] then kills the child, waits for it, removes the run's files and
+/// answers that it was superseded (`a_cancelled_pass_kills_its_child_and_leaves_no_files`), and a
+/// pass that is no longer the latest of its kind for the folder leaves its successor's proposal
+/// where it is.
 ///
-/// Left for the real implementation to settle: a join's warning has one home,
-/// `RelationshipMeta.warning`, which the pane's own measuring over the silver tables writes too.
-/// A warning dovetail writes and one Brightfield measures would overwrite each other there, so
-/// which one stands, or how both are kept, is to be decided when dovetail writes warnings.
-pub struct Dovetail;
+/// A join's warning has one home, `RelationshipMeta.warning`. Dovetail's full pass writes its own
+/// there, and it stands until the next run of the Protocol, when Brightfield's measurement over the
+/// silver tables overwrites it: that measurement is over the tables the charts read, so it is the
+/// one to trust when both exist. Dovetail's next full pass writes its own again.
+#[derive(Debug, Clone)]
+pub struct Dovetail {
+    program: PathBuf,
+}
+
+impl Dovetail {
+    /// Dovetail run by `runner`'s program, the binary that serves as dovetail under
+    /// [`DOVETAIL_ENV`].
+    #[must_use]
+    pub fn new(runner: &Runner) -> Self {
+        Self {
+            program: runner.program().to_path_buf(),
+        }
+    }
+}
 
 impl Discovery for Dovetail {
-    fn discover(&self, _protocol: &OwnProtocol, _pass: Pass) -> Result<Model, String> {
-        Err(
-            "dovetail discovery is not built into this Brightfield yet: it needs dovetail's \
-             DuckDB 2.0 release"
-                .to_string(),
-        )
+    fn discover(&self, protocol: &OwnProtocol, pass: Pass) -> Result<Model, String> {
+        self.discover_until(protocol, pass, &Cancel::default())
+    }
+
+    fn discover_until(
+        &self,
+        protocol: &OwnProtocol,
+        pass: Pass,
+        cancel: &Cancel,
+    ) -> Result<Model, String> {
+        let dir = &protocol.dir;
+        let started = begin_pass(dir, pass);
+        let answered = self.run_child(protocol, pass, started, cancel);
+        if pass == Pass::Full {
+            let passes = passes();
+            // A sample pass started since this one has a newer proposal, which is its successor's
+            // to verify; any older one is removed whatever this pass answered, so a later full pass
+            // never verifies a stale sample.
+            if passes
+                .get(&(dir.clone(), Pass::Sample))
+                .copied()
+                .unwrap_or(0)
+                == started.sample
+            {
+                let _ = std::fs::remove_file(proposal_file(dir, Pass::Sample));
+            }
+        }
+        answered
+    }
+}
+
+/// What a pass that was cancelled, or overtaken by a newer pass of its kind, answers.
+const SUPERSEDED: &str = "the discovery pass was superseded";
+
+/// How often a pass looks at its child, to see whether it has exited or the pass was cancelled.
+const POLL: Duration = Duration::from_millis(50);
+
+/// Numbers each pass's run files, across every Protocol this process discovers.
+static RUNS: AtomicU64 = AtomicU64::new(0);
+
+/// The latest generation of each pass of each Protocol folder, taken as a pass starts. Held while
+/// a pass removes or renames a proposal file, so what it checks is still so when it acts.
+fn passes() -> MutexGuard<'static, HashMap<(PathBuf, Pass), u64>> {
+    static PASSES: OnceLock<Mutex<HashMap<(PathBuf, Pass), u64>>> = OnceLock::new();
+    PASSES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The generations a pass started with: its own, and the sample pass's latest at the time.
+#[derive(Debug, Clone, Copy)]
+struct Started {
+    own: u64,
+    sample: u64,
+}
+
+/// Take the next generation of `pass` for `dir` and remove the proposals it makes stale: its own,
+/// and for a sample pass the full one, which was folded from an older sample.
+fn begin_pass(dir: &Path, pass: Pass) -> Started {
+    let mut passes = passes();
+    let own = passes.entry((dir.to_path_buf(), pass)).or_insert(0);
+    *own += 1;
+    let own = *own;
+    let _ = std::fs::remove_file(proposal_file(dir, pass));
+    if pass == Pass::Sample {
+        let _ = std::fs::remove_file(proposal_file(dir, Pass::Full));
+    }
+    let sample = passes
+        .get(&(dir.to_path_buf(), Pass::Sample))
+        .copied()
+        .unwrap_or(0);
+    Started { own, sample }
+}
+
+/// A run's own files: the database copy and its `.wal`, the child's out file and the `.writing`
+/// file beside it. Dropping it removes them, however the run ended.
+struct RunFiles {
+    copy: PathBuf,
+    out: PathBuf,
+}
+
+impl RunFiles {
+    fn new(dir: &Path, pass: Pass) -> Self {
+        // The process id keeps one process's run files apart from another's: a Brightfield that
+        // quit during a pass leaves its files, and perhaps a child still reading them, behind.
+        let n = RUNS.fetch_add(1, Ordering::SeqCst);
+        let id = format!("{}-{n}", std::process::id());
+        let proposals = dir.join(PROPOSALS_DIR);
+        let pass = match pass {
+            Pass::Sample => "sample",
+            Pass::Full => "full",
+        };
+        Self {
+            copy: proposals.join(format!("run-{id}.duckdb")),
+            out: proposals.join(format!("run-{id}.{pass}.ossie.yaml")),
+        }
+    }
+}
+
+impl Drop for RunFiles {
+    fn drop(&mut self) {
+        for file in [
+            self.copy.clone(),
+            wal_of(&self.copy),
+            self.out.clone(),
+            beside(&self.out, ".writing"),
+        ] {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+}
+
+/// Remove the run files in `proposals` that a Brightfield which has since ended left behind: each
+/// `run-<pid>-...` file whose process id is not this process's and names no process still
+/// running. A process that quits or crashes during a pass never drops its [`RunFiles`], and its
+/// database copy is as large as the Protocol's database
+/// (`a_pass_removes_the_run_files_a_process_that_has_ended_left`).
+///
+/// This cleanup, like a discoverer child's exit when its parent ends, works on Unix only for now;
+/// elsewhere run files stay where they are. A run file whose process id belongs to another
+/// user's live process cannot be signalled, so it is counted dead and removed: a Protocol folder
+/// is one user's.
+fn remove_orphaned_runs(proposals: &Path) {
+    let Ok(entries) = std::fs::read_dir(proposals) else {
+        return;
+    };
+    let own = std::process::id();
+    let mut alive = HashMap::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("run-"))
+            .and_then(|n| n.split_once('-'))
+            .and_then(|(pid, _)| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid != own && !*alive.entry(pid).or_insert_with(|| is_running(pid)) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Whether a process with id `pid` is running, asked of `kill -0`, which signals nothing. Where
+/// that cannot be asked, the process is taken to be running, so its files are left alone.
+fn is_running(pid: u32) -> bool {
+    if !cfg!(unix) {
+        return true;
+    }
+    Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_or(true, |status| status.success())
+}
+
+/// `path` with `suffix` added to its file name.
+fn beside(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// The write-ahead log DuckDB keeps beside the database `db`.
+fn wal_of(db: &Path) -> PathBuf {
+    beside(db, ".wal")
+}
+
+impl Dovetail {
+    /// Copy the database, run the child over the copy until it exits or `cancel` is requested, and
+    /// read what it proposed.
+    fn run_child(
+        &self,
+        protocol: &OwnProtocol,
+        pass: Pass,
+        started: Started,
+        cancel: &Cancel,
+    ) -> Result<Model, String> {
+        let dir = &protocol.dir;
+        let proposals = dir.join(PROPOSALS_DIR);
+        std::fs::create_dir_all(&proposals).map_err(|e| format!("{}: {e}", proposals.display()))?;
+        remove_orphaned_runs(&proposals);
+        let files = RunFiles::new(dir, pass);
+        copy_database(dir, &files.copy)?;
+        if cancel.requested() {
+            return Err(SUPERSEDED.to_string());
+        }
+
+        let mut command = Command::new(&self.program);
+        command
+            .env(DOVETAIL_ENV, "1")
+            .env("NO_COLOR", "1")
+            .env_remove(RUNNER_ENV)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .arg("model")
+            .arg("--db")
+            .arg(&files.copy)
+            .arg("--packages")
+            .arg(dir.join("packages"))
+            .arg("--pass")
+            .arg(match pass {
+                Pass::Sample => "sample",
+                Pass::Full => "full",
+            })
+            .arg("--name")
+            .arg(dir.file_name().unwrap_or(dir.as_os_str()))
+            .arg("--out")
+            .arg(&files.out);
+        let base = dir.join(MODEL_FILE);
+        if base.is_file() {
+            command.arg("--base").arg(base);
+        }
+        let sample = proposal_file(dir, Pass::Sample);
+        if pass == Pass::Full && sample.is_file() {
+            command.arg("--verify").arg(sample);
+        }
+        let mut child = command
+            .spawn()
+            .map_err(|e| format!("{}: {e}", self.program.display()))?;
+        // Read on a thread of its own, so a child that writes more than a pipe holds is never
+        // blocked waiting for the parent to read.
+        let stderr = child.stderr.take().map(|mut pipe| {
+            std::thread::spawn(move || {
+                let mut text = String::new();
+                let _ = pipe.read_to_string(&mut text);
+                text
+            })
+        });
+        let exited = wait_unless_cancelled(&mut child, cancel);
+        let stderr = stderr
+            .and_then(|reader| reader.join().ok())
+            .unwrap_or_default();
+        let status = match exited {
+            Some(Ok(status)) => status,
+            Some(Err(e)) => return Err(format!("{}: {e}", self.program.display())),
+            None => return Err(SUPERSEDED.to_string()),
+        };
+        if !status.success() {
+            let reason = stderr.trim();
+            return Err(if reason.is_empty() {
+                format!("dovetail ended without a reason ({status})")
+            } else {
+                reason.to_string()
+            });
+        }
+
+        let text = std::fs::read_to_string(&files.out)
+            .map_err(|e| format!("{}: {e}", files.out.display()))?;
+        // Read before it is renamed into place, so a proposal Brightfield cannot read never becomes
+        // the pass's proposal file, nor the sample a later full pass verifies.
+        let model = read(&text).map_err(|e| format!("{}: {e}", files.out.display()))?;
+        let proposal = proposal_file(dir, pass);
+        {
+            let passes = passes();
+            let latest = passes.get(&(dir.clone(), pass)).copied().unwrap_or(0);
+            if cancel.requested() || latest != started.own {
+                return Err(SUPERSEDED.to_string());
+            }
+            std::fs::rename(&files.out, &proposal)
+                .map_err(|e| format!("{}: {e}", proposal.display()))?;
+        }
+        Ok(model)
+    }
+}
+
+/// Copy the Protocol's database in `dir`, and its write-ahead log when there is one, to `copy`,
+/// while none of the own-files flow's writes to it is running.
+fn copy_database(dir: &Path, copy: &Path) -> Result<(), String> {
+    let db = arc::spec::protocol_db_path(dir).map_err(|e| e.to_string())?;
+    // A log left beside the copy's name would be replayed into the copy as if it were the
+    // database's own.
+    let stale = wal_of(copy);
+    match std::fs::remove_file(&stale) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(format!("{}: {e}", stale.display()));
+        }
+        _ => {}
+    }
+    let _writing = own_files::database_lock();
+    std::fs::copy(&db, copy).map_err(|e| format!("{}: {e}", db.display()))?;
+    let wal = wal_of(&db);
+    if wal.is_file() {
+        std::fs::copy(&wal, wal_of(copy)).map_err(|e| format!("{}: {e}", wal.display()))?;
+    }
+    Ok(())
+}
+
+/// Wait for `child` to exit, looking at it each [`POLL`], and answer how it exited; or, once
+/// `cancel` is requested, kill it, wait for it so it is not left a zombie, and answer `None`.
+fn wait_unless_cancelled(
+    child: &mut Child,
+    cancel: &Cancel,
+) -> Option<std::io::Result<std::process::ExitStatus>> {
+    loop {
+        if cancel.requested() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(Ok(status)),
+            Ok(None) => std::thread::sleep(POLL),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Some(Err(e));
+            }
+        }
     }
 }
 
@@ -202,6 +583,7 @@ fn unclear_tables(protocol: &OwnProtocol) -> Model {
                             .flatten()
                             .map(str::to_string),
                         decided_by: DecidedBy::Dovetail,
+                        other: serde_json::Map::new(),
                     },
                     other_extensions: Vec::new(),
                 })
@@ -217,12 +599,17 @@ fn unclear_tables(protocol: &OwnProtocol) -> Model {
                 meta: DatasetMeta {
                     role: Role::Unclear,
                     role_evidence: Vec::new(),
+                    role_scores: None,
                     folded_into: None,
+                    fold_column: None,
+                    combined_into: None,
+                    combination: None,
                     excluded: false,
                     decided_by: DecidedBy::Dovetail,
                     source_file: source_file_of(&table.file, &protocol.dir),
                     source_part: table.part.clone(),
                     rows,
+                    other: serde_json::Map::new(),
                 },
                 other_extensions: Vec::new(),
             }
@@ -240,6 +627,9 @@ fn unclear_tables(protocol: &OwnProtocol) -> Model {
         relationships: Vec::new(),
         meta: ModelMeta {
             generator: "brightfield stand-in".to_string(),
+            pass: None,
+            typing: None,
+            sample_rows: None,
             rejected: Vec::new(),
             skipped_sources: protocol
                 .sources
@@ -250,6 +640,7 @@ fn unclear_tables(protocol: &OwnProtocol) -> Model {
                     reason: reason.clone(),
                 })
                 .collect(),
+            other: serde_json::Map::new(),
         },
         other_extensions: Vec::new(),
     }
@@ -337,21 +728,13 @@ pub fn sample_pass(
     Ok(merge_discovery(&held, &sample))
 }
 
-/// The model for `protocol`: a sample pass, then a full pass, each folded into the model held so
-/// far, which is the one on disk if there is one and otherwise the sample pass's own. What the
-/// analyst has decided in between is kept as it is (see [`merge_discovery`]).
+/// The model for `protocol` from `discovery`: a sample pass, then a full pass, each folded into
+/// the model held so far, which is the one on disk if there is one and otherwise the sample
+/// pass's own. What the analyst has decided in between is kept as it is (see
+/// [`merge_discovery`]).
 ///
 /// The passes run one after the other on the calling thread; [`FullPass`] runs the full pass on
 /// a worker.
-///
-/// # Errors
-///
-/// The reason either pass failed.
-pub fn discover_model(protocol: &OwnProtocol) -> Result<Model, String> {
-    discover_with(&StandIn, protocol)
-}
-
-/// [`discover_model`] with the discoverer named.
 ///
 /// # Errors
 ///

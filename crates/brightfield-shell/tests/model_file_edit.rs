@@ -428,6 +428,29 @@ fn deleting_a_fold_host_by_hand_is_refused() {
 }
 
 #[test]
+fn folding_a_table_into_a_combinations_part_by_hand_is_refused() {
+    let (mut pane, _held) = opened();
+    let before = on_disk(&pane);
+    let text = pane.file_text().to_string();
+    // products becomes a part of a combination while categories is still folded into it: a part
+    // has no silver table, so categories' columns would reach none.
+    type_and_pause(
+        &mut pane,
+        replaced(
+            &text,
+            r#""one row per sku"],"excluded":false"#,
+            r#""one row per sku"],"combined_into":"customers","excluded":false"#,
+        ),
+    );
+    let error = pane.file_error().expect("the edit is refused");
+    assert!(
+        error.contains("unfold categories from products first"),
+        "{error}"
+    );
+    assert_eq!(on_disk(&pane), before, "nothing on disk changed");
+}
+
+#[test]
 fn a_table_the_analyst_decided_and_deleted_by_hand_stays_left_out() {
     let (mut pane, _held) = opened();
     let done = pane.dispatch(ModelAction::Edit(Edit::SetRole {
@@ -1065,6 +1088,9 @@ fn typing_in_the_file_view_fires_no_reshape_key() {
         modifiers: egui::Modifiers::NONE,
     }]);
     let disk_before = on_disk(win.app.model_pane().unwrap());
+    // The open's full pass said what it folded in, so the status is checked for change, not for
+    // being empty.
+    let status_before = win.app.model_pane().unwrap().status().map(str::to_owned);
 
     // `y` keeps the selected join and `v` steps the view, but here each is a letter typed.
     win.typed(egui::Key::Y, "y");
@@ -1072,7 +1098,11 @@ fn typing_in_the_file_view_fires_no_reshape_key() {
 
     let pane = win.app.model_pane().unwrap();
     assert_eq!(pane.view, ModelView::File, "v stepped no view");
-    assert_eq!(pane.status(), None, "no reshape verb ran");
+    assert_eq!(
+        pane.status(),
+        status_before.as_deref(),
+        "no reshape verb ran"
+    );
     assert_eq!(on_disk(pane), disk_before, "nothing was written");
     let join = pane
         .model
@@ -1226,4 +1256,437 @@ fn the_inspector_reads_the_run_a_hand_edit_owed() {
         name_failures(&mut pane) > 0,
         "the inspector reads the database the run wrote"
     );
+}
+
+/// `model` read back from `text`, as the file view hands it to a hand edit.
+fn hand_edited(current: &Model, base: &Model, text: &str) -> Model {
+    brightfield_shell::model_file::read_hand_edit(current, base, &[], &[], text)
+        .expect("the text reads")
+        .model
+}
+
+/// The retail model with its first join graded `possible`, the join's name, and the same model
+/// as a full discovery pass would leave it, the join graded `likely`.
+fn graded_apart() -> (Model, Model, String) {
+    let mut base = retail_model();
+    let join = base.relationships[0].name.clone();
+    base.relationships[0].meta.grade = brightfield_ossie::Grade::Possible;
+    let mut current = base.clone();
+    current.relationships[0].meta.grade = brightfield_ossie::Grade::Likely;
+    (base, current, join)
+}
+
+#[test]
+fn an_edit_against_stale_text_keeps_what_a_pass_changed() {
+    let (base, current, join) = graded_apart();
+    let mut typed = base.clone();
+    let described = typed
+        .datasets
+        .iter_mut()
+        .find(|d| !current.relationships.iter().any(|r| r.from == d.name))
+        .expect("a dataset no join starts from");
+    described.description = Some("typed by hand".to_string());
+    let name = described.name.clone();
+    let edited = hand_edited(&current, &base, &brightfield_ossie::write(&typed));
+
+    let kept = edited
+        .relationships
+        .iter()
+        .find(|r| r.name == join)
+        .unwrap();
+    assert_eq!(kept.meta.grade, brightfield_ossie::Grade::Likely);
+    assert_eq!(kept.meta.decided_by, DecidedBy::Dovetail);
+    let dataset = edited.datasets.iter().find(|d| d.name == name).unwrap();
+    assert_eq!(dataset.meta.decided_by, DecidedBy::Analyst);
+}
+
+#[test]
+fn an_edit_of_the_join_itself_is_the_analysts() {
+    let (base, current, join) = graded_apart();
+    let mut typed = base.clone();
+    typed.relationships[0].meta.cardinality = "1:1".to_string();
+    let edited = hand_edited(&current, &base, &brightfield_ossie::write(&typed));
+
+    let r = edited
+        .relationships
+        .iter()
+        .find(|r| r.name == join)
+        .unwrap();
+    assert_eq!(r.meta.cardinality, "1:1");
+    assert_eq!(r.meta.decided_by, DecidedBy::Analyst);
+}
+
+#[test]
+fn a_field_the_text_left_as_it_was_takes_the_current_field() {
+    let mut base = retail_model();
+    base.datasets[0].fields[0].meta.finetype = Some("representation.text.word".to_string());
+    let mut current = base.clone();
+    current.datasets[0].fields[0].meta.finetype = Some("identifier.person.username".to_string());
+    let (dataset, field) = (
+        base.datasets[0].name.clone(),
+        base.datasets[0].fields[0].name.clone(),
+    );
+    let edited = hand_edited(&current, &base, &brightfield_ossie::write(&base));
+
+    let f = edited
+        .datasets
+        .iter()
+        .find(|d| d.name == dataset)
+        .and_then(|d| d.fields.iter().find(|f| f.name == field))
+        .unwrap();
+    assert_eq!(
+        f.meta.finetype.as_deref(),
+        Some("identifier.person.username")
+    );
+    assert_eq!(f.meta.decided_by, DecidedBy::Dovetail);
+}
+
+/// `base` with one dataset's description typed over, as an unrelated hand edit, and its text.
+fn described_elsewhere(base: &Model, not: &[&str]) -> String {
+    let mut typed = base.clone();
+    let d = typed
+        .datasets
+        .iter_mut()
+        .find(|d| !not.contains(&d.name.as_str()))
+        .expect("another dataset");
+    d.description = Some("typed by hand".to_string());
+    brightfield_ossie::write(&typed)
+}
+
+#[test]
+fn an_untouched_dataset_keeps_a_field_a_pass_added() {
+    let base = retail_model();
+    let mut current = base.clone();
+    let mut added = current.datasets[0].fields[0].clone();
+    added.name = "added_by_a_pass".to_string();
+    added.expression_sql = "added_by_a_pass".to_string();
+    current.datasets[0].fields.insert(1, added);
+    let kept = base.datasets[0].name.clone();
+    let text = described_elsewhere(&base, &[&kept]);
+    let edited = hand_edited(&current, &base, &text);
+
+    let names: Vec<&str> = edited
+        .datasets
+        .iter()
+        .find(|d| d.name == kept)
+        .unwrap()
+        .fields
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(names[1], "added_by_a_pass", "{names:?}");
+    assert_eq!(names.len(), base.datasets[0].fields.len() + 1);
+}
+
+#[test]
+fn an_untouched_dataset_current_dropped_is_removed() {
+    let base = retail_model();
+    let gone = base
+        .datasets
+        .iter()
+        .find(|d| {
+            d.meta.folded_into.is_none()
+                && !base
+                    .datasets
+                    .iter()
+                    .any(|o| o.meta.folded_into.as_deref() == Some(d.name.as_str()))
+        })
+        .unwrap()
+        .name
+        .clone();
+    let mut current = base.clone();
+    current.datasets.retain(|d| d.name != gone);
+    current
+        .relationships
+        .retain(|r| r.from != gone && r.to != gone);
+    let text = described_elsewhere(&base, &[&gone]);
+    let edited = hand_edited(&current, &base, &text);
+
+    assert!(edited.datasets.iter().all(|d| d.name != gone));
+    assert!(edited
+        .relationships
+        .iter()
+        .all(|r| r.from != gone && r.to != gone));
+}
+
+#[test]
+fn a_field_edited_in_a_dataset_current_dropped_is_kept_with_its_dataset() {
+    let base = retail_model();
+    let gone = "stores".to_string();
+    let mut current = base.clone();
+    current.datasets.retain(|d| d.name != gone);
+    current
+        .relationships
+        .retain(|r| r.from != gone && r.to != gone);
+    let mut typed = base.clone();
+    let store = typed.datasets.iter_mut().find(|d| d.name == gone).unwrap();
+    store.fields[1].meta.finetype = Some("representation.text.word".to_string());
+    let edited = hand_edited(&current, &base, &brightfield_ossie::write(&typed));
+
+    let d = edited.datasets.iter().find(|d| d.name == gone).unwrap();
+    assert_eq!(d.fields[1].meta.decided_by, DecidedBy::Analyst);
+    assert_eq!(
+        d.fields[1].meta.finetype.as_deref(),
+        Some("representation.text.word")
+    );
+    let tables: Vec<&str> = edited.datasets.iter().map(|d| d.name.as_str()).collect();
+    assert!(edited
+        .relationships
+        .iter()
+        .all(|r| tables.contains(&r.from.as_str()) && tables.contains(&r.to.as_str())));
+}
+
+#[test]
+fn an_untouched_join_current_dropped_is_removed() {
+    let base = retail_model();
+    let gone = base.relationships[0].name.clone();
+    let mut current = base.clone();
+    current.relationships.remove(0);
+    let other = base.relationships[0].from.clone();
+    let text = described_elsewhere(&base, &[&other]);
+    let edited = hand_edited(&current, &base, &text);
+
+    assert!(edited.relationships.iter().all(|r| r.name != gone));
+}
+
+/// The retail model with the join to `stores` graded apart, and the text with `stores` deleted.
+fn stores_cut() -> (Model, Model, String) {
+    let mut base = retail_model();
+    let join = base
+        .relationships
+        .iter_mut()
+        .find(|r| r.name == "transactions_stores")
+        .unwrap();
+    join.meta.grade = brightfield_ossie::Grade::Possible;
+    let mut current = base.clone();
+    let join = current
+        .relationships
+        .iter_mut()
+        .find(|r| r.name == "transactions_stores")
+        .unwrap();
+    join.meta.grade = brightfield_ossie::Grade::Likely;
+    let mut typed = base.clone();
+    typed.datasets.retain(|d| d.name != "stores");
+    (base, current, brightfield_ossie::write(&typed))
+}
+
+#[test]
+fn a_table_cut_from_stale_text_keeps_what_a_pass_changed_on_its_join() {
+    let (base, current, text) = stores_cut();
+    let edited =
+        brightfield_shell::model_file::read_hand_edit(&current, &base, &[], &["stores"], &text)
+            .expect("the text reads")
+            .model;
+
+    let join = edited
+        .relationships
+        .iter()
+        .find(|r| r.name == "transactions_stores")
+        .expect("the join stays in the model");
+    assert_eq!(join.meta.grade, brightfield_ossie::Grade::Likely);
+    assert_eq!(join.meta.decided_by, DecidedBy::Dovetail);
+    let customers = edited.datasets.iter().find(|d| d.name == "customers");
+    assert_eq!(customers.unwrap().meta.decided_by, DecidedBy::Dovetail);
+}
+
+#[test]
+fn a_rejection_survives_a_table_cut_from_text_that_predates_it() {
+    let (base, mut current, text) = stores_cut();
+    let at = current
+        .relationships
+        .iter()
+        .position(|r| r.name == "transactions_stores")
+        .unwrap();
+    let rejected = current.relationships.remove(at);
+    current.meta.rejected.push(rejected);
+    let edited =
+        brightfield_shell::model_file::read_hand_edit(&current, &base, &[], &["stores"], &text)
+            .expect("the text reads")
+            .model;
+
+    assert!(edited
+        .relationships
+        .iter()
+        .all(|r| r.name != "transactions_stores"));
+    assert!(edited
+        .meta
+        .rejected
+        .iter()
+        .any(|r| r.name == "transactions_stores"));
+}
+
+#[test]
+fn a_field_a_pass_added_survives_an_edit_of_the_same_dataset() {
+    let base = retail_model();
+    let mut current = base.clone();
+    let mut added = current.datasets[0].fields[0].clone();
+    added.name = "added_by_a_pass".to_string();
+    added.expression_sql = "added_by_a_pass".to_string();
+    current.datasets[0].fields.push(added);
+    let name = base.datasets[0].name.clone();
+    let mut typed = base.clone();
+    typed.datasets[0].description = Some("typed by hand".to_string());
+    let edited = hand_edited(&current, &base, &brightfield_ossie::write(&typed));
+
+    let d = edited.datasets.iter().find(|d| d.name == name).unwrap();
+    assert_eq!(d.meta.decided_by, DecidedBy::Analyst);
+    assert!(d.fields.iter().any(|f| f.name == "added_by_a_pass"));
+}
+
+#[test]
+fn a_set_aside_join_whose_table_a_pass_adds_survives_the_next_edit() {
+    let mut base = retail_model();
+    let mut ghost_join = base.relationships[0].clone();
+    ghost_join.name = "ghost_join".to_string();
+    ghost_join.to = "ghost".to_string();
+    base.relationships.push(ghost_join.clone());
+    let mut current = retail_model();
+    let mut ghost = current.datasets[0].clone();
+    ghost.name = "ghost".to_string();
+    current.datasets.push(ghost);
+    let other = base.relationships[0].from.clone();
+    let text = described_elsewhere(&base, &[&other]);
+    let edited =
+        brightfield_shell::model_file::read_hand_edit(&current, &base, &[ghost_join], &[], &text)
+            .expect("the text reads")
+            .model;
+
+    assert!(edited.relationships.iter().any(|r| r.name == "ghost_join"));
+}
+
+#[test]
+fn an_edit_of_a_dataset_from_older_text_keeps_the_role_scores_current_holds() {
+    let base = retail_model();
+    let name = base.datasets[0].name.clone();
+    let scores = |entity: f64| brightfield_ossie::RoleScores {
+        entity,
+        event: 0.0,
+        reference: 0.0,
+        bridge: 0.0,
+        snapshot: 0.0,
+        unclear: 0.0,
+        other: serde_json::Map::new(),
+    };
+    // The text the editor holds carries the scores a first pass wrote; a later pass has rescored.
+    let mut older = base.clone();
+    older.datasets[0].meta.role_scores = Some(scores(0.3));
+    let mut current = base.clone();
+    current.datasets[0].meta.role_scores = Some(scores(0.9));
+    let mut typed = older.clone();
+    typed.datasets[0].description = Some("typed by hand".to_string());
+    let edited = hand_edited(&current, &older, &brightfield_ossie::write(&typed));
+
+    let d = edited.datasets.iter().find(|d| d.name == name).unwrap();
+    assert_eq!(d.description.as_deref(), Some("typed by hand"));
+    assert_eq!(d.meta.decided_by, DecidedBy::Analyst);
+    assert_eq!(d.meta.role_scores, Some(scores(0.9)));
+}
+
+#[test]
+fn rescoring_alone_does_not_make_a_dataset_the_analysts() {
+    let base = retail_model();
+    let mut older = base.clone();
+    older.datasets[0].meta.role_scores = Some(brightfield_ossie::RoleScores {
+        entity: 0.3,
+        event: 0.0,
+        reference: 0.0,
+        bridge: 0.0,
+        snapshot: 0.0,
+        unclear: 0.0,
+        other: serde_json::Map::new(),
+    });
+    let edited = hand_edited(&base, &older, &brightfield_ossie::write(&older));
+
+    assert_eq!(edited.datasets[0].meta, base.datasets[0].meta);
+}
+
+/// A pane over the model dovetail's sample pass writes for its retail fixture, with no Protocol or
+/// database behind it: enough for an edit that is refused, which writes nothing.
+fn written_dovetail_retail(name: &str) -> ModelPane {
+    let dir = scratch().join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../brightfield-ossie/fixtures/dovetail/retail.sample.ossie.yaml"),
+        dir.join("model.ossie.yaml"),
+    )
+    .unwrap();
+    let protocol = OwnProtocol {
+        dir,
+        sources: brightfield_engine::sources::SourceSet::default(),
+        profiles: Vec::new(),
+    };
+    ModelPane::open(protocol, runner()).expect("dovetail's retail model reads")
+}
+
+#[test]
+fn leaving_out_or_deleting_a_combined_table_by_hand_is_refused() {
+    let mut pane = written_dovetail_retail("refused-combined-by-hand");
+    let before = on_disk(&pane);
+    let text = pane.file_text().to_string();
+    // members is combined from two parts that have no silver tables of their own, so leaving it
+    // out, or deleting its block, would leave their rows in none.
+    for edit in [
+        replaced(
+            &text,
+            r#""members_2025"],"token_column":"year"},"excluded":false"#,
+            r#""members_2025"],"token_column":"year"},"excluded":true"#,
+        ),
+        cut_item(&text, "members"),
+    ] {
+        type_and_pause(&mut pane, edit);
+        let error = pane.file_error().expect("the edit is refused");
+        assert!(
+            error.contains("members_2024 and members_2025 are combined into members"),
+            "{error}"
+        );
+        assert!(pane
+            .model
+            .datasets
+            .iter()
+            .any(|d| d.name == "members" && !d.meta.excluded));
+        assert_eq!(on_disk(&pane), before, "nothing on disk changed");
+    }
+}
+
+#[test]
+fn an_edit_of_text_from_the_sample_keeps_what_the_full_pass_wrote_of_the_model() {
+    // The editor holds text taken at the sample pass; the full pass has landed since.
+    let mut older = retail_model();
+    older.meta.generator = "brightfield".to_string();
+    older.meta.pass = Some("sample".to_string());
+    older.meta.sample_rows = Some(50000);
+    older.meta.typing = Some(serde_json::json!({"source": "sample"}));
+    older
+        .meta
+        .other
+        .insert("zz_pass_note".to_string(), serde_json::json!("sample"));
+    let mut current = older.clone();
+    current.meta.pass = Some("full".to_string());
+    current.meta.sample_rows = None;
+    current.meta.typing = Some(serde_json::json!({"source": "packages"}));
+    current.meta.skipped_sources = vec![brightfield_ossie::SkippedSource {
+        path: "notes.txt".to_string(),
+        reason: "not tabular".to_string(),
+    }];
+    current
+        .meta
+        .other
+        .insert("zz_pass_note".to_string(), serde_json::json!("full"));
+    let mut typed = older.clone();
+    typed.datasets[0].description = Some("typed by hand".to_string());
+    let edited = hand_edited(&current, &older, &brightfield_ossie::write(&typed));
+
+    assert_eq!(
+        edited.datasets[0].description.as_deref(),
+        Some("typed by hand")
+    );
+    assert_eq!(edited.meta, current.meta);
+
+    // What the text does change of the model's own keys is the analyst's, and stands.
+    let mut typed = older.clone();
+    typed.meta.pass = Some("by hand".to_string());
+    let edited = hand_edited(&current, &older, &brightfield_ossie::write(&typed));
+    assert_eq!(edited.meta.pass.as_deref(), Some("by hand"));
+    assert_eq!(edited.meta.sample_rows, None);
 }
