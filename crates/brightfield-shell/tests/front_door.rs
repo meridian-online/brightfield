@@ -2981,7 +2981,7 @@ fn every_shipped_start_still_renders_and_its_dark_thumbnail_is_current() {
 /// [`remote_stand_in`] by name rather than reaching the network.
 const REMOTE_FIXTURES: &[(&str, &str)] = &[
     (
-        "https://openlake.meridian.online/edgar_gleif.parquet",
+        "https://openlake.meridian.online/library/edgar_lei.parquet",
         "tests/data/edgar_gleif_reduced.parquet",
     ),
     (

@@ -2003,8 +2003,10 @@ fn a_url_is_refused_at_the_window_and_opens_nothing() {
     win.settle();
     let ctx = win.ctx.clone();
 
-    win.app
-        .open_data_file(&ctx, "https://openlake.meridian.online/edgar_gleif.parquet");
+    win.app.open_data_file(
+        &ctx,
+        "https://openlake.meridian.online/library/edgar_lei.parquet",
+    );
     win.settle();
 
     assert!(
@@ -2027,7 +2029,7 @@ fn a_url_is_refused_at_the_window_and_opens_nothing() {
 #[test]
 fn every_url_scheme_is_refused_before_the_engine() {
     for url in [
-        "https://openlake.meridian.online/edgar_gleif.parquet",
+        "https://openlake.meridian.online/library/edgar_lei.parquet",
         "http://127.0.0.1:1/never.csv",
         "s3://bucket/key.parquet",
         "ducklake:https://example.com/catalog.ducklake",

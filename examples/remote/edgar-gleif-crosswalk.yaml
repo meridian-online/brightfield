@@ -72,7 +72,7 @@ params:
   band: { select: crossfilter }
 data:
   crosswalk:
-    file: "https://openlake.meridian.online/edgar_gleif.parquet"
+    file: "https://openlake.meridian.online/library/edgar_lei.parquet"
   # A projection, not a restriction: no WHERE and no LIMIT, so this view has
   # exactly the rows the Parquet has. `corpus` is NOT NULL in the published
   # table (it always carries at least the LEI), so the histogram's own

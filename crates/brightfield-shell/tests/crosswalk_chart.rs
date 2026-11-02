@@ -87,7 +87,7 @@ const _: () = assert!(CROSSWALK_ROWS > MEASURED_INKED_MAX);
 /// The URL the shipped spec reads. Written out so the assertions can hold the
 /// error messages to it by name; the spec is the source of truth and
 /// [`the_shipped_spec_reads_exactly_this_url`] is the strut between them.
-const CROSSWALK_URL: &str = "https://openlake.meridian.online/edgar_gleif.parquet";
+const CROSSWALK_URL: &str = "https://openlake.meridian.online/library/edgar_lei.parquet";
 
 // ---------------------------------------------------------------------------
 // Fixtures

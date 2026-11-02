@@ -5501,7 +5501,7 @@ plot:
     fn remote_https_parquet_executes_via_httpfs() {
         let yaml = r#"
 data:
-  naics: { file: "https://openlake.meridian.online/naics.parquet" }
+  naics: { file: "https://openlake.meridian.online/census/naics_2022.parquet" }
 plot:
   - mark: dot
     data: { from: naics }
