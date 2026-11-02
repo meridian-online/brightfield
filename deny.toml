@@ -91,10 +91,11 @@ ignore = [
   # fonts bundled with meridian-design. No safe upgrade exists.
   "RUSTSEC-2026-0206",
   "RUSTSEC-2026-0192",
-  # zip 6.0.0 — three advisories in `ZipArchive::extract` and
+  # zip 6.0.0 — four advisories in `ZipArchive::extract` and
   # `ZipStreamReader::extract`: SUID/SGID bits kept on extraction, symbolic
-  # links whose targets leave the destination, and permissions applied through
-  # such links. Fixed in zip 9, which nothing in this graph can take yet: zip 6
+  # links whose targets leave the destination, permissions applied through
+  # such links, and a symbolic link's declared size reserved before it is read,
+  # which aborts the process on a size no memory holds. Fixed in zip 9, which nothing in this graph can take yet: zip 6
   # is required by libduckdb-sys's build script and by arcform's `arc` crate.
   # Neither reaches the affected code with untrusted input. libduckdb-sys calls
   # `extract` only when built without its `bundled` feature and with
@@ -107,4 +108,5 @@ ignore = [
   "RUSTSEC-2026-0367",
   "RUSTSEC-2026-0368",
   "RUSTSEC-2026-0369",
+  "RUSTSEC-2026-0429",
 ]
