@@ -943,7 +943,7 @@ impl ModelPane {
             Selection::Dataset(name) => {
                 if !model_inspector::materialised(&self.model, name) {
                     return Err(format!(
-                        "{name} has no table of its own: it is left out or folded into another"
+                        "{name} has no table of its own: it is left out, folded into another or a part of a combination"
                     ));
                 }
                 (name.clone(), model_inspector::silver_rows_sql(name))

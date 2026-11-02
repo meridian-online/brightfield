@@ -428,6 +428,29 @@ fn deleting_a_fold_host_by_hand_is_refused() {
 }
 
 #[test]
+fn folding_a_table_into_a_combinations_part_by_hand_is_refused() {
+    let (mut pane, _held) = opened();
+    let before = on_disk(&pane);
+    let text = pane.file_text().to_string();
+    // products becomes a part of a combination while categories is still folded into it: a part
+    // has no silver table, so categories' columns would reach none.
+    type_and_pause(
+        &mut pane,
+        replaced(
+            &text,
+            r#""one row per sku"],"excluded":false"#,
+            r#""one row per sku"],"combined_into":"customers","excluded":false"#,
+        ),
+    );
+    let error = pane.file_error().expect("the edit is refused");
+    assert!(
+        error.contains("unfold categories from products first"),
+        "{error}"
+    );
+    assert_eq!(on_disk(&pane), before, "nothing on disk changed");
+}
+
+#[test]
 fn a_table_the_analyst_decided_and_deleted_by_hand_stays_left_out() {
     let (mut pane, _held) = opened();
     let done = pane.dispatch(ModelAction::Edit(Edit::SetRole {

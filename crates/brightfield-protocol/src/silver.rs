@@ -151,7 +151,7 @@ pub fn cast_projection(
 /// combined dataset, whose silver table reads the parts' raw tables through its own query.
 #[must_use]
 pub fn has_silver(d: &Dataset) -> bool {
-    !d.meta.excluded && d.meta.folded_into.is_none() && d.meta.combined_into.is_none()
+    d.has_own_table()
 }
 
 /// The raw table of `dataset` with the columns that will be cast read as text, so a column DuckDB

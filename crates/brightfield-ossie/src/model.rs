@@ -56,6 +56,16 @@ pub struct Dataset {
     pub other_extensions: Vec<Extension>,
 }
 
+impl Dataset {
+    /// Whether the dataset has tables of its own in the Protocol's database: it is not left out,
+    /// folded into another dataset, or one part of a combination, whose silver table is the
+    /// combined dataset's.
+    #[must_use]
+    pub fn has_own_table(&self) -> bool {
+        !self.meta.excluded && self.meta.folded_into.is_none() && self.meta.combined_into.is_none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Field {
     pub name: String,

@@ -268,7 +268,7 @@ pub fn refuse_new_strands(before: &Model, after: &Model) -> Result<(), EditError
 }
 
 /// Each kept table folded into a host that has no silver table of its own, as `(table, host)`:
-/// a host left out, folded itself, or not in the model. Only a host with its own silver table
+/// a host left out, folded itself, one part of a combination, or not in the model. Only a host with its own silver table
 /// joins its folds in, so a stranded table's columns and failed values reach no silver table.
 #[must_use]
 pub fn stranded_folds(m: &Model) -> Vec<(String, String)> {
@@ -280,7 +280,7 @@ pub fn stranded_folds(m: &Model) -> Vec<(String, String)> {
             let own_table = m
                 .datasets
                 .iter()
-                .any(|h| h.name == host && !h.meta.excluded && h.meta.folded_into.is_none());
+                .any(|h| h.name == host && h.has_own_table());
             (!own_table).then(|| (d.name.clone(), host.to_string()))
         })
         .collect()
