@@ -66,10 +66,10 @@ pub fn serve_as_dovetail_if_asked() {
     }
 }
 
-/// End this process once its parent has gone, looked at every [`PARENT_POLL`] on a thread of its
-/// own. A Brightfield that quits or crashes during a pass cannot kill its child, and a child left
-/// running would read its database copy to the end for nothing; once the parent is gone the child
-/// is handed to another process, so its parent's id changes.
+/// End this process once its parent has gone, which a thread of its own looks for each
+/// [`PARENT_POLL`]. A Brightfield that quits or crashes during a pass cannot kill its child, and a
+/// child left running would read its database copy to the end for nothing; once the parent is
+/// gone the child is handed to another process, so its parent's id changes.
 #[cfg(unix)]
 fn end_with_the_parent() {
     let parent = std::os::unix::process::parent_id();
