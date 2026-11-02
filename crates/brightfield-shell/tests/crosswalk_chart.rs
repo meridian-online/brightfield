@@ -687,6 +687,7 @@ fn with_no_network_the_crosswalk_chart_refuses_naming_the_network_and_the_url() 
         network: NetworkPolicy::Disabled,
         extension_directory: Some(ext_dir.clone()),
         type_source: None,
+        ..LoadOptions::default()
     };
     let err = Engine::new()
         .load_spec_with(spec, analysis, None, &options)

@@ -162,6 +162,7 @@
 //! `sales<LF>2026.csv` would come back as `sales 2026.csv` and open that file
 //! instead. It is refused in the same place and for the same reason.
 
+use std::collections::BTreeMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
@@ -171,6 +172,7 @@ use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
 
 use crate::dashboard::Dashboard;
+use crate::flat_cast::{CastCopy, CastPlan};
 use crate::pipeline::{Composed, LiveDashboard};
 
 /// The file extensions the front door accepts, lowercased and without the dot.
@@ -266,6 +268,12 @@ pub const MATERIALISE_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
 /// window is titled from the file name.
 pub const SOURCE: &str = "opened";
 
+/// The prefix of the name a cast column's text, as the file wrote it, is kept under in the copy:
+/// `__raw__revenue` beside `revenue`. The grid does not list these columns. It goes by the name
+/// a spec's source SQL gives a column, so a hand-written spec that aliases a column into this
+/// prefix also has it hidden from the grid.
+pub const RAW_PREFIX: &str = "__raw__";
+
 /// Everything opening a file produced: the live session over it, the first
 /// composition, the dashboard that was chosen for it, and where the generated
 /// spec was written for the reader.
@@ -336,6 +344,14 @@ pub struct OpenTrace {
     /// it spent beside what it was allowed to spend, and neither number has to
     /// be inferred from the file's size on disk.
     pub materialise_bytes: Option<u64>,
+    /// Whether the open took the file as already cast: asked for in
+    /// [`OpenOptions::already_cast`], or found by [`settled`].
+    pub already_cast: bool,
+    /// What the cast copy cost, statement by statement: the copy through the casting source and
+    /// the aggregates over it. Filled when [`open_traced`] was asked to count and made a cast
+    /// copy, whether or not any of its casts then stood; empty otherwise.
+    /// `cast_open_reads_the_file_once` reads it.
+    pub cast: ScanTally,
 }
 
 // ---------------------------------------------------------------------------
@@ -674,6 +690,20 @@ pub struct OpenOptions {
     /// per test makes the test carry its own cache, so a warm machine can no
     /// longer answer a question the code is supposed to.
     pub extension_directory: Option<PathBuf>,
+    /// Labels already settled for the file's columns, column name to label,
+    /// handed to the profile as [`LoadOptions::given_labels`] so the type
+    /// source is not asked about them. [`open_traced`] adds to these what it
+    /// finds for the file itself (see [`settled`]); one named here wins.
+    pub given_labels: BTreeMap<String, String>,
+    /// The file's columns were cast from their labels when it was written,
+    /// as a Protocol's grid copy is, so the open must not cast them again.
+    /// [`open_traced`] also sets it for a file it recognises as such (see
+    /// [`settled`]).
+    ///
+    /// A lone file's source casts each column FineType's projection casts
+    /// (see `docs/column-formats.md`); an already-cast file's casts nothing, so a
+    /// rate is not divided by 100 twice.
+    pub already_cast: bool,
 }
 
 impl Default for OpenOptions {
@@ -684,6 +714,8 @@ impl Default for OpenOptions {
             materialise_budget_bytes: MATERIALISE_BUDGET_BYTES,
             type_source: LoadOptions::packaged().type_source,
             extension_directory: None,
+            given_labels: BTreeMap::new(),
+            already_cast: false,
         }
     }
 }
@@ -706,69 +738,147 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
              workbook or database opens as a model of its tables from the front door."
         ));
     }
-    let columns = columns_of(&path, options)?;
-    let dashboard = Dashboard::of(&path, &columns);
-    if dashboard.tiles().is_empty() {
-        let left: Vec<String> = dashboard
-            .omitted()
-            .iter()
-            .map(|o| format!("{}: {}", o.column, o.because))
-            .collect();
-        return Err(format!(
-            "{}: opened, but there is nothing here to draw — no column in it \
-             admits a picture this build can make. {}",
-            path.display(),
-            if left.is_empty() {
-                "It declares no columns at all.".to_string()
-            } else {
-                left.join("; ")
-            }
-        ));
+    // The first flat open of a process clears the records of lone files that have gone.
+    crate::column_record::prune_once();
+    let mut options = options.clone();
+    let found = settled(&path);
+    for (column, label) in found.given_labels {
+        options.given_labels.entry(column).or_insert(label);
     }
-    let spec = dashboard.to_spec();
-    let mut live =
-        LiveDashboard::load_str(&spec, None).map_err(|e| format!("{}: {e}", path.display()))?;
-    // The one read. What the composition issues after this scans a table, so
-    // the tile count stops multiplying the cost of a read — see the module
-    // header for the measurement that decided it.
-    //
-    // TWO conditions, in two units, and they are not interchangeable.
-    // `materialise_under_bytes` is on disk and decides whether the copy is
-    // worth attempting; `materialise_budget_bytes` is the memory the copy may
-    // cost and is enforced inside `materialise_source`, which returns `Err`
-    // when the table does not fit it.
-    //
-    // A file DuckDB will not copy is not a file that failed to open: the view
-    // is still there and still correct, so a refusal here costs the old slow
-    // open and nothing else. That is the branch a table larger than the budget
-    // takes, and `a_file_whose_table_exceeds_the_budget_opens_off_the_view`
-    // drives it.
-    //
+    options.already_cast |= found.already_cast;
+    let options = &options;
+    let columns = columns_of(&path, options)?;
     // A path that cannot be stat-ed reads as `u64::MAX`, which is over any
     // threshold, so an unreadable size declines the copy rather than assuming
     // one is safe.
     let bytes = std::fs::metadata(&path)
         .map(|m| m.len())
         .unwrap_or(u64::MAX);
+    let copying = bytes <= options.materialise_under_bytes;
+    // The columns the copy casts as it reads them. None for a file already
+    // cast, and none for a file that will not be copied: a file over the
+    // threshold opens off the view, as it did before anything was cast.
+    let plan = if options.already_cast || !copying {
+        CastPlan::default()
+    } else {
+        CastPlan::of(
+            &columns,
+            &brightfield_protocol::silver::FinetypeTransforms::vendored(),
+        )
+    };
     let mut materialised = false;
     let mut materialise_ms = 0.0;
     let mut materialise_bytes = None;
-    if bytes <= options.materialise_under_bytes {
-        let at = std::time::Instant::now();
-        match live.materialise_source(SOURCE, options.materialise_budget_bytes) {
-            Ok(()) => {
-                materialised = true;
-                materialise_ms = at.elapsed().as_secs_f64() * 1000.0;
-                materialise_bytes = live.coordinator().session().in_memory_table_bytes();
-            }
+    let mut cast = ScanTally::default();
+
+    // A file with something to cast is opened in the order the cast needs:
+    // the copy through a source that casts every candidate, one aggregate
+    // over the copy, and only then the dashboard, chosen from the cast
+    // columns' profiles. Its spec declares the casts that stood, as SQL over
+    // the file (see `crate::flat_cast`), so a session loaded from the spec
+    // later reads the same columns; here it is swapped into the session that
+    // holds the copy, so the file is still read once. A file with nothing to
+    // cast takes the order below, which draws the same dashboard either way,
+    // because the copy changes no column.
+    let mut cast_open = None;
+    if !plan.is_empty() {
+        match crate::flat_cast::cast_copy(&path, &columns, &plan, options) {
+            Ok(done) => cast_open = Some(done),
             Err(e) => eprintln!(
-                "warning: {}: composing from the file directly, because it \
-                 could not be read into memory within {} bytes: {e}",
+                "warning: {}: opening it uncast, because its cast copy could not be made \
+                 within {} bytes: {e}",
                 path.display(),
                 options.materialise_budget_bytes
             ),
         }
     }
+    // A lone file's record is checked against the file on every open, cast or not, so a changed
+    // file does not keep what was read from its old values; it is brought up to date before the
+    // dashboard is chosen, which shows each column as the record says. A file cast before it was
+    // opened is shown as the record its casts were made from says.
+    let fields = if options.already_cast {
+        found.fields
+    } else {
+        let written = cast_open
+            .as_ref()
+            .map(|done| done.written.clone())
+            .unwrap_or_default();
+        crate::flat_cast::keep_record(&path, &written)
+    };
+    let (mut live, columns, dashboard, spec) = if let Some(done) = cast_open {
+        let CastCopy {
+            mut live,
+            columns,
+            stood,
+            put_back,
+            tally,
+            ms,
+            written: _,
+        } = done;
+        let dashboard = dashboard_for(&path, &columns)?
+            .with_casts(stood)
+            .with_records(fields, options.already_cast);
+        let spec = dashboard.to_spec();
+        live.reload_str(&spec)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        // The copy was made through a source that cast every candidate. Its
+        // view now reads what the spec declares: a cast that did not stand
+        // reads the column's text in its place, and a derived column is
+        // projected over the cast ones.
+        let derived = dashboard.derived_columns();
+        if !put_back.is_empty() || !derived.is_empty() {
+            live.coordinator()
+                .session_mut()
+                .reshape_copy(SOURCE, &put_back, &derived)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+        materialised = true;
+        materialise_ms = ms;
+        materialise_bytes = live.coordinator().session().in_memory_table_bytes();
+        cast = tally;
+        (live, columns, dashboard, spec)
+    } else {
+        let dashboard = dashboard_for(&path, &columns)?.with_records(fields, options.already_cast);
+        let spec = dashboard.to_spec();
+        let mut live =
+            LiveDashboard::load_str(&spec, None).map_err(|e| format!("{}: {e}", path.display()))?;
+        // The one read. What the composition issues after this scans a table,
+        // so the tile count stops multiplying the cost of a read — see the
+        // module header for the measurement that decided it.
+        //
+        // TWO conditions, in two units, and they are not interchangeable.
+        // `materialise_under_bytes` is on disk and decides whether the copy is
+        // worth attempting; `materialise_budget_bytes` is the memory the copy
+        // may cost and is enforced inside `materialise_source`, which returns
+        // `Err` when the table does not fit it.
+        //
+        // A file DuckDB will not copy is not a file that failed to open: the
+        // view is still there and still correct, so a refusal here costs the
+        // old slow open and nothing else. That is the branch a table larger
+        // than the budget takes, and
+        // `a_file_whose_table_exceeds_the_budget_opens_off_the_view` drives it.
+        //
+        // A file whose cast copy could not be made comes here too and is
+        // copied plain: the cast copy is wider, by each cast column's text,
+        // and may have failed for a reason the plain copy does not meet.
+        if copying {
+            let at = std::time::Instant::now();
+            match live.materialise_source(SOURCE, options.materialise_budget_bytes) {
+                Ok(()) => {
+                    materialised = true;
+                    materialise_ms = at.elapsed().as_secs_f64() * 1000.0;
+                    materialise_bytes = live.coordinator().session().in_memory_table_bytes();
+                }
+                Err(e) => eprintln!(
+                    "warning: {}: composing from the file directly, because it \
+                     could not be read into memory within {} bytes: {e}",
+                    path.display(),
+                    options.materialise_budget_bytes
+                ),
+            }
+        }
+        (live, columns, dashboard, spec)
+    };
 
     let at = std::time::Instant::now();
     let (composed, composition) = if options.count_scans {
@@ -805,8 +915,34 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
             materialise_ms,
             bytes,
             materialise_bytes,
+            already_cast: options.already_cast,
+            cast,
         },
     ))
+}
+
+/// The dashboard [`Dashboard::of`] chooses for `columns`, or, when it has no tile, the sentence
+/// that names each column it left out and why.
+fn dashboard_for(path: &Path, columns: &[ColumnProfile]) -> Result<Dashboard, String> {
+    let dashboard = Dashboard::of(path, columns);
+    if dashboard.tiles().is_empty() {
+        let left: Vec<String> = dashboard
+            .omitted()
+            .iter()
+            .map(|o| format!("{}: {}", o.column, o.because))
+            .collect();
+        return Err(format!(
+            "{}: opened, but there is nothing here to draw — no column in it \
+             admits a picture this build can make. {}",
+            path.display(),
+            if left.is_empty() {
+                "It declares no columns at all.".to_string()
+            } else {
+                left.join("; ")
+            }
+        ));
+    }
+    Ok(dashboard)
 }
 
 /// The directory generated specs are written to, per process.
@@ -910,6 +1046,7 @@ fn columns_of(path: &Path, options: &OpenOptions) -> Result<Vec<ColumnProfile>, 
     let load_options = LoadOptions {
         type_source: options.type_source.clone(),
         extension_directory: options.extension_directory.clone(),
+        given_labels: options.given_labels.clone(),
         ..LoadOptions::default()
     };
     let load = Engine::new()
@@ -937,6 +1074,118 @@ fn columns_of(path: &Path, options: &OpenOptions) -> Result<Vec<ColumnProfile>, 
     }
 }
 
+/// What an open takes as settled about a file before profiling it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Settled {
+    /// Labels taken as given, column name to label.
+    pub given_labels: BTreeMap<String, String>,
+    /// Whether the file's columns were already cast from their labels.
+    pub already_cast: bool,
+    /// The record's fields for a file already cast, column name to field: what its casts were
+    /// made from, and how its source wrote each column. Empty for a lone file, whose record the
+    /// open itself brings up to date.
+    pub fields: BTreeMap<String, crate::column_record::FieldRecord>,
+}
+
+/// What is already known about the columns of the file at `path`, from the record kept for it.
+///
+/// A file in the `.grid/` folder of a Protocol (a folder holding an `arcform.yaml`) was written
+/// from the Protocol's silver tables, so it is already cast. When its stem names a resource in
+/// the Protocol's `packages/`, it is the grid copy of that table and every label recorded on the
+/// resource is given: the copy was cast from those labels, and asking the classifier about the
+/// cast values would lose them. Any other file, including a raw `.profile/` snapshot, is a lone
+/// file: the labels an analyst accepted (`nominated`) in its record under
+/// [`crate::column_record::flat_record_path`] are given, and it is not cast.
+///
+/// A record that cannot be read is reported and treated as empty; it never stops an open.
+#[must_use]
+pub fn settled(path: &Path) -> Settled {
+    if let Some(protocol) = grid_folder_protocol(path) {
+        let resource = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let fields = protocol_fields(&protocol, &resource);
+        return Settled {
+            given_labels: labels_of(&fields),
+            already_cast: true,
+            fields,
+        };
+    }
+    let record = crate::column_record::flat_record_path(path)
+        .and_then(|package| crate::column_record::read_record(&package, SOURCE));
+    let given_labels = match record {
+        Ok(record) => record
+            .into_iter()
+            .flat_map(|r| r.fields)
+            .filter(|(_, f)| f.nominated)
+            .filter_map(|(column, f)| Some((column, f.label?)))
+            .collect(),
+        Err(e) => {
+            eprintln!(
+                "warning: {}: its column record was not read, so its columns are profiled \
+                 afresh: {e}",
+                path.display()
+            );
+            BTreeMap::new()
+        }
+    };
+    Settled {
+        given_labels,
+        already_cast: false,
+        fields: BTreeMap::new(),
+    }
+}
+
+/// The Protocol folder `path` is a grid snapshot of: the parent of the `.grid/` folder `path` is
+/// in, when that parent holds an `arcform.yaml`.
+fn grid_folder_protocol(path: &Path) -> Option<PathBuf> {
+    let folder = path.parent()?;
+    if folder.file_name()? != crate::model_inspector::GRID_DIR {
+        return None;
+    }
+    let protocol = folder.parent()?;
+    protocol
+        .join("arcform.yaml")
+        .is_file()
+        .then(|| protocol.to_path_buf())
+}
+
+/// The label each of `fields` records, column name to label.
+fn labels_of(
+    fields: &BTreeMap<String, crate::column_record::FieldRecord>,
+) -> BTreeMap<String, String> {
+    fields
+        .iter()
+        .filter_map(|(column, f)| Some((column.clone(), f.label.clone()?)))
+        .collect()
+}
+
+/// Every field recorded on the resource `resource` in the data packages under `protocol`'s
+/// `packages/`, column name to field. Empty when no package names the resource.
+fn protocol_fields(
+    protocol: &Path,
+    resource: &str,
+) -> BTreeMap<String, crate::column_record::FieldRecord> {
+    let Ok(folders) = std::fs::read_dir(protocol.join("packages")) else {
+        return BTreeMap::new();
+    };
+    let mut packages: Vec<PathBuf> = folders
+        .flatten()
+        .map(|e| e.path().join("datapackage.json"))
+        .filter(|p| p.is_file())
+        .collect();
+    packages.sort();
+    for package in packages {
+        match crate::column_record::read_record(&package, resource) {
+            Ok(Some(record)) => return record.fields,
+            Ok(None) => {}
+            Err(e) => eprintln!("warning: {e}"),
+        }
+    }
+    BTreeMap::new()
+}
+
 // ---------------------------------------------------------------------------
 // Opening anything the door accepts
 // ---------------------------------------------------------------------------
@@ -957,7 +1206,8 @@ pub enum Opened {
 /// A path whose tables come to exactly one flat file takes today's route, [`open`], unchanged.
 /// One sheet of a workbook or one table of a database lands where a flat file does too, on its
 /// grid and dashboard: its Protocol is made and run as below, with no model written, and the
-/// silver table is opened through [`open`] from a Parquet copy in the Protocol folder. Anything
+/// silver table is opened on the flat route from a Parquet copy in the Protocol folder, as already
+/// cast and with the labels its data package records (see [`settled`]). Anything
 /// else takes the own-files flow: the Protocol is made and run, the raw tables are
 /// profiled, a model is discovered from the sample pass and written beside the Protocol, and the
 /// silver steps for it are run. The full pass is the model pane's to run once it opens
@@ -995,7 +1245,11 @@ pub fn open_any(path: &Path, runner: &crate::run::Runner) -> Result<Opened, Stri
     match one_part {
         Some(name) => {
             let rows = own::grid_copy(&protocol, &name)?;
-            open(&rows.to_string_lossy()).map(Opened::OneTable)
+            // The copy is under the Protocol's `.grid/` folder, so `settled` finds the labels the
+            // Protocol's package records for it and opens it as already cast, reading the
+            // packages once.
+            open_traced(&rows.to_string_lossy(), &OpenOptions::default())
+                .map(|(o, _)| Opened::OneTable(o))
         }
         None => Ok(Opened::Model(protocol)),
     }

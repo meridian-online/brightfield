@@ -1324,6 +1324,133 @@ fn crossfilter_names(spec: &brightfield_spec::ast::Spec) -> Vec<String> {
         .collect()
 }
 
+/// Whether a mark of `plot` binds `channel` to an expression over `column` alone: the
+/// columns the binding names (a bin's operand, an aggregate's column, the quoted or bare
+/// identifiers of an SQL expression) are `column` and no other. `{ bin: { sql: '"revenue" / 1e9' } }`
+/// qualifies for `revenue`, `"revenue" / "units"` does not, and `{ count: }` names no column.
+fn expression_names_only(
+    plot: &brightfield_spec::ast::PlotNode,
+    channel: &str,
+    column: &str,
+) -> bool {
+    let mut named = BTreeSet::new();
+    for mark in crate::shelf_edit::marks_of(plot) {
+        if let Some(brightfield_spec::ast::ValueOrParamRef::Value(value)) =
+            mark.options.get(channel)
+        {
+            columns_named(value, &mut named);
+        }
+    }
+    named.len() == 1 && named.contains(column)
+}
+
+/// The columns `value` names, into `out`.
+fn columns_named(value: &SpecValue, out: &mut BTreeSet<String>) {
+    use brightfield_spec::ast::BinOperand;
+    match value {
+        SpecValue::String(text) => {
+            out.insert(text.clone());
+        }
+        SpecValue::Aggregate { column, .. } => out.extend(column.clone()),
+        SpecValue::Bin { operand, .. } => match operand {
+            BinOperand::Column(name) => {
+                out.insert(name.clone());
+            }
+            BinOperand::Expression(sql) => sql_columns(sql, out),
+        },
+        SpecValue::Expression(node) => node.spans.iter().for_each(|span| sql_columns(span, out)),
+        SpecValue::Array(items) => items.iter().for_each(|v| columns_named(v, out)),
+        SpecValue::Object(map) => {
+            for (key, v) in map {
+                match v {
+                    SpecValue::String(sql) if key == "sql" => sql_columns(sql, out),
+                    _ => columns_named(v, out),
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The column names an SQL expression reads, as near as a scan without a parser can say: each
+/// quoted identifier, with `""` read as a quote inside it, and each bare word, except a function
+/// call (a word before `(`), a table's name before a `.`, the type after `::` or `AS`, and the
+/// SQL keywords and type names in its list. Text in single quotes is a literal, and a number,
+/// exponent and all, is no column.
+fn sql_columns(sql: &str, out: &mut BTreeSet<String>) {
+    const WORDS: [&str; 34] = [
+        "and", "or", "not", "null", "case", "when", "then", "else", "end", "as", "cast", "is",
+        "true", "false", "like", "ilike", "in", "between", "distinct", "interval", "exists",
+        "similar", "glob", "escape", "double", "float", "real", "integer", "bigint", "smallint",
+        "tinyint", "hugeint", "decimal", "varchar",
+    ];
+    let chars: Vec<char> = sql.chars().collect();
+    let next_is = |from: usize, want: char| {
+        chars[from.min(chars.len())..]
+            .iter()
+            .find(|c| !c.is_whitespace())
+            == Some(&want)
+    };
+    let mut at = 0;
+    // The word after `::` or `AS` is a type.
+    let mut typed = false;
+    while at < chars.len() {
+        match chars[at] {
+            quote @ ('"' | '\'') => {
+                let mut text = String::new();
+                at += 1;
+                while at < chars.len() {
+                    if chars[at] == quote {
+                        if chars.get(at + 1) == Some(&quote) {
+                            text.push(quote);
+                            at += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    text.push(chars[at]);
+                    at += 1;
+                }
+                at += 1;
+                if quote == '"' && !next_is(at, '.') {
+                    out.insert(text);
+                }
+                typed = false;
+            }
+            ':' if chars.get(at + 1) == Some(&':') => {
+                typed = true;
+                at += 2;
+            }
+            c if c.is_alphabetic() || c == '_' => {
+                let start = at;
+                while at < chars.len() && (chars[at].is_alphanumeric() || chars[at] == '_') {
+                    at += 1;
+                }
+                let word: String = chars[start..at].iter().collect();
+                let lower = word.to_lowercase();
+                let named = !typed && !next_is(at, '(') && !next_is(at, '.');
+                if named && !WORDS.contains(&lower.as_str()) {
+                    out.insert(word);
+                }
+                typed = lower == "as";
+            }
+            c if c.is_ascii_digit() => {
+                // A number, with its exponent: `1e9` is no column.
+                while at < chars.len() && (chars[at].is_alphanumeric() || chars[at] == '.') {
+                    at += 1;
+                }
+                typed = false;
+            }
+            c => {
+                at += 1;
+                if !c.is_whitespace() {
+                    typed = false;
+                }
+            }
+        }
+    }
+}
+
 impl ChartDoc {
     /// A document over `composed`, rastering through `host`.
     #[must_use]
@@ -2484,11 +2611,14 @@ impl ChartDoc {
         };
         let mut spec = kept_spec;
         let put = match channel {
-            ShelfChannel::X => {
-                crate::shelf_edit::put_column(&mut spec, &path, PlotAxis::X, column, table)
-            }
-            ShelfChannel::Y => {
-                crate::shelf_edit::put_column(&mut spec, &path, PlotAxis::Y, column, table)
+            ShelfChannel::X | ShelfChannel::Y => {
+                let axis = if channel == ShelfChannel::X {
+                    PlotAxis::X
+                } else {
+                    PlotAxis::Y
+                };
+                let old = self.rule_written(plot, &spec, &path, axis);
+                crate::shelf_edit::put_column_over(&mut spec, &path, axis, column, table, &old)
             }
             ShelfChannel::Colour => crate::shelf_edit::put_colour(&mut spec, &path, column, table),
             ShelfChannel::Mark => return false,
@@ -2636,13 +2766,14 @@ impl ChartDoc {
                 return false;
             }
         };
-        let was = Self::setting_text(&before, &path, edit.channel, edit.row);
+        let was = self.setting_text(plot, &before, &path, edit.channel, edit.row);
         // Only an axis has a range, and a scale change there is the one write of
         // more than one edit that takes it out; colour's scale writes several
         // keys and has no range to name.
         let axis = matches!(edit.channel, ShelfChannel::X | ShelfChannel::Y);
         let range_note = if axis && applied.len() > 1 {
-            let ends = Self::setting_text(&before, &path, edit.channel, crate::shelf::RANGE_ROW);
+            let ends =
+                self.setting_text(plot, &before, &path, edit.channel, crate::shelf::RANGE_ROW);
             format!(", and its range {ends} \u{2192} auto")
         } else {
             String::new()
@@ -2657,7 +2788,7 @@ impl ChartDoc {
                     .plots
                     .get(plot)
                     .map_or(path, |h| ComponentPath(h.path.clone()));
-                let now = Self::setting_text(live.spec(), &after, edit.channel, edit.row);
+                let now = self.setting_text(plot, live.spec(), &after, edit.channel, edit.row);
                 self.live = Some(live);
                 self.composed = composed;
                 self.publish_grid_condition();
@@ -2960,7 +3091,8 @@ impl ChartDoc {
         if !cleared || !matches!(channel, ShelfChannel::X | ShelfChannel::Y) {
             return String::new();
         }
-        let ends = Self::setting_text(
+        let ends = self.setting_text(
+            plot,
             before,
             &ComponentPath(handle.path.clone()),
             channel,
@@ -2989,19 +3121,25 @@ impl ChartDoc {
         }
     }
 
-    /// What `channel`'s settings row `row` reads on the plot at `path` in `spec`:
-    /// the words the shelf names an edit by.
+    /// What `channel`'s settings row `row` reads on the plot at `path` in `spec`,
+    /// which stands as the page's plot number `plot`: the words the shelf names an
+    /// edit by. The rows are read as the inspector reads them, with the formats the
+    /// rule gives each axis's column.
     fn setting_text(
+        &self,
+        plot: usize,
         spec: &brightfield_spec::ast::Spec,
         path: &ComponentPath,
         channel: ShelfChannel,
         row: &str,
     ) -> String {
         edit::plot_at_path(spec, &path.0)
-            .and_then(|plot| {
-                let channels = ShelfChannels::of_plot(plot)?;
+            .and_then(|node| {
+                let channels = ShelfChannels::of_plot(node)?;
+                let (x, y) = self.rule_formats(plot, node, &channels);
                 let settings =
-                    crate::shelf::ChannelSettings::of_plot(spec, plot, &path.0, &channels);
+                    crate::shelf::ChannelSettings::of_plot(spec, node, &path.0, &channels)
+                        .with_rule_formats(x.as_deref(), y.as_deref());
                 settings
                     .rows(channel)
                     .iter()
@@ -3009,6 +3147,81 @@ impl ChartDoc {
                     .map(|r| r.value.clone())
             })
             .unwrap_or_else(|| crate::shelf::AUTO.to_string())
+    }
+
+    /// The format the rule gives each of `node`'s axes from its column's type, for the
+    /// page's plot number `plot`: the held column's own, or, on an axis drawn from an
+    /// expression, the tile column's when the expression names that column and no other.
+    pub(crate) fn rule_formats(
+        &self,
+        plot: usize,
+        node: &brightfield_spec::ast::PlotNode,
+        channels: &ShelfChannels,
+    ) -> (Option<String>, Option<String>) {
+        let rule = |axis: &Binding, key: &str| {
+            let column = self.rule_column(plot, node, axis, key)?;
+            self.column_facts
+                .get(column)?
+                .representation
+                .tick_format
+                .clone()
+        };
+        (rule(&channels.x, "x"), rule(&channels.y, "y"))
+    }
+
+    /// The column the rule reads for an axis of `node`, the page's plot number `plot`, that
+    /// holds `binding` under the channel `key`: the held column, or, for an expression, the
+    /// tile column when the expression names that column and no other.
+    fn rule_column<'a>(
+        &'a self,
+        plot: usize,
+        node: &brightfield_spec::ast::PlotNode,
+        binding: &'a Binding,
+        key: &str,
+    ) -> Option<&'a str> {
+        match binding {
+            Binding::Column(name) => Some(name.as_str()),
+            Binding::Expression => self
+                .tile_columns()
+                .get(plot)
+                .map(|c| c.column.as_str())
+                .filter(|t| expression_names_only(node, key, t)),
+            Binding::Unset => None,
+        }
+    }
+
+    /// What a generated tile writes on `axis` of the plot at `path` in `spec`, the page's plot
+    /// number `plot`, for the column the axis holds: the rule's tick format for it, and its name
+    /// with and without the rule's unit. Empty where the axis holds no column the rule reads.
+    fn rule_written(
+        &self,
+        plot: usize,
+        spec: &brightfield_spec::ast::Spec,
+        path: &ComponentPath,
+        axis: PlotAxis,
+    ) -> crate::shelf_edit::RuleWritten {
+        let Some(node) = edit::plot_at_path(spec, &path.0) else {
+            return crate::shelf_edit::RuleWritten::default();
+        };
+        let Some(channels) = ShelfChannels::of_plot(node) else {
+            return crate::shelf_edit::RuleWritten::default();
+        };
+        let (binding, key) = match axis {
+            PlotAxis::X => (&channels.x, "x"),
+            PlotAxis::Y => (&channels.y, "y"),
+        };
+        let Some(column) = self.rule_column(plot, node, binding, key) else {
+            return crate::shelf_edit::RuleWritten::default();
+        };
+        let shown = self.column_facts.get(column).map(|f| &f.representation);
+        let mut titles = vec![column.to_string()];
+        if let Some(unit) = shown.and_then(|r| r.title_unit.as_ref()) {
+            titles.push(format!("{column} ({unit})"));
+        }
+        crate::shelf_edit::RuleWritten {
+            tick_format: shown.and_then(|r| r.tick_format.clone()),
+            titles,
+        }
     }
 
     /// **The shelf's words for putting `column` on `channel`**, from the spec
@@ -4664,6 +4877,72 @@ vconcat:
             (control.value - 2.0).abs() < f64::EPSILON,
             "the surfaced control snapped back to {}",
             control.value
+        );
+    }
+    /// The plot of `yaml`'s one histogram-shaped mark, with `x` written as `x`.
+    fn plot_with_x(x: &str) -> brightfield_spec::ast::Spec {
+        let text = format!(
+            "data:\n  t:\n    - {{ revenue: 1, units: 2 }}\nplot:\n  - mark: rectY\n    data: {{ from: t }}\n    x: {x}\n    y: {{ count: }}\nwidth: 600\nheight: 300\n"
+        );
+        brightfield_spec::parse_spec(&text, brightfield_spec::Format::Yaml)
+            .expect("the spec parses")
+            .spec
+    }
+
+    fn names_only(x: &str, column: &str) -> bool {
+        let spec = plot_with_x(x);
+        let plot = edit::plot_at_path(&spec, "root").expect("a plot");
+        expression_names_only(plot, "x", column)
+    }
+
+    /// A bin over one column's expression follows that column; Debug-only names such as
+    /// `steps` or `operand` match nothing, and a second column in the expression
+    /// takes the claim away.
+    #[test]
+    fn an_expression_names_the_tile_column_only_when_it_names_no_other() {
+        assert!(names_only(
+            "{ bin: { sql: '\"revenue\" / 1e9' } }",
+            "revenue"
+        ));
+        assert!(names_only("{ bin: revenue }", "revenue"));
+        assert!(
+            !names_only("{ bin: { sql: '\"revenue\" / 1e9' } }", "operand"),
+            "a name the expression does not hold, even one the AST's own words spell"
+        );
+        assert!(!names_only("{ bin: { sql: '\"revenue\" / 1e9' } }", "sql"));
+        assert!(
+            !names_only("{ bin: { sql: '\"revenue\" / \"units\"' } }", "revenue"),
+            "a ratio of two columns is neither's"
+        );
+        assert!(!names_only("{ count: }", "revenue"));
+    }
+
+    fn columns_of(sql: &str) -> Vec<String> {
+        let mut out = BTreeSet::new();
+        sql_columns(sql, &mut out);
+        out.into_iter().collect()
+    }
+
+    /// The scan reads a quote escaped inside an identifier, as the generator writes one, and
+    /// counts no type, keyword or table name as a column.
+    #[test]
+    fn an_sql_expression_names_its_columns_and_no_keyword_type_or_table() {
+        assert_eq!(columns_of(r#""a""b" / 1e9"#), [r#"a"b"#]);
+        assert!(names_only(r#"{ bin: { sql: '"a""b" / 1e9' } }"#, r#"a"b"#));
+        assert_eq!(columns_of("revenue::FLOAT / 1e9"), ["revenue"]);
+        assert_eq!(columns_of("CAST(revenue AS VARCHAR)"), ["revenue"]);
+        assert_eq!(columns_of("CAST(revenue AS DECIMAL(18, 2))"), ["revenue"]);
+        assert_eq!(
+            columns_of("revenue IS NOT NULL AND flag = TRUE"),
+            ["flag", "revenue"]
+        );
+        assert_eq!(columns_of("t.revenue / 1e9"), ["revenue"]);
+        assert_eq!(columns_of(r#""t"."revenue" / 1e9"#), ["revenue"]);
+        assert_eq!(columns_of("'it''s' || name"), ["name"]);
+        assert_eq!(
+            columns_of(r#""rev"#),
+            ["rev"],
+            "an unclosed quote ends the text"
         );
     }
 }

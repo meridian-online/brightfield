@@ -1219,6 +1219,13 @@ fn scale_parameter(row: &SettingRow) -> Option<Vec<String>> {
         let drawn = row.range.as_ref()?.drawn?;
         return (row.value == AUTO).then(|| vec![format!("\u{b7} {}", ends_text(drawn))]);
     }
+    if row.name == FORMAT_ROW {
+        // An auto format shows the specifier the rule chose, and a default one
+        // offers it.
+        let rule = row.format.as_ref()?.rule.as_ref()?;
+        return matches!(row.value.as_str(), AUTO | DEFAULT_FORMAT)
+            .then(|| vec![format!("\u{b7} {rule}")]);
+    }
     if row.name != SCALE_ROW {
         return None;
     }
@@ -1300,20 +1307,27 @@ pub const TIME_SCALE: &str = "time";
 
 /// The foot's sentence for the format row.
 const FORMAT_SAYS: &str =
-    "How a tick's number or date is written, which auto leaves to the axis's own tick text.";
+    "How a tick's number or date is written, which auto takes from the column's type and default leaves to the axis's own tick text.";
 
 /// What the format row reads while its specifier is no preset's: the one the
 /// field holds, or a file's.
 pub const CUSTOM_FORMAT: &str = "custom";
 
+/// What the format row reads while the file holds no specifier, so the axis
+/// prints its own tick text.
+pub const DEFAULT_FORMAT: &str = "default";
+
 /// The presets the format row steps through, in the order `l` steps them, and
-/// the specifier each writes. `auto` writes none: it takes the key out. Custom
-/// is last and has no specifier of its own: it is the field's.
+/// the specifier each writes. `default` takes the key out and writes no specifier.
+/// `auto` has no fixed one in this table either, because its specifier is the rule's for the
+/// row's own column ([`FormatFacts::rule`]), so [`SettingRow::step_to`] resolves
+/// it per row. Custom is last and has no specifier of its own: it is the field's.
 ///
 /// Number writes `,f` and currency `$,f`, because with no type d3-format takes
 /// one significant digit from the step and a population axis would print
 /// `1e+4`; short is `~s` and percent `%`.
-pub const FORMAT_PRESETS: [(&str, Option<&str>); 6] = [
+pub const FORMAT_PRESETS: [(&str, Option<&str>); 7] = [
+    (DEFAULT_FORMAT, None),
     (AUTO, None),
     ("number", Some(",f")),
     ("short", Some("~s")),
@@ -1332,11 +1346,28 @@ pub fn format_preset(specifier: &str) -> &'static str {
         .map_or(CUSTOM_FORMAT, |(name, _)| *name)
 }
 
-/// The names of the presets, as the foot lists them: `auto, number, short, ...`.
-fn format_preset_names() -> String {
+/// The presets a row with `rule` steps through, in order. `auto` is there only
+/// where the rule gives a specifier, and a preset that writes the rule's own
+/// specifier is left out, since stepping onto it is the same step as `auto`.
+fn reachable_presets(rule: Option<&str>) -> Vec<(&'static str, Option<&'static str>)> {
     FORMAT_PRESETS
         .iter()
-        .map(|(name, _)| *name)
+        .copied()
+        .filter(|(name, writes)| {
+            if *name == AUTO {
+                rule.is_some()
+            } else {
+                writes.is_none() || *writes != rule
+            }
+        })
+        .collect()
+}
+
+/// The names of the presets, as the foot lists them: `default, auto, number, ...`.
+fn format_preset_names(rule: Option<&str>) -> String {
+    reachable_presets(rule)
+        .into_iter()
+        .map(|(name, _)| name)
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -1564,8 +1595,9 @@ impl SettingRow {
 
     /// What one step `by` from the row's own does, or `None` where the row does
     /// not step or stands at the end of its values. The format steps through its
-    /// presets: the first takes the key out, the next four write their specifier,
-    /// and a step that lands on custom opens the field.
+    /// presets: `default` takes the key out, `auto` writes the rule's specifier
+    /// where the column has one, the next four write their own, and a step that
+    /// lands on custom opens the field.
     #[must_use]
     pub fn step_to(&self, by: isize) -> Option<RowStep> {
         if self.name != FORMAT_ROW {
@@ -1574,13 +1606,12 @@ impl SettingRow {
         if !self.steps() {
             return None;
         }
-        let at = FORMAT_PRESETS
-            .iter()
-            .position(|(name, _)| *name == self.value)?;
-        let next = at
-            .checked_add_signed(by)
-            .filter(|n| *n < FORMAT_PRESETS.len())?;
-        Some(match FORMAT_PRESETS[next] {
+        let rule = self.format.as_ref().and_then(|facts| facts.rule.as_deref());
+        let presets = reachable_presets(rule);
+        let at = presets.iter().position(|(name, _)| *name == self.value)?;
+        let next = at.checked_add_signed(by).filter(|n| *n < presets.len())?;
+        Some(match presets[next] {
+            (AUTO, _) => RowStep::Set(SettingValue::Text(rule?.to_string())),
             (_, Some(writes)) => RowStep::Set(SettingValue::Text(writes.to_string())),
             (CUSTOM_FORMAT, None) => RowStep::Field,
             (_, None) => RowStep::Set(SettingValue::Auto),
@@ -1802,6 +1833,11 @@ pub struct FormatFacts {
     /// The specifier the file holds for the axis, where it names a format the
     /// axis reads. The row's value is the preset it equals, or custom.
     pub specifier: Option<String>,
+    /// The specifier the rule gives this axis's column from its type, which a
+    /// file holding exactly it reads as `auto`, and which a file holding none
+    /// shows as a suggestion. `None` for an unlabelled column, or until
+    /// [`ChannelSettings::with_rule_formats`] has been told.
+    pub rule: Option<String>,
     /// What the axis's largest drawn tick prints as under the row's format, drawn
     /// in muted ink beside the value. `None` where no scale has been drawn, or the
     /// axis draws no text a number format sets.
@@ -1925,6 +1961,30 @@ impl ChannelSettings {
                 moments,
             ),
         }
+    }
+
+    /// These rows with the format each axis's column gets from its type
+    /// (`x` and `y`, the rule's tick format, `None` for a column the rule gives
+    /// no format). A format row whose file holds exactly that specifier reads
+    /// `auto`, and every format row carries it for `auto` to write and for the
+    /// row to suggest. A saved chart is not rewritten: its row reads `auto` only
+    /// while the rule still gives what it holds.
+    #[must_use]
+    pub fn with_rule_formats(mut self, x: Option<&str>, y: Option<&str>) -> Self {
+        for (rows, rule) in [(&mut self.x, x), (&mut self.y, y)] {
+            let Some(row) = rows.iter_mut().find(|row| row.name == FORMAT_ROW) else {
+                continue;
+            };
+            let Some(facts) = row.format.as_mut() else {
+                continue;
+            };
+            facts.rule = rule.map(str::to_string);
+            if rule.is_some() && facts.specifier.as_deref() == rule {
+                row.value = AUTO.to_string();
+                row.set = false;
+            }
+        }
+        self
     }
 
     /// `channel`'s rows, in the order the list draws them. Empty for a channel
@@ -2231,7 +2291,7 @@ fn axis_rows(
                 Some(read),
                 Some(text.clone()),
             ),
-            _ => (AUTO.to_string(), false, None, None),
+            _ => (DEFAULT_FORMAT.to_string(), false, None, None),
         };
     let row = |name, value, set, kind, says| SettingRow {
         name,
@@ -2325,6 +2385,7 @@ fn axis_rows(
             format: format_key.map(|key| FormatFacts {
                 key,
                 specifier,
+                rule: None,
                 // The axis's own top tick, which the same call the chart was
                 // drawn through reads off the scale it was drawn against: no
                 // scale drawn, no sample.
@@ -3364,6 +3425,14 @@ impl ColumnList {
                     .and_then(Number::new)?,
             ),
             (ShelfChannel::Colour, STEPS_ROW) => SettingValue::Count(DEFAULT_COLOUR_STEPS),
+            // A format the column's type chose is put back by writing it, so the
+            // row reads auto and the type's format is kept; with none to write,
+            // the key comes out.
+            (_, FORMAT_ROW) => row
+                .format
+                .as_ref()
+                .and_then(|facts| facts.rule.clone())
+                .map_or(SettingValue::Auto, SettingValue::Text),
             _ => SettingValue::Auto,
         };
         Some(RowEdit {
@@ -4524,7 +4593,8 @@ impl ColumnList {
             }
 
             // The word *auto*, where the value is brightfield's own.
-            let auto_rect = (!row.set && field.is_none()).then(|| {
+            // The format row's value says auto or default itself.
+            let auto_rect = (!row.set && field.is_none() && row.name != FORMAT_ROW).then(|| {
                 let galley = painter.layout_no_wrap(AUTO.to_string(), caption_font(), muted);
                 let at = egui::Rect::from_min_size(
                     egui::pos2(
@@ -4548,6 +4618,8 @@ impl ColumnList {
             painter.galley(name_rect.min, name_galley, name_ink);
             let value_left = content.left() + name_column + spacing::SPACE_3;
             let ink = if row.set && applies { primary } else { muted };
+            // Where the parameter after the value ends, if one was drawn.
+            let mut parameter_right = None;
             let (value_rect, field_rect) = if let Some(open) = field {
                 // A field: a sunken ground ruled under in the focus ink, the text in
                 // full ink with the selection's wash behind it while the whole is
@@ -4667,6 +4739,7 @@ impl ColumnList {
                         .find(|galley| galley.size().x <= right - left);
                     if let Some(galley) = galley {
                         let place = egui::pos2(left, line.center().y - galley.size().y / 2.0);
+                        parameter_right = Some(place.x + galley.size().x);
                         painter.galley(place, galley, ink);
                     }
                 }
@@ -4692,7 +4765,7 @@ impl ColumnList {
                 .and_then(|facts| facts.sample.as_ref())
                 .filter(|_| field_rect.is_none())
                 .and_then(|text| {
-                    let left = value_rect.right() + spacing::SPACE_3;
+                    let left = parameter_right.unwrap_or(value_rect.right()) + spacing::SPACE_3;
                     let galley = painter.layout_no_wrap(text.clone(), caption_font(), muted);
                     (galley.size().x <= right - left).then(|| {
                         let at = egui::Rect::from_min_size(
@@ -4931,13 +5004,18 @@ pub fn foot_sentence(row: &SettingRow) -> String {
 /// through, the specifier the file gets, and for a specifier no preset writes, what
 /// `h` and `l` would do to it.
 fn format_foot(row: &SettingRow, facts: &FormatFacts) -> String {
-    let mut foot = format!("{} Takes: {}.", row.says, format_preset_names());
+    let mut foot = format!(
+        "{} Takes: {}.",
+        row.says,
+        format_preset_names(facts.rule.as_deref())
+    );
     let Some(specifier) = &facts.specifier else {
         return foot;
     };
     foot.push_str(&format!(" Writes {}: \"{specifier}\".", facts.key));
     if row.value == CUSTOM_FORMAT {
-        let before = FORMAT_PRESETS[FORMAT_PRESETS.len() - 2].0;
+        let presets = reachable_presets(facts.rule.as_deref());
+        let before = presets[presets.len() - 2].0;
         foot.push_str(&format!(
             " h leaves \"{specifier}\" for {before}, l has nowhere to go; u takes the change back."
         ));

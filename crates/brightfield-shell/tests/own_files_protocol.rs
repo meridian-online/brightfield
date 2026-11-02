@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use brightfield_engine::{ProfileOutcome, SemanticType};
-use brightfield_shell::own_files;
 use brightfield_shell::run::Runner;
+use brightfield_shell::{column_record, own_files};
 
 /// The scratch root every test in this file shares, with the environment pointed into it.
 fn scratch() -> &'static Path {
@@ -159,6 +159,254 @@ fn packages_name_each_field() {
             .is_ok(),
         "{path}"
     );
+}
+
+#[test]
+fn protocol_package_carries_x_brightfield() {
+    let (p, _) = packaged("x_brightfield");
+    let path = p.dir.join("packages/orders/datapackage.json");
+    let mut record = column_record::read_record(&path, "orders")
+        .unwrap()
+        .unwrap();
+    let total = record.fields.get_mut("total").unwrap();
+    total.written.currency_symbol = Some("£".into());
+    total.prefer.number_format = Some(",.0f".into());
+    column_record::write_record(&path, "orders", &record).unwrap();
+
+    // Writing the packages again, as a later open of the Protocol does, keeps the analyst's
+    // preference. How the column was written is read again from the values, and `total` is not
+    // a cast currency column, so the placed symbol goes.
+    own_files::write_packages(&p).unwrap();
+
+    let again = column_record::read_record(&path, "orders")
+        .unwrap()
+        .unwrap();
+    let total = &again.fields["total"];
+    assert_eq!(total.written, column_record::Written::default());
+    assert_eq!(total.prefer.number_format.as_deref(), Some(",.0f"));
+}
+
+const CURRENCY: &str = "finance.currency.amount";
+
+/// Set `column`'s label on `resource` in the package at `package` as an analyst's accepted one, or
+/// take its label away when `label` is `None`; `number_format` is put on it as a preference when
+/// given.
+fn nominate(
+    package: &Path,
+    resource: &str,
+    column: &str,
+    label: Option<&str>,
+    number_format: Option<&str>,
+) {
+    let mut record = column_record::read_record(package, resource)
+        .unwrap()
+        .unwrap();
+    let field = record.fields.get_mut(column).unwrap();
+    field.label = label.map(str::to_string);
+    field.nominated = label.is_some();
+    if let Some(format) = number_format {
+        field.prefer.number_format = Some(format.to_string());
+    }
+    column_record::write_record(package, resource, &record).unwrap();
+}
+
+fn written_of(package: &Path, resource: &str, column: &str) -> column_record::FieldRecord {
+    column_record::read_record(package, resource)
+        .unwrap()
+        .unwrap()
+        .fields
+        .remove(column)
+        .unwrap()
+}
+
+/// Write a one-sheet workbook at `book` whose `amount` column holds `amounts`, beside a `region`
+/// column; false when the excel extension cannot be had here.
+fn write_book(book: &Path, amounts: [&str; 2]) -> bool {
+    let conn = duckdb::Connection::open_in_memory().unwrap();
+    if let Err(e) = conn.execute_batch("INSTALL excel; LOAD excel;") {
+        eprintln!("skipping: the excel extension cannot be installed here: {e}");
+        return false;
+    }
+    conn.execute_batch(&format!(
+        "COPY (SELECT * FROM (VALUES ('{}', 'North'), ('{}', 'South')) t(amount, region)) \
+         TO '{}' (FORMAT xlsx, HEADER true)",
+        amounts[0],
+        amounts[1],
+        book.display()
+    ))
+    .unwrap();
+    true
+}
+
+#[test]
+fn protocol_package_records_how_a_column_was_written() {
+    let dir = scratch().join("input").join("written_book");
+    std::fs::create_dir_all(&dir).unwrap();
+    let book = dir.join("book.xlsx");
+    if !write_book(&book, ["£1,234.50", "(£12.00)"]) {
+        return;
+    }
+    let mut p = own_files::create(&book).unwrap();
+    own_files::run_loads(&p, &runner()).unwrap();
+    own_files::profile(&mut p).unwrap();
+    own_files::write_packages(&p).unwrap();
+    let package = p.dir.join("packages/book/datapackage.json");
+    // The label FineType would give, accepted, so the test needs no FineType bundle.
+    nominate(&package, "book_sheet1", "amount", Some(CURRENCY), None);
+    own_files::write_packages(&p).unwrap();
+
+    let amount = written_of(&package, "book_sheet1", "amount");
+    assert_eq!(amount.written.currency_symbol.as_deref(), Some("£"));
+    assert_eq!(
+        amount.written.negatives,
+        Some(column_record::Negatives::Parentheses)
+    );
+    let region = written_of(&package, "book_sheet1", "region");
+    assert_eq!(region.written, column_record::Written::default());
+
+    // The sheet is re-exported in dollars with minus signs, and the analyst prefers a format.
+    assert!(write_book(&book, ["$1,234.50", "-$12.00"]));
+    nominate(
+        &package,
+        "book_sheet1",
+        "amount",
+        Some(CURRENCY),
+        Some(",.0f"),
+    );
+    own_files::run_loads(&p, &runner()).unwrap();
+    own_files::write_packages(&p).unwrap();
+
+    let amount = written_of(&package, "book_sheet1", "amount");
+    assert_eq!(amount.written.currency_symbol.as_deref(), Some("$"));
+    assert_eq!(
+        amount.written.negatives,
+        Some(column_record::Negatives::Minus)
+    );
+    assert_eq!(amount.prefer.number_format.as_deref(), Some(",.0f"));
+}
+
+/// A folder holding `sales.csv`, whose `amount` column is written in sterling with parentheses.
+fn sterling_folder(name: &str) -> PathBuf {
+    let dir = scratch().join("input").join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("sales.csv"),
+        "id,amount\n1,\"£1,234.50\"\n2,(£12.00)\n",
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn a_column_no_longer_cast_loses_its_written() {
+    let mut p = own_files::create(&sterling_folder("written_uncast")).unwrap();
+    own_files::run_loads(&p, &runner()).unwrap();
+    own_files::profile(&mut p).unwrap();
+    own_files::write_packages(&p).unwrap();
+    let package = p.dir.join("packages/sales/datapackage.json");
+    nominate(&package, "sales", "amount", Some(CURRENCY), None);
+    own_files::write_packages(&p).unwrap();
+    assert_eq!(
+        written_of(&package, "sales", "amount")
+            .written
+            .currency_symbol
+            .as_deref(),
+        Some("£")
+    );
+
+    // The label is taken away, so the silver table no longer casts `amount`.
+    nominate(&package, "sales", "amount", None, None);
+    own_files::write_packages(&p).unwrap();
+    assert_eq!(
+        written_of(&package, "sales", "amount").written,
+        column_record::Written::default()
+    );
+}
+
+#[test]
+fn protocol_written_is_read_from_the_raw_table() {
+    let mut p = own_files::create(&sterling_folder("written_raw")).unwrap();
+    own_files::run_loads(&p, &runner()).unwrap();
+    own_files::profile(&mut p).unwrap();
+    own_files::write_packages(&p).unwrap();
+    let package = p.dir.join("packages/sales/datapackage.json");
+    nominate(&package, "sales", "amount", Some(CURRENCY), None);
+
+    // The silver table casts `amount` to a number, whose text holds no symbol.
+    let model = brightfield_ossie::read(&format!(
+        r#"version: 0.2.0.dev0
+name: written
+datasets:
+- name: sales
+  source: sales.csv
+  fields:
+  - name: id
+    expression: {{sql: id}}
+  - name: amount
+    expression: {{sql: amount}}
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{{"finetype":"{CURRENCY}","decided_by":"dovetail"}}'
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{{"role":"event","excluded":false,"decided_by":"dovetail","source_file":"sales.csv"}}'
+custom_extensions:
+- vendor_name: MERIDIAN
+  data: '{{"generator":"test"}}'
+"#
+    ))
+    .unwrap();
+    own_files::write_silver(&p, &model).unwrap();
+    own_files::run_loads(&p, &runner()).unwrap();
+    let db = arc::spec::protocol_db_path(&p.dir).unwrap();
+    assert_eq!(
+        query_strings(&db, "SELECT CAST(amount AS VARCHAR) FROM sales ORDER BY id"),
+        ["1234.50", "-12.00"]
+    );
+
+    own_files::write_packages(&p).unwrap();
+    let amount = written_of(&package, "sales", "amount");
+    assert_eq!(amount.written.currency_symbol.as_deref(), Some("£"));
+    assert_eq!(
+        amount.written.negatives,
+        Some(column_record::Negatives::Parentheses)
+    );
+}
+
+#[test]
+fn protocol_package_keeps_a_nominated_label() {
+    let (p, _) = packaged("nominated");
+    let path = p.dir.join("packages/customers/datapackage.json");
+    let mut record = column_record::read_record(&path, "customers")
+        .unwrap()
+        .unwrap();
+    let name = record.fields.get_mut("name").unwrap();
+    name.label = Some("identity.person.full_name".into());
+    name.nominated = true;
+    column_record::write_record(&path, "customers", &record).unwrap();
+
+    own_files::write_packages(&p).unwrap();
+
+    let again = column_record::read_record(&path, "customers")
+        .unwrap()
+        .unwrap();
+    assert!(again.fields["name"].nominated);
+    assert_eq!(
+        again.fields["name"].label.as_deref(),
+        Some("identity.person.full_name")
+    );
+    assert!(!again.fields["email"].nominated);
+}
+
+#[test]
+fn broken_package_is_regenerated() {
+    let (p, _) = packaged("broken_package");
+    let path = p.dir.join("packages/customers/datapackage.json");
+    std::fs::write(&path, "{\"resources\": [").unwrap();
+    own_files::write_packages(&p).unwrap();
+    let package: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(package["resources"][0]["name"], "customers");
 }
 
 #[test]
@@ -375,4 +623,61 @@ fn silver_steps_are_rewritten_not_accumulated() {
     assert!(!p.dir.join("models/02_silver_notes.sql").exists());
     assert!(!p.dir.join("models/02_failed_notes.sql").exists());
     assert!(p.dir.join("models/02_silver_events.sql").exists());
+}
+
+#[test]
+fn a_currency_column_stored_as_a_number_records_no_written() {
+    let dir = scratch().join("input").join("written_numeric");
+    std::fs::create_dir_all(&dir).unwrap();
+    let conn = duckdb::Connection::open_in_memory().unwrap();
+    conn.execute_batch(&format!(
+        "COPY (SELECT * FROM (VALUES (1, 1234.5::DOUBLE), (2, -12.0::DOUBLE)) t(id, amount)) \
+         TO '{}' (FORMAT parquet)",
+        dir.join("ledger.parquet").display()
+    ))
+    .unwrap();
+    drop(conn);
+    let mut p = own_files::create(&dir).unwrap();
+    own_files::run_loads(&p, &runner()).unwrap();
+    own_files::profile(&mut p).unwrap();
+    own_files::write_packages(&p).unwrap();
+    let package = p.dir.join("packages/ledger/datapackage.json");
+    nominate(&package, "ledger", "amount", Some(CURRENCY), None);
+    own_files::write_packages(&p).unwrap();
+    let amount = written_of(&package, "ledger", "amount");
+    assert_eq!(amount.label.as_deref(), Some(CURRENCY));
+    // DuckDB's `-12.0` is not how a source wrote a negative.
+    assert_eq!(amount.written, column_record::Written::default());
+}
+
+#[test]
+fn a_raw_table_that_cannot_be_read_keeps_the_written_recorded() {
+    let mut p = own_files::create(&sterling_folder("written_unread")).unwrap();
+    own_files::run_loads(&p, &runner()).unwrap();
+    own_files::profile(&mut p).unwrap();
+    own_files::write_packages(&p).unwrap();
+    let package = p.dir.join("packages/sales/datapackage.json");
+    nominate(&package, "sales", "amount", Some(CURRENCY), None);
+    own_files::write_packages(&p).unwrap();
+    assert_eq!(
+        written_of(&package, "sales", "amount")
+            .written
+            .currency_symbol
+            .as_deref(),
+        Some("£")
+    );
+
+    // The raw table is gone, so the aggregate fails; that is no news about the column.
+    let db = arc::spec::protocol_db_path(&p.dir).unwrap();
+    duckdb::Connection::open(&db)
+        .unwrap()
+        .execute_batch("DROP TABLE raw_sales")
+        .unwrap();
+    own_files::write_packages(&p).unwrap();
+    let amount = written_of(&package, "sales", "amount");
+    assert_eq!(amount.written.currency_symbol.as_deref(), Some("£"));
+    assert_eq!(
+        amount.written.negatives,
+        Some(column_record::Negatives::Parentheses)
+    );
 }

@@ -2,7 +2,8 @@
 # Every consumer of the FineType pin answers with what the pin declares.
 #
 #   scripts/check-finetype-pin.sh
-#   scripts/check-finetype-pin.sh --pin FILE --fetch CMD --package CMD --workflow FILE --transforms FILE
+#   scripts/check-finetype-pin.sh --pin FILE --fetch CMD --package CMD --workflow FILE \
+#     --transforms FILE --displays FILE
 #
 # packaging/finetype-pin.env declares a FineType tag and a model registry
 # revision, and three things stage from them.
@@ -54,6 +55,7 @@ FETCH_CMD="${HERE}/fetch-finetype-bundle.sh --print-tag"
 PACKAGE_CMD="${HERE}/package.sh --print-finetype-pin"
 WORKFLOW="${ROOT}/.github/workflows/release.yml"
 TRANSFORMS="${ROOT}/crates/brightfield-protocol/vendor/finetype/transforms.json"
+DISPLAYS="${ROOT}/crates/brightfield-protocol/vendor/finetype/displays.json"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -62,6 +64,7 @@ while [ "$#" -gt 0 ]; do
     --package)  PACKAGE_CMD="$2"; shift 2 ;;
     --workflow) WORKFLOW="$2";    shift 2 ;;
     --transforms) TRANSFORMS="$2"; shift 2 ;;
+    --displays) DISPLAYS="$2";    shift 2 ;;
     *) echo "check-finetype-pin: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
@@ -110,6 +113,15 @@ VENDORED=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["t
 [ "$VENDORED" = "$TAG" ] || fail "${TRANSFORMS} is vendored from FineType '${VENDORED}' while \
 ${PIN} declares '${TAG}'; run scripts/vendor-finetype-transforms.sh"
 echo "   vendored transforms: ${VENDORED}"
+
+# The display blocks are vendored from the same definitions by the same script. A file from
+# another tag would show values the way some other release's labels say to.
+[ -f "$DISPLAYS" ] || fail "no vendored displays at ${DISPLAYS}"
+VENDORED=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag"])' "$DISPLAYS") \
+  || fail "${DISPLAYS} does not read as the vendored displays"
+[ "$VENDORED" = "$TAG" ] || fail "${DISPLAYS} is vendored from FineType '${VENDORED}' while \
+${PIN} declares '${TAG}'; run scripts/vendor-finetype-transforms.sh"
+echo "   vendored displays: ${VENDORED}"
 
 [ -f "$WORKFLOW" ] || fail "no workflow at ${WORKFLOW}"
 

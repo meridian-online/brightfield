@@ -394,6 +394,7 @@ fn a_selected_row_keeps_its_wash_and_the_ring_is_drawn_over_it() {
             .map(|i| GridColumn {
                 name: format!("c{i}"),
                 numeric: false,
+                unit: None,
             })
             .collect(),
     };

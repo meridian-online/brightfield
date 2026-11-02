@@ -19,9 +19,9 @@ use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
 
 use crate::ast::{
-    AggregateFunc, Component, ConcatNode, Config, DataSource, DataSourceKind, Input, Interactor,
-    LegendNode, Mark, MarkData, Meta, ParamNode, ParamRef, PlotDefaults, PlotNode, SelectionNode,
-    SpaceNode, Spec, SpecValue, ValueOrParamRef,
+    AggregateFunc, BinOperand, Component, ConcatNode, Config, DataSource, DataSourceKind, Input,
+    Interactor, LegendNode, Mark, MarkData, Meta, ParamNode, ParamRef, PlotDefaults, PlotNode,
+    SelectionNode, SpaceNode, Spec, SpecValue, ValueOrParamRef,
 };
 use crate::error::{NameSurface, ParseError, SourceSpan};
 use crate::expr;
@@ -218,8 +218,8 @@ struct BinnedHistogram {
     bin_channel: &'static str,
     /// The opposite positional channel, carrying `{count:}`.
     count_channel: &'static str,
-    /// The column named by the `bin`.
-    column: String,
+    /// What the `bin` names: a column, or an expression.
+    operand: BinOperand,
     /// The `steps:` hint, when written.
     steps: Option<i64>,
 }
@@ -585,12 +585,17 @@ pub enum ParseWarning {
     },
 
     /// A plot's `xDomain`, `yDomain` or `xyDomain` held a value that is not two
-    /// numbers with the low end first: `[100, 0]`, `[0, "high"]`, `[0]`. The
-    /// axis draws as if the key were absent, with the domain its rows give, and
-    /// this names the key, the value as written and the plot. `Fixed` and a
-    /// `null` are not this: `Fixed` is Mosaic's own word and is read elsewhere.
+    /// numbers with the low end first: `[100, 0]`, `[0, "high"]`, `[0]`; or a
+    /// list of categories (`[2001, 2002, 2003]`, `[a, b]`) on an axis that is
+    /// not a band, the one kind of axis a list orders. The axis draws as if the
+    /// key were absent, with the domain its rows give, and this names the key,
+    /// the value as written and the plot. `Fixed` and a `null` are not this:
+    /// `Fixed` is Mosaic's own word and is read elsewhere.
     ///
-    /// Raised by analysis, after the whole spec is built, because a `$param`
+    /// A list of categories is known to land on the wrong kind of axis only
+    /// once the data has typed it, so for a list this is raised by the shell's
+    /// composition, where the scales are found, and not at parse time. Any
+    /// other value is raised by analysis, after the whole spec is built, because a `$param`
     /// cannot be read before `params:` has been parsed and a plot inherits
     /// `plotDefaults:` only once it is built: a `$param` holding two numbers
     /// draws them and says nothing, one holding a bad literal is named as the
@@ -1079,7 +1084,7 @@ impl fmt::Display for ParseWarning {
                 plot,
             } => write!(
                 f,
-                "plot {plot} sets `{attribute}: {value}`, which is not two numbers with the low end first — the axis draws the ends its rows give"
+                "plot {plot} sets `{attribute}: {value}`, which is not two numbers with the low end first, nor a list of categories on an axis of names — the axis draws the ends its rows give"
             ),
             Self::AxisEndsOnFixedAxis { attribute, plot } => write!(
                 f,
@@ -2144,7 +2149,7 @@ impl Walker {
                     options.insert(
                         key.clone(),
                         ValueOrParamRef::Value(SpecValue::Bin {
-                            column: h.column.clone(),
+                            operand: h.operand.clone(),
                             steps: h.steps,
                         }),
                     );
@@ -2701,11 +2706,11 @@ fn binned_histogram(kind: MarkKind, parent: &serde_yaml::Mapping) -> Option<Binn
     BIN_COUNT_AXES
         .iter()
         .find_map(|(bin_channel, count_channel)| {
-            let (column, steps) = bin_transform(channel_map_at(parent, bin_channel)?)?;
+            let (operand, steps) = bin_transform(channel_map_at(parent, bin_channel)?)?;
             is_count_transform(channel_map_at(parent, count_channel)?).then_some(BinnedHistogram {
                 bin_channel,
                 count_channel,
-                column,
+                operand,
                 steps,
             })
         })
@@ -2889,21 +2894,64 @@ fn channel_map_at<'a>(
     }
 }
 
-/// The `(column, steps)` of a `{bin: col}` / `{bin: col, steps: n}` map.
-/// `None` for any other shape — including a `bin` whose value is not a column
-/// name, and a map carrying a modifier this lowerer does not honour.
-fn bin_transform(m: &serde_yaml::Mapping) -> Option<(String, Option<i64>)> {
-    let mut column: Option<String> = None;
+/// The `(operand, steps)` of a `{bin: col}` / `{bin: col, steps: n}` map.
+///
+/// The operand is a column name or, in the spelling Mosaic's spec gives a
+/// `SQLExpression` (`TransformField = string | ParamRef | SQLExpression |
+/// Transform` in `packages/vgplot/spec/src/spec/Transform.ts`), an expression:
+///
+/// ```yaml
+/// x: { bin: { sql: '"revenue" / 1e9' } }
+/// ```
+///
+/// `None` for any other shape — including a `bin` whose value is neither, an
+/// expression map carrying a key beside `sql:` (its `label:` included), and a
+/// map carrying a modifier this lowerer does not honour.
+fn bin_transform(m: &serde_yaml::Mapping) -> Option<(BinOperand, Option<i64>)> {
+    let mut column: Option<BinOperand> = None;
     let mut steps: Option<i64> = None;
     for (k, v) in m {
         match k.as_str()? {
-            "bin" => column = Some(v.as_str()?.to_string()),
+            "bin" => column = Some(bin_operand(v)?),
             "steps" => steps = Some(v.as_i64()?),
             other if BIN_MODIFIER_KEYS.contains(&other) => {}
             _ => return None,
         }
     }
     Some((column?, steps))
+}
+
+/// The value of a `bin:` key as a [`BinOperand`]: a column name, or a map
+/// whose one key is `sql:`.
+///
+/// An expression that is one bare identifier, `{sql: revenue}`, is that column
+/// and lifts as one. Kept as an expression it would be projected under its own
+/// text, `(revenue) AS "revenue"`, beside the source's `revenue`, and the bins
+/// would name a column the query holds twice.
+fn bin_operand(v: &serde_yaml::Value) -> Option<BinOperand> {
+    match v {
+        serde_yaml::Value::String(column) => Some(BinOperand::Column(column.clone())),
+        serde_yaml::Value::Mapping(m) if m.len() == 1 => {
+            let expr = m.get(serde_yaml::Value::String("sql".to_string()))?;
+            let expr = expr.as_str()?.to_string();
+            Some(if is_bare_identifier(&expr) {
+                BinOperand::Column(expr)
+            } else {
+                BinOperand::Expression(expr)
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Whether `text` is an unquoted SQL identifier: a letter or `_`, then letters,
+/// digits and `_`.
+fn is_bare_identifier(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Whether a channel map is exactly `{count:}` — the corpus writes it both
@@ -3442,12 +3490,19 @@ impl Serialize for SerSpecValue<'_> {
                 }
                 map.end()
             }
-            // Likewise for the positional bin: back to `{bin: col}` — plus
-            // `{steps: n}` only when the spec wrote one, so a spec that took
-            // the default does not gain a key it never had.
-            SpecValue::Bin { column, steps } => {
+            // Likewise for the positional bin: back to `{bin: col}` or
+            // `{bin: {sql: expr}}` — plus `{steps: n}` only when the spec wrote
+            // one, so a spec that took the default does not gain a key it
+            // never had.
+            SpecValue::Bin { operand, steps } => {
                 let mut map = s.serialize_map(Some(1 + usize::from(steps.is_some())))?;
-                map.serialize_entry("bin", column)?;
+                match operand {
+                    BinOperand::Column(column) => map.serialize_entry("bin", column)?,
+                    BinOperand::Expression(expr) => {
+                        let sql: IndexMap<&str, &str> = IndexMap::from([("sql", expr.as_str())]);
+                        map.serialize_entry("bin", &sql)?;
+                    }
+                }
                 if let Some(n) = steps {
                     map.serialize_entry("steps", n)?;
                 }
@@ -4812,7 +4867,7 @@ plot:
     // Self-aggregating channel transforms (fill/r {count:}/{avg:})
     // -----------------------------------------------------------------------
 
-    use crate::ast::AggregateFunc;
+    use crate::ast::{AggregateFunc, BinOperand};
 
     fn mark_channel(src: &str, channel: &str) -> ValueOrParamRef<SpecValue> {
         let out = parse_spec(src, Format::Yaml).expect("parses");
@@ -4926,7 +4981,7 @@ plot:
         assert_eq!(
             mark_channel(src, "x"),
             ValueOrParamRef::Value(SpecValue::Bin {
-                column: "delay".to_string(),
+                operand: BinOperand::Column("delay".to_string()),
                 steps: Some(60),
             })
         );
@@ -4941,7 +4996,7 @@ plot:
         assert_eq!(
             mark_channel("mark: rectX\nx: { count: }\ny: { bin: delay }\n", "y"),
             ValueOrParamRef::Value(SpecValue::Bin {
-                column: "delay".to_string(),
+                operand: BinOperand::Column("delay".to_string()),
                 steps: None,
             })
         );
@@ -4994,10 +5049,48 @@ plot:
             "mark: rectY\nx: { bin: delay, interval: day }\ny: { count: }\n",
             "an unknown modifier beside the bin",
         );
-        // A bin whose value is not a column name.
+        // A bin over an aggregate: one number per group is not a value each
+        // row carries, so there is nothing to cut into bins.
         refused(
-            "mark: rectY\nx: { bin: { sql: 'a + b' } }\ny: { count: }\n",
-            "the bin must name a column",
+            "mark: rectY\nx: { bin: { agg: 'sum(a)' } }\ny: { count: }\n",
+            "the bin must name a column or a row-level expression",
+        );
+        // An expression carrying a key beside its `sql:`. Mosaic's `label:`
+        // titles the axis, which this lift has nowhere to carry, so it is
+        // refused rather than dropped.
+        refused(
+            "mark: rectY\nx: { bin: { sql: 'a + b', label: Total } }\ny: { count: }\n",
+            "an expression key the lift does not honour",
+        );
+    }
+
+    /// A bin takes an expression as well as a column, in the spelling
+    /// Mosaic's spec gives an expression anywhere it takes a transform field:
+    /// a map whose one key is `sql:`.
+    #[test]
+    fn bin_takes_an_expression() {
+        let src = "mark: rectY\nx: { bin: { sql: '\"revenue\" / 1e9' } }\ny: { count: }\n";
+        assert_eq!(
+            mark_channel(src, "x"),
+            ValueOrParamRef::Value(SpecValue::Bin {
+                operand: BinOperand::Expression("\"revenue\" / 1e9".to_string()),
+                steps: None,
+            })
+        );
+    }
+
+    /// An expression that is one bare column name is that column. Lifted as
+    /// an expression, the bin would project a second `revenue` beside the
+    /// source's own.
+    #[test]
+    fn an_expression_naming_one_column_bins_that_column() {
+        let src = "mark: rectY\nx: { bin: { sql: revenue } }\ny: { count: }\n";
+        assert_eq!(
+            mark_channel(src, "x"),
+            ValueOrParamRef::Value(SpecValue::Bin {
+                operand: BinOperand::Column("revenue".to_string()),
+                steps: None,
+            })
         );
     }
 
@@ -5016,7 +5109,7 @@ plot:
         assert_eq!(
             entry,
             ValueOrParamRef::Value(SpecValue::Bin {
-                column: "delay".to_string(),
+                operand: BinOperand::Column("delay".to_string()),
                 steps: None,
             })
         );
@@ -5216,6 +5309,7 @@ plot:
         for src in [
             "mark: rectY\nx: { bin: delay }\ny: { count: }\n",
             "mark: rectY\nx: { bin: delay, steps: 60 }\ny: { count: }\n",
+            "mark: rectY\nx: { bin: { sql: '\"revenue\" / 1e9' } }\ny: { count: }\n",
         ] {
             let first = parse_spec(src, Format::Yaml).expect("parses");
             let wire = serialise_spec(&first.spec).expect("serialises");

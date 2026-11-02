@@ -46,6 +46,7 @@ fn facts(column: &str, label: Option<&str>) -> ColumnFacts {
         moments: None,
         title: label.and_then(|l| catalogue.title(l)).map(str::to_string),
         icon: label.and_then(|l| catalogue.icon(l)).map(str::to_string),
+        representation: brightfield_shell::representation::Representation::default(),
     }
 }
 

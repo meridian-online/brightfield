@@ -174,7 +174,7 @@
   },
   "datetime.date.month_year_abbrev": {
    "duckdb_type": "DATE",
-   "transform": "strptime('01 ' || {col}, '%d %b %Y')::DATE"
+   "transform": "strptime('01 ' || upper(substr({col}, 1, 1)) || lower(substr({col}, 2, 2)) || ' ' || substr({col}, length({col}) - 3), '%d %b %Y')::DATE"
   },
   "datetime.date.month_year_full": {
    "duckdb_type": "DATE",
@@ -226,7 +226,7 @@
   },
   "datetime.duration.iso_8601": {
    "duckdb_type": "INTERVAL",
-   "transform": "CAST(\n  COALESCE(NULLIF(REGEXP_EXTRACT({col}, '(\\d+)Y', 1), '') || ' years ', '') ||\n  COALESCE(NULLIF(REGEXP_EXTRACT({col}, 'P[^T]*?(\\d+)M', 1), '') || ' months ', '') ||\n  COALESCE(NULLIF(REGEXP_EXTRACT({col}, '(\\d+)W', 1), '') || ' weeks ', '') ||\n  COALESCE(NULLIF(REGEXP_EXTRACT({col}, '(\\d+)D', 1), '') || ' days ', '') ||\n  COALESCE(NULLIF(REGEXP_EXTRACT({col}, '(\\d+)H', 1), '') || ' hours ', '') ||\n  COALESCE(NULLIF(REGEXP_EXTRACT({col}, 'T.*?(\\d+)M', 1), '') || ' minutes ', '') ||\n  COALESCE(NULLIF(REGEXP_EXTRACT({col}, '(\\d+(?:\\.\\d+)?)S', 1), '') || ' seconds', '0 seconds')\nAS INTERVAL)\n"
+   "transform": "CAST(CASE WHEN REGEXP_MATCHES({col}, '^P\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$') THEN\n  REGEXP_EXTRACT({col}, '^P(\\d{4})-', 1) || ' years ' ||\n  REGEXP_EXTRACT({col}, '^P\\d{4}-(\\d{2})-', 1) || ' months ' ||\n  REGEXP_EXTRACT({col}, '^P\\d{4}-\\d{2}-(\\d{2})T', 1) || ' days ' ||\n  REGEXP_EXTRACT({col}, 'T(\\d{2}:\\d{2}:\\d{2})$', 1)\nELSE\n  COALESCE(NULLIF(REPLACE(REGEXP_EXTRACT({col}, '([\\d.,]+)Y', 1), ',', '.'), '') || ' years ', '') ||\n  COALESCE(NULLIF(REPLACE(REGEXP_EXTRACT({col}, '^-?P(?:[\\d.,]+Y)?([\\d.,]+)M', 1), ',', '.'), '') || ' months ', '') ||\n  COALESCE(NULLIF(REPLACE(REGEXP_EXTRACT({col}, '([\\d.,]+)W', 1), ',', '.'), '') || ' weeks ', '') ||\n  COALESCE(NULLIF(REPLACE(REGEXP_EXTRACT({col}, '([\\d.,]+)D', 1), ',', '.'), '') || ' days ', '') ||\n  COALESCE(NULLIF(REPLACE(REGEXP_EXTRACT({col}, '([\\d.,]+)H', 1), ',', '.'), '') || ' hours ', '') ||\n  COALESCE(NULLIF(REPLACE(REGEXP_EXTRACT({col}, 'T(?:[\\d.,]+H)?([\\d.,]+)M', 1), ',', '.'), '') || ' minutes ', '') ||\n  COALESCE(NULLIF(REPLACE(REGEXP_EXTRACT({col}, '([\\d.,]+)S', 1), ',', '.'), '') || ' seconds', '0 seconds')\nEND AS INTERVAL)\n"
   },
   "datetime.epoch.unix_microseconds": {
    "duckdb_type": "TIMESTAMP",
@@ -362,7 +362,7 @@
   },
   "datetime.timestamp.pg_short_offset": {
    "duckdb_type": "TIMESTAMP WITH TIME ZONE",
-   "transform": "strptime({col} || ':00', '%Y-%m-%d %H:%M:%S.%f%z')"
+   "transform": "COALESCE(try_strptime({col} || ':00', '%Y-%m-%d %H:%M:%S%z'), try_strptime({col} || ':00', '%Y-%m-%d %H:%M:%S.%f%z'))"
   },
   "datetime.timestamp.rfc_2822": {
    "duckdb_type": "TIMESTAMP WITH TIME ZONE",
@@ -462,7 +462,7 @@
   },
   "finance.currency.amount_multisym": {
    "duckdb_type": "VARCHAR",
-   "transform": "CAST(REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, '^[^0-9-]+|\\s', '', 'g'), '[.,]([0-9]{1,2})$', 'D\\1'), '[.,]', '', 'g'), 'D', '.') AS DECIMAL(18,2))"
+   "transform": "CAST(REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE({col}, '^[^0-9-]+|[^0-9]+$|[\\s\\x{A0}\\x{202F}]', '', 'g'), '[.,]([0-9]{1,2})$', 'D\\1'), '[.,]', '', 'g'), 'D', '.') AS DECIMAL(18,2))"
   },
   "finance.currency.amount_neg_trailing": {
    "duckdb_type": "VARCHAR",
@@ -542,7 +542,7 @@
   },
   "geography.coordinate.coordinates": {
    "duckdb_type": "POINT",
-   "transform": "STRUCT_PACK(lat := CAST(REGEXP_EXTRACT({col}, '^([^, ]+)', 1) AS DOUBLE), lon := CAST(REGEXP_EXTRACT({col}, '[, ]([^, ]+)$', 1) AS DOUBLE))"
+   "transform": "STRUCT_PACK(lat := CAST(REGEXP_EXTRACT({col}, '^(-?[0-9]+(?:\\.[0-9]+)?)', 1) AS DOUBLE), lon := CAST(REGEXP_EXTRACT({col}, '(-?[0-9]+(?:\\.[0-9]+)?)$', 1) AS DOUBLE))"
   },
   "geography.coordinate.dms": {
    "duckdb_type": "VARCHAR",
@@ -830,7 +830,7 @@
   },
   "representation.numeric.percentage": {
    "duckdb_type": "DOUBLE",
-   "transform": "CAST(REGEXP_EXTRACT({col}, '^%?(-?[0-9]+(\\.[0-9]+)?)', 1) AS DOUBLE)"
+   "transform": "CAST(REGEXP_EXTRACT({col}, '^%?(-?[0-9]+(\\.[0-9]+)?)', 1) || 'e-2' AS DOUBLE)"
   },
   "representation.numeric.scientific_notation": {
    "duckdb_type": "DOUBLE",
@@ -1006,5 +1006,5 @@
   }
  },
  "source": "https://github.com/meridian-online/finetype/blob/<tag>/labels/definitions_*.yaml",
- "tag": "v0.6.64"
+ "tag": "v0.6.67"
 }

@@ -7728,6 +7728,8 @@ impl MeridianApp {
             steps,
             order: self.charts.doc.grid_view().order.clone(),
             runner: self.runner.clone(),
+            shown: self.charts.doc.column_facts().shown().clone(),
+            casts: source.casts.clone(),
         })
     }
 
@@ -7998,6 +8000,8 @@ impl MeridianApp {
                     steps: Vec::new(),
                     order: None,
                     runner: None,
+                    shown: crate::data_grid::Shown::new(),
+                    casts: source.casts.clone(),
                 },
                 chain.clone(),
                 move || wake.request_repaint(),
@@ -10273,6 +10277,7 @@ impl MeridianApp {
             ran: model.step_ran(&step.name),
             recorded: !model.is_typed(&step.name),
             run_key: self.run_binding.map(str::to_owned),
+            shown: self.charts.doc.column_facts().shown().clone(),
         })
     }
 
@@ -13548,15 +13553,21 @@ fn hero_axis_settings(
             .and_then(|p| p.moments.as_ref()),
         _ => None,
     };
-    Some(ChannelSettings::of_plot_profiled(
-        spec,
-        plot,
-        &hero.path,
-        channels,
-        &hero.scales,
-        &hero.marks,
-        moments,
-    ))
+    // The format the rule gives each axis's column from its type, which a format row
+    // holding exactly it reads as auto.
+    let (x, y) = doc.rule_formats(HERO_PLOT, plot, channels);
+    Some(
+        ChannelSettings::of_plot_profiled(
+            spec,
+            plot,
+            &hero.path,
+            channels,
+            &hero.scales,
+            &hero.marks,
+            moments,
+        )
+        .with_rule_formats(x.as_deref(), y.as_deref()),
+    )
 }
 
 /// Draw the grid pane's layout switch on `band`, record it on the document and

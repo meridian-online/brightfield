@@ -52,7 +52,7 @@ use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_shell::{chart_kinds, data_file};
 use brightfield_spec::analysis::ComponentPath;
-use brightfield_spec::ast::{AggregateFunc, MarkData};
+use brightfield_spec::ast::{AggregateFunc, BinOperand, MarkData};
 use brightfield_spec::vocab::SelectionResolution;
 use brightfield_spec::{
     parse_spec, Component, Format, InteractorKind, Mark, MarkKind, ParamNode, PlotNode, Spec,
@@ -490,7 +490,7 @@ fn the_registrys_numeric_tile_declares_a_ghost_behind_a_filtered_subset() {
         assert_eq!(
             layer.options.get("x"),
             Some(&ValueOrParamRef::Value(SpecValue::Bin {
-                column: MEASURE.to_string(),
+                operand: BinOperand::Column(MEASURE.to_string()),
                 steps: None,
             })),
             "layer {n} does not bin {MEASURE} — the two layers must share one \

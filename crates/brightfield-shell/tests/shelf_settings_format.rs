@@ -33,7 +33,7 @@ use brightfield_shell::pipeline::Composed;
 use brightfield_shell::shelf::{
     foot_sentence, format_preset, format_specifier, Binding, ChannelSettings, ColumnList,
     ColumnListRequest, ListColumn, ListReport, ListTab, RowEdit, RowField, SettingRow,
-    SettingValue, ShelfChannels, AUTO, FORMAT_PRESETS, FORMAT_ROW, TITLE_ROW,
+    SettingValue, ShelfChannels, DEFAULT_FORMAT, FORMAT_PRESETS, FORMAT_ROW, TITLE_ROW,
 };
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -269,7 +269,9 @@ fn the_foot_names_the_specifier_the_file_gets() {
             "the foot over `{attrs}` names the key and the specifier: {foot}"
         );
     }
-    for name in ["auto", "number", "short", "percent", "currency", "custom"] {
+    for name in [
+        "default", "number", "short", "percent", "currency", "custom",
+    ] {
         assert!(auto.contains(name), "the foot lists {name}: {auto}");
     }
 }
@@ -427,7 +429,7 @@ fn each_preset_reads_back_as_its_own_name() {
     let names: Vec<&str> = FORMAT_PRESETS.iter().map(|(name, _)| *name).collect();
     assert_eq!(
         names,
-        ["auto", "number", "short", "percent", "currency", "custom"]
+        ["default", "auto", "number", "short", "percent", "currency", "custom"]
     );
     for (name, written) in FORMAT_PRESETS {
         if let Some(written) = written {
@@ -441,7 +443,7 @@ fn each_preset_reads_back_as_its_own_name() {
         }
     }
     let row = format_row("", &ScaleSet::new());
-    assert_eq!((row.value.as_str(), row.set), (AUTO, false));
+    assert_eq!((row.value.as_str(), row.set), (DEFAULT_FORMAT, false));
 }
 
 /// **AC2.** The sample is what the axis's top drawn tick prints as under the row's
@@ -452,7 +454,7 @@ fn each_preset_reads_back_as_its_own_name() {
 fn the_sample_is_the_top_drawn_tick_under_the_preset_and_not_the_columns_maximum() {
     let drawn = drawn_to(5565.0);
     let cases = [
-        ("", "5000"),
+        ("", "5,000"),
         ("xTickFormat: ',f'", "5,000"),
         ("xTickFormat: '~s'", "5k"),
         ("xTickFormat: '%'", "500000%"),
@@ -805,7 +807,7 @@ impl Window {
 fn l_writes_each_preset_to_the_plot_and_the_axis_repaints_under_it() {
     let mut win = Window::housing("presets");
     assert_eq!(win.attribute("xTickFormat"), None);
-    assert_eq!(win.row().value, AUTO);
+    assert_eq!(win.row().value, DEFAULT_FORMAT);
     let plain = win.x_tick_glyphs();
     assert_eq!(
         plain,

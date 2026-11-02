@@ -108,7 +108,7 @@ use brightfield_engine::{
     PREVIEW_FILE_LIMIT_BYTES,
 };
 
-use crate::data_grid::{page_of, GridPage, PreviewHooks, PREVIEW_ROWS};
+use crate::data_grid::{GridPage, PreviewHooks, PREVIEW_ROWS};
 use crate::generated::{sql_step_name_for, GeneratedStep, StepEffect};
 use crate::operation::{recognise, Recognised};
 use crate::run::Runner;
@@ -198,6 +198,51 @@ pub struct TypedSource {
     pub order: Option<String>,
     /// The program arc runs as, when there is one to ask.
     pub runner: Option<Runner>,
+    /// How the applied grid shows each column, so a page read here agrees with its header.
+    pub shown: crate::data_grid::Shown,
+    /// The casts the window's session reads the file through, each a column and the SQL that
+    /// casts it. A read here makes the root table through the same casts, so a condition reads
+    /// `share` as the fraction the applied grid's `where` reads, not the file's `45%`.
+    pub casts: Vec<(String, String)>,
+}
+
+impl TypedSource {
+    /// The table the file loads as and the steps after it, for a read of `chain` over the root
+    /// table as the session reads it: with no casts, the root table and `chain`; with casts, the
+    /// file loads under a name of its own, the session's raw rows' name unless the root table or
+    /// a step of `chain` already has it, and the root table is made from it, cast, as the first
+    /// step.
+    fn read_over(&self, chain: Vec<(String, PreviewOp)>) -> (String, Vec<(String, PreviewOp)>) {
+        if self.casts.is_empty() {
+            return (self.root_table.clone(), chain);
+        }
+        let taken = |name: &str| {
+            name.eq_ignore_ascii_case(&self.root_table)
+                || chain
+                    .iter()
+                    .any(|(step, _)| step.eq_ignore_ascii_case(name))
+        };
+        let mut rows = crate::data_file::ROWS.to_string();
+        let mut n = 2;
+        while taken(&rows) {
+            rows = format!("{}_{n}", crate::data_file::ROWS);
+            n += 1;
+        }
+        let mut cast = vec![(
+            self.root_table.clone(),
+            PreviewOp::Statement(crate::flat_cast::cast_select_from(&self.casts, &rows)),
+        )];
+        cast.extend(chain);
+        (rows, cast)
+    }
+
+    /// The columns the casts keep each cast column's text under, which the applied grid hides.
+    fn raw_columns(&self) -> std::collections::BTreeSet<String> {
+        self.casts
+            .iter()
+            .map(|(column, _)| crate::flat_cast::raw_name(column))
+            .collect()
+    }
 }
 
 /// What a read of a typed statement found.
@@ -467,11 +512,12 @@ pub fn spawn_row_count(
     let (send, answer) = channel();
     let hooks = PreviewHooks::default();
     std::thread::spawn(move || {
+        let (root, chain) = source.read_over(chain);
         let count = hooks.read_inside(|| {
             preview_row_count_stoppable(
                 &source.data,
                 source.reader,
-                &source.root_table,
+                &root,
                 &chain,
                 PREVIEW_FILE_LIMIT_BYTES,
                 PREVIEW_DEADLINE,
@@ -508,17 +554,20 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
         free_step_name(&source.root_table, &chain),
         PreviewOp::Statement(text.to_string()),
     ));
+    let (root, chain) = source.read_over(chain);
     let page = match preview_first_page_stoppable(
         &source.data,
         source.reader,
-        &source.root_table,
+        &root,
         &chain,
         PREVIEW_ROWS,
         PREVIEW_FILE_LIMIT_BYTES,
         PREVIEW_DEADLINE,
         stop,
     ) {
-        Ok(batches) => page_of(&batches),
+        Ok(batches) => {
+            crate::data_grid::page_of_hiding(&batches, &source.shown, &source.raw_columns())
+        }
         Err(PreviewRefusal::Superseded) => return None,
         Err(refusal) => return Some(Err((text.to_string(), refusal.to_string()))),
     };
@@ -540,11 +589,12 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
                 free_step_name(&source.root_table, &[]),
                 PreviewOp::Where(condition.clone()),
             )];
+            let (root, counted) = source.read_over(filter.clone());
             let rows = match preview_row_count_stoppable(
                 &source.data,
                 source.reader,
-                &source.root_table,
-                &filter,
+                &root,
+                &counted,
                 PREVIEW_FILE_LIMIT_BYTES,
                 PREVIEW_DEADLINE,
                 stop,
@@ -561,17 +611,22 @@ fn read_typed(source: &TypedSource, text: &str, stop: &PreviewStop) -> Option<Ty
                     PreviewOp::OrderBy(order.clone()),
                 ));
             }
+            let (root, filter) = source.read_over(filter);
             let page = match preview_first_page_stoppable(
                 &source.data,
                 source.reader,
-                &source.root_table,
+                &root,
                 &filter,
                 PREVIEW_ROWS,
                 PREVIEW_FILE_LIMIT_BYTES,
                 PREVIEW_DEADLINE,
                 stop,
             ) {
-                Ok(batches) => Some(page_of(&batches)),
+                Ok(batches) => Some(crate::data_grid::page_of_hiding(
+                    &batches,
+                    &source.shown,
+                    &source.raw_columns(),
+                )),
                 Err(PreviewRefusal::Superseded) => return None,
                 Err(_) => None,
             };

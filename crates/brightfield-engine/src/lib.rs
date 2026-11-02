@@ -18,7 +18,7 @@ pub mod semantic;
 pub mod sources;
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // Re-export duckdb's Arrow types so consumers don't need a separate arrow dep.
@@ -355,6 +355,20 @@ pub struct LoadOptions {
     /// A source that loads nothing native — the default — declares `false` and
     /// costs the session nothing.
     pub type_source: Option<semantic::TypeSourceSpec>,
+    /// Labels already settled, column name to label: one an analyst accepted,
+    /// or one a cast copy was made from.
+    ///
+    /// The names are bare column names, not keyed by source: a label here
+    /// applies to a column of that name in every source the session loads.
+    /// A flat open loads one source, so there it labels that source alone.
+    ///
+    /// A column named here is not asked of [`LoadOptions::type_source`]: the
+    /// profile issues no typing term for it, and its
+    /// [`ColumnProfile::semantic`] is [`SemanticType::Labelled`] with this
+    /// label and [`ValueCheck::Given`]. That holds with no type source at
+    /// all, since a given label needs no classifier. A name that is not a
+    /// column of a source is ignored for that source.
+    pub given_labels: BTreeMap<String, String>,
 }
 
 impl LoadOptions {
@@ -827,8 +841,10 @@ impl Engine {
             facts_cache: HashMap::new(),
             type_source,
             type_source_error,
+            given_labels: options.given_labels.clone(),
             scan_tally: RefCell::new(None),
             copy_budget_baseline,
+            hidden_columns: BTreeSet::new(),
         };
 
         Ok(LoadResult {
@@ -978,6 +994,9 @@ pub struct Session {
     /// and refused" and "no bundle was asked for" — the two look identical
     /// from a column profile, and only one of them is a packaging bug.
     type_source_error: Option<String>,
+    /// [`LoadOptions::given_labels`]: columns the profile labels without
+    /// asking the type source.
+    given_labels: BTreeMap<String, String>,
     /// Where [`Session::profile_sources_counting_scans`] and
     /// [`Session::begin_scan_tally`] collect what the statements they enclose
     /// cost. `None` — the state a caller that did not ask to count leaves it
@@ -1002,6 +1021,8 @@ pub struct Session {
     /// `None` where DuckDB would not answer, and then the copy is declined: a
     /// budget that cannot be lifted afterwards is worse than a slow open.
     copy_budget_baseline: Option<(String, String)>,
+    /// See [`Session::hidden_columns`].
+    hidden_columns: BTreeSet<String>,
 }
 
 /// One navigable axis of a navigation extent: the column the gesture moved
@@ -3367,6 +3388,69 @@ impl Session {
         Ok(())
     }
 
+    /// Point the view `name` at its copy ([`Session::materialise_source`])
+    /// again, reshaped: for each `(column, kept)` of `put_back`, `kept` is read
+    /// in `column`'s place and is not listed under its own name; then each of
+    /// `derived` is projected beside the columns, as a spec that derives
+    /// columns declares them.
+    ///
+    /// For a copy whose source cast a column and also kept the text it was
+    /// cast from: a cast that should not stand is put back as the text, where
+    /// the column stood, without a second read of the file. The copy itself is
+    /// not changed.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB's, when `name` has no copy, a column is not in it, or a
+    /// projection does not bind.
+    pub fn reshape_copy(
+        &mut self,
+        name: &str,
+        put_back: &[(String, String)],
+        derived: &[String],
+    ) -> Result<(), EngineError> {
+        let quoted = escape_ident(name);
+        let table = escape_ident(&format!("{name}{MATERIALISED_SUFFIX}"));
+        let mut rows = format!("SELECT * FROM \"{table}\"");
+        if !put_back.is_empty() {
+            let kept: Vec<String> = put_back
+                .iter()
+                .map(|(_, kept)| format!("\"{}\"", escape_ident(kept)))
+                .collect();
+            let replaced: Vec<String> = put_back
+                .iter()
+                .map(|(column, kept)| {
+                    format!("\"{}\" AS \"{}\"", escape_ident(kept), escape_ident(column))
+                })
+                .collect();
+            rows = format!(
+                "SELECT * EXCLUDE ({}) REPLACE ({}) FROM \"{table}\"",
+                kept.join(", "),
+                replaced.join(", ")
+            );
+        }
+        if !derived.is_empty() {
+            rows = format!("SELECT *, {} FROM ({rows})", derived.join(", "));
+        }
+        self.conn
+            .execute_batch(&format!("CREATE OR REPLACE VIEW \"{quoted}\" AS {rows};"))
+            .map_err(|cause| EngineError::ConnectionFailed { cause })?;
+        self.invalidate_derived_state();
+        Ok(())
+    }
+
+    /// Columns a reader of this session's rows is not shown: the grid leaves
+    /// them out. Empty unless [`Session::set_hidden_columns`] named some.
+    #[must_use]
+    pub fn hidden_columns(&self) -> &BTreeSet<String> {
+        &self.hidden_columns
+    }
+
+    /// Name the columns [`Session::hidden_columns`] reports.
+    pub fn set_hidden_columns(&mut self, columns: BTreeSet<String>) {
+        self.hidden_columns = columns;
+    }
+
     /// Put `memory_limit` and `max_temp_directory_size` back to the values
     /// captured at load, after [`Session::materialise_source`] narrowed them
     /// for one copy.
@@ -3494,10 +3578,52 @@ impl Session {
             Ok(c) => c,
             Err(e) => return ProfileOutcome::Failed(e),
         };
-        let mut outcome = match self.aggregate_source(name, &columns) {
-            Ok(outcome) => outcome,
-            Err(e) => return ProfileOutcome::Failed(e),
-        };
+        match self.profile_described(name, &columns, &[]) {
+            Ok((outcome, _)) => outcome,
+            Err(e) => ProfileOutcome::Failed(e),
+        }
+    }
+
+    /// The profiles of `columns` in the source `name`, with each of `extra`, a SQL aggregate
+    /// over the source, answered as text by the same aggregate: the profile pass of
+    /// [`Session::profile_sources`] for some of a source's columns, with questions of the
+    /// caller's riding the one read.
+    ///
+    /// The columns come back in the source's order, whatever order they are asked in, and a name
+    /// the source does not have is left out. Each profile's [`ColumnProfile::semantic`] is what
+    /// this session's type source and given labels say, which for a session loaded with neither
+    /// is [`SemanticType::NotAsked`].
+    ///
+    /// # Errors
+    ///
+    /// DuckDB's words, when the source cannot be described or an aggregate does not bind.
+    pub fn profile_columns_with(
+        &self,
+        name: &str,
+        columns: &[String],
+        extra: &[String],
+    ) -> Result<(Vec<ColumnProfile>, Vec<Option<String>>), String> {
+        let described: Vec<(String, String)> = self
+            .describe_columns(name)?
+            .into_iter()
+            .filter(|(column, _)| columns.contains(column))
+            .collect();
+        match self.profile_described(name, &described, extra)? {
+            (ProfileOutcome::Profiled { columns, .. }, extras) => Ok((columns, extras)),
+            (ProfileOutcome::Failed(reason), _) => Err(reason),
+            (ProfileOutcome::Unsupported, _) => Err("the source cannot be profiled".to_string()),
+        }
+    }
+
+    /// The aggregate pass over `columns` of `name` with `extra` riding it, then the
+    /// distributions.
+    fn profile_described(
+        &self,
+        name: &str,
+        columns: &[(String, String)],
+        extra: &[String],
+    ) -> Result<(ProfileOutcome, Vec<Option<String>>), String> {
+        let (mut outcome, extras) = self.aggregate_source(name, columns, extra)?;
         // The second pass, and the reason it is a second one: which shape a
         // column's distribution takes is decided by the EXACT distinct count,
         // which the aggregate above is what produces. ONE `GROUP BY` for every
@@ -3515,11 +3641,11 @@ impl Session {
                             }
                         }
                     }
-                    Err(e) => return ProfileOutcome::Failed(e.to_string()),
+                    Err(e) => return Err(e.to_string()),
                 }
             }
         }
-        outcome
+        Ok((outcome, extras))
     }
 
     /// A column's `min` and `max`, spelled for the bucket expression so the
@@ -3687,7 +3813,8 @@ impl Session {
         &self,
         name: &str,
         columns: &[(String, String)],
-    ) -> Result<ProfileOutcome, String> {
+        extra: &[String],
+    ) -> Result<(ProfileOutcome, Vec<Option<String>>), String> {
         let mut selects: Vec<String> = vec!["CAST(count(*) AS BIGINT)".to_string()];
         // Per column: whether it contributed min/max cells, and what the type
         // source asked for. Both drive the read back below, which walks the
@@ -3728,9 +3855,20 @@ impl Session {
             // `ft_profile` is a true DuckDB aggregate, so one extra term per
             // column costs one extra accumulator on the same pass over the
             // same rows.
-            typed.push(match &self.type_source {
-                None => Err(SemanticType::NotAsked),
-                Some(src) => match src.typing_expr(col, ty) {
+            // A label already settled is not asked again, so no typing term
+            // is issued for its column.
+            let given = self
+                .given_labels
+                .get(col)
+                .map(|label| SemanticType::Labelled {
+                    label: label.clone(),
+                    confidence: 1.0,
+                    check: ValueCheck::Given,
+                });
+            typed.push(match (given, &self.type_source) {
+                (Some(given), _) => Err(given),
+                (None, None) => Err(SemanticType::NotAsked),
+                (None, Some(src)) => match src.typing_expr(col, ty) {
                     Ok(expr) => {
                         selects.push(expr);
                         Ok(())
@@ -3739,6 +3877,7 @@ impl Session {
                 },
             });
         }
+        selects.extend(extra.iter().map(|e| format!("CAST(({e}) AS VARCHAR)")));
         let sql = format!(
             "SELECT {} FROM \"{}\"",
             selects.join(", "),
@@ -3822,10 +3961,16 @@ impl Session {
                 moments,
             });
         }
-        Ok(ProfileOutcome::Profiled {
-            row_count,
-            columns: out,
-        })
+        let extras = (idx..idx + extra.len())
+            .map(|at| profile::read_text(&batch, at))
+            .collect();
+        Ok((
+            ProfileOutcome::Profiled {
+                row_count,
+                columns: out,
+            },
+            extras,
+        ))
     }
 
     /// Run a raw read-only query and collect its Arrow batches — the profiling
@@ -5032,6 +5177,7 @@ plot:
             network: NetworkPolicy::Disabled,
             extension_directory: Some(ext_dir.clone()),
             type_source: None,
+            ..LoadOptions::default()
         };
         let mut session = Engine::new()
             .load_spec_with(spec, analysis, None, &options)
@@ -5071,6 +5217,7 @@ plot:
             network: NetworkPolicy::Disabled,
             extension_directory: Some(ext_dir.clone()),
             type_source: None,
+            ..LoadOptions::default()
         };
         let err = Engine::new()
             .load_spec_with(spec, analysis, None, &options)
@@ -5133,6 +5280,7 @@ plot:
             network: NetworkPolicy::Disabled,
             extension_directory: Some(ext_dir.clone()),
             type_source: None,
+            ..LoadOptions::default()
         };
         let err = Engine::new()
             .load_spec_with(spec, analysis, None, &options)

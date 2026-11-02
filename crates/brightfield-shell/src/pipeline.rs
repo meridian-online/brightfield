@@ -57,8 +57,8 @@ use brightfield_render::past_ends::{
 use brightfield_render::sample_notice::{sample_band_margins, SampleFact};
 use brightfield_render::sample_policy;
 use brightfield_render::scale::{
-    written_ends_apply, ColourOverride, ColourScale, PinnedDomains, Scale, ScaleSet,
-    SequentialScheme, ViewExtent,
+    written_domain_applies, written_ends_apply, ColourOverride, ColourScale, PinnedDomains, Scale,
+    ScaleSet, SequentialScheme, ViewExtent,
 };
 use brightfield_render::scene::{
     axis_ends_apply, axis_keys_apply, colour_categories_apply, colour_override_applies,
@@ -71,7 +71,7 @@ use brightfield_render::selection::{
 };
 use brightfield_render::{grow_margins_at, resolve_titles};
 use brightfield_spec::analysis::{
-    analyse_spec, build_brushable_bindings, BrushKind, ComponentPath,
+    analyse_spec, build_brushable_bindings, BrushKind, ChannelField, ComponentPath,
 };
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::edit::{colour_legend_placement, LegendPlacement};
@@ -367,6 +367,9 @@ pub struct HoverLayer {
     /// the data, and a `{count:}` or a `{bin:}` names a column the step's own
     /// rows do not carry.
     pub channels: Vec<(Channel, String)>,
+    /// The tick formats the plot wrote for its positional axes, which a readout prints a value
+    /// on that axis with.
+    pub tick_formats: brightfield_spec::layout::TickFormats,
 }
 
 impl HoverLayer {
@@ -475,6 +478,7 @@ fn hover_layer(
     marks: &[&brightfield_spec::ast::Mark],
     maps: &[ChannelMap],
     scales: &ScaleSet,
+    tick_formats: &brightfield_spec::layout::TickFormats,
 ) -> Option<HoverLayer> {
     for channel in [Channel::X, Channel::Y] {
         scales.get(channel).and_then(units_per_pixel)?;
@@ -490,7 +494,11 @@ fn hover_layer(
         .iter()
         .filter(|(c, _)| matches!(c, Channel::X | Channel::Y))
         .count();
-    (positional == 2).then_some(HoverLayer { mark, channels })
+    (positional == 2).then(|| HoverLayer {
+        mark,
+        channels,
+        tick_formats: tick_formats.clone(),
+    })
 }
 
 /// A plot's declared interaction, resolved from the spec's brushable-interactor
@@ -505,10 +513,11 @@ pub struct GestureBinding {
     pub contributor: ComponentPath,
     /// Which gesture the interactor declared (interval axes / point toggle).
     pub kind: BrushKind,
-    /// The x channel's column expression, when the first mark names one.
-    pub x_column: Option<String>,
-    /// The y channel's column expression, when the first mark names one.
-    pub y_column: Option<String>,
+    /// The x channel's field — a column, or a binned expression — when the
+    /// first mark names one.
+    pub x_field: Option<ChannelField>,
+    /// The y channel's field, when the first mark names one.
+    pub y_field: Option<ChannelField>,
 }
 
 /// One spec-declared scalar parameter with a slider widget behind it: what the
@@ -1201,7 +1210,7 @@ impl LiveDashboard {
         let diagnostics = LoadDiagnostics::collect(None, &spec, &[], &analysis.warnings);
         let coordinator = Coordinator::load(spec.clone(), analysis, spec_dir)
             .map_err(|e| format!("engine error: {e}"))?;
-        Ok(Self::sampled_by_policy(Self {
+        Ok(Self::sampled_by_policy(Self::raw_hidden(Self {
             coordinator,
             spec,
             diagnostics,
@@ -1212,7 +1221,20 @@ impl LiveDashboard {
             viewport: Rect::zero(),
             sample_is_automatic: false,
             mode: Mode::Light,
-        }))
+        })))
+    }
+
+    /// `dash`, with the text its source's casts keep beside each cast column
+    /// hidden from the grid — see [`crate::flat_cast::raw_columns_declared`].
+    fn raw_hidden(mut dash: Self) -> Self {
+        dash.hide_raw_columns();
+        dash
+    }
+
+    /// Hide from the grid the raw columns this dashboard's spec declares.
+    fn hide_raw_columns(&mut self) {
+        let raw = crate::flat_cast::raw_columns_declared(&self.spec);
+        self.coordinator.session_mut().set_hidden_columns(raw);
     }
 
     /// Put the automatic rate on a freshly-loaded dashboard, before anything
@@ -1248,7 +1270,7 @@ impl LiveDashboard {
             LoadDiagnostics::collect(source, &spec, &parsed.warnings, &analysis.warnings);
         let coordinator = Coordinator::load(spec.clone(), analysis, spec_dir)
             .map_err(|e| format!("engine error: {e}"))?;
-        Ok(Self::sampled_by_policy(Self {
+        Ok(Self::sampled_by_policy(Self::raw_hidden(Self {
             coordinator,
             spec,
             diagnostics,
@@ -1259,7 +1281,7 @@ impl LiveDashboard {
             viewport: Rect::zero(),
             sample_is_automatic: false,
             mode: Mode::Light,
-        }))
+        })))
     }
 
     /// Load from spec text (mirrors [`compose_spec_str`]).
@@ -1485,6 +1507,35 @@ impl LiveDashboard {
             .session_mut()
             .materialise_source(name, budget_bytes)
             .map_err(|e| e.to_string())
+    }
+
+    /// Compose `source` from here on, over this dashboard's session and the
+    /// views it already holds: the spec is parsed, analysed and swapped into
+    /// the session ([`brightfield_engine::Session::reload_spec`]) with no new
+    /// DuckDB connection, so a copy already made stays made.
+    ///
+    /// The diagnostics become the new spec's, and an automatic sample is
+    /// decided again, since it depends on the marks.
+    ///
+    /// # Errors
+    ///
+    /// The parse or analysis error, in which case nothing changed.
+    pub fn reload_str(&mut self, source: &str) -> Result<(), String> {
+        let parsed = parse_spec(source, Format::Yaml).map_err(|e| format!("parse error: {e}"))?;
+        let spec = parsed.spec;
+        let analysis = analyse_spec(&spec).map_err(|e| format!("analysis error: {e}"))?;
+        self.diagnostics =
+            LoadDiagnostics::collect(None, &spec, &parsed.warnings, &analysis.warnings);
+        self.coordinator
+            .session_mut()
+            .reload_spec(spec.clone(), analysis);
+        self.spec = spec;
+        self.hide_raw_columns();
+        if self.sample_is_automatic {
+            let rate = automatic_sample(self.coordinator.session());
+            self.coordinator.session_mut().set_sample(rate);
+        }
+        Ok(())
     }
 
     /// [`LiveDashboard::present`], with DuckDB asked to explain each statement
@@ -2024,10 +2075,12 @@ fn gather_selected(predicate: &Predicate, plot: &PlotHandle, held: &mut Committe
 /// The channel slot `column` occupies on this plot, when the plot draws that
 /// column on a positional channel and has not already taken the slot.
 ///
-/// Matched against the plot's OWN channel columns rather than the gesture
-/// binding's, so a clause a plot did not draw an axis for gets no band.
+/// Matched against the columns the plot itself draws on each axis, so a
+/// clause a plot did not draw an axis for gets no band. A binned expression is
+/// matched there through the field the plot's own gesture sweeps, on the
+/// spelling that gesture writes ([`clause_names_axis`]).
 ///
-/// On the column's NAME rather than on its spelling. A clause carries the
+/// Any other column is matched on its NAME rather than on its spelling. A clause carries the
 /// column as a SQL identifier (`"observed by hour"`) because that is what a
 /// WHERE has to say; a plot handle carries the name the mark was bound to
 /// (`observed by hour`). Comparing the two strings directly matched neither the
@@ -2038,14 +2091,37 @@ fn channel_slot<'a>(
     column: &str,
     held: &'a mut CommittedSelection,
 ) -> Option<&'a mut Option<Selected>> {
-    let name = crate::sql_ident::name_of(column);
-    if plot.x_column.as_deref() == Some(name.as_ref()) && held.x.is_none() {
+    let gesture = plot.gesture.as_ref();
+    let x_field = gesture.and_then(|g| g.x_field.as_ref());
+    if clause_names_axis(column, plot.x_column.as_deref(), x_field) && held.x.is_none() {
         return Some(&mut held.x);
     }
-    if plot.y_column.as_deref() == Some(name.as_ref()) && held.y.is_none() {
+    let y_field = gesture.and_then(|g| g.y_field.as_ref());
+    if clause_names_axis(column, plot.y_column.as_deref(), y_field) && held.y.is_none() {
         return Some(&mut held.y);
     }
     None
+}
+
+/// Whether a clause's `column` is what a plot draws on one axis, given the
+/// name the axis was bound to and the field the plot's own gesture sweeps there.
+///
+/// A binned expression is matched on the spelling its gesture writes,
+/// `("revenue" / 1e9)`, against the plot whose axis carries that expression's
+/// text — the name its bin is aliased to. A plot draws the clause it
+/// contributed ([`plot_selection`]), so the gesture that wrote such a clause is
+/// this plot's own; `a_sweep_over_a_binned_expression_filters_and_draws_its_band`
+/// draws one. Every other axis is matched on the column's name, as above.
+fn clause_names_axis(column: &str, drawn: Option<&str>, swept: Option<&ChannelField>) -> bool {
+    let Some(drawn) = drawn else {
+        return false;
+    };
+    match swept {
+        Some(field @ ChannelField::Expression(expr)) => {
+            expr == drawn && field.clause(crate::sql_ident::quote) == column
+        }
+        _ => crate::sql_ident::name_of(column) == drawn,
+    }
 }
 
 /// A bound's position in the units its scale reads — microseconds for the two
@@ -2863,10 +2939,10 @@ fn compose_from_results(
                     selection: b.selection.clone(),
                     contributor: b.parent_plot.clone(),
                     kind: b.kind,
-                    x_column: b.channels.x.clone(),
-                    y_column: b.channels.y.clone(),
+                    x_field: b.channels.x.clone(),
+                    y_field: b.channels.y.clone(),
                 });
-            let hover = hover_layer(&drawn, &marks, &channel_maps, &scales);
+            let hover = hover_layer(&drawn, &marks, &channel_maps, &scales, &tick_formats);
             plots.push(PlotHandle {
                 path: plot.path.clone(),
                 rect,
@@ -3175,6 +3251,9 @@ fn inert_axis_instructions(
     let grid_asked =
         |key: &str| literal_attribute(node, &spec.params, key).and_then(grid_switch) == Some(true);
     let mut out = Vec::new();
+    // A listed domain this plot's axis does not take, named once however many
+    // axes `xyDomain` landed it on, as the spec's own refusal is.
+    let mut unread_lists: Vec<(&str, &str)> = Vec::new();
     for (channel, zero, nice, ticks, format, grid, reversed) in [
         (
             Channel::X,
@@ -3195,6 +3274,24 @@ fn inert_axis_instructions(
             ("yReverse", reverse.y),
         ),
     ] {
+        // A list of categories orders a band and nothing else: on any other
+        // axis it is a domain that is not two numbers, and is named as one. An
+        // axis with no scale (a layer that drew no rows) has no kind to judge
+        // it against, and says nothing, as two numbers there do.
+        if let (DomainReading::Categories { key, value, .. }, Some(scale)) =
+            (written.axis(plot_axis(channel)), scales.get(channel))
+        {
+            let taken =
+                !projected && written_domain_applies(written.axis(plot_axis(channel)), scale);
+            if !taken && !unread_lists.contains(&(*key, value.as_str())) {
+                unread_lists.push((key, value));
+                out.push(ParseWarning::UnreadAxisEnds {
+                    attribute: (*key).to_string(),
+                    value: value.clone(),
+                    plot: plot.to_string(),
+                });
+            }
+        }
         if projected {
             for (key, set) in [zero, nice, ticks, format, grid, reversed] {
                 if set {
@@ -3213,9 +3310,10 @@ fn inert_axis_instructions(
             // is named as `xZero` is on the same axis. Where they do fix the
             // ends, `xZero` and `xNice` have no effect beside them.
             let ends_fixed = match written.axis(plot_axis(channel)) {
-                DomainReading::Ends { key, lo, hi } => {
-                    let applies = written_ends_apply(scale);
-                    if !applies {
+                reading @ DomainReading::Ends { key, lo, hi } => {
+                    // Two numbers on a band of numbers are its two categories,
+                    // which fix no ends for `xZero` or `xNice` to yield to.
+                    if !written_domain_applies(reading, scale) {
                         out.push(ParseWarning::AxisAttributeOnWrongAxis {
                             attribute: (*key).to_string(),
                             plot: plot.to_string(),
@@ -3224,6 +3322,7 @@ fn inert_axis_instructions(
                     }
                     // A log axis takes no ends through zero, which the draw leaves
                     // through the same judge: the axis runs over its rows.
+                    let applies = written_ends_apply(scale);
                     let refused = applies
                         && matches!(scale, brightfield_render::scale::Scale::Log { .. })
                         && brightfield_render::scale::log_ends_refused(*lo);
@@ -3236,7 +3335,9 @@ fn inert_axis_instructions(
                     }
                     applies && !refused
                 }
-                DomainReading::Absent | DomainReading::Refused { .. } => false,
+                DomainReading::Absent
+                | DomainReading::Refused { .. }
+                | DomainReading::Categories { .. } => false,
             };
             for (key, set, applies) in [
                 (zero.0, zero.1, axis_ends_apply(scale)),

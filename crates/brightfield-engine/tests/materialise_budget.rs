@@ -295,3 +295,109 @@ fn a_copy_that_fitted_leaves_the_session_able_to_spend_more_than_the_budget() {
          max_temp_directory_size reads {rendered}"
     );
 }
+
+/// The `(name, type)` of each column `relation` has, in order.
+fn described(session: &mut Session, relation: &str) -> Vec<(String, String)> {
+    use duckdb::arrow::array::StringArray;
+    let batches = session
+        .execute_uncached(&format!(
+            "SELECT column_name, column_type FROM (DESCRIBE \"{relation}\")"
+        ))
+        .expect("the relation describes");
+    let mut out = Vec::new();
+    for batch in &batches {
+        let text = |at: usize| {
+            batch
+                .column(at)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("DESCRIBE answers text")
+                .clone()
+        };
+        let (names, types) = (text(0), text(1));
+        for row in 0..batch.num_rows() {
+            out.push((names.value(row).to_string(), types.value(row).to_string()));
+        }
+    }
+    out
+}
+
+/// Five rows whose `s` is cast from text, with the text kept beside it as `raw_s`, and a
+/// trailing column after both.
+const CAST_NUMBERS: &str =
+    "data:\n  t:\n    query: \"SELECT i AS n, TRY_CAST(i::VARCHAR AS BIGINT) \
+     AS s, 'x' AS tail, i::VARCHAR AS raw_s FROM range(5) r(i)\"\n";
+
+/// **A materialised copy can be read with a cast put back**, the text in the cast column's place,
+/// and with columns derived beside it, without the copy being made again.
+#[test]
+fn a_materialised_copy_reshapes_without_a_second_copy() {
+    let mut live = session(CAST_NUMBERS);
+    live.materialise_source("t", GENEROUS).expect("the copy");
+    assert_eq!(
+        described(&mut live, "t"),
+        [
+            ("n".to_string(), "BIGINT".to_string()),
+            ("s".to_string(), "BIGINT".to_string()),
+            ("tail".to_string(), "VARCHAR".to_string()),
+            ("raw_s".to_string(), "VARCHAR".to_string()),
+        ]
+    );
+    assert_eq!(
+        count_of(&mut live, "SELECT sum(\"s\")::BIGINT FROM \"t\""),
+        10
+    );
+
+    live.reshape_copy(
+        "t",
+        &[("s".to_string(), "raw_s".to_string())],
+        &["\"n\" * 2 AS \"twice\"".to_string()],
+    )
+    .expect("the copy reshapes");
+    assert_eq!(
+        described(&mut live, "t"),
+        [
+            ("n".to_string(), "BIGINT".to_string()),
+            ("s".to_string(), "VARCHAR".to_string()),
+            ("tail".to_string(), "VARCHAR".to_string()),
+            ("twice".to_string(), "BIGINT".to_string()),
+        ]
+    );
+    assert_eq!(
+        count_of(&mut live, "SELECT sum(\"twice\")::BIGINT FROM \"t\""),
+        20
+    );
+    assert_eq!(
+        count_of(
+            &mut live,
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = 't__bf_materialised'"
+        ),
+        1,
+        "the copy is still the one table"
+    );
+}
+
+/// **The columns of a materialised copy profile as a source's do**, with the caller's own
+/// aggregates answered by the same statement.
+#[test]
+fn a_materialised_copy_profiles_some_columns_with_extra_terms() {
+    let mut live = session(CAST_NUMBERS);
+    live.materialise_source("t", GENEROUS).expect("the copy");
+    let (columns, extras) = live
+        .profile_columns_with(
+            "t",
+            &["s".to_string(), "missing".to_string()],
+            &["count(\"raw_s\")".to_string(), "NULL".to_string()],
+        )
+        .expect("the columns profile");
+    assert_eq!(columns.len(), 1, "a name the source lacks is left out");
+    let s = &columns[0];
+    assert_eq!((s.name.as_str(), s.type_name.as_str()), ("s", "BIGINT"));
+    assert_eq!(
+        (s.non_null, s.min.as_deref(), s.max.as_deref()),
+        (5, Some("0"), Some("4"))
+    );
+    let moments = s.moments.as_ref().expect("a numeric column has moments");
+    assert_eq!(moments.mean, 2.0);
+    assert_eq!(extras, [Some("5".to_string()), None]);
+}

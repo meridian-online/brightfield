@@ -1,0 +1,345 @@
+{
+ "labels": {
+  "datetime.component.year": {
+   "number": "d"
+  },
+  "datetime.date.abbrev_month_no_comma": {
+   "time": "%b %d %Y"
+  },
+  "datetime.date.abbreviated_month": {
+   "time": "%b %d, %Y"
+  },
+  "datetime.date.chinese_ymd": {
+   "time": "%Y年%-m月%-d日"
+  },
+  "datetime.date.compact_dmy": {
+   "time": "%Y-%m-%d"
+  },
+  "datetime.date.compact_mdy": {
+   "time": "%Y-%m-%d"
+  },
+  "datetime.date.compact_ym": {
+   "time": "%Y-%m"
+  },
+  "datetime.date.compact_ymd": {
+   "time": "%Y-%m-%d"
+  },
+  "datetime.date.dmy_dash": {
+   "time": "%d-%m-%Y"
+  },
+  "datetime.date.dmy_dash_abbrev": {
+   "time": "%d-%b-%Y"
+  },
+  "datetime.date.dmy_dash_abbrev_short": {
+   "time": "%d-%b-%y"
+  },
+  "datetime.date.dmy_dot": {
+   "time": "%d.%m.%Y"
+  },
+  "datetime.date.dmy_short_dot": {
+   "time": "%d.%m.%y"
+  },
+  "datetime.date.dmy_short_slash": {
+   "time": "%d/%m/%y"
+  },
+  "datetime.date.dmy_slash": {
+   "time": "%d/%m/%Y"
+  },
+  "datetime.date.dmy_space_abbrev": {
+   "time": "%d %b %Y"
+  },
+  "datetime.date.dmy_space_full": {
+   "time": "%d %B %Y"
+  },
+  "datetime.date.full_month_no_comma": {
+   "time": "%B %d %Y"
+  },
+  "datetime.date.iso": {
+   "time": "%Y-%m-%d"
+  },
+  "datetime.date.iso_week": {
+   "time": "%G-W%V"
+  },
+  "datetime.date.jp_era_long": {
+   "time": "%Y-%m-%d"
+  },
+  "datetime.date.jp_era_short": {
+   "time": "%Y-%m-%d"
+  },
+  "datetime.date.julian": {
+   "time": "%y-%j"
+  },
+  "datetime.date.korean_ymd": {
+   "time": "%Y년 %-m월 %-d일"
+  },
+  "datetime.date.long_full_month": {
+   "time": "%B %d, %Y"
+  },
+  "datetime.date.mdy_dash": {
+   "time": "%m-%d-%Y"
+  },
+  "datetime.date.mdy_short_slash": {
+   "time": "%m/%d/%y"
+  },
+  "datetime.date.mdy_slash": {
+   "time": "%m/%d/%Y"
+  },
+  "datetime.date.month_year_abbrev": {
+   "time": "%b %Y"
+  },
+  "datetime.date.month_year_full": {
+   "time": "%B %Y"
+  },
+  "datetime.date.month_year_slash": {
+   "time": "%m/%Y"
+  },
+  "datetime.date.ordinal": {
+   "time": "%Y-%j"
+  },
+  "datetime.date.short_dmy": {
+   "time": "%d-%m-%y"
+  },
+  "datetime.date.short_mdy": {
+   "time": "%m-%d-%y"
+  },
+  "datetime.date.short_ymd": {
+   "time": "%y-%m-%d"
+  },
+  "datetime.date.weekday_abbreviated_month": {
+   "time": "%A, %b %d, %Y"
+  },
+  "datetime.date.weekday_dmy_full": {
+   "time": "%A, %d %B %Y"
+  },
+  "datetime.date.weekday_full_month": {
+   "time": "%A, %B %d, %Y"
+  },
+  "datetime.date.year_month": {
+   "time": "%Y-%m"
+  },
+  "datetime.date.ymd_dot": {
+   "time": "%Y.%m.%d"
+  },
+  "datetime.date.ymd_slash": {
+   "time": "%Y/%m/%d"
+  },
+  "datetime.epoch.unix_microseconds": {
+   "time": "%Y-%m-%d %H:%M:%S"
+  },
+  "datetime.epoch.unix_milliseconds": {
+   "time": "%Y-%m-%d %H:%M:%S"
+  },
+  "datetime.epoch.unix_seconds": {
+   "time": "%Y-%m-%d %H:%M:%S"
+  },
+  "datetime.period.quarter": {
+   "time": "Q%q %Y"
+  },
+  "datetime.time.hm_12h": {
+   "time": "%I:%M %p"
+  },
+  "datetime.time.hm_24h": {
+   "time": "%H:%M"
+  },
+  "datetime.time.hms_12h": {
+   "time": "%I:%M:%S %p"
+  },
+  "datetime.time.hms_24h": {
+   "time": "%H:%M:%S"
+  },
+  "datetime.time.iso": {
+   "time": "%H:%M:%S.%f"
+  },
+  "datetime.timestamp.clf": {
+   "time": "%d/%b/%Y:%H:%M:%S %Z"
+  },
+  "datetime.timestamp.ctime": {
+   "time": "%a %b %-d %H:%M:%S %Y"
+  },
+  "datetime.timestamp.dmy_hm": {
+   "time": "%d/%m/%Y %H:%M"
+  },
+  "datetime.timestamp.dot_dmy_24h": {
+   "time": "%d.%m.%Y %H:%M:%S"
+  },
+  "datetime.timestamp.dot_ymd_24h": {
+   "time": "%Y.%m.%d %H:%M:%S"
+  },
+  "datetime.timestamp.epoch_nanoseconds": {
+   "time": "%Y-%m-%d %H:%M:%S"
+  },
+  "datetime.timestamp.iso_8601": {
+   "time": "%Y-%m-%dT%H:%M:%S%Z"
+  },
+  "datetime.timestamp.iso_8601_compact": {
+   "time": "%Y-%m-%dT%H:%M:%S"
+  },
+  "datetime.timestamp.iso_8601_micros_offset": {
+   "time": "%Y-%m-%dT%H:%M:%S.%f%Z"
+  },
+  "datetime.timestamp.iso_8601_microseconds": {
+   "time": "%Y-%m-%dT%H:%M:%S.%f%Z"
+  },
+  "datetime.timestamp.iso_8601_millis_offset": {
+   "time": "%Y-%m-%dT%H:%M:%S.%L%Z"
+  },
+  "datetime.timestamp.iso_8601_milliseconds": {
+   "time": "%Y-%m-%dT%H:%M:%S.%L%Z"
+  },
+  "datetime.timestamp.iso_8601_offset": {
+   "time": "%Y-%m-%dT%H:%M:%S%Z"
+  },
+  "datetime.timestamp.iso_microseconds": {
+   "time": "%Y-%m-%dT%H:%M:%S.%f"
+  },
+  "datetime.timestamp.iso_milliseconds": {
+   "time": "%Y-%m-%dT%H:%M:%S.%L"
+  },
+  "datetime.timestamp.iso_minutes": {
+   "time": "%Y-%m-%dT%H:%M"
+  },
+  "datetime.timestamp.iso_seconds": {
+   "time": "%Y-%m-%dT%H:%M:%S"
+  },
+  "datetime.timestamp.iso_space_zulu": {
+   "time": "%Y-%m-%d %H:%M:%S%Z"
+  },
+  "datetime.timestamp.mdy_12h": {
+   "time": "%m/%d/%Y %I:%M %p"
+  },
+  "datetime.timestamp.mdy_24h": {
+   "time": "%m/%d/%Y %H:%M:%S"
+  },
+  "datetime.timestamp.pg_short_offset": {
+   "time": "%Y-%m-%d %H:%M:%S.%f%Z"
+  },
+  "datetime.timestamp.rfc_2822": {
+   "time": "%a, %d %b %Y %H:%M:%S %Z"
+  },
+  "datetime.timestamp.rfc_2822_ordinal": {
+   "time": "%d %b %Y %H:%M:%S %Z"
+  },
+  "datetime.timestamp.rfc_3339": {
+   "time": "%Y-%m-%d %H:%M:%S%Z"
+  },
+  "datetime.timestamp.slash_ymd_24h": {
+   "time": "%Y/%m/%d %H:%M:%S"
+  },
+  "datetime.timestamp.sql_microseconds": {
+   "time": "%Y-%m-%d %H:%M:%S.%f"
+  },
+  "datetime.timestamp.sql_microseconds_offset": {
+   "time": "%Y-%m-%d %H:%M:%S.%f%Z"
+  },
+  "datetime.timestamp.sql_milliseconds": {
+   "time": "%Y-%m-%d %H:%M:%S.%L"
+  },
+  "datetime.timestamp.sql_minutes": {
+   "time": "%Y-%m-%d %H:%M"
+  },
+  "datetime.timestamp.sql_standard": {
+   "time": "%Y-%m-%d %H:%M:%S"
+  },
+  "finance.currency.amount": {
+   "money": true,
+   "number": ",.2f"
+  },
+  "finance.currency.amount_accounting": {
+   "money": true,
+   "number": "(,.2f"
+  },
+  "finance.currency.amount_apostrophe": {
+   "currency": "CHF",
+   "money": true,
+   "number": ",.2f"
+  },
+  "finance.currency.amount_code_prefix": {
+   "money": true,
+   "number": ",.2f"
+  },
+  "finance.currency.amount_comma": {
+   "money": true,
+   "number": ",.2f"
+  },
+  "finance.currency.amount_comma_suffix": {
+   "money": true,
+   "number": ",.2f"
+  },
+  "finance.currency.amount_crypto": {
+   "money": true,
+   "number": ",.8~f"
+  },
+  "finance.currency.amount_lakh": {
+   "currency": "INR",
+   "money": true,
+   "number": ",.2f"
+  },
+  "finance.currency.amount_multisym": {
+   "money": true,
+   "number": ",.2f"
+  },
+  "finance.currency.amount_neg_trailing": {
+   "money": true,
+   "number": ",.2f"
+  },
+  "finance.currency.amount_nodecimal": {
+   "money": true,
+   "number": ",d"
+  },
+  "finance.currency.amount_space": {
+   "money": true,
+   "number": ",.2f"
+  },
+  "finance.rate.basis_points": {
+   "fraction": true,
+   "number": "~%"
+  },
+  "finance.rate.yield": {
+   "fraction": true,
+   "number": "~%"
+  },
+  "geography.coordinate.latitude": {
+   "number": "~f"
+  },
+  "geography.coordinate.longitude": {
+   "number": "~f"
+  },
+  "identity.person.height": {
+   "number": ",~f"
+  },
+  "identity.person.weight": {
+   "number": ",~f"
+  },
+  "representation.file.file_size": {
+   "bytes": true,
+   "number": ",d"
+  },
+  "representation.identifier.increment": {
+   "number": "d"
+  },
+  "representation.numeric.decimal_number": {
+   "number": ","
+  },
+  "representation.numeric.decimal_number_comma": {
+   "number": ","
+  },
+  "representation.numeric.integer_number": {
+   "number": ",d"
+  },
+  "representation.numeric.percentage": {
+   "fraction": true,
+   "number": "~%"
+  },
+  "representation.numeric.scientific_notation": {
+   "number": "~e"
+  },
+  "representation.numeric.si_number": {
+   "number": "~s"
+  },
+  "technology.identifier.snowflake_id": {
+   "time": "%Y-%m-%d %H:%M:%S.%L"
+  }
+ },
+ "source": "https://github.com/meridian-online/finetype/blob/<tag>/labels/definitions_*.yaml",
+ "tag": "v0.6.67"
+}

@@ -63,7 +63,9 @@ use brightfield_spec::ast::{
     Component, Mark, MarkData, PlotNode, Spec, SpecValue, ValueOrParamRef,
 };
 use brightfield_spec::edit::{self, plot_at_path, ChartEdit, RefuseReason};
-use brightfield_spec::layout::{resolve_colour_scale_diverging, PlotAxis};
+use brightfield_spec::layout::{
+    literal_attribute, resolve_colour_scale_diverging, DomainReading, PlotAxis,
+};
 
 use crate::chart_kinds::{type_base, POINT_MAP_PROJECTION};
 use crate::dashboard::coordinate_pair;
@@ -122,6 +124,9 @@ impl std::error::Error for ShelfRefusal {}
 /// A column that is already where it is put yields no edits and leaves the
 /// spec equal.
 ///
+/// This is [`put_column_over`] with an empty [`RuleWritten`] for the column
+/// the axis held, so the axis's format and title stay as they are.
+///
 /// # Errors
 ///
 /// [`ShelfRefusal::NoSuchColumn`] when the table has no `column`, and
@@ -133,6 +138,46 @@ pub fn put_column(
     axis: PlotAxis,
     column: &str,
     table: &[ColumnProfile],
+) -> Result<Vec<ChartEdit>, ShelfRefusal> {
+    put_column_over(spec, plot, axis, column, table, &RuleWritten::default())
+}
+
+/// What a generated tile writes on an axis for the column it draws there, from
+/// the column's type: the rule's tick format, and the titles it names the axis
+/// by. A column put on the axis in its place takes out a key that still holds
+/// one of them, because a format or a unit chosen for the old column describes
+/// the new one falsely: `downloads` under `$,~f` would read `$1,200`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuleWritten {
+    /// The rule's tick format for the old column, as the tile writes it.
+    pub tick_format: Option<String>,
+    /// The titles the tile names the old column's axis by: its name, and its
+    /// name with its unit, `revenue (£bn)`.
+    pub titles: Vec<String>,
+}
+
+/// **[`put_column`], taking out what the rule wrote for the old column.**
+///
+/// After the edits [`put_column`] lists, and in the same list so one `u` takes
+/// them back together
+/// (`a_column_put_on_the_scaled_tile_drops_the_unit_and_one_undo_puts_everything_back`),
+/// the axis's tick format (`xTickFormat` / `yTickFormat`)
+/// comes out when it equals `old.tick_format`, and its title (`xLabel` /
+/// `yLabel`) when it equals one of `old.titles`. A format or title that differs
+/// from those is the analyst's and stays
+/// (`a_format_the_analyst_typed_stays_when_the_column_changes`). A column
+/// already where it is put yields no edits.
+///
+/// # Errors
+///
+/// As [`put_column`]'s.
+pub fn put_column_over(
+    spec: &mut Spec,
+    plot: &ComponentPath,
+    axis: PlotAxis,
+    column: &str,
+    table: &[ColumnProfile],
+    old: &RuleWritten,
 ) -> Result<Vec<ChartEdit>, ShelfRefusal> {
     if !table.iter().any(|c| c.name == column) {
         return Err(ShelfRefusal::NoSuchColumn(column.to_string()));
@@ -198,8 +243,60 @@ pub fn put_column(
 
     if changed {
         edits.extend(put_range_to_auto(&mut edited, plot, axis)?);
+        edits.extend(take_out_rule_written(&mut edited, plot, axis, old)?);
     }
     *spec = edited;
+    Ok(edits)
+}
+
+/// The plot attribute an axis's tick format is written under, as Mosaic spells
+/// it.
+fn tick_format_key(axis: PlotAxis) -> &'static str {
+    match axis {
+        PlotAxis::X => "xTickFormat",
+        PlotAxis::Y => "yTickFormat",
+    }
+}
+
+/// The plot attribute an axis's title is written under, as Mosaic spells it.
+fn title_key(axis: PlotAxis) -> &'static str {
+    match axis {
+        PlotAxis::X => "xLabel",
+        PlotAxis::Y => "yLabel",
+    }
+}
+
+/// Take `axis`'s tick format and title out of the plot at `plot` where each
+/// still holds what `old` says the rule wrote, and return the edits applied.
+fn take_out_rule_written(
+    spec: &mut Spec,
+    plot: &ComponentPath,
+    axis: PlotAxis,
+    old: &RuleWritten,
+) -> Result<Vec<ChartEdit>, ShelfRefusal> {
+    let target =
+        plot_at_path(spec, &plot.0).ok_or(ShelfRefusal::Edit(RefuseReason::PlotNotFound))?;
+    let holds = |key: &str, written: &dyn Fn(&str) -> bool| matches!(target.attributes.get(key), Some(SpecValue::String(text)) if written(text));
+    let mut keys = Vec::new();
+    if holds(tick_format_key(axis), &|text| {
+        old.tick_format.as_deref() == Some(text)
+    }) {
+        keys.push(tick_format_key(axis));
+    }
+    if holds(title_key(axis), &|text| {
+        old.titles.iter().any(|t| t == text)
+    }) {
+        keys.push(title_key(axis));
+    }
+    let mut edits = Vec::new();
+    for key in keys {
+        let e = ChartEdit::RemovePlotAttribute {
+            plot: plot.clone(),
+            key: key.to_string(),
+        };
+        edit::apply_for_fresh_load(spec, &e).map_err(ShelfRefusal::Edit)?;
+        edits.push(e);
+    }
     Ok(edits)
 }
 
@@ -225,10 +322,14 @@ pub fn number_value(n: f64) -> SpecValue {
 }
 
 /// **Put the range of `axis` of the plot at `plot` back to auto**, editing `spec`
-/// in place, and return the edits applied: none where the file sets no two ends
-/// for the axis.
+/// in place, and return the edits applied: none where the file sets neither two
+/// ends nor a list of categories for the axis.
 ///
-/// The axis's own key comes out. A pair held under `xyDomain` stands for both
+/// A listed domain is a range as two ends are: a band pins its categories to the
+/// list, so a year tile's run of years left on an axis that now holds another
+/// column would match none of its values and draw no bar.
+///
+/// The axis's own key comes out. A domain held under `xyDomain` stands for both
 /// axes, so it is handed to the other axis under that axis's own key, unless the
 /// other axis holds one, and then taken out.
 ///
@@ -244,12 +345,22 @@ pub fn put_range_to_auto(
     let target =
         plot_at_path(spec, &plot.0).ok_or(ShelfRefusal::Edit(RefuseReason::PlotNotFound))?;
     let readings = brightfield_spec::layout::read_domains_in(target, &spec.params);
-    let brightfield_spec::layout::DomainReading::Ends { key, lo, hi } = readings.axis(axis) else {
-        return Ok(Vec::new());
+    let (key, handed) = match readings.axis(axis) {
+        DomainReading::Ends { key, lo, hi } => (
+            *key,
+            SpecValue::Array(vec![number_value(*lo), number_value(*hi)]),
+        ),
+        DomainReading::Categories { key, .. } => (
+            *key,
+            literal_attribute(target, &spec.params, key)
+                .cloned()
+                .unwrap_or(SpecValue::Null),
+        ),
+        _ => return Ok(Vec::new()),
     };
     let mut edited = spec.clone();
     let mut edits = Vec::new();
-    if *key == "xyDomain" {
+    if key == "xyDomain" {
         let other = match axis {
             PlotAxis::X => PlotAxis::Y,
             PlotAxis::Y => PlotAxis::X,
@@ -259,7 +370,7 @@ pub fn put_range_to_auto(
             shared.push(ChartEdit::SetPlotAttribute {
                 plot: plot.clone(),
                 key: range_key(other).to_string(),
-                value: SpecValue::Array(vec![number_value(*lo), number_value(*hi)]),
+                value: handed,
             });
         }
         shared.push(ChartEdit::RemovePlotAttribute {

@@ -405,3 +405,23 @@ fn a_plot_defaults_date_format_reaches_the_plot() {
     assert_eq!(painted_x(&composed), strs(&["Mar", "Apr", "May"]));
     assert!(said(&composed).is_empty(), "{:?}", said(&composed));
 }
+
+// ---------------------------------------------------------------------------
+// Number axes keep a year whole
+// ---------------------------------------------------------------------------
+
+/// A number axis with no format groups thousands, so a committed chart that puts
+/// a year on one names `d`: `examples/line-y.yaml` still reads `2018` to `2022`.
+#[test]
+fn committed_year_axes_stay_ungrouped() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/line-y.yaml");
+    let spec = std::fs::read_to_string(path).expect("the example is committed");
+    let composed = LiveDashboard::load_str(&spec, None)
+        .expect("the example loads")
+        .present()
+        .expect("the example composes");
+    assert_eq!(
+        painted_x(&composed),
+        strs(&["2018", "2019", "2020", "2021", "2022"])
+    );
+}

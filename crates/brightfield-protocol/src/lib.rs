@@ -35,6 +35,7 @@ pub mod collapse;
 pub mod contract;
 pub mod contract_graph;
 pub mod cte;
+pub mod display;
 pub mod error;
 pub mod graph;
 pub mod layout;

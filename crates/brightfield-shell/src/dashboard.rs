@@ -97,15 +97,21 @@
 //! `every_kind_one_column_can_fill_has_a_tile_form` is what stops a kind added
 //! later from being silently skipped.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use brightfield_engine::{ColumnProfile, SemanticType};
+use brightfield_protocol::display::FinetypeDisplays;
+use brightfield_protocol::silver::FinetypeTransforms;
 use brightfield_workbench::registry::{ChartKind, ChartKindId, Field, FieldType};
 
 use crate::chart_kinds;
-use crate::data_file::{file_label, source_spec_deriving, SOURCE};
+use crate::column_record::FieldRecord;
+use crate::data_file::{file_label, SOURCE};
 use crate::ranked_bars::RankedCategoryBars;
+use crate::representation::{representation_of, Representation, Scale};
 use crate::resample::{self, Step};
 
 /// One tile's width in logical points.
@@ -278,6 +284,16 @@ pub fn row_stack_extent(offered: f32, tiles: usize) -> f32 {
 /// window puts on screen as a *"had no effect"* banner over the picture — so
 /// the declaration is not decoration.
 pub const SELECTION: &str = "sel";
+
+/// The label whose column draws as counts per year in time order, whatever the category ceiling
+/// says: a year is a member of an ordered set, and ranking the busiest ten loses the series.
+pub const YEAR_LABEL: &str = "datetime.component.year";
+
+/// The longest run of years, first to last, a year tile writes as its x domain. A longer run is
+/// left to the data: at a column tile's width, 120 slots is about the narrowest a year's bar can
+/// be and still be seen, and a run past it is a series where a missing year is a gap too thin to
+/// read.
+pub const YEAR_RUN_CEILING: i64 = 120;
 
 // ---------------------------------------------------------------------------
 // What a column is for
@@ -549,6 +565,19 @@ pub struct Dashboard {
     path: std::path::PathBuf,
     tiles: Vec<Tile>,
     omitted: Vec<Omitted>,
+    /// The columns the source casts as it reads the file, each with the SQL
+    /// that casts it — see [`crate::flat_cast`]. Empty for a file read as it
+    /// is.
+    casts: Vec<(String, String)>,
+    /// The profiled columns the tiles were chosen from: the range each one's representation is
+    /// decided from. On a cast open these are the cast copy's profiles.
+    columns: Vec<ColumnProfile>,
+    /// The column record's fields, column name to field: the currency symbol a column was
+    /// written with, and an analyst's preferred format. Empty for a source with no record.
+    records: BTreeMap<String, FieldRecord>,
+    /// The file's columns were cast from their labels before it was opened, as a Protocol's grid
+    /// copy is: a column whose label FineType's projection casts holds the cast values.
+    cast_before_open: bool,
 }
 
 impl Dashboard {
@@ -602,7 +631,138 @@ impl Dashboard {
             path: path.to_path_buf(),
             tiles,
             omitted,
+            casts: Vec::new(),
+            columns: columns.to_vec(),
+            records: BTreeMap::new(),
+            cast_before_open: false,
         }
+    }
+
+    /// This dashboard with the column record's `fields`, and whether the file's columns were
+    /// `cast_before_open` (a Protocol's grid copy), so each tile is shown as the record and the
+    /// cast say.
+    #[must_use]
+    pub(crate) fn with_records(
+        mut self,
+        fields: BTreeMap<String, FieldRecord>,
+        cast_before_open: bool,
+    ) -> Self {
+        self.records = fields;
+        self.cast_before_open = cast_before_open;
+        self
+    }
+
+    /// How `column`'s values are shown, from FineType's display block for its trusted label, its
+    /// profile, its record and whether its label's cast ran on it. A column this dashboard was
+    /// not given gets [`Representation::default`].
+    ///
+    /// The cast ran on a column the source casts as it reads the file, and, on a file cast
+    /// before it was opened, on each column whose label FineType's projection casts.
+    #[must_use]
+    pub fn representation(&self, column: &str) -> Representation {
+        self.representation_from(column, self.records.get(column))
+    }
+
+    /// [`Self::representation`] with `record` in place of the column's own record.
+    fn representation_from(&self, column: &str, record: Option<&FieldRecord>) -> Representation {
+        let Some(profile) = self.columns.iter().find(|c| c.name == column) else {
+            return Representation::default();
+        };
+        let label = trusted_label(&profile.semantic);
+        let cast = self.casts.iter().any(|(c, _)| c == column)
+            || (self.cast_before_open
+                && brightfield_protocol::silver::cast_expr(column, label, vendored_transforms())
+                    .is_some());
+        representation_of(
+            profile,
+            label.and_then(|l| vendored_displays().get(l)),
+            record,
+            cast,
+        )
+    }
+
+    /// Whether `column`'s recorded preference changed how it is shown: a preference the rule
+    /// passed over (one that does not parse, or a date format on a number column) is not used
+    /// (`a_preference_is_credited_only_when_it_is_used`).
+    fn preference_used(&self, column: &str) -> bool {
+        let Some(record) = self.records.get(column) else {
+            return false;
+        };
+        let without = FieldRecord {
+            prefer: crate::column_record::Prefer::default(),
+            ..record.clone()
+        };
+        self.representation_from(column, Some(record))
+            != self.representation_from(column, Some(&without))
+    }
+
+    /// What `tile` writes of how its column's values are shown: the rule's tick format on the
+    /// column's axis, the axis title with its unit, a scaled bin, a year run's domain, and the
+    /// gridlines Brightfield draws.
+    fn look_of(&self, tile: &Tile) -> Look {
+        if tile.kind == chart_kinds::POINT_MAP {
+            // A map's x and y are a projection's, which takes no axis keys.
+            return Look::default();
+        }
+        let mut shown = self.representation(tile.column());
+        // A resampled column is drawn through its bucket, which its label's format does not
+        // describe.
+        if tile.resampled.is_some() {
+            shown.tick_format = None;
+        }
+        let profile = self.columns.iter().find(|c| c.name == tile.column);
+        let year =
+            matches!(tile.chosen_by(), ChosenBy::Meaning { label, .. } if label == YEAR_LABEL);
+        Look {
+            tick_format: shown.tick_format.clone(),
+            scale: shown.scale,
+            title: shown
+                .title_unit
+                .as_ref()
+                .map(|unit| format!("{} ({unit})", tile.column)),
+            domain: if year {
+                profile.and_then(year_run)
+            } else {
+                None
+            },
+            grid: true,
+            chosen: self.format_chosen_by(tile, &shown),
+        }
+    }
+
+    /// What chose `tile`'s format, for its comment: the analyst's recorded preference, or the
+    /// label whose display block it came from, with the scale its values are divided by. `None`
+    /// for a tile written with no format.
+    fn format_chosen_by(&self, tile: &Tile, shown: &Representation) -> Option<String> {
+        if shown.tick_format.is_none() && shown.scale.is_none() {
+            return None;
+        }
+        let by = if self.preference_used(tile.column()) {
+            "its recorded preference chose its format".to_string()
+        } else {
+            let profile = self.columns.iter().find(|c| c.name == tile.column)?;
+            format!("{} chose its format", trusted_label(&profile.semantic)?)
+        };
+        Some(match shown.scale {
+            Some(scale) => format!("{by}, and its scale ({})", scale.unit),
+            None => by,
+        })
+    }
+
+    /// This dashboard over a source that casts `casts` — each a column and
+    /// the SQL that casts it — as it reads the file, so the spec declares the
+    /// cast and any session loaded from it reads the columns as cast.
+    #[must_use]
+    pub(crate) fn with_casts(mut self, casts: Vec<(String, String)>) -> Self {
+        self.casts = casts;
+        self
+    }
+
+    /// The columns the source casts as it reads the file, each with the SQL that casts it: the
+    /// casts that stood on open. Empty for a file read as it is.
+    #[must_use]
+    pub(crate) fn casts(&self) -> &[(String, String)] {
+        &self.casts
     }
 
     /// The tiles, in the table's own column order.
@@ -736,14 +896,19 @@ impl Dashboard {
         let _ = writeln!(out, "  title: {}", yaml_string(&file_label(&self.path)));
         let _ = writeln!(out, "params:");
         let _ = writeln!(out, "  {SELECTION}: {{ select: crossfilter }}");
-        out.push_str(&source_spec_deriving(&self.path, &self.derived_columns()));
+        out.push_str(&crate::flat_cast::source_spec_casting(
+            &self.path,
+            &self.casts,
+            &self.derived_columns(),
+        ));
         let Some(hero) = self.hero_index() else {
             let _ = writeln!(out, "vconcat:");
             for row in self.tiles.chunks(TILES_PER_ROW) {
                 let _ = writeln!(out, "  - hconcat:");
                 for tile in row {
-                    let _ = writeln!(out, "    # {}", tile_comment(tile));
-                    out.push_str(&tile_yaml(tile, 4, TILE_WIDTH, TILE_HEIGHT));
+                    let look = self.look_of(tile);
+                    let _ = writeln!(out, "    # {}", tile_comment(tile, &look));
+                    out.push_str(&tile_yaml(tile, &look, 4, TILE_WIDTH, TILE_HEIGHT));
                 }
             }
             return out;
@@ -753,16 +918,30 @@ impl Dashboard {
         // `hconcat` offers each flexing item its whole height and the page is
         // as tall as the *column* needs — see `HERO_BOUND`.
         let _ = writeln!(out, "  - vconcat:");
-        let _ = writeln!(out, "    # {}", tile_comment(&self.tiles[hero]));
-        out.push_str(&tile_yaml(&self.tiles[hero], 4, HERO_WIDTH, HERO_HEIGHT));
+        let look = self.look_of(&self.tiles[hero]);
+        let _ = writeln!(out, "    # {}", tile_comment(&self.tiles[hero], &look));
+        out.push_str(&tile_yaml(
+            &self.tiles[hero],
+            &look,
+            4,
+            HERO_WIDTH,
+            HERO_HEIGHT,
+        ));
         let _ = writeln!(out, "    - vspace: {HERO_BOUND}");
         // The gutter the two panes' own frames take out of the page between
         // them. See `HERO_GUTTER`.
         let _ = writeln!(out, "  - hspace: {HERO_GUTTER}");
         let _ = writeln!(out, "  - vconcat:");
         for tile in self.column_tiles() {
-            let _ = writeln!(out, "    # {}", tile_comment(tile));
-            out.push_str(&tile_yaml(tile, 4, COLUMN_TILE_WIDTH, COLUMN_TILE_HEIGHT));
+            let look = self.look_of(tile);
+            let _ = writeln!(out, "    # {}", tile_comment(tile, &look));
+            out.push_str(&tile_yaml(
+                tile,
+                &look,
+                4,
+                COLUMN_TILE_WIDTH,
+                COLUMN_TILE_HEIGHT,
+            ));
         }
         out
     }
@@ -773,7 +952,7 @@ impl Dashboard {
     /// Empty for a dashboard whose columns all draw as they stand, which is
     /// what keeps the data block a single `file:` entry for a table carrying no
     /// timestamp.
-    fn derived_columns(&self) -> Vec<String> {
+    pub(crate) fn derived_columns(&self) -> Vec<String> {
         self.tiles
             .iter()
             .filter_map(|tile| {
@@ -846,6 +1025,7 @@ fn tile_for(column: &ColumnProfile, taken: &[String]) -> Result<Tile, Omission> 
                 label: label.to_string(),
             })
         }
+        Some((label, role)) if label == YEAR_LABEL => return year_tile_for(column, role),
         Some((label, role)) => (
             offered(field_as(column, role)).ok_or(Omission::NoPicture)?,
             ChosenBy::Meaning {
@@ -874,6 +1054,75 @@ fn tile_for(column: &ColumnProfile, taken: &[String]) -> Result<Tile, Omission> 
         resampled: bucket.map(|(_, step)| step),
         paired: None,
     })
+}
+
+/// The tile a year column gets: its rows counted per year, in time order, by
+/// [`chart_kinds::COUNTS_OVER_TIME`], whatever the category ceiling says. A year
+/// ranked by count is the ten busiest years, each bar true and the series gone.
+///
+/// The year's band is laid out in value order, so the tile writes no `sort:`;
+/// [`Dashboard::look_of`] gives it the run of years as its domain.
+fn year_tile_for(column: &ColumnProfile, role: ColumnRole) -> Result<Tile, Omission> {
+    if !chart_kinds::nameable(&column.name) {
+        return Err(Omission::NoPicture);
+    }
+    let field = Field::new(&column.name, FieldType::Temporal);
+    let kind = chart_kinds::find(chart_kinds::COUNTS_OVER_TIME).ok_or(Omission::NoPicture)?;
+    let block = kind
+        .bind(std::slice::from_ref(&field))
+        .ok()
+        .and_then(|b| kind.spec(&b, &kind.options()).ok())
+        .ok_or(Omission::NoPicture)?;
+    Ok(Tile {
+        kind: kind.id,
+        column: column.name.clone(),
+        field,
+        block,
+        chosen_by: ChosenBy::Meaning {
+            label: YEAR_LABEL.to_string(),
+            role,
+        },
+        resampled: None,
+        paired: None,
+    })
+}
+
+/// The run of whole years from `column`'s profiled minimum to its maximum, when it is no longer
+/// than [`YEAR_RUN_CEILING`]: the x domain that keeps a year with no rows as an empty slot.
+/// `None` for a longer run, which is left to the data, or for a column whose ends are not years.
+fn year_run(column: &ColumnProfile) -> Option<Vec<i64>> {
+    // A year stored as text draws a band of words, which another Mosaic tool matches against a
+    // listed domain by value: the number 2001 is not the word "2001", and every bar would go.
+    if !crate::flat_cast::is_number_type(&column.type_name) {
+        return None;
+    }
+    let end = |text: &Option<String>| -> Option<i64> {
+        let value: f64 = text.as_deref()?.trim().parse().ok()?;
+        (value.fract() == 0.0 && value.abs() < 1e6).then_some(value as i64)
+    };
+    let (first, last) = (end(&column.min)?, end(&column.max)?);
+    (first < last && last - first < YEAR_RUN_CEILING).then(|| (first..=last).collect())
+}
+
+/// FineType's display blocks, read once.
+fn vendored_displays() -> &'static FinetypeDisplays {
+    static DISPLAYS: OnceLock<FinetypeDisplays> = OnceLock::new();
+    DISPLAYS.get_or_init(FinetypeDisplays::vendored)
+}
+
+/// FineType's transforms, read once.
+fn vendored_transforms() -> &'static FinetypeTransforms {
+    static TRANSFORMS: OnceLock<FinetypeTransforms> = OnceLock::new();
+    TRANSFORMS.get_or_init(FinetypeTransforms::vendored)
+}
+
+/// The label `semantic` carries when it is trusted: [`role_of`]'s rule, so a label whose values
+/// contradict it chooses no format, as it chooses no tile.
+fn trusted_label(semantic: &SemanticType) -> Option<&str> {
+    match semantic {
+        SemanticType::Labelled { label, .. } => Some(label),
+        _ => None,
+    }
 }
 
 /// The columns [`Dashboard::of`] draws as one [`chart_kinds::POINT_MAP`] tile
@@ -1168,17 +1417,30 @@ enum TileForm {
 /// reads the two apart is `a_timestamp_past_the_grid_ceiling_gets_a_tile`, and
 /// `the_dates_tile_counts_in_time_order_and_drops_no_date` is the date beside
 /// it, whose mark names the file's own column.
-fn tile_yaml(tile: &Tile, indent: usize, width: u32, height: u32) -> String {
+fn tile_yaml(tile: &Tile, look: &Look, indent: usize, width: u32, height: u32) -> String {
     match tile_form(tile.kind) {
         Some(TileForm::Histogram) => {
-            histogram_tile_sized(tile.drawn_column(), indent, width, height)
+            histogram_tile_framed(tile.drawn_column(), look, indent, width, height)
         }
         Some(TileForm::TimeBars) => {
-            time_bars_tile_sized(tile.drawn_column(), indent, width, height)
+            time_bars_tile_framed(tile.drawn_column(), look, indent, width, height)
         }
-        Some(TileForm::RankedBars) => RankedCategoryBars::new(tile.drawn_column())
-            .with_size(width, height)
-            .plot_yaml(SOURCE, SELECTION, indent),
+        Some(TileForm::RankedBars) => {
+            let mut out = RankedCategoryBars::new(tile.drawn_column())
+                .with_size(width, height)
+                .plot_yaml(SOURCE, SELECTION, indent);
+            // The category's title, with its unit when the rule gives one.
+            let pad = " ".repeat(indent + 2);
+            let bare = yaml_string(tile.drawn_column());
+            out = out.replacen(
+                &format!("{pad}yLabel: {bare}\n"),
+                &format!("{pad}yLabel: {}\n", look.title_or(&bare)),
+                1,
+            );
+            // The category runs along y, so its format is y's; the count's axis writes none.
+            out.push_str(&look.axis_lines(&" ".repeat(indent + 2), "y"));
+            out
+        }
         Some(TileForm::PointMap) => chart_kinds::point_map_tile_sized(
             tile.drawn_column(),
             tile.paired_column().unwrap_or_default(),
@@ -1192,6 +1454,76 @@ fn tile_yaml(tile: &Tile, indent: usize, width: u32, height: u32) -> String {
         // half-written plot is the answer that cannot produce a spec which
         // parses and draws something else.
         None => String::new(),
+    }
+}
+
+/// What a generated tile writes of how its column's values are shown, from
+/// [`Dashboard::look_of`]. The default writes nothing, which is how the tile forms
+/// a chart kind builds stay as they were.
+#[derive(Clone, Debug, Default)]
+struct Look {
+    /// The rule's tick format, on the axis the column is drawn on.
+    tick_format: Option<String>,
+    /// The divisor the column's bin applies, so the bins and ticks are in the unit the title
+    /// names.
+    scale: Option<Scale>,
+    /// The axis title with its unit: `revenue (£bn)`.
+    title: Option<String>,
+    /// The run of years a year tile lists as its x domain.
+    domain: Option<Vec<i64>>,
+    /// Write `xGrid` and `yGrid` as Brightfield draws them, since Observable Plot draws no
+    /// gridlines by default.
+    grid: bool,
+    /// What chose the format, for the tile's comment.
+    chosen: Option<String>,
+}
+
+impl Look {
+    /// The column's axis's title, quoted, or the column's own name when the rule gives no unit.
+    fn title_or(&self, quoted_column: &str) -> String {
+        self.title
+            .as_deref()
+            .map_or_else(|| quoted_column.to_string(), yaml_string)
+    }
+
+    /// The plot attributes for the column's axis (`axis` is `x` or `y`) and the gridlines, each
+    /// at `pad`, the plot's own attribute indent.
+    fn axis_lines(&self, pad: &str, axis: &str) -> String {
+        let mut out = String::new();
+        if let Some(format) = &self.tick_format {
+            let _ = writeln!(out, "{pad}{axis}TickFormat: {}", yaml_string(format));
+        }
+        if self.grid {
+            let _ = writeln!(out, "{pad}xGrid: true");
+            let _ = writeln!(out, "{pad}yGrid: true");
+        }
+        out
+    }
+
+    /// What the column's bin reads: the column itself, quoted, or for a scaled column an
+    /// expression dividing it, in the `{ sql: … }` form Mosaic's `bin` takes.
+    fn bin_operand(&self, column: &str) -> String {
+        match self.scale {
+            None => yaml_string(column),
+            Some(scale) => {
+                let sql = format!(
+                    "\"{}\" / {}",
+                    column.replace('"', "\"\""),
+                    divisor_text(scale.divisor)
+                );
+                format!("{{ sql: '{}' }}", sql.replace('\'', "''"))
+            }
+        }
+    }
+}
+
+/// A divisor as the bin's SQL writes it: `1e9` for a power of ten, the whole number otherwise.
+fn divisor_text(divisor: f64) -> String {
+    let exponent = divisor.log10().round();
+    if (10f64.powf(exponent) - divisor).abs() < 0.5 {
+        format!("1e{exponent}")
+    } else {
+        format!("{divisor:.0}")
     }
 }
 
@@ -1209,6 +1541,31 @@ fn tile_yaml(tile: &Tile, indent: usize, width: u32, height: u32) -> String {
 /// longer keeps its own copy of the same step, and [`histogram_tile`]'s
 /// header says how the two routes reach it.
 const GHOST_INK: meridian_design::colour::Rgba = meridian_design::scales::GRAY_LIGHT[7];
+
+/// [`histogram_tile_sized`] written as `look` says: the bin over the scaled
+/// expression, the title with its unit, the tick format and the gridlines.
+fn histogram_tile_framed(
+    column: &str,
+    look: &Look,
+    indent: usize,
+    width: u32,
+    height: u32,
+) -> String {
+    let pad = " ".repeat(indent);
+    let title = look.title_or(&yaml_string(column));
+    let mut out = String::new();
+    let _ = writeln!(out, "{pad}- plot:");
+    out.push_str(&ghosted_histogram_body(
+        &format!("{pad}  "),
+        &yaml_string(SOURCE),
+        &look.bin_operand(column),
+        Some((width, height)),
+        true,
+        Some(&title),
+    ));
+    out.push_str(&look.axis_lines(&format!("{pad}  "), "x"));
+    out
+}
 
 /// A measure's distribution, brushable, with **the unfiltered total kept behind
 /// the filtered subset**.
@@ -1235,20 +1592,7 @@ pub fn histogram_tile(column: &str, indent: usize) -> String {
 /// shares its box out by. See [`HERO_WIDTH`].
 #[must_use]
 pub fn histogram_tile_sized(column: &str, indent: usize, width: u32, height: u32) -> String {
-    let pad = " ".repeat(indent);
-    let col = yaml_string(column);
-    let table = yaml_string(SOURCE);
-    let mut out = String::new();
-    let _ = writeln!(out, "{pad}- plot:");
-    out.push_str(&ghosted_histogram_body(
-        &format!("{pad}  "),
-        &table,
-        &col,
-        Some((width, height)),
-        true,
-        Some(&col),
-    ));
-    out
+    histogram_tile_framed(column, &Look::default(), indent, width, height)
 }
 
 /// The ghosted two-layer histogram body: the two `rectY` layers over one table
@@ -1363,6 +1707,19 @@ pub fn time_bars_tile(column: &str, indent: usize) -> String {
 /// [`time_bars_tile`] at a declared size. See [`histogram_tile_sized`].
 #[must_use]
 pub fn time_bars_tile_sized(column: &str, indent: usize, width: u32, height: u32) -> String {
+    time_bars_tile_framed(column, &Look::default(), indent, width, height)
+}
+
+/// [`time_bars_tile_sized`] written as `look` says: the title with its unit, the
+/// tick format, a year run's domain and the gridlines. The count's axis writes no
+/// format: Plot's default already groups thousands, as Brightfield's does.
+fn time_bars_tile_framed(
+    column: &str,
+    look: &Look,
+    indent: usize,
+    width: u32,
+    height: u32,
+) -> String {
     let pad = " ".repeat(indent);
     let col = yaml_string(column);
     let table = yaml_string(SOURCE);
@@ -1381,9 +1738,14 @@ pub fn time_bars_tile_sized(column: &str, indent: usize, width: u32, height: u32
     // Plot attributes are siblings of `plot:`, so they sit at its indent — one
     // level deeper and they read as more options on the last interactor, which
     // is a spec that parses and does something else.
-    let _ = writeln!(out, "{pad}  xLabel: {col}");
+    let _ = writeln!(out, "{pad}  xLabel: {}", look.title_or(&col));
     let _ = writeln!(out, "{pad}  width: {width}");
     let _ = writeln!(out, "{pad}  height: {height}");
+    if let Some(years) = &look.domain {
+        let listed: Vec<String> = years.iter().map(i64::to_string).collect();
+        let _ = writeln!(out, "{pad}  xDomain: [{}]", listed.join(", "));
+    }
+    out.push_str(&look.axis_lines(&format!("{pad}  "), "x"));
     out
 }
 
@@ -1394,8 +1756,10 @@ pub fn time_bars_tile_sized(column: &str, indent: usize, width: u32, height: u32
 /// it" is discharged in the artefact.** A reader with the spec in front of them
 /// can see that `amount` was binned because a label called it a currency
 /// amount, and that `region` was ranked because no trusted label came back and
-/// DuckDB stored it as text — [`role_of`]'s call, not restated here.
-fn tile_comment(tile: &Tile) -> String {
+/// DuckDB stored it as text — [`role_of`]'s call, not restated here. A tile
+/// written with a format says what chose it, and the scale its values are divided
+/// by.
+fn tile_comment(tile: &Tile, look: &Look) -> String {
     let because = match tile.chosen_by() {
         ChosenBy::Meaning { label, role } => {
             format!(
@@ -1422,7 +1786,11 @@ fn tile_comment(tile: &Tile) -> String {
         Some(step) => format!(", counted by the {}", step.label()),
         None => String::new(),
     };
-    format!("{}: {because} → {}{at}", tile.column(), tile.kind())
+    let format = match &look.chosen {
+        Some(chosen) => format!("; {chosen}"),
+        None => String::new(),
+    };
+    format!("{}: {because} → {}{at}{format}", tile.column(), tile.kind())
 }
 
 /// A YAML scalar that cannot be read as anything but a string.
@@ -1756,15 +2124,22 @@ mod tests {
     }
 
     /// A numeric column labelled a **category** is ranked rather than binned —
-    /// a year, a quarter, a gender code. The storage type would have binned it.
+    /// a gender code, an ordinal. The storage type would have binned it. A year
+    /// is the exception, counted in time order
+    /// (`a_year_counts_in_time_order_and_lists_a_short_run`).
     #[test]
     fn a_number_labelled_a_category_is_ranked_not_binned() {
-        let dash = of(&[labelled("year", "BIGINT", 12, "datetime.component.year")]);
+        let dash = of(&[labelled(
+            "code",
+            "BIGINT",
+            12,
+            "identity.person.gender_code",
+        )]);
         let tile = &dash.tiles()[0];
         assert_eq!(tile.kind(), crate::ranked_bars::KIND_ID);
         assert_eq!(tile.field().ty, FieldType::Categorical);
         // …and without the label the same column is a measure.
-        let bare = of(&[column("year", "BIGINT", 12)]);
+        let bare = of(&[column("code", "BIGINT", 12)]);
         assert_eq!(bare.tiles()[0].kind(), chart_kinds::BINNED_HISTOGRAM);
     }
 
@@ -2490,6 +2865,161 @@ mod tests {
             source.contains("lei: finance.securities.lei — it identifies rather than describes"),
             "the omission and its reason belong in the spec the reader opens:\n{source}"
         );
+    }
+
+    /// **A year column counts per year in time order, whatever the category
+    /// ceiling says**, and lists its run of years as its domain while the run is
+    /// no longer than [`YEAR_RUN_CEILING`].
+    #[test]
+    fn a_year_counts_in_time_order_and_lists_a_short_run() {
+        let year = |min: &str, max: &str, distinct: u64| ColumnProfile {
+            min: Some(min.to_string()),
+            max: Some(max.to_string()),
+            ..labelled("year", "SMALLINT", distinct, YEAR_LABEL)
+        };
+        for distinct in [23, 400] {
+            let dash = of(&[year("2001", "2024", distinct)]);
+            assert_eq!(dash.tiles()[0].kind(), chart_kinds::COUNTS_OVER_TIME);
+        }
+        assert_eq!(
+            year_run(&year("2001", "2003", 3)),
+            Some(vec![2001, 2002, 2003])
+        );
+        assert_eq!(
+            year_run(&year("1601", "1720", 120)).map(|r| r.len()),
+            Some(120)
+        );
+        assert_eq!(year_run(&year("1601", "1721", 121)), None);
+        assert_eq!(year_run(&year("2001.5", "2003", 3)), None);
+        let source = of(&[year("2001", "2003", 3)]).to_spec();
+        assert!(source.contains("xDomain: [2001, 2002, 2003]\n"), "{source}");
+        assert!(source.contains("xTickFormat: \"d\"\n"), "{source}");
+        assert!(parse_spec(&source, Format::Yaml).is_ok(), "{source}");
+    }
+
+    /// **A resampled timestamp writes no format and claims none**: its tile is
+    /// drawn through the bucket column, which its label's format does not
+    /// describe.
+    #[test]
+    fn a_resampled_timestamp_writes_no_format() {
+        let at = ColumnProfile {
+            semantic: labelled("at", "TIMESTAMP", 900, "datetime.timestamp.ctime").semantic,
+            ..stamped("at", "2020-01-01 00:00:00", "2020-06-01 00:00:00", 900)
+        };
+        let dash = of(&[at]);
+        assert!(
+            dash.tiles()[0].resampled().is_some(),
+            "fixture check: resampled"
+        );
+        assert!(
+            dash.representation("at").tick_format.is_some(),
+            "fixture check: a format"
+        );
+        let source = dash.to_spec();
+        assert!(!source.contains("TickFormat"), "{source}");
+        assert!(!source.contains("chose its format"), "{source}");
+    }
+
+    /// **A year stored as text lists no domain.** Its band is of words, and
+    /// another Mosaic tool matches a listed domain by value, so the number
+    /// 2001 would match no bar; the run is left to the data.
+    #[test]
+    fn a_year_stored_as_text_lists_no_domain() {
+        let text_year = ColumnProfile {
+            min: Some("2001".to_string()),
+            max: Some("2003".to_string()),
+            ..labelled("year", "VARCHAR", 3, YEAR_LABEL)
+        };
+        assert_eq!(year_run(&text_year), None);
+        let dash = of(&[text_year]);
+        assert_eq!(dash.tiles()[0].kind(), chart_kinds::COUNTS_OVER_TIME);
+        let source = dash.to_spec();
+        assert!(!source.contains("xDomain: ["), "{source}");
+    }
+
+    /// **A recorded preference is credited only when it chose the format.** One
+    /// the rule passed over (it does not parse, or it is a date format on a
+    /// number column) leaves the label credited.
+    #[test]
+    fn a_preference_is_credited_only_when_it_is_used() {
+        let amount = ColumnProfile {
+            min: Some("10".to_string()),
+            max: Some("900".to_string()),
+            ..labelled("amount", "DOUBLE", 900, "finance.currency.amount")
+        };
+        let comment = |prefer: crate::column_record::Prefer| {
+            let fields = BTreeMap::from([(
+                "amount".to_string(),
+                FieldRecord {
+                    prefer,
+                    ..FieldRecord::default()
+                },
+            )]);
+            let dash = of(std::slice::from_ref(&amount)).with_records(fields, false);
+            let source = dash.to_spec();
+            source
+                .lines()
+                .find(|l| l.contains("# amount:"))
+                .unwrap_or_default()
+                .to_string()
+        };
+        let used = comment(crate::column_record::Prefer {
+            number_format: Some(",.0f".to_string()),
+            ..Default::default()
+        });
+        assert!(
+            used.contains("its recorded preference chose its format"),
+            "{used}"
+        );
+        for prefer in [
+            crate::column_record::Prefer {
+                number_format: Some("not a format {".to_string()),
+                ..Default::default()
+            },
+            crate::column_record::Prefer {
+                date_format: Some("%Y".to_string()),
+                ..Default::default()
+            },
+        ] {
+            let passed_over = comment(prefer);
+            assert!(
+                passed_over.contains("finance.currency.amount chose its format"),
+                "{passed_over}"
+            );
+        }
+    }
+
+    /// **A ranked category's title carries its unit** when the rule gives one.
+    #[test]
+    fn a_ranked_tile_titles_its_category_with_its_unit() {
+        let dash = of(&[column("region", "VARCHAR", 4)]);
+        let tile = &dash.tiles()[0];
+        assert_eq!(tile.kind(), crate::ranked_bars::KIND_ID);
+        let look = Look {
+            title: Some("region (£)".to_string()),
+            ..Look::default()
+        };
+        let yaml = tile_yaml(tile, &look, 4, TILE_WIDTH, TILE_HEIGHT);
+        assert!(yaml.contains("      yLabel: \"region (£)\"\n"), "{yaml}");
+        let plain = tile_yaml(tile, &Look::default(), 4, TILE_WIDTH, TILE_HEIGHT);
+        assert!(plain.contains("      yLabel: \"region\"\n"), "{plain}");
+    }
+
+    /// **A tick format is written quoted, so YAML reads it back as the string
+    /// it is**, whatever it looks like: a number, a word YAML reads as a
+    /// boolean or a null, or a specifier that starts with an indicator.
+    #[test]
+    fn a_format_reads_back_as_written() {
+        for format in [
+            "d", ".1f", ",~f", "(,~f", "$,.2f", "%Y-%m-%d", ".0%", "~s", "y", "10", "True", "NULL",
+        ] {
+            let yaml = format!("k: {}", yaml_string(format));
+            let back: std::collections::BTreeMap<String, String> =
+                serde_yaml::from_str(&yaml).expect("the scalar parses");
+            assert_eq!(back["k"], format, "{yaml}");
+        }
+        assert_eq!(divisor_text(1e9), "1e9");
+        assert_eq!(divisor_text(1_048_576.0), "1048576");
     }
 
     /// A column name YAML would read as something other than a string survives

@@ -17,6 +17,7 @@ vconcat:
     title: "Training compute bends upward around 2010: since then it doubles in months, not years. Data: Epoch AI, CC BY 4.0"
     xDomain: Fixed
     xLabel: year published
+    xTickFormat: d
     yLabel: "training compute, log10 FLOP (24 means 10^24)"
     width: 1180
     height: 420
@@ -36,6 +37,7 @@ vconcat:
       title: Notable models published per year, compute recorded or not
       xDomain: Fixed
       xLabel: year published
+      xTickFormat: d
       yLabel: models
       width: 560
       height: 220

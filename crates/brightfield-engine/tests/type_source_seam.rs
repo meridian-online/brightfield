@@ -230,3 +230,62 @@ fn a_type_source_that_is_not_finetype_reaches_the_column_profile_unchanged() {
     assert_eq!(n.min.as_deref(), Some("1"));
     assert_eq!(n.max.as_deref(), Some("2"));
 }
+
+/// A column with a given label is not asked of the type source, and is
+/// labelled with what it was given, with or without a source behind it.
+#[test]
+fn a_given_label_is_not_asked_of_the_type_source() {
+    let load = |type_source: Option<TypeSourceSpec>| {
+        let parsed = parse_spec(FIXTURE, Format::Yaml).expect("the fixture parses");
+        let analysis = analyse_spec(&parsed.spec).expect("the fixture analyses");
+        let options = LoadOptions {
+            type_source,
+            given_labels: [("name".to_string(), "given.label".to_string())].into(),
+            ..LoadOptions::default()
+        };
+        let session = Engine::new()
+            .load_spec_with(parsed.spec, analysis, None, &options)
+            .expect("the fixture loads")
+            .session;
+        match session
+            .profile_sources()
+            .into_iter()
+            .find(|p| p.name == "things")
+            .expect("one source")
+            .outcome
+        {
+            ProfileOutcome::Profiled { columns, .. } => columns,
+            other => panic!("expected a profiled source, got {other:?}"),
+        }
+    };
+    let given = SemanticType::Labelled {
+        label: "given.label".to_string(),
+        confidence: 1.0,
+        check: ValueCheck::Given,
+    };
+
+    let columns = load(Some(TypeSourceSpec::Other(Arc::new(OpenBackwards))));
+    let semantic = |n: &str| {
+        columns
+            .iter()
+            .find(|c| c.name == n)
+            .unwrap()
+            .semantic
+            .clone()
+    };
+    // The stub would have answered `RAHCRAV` had it been asked.
+    assert_eq!(semantic("name"), given);
+    assert_eq!(semantic("n").label(), Some("REGETNI"));
+
+    let columns = load(None);
+    let semantic = |n: &str| {
+        columns
+            .iter()
+            .find(|c| c.name == n)
+            .unwrap()
+            .semantic
+            .clone()
+    };
+    assert_eq!(semantic("name"), given);
+    assert_eq!(semantic("n"), SemanticType::NotAsked);
+}

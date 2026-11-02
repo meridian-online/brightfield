@@ -564,8 +564,8 @@ fn a_pointer_sweep_on_every_shipped_producer_commits_a_clause() {
         // the shipped spec on the day it changes.
         let declared: Vec<String> = swept_columns(
             binding.kind,
-            binding.x_column.as_deref(),
-            binding.y_column.as_deref(),
+            binding.x_field.as_ref().map(|f| f.name()),
+            binding.y_field.as_ref().map(|f| f.name()),
         )
         .into_iter()
         .collect::<Option<Vec<String>>>()
@@ -689,7 +689,11 @@ fn a_producer_whose_channel_names_no_column_commits_nothing() {
         let [b] = bindings.as_slice() else {
             panic!("the fixture declares {} producers, not one", bindings.len())
         };
-        swept_columns(b.kind, b.channels.x.as_deref(), b.channels.y.as_deref())
+        swept_columns(
+            b.kind,
+            b.channels.x.as_ref().map(|f| f.name()),
+            b.channels.y.as_ref().map(|f| f.name()),
+        )
     };
     let working = swept_by(&twin);
     let dead = swept_by(&control);

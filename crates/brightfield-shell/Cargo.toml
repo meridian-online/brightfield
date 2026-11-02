@@ -144,6 +144,10 @@ zip = { workspace = true }
 # `tempfile` 3 is already in Cargo.lock through egui_kittest.
 duckdb = { workspace = true, features = ["parquet"] }
 tempfile = "3"
+# The stable key of a lone file's column record in `crate::column_record`, and the SHA-256 the
+# bundled gallery dataset test checks against its Frictionless descriptor. Not a new crate in the
+# graph: 0.10 is already in Cargo.lock, on the same version line, so this adds no build.
+sha2 = "0.10"
 # Sets a Protocol's report.md as the PDF `export-pdf` writes, with the charts
 # this crate draws handed to it as pictures.
 brightfield-report = { path = "../brightfield-report" }
@@ -163,12 +167,6 @@ egui_kittest = { version = "0.35", features = ["wgpu", "snapshot"] }
 # build) — `parquet` stated here too so this test-side writer is not relying on
 # the engine's declaration to have its reader.
 duckdb = { workspace = true, features = ["parquet"] }
-# Reads the bundled gallery dataset back against the SHA-256 its own
-# Frictionless descriptor declares — `the_bundled_dataset_is_the_bytes_its_
-# descriptor_declares` in `tests/front_door.rs`. Not a new crate in the graph:
-# 0.10 is already in Cargo.lock as a transitive dependency, on the same version
-# line, so this declaration adds no build.
-sha2 = "0.10"
 
 [[bin]]
 name = "brightfield-shell"

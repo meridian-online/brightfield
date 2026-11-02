@@ -205,7 +205,7 @@ fn a_precision_in_the_format_prints_each_tick_as_d3_format_does() {
     // The y axis names no format and is left as it was.
     assert_eq!(
         painted_y(&composed),
-        strs(&["2000000", "1500000", "1000000", "500000", "0"])
+        strs(&["2,000,000", "1,500,000", "1,000,000", "500,000", "0"])
     );
 
     let grouped = compose_to(2_000_000.0, "yTickFormat: ',d'");
@@ -215,7 +215,7 @@ fn a_precision_in_the_format_prints_each_tick_as_d3_format_does() {
     );
     assert_eq!(
         painted_x(&grouped),
-        strs(&["0", "500000", "1000000", "1500000", "2000000"])
+        strs(&["0", "500,000", "1,000,000", "1,500,000", "2,000,000"])
     );
 
     let percent = compose_to(1.0, "xTickFormat: '.0%'");
@@ -248,7 +248,7 @@ fn a_format_with_no_precision_follows_the_tick_step() {
     );
     assert_eq!(
         painted_y(&composed),
-        strs(&["2000", "1500", "1000", "500", "0"]),
+        strs(&["2,000", "1,500", "1,000", "500", "0"]),
         "the y axis names no format"
     );
 

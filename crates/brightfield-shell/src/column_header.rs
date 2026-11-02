@@ -431,6 +431,8 @@ fn detail_font() -> egui::FontId {
 pub struct ColumnBandFacts {
     by_name: std::collections::BTreeMap<String, ColumnFacts>,
     tints: std::collections::BTreeMap<String, usize>,
+    /// How each column's values are shown, for the grid's cells.
+    shown: crate::data_grid::Shown,
 }
 
 impl ColumnBandFacts {
@@ -453,7 +455,17 @@ impl ColumnBandFacts {
                 .map(|c| (c.column.clone(), c.clone()))
                 .collect(),
             tints,
+            shown: columns
+                .iter()
+                .map(|c| (c.column.clone(), c.representation.clone()))
+                .collect(),
         }
+    }
+
+    /// How each column's values are shown, by column name.
+    #[must_use]
+    pub fn shown(&self) -> &crate::data_grid::Shown {
+        &self.shown
     }
 
     /// Whether any column was declared.
@@ -788,7 +800,7 @@ pub fn band_content_width(
         }
     };
     let glyph = glyph_for(facts);
-    let mut name = width_of(glyph, glyph_font()) + width_of(&facts.column, name_font());
+    let mut name = width_of(glyph, glyph_font()) + width_of(&facts.header_name(), name_font());
     if !glyph.is_empty() {
         name += spacing::SPACE_3;
     }
@@ -860,7 +872,7 @@ pub fn draw_column_band(
         .text(
             egui::pos2(text_left, y + NAME_ROW / 2.0),
             egui::Align2::LEFT_CENTER,
-            &facts.column,
+            facts.header_name(),
             name_font(),
             frame.name,
         )
@@ -1339,6 +1351,7 @@ mod tests {
             }),
             title: None,
             icon: None,
+            representation: crate::representation::Representation::default(),
         }
     }
 
@@ -1546,6 +1559,7 @@ mod tests {
             moments: None,
             title: None,
             icon: None,
+            representation: crate::representation::Representation::default(),
         };
         let columns = vec![
             facts("a", "DOUBLE"),

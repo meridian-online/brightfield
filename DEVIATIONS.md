@@ -445,10 +445,12 @@ one has nothing to format.
 names `xTickFormat` or `yTickFormat` as changing nothing on a category
 axis, with the key first and then the plot. A number format and a date
 format are named alike, and whether or not the names read as numbers: an
-axis is an axis of names when its column is text that is not a calendar
-day, whatever the text spells. A band of calendar days is a date axis and
-takes a date format; a number format on it is named as the other kind of
-format, as it was. A format that is no format at all is named once, as
+axis is an axis of names when its categories are neither all calendar
+days nor all whole numbers spelled the way an integer prints, so `02134`
+and `+7` stay names. A band of calendar days is a date axis and takes a
+date format; a number format on it is named as the other kind of format,
+as it was. A band of whole numbers is a number axis and takes a number
+format (DEV-0019 says what it prints with none). A format that is no format at all is named once, as
 such. A plot with no format on an axis of names says nothing.
 
 
@@ -645,6 +647,19 @@ renderer. Until then a line over evenly spaced days is the picture Mosaic
 draws, and a line over uneven days (weekdays only, a missing month,
 event dates) is drawn with the gaps evened out and says so, rather than
 misstating the intervals without a word.
+
+
+**Conformance layers suppressed:** 3
+
+## DEV-0019 — axes — a band of whole numbers with no tick format (`xTickFormat`, `yTickFormat` unset)
+
+**Mosaic behaviour.** Mosaic hands a numeric column on a band to Observable Plot, whose axis prints each number through `toLocaleString`, so with no tick format a year prints `2,024` and a code `12,000`. A text column's categories print as they are written.
+
+
+**Brightfield behaviour.** A band whose categories are all whole numbers, spelled the way an integer prints, prints each category's text as it is with no format, whether its column holds numbers or text: `2024`, `12000`. With a number format set it is a number axis and prints through that format (DEV-0013). The counts-per-year tile Brightfield generates writes `xTickFormat: "d"`, so it prints `2024` in both; a chart over a numeric column on a band with no format, hand-written or not, draws `2024` here and `2,024` in Plot.
+
+
+**Rationale.** A band of whole numbers is most often years or codes, which an analyst reads ungrouped, and grouping them by default would print `2,024` on every year axis Brightfield did not write a format for. A chart that wants either reading can say so with a format, which both draw alike.
 
 
 **Conformance layers suppressed:** 3

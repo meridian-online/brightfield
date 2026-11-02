@@ -850,8 +850,27 @@ pub enum DomainReading {
         /// The high end.
         hi: f64,
     },
-    /// A value that is not two finite numbers with the low end first:
-    /// `[100, 0]`, `[0, "high"]`, `[0]`, a number, a word other than `Fixed`.
+    /// A list read as a band's categories, in the order the file lists them:
+    /// three or more numbers, or two or more words, each listed once. A band
+    /// draws its categories in this order, and a category with no rows keeps an
+    /// empty slot. A number is named as a band over a number column names its
+    /// categories, so `2009` is `"2009"`. Only a band takes it: on any other
+    /// axis it changes nothing and is named as a refused domain is.
+    ///
+    /// Two numbers low first are [`DomainReading::Ends`] even on a band, since
+    /// the file cannot say which it meant; a band of numbers reads them as its
+    /// two categories.
+    Categories {
+        /// The attribute that wrote the list.
+        key: &'static str,
+        /// Each category, as the band names it, in the file's order.
+        values: Vec<String>,
+        /// The list as written, for the warning that names it.
+        value: String,
+    },
+    /// A value that is not two finite numbers with the low end first, nor a
+    /// list of categories: `[100, 0]`, `[0, "high"]`, `[0]`, a number, a word
+    /// other than `Fixed`.
     /// The axis draws as if the key were absent. `value` is the value as
     /// written, for the warning that names it.
     Refused {
@@ -868,9 +887,36 @@ impl DomainReading {
     pub fn ends(&self) -> Option<(f64, f64)> {
         match self {
             Self::Ends { lo, hi, .. } => Some((*lo, *hi)),
-            Self::Absent | Self::Refused { .. } => None,
+            Self::Absent | Self::Refused { .. } | Self::Categories { .. } => None,
         }
     }
+}
+
+/// The categories a domain list names, in the file's order, or `None` for a
+/// list that is not one: fewer than three numbers, a single word, a list that
+/// mixes numbers and words, or one that names a category twice.
+fn domain_categories(items: &[SpecValue]) -> Option<Vec<String>> {
+    let numbers: Option<Vec<String>> = items
+        .iter()
+        .map(|item| domain_end(item).map(|n| n.to_string()))
+        .collect();
+    let words: Option<Vec<String>> = items
+        .iter()
+        .map(|item| match item {
+            SpecValue::String(word) => Some(word.clone()),
+            _ => None,
+        })
+        .collect();
+    let values = match (numbers, words) {
+        (Some(numbers), _) if numbers.len() >= 3 => numbers,
+        (_, Some(words)) if words.len() >= 2 => words,
+        _ => return None,
+    };
+    let mut seen = std::collections::HashSet::new();
+    values
+        .iter()
+        .all(|value| seen.insert(value.as_str()))
+        .then_some(values)
 }
 
 /// [`DomainReading`] for each of a plot's positional axes.
@@ -927,9 +973,12 @@ fn domain_value_text(value: &SpecValue) -> String {
 ///
 /// A pure spec reading, mirroring [`resolve_fixed_domains`], which reads the
 /// other thing these keys take, Mosaic's `Fixed`. Two numbers with the low end
-/// first are [`DomainReading::Ends`]; a value that is neither those nor `Fixed`
-/// nor `null` is [`DomainReading::Refused`], so a file that writes `[100, 0]`
-/// draws as one without the key and the reading keeps the value to name. The
+/// first are [`DomainReading::Ends`]; three or more numbers, or two or more
+/// words, are [`DomainReading::Categories`], the order a band draws in
+/// (`a_list_of_words_or_of_three_numbers_is_categories`); any other value but
+/// `Fixed` or `null` is [`DomainReading::Refused`], so a file that writes
+/// `[100, 0]` draws as one without the key and the reading keeps the value to
+/// name. The
 /// high end first is refused and not read as a reversal, because `xReverse` is
 /// the key that turns an axis.
 ///
@@ -953,16 +1002,25 @@ pub fn read_domains_in(plot: &PlotNode, params: &IndexMap<String, ParamNode>) ->
             SpecValue::Null => DomainReading::Absent,
             SpecValue::String(word) if word == FIXED => DomainReading::Absent,
             SpecValue::Array(items) => match items.as_slice() {
-                [lo, hi] => match (domain_end(lo), domain_end(hi)) {
-                    (Some(lo), Some(hi)) if lo < hi => DomainReading::Ends { key, lo, hi },
-                    _ => DomainReading::Refused {
+                [lo, hi] if domain_end(lo).is_some() && domain_end(hi).is_some() => {
+                    match (domain_end(lo), domain_end(hi)) {
+                        (Some(lo), Some(hi)) if lo < hi => DomainReading::Ends { key, lo, hi },
+                        _ => DomainReading::Refused {
+                            key,
+                            value: domain_value_text(value),
+                        },
+                    }
+                }
+                listed => match domain_categories(listed) {
+                    Some(values) => DomainReading::Categories {
+                        key,
+                        values,
+                        value: domain_value_text(value),
+                    },
+                    None => DomainReading::Refused {
                         key,
                         value: domain_value_text(value),
                     },
-                },
-                _ => DomainReading::Refused {
-                    key,
-                    value: domain_value_text(value),
                 },
             },
             _ => DomainReading::Refused {
@@ -4773,11 +4831,11 @@ xDomain: [0, 100]
         );
     }
 
-    /// **A value that is not two finite numbers low first is refused, with the
-    /// key and the value as the file wrote it.** High first, equal ends, a
-    /// string end, one end, three ends, an infinite end, a bare number and a
-    /// word that is not `Fixed`: each is refused and not read as a reversal,
-    /// half a pair or a pin.
+    /// **A value that is not two finite numbers low first, nor a list of
+    /// categories, is refused, with the key and the value as the file wrote
+    /// it.** High first, equal ends, a string end beside a number, one end, an
+    /// infinite end, an empty list, a bare number and a word that is not
+    /// `Fixed`: each is refused and not read as a reversal, half a pair or a pin.
     #[test]
     fn a_value_that_is_not_two_numbers_low_first_is_refused_with_its_text() {
         let int = SpecValue::Integer;
@@ -4786,7 +4844,6 @@ xDomain: [0, 100]
             (pair(int(5), int(5)), "[5, 5]"),
             (pair(int(0), word("high")), "[0, \"high\"]"),
             (SpecValue::Array(vec![int(0)]), "[0]"),
-            (SpecValue::Array(vec![int(0), int(5), int(9)]), "[0, 5, 9]"),
             (pair(int(0), SpecValue::Float(f64::INFINITY)), "[0, inf]"),
             (SpecValue::Array(vec![]), "[]"),
             (int(50), "50"),
@@ -4803,6 +4860,85 @@ xDomain: [0, 100]
                 "yDomain: {value:?}"
             );
             assert_eq!(read.x, DomainReading::Absent, "the key names y alone");
+        }
+    }
+
+    /// **A listed domain orders a band.** A run of years written as a list,
+    /// with 2009 among them though no row holds it, parses with no warning
+    /// and reads as the band's categories in the file's order, each named as
+    /// a band over a number column names it. The render crate's test of the
+    /// same name draws it.
+    #[test]
+    fn a_listed_domain_orders_the_band() {
+        let years: Vec<String> = (2001..=2024).map(|y| y.to_string()).collect();
+        let source = format!(
+            "data:\n  t:\n    - {{ year: 2001 }}\n    - {{ year: 2024 }}\n\
+             plot:\n  - {{ mark: barY, data: {{ from: t }}, x: year, y: {{ count: }} }}\n\
+             xDomain: [{}]\n",
+            years.join(", ")
+        );
+        let parsed = parse_spec(&source, Format::Yaml).expect("parse");
+        assert!(
+            parsed.warnings.is_empty(),
+            "a listed domain raises no warning: {:?}",
+            parsed.warnings
+        );
+        let nodes = collect_plot_nodes(&parsed.spec);
+        let read = read_domains_in(nodes[0].1, &parsed.spec.params);
+        let DomainReading::Categories { key, values, .. } = &read.x else {
+            panic!("a list of years is a band's categories: {:?}", read.x);
+        };
+        assert_eq!(*key, "xDomain");
+        assert_eq!(values, &years, "the band's order is the file's");
+        assert_eq!(read.x.ends(), None, "a list fixes no ends");
+    }
+
+    /// **Two or more words, or three or more numbers, are categories; a list
+    /// that names one twice or mixes the two is refused.** Two numbers low
+    /// first stay the axis's ends: the file cannot say it meant two
+    /// categories, and a band of numbers reads them as its two.
+    #[test]
+    fn a_list_of_words_or_of_three_numbers_is_categories() {
+        let int = SpecValue::Integer;
+        let read = |value: SpecValue| {
+            read_domains_in(&plot_with(&[("xDomain", value)]), &IndexMap::new()).x
+        };
+        assert_eq!(
+            read(SpecValue::Array(vec![word("c"), word("a")])),
+            DomainReading::Categories {
+                key: "xDomain",
+                values: vec!["c".to_string(), "a".to_string()],
+                value: "[\"c\", \"a\"]".to_string(),
+            }
+        );
+        assert_eq!(
+            read(SpecValue::Array(vec![
+                int(0),
+                SpecValue::Float(2.5),
+                int(9)
+            ])),
+            DomainReading::Categories {
+                key: "xDomain",
+                values: vec!["0".to_string(), "2.5".to_string(), "9".to_string()],
+                value: "[0, 2.5, 9]".to_string(),
+            }
+        );
+        assert_eq!(read(pair(int(0), int(9))).ends(), Some((0.0, 9.0)));
+        for (value, text) in [
+            (SpecValue::Array(vec![int(1), int(2), int(1)]), "[1, 2, 1]"),
+            (
+                SpecValue::Array(vec![int(1), word("a"), int(2)]),
+                "[1, \"a\", 2]",
+            ),
+            (SpecValue::Array(vec![word("a")]), "[\"a\"]"),
+        ] {
+            assert_eq!(
+                read(value),
+                DomainReading::Refused {
+                    key: "xDomain",
+                    value: text.to_string()
+                }
+            );
         }
     }
 

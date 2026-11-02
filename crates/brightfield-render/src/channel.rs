@@ -549,12 +549,13 @@ impl ChannelMap {
                     }
                     // A positional bin binds THREE channels off one key. The
                     // two interval channels are what the rect actually draws
-                    // (its lowerer emits the low edge under the source column's
-                    // own name and the high edge under a reserved one); the
-                    // bare positional channel is bound as well, so the axis
-                    // still derives its title from the column the author named
-                    // and `infer_scales` sees a quantitative axis there.
-                    ValueOrParamRef::Value(SpecValue::Bin { column, .. }) => {
+                    // (its lowerer emits the low edge under the binned
+                    // column's own name, or an expression's text, and the high
+                    // edge under a reserved one); the bare positional channel
+                    // is bound as well, so the axis still derives its title
+                    // from what the author named and `infer_scales` sees a
+                    // quantitative axis there.
+                    ValueOrParamRef::Value(SpecValue::Bin { operand, .. }) => {
                         let (lo, hi, hi_col) = match ch {
                             Channel::X => (Channel::X1, Channel::X2, BIN_HI_X_COL),
                             Channel::Y => (Channel::Y1, Channel::Y2, BIN_HI_Y_COL),
@@ -563,9 +564,9 @@ impl ChannelMap {
                             // than invent a column the batch does not carry.
                             _ => continue,
                         };
-                        cm.insert(lo, column.clone());
+                        cm.insert(lo, operand.name().to_string());
                         cm.insert(hi, hi_col.to_string());
-                        cm.insert(*ch, column.clone());
+                        cm.insert(*ch, operand.name().to_string());
                     }
                     ValueOrParamRef::Param(param_ref) => {
                         // A positional channel bound to a `$param` is projected
@@ -976,7 +977,7 @@ mod tests {
         options.insert(
             "x".to_string(),
             ValueOrParamRef::Value(SpecValue::Bin {
-                column: "delay".to_string(),
+                operand: brightfield_spec::ast::BinOperand::Column("delay".to_string()),
                 steps: None,
             }),
         );
