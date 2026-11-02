@@ -546,3 +546,27 @@ fn discovered_fold_keeps_its_join_after_an_edit() {
     let merged = merge_discovery(&current, &proposed);
     assert!(rel(&merged, "products_categories").is_some());
 }
+
+#[test]
+fn a_merge_takes_the_pass_of_the_proposal_and_keeps_its_own_generator() {
+    let mut current = model();
+    current.meta.generator = "brightfield".to_string();
+    current.meta.pass = Some("sample".to_string());
+    current.meta.sample_rows = Some(50000);
+    let mut proposed = model();
+    proposed.meta.generator = "dovetail".to_string();
+    proposed.meta.pass = Some("full".to_string());
+    proposed.meta.sample_rows = None;
+    proposed.meta.typing = Some(serde_json::json!({"source": "packages"}));
+    proposed
+        .meta
+        .other
+        .insert("zz_new".to_string(), serde_json::json!(1));
+    let merged = merge_discovery(&current, &proposed);
+
+    assert_eq!(merged.meta.generator, "brightfield");
+    assert_eq!(merged.meta.pass.as_deref(), Some("full"));
+    assert_eq!(merged.meta.sample_rows, None);
+    assert_eq!(merged.meta.typing, proposed.meta.typing);
+    assert_eq!(merged.meta.other, proposed.meta.other);
+}

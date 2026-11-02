@@ -19,6 +19,12 @@ pub(crate) fn same_join(a: &Relationship, b: &Relationship) -> bool {
 pub fn merge_discovery(current: &Model, proposed: &Model) -> Model {
     let mut out = current.clone();
     out.meta.skipped_sources = proposed.meta.skipped_sources.clone();
+    // The pass describes the data the proposal was measured on, so it replaces the model's.
+    // The generator stays the caller's own.
+    out.meta.pass.clone_from(&proposed.meta.pass);
+    out.meta.typing.clone_from(&proposed.meta.typing);
+    out.meta.sample_rows = proposed.meta.sample_rows;
+    out.meta.other.clone_from(&proposed.meta.other);
 
     let mut datasets = Vec::new();
     for cur in &current.datasets {
