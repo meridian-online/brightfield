@@ -37,6 +37,27 @@ pub const MODEL_FILE: &str = "model.ossie.yaml";
 /// proposes.
 pub const PROPOSALS_DIR: &str = ".discovery";
 
+/// The environment variable that makes a process of this binary dovetail instead of a window.
+/// The binary runs dovetail as a child of itself because dovetail's entry point parses the
+/// process's argv and ends the process.
+pub const DOVETAIL_ENV: &str = "BRIGHTFIELD_RUN_AS_DOVETAIL";
+
+/// Become dovetail if [`DOVETAIL_ENV`] is set: run its command line and end the process, so
+/// nothing after this call in `main` (a layout, a window, a file to open) is reached.
+///
+/// Dovetail parses the argv itself and ends the process on an error; a run it reports as
+/// successful ends this process with 0, and any other result with 1.
+pub fn serve_as_dovetail_if_asked() {
+    if std::env::var_os(DOVETAIL_ENV).is_some() {
+        let code = if dovetail::cli_main() == std::process::ExitCode::SUCCESS {
+            0
+        } else {
+            1
+        };
+        std::process::exit(code);
+    }
+}
+
 /// The file a child discoverer writes `pass`'s proposal to, in the Protocol folder `dir`:
 /// `.discovery/sample.ossie.yaml` or `.discovery/full.ossie.yaml`.
 #[must_use]
