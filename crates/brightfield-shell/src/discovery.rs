@@ -160,9 +160,10 @@ impl Discovery for StandIn {
 /// child never writes `model.ossie.yaml`, which holds the analyst's decisions and is Brightfield's
 /// alone to write; it is handed that file as `--base`, so the analyst's decisions carry through.
 ///
-/// The child reads a copy of the Protocol's database, taken under [`own_files::database_lock`] so
-/// no run of the Protocol is writing it at the time, and the lock is let go before the child
-/// starts, so a run waits on a pass while it copies and not while its child runs. Each pass has
+/// The child reads a copy of the Protocol's database, taken under [`own_files::database_lock`],
+/// which the own-files flow's writes to that database hold, so none of them is part way through
+/// when the copy is taken. The lock is let go before the child starts, so a run waits on a pass
+/// while it copies and not while its child runs. Each pass has
 /// files of its own, a copy named for the run and an out file beside it, so a superseded child
 /// being killed and its successor write separate files. Once the child exits 0, its out file is
 /// renamed to the pass's [`proposal_file`], and that is the pass's answer. A pass removes its
@@ -282,15 +283,18 @@ struct RunFiles {
 
 impl RunFiles {
     fn new(dir: &Path, pass: Pass) -> Self {
+        // The process id keeps one process's run files apart from another's: a Brightfield that
+        // quit during a pass leaves its files, and perhaps a child still reading them, behind.
         let n = RUNS.fetch_add(1, Ordering::SeqCst);
+        let id = format!("{}-{n}", std::process::id());
         let proposals = dir.join(PROPOSALS_DIR);
         let pass = match pass {
             Pass::Sample => "sample",
             Pass::Full => "full",
         };
         Self {
-            copy: proposals.join(format!("run-{n}.duckdb")),
-            out: proposals.join(format!("run-{n}.{pass}.ossie.yaml")),
+            copy: proposals.join(format!("run-{id}.duckdb")),
+            out: proposals.join(format!("run-{id}.{pass}.ossie.yaml")),
         }
     }
 }
@@ -401,6 +405,9 @@ impl Dovetail {
 
         let text = std::fs::read_to_string(&files.out)
             .map_err(|e| format!("{}: {e}", files.out.display()))?;
+        // Read before it is renamed into place, so a proposal Brightfield cannot read never becomes
+        // the pass's proposal file, nor the sample a later full pass verifies.
+        let model = read(&text).map_err(|e| format!("{}: {e}", files.out.display()))?;
         let proposal = proposal_file(dir, pass);
         {
             let passes = passes();
@@ -411,14 +418,23 @@ impl Dovetail {
             std::fs::rename(&files.out, &proposal)
                 .map_err(|e| format!("{}: {e}", proposal.display()))?;
         }
-        read(&text).map_err(|e| format!("{}: {e}", proposal.display()))
+        Ok(model)
     }
 }
 
 /// Copy the Protocol's database in `dir`, and its write-ahead log when there is one, to `copy`,
-/// while no run of the Protocol in this process writes it.
+/// while none of the own-files flow's writes to it is running.
 fn copy_database(dir: &Path, copy: &Path) -> Result<(), String> {
     let db = arc::spec::protocol_db_path(dir).map_err(|e| e.to_string())?;
+    // A log left beside the copy's name would be replayed into the copy as if it were the
+    // database's own.
+    let stale = wal_of(copy);
+    match std::fs::remove_file(&stale) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(format!("{}: {e}", stale.display()));
+        }
+        _ => {}
+    }
     let _writing = own_files::database_lock();
     std::fs::copy(&db, copy).map_err(|e| format!("{}: {e}", db.display()))?;
     let wal = wal_of(&db);

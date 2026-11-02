@@ -453,6 +453,37 @@ fn dovetail_child_writes_valid_ossie() {
     );
 }
 
+/// The process id of the dovetail child reading a copy of `protocol`'s database, once one is
+/// running: a process whose command line passes `--db` a run file in the Protocol's proposals
+/// folder.
+#[cfg(unix)]
+fn running_child(protocol: &OwnProtocol) -> Option<u32> {
+    let copies = protocol.dir.join(PROPOSALS_DIR).join("run-");
+    let pattern = format!("model --db {}", copies.display());
+    let out = std::process::Command::new("pgrep")
+        .arg("-f")
+        .arg(pattern)
+        .output()
+        .expect("pgrep runs");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .and_then(|pid| pid.trim().parse().ok())
+}
+
+/// Whether a process `pid` is there, a zombie not yet waited for included.
+#[cfg(unix)]
+fn process_is_there(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("kill runs")
+        .success()
+}
+
+#[cfg(unix)]
 #[test]
 fn a_cancelled_pass_kills_its_child_and_leaves_no_files() {
     let protocol = dovetail_protocol("dovetail-cancelled");
@@ -466,15 +497,15 @@ fn a_cancelled_pass_kills_its_child_and_leaves_no_files() {
         });
     }
 
-    // The pass has copied the database for its child once its run file is there.
+    // Cancelled once its child is running over the copy, which takes seconds to model.
     let due = Instant::now() + Duration::from_secs(30);
-    while !proposals_folder(&protocol)
-        .iter()
-        .any(|f| f.starts_with("run-") && f.ends_with(".duckdb"))
-    {
-        assert!(Instant::now() < due, "the pass never copied the database");
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    let child = loop {
+        if let Some(pid) = running_child(&protocol) {
+            break pid;
+        }
+        assert!(Instant::now() < due, "the pass never started its child");
+        std::thread::sleep(Duration::from_millis(5));
+    };
     cancel.request();
     let answered = answer
         .recv_timeout(Duration::from_secs(5))
@@ -482,6 +513,10 @@ fn a_cancelled_pass_kills_its_child_and_leaves_no_files() {
     assert_eq!(
         answered,
         Err("the discovery pass was superseded".to_string())
+    );
+    assert!(
+        !process_is_there(child),
+        "the child {child} was killed and waited for"
     );
     let left = proposals_folder(&protocol);
     assert!(
@@ -491,6 +526,36 @@ fn a_cancelled_pass_kills_its_child_and_leaves_no_files() {
     assert!(
         !proposal_file(&protocol.dir, Pass::Full).exists(),
         "a cancelled pass proposes nothing"
+    );
+}
+
+#[test]
+fn the_child_reads_the_database_log_beside_the_copy() {
+    let protocol = dovetail_protocol("dovetail-wal");
+    let db = arc::spec::protocol_db_path(&protocol.dir).unwrap();
+    // Rows written to the log and not yet checkpointed into the database, held there by a
+    // connection left open while the pass copies.
+    let conn = duckdb::Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "SET checkpoint_threshold = '1GB'; INSERT INTO raw_stores SELECT * FROM raw_stores;",
+    )
+    .unwrap();
+    let rows: u64 = conn
+        .query_row("SELECT count(*) FROM raw_stores", [], |row| row.get(0))
+        .unwrap();
+    let mut wal = db.clone().into_os_string();
+    wal.push(".wal");
+    assert!(Path::new(&wal).is_file(), "the insert is in the log");
+
+    let model = Dovetail::new(&runner())
+        .discover(&protocol, Pass::Full)
+        .expect("the dovetail child runs");
+    drop(conn);
+    let stores = model.datasets.iter().find(|d| d.name == "stores").unwrap();
+    assert_eq!(
+        stores.meta.rows,
+        Some(rows),
+        "the child read the logged rows"
     );
 }
 

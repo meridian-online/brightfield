@@ -110,11 +110,13 @@ pub fn create(opened: &Path) -> Result<OwnProtocol, String> {
     })
 }
 
-/// Held by whatever in this process writes a Protocol's database, for as long as it writes, and
-/// by a discovery pass while it copies the database for its child, so the copy is never taken
-/// part way through a write. [`run_loads`] and [`drop_unmade_silver`] take it for their whole
-/// run. A writer that panicked left the database as an interrupted run would, so the lock is
-/// taken again rather than refused.
+/// Held by the own-files flow's writes to a Protocol's database, [`run_loads`] and
+/// [`drop_unmade_silver`], for their whole run, and by a discovery pass while it copies the
+/// database for its child, so the copy is not taken part way through one of those writes. The
+/// window's own runs start `arc` without it: they run the workbench's Protocols, and an own-files
+/// Protocol is run through this module. The lock is this process's, so another process writing the
+/// same folder is not held off. A writer that panicked left the database as an interrupted run
+/// would, so the lock is taken again rather than refused.
 pub fn database_lock() -> std::sync::MutexGuard<'static, ()> {
     static DATABASE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     DATABASE
