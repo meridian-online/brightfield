@@ -161,16 +161,15 @@ impl Discovery for StandIn {
 /// alone to write; it is handed that file as `--base`, so the analyst's decisions carry through.
 ///
 /// The child reads a copy of the Protocol's database, taken under [`own_files::database_lock`],
-/// which the own-files flow's writes to that database hold, so none of them is part way through
-/// when the copy is taken. The lock is let go before the child starts, so a run waits on a pass
-/// while it copies and not while its child runs. Each pass has
-/// files of its own, a copy named for the run and an out file beside it, so a superseded child
-/// being killed and its successor write separate files. Once the child exits 0, its out file is
-/// renamed to the pass's [`proposal_file`], and that is the pass's answer. A pass removes its
-/// proposal file before it runs, and a sample pass the full one too, so a proposal on disk is
-/// always the latest pass's own. The full pass is given the sample proposal to verify when there is
-/// one, and removes it once it has run, unless a newer sample pass has started since, whose
-/// proposal is its successor's to verify.
+/// which the own-files flow's writes to that database hold, so the copy waits for a write in
+/// progress to finish. The lock is let go before the child starts, so a run waits on a pass while
+/// it copies and not while its child runs. Each pass has files of its own, a copy named for the run
+/// and an out file beside it, so a superseded child being killed and its successor write separate
+/// files. Once the child exits 0, its out file is renamed to the pass's [`proposal_file`], and that
+/// is the pass's answer. A pass removes its proposal file before it runs, and a sample pass the
+/// full one too, so a proposal on disk is always the latest pass's own. The full pass is given the
+/// sample proposal to verify when there is one, and removes it once it has run, unless a newer
+/// sample pass has started since, whose proposal is its successor's to verify.
 ///
 /// A pass may be superseded while its child runs, by a new pass or by the pane letting it go.
 /// [`Discovery::discover_until`] then kills the child, waits for it, removes the run's files and
