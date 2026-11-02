@@ -230,7 +230,7 @@ echo "   ok: curl cannot reach the network in the jail"
 # URL is written out rather than read from the spec so that a spec silently
 # repointed at somewhere else fails this check instead of passing it against
 # whatever it now says.
-REMOTE_URL="https://openlake.meridian.online/edgar_gleif.parquet"
+REMOTE_URL="https://openlake.meridian.online/library/edgar_lei.parquet"
 case "$ARTIFACT" in
   *.tar.gz)
     echo "== unpack: $ARTIFACT"

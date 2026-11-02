@@ -973,7 +973,7 @@ fn only_the_remote_starts_have_anything_to_fetch() {
     let chart = starts::find(starts::CROSSWALK_CHART).expect("the shipped set has it");
     assert_eq!(
         remote::remote_sources(chart.spec.expect("it carries a spec")).expect("it parses"),
-        vec!["https://openlake.meridian.online/edgar_gleif.parquet".to_string()],
+        vec!["https://openlake.meridian.online/library/edgar_lei.parquet".to_string()],
         "the crosswalk chart fetches something other than the URL its shipped \
          spec reads"
     );
@@ -1012,7 +1012,7 @@ fn taking_the_remote_card_records_the_url_its_spec_names() {
     );
     assert_eq!(
         win.app.fetching_sources(),
-        ["https://openlake.meridian.online/edgar_gleif.parquet".to_string()],
+        ["https://openlake.meridian.online/library/edgar_lei.parquet".to_string()],
         "the click fetches something other than what the shipped spec reads"
     );
     assert!(

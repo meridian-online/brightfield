@@ -18,6 +18,7 @@ Releases before 0.1.6 predate this file; their tags and the commit history are t
 
 ### Changed
 
+- Brightfield reads Meridian's open datasets at their new addresses on `openlake.meridian.online`, each under its publisher's namespace: the EDGAR↔GLEIF crosswalk at `library/edgar_lei.parquet`, SEC's company tickers at `sec/company_tickers_exchange.parquet`, GLEIF's LEI records at `gleif/lei.parquet` and NAICS at `census/naics_2022.parquet`. The crosswalk start and the EDGAR↔GLEIF Protocol read them there. The old flat addresses (`edgar_gleif.parquet`, `edgar.parquet`, `gleif.parquet`, `naics.parquet`) no longer change and will be retired no sooner than 90 days after this release, after which 0.1.7 and earlier cannot open those starts: upgrade before then with `brew upgrade meridian-online/tap/brightfield`.
 - The California Housing card fetches the dataset from StatLib, where its authors published it, the first time it is opened, and says on the card that it needs the network. Brightfield no longer ships a copy, and the release's `examples/data/` holds a reduced copy of the EDGAR↔GLEIF crosswalk instead. The table now has all 20,640 block groups and the source's own nine columns, with rooms, bedrooms and households as totals rather than per-household averages.
 
 ## [0.1.7] - 2026-10-20

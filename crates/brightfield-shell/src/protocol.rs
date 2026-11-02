@@ -5809,7 +5809,7 @@ mod tests {
     /// CTE arm first. It is also the shape the textbook strict-linear criterion
     /// refuses outright: a host has no producer of its own.
     const CHAIN_ABSORBED: &str =
-        "source.edgar_gleif.https://openlake.meridian.online/edgar.parquet";
+        "source.edgar_gleif.https://openlake.meridian.online/sec/company_tickers_exchange.parquet";
 
     /// The asset [`CHAIN_ABSORBED`]'s run ends at — the node the fold keeps.
     const CHAIN_TAIL: &str = "file.edgar_gleif.build/edgar.parquet";
@@ -5907,7 +5907,7 @@ mod tests {
             "the boot canvas is the collapsed graph itself"
         );
         for id in [
-            "source.edgar_gleif.https://openlake.meridian.online/edgar.parquet",
+            "source.edgar_gleif.https://openlake.meridian.online/sec/company_tickers_exchange.parquet",
             "file.edgar_gleif.build/edgar_gleif.parquet",
             "asset.edgar_gleif.sec_entities",
         ] {

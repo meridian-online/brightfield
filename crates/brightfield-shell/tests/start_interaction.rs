@@ -82,7 +82,8 @@ use brightfield_sql::ir::ScalarValue;
 
 /// The line the one remote start declares its rows on, written out so the
 /// substitution below is a named edit rather than a regex over a spec.
-const REMOTE_SOURCE: &str = "    file: \"https://openlake.meridian.online/edgar_gleif.parquet\"";
+const REMOTE_SOURCE: &str =
+    "    file: \"https://openlake.meridian.online/library/edgar_lei.parquet\"";
 
 /// What it is swapped for: a generated table carrying the three columns the
 /// shipped `links` view reads (`tier`, `method`, and the `corpus` whose length

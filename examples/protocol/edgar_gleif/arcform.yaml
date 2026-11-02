@@ -35,13 +35,13 @@ steps:
   - name: fetch_edgar
     op: http_fetch@1
     with:
-      url: https://openlake.meridian.online/edgar.parquet
+      url: https://openlake.meridian.online/sec/company_tickers_exchange.parquet
       out: build/edgar.parquet
 
   - name: fetch_gleif
     op: http_fetch@1
     with:
-      url: https://openlake.meridian.online/gleif.parquet
+      url: https://openlake.meridian.online/gleif/lei.parquet
       out: build/gleif.parquet
 
   # ── SEC entity universe (crosswalk LEFT side): fetch the raw cik-lookup list, then

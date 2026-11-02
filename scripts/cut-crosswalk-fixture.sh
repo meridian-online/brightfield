@@ -30,7 +30,7 @@
 # and commit the copy, its provenance file and the PNGs together.
 set -euo pipefail
 
-URL="https://openlake.meridian.online/edgar_gleif.parquet"
+URL="https://openlake.meridian.online/library/edgar_lei.parquet"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DUCKDB="${1:-$ROOT/target/duckdb-cli/duckdb}"
 DATA="$ROOT/crates/brightfield-shell/tests/data"

@@ -1392,7 +1392,7 @@ mod tests {
     #[test]
     fn a_url_is_refused_by_scheme_not_by_hostname() {
         for url in [
-            "https://openlake.meridian.online/edgar_gleif.parquet",
+            "https://openlake.meridian.online/library/edgar_lei.parquet",
             "http://example.com/data.csv",
             "s3://bucket/key.parquet",
             "gs://bucket/key.parquet",

@@ -29,9 +29,9 @@
       ]
     },
     {
-      "id": "source:https://openlake.meridian.online/edgar.parquet",
+      "id": "source:https://openlake.meridian.online/sec/company_tickers_exchange.parquet",
       "kind": "source",
-      "name": "https://openlake.meridian.online/edgar.parquet",
+      "name": "https://openlake.meridian.online/sec/company_tickers_exchange.parquet",
       "path": null,
       "bytes": null,
       "row_count": null,
