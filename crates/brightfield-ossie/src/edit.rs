@@ -280,15 +280,33 @@ pub fn refuse_new_strands(before: &Model, after: &Model) -> Result<(), EditError
         .filter(|(_, c)| c == combined)
         .map(|(part, _)| part.as_str())
         .collect();
-    // The last clause names what to undo: a fold, a leaving-out, or a removal.
-    let remedy = match after.datasets.iter().find(|d| d.name == *combined) {
-        Some(d) if d.meta.folded_into.is_some() => format!("don't fold {combined}"),
-        Some(d) if d.meta.excluded => format!("bring {combined} back first"),
-        _ => format!("keep {combined} in the model"),
+    // The last clause names what to undo: a removal, a leaving-out, or the host's.
+    let host = |h: &str| match after.datasets.iter().find(|d| d.name == h) {
+        Some(d) if d.meta.excluded => format!("bring {h} back first"),
+        _ => format!("keep {h} in the model"),
+    };
+    let (why, remedy) = match after.datasets.iter().find(|d| d.name == *combined) {
+        Some(d) if d.meta.excluded => (
+            "which would have no table of its own".to_string(),
+            format!("bring {combined} back first"),
+        ),
+        Some(d) => match d.meta.folded_into.as_deref() {
+            Some(h) => (
+                format!("which is folded into {h}, which would have no table of its own"),
+                host(h),
+            ),
+            None => (
+                "which would have no table of its own".to_string(),
+                format!("keep {combined} in the model"),
+            ),
+        },
+        None => (
+            "which would have no table of its own".to_string(),
+            format!("keep {combined} in the model"),
+        ),
     };
     err(format!(
-        "{} {} combined into {combined}, which would have no table of its own, so their rows \
-         would reach no table: {remedy}",
+        "{} {} combined into {combined}, {why}, so their rows would reach no table: {remedy}",
         and_list(&parts),
         if parts.len() == 1 { "is" } else { "are" },
     ))
@@ -318,10 +336,10 @@ pub fn stranded_folds(m: &Model) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Each kept part of a combination whose combined table has no silver table of its own, as
-/// `(part, combined)`: the combined table left out, folded, or not in the model. A part has no
-/// silver table, and its rows reach one only through the combined table's, so a stranded part's
-/// rows reach none.
+/// Each kept part of a combination whose rows reach no silver table, as `(part, combined)`: the
+/// combined table is left out or not in the model, or is folded into a host with no table of its
+/// own. A part has no silver table, and its rows reach one only through the combined table's or,
+/// when the combined table is folded, through its host's, so a stranded part's rows reach none.
 #[must_use]
 pub fn stranded_parts(m: &Model) -> Vec<(String, String)> {
     m.datasets
@@ -329,9 +347,22 @@ pub fn stranded_parts(m: &Model) -> Vec<(String, String)> {
         .filter(|d| !d.meta.excluded)
         .filter_map(|d| {
             let combined = d.meta.combined_into.as_deref()?;
-            (!has_own_table(m, combined)).then(|| (d.name.clone(), combined.to_string()))
+            (!reaches_a_table(m, combined)).then(|| (d.name.clone(), combined.to_string()))
         })
         .collect()
+}
+
+/// Whether the rows of the dataset `name` land in a silver table: its own, or the host's it is
+/// folded into.
+fn reaches_a_table(m: &Model, name: &str) -> bool {
+    m.datasets.iter().any(|d| {
+        d.name == name
+            && !d.meta.excluded
+            && match d.meta.folded_into.as_deref() {
+                Some(host) => has_own_table(m, host),
+                None => d.has_own_table(),
+            }
+    })
 }
 
 /// Whether `m` has a dataset named `name` with a silver table of its own.

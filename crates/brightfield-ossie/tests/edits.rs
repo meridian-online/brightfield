@@ -1,5 +1,5 @@
 use brightfield_ossie::{
-    apply, merge_discovery, read, DecidedBy, Edit, Grade, Model, Role, Verified,
+    apply, merge_discovery, read, stranded_parts, DecidedBy, Edit, Grade, Model, Role, Verified,
 };
 
 const STAND_IN: &str = include_str!("../fixtures/retail_extract/model.ossie.yaml");
@@ -641,7 +641,8 @@ fn leaving_out_a_combined_table_is_refused_while_its_parts_are_kept() {
 }
 
 #[test]
-fn folding_a_combined_table_is_refused_while_its_parts_are_kept() {
+fn folding_a_combined_table_into_a_host_with_a_table_succeeds() {
+    // A folded combination's rows reach the host's silver table, so its parts are not stranded.
     let m = read(include_str!(
         "../fixtures/dovetail/retail.sample.ossie.yaml"
     ))
@@ -656,18 +657,27 @@ fn folding_a_combined_table_is_refused_while_its_parts_are_kept() {
         },
     )
     .unwrap();
-    let e = apply(
+    let folded = apply(
         &m,
         &Edit::Fold {
             dataset: "members".into(),
             into: "customers".into(),
         },
     )
+    .unwrap();
+    assert_eq!(
+        dataset(&folded, "members").meta.folded_into.as_deref(),
+        Some("customers")
+    );
+    assert!(stranded_parts(&folded).is_empty());
+    // Leaving the host out would leave the combination's rows in no table.
+    let e = apply(
+        &folded,
+        &Edit::Exclude {
+            dataset: "customers".into(),
+        },
+    )
     .unwrap_err()
     .to_string();
-    assert!(
-        e.contains("members_2024 and members_2025 are combined into members"),
-        "{e}"
-    );
-    assert!(e.ends_with("don't fold members"), "{e}");
+    assert!(e.contains("members"), "{e}");
 }
