@@ -128,8 +128,8 @@ pub fn read_hand_edit(
         .into_iter()
         .partition(|r| tables.contains(&r.from) && tables.contains(&r.to));
     if !rejoined.is_empty() {
-        // Only these are new to the model: marking all of it again would take what
-        // `hold_deletions` added from `current` for the analyst's, as `base` does not hold it.
+        // These joins are new to the model. Marking the whole model again would take the elements
+        // `hold_deletions` added from `current` for the analyst's, as `base` does not hold them.
         mark_relationships(current, base, &mut rejoined);
         model.relationships.extend(rejoined);
         // This reads `current` alone, so running it again leaves what it already did as it is.
