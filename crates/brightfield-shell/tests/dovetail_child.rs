@@ -1,7 +1,8 @@
 //! The `brightfield-shell` binary becomes dovetail, under its variable.
 //!
-//! Dovetail's entry point parses the calling process's argv and ends the process, so it runs in a
-//! child of this binary rather than on a thread of the window, the way `arc` does.
+//! Dovetail's entry point parses the calling process's argv and returns an exit code, so it runs in
+//! a child of this binary rather than on a thread of the window, whose argv is its own, the way
+//! `arc` does.
 
 use std::process::Command;
 
