@@ -562,6 +562,78 @@ fn left_out_table_is_not_left_materialised() {
     assert!(has_table(&pane, "promo_codes__failed"));
 }
 
+/// Two CSVs, `a` and `b`, combined into `ab` as a partition, with the `own_files` Protocol made
+/// from them, its silver steps written for `model` and the Protocol run.
+fn combined(name: &str, excluded: bool) -> (brightfield_shell::own_files::OwnProtocol, Model) {
+    let root = scratch().join(name);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.csv"), "id\n1\n2\n").unwrap();
+    std::fs::write(root.join("b.csv"), "id\n3\n").unwrap();
+    let part = |n: &str| {
+        format!(
+            "- name: {n}\n  source: {n}.csv\n  fields:\n  - {{name: id, expression: {{sql: x}}}}\n  \
+             custom_extensions:\n  - {{vendor_name: MERIDIAN, data: '{{\"role\":\"event\",\"combined_into\":\"ab\",\"decided_by\":\"dovetail\",\"source_file\":\"{n}\"}}'}}\n"
+        )
+    };
+    let text = format!(
+        "version: 0.2.0.dev0\nname: combined\ndatasets:\n{}{}- name: ab\n  source: SELECT \"id\" FROM \"raw_a\" UNION ALL BY NAME SELECT \"id\" FROM \"raw_b\"\n  \
+         fields:\n  - {{name: id, expression: {{sql: x}}}}\n  custom_extensions:\n  - {{vendor_name: MERIDIAN, data: '{{\"role\":\"event\",\"excluded\":{excluded},\"combination\":{{\"kind\":\"partition\",\"parts\":[\"a\",\"b\"]}},\"decided_by\":\"dovetail\",\"source_file\":\"ab\"}}'}}\n",
+        part("a"),
+        part("b")
+    );
+    let model = brightfield_ossie::read(&text).expect("the model reads");
+    let protocol = {
+        let _held = folder_lock();
+        brightfield_shell::own_files::create(&root).expect("a Protocol")
+    };
+    brightfield_shell::own_files::write_silver(&protocol, &model).unwrap();
+    brightfield_shell::own_files::run_loads(&protocol, &runner()).unwrap();
+    (protocol, model)
+}
+
+fn count_tables(dir: &Path, names: &[&str]) -> Vec<bool> {
+    names
+        .iter()
+        .map(|n| {
+            let rows = model_inspector::query(
+                dir,
+                &format!("SELECT count(*) AS n FROM duckdb_tables() WHERE table_name = '{n}'"),
+            )
+            .expect("the database reads");
+            rows.value(0, "n") != Some("0")
+        })
+        .collect()
+}
+
+#[test]
+fn a_combination_gets_one_silver_table_and_its_parts_none() {
+    let (protocol, _) = combined("combination", false);
+    assert_eq!(
+        count_tables(&protocol.dir, &["ab", "ab__failed", "a", "b"]),
+        [true, true, false, false]
+    );
+    let rows = model_inspector::query(&protocol.dir, "SELECT count(*) AS n FROM ab").unwrap();
+    assert_eq!(rows.value(0, "n"), Some("3"));
+}
+
+#[test]
+fn a_combination_left_out_loses_its_table() {
+    let (protocol, mut model) = combined("combination-left-out", false);
+    model
+        .datasets
+        .iter_mut()
+        .find(|d| d.name == "ab")
+        .unwrap()
+        .meta
+        .excluded = true;
+    brightfield_shell::own_files::write_silver(&protocol, &model).unwrap();
+    brightfield_shell::own_files::drop_unmade_silver(&protocol, &model).unwrap();
+    assert_eq!(
+        count_tables(&protocol.dir, &["ab", "ab__failed"]),
+        [false, false]
+    );
+}
+
 #[test]
 fn the_pickers_change_keys_and_retype_a_column() {
     let mut pane = opened(retail_model());

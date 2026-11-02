@@ -124,6 +124,19 @@ pub fn run_loads(p: &OwnProtocol, runner: &Runner) -> Result<(), String> {
     }
 }
 
+/// The datasets that may have a silver table: the source tables, then each dataset of `model` with
+/// a combination, in model order and without repeats. A combined dataset has no source table of
+/// its own, because it is built from its parts' raw tables by a query.
+fn silver_datasets(model: &Model, sources: &[&str]) -> Vec<String> {
+    let mut names: Vec<String> = sources.iter().map(|s| (*s).to_string()).collect();
+    for d in &model.datasets {
+        if d.meta.combination.is_some() && !names.contains(&d.name) {
+            names.push(d.name.clone());
+        }
+    }
+    names
+}
+
 /// Write the silver steps for `model`: for each dataset that has a silver table, a step that casts
 /// the raw table through FineType's transformation contracts and one that keeps the values that did
 /// not cast, as `models/02_silver_<name>.sql` and `models/02_failed_<name>.sql`.
@@ -156,24 +169,25 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
     });
 
     let mut written: HashSet<String> = HashSet::new();
-    for table in &p.sources.tables {
-        let silver = silver_sql(model, &table.name, &transforms);
+    let sources: Vec<&str> = p.sources.tables.iter().map(|t| t.name.as_str()).collect();
+    for name in silver_datasets(model, &sources) {
+        let silver = silver_sql(model, &name, &transforms);
         if silver.is_empty() {
             continue;
         }
-        let failed = failed_sql(model, &table.name, &transforms);
+        let failed = failed_sql(model, &name, &transforms);
         for (step, file, sql, produces) in [
             (
-                format!("{SILVER_STEP}{}", table.name),
-                format!("models/{SILVER_FILE}{}.sql", table.name),
+                format!("{SILVER_STEP}{}", name),
+                format!("models/{SILVER_FILE}{}.sql", name),
                 silver,
-                table.name.clone(),
+                name.clone(),
             ),
             (
-                format!("{FAILED_STEP}{}", table.name),
-                format!("models/{FAILED_FILE}{}.sql", table.name),
+                format!("{FAILED_STEP}{}", name),
+                format!("models/{FAILED_FILE}{}.sql", name),
                 failed,
-                format!("{}__failed", table.name),
+                format!("{}__failed", name),
             ),
         ] {
             std::fs::write(p.dir.join(&file), format!("{sql};\n"))
@@ -227,12 +241,18 @@ pub fn drop_unmade_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> 
         return Ok(());
     }
     let transforms = FinetypeTransforms::vendored();
-    let unmade: Vec<&str> = p
-        .sources
-        .tables
-        .iter()
-        .filter(|t| silver_sql(model, &t.name, &transforms).is_empty())
-        .map(|t| t.name.as_str())
+    // A part of a combination is a source table that has no silver table; a combined dataset or a
+    // part left out of the model keeps none either, so what an earlier model made of them goes.
+    let mut candidates: Vec<String> = p.sources.tables.iter().map(|t| t.name.clone()).collect();
+    for d in &model.datasets {
+        let combined = d.meta.combination.is_some() || d.meta.combined_into.is_some();
+        if combined && !candidates.contains(&d.name) {
+            candidates.push(d.name.clone());
+        }
+    }
+    let unmade: Vec<String> = candidates
+        .into_iter()
+        .filter(|name| silver_sql(model, name, &transforms).is_empty())
         .collect();
     if unmade.is_empty() {
         return Ok(());
@@ -246,7 +266,7 @@ pub fn drop_unmade_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> 
         )
         .map_err(|e| format!("{}: {e}", db.display()))?;
     let mut sql = String::new();
-    for name in unmade {
+    for name in &unmade {
         let _ = write!(
             sql,
             "DROP TABLE IF EXISTS {}; DROP TABLE IF EXISTS {};",

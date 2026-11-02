@@ -147,9 +147,10 @@ pub fn cast_projection(
     }
 }
 
-/// A dataset gets silver tables unless it is excluded or folded into another.
+/// A dataset gets silver tables unless it is excluded, folded into another, or one part of a
+/// combined dataset, whose silver table reads the parts' raw tables through its own query.
 fn has_silver(d: &Dataset) -> bool {
-    !d.meta.excluded && d.meta.folded_into.is_none()
+    !d.meta.excluded && d.meta.folded_into.is_none() && d.meta.combined_into.is_none()
 }
 
 /// The raw table of `dataset` with the columns that will be cast read as text, so a column DuckDB
@@ -164,11 +165,42 @@ fn source(d: &Dataset, transforms: &FinetypeTransforms) -> String {
             columns.push(col);
         }
     }
+    if d.meta.combination.is_some() {
+        // The combined query has no lineage columns of its own, so a typed row with none of
+        // them goes first: `UNION ALL BY NAME` then puts them ahead of the query's columns, and
+        // they read NULL where the parts' raw tables are no longer one table's rows.
+        return format!(
+            "SELECT {} FROM (SELECT NULL::VARCHAR AS \"__source_file\", NULL::VARCHAR AS \
+             \"__source_part\", NULL::BIGINT AS \"__source_row\" WHERE false \
+             UNION ALL BY NAME SELECT * FROM ({}))",
+            columns.join(", "),
+            d.source
+        );
+    }
     format!(
         "SELECT {} FROM {}",
         columns.join(", "),
         quoted(&format!("raw_{}", d.name))
     )
+}
+
+/// The `ORDER BY` that picks a folded dataset's first row for a key. A combined dataset has NULL
+/// lineage, so the file and row alone leave the pick to chance: its token column, then every
+/// field, break the tie the same way on each build.
+fn fold_order(d: &Dataset) -> String {
+    let mut order = vec![quoted("__source_file"), quoted("__source_row")];
+    if let Some(token) = d
+        .meta
+        .combination
+        .as_ref()
+        .and_then(|c| c.token_column.as_ref())
+    {
+        order.push(quoted(token));
+    }
+    if d.meta.combination.is_some() {
+        order.extend(d.fields.iter().map(|f| quoted(&f.name)));
+    }
+    order.join(", ")
 }
 
 /// `d`'s columns as cast, lineage first, to select from [`source`].
@@ -303,10 +335,11 @@ pub fn silver_sql(model: &Model, dataset: &str, transforms: &FinetypeTransforms)
         let partition: Vec<String> = fold.keys.iter().map(|k| quoted(k)).collect();
         ctes.push(format!(
             "{alias} AS (SELECT * FROM (SELECT {} FROM ({})) QUALIFY row_number() OVER \
-             (PARTITION BY {} ORDER BY \"__source_file\", \"__source_row\") = 1)",
+             (PARTITION BY {} ORDER BY {}) = 1)",
             projections(fold.dataset, transforms).join(", "),
             source(fold.dataset, transforms),
-            partition.join(", ")
+            partition.join(", "),
+            fold_order(fold.dataset)
         ));
         let on: Vec<String> = fold
             .host_keys
