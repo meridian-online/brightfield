@@ -42,8 +42,8 @@ pub const PROPOSALS_DIR: &str = ".discovery";
 /// process's argv and ends the process.
 pub const DOVETAIL_ENV: &str = "BRIGHTFIELD_RUN_AS_DOVETAIL";
 
-/// Become dovetail if [`DOVETAIL_ENV`] is set: run its command line and end the process, so
-/// nothing after this call in `main` (a layout, a window, a file to open) is reached.
+/// Become dovetail if [`DOVETAIL_ENV`] is set: run its command line and end the process, so `main`
+/// opens no window and reads no file to open (`the_binary_serves_as_dovetail_under_its_variable`).
 ///
 /// Dovetail parses the argv itself and ends the process on an error; a run it reports as
 /// successful ends this process with 0, and any other result with 1.
