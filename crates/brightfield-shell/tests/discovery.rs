@@ -1,6 +1,6 @@
 //! The discovery seam: its stand-in, the full pass that runs on a worker and folds into the model
 //! as it stands when it lands, starts only once the sample's save is written, and is stopped when a
-//! newer pass supersedes it, and the dovetail child that is not built in yet.
+//! newer pass supersedes it, and the dovetail child that runs each pass over a copy of the database.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 
 use brightfield_ossie::{DecidedBy, Edit, Model, Role};
 use brightfield_shell::data_file::{self, Opened};
-use brightfield_shell::discovery::{proposal_file, Cancel, Discovery, Dovetail, Pass, StandIn};
+use brightfield_shell::discovery::{
+    proposal_file, Cancel, Discovery, Dovetail, Pass, StandIn, PROPOSALS_DIR,
+};
 use brightfield_shell::model_inspector::ModelAction;
 use brightfield_shell::model_pane::{Dispatched, ModelPane};
 use brightfield_shell::own_files::{self, OwnProtocol};
@@ -373,11 +375,10 @@ fn full_pass_waits_for_a_file_edit_to_be_read() {
     assert_eq!(role_of(&pane.model, "promo_codes"), Role::Reference);
 }
 
-#[test]
-#[ignore = "dovetail is not built into Brightfield until dovetail's DuckDB 2.0 release ships, \
-            with Ossie output, table roles and the sample and full passes"]
-fn dovetail_child_writes_valid_ossie() {
-    let root = retail_copy("dovetail");
+/// The retail extract copied into `name` and made a Protocol a dovetail child can read: its raw
+/// tables loaded, profiled and described in data packages.
+fn dovetail_protocol(name: &str) -> OwnProtocol {
+    let root = retail_copy(name);
     let mut protocol = {
         let _held = folder_lock();
         let protocol = own_files::create(&root).unwrap();
@@ -386,13 +387,31 @@ fn dovetail_child_writes_valid_ossie() {
     };
     own_files::profile(&mut protocol).unwrap();
     own_files::write_packages(&protocol).unwrap();
+    protocol
+}
+
+/// The names in the Protocol's proposals folder, or none when it is not there.
+fn proposals_folder(protocol: &OwnProtocol) -> Vec<String> {
+    std::fs::read_dir(protocol.dir.join(PROPOSALS_DIR))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn dovetail_child_writes_valid_ossie() {
+    let protocol = dovetail_protocol("dovetail");
     // The model the analyst holds, which the child must leave alone.
     let model_file = protocol.dir.join("model.ossie.yaml");
     let held = brightfield_ossie::write(&StandIn.discover(&protocol, Pass::Sample).unwrap());
     std::fs::write(&model_file, &held).unwrap();
 
     for pass in [Pass::Sample, Pass::Full] {
-        let answered = Dovetail
+        let answered = Dovetail::new(&runner())
             .discover(&protocol, pass)
             .expect("the dovetail child runs");
         let text = std::fs::read_to_string(proposal_file(&protocol.dir, pass))
@@ -422,7 +441,88 @@ fn dovetail_child_writes_valid_ossie() {
             held,
             "the child never writes model.ossie.yaml"
         );
+        let left: Vec<String> = proposals_folder(&protocol)
+            .into_iter()
+            .filter(|f| f.starts_with("run-"))
+            .collect();
+        assert!(left.is_empty(), "the run's own files are removed: {left:?}");
     }
+    assert!(
+        !proposal_file(&protocol.dir, Pass::Sample).exists(),
+        "the full pass removes the sample proposal it verified"
+    );
+}
+
+#[test]
+fn a_cancelled_pass_kills_its_child_and_leaves_no_files() {
+    let protocol = dovetail_protocol("dovetail-cancelled");
+    let cancel = Cancel::default();
+    let (send, answer) = mpsc::channel();
+    {
+        let (protocol, cancel) = (protocol.clone(), cancel.clone());
+        std::thread::spawn(move || {
+            let _ =
+                send.send(Dovetail::new(&runner()).discover_until(&protocol, Pass::Full, &cancel));
+        });
+    }
+
+    // The pass has copied the database for its child once its run file is there.
+    let due = Instant::now() + Duration::from_secs(30);
+    while !proposals_folder(&protocol)
+        .iter()
+        .any(|f| f.starts_with("run-") && f.ends_with(".duckdb"))
+    {
+        assert!(Instant::now() < due, "the pass never copied the database");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    cancel.request();
+    let answered = answer
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the cancelled pass answers within 5 s");
+    assert_eq!(
+        answered,
+        Err("the discovery pass was superseded".to_string())
+    );
+    let left = proposals_folder(&protocol);
+    assert!(
+        !left.iter().any(|f| f.starts_with("run-")),
+        "the run's files are removed: {left:?}"
+    );
+    assert!(
+        !proposal_file(&protocol.dir, Pass::Full).exists(),
+        "a cancelled pass proposes nothing"
+    );
+}
+
+/// A Protocol dovetail cannot model, since its data packages were removed before the pass.
+fn protocol_without_packages(name: &str) -> OwnProtocol {
+    let protocol = dovetail_protocol(name);
+    std::fs::remove_dir_all(protocol.dir.join("packages")).unwrap();
+    protocol
+}
+
+#[test]
+fn a_failing_child_answers_its_stderr() {
+    let protocol = protocol_without_packages("dovetail-failing");
+    let answered = Dovetail::new(&runner()).discover(&protocol, Pass::Sample);
+    let reason = answered.expect_err("the child cannot read the packages");
+    assert!(reason.contains("dovetail model:"), "{reason}");
+}
+
+#[test]
+fn a_failed_sample_pass_leaves_no_proposal_to_verify() {
+    let protocol = protocol_without_packages("dovetail-stale-sample");
+    // An earlier sample pass's proposal, which a failed pass must not leave for the full pass.
+    let stale = proposal_file(&protocol.dir, Pass::Sample);
+    std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+    std::fs::write(&stale, "stale").unwrap();
+
+    let answered = Dovetail::new(&runner()).discover(&protocol, Pass::Sample);
+    assert!(answered.is_err(), "{answered:?}");
+    assert!(
+        !stale.exists(),
+        "a failed sample pass leaves no proposal to verify"
+    );
 }
 
 #[test]

@@ -110,12 +110,25 @@ pub fn create(opened: &Path) -> Result<OwnProtocol, String> {
     })
 }
 
+/// Held by whatever in this process writes a Protocol's database, for as long as it writes, and
+/// by a discovery pass while it copies the database for its child, so the copy is never taken
+/// part way through a write. [`run_loads`] and [`drop_unmade_silver`] take it for their whole
+/// run. A writer that panicked left the database as an interrupted run would, so the lock is
+/// taken again rather than refused.
+pub fn database_lock() -> std::sync::MutexGuard<'static, ()> {
+    static DATABASE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    DATABASE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Run the Protocol's steps with `runner`, which makes the raw tables, and wait for it.
 ///
 /// # Errors
 ///
 /// What `arc` printed, when the run did not succeed.
 pub fn run_loads(p: &OwnProtocol, runner: &Runner) -> Result<(), String> {
+    let _writing = database_lock();
     let finished: Finished = Run::begin(runner, &p.dir, || {}).wait();
     if finished.succeeded {
         Ok(())
@@ -236,6 +249,7 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
 ///
 /// The reason when the database cannot be opened or a table cannot be dropped.
 pub fn drop_unmade_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
+    let _writing = database_lock();
     let db = arc::spec::protocol_db_path(&p.dir).map_err(|e| e.to_string())?;
     if !db.is_file() {
         return Ok(());
