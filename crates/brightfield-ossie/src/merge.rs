@@ -24,7 +24,11 @@ pub fn merge_discovery(current: &Model, proposed: &Model) -> Model {
     out.meta.pass.clone_from(&proposed.meta.pass);
     out.meta.typing.clone_from(&proposed.meta.typing);
     out.meta.sample_rows = proposed.meta.sample_rows;
-    out.meta.other.clone_from(&proposed.meta.other);
+    // Key by key, so a key the proposal does not write, such as one a newer Brightfield or an
+    // earlier pass put there, is not lost; the proposal's own keys win.
+    for (key, value) in &proposed.meta.other {
+        out.meta.other.insert(key.clone(), value.clone());
+    }
 
     let mut datasets = Vec::new();
     for cur in &current.datasets {

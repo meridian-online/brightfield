@@ -252,19 +252,48 @@ pub(crate) fn unique_name(base: &str, kept: &[Relationship], rejected: &[Relatio
     name
 }
 
-/// Why `after` strands a folded table that `before` did not, if it does: see [`stranded_folds`].
+/// Why `after` strands a folded table or a combination's parts that `before` did not, if it does:
+/// see [`stranded_folds`] and [`stranded_parts`].
 ///
 /// # Errors
 ///
-/// The first newly stranded fold, naming the table to unfold and its host.
+/// The first newly stranded fold, naming the table to unfold and its host; or else the parts of
+/// the first combination whose rows `after` leaves in no table, naming each part.
 pub fn refuse_new_strands(before: &Model, after: &Model) -> Result<(), EditError> {
     let had = stranded_folds(before);
-    match stranded_folds(after).into_iter().find(|s| !had.contains(s)) {
-        Some((inner, host)) => err(format!(
+    if let Some((inner, host)) = stranded_folds(after).into_iter().find(|s| !had.contains(s)) {
+        return err(format!(
             "{inner} is folded into {host}, which would have no table of its own: \
              unfold {inner} from {host} first"
-        )),
-        None => Ok(()),
+        ));
+    }
+    let had = stranded_parts(before);
+    let new: Vec<_> = stranded_parts(after)
+        .into_iter()
+        .filter(|s| !had.contains(s))
+        .collect();
+    let Some((_, combined)) = new.first() else {
+        return Ok(());
+    };
+    let parts: Vec<&str> = new
+        .iter()
+        .filter(|(_, c)| c == combined)
+        .map(|(part, _)| part.as_str())
+        .collect();
+    err(format!(
+        "{} {} combined into {combined}, which would have no table of its own, so their rows \
+         would reach no table: keep {combined} in the model",
+        and_list(&parts),
+        if parts.len() == 1 { "is" } else { "are" },
+    ))
+}
+
+/// `names` as prose: `a`, `a and b`, or `a, b and c`.
+fn and_list(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -278,13 +307,32 @@ pub fn stranded_folds(m: &Model) -> Vec<(String, String)> {
         .filter(|d| !d.meta.excluded)
         .filter_map(|d| {
             let host = d.meta.folded_into.as_deref()?;
-            let own_table = m
-                .datasets
-                .iter()
-                .any(|h| h.name == host && h.has_own_table());
-            (!own_table).then(|| (d.name.clone(), host.to_string()))
+            (!has_own_table(m, host)).then(|| (d.name.clone(), host.to_string()))
         })
         .collect()
+}
+
+/// Each kept part of a combination whose combined table has no silver table of its own, as
+/// `(part, combined)`: the combined table left out, folded, or not in the model. A part has no
+/// silver table, and its rows reach one only through the combined table's, so a stranded part's
+/// rows reach none.
+#[must_use]
+pub fn stranded_parts(m: &Model) -> Vec<(String, String)> {
+    m.datasets
+        .iter()
+        .filter(|d| !d.meta.excluded)
+        .filter_map(|d| {
+            let combined = d.meta.combined_into.as_deref()?;
+            (!has_own_table(m, combined)).then(|| (d.name.clone(), combined.to_string()))
+        })
+        .collect()
+}
+
+/// Whether `m` has a dataset named `name` with a silver table of its own.
+fn has_own_table(m: &Model, name: &str) -> bool {
+    m.datasets
+        .iter()
+        .any(|d| d.name == name && d.has_own_table())
 }
 
 fn dataset_index(m: &Model, name: &str) -> Result<usize, EditError> {

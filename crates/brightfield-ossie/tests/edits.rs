@@ -570,3 +570,72 @@ fn a_merge_takes_the_pass_of_the_proposal_and_keeps_its_own_generator() {
     assert_eq!(merged.meta.typing, proposed.meta.typing);
     assert_eq!(merged.meta.other, proposed.meta.other);
 }
+
+#[test]
+fn a_merge_takes_the_proposals_model_keys_and_keeps_the_ones_it_lacks() {
+    let mut current = model();
+    current
+        .meta
+        .other
+        .insert("zz_mine".to_string(), serde_json::json!("kept"));
+    current
+        .meta
+        .other
+        .insert("zz_both".to_string(), serde_json::json!("old"));
+    let mut proposed = model();
+    proposed
+        .meta
+        .other
+        .insert("zz_both".to_string(), serde_json::json!("new"));
+    proposed
+        .meta
+        .other
+        .insert("zz_new".to_string(), serde_json::json!(1));
+    let merged = merge_discovery(&current, &proposed);
+
+    assert_eq!(merged.meta.other["zz_mine"], serde_json::json!("kept"));
+    assert_eq!(merged.meta.other["zz_both"], serde_json::json!("new"));
+    assert_eq!(merged.meta.other["zz_new"], serde_json::json!(1));
+}
+
+#[test]
+fn leaving_out_a_combined_table_is_refused_while_its_parts_are_kept() {
+    // members is combined from members_2024 and members_2025, which have no silver tables of
+    // their own: leaving members out would leave their rows in none.
+    let m = read(include_str!(
+        "../fixtures/dovetail/retail.sample.ossie.yaml"
+    ))
+    .unwrap();
+    let e = apply(
+        &m,
+        &Edit::Exclude {
+            dataset: "members".into(),
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        e.contains("members_2024 and members_2025 are combined into members"),
+        "{e}"
+    );
+    // Once both parts are left out too, nothing is stranded.
+    let parts_out = ["members_2024", "members_2025"]
+        .into_iter()
+        .try_fold(m, |m, part| {
+            apply(
+                &m,
+                &Edit::Exclude {
+                    dataset: part.into(),
+                },
+            )
+        })
+        .unwrap();
+    let out = apply(
+        &parts_out,
+        &Edit::Exclude {
+            dataset: "members".into(),
+        },
+    )
+    .unwrap();
+    assert!(dataset(&out, "members").meta.excluded);
+}

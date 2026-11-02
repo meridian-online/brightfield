@@ -878,3 +878,40 @@ impl Window {
         self.frame(Vec::new());
     }
 }
+
+/// A pane over the model dovetail's sample pass writes for its retail fixture, with no Protocol or
+/// database behind it: enough for what is refused before anything is written.
+fn written_dovetail_retail(name: &str) -> ModelPane {
+    let dir = scratch().join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../brightfield-ossie/fixtures/dovetail/retail.sample.ossie.yaml"),
+        dir.join("model.ossie.yaml"),
+    )
+    .unwrap();
+    let protocol = brightfield_shell::own_files::OwnProtocol {
+        dir,
+        sources: brightfield_engine::sources::SourceSet::default(),
+        profiles: Vec::new(),
+    };
+    ModelPane::open(protocol, runner()).expect("dovetail's retail model reads")
+}
+
+#[test]
+fn leaving_out_a_combined_table_is_refused() {
+    let mut pane = written_dovetail_retail("refused-combined-left-out");
+    let before = pane.model.clone();
+    let text = pane.file_text().to_string();
+    let Dispatched::Failed(why) = pane.dispatch(ModelAction::Edit(Edit::Exclude {
+        dataset: "members".into(),
+    })) else {
+        panic!("leaving members out is refused");
+    };
+    assert!(
+        why.contains("members_2024 and members_2025 are combined into members"),
+        "{why}"
+    );
+    assert_eq!(pane.model, before, "the model is unchanged");
+    assert_eq!(pane.file_text(), text, "the file is unchanged");
+}

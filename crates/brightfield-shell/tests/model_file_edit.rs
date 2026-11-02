@@ -1599,3 +1599,52 @@ fn rescoring_alone_does_not_make_a_dataset_the_analysts() {
 
     assert_eq!(edited.datasets[0].meta, base.datasets[0].meta);
 }
+
+/// A pane over the model dovetail's sample pass writes for its retail fixture, with no Protocol or
+/// database behind it: enough for an edit that is refused, which writes nothing.
+fn written_dovetail_retail(name: &str) -> ModelPane {
+    let dir = scratch().join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../brightfield-ossie/fixtures/dovetail/retail.sample.ossie.yaml"),
+        dir.join("model.ossie.yaml"),
+    )
+    .unwrap();
+    let protocol = OwnProtocol {
+        dir,
+        sources: brightfield_engine::sources::SourceSet::default(),
+        profiles: Vec::new(),
+    };
+    ModelPane::open(protocol, runner()).expect("dovetail's retail model reads")
+}
+
+#[test]
+fn leaving_out_or_deleting_a_combined_table_by_hand_is_refused() {
+    let mut pane = written_dovetail_retail("refused-combined-by-hand");
+    let before = on_disk(&pane);
+    let text = pane.file_text().to_string();
+    // members is combined from two parts that have no silver tables of their own, so leaving it
+    // out, or deleting its block, would leave their rows in none.
+    for edit in [
+        replaced(
+            &text,
+            r#""members_2025"],"token_column":"year"},"excluded":false"#,
+            r#""members_2025"],"token_column":"year"},"excluded":true"#,
+        ),
+        cut_item(&text, "members"),
+    ] {
+        type_and_pause(&mut pane, edit);
+        let error = pane.file_error().expect("the edit is refused");
+        assert!(
+            error.contains("members_2024 and members_2025 are combined into members"),
+            "{error}"
+        );
+        assert!(pane
+            .model
+            .datasets
+            .iter()
+            .any(|d| d.name == "members" && !d.meta.excluded));
+        assert_eq!(on_disk(&pane), before, "nothing on disk changed");
+    }
+}
