@@ -162,7 +162,7 @@ impl Discovery for StandIn {
 ///
 /// The child reads a copy of the Protocol's database, taken under [`own_files::database_lock`] so
 /// no run of the Protocol is writing it at the time, and the lock is let go before the child
-/// starts, so a run waits on a pass only while it copies. Each pass has files of its own, a copy
+/// starts, so a run waits on a pass while it copies and not while its child runs. Each pass has files of its own, a copy
 /// named for the run and an out file beside it, so a superseded child being killed and its
 /// successor write separate files. Once the child exits 0, its out file is renamed to the pass's [`proposal_file`], and
 /// that is the pass's answer. A pass removes its proposal file before it runs, and a sample pass
