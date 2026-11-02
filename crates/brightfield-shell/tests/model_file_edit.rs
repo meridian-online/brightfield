@@ -1230,7 +1230,7 @@ fn the_inspector_reads_the_run_a_hand_edit_owed() {
 
 /// `model` read back from `text`, as the file view hands it to a hand edit.
 fn hand_edited(current: &Model, base: &Model, text: &str) -> Model {
-    brightfield_shell::model_file::read_hand_edit(current, base, &[], text)
+    brightfield_shell::model_file::read_hand_edit(current, base, &[], &[], text)
         .expect("the text reads")
         .model
 }
@@ -1443,9 +1443,10 @@ fn stores_cut() -> (Model, Model, String) {
 #[test]
 fn a_table_cut_from_stale_text_keeps_what_a_pass_changed_on_its_join() {
     let (base, current, text) = stores_cut();
-    let edited = brightfield_shell::model_file::read_hand_edit(&current, &base, &["stores"], &text)
-        .expect("the text reads")
-        .model;
+    let edited =
+        brightfield_shell::model_file::read_hand_edit(&current, &base, &[], &["stores"], &text)
+            .expect("the text reads")
+            .model;
 
     let join = edited
         .relationships
@@ -1468,9 +1469,10 @@ fn a_rejection_survives_a_table_cut_from_text_that_predates_it() {
         .unwrap();
     let rejected = current.relationships.remove(at);
     current.meta.rejected.push(rejected);
-    let edited = brightfield_shell::model_file::read_hand_edit(&current, &base, &["stores"], &text)
-        .expect("the text reads")
-        .model;
+    let edited =
+        brightfield_shell::model_file::read_hand_edit(&current, &base, &[], &["stores"], &text)
+            .expect("the text reads")
+            .model;
 
     assert!(edited
         .relationships
@@ -1481,4 +1483,43 @@ fn a_rejection_survives_a_table_cut_from_text_that_predates_it() {
         .rejected
         .iter()
         .any(|r| r.name == "transactions_stores"));
+}
+
+#[test]
+fn a_field_a_pass_added_survives_an_edit_of_the_same_dataset() {
+    let base = retail_model();
+    let mut current = base.clone();
+    let mut added = current.datasets[0].fields[0].clone();
+    added.name = "added_by_a_pass".to_string();
+    added.expression_sql = "added_by_a_pass".to_string();
+    current.datasets[0].fields.push(added);
+    let name = base.datasets[0].name.clone();
+    let mut typed = base.clone();
+    typed.datasets[0].description = Some("typed by hand".to_string());
+    let edited = hand_edited(&current, &base, &brightfield_ossie::write(&typed));
+
+    let d = edited.datasets.iter().find(|d| d.name == name).unwrap();
+    assert_eq!(d.meta.decided_by, DecidedBy::Analyst);
+    assert!(d.fields.iter().any(|f| f.name == "added_by_a_pass"));
+}
+
+#[test]
+fn a_set_aside_join_whose_table_a_pass_adds_survives_the_next_edit() {
+    let mut base = retail_model();
+    let mut ghost_join = base.relationships[0].clone();
+    ghost_join.name = "ghost_join".to_string();
+    ghost_join.to = "ghost".to_string();
+    base.relationships.push(ghost_join.clone());
+    let mut current = retail_model();
+    let mut ghost = current.datasets[0].clone();
+    ghost.name = "ghost".to_string();
+    current.datasets.push(ghost);
+    let other = base.relationships[0].from.clone();
+    let text = described_elsewhere(&base, &[&other]);
+    let edited =
+        brightfield_shell::model_file::read_hand_edit(&current, &base, &[ghost_join], &[], &text)
+            .expect("the text reads")
+            .model;
+
+    assert!(edited.relationships.iter().any(|r| r.name == "ghost_join"));
 }

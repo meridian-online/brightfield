@@ -530,6 +530,7 @@ impl ModelPane {
         let result = match model_file::read_hand_edit(
             &self.model,
             &self.file_base,
+            &self.kept.relationships,
             &sources,
             &self.file_draft,
         ) {

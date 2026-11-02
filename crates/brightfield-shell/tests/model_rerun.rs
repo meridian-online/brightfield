@@ -391,6 +391,9 @@ fn a_hand_edit_never_claims_measured_evidence() {
     frame(&mut pane, vec![egui::Event::PointerMoved(at), button(true)]);
     frame(&mut pane, vec![button(false)]);
 
+    // The editor's text before the measurement, which is the text the edit starts from.
+    let stale = pane.file_draft().to_string();
+
     // The written model runs and is measured while the editor holds the keyboard: the file on
     // disk warns, and the editor still holds text without the warning.
     pane.save_model(retail_model())
@@ -405,10 +408,13 @@ fn a_hand_edit_never_claims_measured_evidence() {
 
     // An unrelated hand edit to the text from before the measurement: promo_codes made a
     // reference table.
-    let stale = brightfield_ossie::write(&retail_model());
     let promo = r#"data: '{"role":"unclear""#;
-    assert_eq!(stale.matches(promo).count(), 1, "{stale}");
-    let typed = stale.replacen(promo, r#"data: '{"role":"reference""#, 1);
+    let at = stale
+        .find("- name: promo_codes")
+        .expect("the promo_codes table");
+    let role = at + stale[at..].find(promo).expect("its role");
+    let mut typed = stale.clone();
+    typed.replace_range(role..role + promo.len(), r#"data: '{"role":"reference""#);
     pane.set_file_draft(typed.clone());
     frame(&mut pane, Vec::new());
     assert_eq!(pane.tick_file_edit(0), None);

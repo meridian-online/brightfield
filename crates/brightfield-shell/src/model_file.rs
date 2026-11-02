@@ -78,8 +78,9 @@ pub struct HandEdit {
 }
 
 /// Read `text`, the Ossie file as the analyst edited it, against `current`, the model the pane
-/// holds, `base`, the model of the text the edit started from, and `sources`, the names of the
-/// Protocol's source tables (see the module).
+/// holds, `base`, the model of the text the edit started from, `kept`, the joins the file holds
+/// that the model does not (`Kept::relationships`), and `sources`, the names of the Protocol's
+/// source tables (see the module).
 ///
 /// # Errors
 ///
@@ -88,6 +89,7 @@ pub struct HandEdit {
 pub fn read_hand_edit(
     current: &Model,
     base: &Model,
+    kept: &[Relationship],
     sources: &[&str],
     text: &str,
 ) -> Result<HandEdit, String> {
@@ -118,7 +120,7 @@ pub fn read_hand_edit(
             .partition(|r| tables.contains(&r.from) && tables.contains(&r.to));
     model.relationships = acted;
     keep_measurements(current, &mut model);
-    mark_changed(current, base, &mut model);
+    mark_changed(current, base, kept, &mut model);
     // A table `current` dropped from text that left it as it was takes its joins with it: those
     // the edit kept are set aside rather than left naming a table the model lacks.
     let tables: Vec<String> = model.datasets.iter().map(|d| d.name.clone()).collect();
@@ -128,13 +130,14 @@ pub fn read_hand_edit(
             .partition(|r| tables.contains(&r.from) && tables.contains(&r.to));
     model.relationships = acted;
     unjoined.extend(stranded);
-    // A set-aside join the text left as it was and `current` has dropped is dropped below. Its
-    // rejection in `current` is carried over, so it is not counted as held here.
+    // A join the text left as it was and `current` has dropped is left out of the edit. A join
+    // the file sets aside is still held by the pane, though the model never holds it. A rejection
+    // in `current` is carried over, so a dropped join is not counted as held here.
     let dropped = |r: &Relationship| {
         base.relationships
             .iter()
             .any(|b| b.name == r.name && same_relationship(b, r))
-            && !current.relationships.iter().any(|c| c.name == r.name)
+            && !held_by_pane(current, kept, &r.name)
     };
     let counted: Vec<Relationship> = unjoined.iter().filter(|r| !dropped(r)).cloned().collect();
     hold_deletions(current, base, sources, &mut model, &counted);
@@ -142,13 +145,15 @@ pub fn read_hand_edit(
     // again and is acted on rather than set aside
     // (`a_table_deleted_by_hand_keeps_its_joins_in_the_model`).
     let tables: Vec<String> = model.datasets.iter().map(|d| d.name.clone()).collect();
-    let (mut rejoined, unjoined): (Vec<Relationship>, Vec<Relationship>) = unjoined
+    let (mut rejoined, mut unjoined): (Vec<Relationship>, Vec<Relationship>) = unjoined
         .into_iter()
         .partition(|r| tables.contains(&r.from) && tables.contains(&r.to));
+    // One `current` rejected is carried in `rejected`, so it is not also set aside.
+    unjoined.retain(|r| !dropped(r));
     if !rejoined.is_empty() {
         // These joins are new to the model. Marking the whole model again would take the elements
         // `hold_deletions` added from `current` for the analyst's, as `base` does not hold them.
-        mark_relationships(current, base, &mut rejoined);
+        mark_relationships(current, base, kept, &mut rejoined);
         model.relationships.extend(rejoined);
         // This reads `current` alone, so running it again leaves what it already did as it is.
         keep_measurements(current, &mut model);
@@ -443,7 +448,7 @@ fn keep_measurements(current: &Model, edited: &mut Model) {
 /// version, which a discovery pass may have changed while the editor held older text, or is
 /// dropped when `current` no longer holds it. One that differs from `base`, or that `base` did not
 /// hold, is marked the analyst's. A dataset is compared bare, its fields one by one.
-fn mark_changed(current: &Model, base: &Model, edited: &mut Model) {
+fn mark_changed(current: &Model, base: &Model, kept: &[Relationship], edited: &mut Model) {
     let datasets = std::mem::take(&mut edited.datasets);
     for mut d in datasets {
         let held = base.datasets.iter().find(|b| b.name == d.name);
@@ -493,7 +498,7 @@ fn mark_changed(current: &Model, base: &Model, edited: &mut Model) {
         }
         // A field `current` gained since `base` is not in the text. A field the analyst deleted
         // by hand was in `base`, so it stays deleted.
-        if let (Some(c), true) = (now, untouched) {
+        if let Some(c) = now {
             for (i, cf) in c.fields.iter().enumerate() {
                 let known = held.is_some_and(|b| b.fields.iter().any(|bf| bf.name == cf.name));
                 if !known && !text_fields.contains(&cf.name) {
@@ -503,18 +508,31 @@ fn mark_changed(current: &Model, base: &Model, edited: &mut Model) {
         }
         edited.datasets.push(d);
     }
-    mark_relationships(current, base, &mut edited.relationships);
+    mark_relationships(current, base, kept, &mut edited.relationships);
+}
+
+/// Whether the pane holds a join named `name`: in the model, or set aside beside it.
+fn held_by_pane(current: &Model, kept: &[Relationship], name: &str) -> bool {
+    current.relationships.iter().any(|c| c.name == name) || kept.iter().any(|k| k.name == name)
 }
 
 /// `mark_changed` for relationships alone, which the second pass over joins the edit set aside
 /// needs: the rest of the model has been through `hold_deletions` by then, and what that added
 /// from `current` is not `base`'s to compare.
-fn mark_relationships(current: &Model, base: &Model, relationships: &mut Vec<Relationship>) {
+fn mark_relationships(
+    current: &Model,
+    base: &Model,
+    kept: &[Relationship],
+    relationships: &mut Vec<Relationship>,
+) {
     for mut r in std::mem::take(relationships) {
         let held = base.relationships.iter().find(|b| b.name == r.name);
         if held.is_some_and(|b| same_relationship(b, &r)) {
             if let Some(c) = current.relationships.iter().find(|c| c.name == r.name) {
                 relationships.push(c.clone());
+            } else if kept.iter().any(|k| k.name == r.name) {
+                // The pane set it aside and no pass has proposed it since: it is as it was.
+                relationships.push(r);
             }
         } else {
             r.meta.decided_by = DecidedBy::Analyst;
