@@ -14,9 +14,9 @@
 //! A discoverer run as a child writes its proposal to a file of its own ([`proposal_file`]).
 //!
 //! [`Dovetail`] is the discoverer: it runs dovetail as a child of this binary, one child per
-//! pass. [`StandIn`] serves a single table, which has nothing to relate, and the open's sample
+//! pass. [`StandIn`] serves a single table, which has no second table to join, and the open's sample
 //! pass when dovetail's fails: it returns the model already in the Protocol folder, or else lists
-//! each table as unclear with no joins.
+//! the tables as unclear with no joins.
 
 use std::collections::HashMap;
 use std::io::Read as _;
