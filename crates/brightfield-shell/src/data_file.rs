@@ -1252,15 +1252,15 @@ pub fn open_any_with(
     // leaving the Protocol folder behind with no window; the pane's full pass runs dovetail again
     // and says why in the status line if it fails too.
     let stand_in = crate::discovery::StandIn;
-    let discoverer: &dyn crate::discovery::Discovery = if one_part.is_none() {
-        dovetail
+    let model = if one_part.is_none() {
+        crate::discovery::sample_pass(dovetail, &protocol, None).or_else(|e| {
+            eprintln!("dovetail's sample pass failed, so the tables open unclear: {e}");
+            crate::discovery::sample_pass(&stand_in, &protocol, None)
+        })?
     } else {
-        &stand_in
+        // The stand-in is the discoverer here, so its failure is the open's, not one to retry.
+        crate::discovery::sample_pass(&stand_in, &protocol, None)?
     };
-    let model = crate::discovery::sample_pass(discoverer, &protocol, None).or_else(|e| {
-        eprintln!("dovetail's sample pass failed, so the tables open unclear: {e}");
-        crate::discovery::sample_pass(&stand_in, &protocol, None)
-    })?;
     // A single table has nothing to relate, so no model is written for it, and its folder is not
     // one the door lists as an own-files Protocol.
     if one_part.is_none() {
