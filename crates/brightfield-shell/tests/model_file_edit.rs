@@ -1523,3 +1523,47 @@ fn a_set_aside_join_whose_table_a_pass_adds_survives_the_next_edit() {
 
     assert!(edited.relationships.iter().any(|r| r.name == "ghost_join"));
 }
+
+#[test]
+fn an_edit_of_a_dataset_from_older_text_keeps_the_role_scores_current_holds() {
+    let base = retail_model();
+    let name = base.datasets[0].name.clone();
+    let scores = |entity: f64| brightfield_ossie::RoleScores {
+        entity,
+        event: 0.0,
+        reference: 0.0,
+        bridge: 0.0,
+        snapshot: 0.0,
+        unclear: 0.0,
+    };
+    // The text the editor holds carries the scores a first pass wrote; a later pass has rescored.
+    let mut older = base.clone();
+    older.datasets[0].meta.role_scores = Some(scores(0.3));
+    let mut current = base.clone();
+    current.datasets[0].meta.role_scores = Some(scores(0.9));
+    let mut typed = older.clone();
+    typed.datasets[0].description = Some("typed by hand".to_string());
+    let edited = hand_edited(&current, &older, &brightfield_ossie::write(&typed));
+
+    let d = edited.datasets.iter().find(|d| d.name == name).unwrap();
+    assert_eq!(d.description.as_deref(), Some("typed by hand"));
+    assert_eq!(d.meta.decided_by, DecidedBy::Analyst);
+    assert_eq!(d.meta.role_scores, Some(scores(0.9)));
+}
+
+#[test]
+fn rescoring_alone_does_not_make_a_dataset_the_analysts() {
+    let base = retail_model();
+    let mut older = base.clone();
+    older.datasets[0].meta.role_scores = Some(brightfield_ossie::RoleScores {
+        entity: 0.3,
+        event: 0.0,
+        reference: 0.0,
+        bridge: 0.0,
+        snapshot: 0.0,
+        unclear: 0.0,
+    });
+    let edited = hand_edited(&base, &older, &brightfield_ossie::write(&older));
+
+    assert_eq!(edited.datasets[0].meta, base.datasets[0].meta);
+}

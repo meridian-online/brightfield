@@ -143,6 +143,7 @@ pub fn apply(model: &Model, edit: &Edit) -> Result<Model, EditError> {
                     verified: Verified::Unmeasured,
                     decided_by: DecidedBy::Analyst,
                     warning: None,
+                    other: serde_json::Map::new(),
                 },
                 extras: Default::default(),
                 other_extensions: Vec::new(),

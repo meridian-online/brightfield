@@ -145,8 +145,20 @@ pub struct DatasetMeta {
     pub role: Role,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub role_evidence: Vec<String>,
+    /// How well each role fitted the table, as dovetail scored it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_scores: Option<RoleScores>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folded_into: Option<String>,
+    /// The column of the host that tells apart the rows folded in from this table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fold_column: Option<String>,
+    /// The combined table this one is a part of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combined_into: Option<String>,
+    /// For a combined table, the parts it was built from and how.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combination: Option<Combination>,
     #[serde(default)]
     pub excluded: bool,
     pub decided_by: DecidedBy,
@@ -155,6 +167,39 @@ pub struct DatasetMeta {
     pub source_part: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rows: Option<u64>,
+    /// Keys Brightfield does not type, carried through a read and write unchanged.
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The score of each role for a table, in dovetail's order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoleScores {
+    pub entity: f64,
+    pub event: f64,
+    pub reference: f64,
+    pub bridge: f64,
+    pub snapshot: f64,
+    pub unclear: f64,
+}
+
+/// How the parts of a combined table relate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CombinationKind {
+    Partition,
+    Snapshot,
+    Duplicate,
+}
+
+/// A table dovetail built from several files that share one shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Combination {
+    pub kind: CombinationKind,
+    pub parts: Vec<String>,
+    /// The column that holds what told the parts apart, such as a year taken from the file name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_column: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,6 +207,9 @@ pub struct FieldMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finetype: Option<String>,
     pub decided_by: DecidedBy,
+    /// Keys Brightfield does not type, carried through a read and write unchanged.
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -196,6 +244,9 @@ pub struct RelationshipMeta {
     pub decided_by: DecidedBy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
+    /// Keys Brightfield does not type, carried through a read and write unchanged.
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A source file the discovery pass left out, and why.
@@ -208,10 +259,21 @@ pub struct SkippedSource {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelMeta {
     pub generator: String,
+    /// The discovery pass that wrote the model, such as `sample` or `full`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass: Option<String>,
+    /// How the columns were typed, kept as dovetail wrote it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typing: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rows: Option<u64>,
     /// Dropped relationships live here, not in `relationships`, so the core
     /// document only asserts joins the model holds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rejected: Vec<Relationship>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped_sources: Vec<SkippedSource>,
+    /// Keys Brightfield does not type, carried through a read and write unchanged.
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }

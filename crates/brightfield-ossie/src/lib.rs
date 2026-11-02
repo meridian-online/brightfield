@@ -23,8 +23,9 @@ pub use layout::{
 };
 pub use merge::merge_discovery;
 pub use model::{
-    Dataset, DatasetMeta, Datatype, DecidedBy, Evidence, Extension, Field, FieldMeta, Grade, Model,
-    ModelMeta, Relationship, RelationshipMeta, Role, SkippedSource, Verified,
+    Combination, CombinationKind, Dataset, DatasetMeta, Datatype, DecidedBy, Evidence, Extension,
+    Field, FieldMeta, Grade, Model, ModelMeta, Relationship, RelationshipMeta, Role, RoleScores,
+    SkippedSource, Verified,
 };
 pub use validate::{validate, SchemaIssue};
 pub use verify::{apply_evidence, evidence_sql};

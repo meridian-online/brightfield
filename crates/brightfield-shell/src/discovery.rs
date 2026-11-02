@@ -202,6 +202,7 @@ fn unclear_tables(protocol: &OwnProtocol) -> Model {
                             .flatten()
                             .map(str::to_string),
                         decided_by: DecidedBy::Dovetail,
+                        other: serde_json::Map::new(),
                     },
                     other_extensions: Vec::new(),
                 })
@@ -217,12 +218,17 @@ fn unclear_tables(protocol: &OwnProtocol) -> Model {
                 meta: DatasetMeta {
                     role: Role::Unclear,
                     role_evidence: Vec::new(),
+                    role_scores: None,
                     folded_into: None,
+                    fold_column: None,
+                    combined_into: None,
+                    combination: None,
                     excluded: false,
                     decided_by: DecidedBy::Dovetail,
                     source_file: source_file_of(&table.file, &protocol.dir),
                     source_part: table.part.clone(),
                     rows,
+                    other: serde_json::Map::new(),
                 },
                 other_extensions: Vec::new(),
             }
@@ -240,6 +246,9 @@ fn unclear_tables(protocol: &OwnProtocol) -> Model {
         relationships: Vec::new(),
         meta: ModelMeta {
             generator: "brightfield stand-in".to_string(),
+            pass: None,
+            typing: None,
+            sample_rows: None,
             rejected: Vec::new(),
             skipped_sources: protocol
                 .sources
@@ -250,6 +259,7 @@ fn unclear_tables(protocol: &OwnProtocol) -> Model {
                     reason: reason.clone(),
                 })
                 .collect(),
+            other: serde_json::Map::new(),
         },
         other_extensions: Vec::new(),
     }

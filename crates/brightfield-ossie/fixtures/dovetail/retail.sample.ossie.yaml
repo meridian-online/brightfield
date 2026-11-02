@@ -1,0 +1,637 @@
+version: 0.2.0.dev0
+name: retail
+datasets:
+- name: categories
+  source: raw_categories
+  primary_key:
+  - category_id
+  fields:
+  - name: category_id
+    expression:
+      sql: category_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: name
+    expression:
+      sql: name
+    datatype: String
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.text.word","decided_by":"dovetail"}'
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"reference","role_evidence":["typing: packages (labels from the data packages)","category_id unique across 8 rows; pointed at by products","label columns: name","reference 1.00, ahead of entity 0.80"],"role_scores":{"entity":0.8,"event":0.0,"reference":1.0,"bridge":0.0,"snapshot":0.0,"unclear":0.0},"folded_into":"products","fold_column":"category","excluded":false,"decided_by":"dovetail","source_file":"source/categories.csv","rows":8}'
+- name: customer_segments
+  source: raw_customer_segments
+  primary_key:
+  - customer_id
+  - assessed_on
+  fields:
+  - name: customer_id
+    expression:
+      sql: customer_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: segment
+    expression:
+      sql: segment
+    datatype: String
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.text.word","decided_by":"dovetail"}'
+  - name: assessed_on
+    expression:
+      sql: assessed_on
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+    dimension:
+      is_time: true
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"snapshot","role_evidence":["typing: packages (labels from the data packages)","customer_id, assessed_on unique across 2400 rows","customer_id points at customers.customer_id; 400 distinct values across 2400 rows, values repeat","assessed_on is a time column, 100% filled, 6 distinct, varies within a parent","label columns: segment","customer_id, assessed_on unique while assessed_on takes 6 distinct values across 2400 rows","snapshot 1.00, ahead of event 0.40"],"role_scores":{"entity":0.0,"event":0.4,"reference":0.0,"bridge":0.0,"snapshot":1.0,"unclear":0.0},"excluded":false,"decided_by":"dovetail","source_file":"source/customer_segments.csv","rows":2400}'
+- name: customers
+  source: raw_customers
+  primary_key:
+  - customer_id
+  fields:
+  - name: customer_id
+    expression:
+      sql: customer_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: name
+    expression:
+      sql: name
+    datatype: String
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"identity.person.full_name","decided_by":"dovetail"}'
+  - name: email
+    expression:
+      sql: email
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  - name: joined_on
+    expression:
+      sql: joined_on
+    datatype: Date
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"datetime.date.iso","decided_by":"dovetail"}'
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"entity","role_evidence":["typing: packages (labels from the data packages)","customer_id unique across 400 rows; pointed at by customer_segments, loyalty_visits, transactions","joined_on is a time column, 100% filled, 400 distinct","label columns: name","attribute columns: email, joined_on","entity 0.85, ahead of event 0.00"],"role_scores":{"entity":0.85,"event":0.0,"reference":0.0,"bridge":0.0,"snapshot":0.0,"unclear":0.0},"excluded":false,"decided_by":"dovetail","source_file":"source/customers.csv","rows":400}'
+- name: loyalty_visits
+  source: raw_loyalty_visits
+  primary_key:
+  - visit_id
+  fields:
+  - name: visit_id
+    expression:
+      sql: visit_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: customer_id
+    expression:
+      sql: customer_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: store_id
+    expression:
+      sql: store_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: visited_on
+    expression:
+      sql: visited_on
+    datatype: Date
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"datetime.date.iso","decided_by":"dovetail"}'
+    dimension:
+      is_time: true
+  - name: points
+    expression:
+      sql: points
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"event","role_evidence":["typing: packages (labels from the data packages)","visit_id unique across 1500 rows","customer_id points at customers.customer_id; 400 distinct values across 1500 rows, values repeat","store_id points at stores.store_id; 12 distinct values across 1500 rows, values repeat","visited_on is a time column, 100% filled, 300 distinct, varies within a parent","attribute columns: visited_on, points","event 1.00, ahead of entity 0.10"],"role_scores":{"entity":0.1,"event":1.0,"reference":0.0,"bridge":0.0,"snapshot":0.0,"unclear":0.0},"excluded":false,"decided_by":"dovetail","source_file":"source/loyalty_visits.csv","rows":1500}'
+- name: member_visits
+  source: raw_member_visits
+  primary_key:
+  - member_visit_id
+  fields:
+  - name: member_visit_id
+    expression:
+      sql: member_visit_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: member_id
+    expression:
+      sql: member_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: visited_at
+    expression:
+      sql: visited_at
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+    dimension:
+      is_time: true
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"event","role_evidence":["typing: packages (labels from the data packages)","member_visit_id unique across 2000 rows","member_id carries the key member_id of snapshot members, 100% overlap, values repeat","visited_at is a time column, 100% filled, 2000 distinct, varies within a parent","attribute columns: visited_at","event 0.80, ahead of entity 0.10"],"role_scores":{"entity":0.1,"event":0.8,"reference":0.0,"bridge":0.0,"snapshot":0.0,"unclear":0.0},"excluded":false,"decided_by":"dovetail","source_file":"source/member_visits.csv","rows":2000}'
+- name: members
+  source: SELECT "member_id", "tier", CAST('2024' AS INTEGER) AS "year" FROM "raw_members_2024" UNION ALL BY NAME SELECT "member_id", "tier", CAST('2025' AS INTEGER) AS "year" FROM "raw_members_2025"
+  primary_key:
+  - member_id
+  - year
+  fields:
+  - name: member_id
+    expression:
+      sql: member_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: tier
+    expression:
+      sql: tier
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  - name: year
+    expression:
+      sql: year
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"datetime.component.year","decided_by":"dovetail"}'
+    dimension:
+      is_time: true
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"snapshot","role_evidence":["typing: packages (labels from the data packages)","member_id, year unique across 600 rows; carried by member_visits","member_visits.member_id carries the key member_id of this snapshot, 100% overlap","year is a time column, 100% filled, 2 distinct","attribute columns: tier","member_id, year unique while year takes 2 distinct values across 600 rows","snapshot 0.70, ahead of entity 0.30"],"role_scores":{"entity":0.3,"event":0.0,"reference":0.0,"bridge":0.0,"snapshot":0.7,"unclear":0.0},"combination":{"kind":"snapshot","parts":["members_2024","members_2025"],"token_column":"year"},"excluded":false,"decided_by":"dovetail","source_file":"source/members_2024.csv, source/members_2025.csv","rows":600}'
+- name: members_2024
+  source: raw_members_2024
+  fields:
+  - name: member_id
+    expression:
+      sql: member_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: tier
+    expression:
+      sql: tier
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"snapshot","role_evidence":["combined into members"],"role_scores":{"entity":0.3,"event":0.0,"reference":0.0,"bridge":0.0,"snapshot":0.7,"unclear":0.0},"combined_into":"members","excluded":false,"decided_by":"dovetail","source_file":"source/members_2024.csv","rows":300}'
+- name: members_2025
+  source: raw_members_2025
+  fields:
+  - name: member_id
+    expression:
+      sql: member_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: tier
+    expression:
+      sql: tier
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"snapshot","role_evidence":["combined into members"],"role_scores":{"entity":0.3,"event":0.0,"reference":0.0,"bridge":0.0,"snapshot":0.7,"unclear":0.0},"combined_into":"members","excluded":false,"decided_by":"dovetail","source_file":"source/members_2025.csv","rows":300}'
+- name: price_list
+  source: SELECT "sku", "unit_price", CAST('2024' AS INTEGER) AS "year" FROM "raw_price_list_2024" UNION ALL BY NAME SELECT "sku", "unit_price", CAST('2025' AS INTEGER) AS "year" FROM "raw_price_list_2025"
+  primary_key:
+  - sku
+  - year
+  fields:
+  - name: sku
+    expression:
+      sql: sku
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  - name: unit_price
+    expression:
+      sql: unit_price
+    datatype: Float
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"finance.currency.amount","decided_by":"dovetail"}'
+  - name: year
+    expression:
+      sql: year
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"datetime.component.year","decided_by":"dovetail"}'
+    dimension:
+      is_time: true
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"snapshot","role_evidence":["typing: packages (labels from the data packages)","sku, year unique across 200 rows","sku points at products.sku; 100 distinct values across 200 rows, values repeat","year is a time column, 100% filled, 2 distinct, varies within a parent","attribute columns: unit_price","sku, year unique while year takes 2 distinct values across 200 rows","snapshot 1.00, ahead of event 0.40"],"role_scores":{"entity":0.0,"event":0.4,"reference":0.0,"bridge":0.0,"snapshot":1.0,"unclear":0.0},"combination":{"kind":"snapshot","parts":["price_list_2024","price_list_2025"],"token_column":"year"},"excluded":false,"decided_by":"dovetail","source_file":"source/price_list_2024.csv, source/price_list_2025.csv","rows":200}'
+- name: price_list_2024
+  source: raw_price_list_2024
+  fields:
+  - name: sku
+    expression:
+      sql: sku
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  - name: unit_price
+    expression:
+      sql: unit_price
+    datatype: Float
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"finance.currency.amount","decided_by":"dovetail"}'
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"snapshot","role_evidence":["combined into price_list"],"role_scores":{"entity":0.0,"event":0.4,"reference":0.0,"bridge":0.0,"snapshot":1.0,"unclear":0.0},"combined_into":"price_list","excluded":false,"decided_by":"dovetail","source_file":"source/price_list_2024.csv","rows":100}'
+- name: price_list_2025
+  source: raw_price_list_2025
+  fields:
+  - name: sku
+    expression:
+      sql: sku
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  - name: unit_price
+    expression:
+      sql: unit_price
+    datatype: Float
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"finance.currency.amount","decided_by":"dovetail"}'
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"snapshot","role_evidence":["combined into price_list"],"role_scores":{"entity":0.0,"event":0.4,"reference":0.0,"bridge":0.0,"snapshot":1.0,"unclear":0.0},"combined_into":"price_list","excluded":false,"decided_by":"dovetail","source_file":"source/price_list_2025.csv","rows":100}'
+- name: products
+  source: raw_products
+  primary_key:
+  - sku
+  fields:
+  - name: sku
+    expression:
+      sql: sku
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  - name: name
+    expression:
+      sql: name
+    datatype: String
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.text.word","decided_by":"dovetail"}'
+  - name: category_id
+    expression:
+      sql: category_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: unit_price
+    expression:
+      sql: unit_price
+    datatype: Float
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"finance.currency.amount","decided_by":"dovetail"}'
+  - name: supplier_id
+    expression:
+      sql: supplier_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"entity","role_evidence":["typing: packages (labels from the data packages)","sku unique across 120 rows; pointed at by price_list, transactions","category_id points at categories.category_id; 8 distinct values across 120 rows, values repeat","supplier_id points at suppliers.supplier_id; 30 distinct values across 120 rows, values repeat","label columns: name","attribute columns: unit_price","entity 1.00, ahead of event 0.20"],"role_scores":{"entity":1.0,"event":0.2,"reference":0.0,"bridge":0.0,"snapshot":0.0,"unclear":0.0},"excluded":false,"decided_by":"dovetail","source_file":"source/products.csv","rows":120}'
+- name: promo_codes
+  source: raw_promo_codes
+  primary_key:
+  - code
+  fields:
+  - name: code
+    expression:
+      sql: code
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  - name: discount_pct
+    expression:
+      sql: discount_pct
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: valid_to
+    expression:
+      sql: valid_to
+    datatype: Date
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"datetime.date.iso","decided_by":"dovetail"}'
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"unclear","role_evidence":["typing: packages (labels from the data packages)","code unique across 20 rows","nothing points at promo_codes, and it points at nothing","valid_to is a time column, 100% filled, 20 distinct","attribute columns: discount_pct, valid_to","unclear: the top score, entity 0.20, is under 0.5"],"role_scores":{"entity":0.2,"event":0.0,"reference":0.0,"bridge":0.0,"snapshot":0.0,"unclear":0.0},"excluded":false,"decided_by":"dovetail","source_file":"source/promo_codes.csv","rows":20}'
+- name: stores
+  source: raw_stores
+  primary_key:
+  - store_id
+  fields:
+  - name: store_id
+    expression:
+      sql: store_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: city
+    expression:
+      sql: city
+    datatype: String
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"geography.location.city","decided_by":"dovetail"}'
+  - name: region
+    expression:
+      sql: region
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"entity","role_evidence":["typing: packages (labels from the data packages)","store_id unique across 12 rows; pointed at by loyalty_visits, transactions","attribute columns: city, region","entity 1.00, ahead of reference 0.20"],"role_scores":{"entity":1.0,"event":0.0,"reference":0.2,"bridge":0.0,"snapshot":0.0,"unclear":0.0},"excluded":false,"decided_by":"dovetail","source_file":"source/stores.csv","rows":12}'
+- name: suppliers
+  source: SELECT "supplier_id", "name", "country", CAST('north' AS VARCHAR) AS "region" FROM "raw_suppliers_north" UNION ALL BY NAME SELECT "supplier_id", "name", "country", CAST('south' AS VARCHAR) AS "region" FROM "raw_suppliers_south"
+  primary_key:
+  - supplier_id
+  fields:
+  - name: supplier_id
+    expression:
+      sql: supplier_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: name
+    expression:
+      sql: name
+    datatype: String
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.text.word","decided_by":"dovetail"}'
+  - name: country
+    expression:
+      sql: country
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  - name: region
+    expression:
+      sql: region
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"entity","role_evidence":["typing: packages (labels from the data packages)","supplier_id unique across 60 rows; pointed at by products","label columns: name","attribute columns: country, region","entity 1.00, ahead of reference 0.20"],"role_scores":{"entity":1.0,"event":0.0,"reference":0.2,"bridge":0.0,"snapshot":0.0,"unclear":0.0},"combination":{"kind":"partition","parts":["suppliers_north","suppliers_south"],"token_column":"region"},"excluded":false,"decided_by":"dovetail","source_file":"source/suppliers_north.csv, source/suppliers_south.csv","rows":60}'
+- name: suppliers_north
+  source: raw_suppliers_north
+  fields:
+  - name: supplier_id
+    expression:
+      sql: supplier_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: name
+    expression:
+      sql: name
+    datatype: String
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.text.word","decided_by":"dovetail"}'
+  - name: country
+    expression:
+      sql: country
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"entity","role_evidence":["combined into suppliers"],"role_scores":{"entity":1.0,"event":0.0,"reference":0.2,"bridge":0.0,"snapshot":0.0,"unclear":0.0},"combined_into":"suppliers","excluded":false,"decided_by":"dovetail","source_file":"source/suppliers_north.csv","rows":30}'
+- name: suppliers_south
+  source: raw_suppliers_south
+  fields:
+  - name: supplier_id
+    expression:
+      sql: supplier_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: name
+    expression:
+      sql: name
+    datatype: String
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.text.word","decided_by":"dovetail"}'
+  - name: country
+    expression:
+      sql: country
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"entity","role_evidence":["combined into suppliers"],"role_scores":{"entity":1.0,"event":0.0,"reference":0.2,"bridge":0.0,"snapshot":0.0,"unclear":0.0},"combined_into":"suppliers","excluded":false,"decided_by":"dovetail","source_file":"source/suppliers_south.csv","rows":30}'
+- name: transactions
+  source: raw_transactions
+  primary_key:
+  - txn_id
+  fields:
+  - name: txn_id
+    expression:
+      sql: txn_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: customer_id
+    expression:
+      sql: customer_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: store_id
+    expression:
+      sql: store_id
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: sku
+    expression:
+      sql: sku
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"decided_by":"dovetail"}'
+  - name: quantity
+    expression:
+      sql: quantity
+    datatype: Integer
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"representation.numeric.integer_number","decided_by":"dovetail"}'
+  - name: amount
+    expression:
+      sql: amount
+    datatype: Float
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"finance.currency.amount","decided_by":"dovetail"}'
+  - name: purchased_at
+    expression:
+      sql: purchased_at
+    datatype: DateTime
+    custom_extensions:
+    - vendor_name: MERIDIAN
+      data: '{"finetype":"datetime.timestamp.iso_8601","decided_by":"dovetail"}'
+    dimension:
+      is_time: true
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"role":"event","role_evidence":["typing: packages (labels from the data packages)","txn_id unique across 5000 rows","customer_id points at customers.customer_id; 400 distinct values across 5000 rows, values repeat","sku points at products.sku; 120 distinct values across 5000 rows, values repeat","store_id points at stores.store_id; 12 distinct values across 5000 rows, values repeat","purchased_at is a time column, 100% filled, 5000 distinct, varies within a parent","attribute columns: quantity, amount, purchased_at","event 1.00, ahead of entity 0.10"],"role_scores":{"entity":0.1,"event":1.0,"reference":0.0,"bridge":0.0,"snapshot":0.0,"unclear":0.0},"excluded":false,"decided_by":"dovetail","source_file":"source/transactions.csv","rows":5000}'
+relationships:
+- name: customer_segments_customers
+  from: customer_segments
+  to: customers
+  from_columns:
+  - customer_id
+  to_columns:
+  - customer_id
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"grade":"likely","evidence":{"value_overlap":1.0,"orphans":0,"child_rows":2400,"child_type":"representation.numeric.integer_number","parent_type":"representation.numeric.integer_number","types_agree":true,"name_similarity":0.9},"cardinality":"N:1","verified":"sample","decided_by":"dovetail"}'
+- name: loyalty_visits_customers
+  from: loyalty_visits
+  to: customers
+  from_columns:
+  - customer_id
+  to_columns:
+  - customer_id
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"grade":"likely","evidence":{"value_overlap":1.0,"orphans":0,"child_rows":1500,"child_type":"representation.numeric.integer_number","parent_type":"representation.numeric.integer_number","types_agree":true,"name_similarity":0.9},"cardinality":"N:1","verified":"sample","decided_by":"dovetail"}'
+- name: loyalty_visits_stores
+  from: loyalty_visits
+  to: stores
+  from_columns:
+  - store_id
+  to_columns:
+  - store_id
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"grade":"likely","evidence":{"value_overlap":1.0,"orphans":0,"child_rows":1500,"child_type":"representation.numeric.integer_number","parent_type":"representation.numeric.integer_number","types_agree":true,"name_similarity":0.9},"cardinality":"N:1","verified":"sample","decided_by":"dovetail"}'
+- name: price_list_products
+  from: price_list
+  to: products
+  from_columns:
+  - sku
+  to_columns:
+  - sku
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"grade":"likely","evidence":{"value_overlap":1.0,"orphans":0,"child_rows":200,"types_agree":true,"name_similarity":0.7},"cardinality":"N:1","verified":"sample","decided_by":"dovetail"}'
+- name: products_categories
+  from: products
+  to: categories
+  from_columns:
+  - category_id
+  to_columns:
+  - category_id
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"grade":"likely","evidence":{"value_overlap":1.0,"orphans":0,"child_rows":120,"child_type":"representation.numeric.integer_number","parent_type":"representation.numeric.integer_number","types_agree":true,"name_similarity":0.9},"cardinality":"N:1","verified":"sample","decided_by":"dovetail"}'
+- name: products_suppliers
+  from: products
+  to: suppliers
+  from_columns:
+  - supplier_id
+  to_columns:
+  - supplier_id
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"grade":"likely","evidence":{"value_overlap":1.0,"orphans":0,"child_rows":120,"child_type":"representation.numeric.integer_number","parent_type":"representation.numeric.integer_number","types_agree":true,"name_similarity":0.9},"cardinality":"N:1","verified":"sample","decided_by":"dovetail"}'
+- name: transactions_customers
+  from: transactions
+  to: customers
+  from_columns:
+  - customer_id
+  to_columns:
+  - customer_id
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"grade":"likely","evidence":{"value_overlap":1.0,"orphans":0,"child_rows":5000,"child_type":"representation.numeric.integer_number","parent_type":"representation.numeric.integer_number","types_agree":true,"name_similarity":0.9},"cardinality":"N:1","verified":"sample","decided_by":"dovetail"}'
+- name: transactions_products
+  from: transactions
+  to: products
+  from_columns:
+  - sku
+  to_columns:
+  - sku
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"grade":"likely","evidence":{"value_overlap":1.0,"orphans":0,"child_rows":5000,"types_agree":true,"name_similarity":0.7},"cardinality":"N:1","verified":"sample","decided_by":"dovetail"}'
+- name: transactions_stores
+  from: transactions
+  to: stores
+  from_columns:
+  - store_id
+  to_columns:
+  - store_id
+  custom_extensions:
+  - vendor_name: MERIDIAN
+    data: '{"grade":"likely","evidence":{"value_overlap":1.0,"orphans":0,"child_rows":5000,"child_type":"representation.numeric.integer_number","parent_type":"representation.numeric.integer_number","types_agree":true,"name_similarity":0.9},"cardinality":"N:1","verified":"sample","decided_by":"dovetail"}'
+custom_extensions:
+- vendor_name: MERIDIAN
+  data: '{"generator":"dovetail VERSION","pass":"sample","typing":{"source":"packages"},"sample_rows":50000}'

@@ -430,7 +430,8 @@ fn set_aside_roles(current: &Model, doc: &mut Value) -> Vec<IgnoredRole> {
     kept
 }
 
-/// Give each relationship of `edited` that `current` also holds `current`'s evidence and warning.
+/// Give each relationship of `edited` that `current` also holds `current`'s evidence and warning,
+/// and each dataset it holds `current`'s role scores.
 /// Those are measured over the data after each run, not decided, so a hand edit never claims
 /// them: an editor whose text predates the last measurement would otherwise write the old
 /// numbers back and mark every join they differ on as the analyst's.
@@ -439,6 +440,12 @@ fn keep_measurements(current: &Model, edited: &mut Model) {
         if let Some(c) = current.relationships.iter().find(|c| c.name == r.name) {
             r.meta.evidence.clone_from(&c.meta.evidence);
             r.meta.warning.clone_from(&c.meta.warning);
+        }
+    }
+    // Scores are measured by a pass like evidence is, so the editor's older text does not claim them.
+    for d in &mut edited.datasets {
+        if let Some(c) = current.datasets.iter().find(|c| c.name == d.name) {
+            d.meta.role_scores.clone_from(&c.meta.role_scores);
         }
     }
 }
@@ -618,6 +625,7 @@ fn same_dataset(a: &Dataset, b: &Dataset) -> bool {
         fields: Vec::new(),
         meta: DatasetMeta {
             decided_by: DecidedBy::Analyst,
+            role_scores: None,
             ..d.meta.clone()
         },
         ..d.clone()
