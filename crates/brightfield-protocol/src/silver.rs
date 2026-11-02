@@ -190,11 +190,14 @@ fn source(d: &Dataset, transforms: &FinetypeTransforms) -> String {
 /// field, break the tie the same way on each build.
 fn fold_order(d: &Dataset) -> String {
     let mut order = vec![quoted("__source_file"), quoted("__source_row")];
+    // The fold selects only lineage and the fields, so a token column the analyst removed or
+    // renamed out of them is not there to order by.
     if let Some(token) = d
         .meta
         .combination
         .as_ref()
         .and_then(|c| c.token_column.as_ref())
+        .filter(|t| d.fields.iter().any(|f| f.name == **t))
     {
         order.push(quoted(token));
     }

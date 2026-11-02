@@ -469,6 +469,9 @@ fn keep_model_meta(current: &Model, base: &Model, edited: &mut Model) {
     if meta.sample_rows == then.sample_rows {
         meta.sample_rows = now.sample_rows;
     }
+    if meta.skipped_sources == then.skipped_sources {
+        meta.skipped_sources.clone_from(&now.skipped_sources);
+    }
     let keys: std::collections::BTreeSet<String> = meta
         .other
         .keys()

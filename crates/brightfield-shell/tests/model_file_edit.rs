@@ -1665,6 +1665,10 @@ fn an_edit_of_text_from_the_sample_keeps_what_the_full_pass_wrote_of_the_model()
     current.meta.pass = Some("full".to_string());
     current.meta.sample_rows = None;
     current.meta.typing = Some(serde_json::json!({"source": "packages"}));
+    current.meta.skipped_sources = vec![brightfield_ossie::SkippedSource {
+        path: "notes.txt".to_string(),
+        reason: "not tabular".to_string(),
+    }];
     current
         .meta
         .other

@@ -280,9 +280,15 @@ pub fn refuse_new_strands(before: &Model, after: &Model) -> Result<(), EditError
         .filter(|(_, c)| c == combined)
         .map(|(part, _)| part.as_str())
         .collect();
+    // The last clause names what to undo: a fold, a leaving-out, or a removal.
+    let remedy = match after.datasets.iter().find(|d| d.name == *combined) {
+        Some(d) if d.meta.folded_into.is_some() => format!("don't fold {combined}"),
+        Some(d) if d.meta.excluded => format!("bring {combined} back first"),
+        _ => format!("keep {combined} in the model"),
+    };
     err(format!(
         "{} {} combined into {combined}, which would have no table of its own, so their rows \
-         would reach no table: keep {combined} in the model",
+         would reach no table: {remedy}",
         and_list(&parts),
         if parts.len() == 1 { "is" } else { "are" },
     ))

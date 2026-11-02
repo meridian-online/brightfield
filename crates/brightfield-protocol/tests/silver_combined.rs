@@ -202,3 +202,24 @@ fn a_cast_field_casts_over_the_combined_query() {
         .unwrap();
     assert_eq!(failed, 1);
 }
+
+#[test]
+fn a_folded_combination_without_its_token_column_among_the_fields_still_binds() {
+    // The analyst removed `region` from the fields, so the fold CTE cannot order by it.
+    let mut m = model(true);
+    let ab = m.datasets.iter_mut().find(|d| d.name == "ab").unwrap();
+    ab.fields.retain(|f| f.name != "region");
+    let t = transforms();
+    let conn = db();
+    conn.execute_batch(
+        "CREATE TABLE raw_host AS SELECT * FROM (VALUES ('h', NULL::VARCHAR, 1::BIGINT, 1::BIGINT)) \
+         t(__source_file, __source_part, __source_row, id);",
+    )
+    .unwrap();
+    conn.execute_batch(&silver_sql(&m, "host", &t))
+        .expect("the host's statement binds");
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM host", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 1);
+}

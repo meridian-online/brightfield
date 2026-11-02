@@ -338,6 +338,11 @@ impl Drop for RunFiles {
 /// running. A process that quits or crashes during a pass never drops its [`RunFiles`], and its
 /// database copy is as large as the Protocol's database
 /// (`a_pass_removes_the_run_files_a_process_that_has_ended_left`).
+///
+/// This cleanup, like a discoverer child's exit when its parent ends, works on Unix only for now;
+/// elsewhere run files stay where they are. A run file whose process id belongs to another
+/// user's live process cannot be signalled, so it is counted dead and removed: a Protocol folder
+/// is one user's.
 fn remove_orphaned_runs(proposals: &Path) {
     let Ok(entries) = std::fs::read_dir(proposals) else {
         return;

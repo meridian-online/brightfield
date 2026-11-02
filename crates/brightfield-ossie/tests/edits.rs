@@ -639,3 +639,35 @@ fn leaving_out_a_combined_table_is_refused_while_its_parts_are_kept() {
     .unwrap();
     assert!(dataset(&out, "members").meta.excluded);
 }
+
+#[test]
+fn folding_a_combined_table_is_refused_while_its_parts_are_kept() {
+    let m = read(include_str!(
+        "../fixtures/dovetail/retail.sample.ossie.yaml"
+    ))
+    .unwrap();
+    let m = apply(
+        &m,
+        &Edit::AddJoin {
+            from: "members".into(),
+            from_columns: vec!["member_id".into()],
+            to: "customers".into(),
+            to_columns: vec!["customer_id".into()],
+        },
+    )
+    .unwrap();
+    let e = apply(
+        &m,
+        &Edit::Fold {
+            dataset: "members".into(),
+            into: "customers".into(),
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        e.contains("members_2024 and members_2025 are combined into members"),
+        "{e}"
+    );
+    assert!(e.ends_with("don't fold members"), "{e}");
+}
