@@ -1648,3 +1648,41 @@ fn leaving_out_or_deleting_a_combined_table_by_hand_is_refused() {
         assert_eq!(on_disk(&pane), before, "nothing on disk changed");
     }
 }
+
+#[test]
+fn an_edit_of_text_from_the_sample_keeps_what_the_full_pass_wrote_of_the_model() {
+    // The editor holds text taken at the sample pass; the full pass has landed since.
+    let mut older = retail_model();
+    older.meta.generator = "brightfield".to_string();
+    older.meta.pass = Some("sample".to_string());
+    older.meta.sample_rows = Some(50000);
+    older.meta.typing = Some(serde_json::json!({"source": "sample"}));
+    older
+        .meta
+        .other
+        .insert("zz_pass_note".to_string(), serde_json::json!("sample"));
+    let mut current = older.clone();
+    current.meta.pass = Some("full".to_string());
+    current.meta.sample_rows = None;
+    current.meta.typing = Some(serde_json::json!({"source": "packages"}));
+    current
+        .meta
+        .other
+        .insert("zz_pass_note".to_string(), serde_json::json!("full"));
+    let mut typed = older.clone();
+    typed.datasets[0].description = Some("typed by hand".to_string());
+    let edited = hand_edited(&current, &older, &brightfield_ossie::write(&typed));
+
+    assert_eq!(
+        edited.datasets[0].description.as_deref(),
+        Some("typed by hand")
+    );
+    assert_eq!(edited.meta, current.meta);
+
+    // What the text does change of the model's own keys is the analyst's, and stands.
+    let mut typed = older.clone();
+    typed.meta.pass = Some("by hand".to_string());
+    let edited = hand_edited(&current, &older, &brightfield_ossie::write(&typed));
+    assert_eq!(edited.meta.pass.as_deref(), Some("by hand"));
+    assert_eq!(edited.meta.sample_rows, None);
+}

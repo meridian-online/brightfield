@@ -120,6 +120,7 @@ pub fn read_hand_edit(
             .partition(|r| tables.contains(&r.from) && tables.contains(&r.to));
     model.relationships = acted;
     keep_measurements(current, &mut model);
+    keep_model_meta(current, base, &mut model);
     mark_changed(current, base, kept, &mut model);
     // A table `current` dropped from text that left it as it was takes its joins with it: those
     // the edit kept are set aside rather than left naming a table the model lacks.
@@ -446,6 +447,46 @@ fn keep_measurements(current: &Model, edited: &mut Model) {
     for d in &mut edited.datasets {
         if let Some(c) = current.datasets.iter().find(|c| c.name == d.name) {
             d.meta.role_scores.clone_from(&c.meta.role_scores);
+        }
+    }
+}
+
+/// Take the model's own keys a pass writes from `current` where the text left them as `base` had
+/// them, so text the editor took before a pass landed does not put back what the pass replaced
+/// (`an_edit_of_text_from_the_sample_keeps_what_the_full_pass_wrote_of_the_model`). A key the text
+/// changed is the analyst's and stands. The keys Brightfield does not type are settled one by one.
+fn keep_model_meta(current: &Model, base: &Model, edited: &mut Model) {
+    let (now, then, meta) = (&current.meta, &base.meta, &mut edited.meta);
+    if meta.generator == then.generator {
+        meta.generator.clone_from(&now.generator);
+    }
+    if meta.pass == then.pass {
+        meta.pass.clone_from(&now.pass);
+    }
+    if meta.typing == then.typing {
+        meta.typing.clone_from(&now.typing);
+    }
+    if meta.sample_rows == then.sample_rows {
+        meta.sample_rows = now.sample_rows;
+    }
+    let keys: std::collections::BTreeSet<String> = meta
+        .other
+        .keys()
+        .chain(then.other.keys())
+        .chain(now.other.keys())
+        .cloned()
+        .collect();
+    for key in keys {
+        if meta.other.get(&key) != then.other.get(&key) {
+            continue;
+        }
+        match now.other.get(&key) {
+            Some(value) => {
+                meta.other.insert(key, value.clone());
+            }
+            None => {
+                meta.other.remove(&key);
+            }
         }
     }
 }
