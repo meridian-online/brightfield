@@ -38,15 +38,15 @@ pub const MODEL_FILE: &str = "model.ossie.yaml";
 pub const PROPOSALS_DIR: &str = ".discovery";
 
 /// The environment variable that makes a process of this binary dovetail instead of a window.
-/// The binary runs dovetail as a child of itself because dovetail's entry point parses the
-/// process's argv and ends the process.
+/// The binary runs dovetail as a child of itself because dovetail's entry point reads the
+/// process's argv, and the window's process has argv of its own.
 pub const DOVETAIL_ENV: &str = "BRIGHTFIELD_RUN_AS_DOVETAIL";
 
 /// Become dovetail if [`DOVETAIL_ENV`] is set: run its command line and end the process, so `main`
 /// opens no window and reads no file to open (`the_binary_serves_as_dovetail_under_its_variable`).
 ///
-/// Dovetail parses the argv itself and ends the process on an error; a run it reports as
-/// successful ends this process with 0, and any other result with 1.
+/// Dovetail reads the argv itself and returns an exit code. A success ends this process with 0 and
+/// any other code with 1: the parent reads only success or failure, and the reason from stderr.
 pub fn serve_as_dovetail_if_asked() {
     if std::env::var_os(DOVETAIL_ENV).is_some() {
         let code = if dovetail::cli_main() == std::process::ExitCode::SUCCESS {

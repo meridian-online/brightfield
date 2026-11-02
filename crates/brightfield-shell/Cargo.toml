@@ -85,8 +85,8 @@ brightfield-ossie = { workspace = true }
 # and BUMPING is README §"The arcform dependency".
 arc = { workspace = true, features = ["cli"] }
 # The own-files discoverer, `crate::discovery`. Its `cli_main` is dovetail's binary entry point:
-# it parses the calling process's argv and ends the process, so nothing here calls it on a thread
-# of the window. `main` hands a child process of this same binary to it, started with
+# it reads the calling process's argv, which the window's process has its own use for, so nothing
+# here calls it on a thread of the window. `main` hands a child process of this same binary to it, started with
 # `discovery::DOVETAIL_ENV` set. The rev is on `dovetail` in the workspace root.
 dovetail = { workspace = true }
 brightfield-keys = { workspace = true }
