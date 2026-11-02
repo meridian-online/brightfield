@@ -162,17 +162,18 @@ impl Discovery for StandIn {
 ///
 /// The child reads a copy of the Protocol's database, taken under [`own_files::database_lock`] so
 /// no run of the Protocol is writing it at the time, and the lock is let go before the child
-/// starts: a pass never holds up a run. Each pass has files of its own, a copy named for the run
-/// and an out file beside it, so a superseded child being killed and its successor never write
-/// one file. Once the child exits 0, its out file is renamed to the pass's [`proposal_file`], and
+/// starts, so a run waits on a pass only while it copies. Each pass has files of its own, a copy
+/// named for the run and an out file beside it, so a superseded child being killed and its
+/// successor write separate files. Once the child exits 0, its out file is renamed to the pass's [`proposal_file`], and
 /// that is the pass's answer. A pass removes its proposal file before it runs, and a sample pass
 /// the full one too, so a proposal on disk is always the latest pass's own; the full pass is given
 /// the sample proposal to verify when there is one, and removes it once it has run.
 ///
 /// A pass may be superseded while its child runs, by a new pass or by the pane letting it go.
 /// [`Discovery::discover_until`] then kills the child, waits for it, removes the run's files and
-/// answers that it was superseded, and a pass that is no longer the latest of its kind for the
-/// folder renames nothing over its successor's proposal.
+/// answers that it was superseded (`a_cancelled_pass_kills_its_child_and_leaves_no_files`), and a
+/// pass that is no longer the latest of its kind for the folder leaves its successor's proposal
+/// where it is.
 ///
 /// A join's warning has one home, `RelationshipMeta.warning`. Dovetail's full pass writes its own
 /// there, and it stands until the next run of the Protocol, when Brightfield's measurement over the
@@ -425,7 +426,7 @@ fn copy_database(dir: &Path, copy: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Wait for `child` to exit, looking every [`POLL`], and answer how it exited; or, once `cancel` is
+/// Wait for `child` to exit, looking at it each [`POLL`], and answer how it exited; or, once `cancel` is
 /// requested, kill it, wait for it so it is not left a zombie, and answer `None`.
 fn wait_unless_cancelled(
     child: &mut Child,
