@@ -1234,7 +1234,12 @@ pub fn open_any(path: &Path, runner: &crate::run::Runner) -> Result<Opened, Stri
     own::run_loads(&protocol, runner)?;
     own::profile(&mut protocol)?;
     own::write_packages(&protocol)?;
-    let model = crate::discovery::sample_pass(&crate::discovery::StandIn, &protocol, None)?;
+    // A single table has nothing to relate, so dovetail is not asked about it.
+    let model = if one_part.is_none() {
+        crate::discovery::sample_pass(&crate::discovery::Dovetail::new(runner), &protocol, None)?
+    } else {
+        crate::discovery::sample_pass(&crate::discovery::StandIn, &protocol, None)?
+    };
     // A single table has nothing to relate, so no model is written for it, and its folder is not
     // one the door lists as an own-files Protocol.
     if one_part.is_none() {

@@ -1088,6 +1088,9 @@ fn typing_in_the_file_view_fires_no_reshape_key() {
         modifiers: egui::Modifiers::NONE,
     }]);
     let disk_before = on_disk(win.app.model_pane().unwrap());
+    // The open's full pass said what it folded in, so the status is checked for change, not for
+    // being empty.
+    let status_before = win.app.model_pane().unwrap().status().map(str::to_owned);
 
     // `y` keeps the selected join and `v` steps the view, but here each is a letter typed.
     win.typed(egui::Key::Y, "y");
@@ -1095,7 +1098,11 @@ fn typing_in_the_file_view_fires_no_reshape_key() {
 
     let pane = win.app.model_pane().unwrap();
     assert_eq!(pane.view, ModelView::File, "v stepped no view");
-    assert_eq!(pane.status(), None, "no reshape verb ran");
+    assert_eq!(
+        pane.status(),
+        status_before.as_deref(),
+        "no reshape verb ran"
+    );
     assert_eq!(on_disk(pane), disk_before, "nothing was written");
     let join = pane
         .model

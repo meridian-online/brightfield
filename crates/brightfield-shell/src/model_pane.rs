@@ -67,7 +67,7 @@ use meridian_design::{semantic, spacing};
 
 use crate::canvas::EguiCanvasHost;
 use crate::design::Mode;
-use crate::discovery::{sample_pass, write_model_file, Discovery, FullPass, StandIn, MODEL_FILE};
+use crate::discovery::{sample_pass, write_model_file, Discovery, Dovetail, FullPass, MODEL_FILE};
 use crate::editor::Access;
 use crate::model_file::{self, Kept};
 use crate::model_inspector::{self, Inspected, InspectorDrawn, ModelAction, ModelPicker};
@@ -682,8 +682,9 @@ impl ModelPane {
     /// answer what came of it; `None` when `longname` is neither.
     pub fn perform_reshape(&mut self, longname: &str) -> Option<Dispatched> {
         if longname == REDISCOVER_MODEL {
-            // The stand-in is the discoverer the open uses ([`crate::data_file::open_any`]).
-            return Some(self.rediscover(StandIn));
+            // The same discoverer the open uses ([`crate::data_file::open_any`]).
+            let dovetail = Dovetail::new(&self.runner);
+            return Some(self.rediscover(dovetail));
         }
         Some(match self.reshape_action(longname)? {
             Ok(action) => self.dispatch(action),

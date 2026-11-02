@@ -340,14 +340,16 @@ fn rediscover_is_a_durable_verb_of_the_model() {
     assert!(model_pane::is_model_verb(REDISCOVER_MODEL));
     assert!(model_pane::model_palette_verbs().contains(&REDISCOVER_MODEL));
 
-    // With the stand-in discoverer, which proposes the model on disk, nothing changes.
+    // The verb runs dovetail over the Protocol, so the file is its proposal's, folded around the
+    // retail model the pane was opened on, and no longer the retail model's text.
     let mut pane = opened(&retail_copy("retail-rediscover-verb", ""), retail_model());
     let text = pane.file_text().to_string();
     let done = pane
         .perform_reshape(REDISCOVER_MODEL)
         .expect("a model verb");
     assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
-    assert_eq!(pane.file_text(), text);
+    assert_ne!(pane.file_text(), text, "dovetail's proposal was written");
+    brightfield_ossie::read(pane.file_text()).expect("the written file reads");
 }
 
 #[test]

@@ -671,3 +671,70 @@ fn a_rediscover_whose_save_fails_still_runs_the_full_pass() {
     release.send(stores_as_reference()).unwrap();
     assert!(pane.finish_discovery().is_some(), "the full pass lands");
 }
+
+#[test]
+fn opening_related_tables_proposes_dovetails_joins() {
+    let opened = {
+        let _held = folder_lock();
+        data_file::open_any(&retail_copy("joins"), &runner()).expect("it opens")
+    };
+    let Opened::Model(protocol) = opened else {
+        panic!("several tables are a model");
+    };
+    let text = std::fs::read_to_string(protocol.dir.join("model.ossie.yaml"))
+        .expect("the open wrote the model");
+    let model = brightfield_ossie::read(&text).expect("the model reads");
+    assert!(
+        model
+            .relationships
+            .iter()
+            .any(|r| r.meta.decided_by == DecidedBy::Dovetail),
+        "dovetail proposed at least one join: {:?}",
+        model.relationships
+    );
+    assert!(
+        model.meta.generator.starts_with("dovetail "),
+        "generator is {:?}",
+        model.meta.generator
+    );
+}
+
+/// Whether a dovetail run file is in the Protocol's proposals folder.
+fn run_file_there(protocol: &OwnProtocol) -> bool {
+    proposals_folder(protocol)
+        .iter()
+        .any(|f| f.starts_with("run-") && f.ends_with(".duckdb"))
+}
+
+#[test]
+fn a_save_during_a_full_pass_runs_the_protocol() {
+    let mut pane = retail_pane("save-during-full");
+    pane.start_full_pass(Dovetail::new(&runner()));
+
+    // The save overlaps a running child: wait until the pass has made its copy.
+    let due = Instant::now() + Duration::from_secs(30);
+    while !run_file_there(&pane.protocol) {
+        assert!(
+            Instant::now() < due,
+            "the full pass never started its child"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let done = pane.dispatch(ModelAction::Edit(Edit::Exclude {
+        dataset: "promo_codes".into(),
+    }));
+    assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
+
+    let due = Instant::now() + Duration::from_secs(120);
+    while pane.poll_discovery().is_none() {
+        assert!(Instant::now() < due, "the full pass never landed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let promo = pane
+        .model
+        .datasets
+        .iter()
+        .find(|d| d.name == "promo_codes")
+        .unwrap();
+    assert!(promo.meta.excluded, "the exclusion survived the fold");
+}
