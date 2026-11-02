@@ -7,15 +7,16 @@
 //! [`sample_pass`] answers the sample's model at once, and [`FullPass`] runs the full pass on a
 //! worker, whose answer the holder folds into its model as that stands when the answer lands,
 //! edits made in the meantime included. A pass that is superseded is told to stop, and its answer
-//! goes nowhere. [`discover_model`] runs both passes in turn on the calling thread.
+//! goes nowhere. [`discover_with`] runs both passes in turn on the calling thread.
 //!
 //! Brightfield writes `model.ossie.yaml` itself, whole ([`write_model_file`]), so a pass that
 //! reads it finds the file as a save left it (`full_pass_reads_the_file_the_sample_save_wrote`).
 //! A discoverer run as a child writes its proposal to a file of its own ([`proposal_file`]).
 //!
-//! [`StandIn`] is what runs until a real discoverer is wired in: it returns the model already in
-//! the Protocol folder, or else lists each table as unclear with no joins. [`Dovetail`] runs
-//! dovetail as a child of this binary, one child per pass.
+//! [`Dovetail`] is the discoverer: it runs dovetail as a child of this binary, one child per
+//! pass. [`StandIn`] serves a single table, which has nothing to relate, and the open's sample
+//! pass when dovetail's fails: it returns the model already in the Protocol folder, or else lists
+//! each table as unclear with no joins.
 
 use std::collections::HashMap;
 use std::io::Read as _;
@@ -657,21 +658,13 @@ pub fn sample_pass(
     Ok(merge_discovery(&held, &sample))
 }
 
-/// The model for `protocol`: a sample pass, then a full pass, each folded into the model held so
-/// far, which is the one on disk if there is one and otherwise the sample pass's own. What the
-/// analyst has decided in between is kept as it is (see [`merge_discovery`]).
+/// The model for `protocol` from `discovery`: a sample pass, then a full pass, each folded into
+/// the model held so far, which is the one on disk if there is one and otherwise the sample
+/// pass's own. What the analyst has decided in between is kept as it is (see
+/// [`merge_discovery`]).
 ///
 /// The passes run one after the other on the calling thread; [`FullPass`] runs the full pass on
 /// a worker.
-///
-/// # Errors
-///
-/// The reason either pass failed.
-pub fn discover_model(protocol: &OwnProtocol) -> Result<Model, String> {
-    discover_with(&StandIn, protocol)
-}
-
-/// [`discover_model`] with the discoverer named.
 ///
 /// # Errors
 ///

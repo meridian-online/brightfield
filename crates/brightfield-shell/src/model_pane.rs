@@ -807,7 +807,8 @@ impl ModelPane {
 
     /// Run `discovery` over the Protocol again and fold what it proposes into the model: what the
     /// analyst decided stays as it is, and what Dovetail decided takes the fresh pass. The sample
-    /// pass is folded in and saved, as an action's model is, before this answers; the full pass
+    /// pass is folded in and saved, as an action's model is, before this answers, so the window
+    /// waits for the sample pass's child to finish; the full pass
     /// then runs on a worker, in place of any still running, which is told to stop, and lands
     /// through [`Self::poll_discovery`]. The full pass starts only once the sample's save is
     /// written, so it reads the folder as the save left it. What came of it stands in the status

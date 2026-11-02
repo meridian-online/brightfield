@@ -349,6 +349,8 @@ fn rediscover_is_a_durable_verb_of_the_model() {
         .expect("a model verb");
     assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
     assert_ne!(pane.file_text(), text, "dovetail's proposal was written");
+    // The generator is not checked: a fold keeps the held model's own, so only an open, which
+    // holds nothing, writes dovetail's.
     brightfield_ossie::read(pane.file_text()).expect("the written file reads");
 }
 

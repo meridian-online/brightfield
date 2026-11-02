@@ -699,6 +699,35 @@ fn opening_related_tables_proposes_dovetails_joins() {
     );
 }
 
+/// A discoverer whose every pass fails.
+struct Failing;
+
+impl Discovery for Failing {
+    fn discover(&self, _protocol: &OwnProtocol, _pass: Pass) -> Result<Model, String> {
+        Err("dovetail could not run".to_string())
+    }
+}
+
+#[test]
+fn a_failed_dovetail_sample_opens_the_stand_ins_model() {
+    let opened = {
+        let _held = folder_lock();
+        data_file::open_any_with(&retail_copy("failed-sample-open"), &runner(), &Failing)
+            .expect("the open still succeeds")
+    };
+    let Opened::Model(protocol) = opened else {
+        panic!("several tables are a model");
+    };
+    let text = std::fs::read_to_string(protocol.dir.join("model.ossie.yaml")).unwrap();
+    let model = brightfield_ossie::read(&text).unwrap();
+    assert!(model.relationships.is_empty(), "no joins are proposed");
+    assert!(!model.datasets.is_empty());
+    assert!(
+        model.datasets.iter().all(|d| d.meta.role == Role::Unclear),
+        "every table is unclear"
+    );
+}
+
 /// Whether a dovetail run file is in the Protocol's proposals folder.
 fn run_file_there(protocol: &OwnProtocol) -> bool {
     proposals_folder(protocol)
@@ -726,10 +755,14 @@ fn a_save_during_a_full_pass_runs_the_protocol() {
     assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
 
     let due = Instant::now() + Duration::from_secs(120);
-    while pane.poll_discovery().is_none() {
+    let landed = loop {
+        if let Some(landed) = pane.poll_discovery() {
+            break landed;
+        }
         assert!(Instant::now() < due, "the full pass never landed");
         std::thread::sleep(Duration::from_millis(20));
-    }
+    };
+    assert!(!matches!(landed, Dispatched::Failed(_)), "{landed:?}");
     let promo = pane
         .model
         .datasets
