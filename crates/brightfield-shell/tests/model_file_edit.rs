@@ -1310,3 +1310,175 @@ fn a_field_the_text_left_as_it_was_takes_the_current_field() {
     );
     assert_eq!(f.meta.decided_by, DecidedBy::Dovetail);
 }
+
+/// `base` with one dataset's description typed over, as an unrelated hand edit, and its text.
+fn described_elsewhere(base: &Model, not: &[&str]) -> String {
+    let mut typed = base.clone();
+    let d = typed
+        .datasets
+        .iter_mut()
+        .find(|d| !not.contains(&d.name.as_str()))
+        .expect("another dataset");
+    d.description = Some("typed by hand".to_string());
+    brightfield_ossie::write(&typed)
+}
+
+#[test]
+fn an_untouched_dataset_keeps_a_field_a_pass_added() {
+    let base = retail_model();
+    let mut current = base.clone();
+    let mut added = current.datasets[0].fields[0].clone();
+    added.name = "added_by_a_pass".to_string();
+    added.expression_sql = "added_by_a_pass".to_string();
+    current.datasets[0].fields.insert(1, added);
+    let kept = base.datasets[0].name.clone();
+    let text = described_elsewhere(&base, &[&kept]);
+    let edited = hand_edited(&current, &base, &text);
+
+    let names: Vec<&str> = edited
+        .datasets
+        .iter()
+        .find(|d| d.name == kept)
+        .unwrap()
+        .fields
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(names[1], "added_by_a_pass", "{names:?}");
+    assert_eq!(names.len(), base.datasets[0].fields.len() + 1);
+}
+
+#[test]
+fn an_untouched_dataset_current_dropped_is_removed() {
+    let base = retail_model();
+    let gone = base
+        .datasets
+        .iter()
+        .find(|d| {
+            d.meta.folded_into.is_none()
+                && !base
+                    .datasets
+                    .iter()
+                    .any(|o| o.meta.folded_into.as_deref() == Some(d.name.as_str()))
+        })
+        .unwrap()
+        .name
+        .clone();
+    let mut current = base.clone();
+    current.datasets.retain(|d| d.name != gone);
+    current
+        .relationships
+        .retain(|r| r.from != gone && r.to != gone);
+    let text = described_elsewhere(&base, &[&gone]);
+    let edited = hand_edited(&current, &base, &text);
+
+    assert!(edited.datasets.iter().all(|d| d.name != gone));
+    assert!(edited
+        .relationships
+        .iter()
+        .all(|r| r.from != gone && r.to != gone));
+}
+
+#[test]
+fn a_field_edited_in_a_dataset_current_dropped_is_kept_with_its_dataset() {
+    let base = retail_model();
+    let gone = "stores".to_string();
+    let mut current = base.clone();
+    current.datasets.retain(|d| d.name != gone);
+    current
+        .relationships
+        .retain(|r| r.from != gone && r.to != gone);
+    let mut typed = base.clone();
+    let store = typed.datasets.iter_mut().find(|d| d.name == gone).unwrap();
+    store.fields[1].meta.finetype = Some("representation.text.word".to_string());
+    let edited = hand_edited(&current, &base, &brightfield_ossie::write(&typed));
+
+    let d = edited.datasets.iter().find(|d| d.name == gone).unwrap();
+    assert_eq!(d.fields[1].meta.decided_by, DecidedBy::Analyst);
+    assert_eq!(
+        d.fields[1].meta.finetype.as_deref(),
+        Some("representation.text.word")
+    );
+    let tables: Vec<&str> = edited.datasets.iter().map(|d| d.name.as_str()).collect();
+    assert!(edited
+        .relationships
+        .iter()
+        .all(|r| tables.contains(&r.from.as_str()) && tables.contains(&r.to.as_str())));
+}
+
+#[test]
+fn an_untouched_join_current_dropped_is_removed() {
+    let base = retail_model();
+    let gone = base.relationships[0].name.clone();
+    let mut current = base.clone();
+    current.relationships.remove(0);
+    let other = base.relationships[0].from.clone();
+    let text = described_elsewhere(&base, &[&other]);
+    let edited = hand_edited(&current, &base, &text);
+
+    assert!(edited.relationships.iter().all(|r| r.name != gone));
+}
+
+/// The retail model with the join to `stores` graded apart, and the text with `stores` deleted.
+fn stores_cut() -> (Model, Model, String) {
+    let mut base = retail_model();
+    let join = base
+        .relationships
+        .iter_mut()
+        .find(|r| r.name == "transactions_stores")
+        .unwrap();
+    join.meta.grade = brightfield_ossie::Grade::Possible;
+    let mut current = base.clone();
+    let join = current
+        .relationships
+        .iter_mut()
+        .find(|r| r.name == "transactions_stores")
+        .unwrap();
+    join.meta.grade = brightfield_ossie::Grade::Likely;
+    let mut typed = base.clone();
+    typed.datasets.retain(|d| d.name != "stores");
+    (base, current, brightfield_ossie::write(&typed))
+}
+
+#[test]
+fn a_table_cut_from_stale_text_keeps_what_a_pass_changed_on_its_join() {
+    let (base, current, text) = stores_cut();
+    let edited = brightfield_shell::model_file::read_hand_edit(&current, &base, &["stores"], &text)
+        .expect("the text reads")
+        .model;
+
+    let join = edited
+        .relationships
+        .iter()
+        .find(|r| r.name == "transactions_stores")
+        .expect("the join stays in the model");
+    assert_eq!(join.meta.grade, brightfield_ossie::Grade::Likely);
+    assert_eq!(join.meta.decided_by, DecidedBy::Dovetail);
+    let customers = edited.datasets.iter().find(|d| d.name == "customers");
+    assert_eq!(customers.unwrap().meta.decided_by, DecidedBy::Dovetail);
+}
+
+#[test]
+fn a_rejection_survives_a_table_cut_from_text_that_predates_it() {
+    let (base, mut current, text) = stores_cut();
+    let at = current
+        .relationships
+        .iter()
+        .position(|r| r.name == "transactions_stores")
+        .unwrap();
+    let rejected = current.relationships.remove(at);
+    current.meta.rejected.push(rejected);
+    let edited = brightfield_shell::model_file::read_hand_edit(&current, &base, &["stores"], &text)
+        .expect("the text reads")
+        .model;
+
+    assert!(edited
+        .relationships
+        .iter()
+        .all(|r| r.name != "transactions_stores"));
+    assert!(edited
+        .meta
+        .rejected
+        .iter()
+        .any(|r| r.name == "transactions_stores"));
+}

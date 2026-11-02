@@ -112,14 +112,32 @@ pub fn read_hand_edit(
     let mut model = brightfield_ossie::read(&readable).map_err(|e| read_error(&e))?;
     let typed = model.clone();
     let tables: Vec<String> = model.datasets.iter().map(|d| d.name.clone()).collect();
-    let (acted, unjoined): (Vec<Relationship>, Vec<Relationship>) =
+    let (acted, mut unjoined): (Vec<Relationship>, Vec<Relationship>) =
         std::mem::take(&mut model.relationships)
             .into_iter()
             .partition(|r| tables.contains(&r.from) && tables.contains(&r.to));
     model.relationships = acted;
     keep_measurements(current, &mut model);
     mark_changed(current, base, &mut model);
-    hold_deletions(current, base, sources, &mut model, &unjoined);
+    // A table `current` dropped from text that left it as it was takes its joins with it: those
+    // the edit kept are set aside rather than left naming a table the model lacks.
+    let tables: Vec<String> = model.datasets.iter().map(|d| d.name.clone()).collect();
+    let (acted, stranded): (Vec<Relationship>, Vec<Relationship>) =
+        std::mem::take(&mut model.relationships)
+            .into_iter()
+            .partition(|r| tables.contains(&r.from) && tables.contains(&r.to));
+    model.relationships = acted;
+    unjoined.extend(stranded);
+    // A set-aside join the text left as it was and `current` has dropped is dropped below. Its
+    // rejection in `current` is carried over, so it is not counted as held here.
+    let dropped = |r: &Relationship| {
+        base.relationships
+            .iter()
+            .any(|b| b.name == r.name && same_relationship(b, r))
+            && !current.relationships.iter().any(|c| c.name == r.name)
+    };
+    let counted: Vec<Relationship> = unjoined.iter().filter(|r| !dropped(r)).cloned().collect();
+    hold_deletions(current, base, sources, &mut model, &counted);
     // A table the edit deleted is held, left out, so a join to it names a table of the model
     // again and is acted on rather than set aside
     // (`a_table_deleted_by_hand_keeps_its_joins_in_the_model`).
@@ -431,10 +449,22 @@ fn mark_changed(current: &Model, base: &Model, edited: &mut Model) {
         let held = base.datasets.iter().find(|b| b.name == d.name);
         let now = current.datasets.iter().find(|c| c.name == d.name);
         let untouched = held.is_some_and(|b| same_dataset(b, &d));
-        if untouched && now.is_none() {
+        // A dataset the edit left whole, fields included, goes when `current` has dropped it. One
+        // with an edited field stays, as the analyst's, so that edit is not lost.
+        let whole = untouched
+            && held.is_some_and(|b| {
+                b.fields.len() == d.fields.len()
+                    && d.fields.iter().all(|f| {
+                        b.fields
+                            .iter()
+                            .any(|bf| bf.name == f.name && same_field(bf, f))
+                    })
+            });
+        if whole && now.is_none() {
             continue;
         }
         let fields = std::mem::take(&mut d.fields);
+        let text_fields: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
         d = match now {
             Some(c) if untouched => Dataset {
                 fields: Vec::new(),
@@ -447,14 +477,28 @@ fn mark_changed(current: &Model, base: &Model, edited: &mut Model) {
         };
         for mut f in fields {
             let was = held.and_then(|b| b.fields.iter().find(|bf| bf.name == f.name));
-            let now = now.and_then(|c| c.fields.iter().find(|cf| cf.name == f.name));
+            let at = now.and_then(|c| c.fields.iter().find(|cf| cf.name == f.name));
             if was.is_some_and(|bf| same_field(bf, &f)) {
-                if let Some(cf) = now {
-                    d.fields.push(cf.clone());
+                // Without `current`'s dataset there is no newer field, and the dataset is kept
+                // for an edit elsewhere in it, so the field stays as the text has it.
+                match (at, now) {
+                    (Some(cf), _) => d.fields.push(cf.clone()),
+                    (None, None) => d.fields.push(f),
+                    (None, Some(_)) => {}
                 }
             } else {
                 f.meta.decided_by = DecidedBy::Analyst;
                 d.fields.push(f);
+            }
+        }
+        // A field `current` gained since `base` is not in the text. A field the analyst deleted
+        // by hand was in `base`, so it stays deleted.
+        if let (Some(c), true) = (now, untouched) {
+            for (i, cf) in c.fields.iter().enumerate() {
+                let known = held.is_some_and(|b| b.fields.iter().any(|bf| bf.name == cf.name));
+                if !known && !text_fields.contains(&cf.name) {
+                    d.fields.insert(i.min(d.fields.len()), cf.clone());
+                }
             }
         }
         edited.datasets.push(d);
