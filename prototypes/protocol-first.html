@@ -95,6 +95,7 @@ ol.steps li { counter-increment: step; display: grid; grid-template-columns: 26p
 ol.steps li::before { content: counter(step); width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line-2); font-size: 12px; display: grid; place-items: center; margin-top: 4px; }
 ol.steps li.done { color: var(--ink-2); }
 ol.steps li.done::before { content: "✓"; background: var(--surface-2); }
+ol.steps li.skipped::before { content: "–"; }
 ol.steps li.current { color: var(--ink); }
 ol.steps li.current::before { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 ol.steps .step-btn { text-align: left; border: 1px solid transparent; background: none; padding: 4px 8px; border-radius: 7px; cursor: default; }
@@ -285,7 +286,7 @@ footer { margin-top: 36px; color: var(--ink-3); font-size: 13px; }
   <header class="top">
     <h1>Opening data, Protocol first</h1>
     <p>A Protocol is what Brightfield opens and keeps. Data files, folders and databases are sources you add to it, through a keyboard-driven sources browser. Drive the cases below and watch what the window, the front door, the source library and the disk say after each one. A throwaway prototype: the data is invented and nothing touches your disk.</p>
-    <p class="howto"><b>How:</b> pick a scenario and press its highlighted step, or do the same thing yourself with the keys; the steps tick as you reach each one. In the sources browser: <b>j k</b> move, <b>h</b> goes up, <b>l</b> or <b>Enter</b> goes into a folder or adds a file, <b>a</b> adds what's highlighted (a file, a whole folder, or your marked files), <b>Space</b> marks a file, <b>Tab</b> moves between the places, the list and the canvas, <b>/</b> types a glob, <b>g t</b> fills the browser with the preview, <b>v</b> switches a folder's preview between the dovetail canvas and its file list, <b>Esc</b> closes. On a dovetail canvas, <b>j k</b> move between joins and <b>Space</b> accepts or drops one. In a Protocol, <b>A</b> opens the browser, <b>o</b> organises with dovetail and <b>⌘↩</b> runs. Every key here is a default, and a keymap file can change any of them, as yazi's does.</p>
+    <p class="howto"><b>How:</b> pick a scenario and press its highlighted step, or do the same thing yourself with the keys; the steps tick as you reach each one. Skip a step and the list catches up when you reach a later one, with a dash on the step you went past. In the sources browser: <b>j k</b> move, <b>h</b> goes up, <b>l</b> or <b>Enter</b> goes into a folder or adds a file, <b>a</b> adds what's highlighted (a file, a whole folder, or your marked files), <b>Space</b> marks a file, <b>Tab</b> moves between the places, the list and the canvas, <b>/</b> types a glob, <b>g t</b> fills the browser with the preview, <b>v</b> switches a folder's preview between the dovetail canvas and its file list, <b>Esc</b> closes. On a dovetail canvas, <b>j k</b> move between joins and <b>Space</b> accepts or drops one. In a Protocol, <b>A</b> opens the browser, <b>o</b> organises with dovetail and <b>⌘↩</b> runs. Every key here is a default, and a keymap file can change any of them, as yazi's does.</p>
     <p class="howto"><b>Saving:</b> a Protocol, its sources and its joins are kept the moment you make or add them, so there is nothing to save and closing asks nothing. Edits to its steps and charts, which this prototype doesn't model, wait for <b>⌘S</b>, and closing with one unsaved asks first.</p>
     <div class="theme" role="group" aria-label="Theme"><span>Theme</span><button data-theme-set="system" aria-pressed="true">System</button><button data-theme-set="light" aria-pressed="false">Light</button><button data-theme-set="dark" aria-pressed="false">Dark</button></div>
     <details class="calls">
@@ -1049,7 +1050,25 @@ const SCENARIOS = [
     steps: [],
   },
 ];
-if (typeof module !== 'undefined') module.exports = { ProtocolFirst, SCENARIOS };
+
+// The outcome each scripted step leaves, played from a fresh start.
+function scriptTrail(sc) {
+  let s = ProtocolFirst.initial();
+  return sc.steps.map(st => ProtocolFirst.outcome(s = st.do.reduce(ProtocolFirst.reduce, s)));
+}
+// Where the steps stand once the state is s. The step in front of you is done when s matches
+// what its scripted actions would leave (expected). A later step is done when s is the outcome
+// the script reaches first at that step, so skipping a step or doing one another way doesn't
+// stall the list. An outcome the script also reaches earlier (v, then v again) doesn't count,
+// since you may just not have moved on.
+function stepReached(trail, idx, expected, s) {
+  const now = ProtocolFirst.outcome(s);
+  if (expected && now === expected) return { idx: idx + 1, skipped: [] };
+  const k = [ProtocolFirst.outcome(ProtocolFirst.initial()), ...trail].indexOf(now) - 1;
+  if (k < idx) return { idx, skipped: [] };
+  return { idx: k + 1, skipped: Array.from({ length: k - idx }, (_, i) => idx + i) };
+}
+if (typeof module !== 'undefined') module.exports = { ProtocolFirst, SCENARIOS, scriptTrail, stepReached };
 </script>
 
 <script>
@@ -1064,18 +1083,21 @@ if (typeof document !== 'undefined') (() => {
   let scenario = SCENARIOS[0];
   let stepIdx = 0;
   let expected = null;
+  let trail = [];
+  let skipped = new Set();
   let pendingG = false;
   let globTimer = null;
 
-  // Doing a scenario's next step yourself advances the scenario too, however you get there:
-  // the step is done once the state matches what its scripted actions would have left.
+  // Doing a scenario's steps yourself advances the scenario too, however you get there and
+  // whether or not you skip one: see stepReached.
   function expectStep() {
     const st = scenario.steps[stepIdx];
     expected = st ? M.outcome(st.do.reduce(M.reduce, state)) : null;
   }
   function dispatch(action) {
     state = M.reduce(state, action);
-    if (expected && M.outcome(state) === expected) { stepIdx += 1; expectStep(); }
+    const r = stepReached(trail, stepIdx, expected, state);
+    if (r.idx !== stepIdx) { r.skipped.forEach(i => skipped.add(i)); stepIdx = r.idx; expectStep(); }
     if (action.type === 'glob') scheduleCount(action.text);
     if (!state.modal) clearTimeout(globTimer);
     render();
@@ -1087,6 +1109,7 @@ if (typeof document !== 'undefined') (() => {
   }
   function startScenario(sc) {
     scenario = sc; stepIdx = 0; state = M.initial();
+    trail = scriptTrail(sc); skipped = new Set();
     clearTimeout(globTimer);
     expectStep();
     render();
@@ -1108,8 +1131,8 @@ if (typeof document !== 'undefined') (() => {
     $('blurb').textContent = scenario.blurb;
     $('watch').innerHTML = scenario.watch;
     $('steps').innerHTML = scenario.steps.map((st, i) => {
-      const cls = i < stepIdx ? 'done' : i === stepIdx ? 'current' : '';
-      return `<li class="${cls}"><button class="step-btn" data-step="${i}" ${i === stepIdx ? '' : 'tabindex="-1"'}>${esc(st.t)}</button></li>`;
+      const cls = skipped.has(i) ? 'done skipped' : i < stepIdx ? 'done' : i === stepIdx ? 'current' : '';
+      return `<li class="${cls}"${skipped.has(i) ? ' title="You went past this step another way"' : ''}><button class="step-btn" data-step="${i}" ${i === stepIdx ? '' : 'tabindex="-1"'}>${esc(st.t)}</button></li>`;
     }).join('');
     $('steps-foot').innerHTML = scenario.steps.length && stepIdx >= scenario.steps.length
       ? `<span>Done.</span> <button class="linkish" data-restart>Run it again</button>`
