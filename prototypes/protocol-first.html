@@ -1476,8 +1476,7 @@ if (typeof document !== 'undefined') (() => {
     if ((e.key === 'o' || e.key === 'O') && state.running && state.screen === 'protocol' && M.sourcePaths(state.protocols[state.open]).length > 1) { e.preventDefault(); dispatch({ type: 'organise' }); }
   });
 
-  expectStep();
-  render();
+  startScenario(scenario);
 })();
 </script>
 </body>
