@@ -410,7 +410,7 @@ const ProtocolFirst = (() => {
   dir('~/datasets', { protocol: true });
   dir('~/datasets/models'); dir('~/datasets/panels');
   file('~/datasets/arcform-log.txt', 'txt'); file('~/datasets/arcform.yaml', 'yaml');
-  dir('~/datasets/gittables', { link: '/Volumes/Dev/datasets/gittables' });
+  dir('~/datasets/gittables', { link: '/Volumes/External/gittables' });
   HOME_SETS.forEach(n => {
     const known = DOC_SETS.find(d => d[0] === n);
     const rows = n === 'earthquakes_2024' ? 28412 : known ? known[1] : 40 + hash(n) % 400;
@@ -593,12 +593,7 @@ const ProtocolFirst = (() => {
   }
   function previewJoins(s, m) {
     const tables = previewTables(s, m).map(stem);
-    let c = candidatesAmong(tables);
-    if (m.mode === 'organise') {
-      const p = s.protocols[s.open];
-      c = c.map(j => Object.assign(j, { kept: p.joins.some(k => joinId(k) === j.id) }));
-    }
-    return c;
+    return candidatesAmong(tables);
   }
   // The joins a key can reach: every candidate in Organise, else the canvas preview's, when it shows.
   function keyJoins(s, m) { return m.mode === 'organise' || m.view === 'canvas' ? previewJoins(s, m) : []; }
@@ -613,13 +608,15 @@ const ProtocolFirst = (() => {
 
   function applyOrganise(s) {
     const m = s.modal, p = s.protocols[s.open];
-    const chosen = previewJoins(s, m).filter(j => m.accepted.includes(j.id) || j.kept);
-    const before = p.joins.length;
+    const chosen = previewJoins(s, m).filter(j => m.accepted.includes(j.id));
+    const had = new Set(p.joins.map(joinId));
+    const added = chosen.filter(j => !had.has(j.id)).length, dropped = [...had].filter(id => !chosen.some(j => j.id === id)).length;
     p.joins = chosen.map(({ from, fromCol, to, toCol, card }) => ({ from, fromCol, to, toCol, card }));
     keep(s, p);
     s.modal = null;
-    s.selected = p.joins.length ? 'model' : s.selected;
-    say(s, `dovetail organised ${p.name}: ${plural(p.joins.length, 'join')} in the model.`, [p.joins.length > before ? `${plural(p.joins.length - before, 'join')} added to the model step.` : 'No new joins.', `Kept at ${clock(s.now)}.`]);
+    s.selected = p.joins.length ? 'model' : s.selected === 'model' ? stepId(p.sources[0]) : s.selected;
+    const what = [added ? `${plural(added, 'join')} added to the model step.` : '', dropped ? `${plural(dropped, 'join')} dropped from it.` : ''].filter(Boolean);
+    say(s, `dovetail organised ${p.name}: ${plural(p.joins.length, 'join')} in the model.`, [...(what.length ? what : ['No change to the joins.']), `Kept at ${clock(s.now)}.`]);
   }
   function openProtocolAt(s, cur) {
     if (!s.protocols[cur]) s.protocols[cur] = JSON.parse(JSON.stringify(EXISTING));
@@ -646,6 +643,17 @@ const ProtocolFirst = (() => {
   function addHere(s) {
     const m = s.modal;
     const p = s.protocols[s.open];
+    if (m.col === 'preview') {
+      // On a folder's canvas: the folder with its accepted joins, and any marked files with it.
+      const cur = current(s, m);
+      const files = cur ? dataFilesIn(s, cur) : [];
+      if (!files.length) return;
+      const extra = m.marks.filter(x => !files.includes(x));
+      const joins = previewJoins(s, m).filter(j => m.accepted.includes(j.id));
+      s.modal = null;
+      addSources(s, p, files.concat(extra).map(path => ({ path })), joins, base(cur) + '/' + (extra.length ? ` and ${plural(extra.length, 'marked file')}` : ''));
+      return;
+    }
     if (m.glob.trim()) {
       const hits = globMatches(s, m.cwd, m.glob);
       if (!hits.length) { m.note = `No files match ${m.glob}.`; return; }
@@ -699,7 +707,7 @@ const ProtocolFirst = (() => {
     m.note = '';
     if (key === 'Escape') { s.modal = null; say(s, m.mode === 'protocol' ? 'Closed the Open browser.' : 'Closed the sources browser. Nothing was added.'); return; }
     const joins = m.mode === 'protocol' || m.mode === 'locate' ? [] : keyJoins(s, m);
-    if (m.mode === 'organise' || (m.col === 'preview' && joins.length)) {
+    if ((m.mode === 'organise' || m.col === 'preview') && joins.length) {
       if (key === 'j') { m.joinIdx = Math.min(joins.length - 1, m.joinIdx + 1); return; }
       if (key === 'k') { m.joinIdx = Math.max(0, m.joinIdx - 1); return; }
       if (key === ' ') { m.accepted = toggle(m.accepted, joins[Math.min(m.joinIdx, joins.length - 1)].id); return; }
@@ -742,6 +750,7 @@ const ProtocolFirst = (() => {
     return { now: 0, running: true, screen: 'door', open: null, lastOpen: null, selected: null, modal: null, protocols: {}, library: {}, recents: [], moved: {}, events: [], last: null };
   }
   function reduce(prev, a) {
+    if (a.type === 'globCounted' && (!prev.modal || prev.modal.glob !== a.text)) return prev;
     const s = JSON.parse(JSON.stringify(prev));
     s.now += 1;
     s.last = null;
@@ -830,7 +839,7 @@ const ProtocolFirst = (() => {
       case 'place': { const m = s.modal; if (!m) break; cd(s, m, a.path); m.col = 'list'; break; }
       case 'cursorTo': { const m = s.modal; if (!m) break; const i = entries(s, m).indexOf(a.path); if (i >= 0) { m.cursor = i; m.col = 'list'; m.joinIdx = 0; m.note = ''; } break; }
       case 'glob': { const m = s.modal; if (!m) break; m.glob = a.text; m.globRows = null; m.cursor = 0; m.marks = []; m.note = ''; break; }
-      case 'globCounted': { const m = s.modal; if (!m || m.glob !== a.text) break; m.globRows = globMatches(s, m.cwd, m.glob).reduce((t, x) => t + rowsOf(s, x), 0); s.now -= 1; break; }
+      case 'globCounted': { const m = s.modal; m.globRows = globMatches(s, m.cwd, m.glob).reduce((t, x) => t + rowsOf(s, x), 0); s.now -= 1; break; }
       case 'toggleJoin': {
         // A click on a join: the same as moving onto it with j k and pressing Space.
         const m = s.modal; if (!m) break;
@@ -842,7 +851,7 @@ const ProtocolFirst = (() => {
       }
       case 'select': s.selected = a.id; s.now -= 1; break;
       case 'run': {
-        if (!p) break;
+        if (!p || !sourcePaths(p).length) break;
         const miss = missingIn(s, p);
         if (miss.length) { say(s, `Can't run ${p.name}: ${miss.map(base).join(', ')} ${miss.length === 1 ? 'is' : 'are'} missing.`, ['Locate the file, and the run can go ahead.']); break; }
         p.runAt = s.now; p.runs = (p.runs || 0) + 1; keep(s, p);
@@ -928,8 +937,7 @@ const ProtocolFirst = (() => {
   function disk(s) {
     const protos = Object.values(s.protocols).filter(p => p.where === 'protocols').sort((a, b) => a.dir.localeCompare(b.dir));
     const elsewhere = Object.values(s.protocols).filter(p => p.where === 'inplace');
-    const dbs = Object.values(s.protocols).filter(p => p.runAt !== null && p.runAt >= 0);
-    return { protos, elsewhere, dbs, library: Object.keys(s.library).sort(), recents: s.recents.slice() };
+    return { protos, elsewhere, library: Object.keys(s.library).sort(), recents: s.recents.slice() };
   }
 
   // What a step leaves behind, without the clock or which column has focus. A step is done
@@ -1033,8 +1041,8 @@ const SCENARIOS = [
       { t: 'Try to run', do: [{ type: 'run' }] },
       { t: 'Close the window and look at the front door', do: [{ type: 'close' }] },
       { t: 'Open earthquakes_2024', do: [{ type: 'openRow', dir: '~/Documents/Protocols/earthquakes_2024' }] },
-      { t: 'Locate…', do: [{ type: 'locate', path: QUAKES, at: '~/Archive' }] },
-      { t: 'Press Enter on earthquakes_2024.csv', do: [{ type: 'key', key: 'Enter' }] },
+      { t: 'Locate…', do: [{ type: 'locate', path: QUAKES, at: '~' }] },
+      { t: 'Press Enter to go into Archive, and Enter again on earthquakes_2024.csv', do: [{ type: 'key', key: 'Enter' }, { type: 'key', key: 'Enter' }] },
     ],
   },
   {
@@ -1072,6 +1080,7 @@ if (typeof document !== 'undefined') (() => {
     state = M.reduce(state, action);
     if (expected && M.outcome(state) === expected) { stepIdx += 1; expectStep(); }
     if (action.type === 'glob') scheduleCount(action.text);
+    if (!state.modal) clearTimeout(globTimer);
     render();
   }
   function scheduleCount(text) {
@@ -1088,6 +1097,7 @@ if (typeof document !== 'undefined') (() => {
   function runStep(i) {
     if (i !== stepIdx) return;
     scenario.steps[i].do.forEach(a => { state = M.reduce(state, a); if (a.type === 'glob') scheduleCount(a.text); });
+    if (!state.modal) clearTimeout(globTimer);
     stepIdx += 1;
     expectStep();
     render();
@@ -1277,7 +1287,7 @@ if (typeof document !== 'undefined') (() => {
     let svg = '', labels = '';
     joins.forEach((j, k) => {
       const a = yL(froms.indexOf(j.from)) + CARD / 2, b = yR(tos.indexOf(j.to)) + CARD / 2;
-      const on = j.on || j.kept;
+      const on = j.on;
       svg += `<path d="M30 ${a} C 48 ${a}, 52 ${b}, 70 ${b}" fill="none" stroke="currentColor" stroke-width="${on ? 1.6 : 1}" stroke-dasharray="${on ? '' : '4 3'}" vector-effect="non-scaling-stroke" opacity="${on ? .9 : .55}"/>`;
       const ly = a + (b - a) * 0.08; // near its own fact table, so labels into one lookup don't stack
       const text = `${esc(j.fromCol)} = ${esc(j.toCol)} · ${esc(j.card)}${j.conf && !on ? ` · ${j.conf}%` : ''}`;
@@ -1386,6 +1396,7 @@ if (typeof document !== 'undefined') (() => {
   }
 
   function render() {
+    if (!state.modal) window.__focusGlob = false;
     renderTabs(); renderSteps(); renderFinder(); renderWin(); renderSide();
     const g = $('glob');
     if (g && document.activeElement !== g && window.__focusGlob) { g.focus(); g.setSelectionRange(g.value.length, g.value.length); }
@@ -1417,11 +1428,12 @@ if (typeof document !== 'undefined') (() => {
       return dispatch({ type: 'cursorTo', path });
     }
   });
+  document.addEventListener('mousedown', e => { if (e.target.id !== 'glob') window.__focusGlob = false; });
   document.addEventListener('input', e => {
     if (e.target.id === 'glob') { window.__focusGlob = true; dispatch({ type: 'glob', text: e.target.value }); }
   });
   document.addEventListener('keydown', e => {
-    if (e.metaKey && e.key === 'Enter' && state.running && state.screen === 'protocol' && !state.modal) { e.preventDefault(); return dispatch({ type: 'run' }); }
+    if (e.metaKey && e.key === 'Enter' && state.running && state.screen === 'protocol' && !state.modal && M.sourcePaths(state.protocols[state.open]).length) { e.preventDefault(); return dispatch({ type: 'run' }); }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const inGlob = e.target.id === 'glob';
     if (state.modal) {
