@@ -608,10 +608,13 @@ const ProtocolFirst = (() => {
 
   function applyOrganise(s) {
     const m = s.modal, p = s.protocols[s.open];
+    // Joins on a missing source aren't on the canvas, so they can't be dropped here: carry them over.
+    const shown = new Set(previewTables(s, m).map(stem));
+    const hidden = p.joins.filter(k => !shown.has(k.from) || !shown.has(k.to));
     const chosen = previewJoins(s, m).filter(j => m.accepted.includes(j.id));
-    const had = new Set(p.joins.map(joinId));
+    const had = new Set(p.joins.filter(k => !hidden.includes(k)).map(joinId));
     const added = chosen.filter(j => !had.has(j.id)).length, dropped = [...had].filter(id => !chosen.some(j => j.id === id)).length;
-    p.joins = chosen.map(({ from, fromCol, to, toCol, card }) => ({ from, fromCol, to, toCol, card }));
+    p.joins = hidden.concat(chosen.map(({ from, fromCol, to, toCol, card }) => ({ from, fromCol, to, toCol, card })));
     keep(s, p);
     s.modal = null;
     s.selected = p.joins.length ? 'model' : s.selected === 'model' ? stepId(p.sources[0]) : s.selected;
@@ -651,7 +654,7 @@ const ProtocolFirst = (() => {
       const extra = m.marks.filter(x => !files.includes(x));
       const joins = previewJoins(s, m).filter(j => m.accepted.includes(j.id));
       s.modal = null;
-      addSources(s, p, files.concat(extra).map(path => ({ path })), joins, base(cur) + '/' + (extra.length ? ` and ${plural(extra.length, 'marked file')}` : ''));
+      addSources(s, p, files.concat(extra).map(path => ({ path })), joins, base(cur) + '/');
       return;
     }
     if (m.glob.trim()) {
