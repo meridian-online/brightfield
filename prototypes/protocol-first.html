@@ -285,15 +285,13 @@ footer { margin-top: 36px; color: var(--ink-3); font-size: 13px; }
   <header class="top">
     <h1>Opening data, Protocol first</h1>
     <p>A Protocol is what Brightfield opens and keeps. Data files, folders and databases are sources you add to it, through a keyboard-driven sources browser. Drive the cases below and watch what the window, the front door, the source library and the disk say after each one. A throwaway prototype: the data is invented and nothing touches your disk.</p>
-    <p class="howto"><b>How:</b> pick a scenario and press its highlighted step, or do the same thing yourself with the keys; the steps tick as you reach each one. In the sources browser: <b>j k</b> move, <b>h</b> goes up, <b>l</b> or <b>Enter</b> goes into a folder, <b>Enter</b> on a file adds it, <b>a</b> adds what's highlighted (a file, a whole folder, or your marked files), <b>Space</b> marks a file, <b>Tab</b> moves between the places, the list and the canvas, <b>/</b> types a glob, <b>g t</b> fills the browser with the preview, <b>v</b> switches a folder's preview between the dovetail canvas and its file list, <b>Esc</b> closes. On a dovetail canvas, <b>j k</b> move between joins and <b>Space</b> accepts or drops one. In a Protocol, <b>A</b> opens the browser, <b>o</b> organises with dovetail and <b>⌘↩</b> runs.</p>
+    <p class="howto"><b>How:</b> pick a scenario and press its highlighted step, or do the same thing yourself with the keys; the steps tick as you reach each one. In the sources browser: <b>j k</b> move, <b>h</b> goes up, <b>l</b> or <b>Enter</b> goes into a folder or adds a file, <b>a</b> adds what's highlighted (a file, a whole folder, or your marked files), <b>Space</b> marks a file, <b>Tab</b> moves between the places, the list and the canvas, <b>/</b> types a glob, <b>g t</b> fills the browser with the preview, <b>v</b> switches a folder's preview between the dovetail canvas and its file list, <b>Esc</b> closes. On a dovetail canvas, <b>j k</b> move between joins and <b>Space</b> accepts or drops one. In a Protocol, <b>A</b> opens the browser, <b>o</b> organises with dovetail and <b>⌘↩</b> runs. Every key here is a default, and a keymap file can change any of them, as yazi's does.</p>
+    <p class="howto"><b>Saving:</b> a Protocol, its sources and its joins are kept the moment you make or add them, so there is nothing to save and closing asks nothing. Edits to its steps and charts, which this prototype doesn't model, wait for <b>⌘S</b>, and closing with one unsaved asks first.</p>
     <div class="theme" role="group" aria-label="Theme"><span>Theme</span><button data-theme-set="system" aria-pressed="true">System</button><button data-theme-set="light" aria-pressed="false">Light</button><button data-theme-set="dark" aria-pressed="false">Dark</button></div>
     <details class="calls">
       <summary>Calls made in this prototype that you haven't decided</summary>
       <ul>
-        <li>l and Enter both go into a folder, so adding a whole folder takes a key of its own: a. On a file, Enter adds it and l does nothing, so pressing l once too often while going down never adds anything.</li>
         <li>With the canvas filling the browser (g t), or after Tab onto it, Enter adds the folder with the joins you accepted, as Enter applies them in Organise with dovetail.</li>
-        <li>The spine lists the model's tables first, each next to the tables it joins, with the model step straight under them and a curve in the gutter for each join. Sources with no join follow, under their own heading.</li>
-        <li>The sources browser opens on the Protocol's first source, in its folder, rather than at the top of that folder.</li>
         <li>Marks survive going into another folder, so one add can take files from several folders.</li>
         <li>Dragging a folder onto Brightfield makes a Protocol named after the folder and opens the browser on that folder, so you can accept joins before anything is added.</li>
         <li>A new Protocol from the front door starts as "Untitled" and takes the name of the first thing you add, while it has never run, so arc has no database to rebuild.</li>
@@ -689,8 +687,8 @@ const ProtocolFirst = (() => {
     m.note = `${base(cur)} isn't data Brightfield can read.`;
   }
 
-  // Enter: into a folder, as l. On a file it adds it (or the marked files), opens a
-  // Protocol in the Open browser, or locates. On the canvas it adds the folder with its joins.
+  // Enter, and l: into a folder. On a file it adds it (or the marked files), opens a
+  // Protocol in the Open browser, or locates. On the canvas, Enter adds the folder with its joins.
   function modalEnter(s) {
     const m = s.modal;
     if (m.mode === 'organise') return applyOrganise(s);
@@ -738,11 +736,7 @@ const ProtocolFirst = (() => {
     if (key === 'j') { m.cursor = Math.min(e.length - 1, m.cursor + 1); m.joinIdx = 0; }
     if (key === 'k') { m.cursor = Math.max(0, m.cursor - 1); m.joinIdx = 0; }
     if (key === 'h') { if (m.glob) { m.glob = ''; m.globRows = null; m.cursor = 0; } else if (parent(m.cwd) !== m.cwd && !/^gs:\/\/[^/]+$/.test(m.cwd)) cd(s, m, parent(m.cwd), m.cwd); }
-    if (key === 'l') {
-      const c = current(s, m); const n = c && nodeAt(s, c);
-      if (m.mode === 'protocol' && n && n.protocol) openProtocolAt(s, c);
-      else if (n && n.children) cd(s, m, c);
-    }
+    if (key === 'l') modalEnter(s); // l and Enter are one action, as yazi's smart-enter: into a folder, or add the file
     if (key === ' ') { const c = current(s, m); if (c && isData(nodeAt(s, c))) { m.marks = toggle(m.marks, c); m.cursor = Math.min(e.length - 1, m.cursor + 1); } }
     if (key === 'a' && m.mode === 'sources') addHere(s);
     if (key === 'Enter') modalEnter(s);
@@ -1364,10 +1358,10 @@ if (typeof document !== 'undefined') (() => {
     const foot = m.mode === 'protocol'
       ? k(['j', 'k'], 'move') + k(['h'], 'up') + k(['l', 'Enter'], 'into a folder, or open a Protocol') + k(['Esc'], 'cancel')
       : m.mode === 'locate'
-      ? k(['j', 'k'], 'move') + k(['h'], 'up') + k(['l', 'Enter'], 'into a folder') + k(['Enter'], 'on the file locates it') + k(['Esc'], 'cancel')
+      ? k(['j', 'k'], 'move') + k(['h'], 'up') + k(['l', 'Enter'], 'into a folder, or locate the file') + k(['Esc'], 'cancel')
       : m.col === 'preview'
       ? k(['j', 'k'], 'move between joins') + k(['Space'], 'accept or drop') + k(['Enter'], 'add the folder') + k(['h'], 'back to the list') + k(['v'], 'canvas / list') + k(['g', 't'], 'full preview') + k(['Esc'], 'close')
-      : k(['j', 'k'], 'move') + k(['h'], 'up') + k(['l', 'Enter'], 'into a folder') + k(['Enter'], m.marks.length ? `on a file adds ${m.marks.length} marked` : 'on a file adds it') + k(['a'], m.marks.length ? `add ${m.marks.length} marked` : 'add this file or folder') + k(['Space'], 'mark') + k(['Tab'], 'places / canvas') + k(['/'], 'glob') + k(['g', 't'], 'full preview') + k(['v'], 'canvas / list') + k(['Esc'], 'close');
+      : k(['j', 'k'], 'move') + k(['h'], 'up') + k(['l', 'Enter'], m.marks.length ? `into a folder, or add ${m.marks.length} marked` : 'into a folder, or add the file') + k(['a'], m.marks.length ? `add ${m.marks.length} marked` : 'add this file or folder') + k(['Space'], 'mark') + k(['Tab'], 'places / canvas') + k(['/'], 'glob') + k(['g', 't'], 'full preview') + k(['v'], 'canvas / list') + k(['Esc'], 'close');
     return `<div class="sheet-wrap"><div class="yz" id="yz"><div class="yz-head"><span class="mode">${modeLabel}</span><span class="cwd">${esc(m.cwd)}</span>
       ${m.mode === 'protocol' || m.mode === 'locate' ? '' : `<input id="glob" placeholder="/ glob, e.g. */*.csv" value="${esc(m.glob)}" aria-label="Glob">`}</div>
       <div class="yz-cols${m.max ? ' max' : ''}"><div class="yz-col places${m.col === 'places' ? ' focus' : ''}">${places}</div><div class="yz-col${m.col === 'list' ? ' focus' : ''}">${list}</div><div class="yz-col prev${m.col === 'preview' ? ' focus' : ''}">${prev}</div></div>
