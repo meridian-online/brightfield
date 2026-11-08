@@ -1,6 +1,6 @@
 //! The folder new Protocols are made in, and how a new one is named.
 //!
-//! Every open makes a Protocol, so they accumulate somewhere the analyst can see and reach with
+//! An open makes a Protocol, so they accumulate somewhere the analyst can see and reach with
 //! the Finder: `~/Documents/Protocols`, or the folder `BRIGHTFIELD_PROTOCOLS_DIR` names. Tests
 //! point the variable at a temporary folder so none of them writes under the home directory.
 
@@ -16,7 +16,7 @@ pub enum ClaimError {
     /// The system refused the write in this folder, which on macOS means Brightfield has not been
     /// given access to it.
     Refused(PathBuf),
-    /// Anything else the file system said.
+    /// A failure other than a refusal, in the file system's words.
     Io(String),
 }
 
@@ -60,7 +60,7 @@ pub fn root() -> PathBuf {
 /// # Errors
 ///
 /// [`ClaimError::Refused`] when the system denies the write in `parent`; [`ClaimError::Io`] for
-/// anything else.
+/// any other failure.
 pub fn claim(parent: &Path, stem: &str) -> Result<(PathBuf, String), ClaimError> {
     std::fs::create_dir_all(parent).map_err(|e| classify(&e, parent))?;
     (1..)
