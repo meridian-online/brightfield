@@ -296,6 +296,7 @@
   - `an_open_protocol_is_moved_after_the_close_question_or_left`
   - `the_door_tree_reads_the_new_folder`
   - `a_refused_new_folder_says_how_and_keeps_the_old`: the Privacy & Security sentence, as in Task 1.
+  - Once trust exists (Task 15), extend: `a_new_protocols_folder_is_not_trusted_by_the_old_ones_trust` and `a_moved_protocol_keeps_trust_it_had_through_its_old_folder`.
 - [ ] **Step 2:** Run `cargo test -p brightfield-shell --test preferences`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run the test. Expected: PASS.
