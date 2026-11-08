@@ -3,8 +3,8 @@
 //! source file.
 //!
 //! The load steps read the files where they are, by absolute path, so nothing the analyst gave is
-//! copied or moved. The Protocol is made under [`crate::starts::datasets_dir`], beside the
-//! Protocols that ship with the app, in a folder of its own per open.
+//! copied or moved. The Protocol is made in the Protocols folder ([`crate::protocols_dir::root`]),
+//! in a folder of its own per open, named after the first source.
 //!
 //! The profile is a Parquet snapshot of each raw table (lineage columns left out), read through
 //! the engine's profiler as any opened file is, and it is kept in a `.profile` folder inside the
@@ -26,6 +26,7 @@ use brightfield_spec::{parse_spec, Format};
 use serde_json::{json, Value};
 
 use crate::discovery::MODEL_FILE;
+use crate::protocols_dir;
 use crate::run::{Finished, Run, Runner};
 use crate::starts;
 
@@ -64,6 +65,15 @@ pub struct OwnProtocol {
 ///
 /// The reason when nothing in `opened` can be read, or the folder cannot be written.
 pub fn create(opened: &Path) -> Result<OwnProtocol, String> {
+    create_in(&protocols_dir::root(), opened)
+}
+
+/// [`create`], making the Protocol folder in `parent` rather than in the Protocols folder.
+///
+/// # Errors
+///
+/// The reason when nothing in `opened` can be read, or the folder cannot be written.
+pub fn create_in(parent: &Path, opened: &Path) -> Result<OwnProtocol, String> {
     let sources = sources::discover(opened)?;
     if sources.tables.is_empty() {
         return Err(format!(
@@ -72,22 +82,7 @@ pub fn create(opened: &Path) -> Result<OwnProtocol, String> {
             skipped_note(&sources)
         ));
     }
-    let slug = slug_of(opened);
-    let parent = starts::datasets_dir().join("protocols").join(OWN_DIR);
-    std::fs::create_dir_all(&parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    // `create_dir` is the claim on a number: it fails if the folder exists, so two opens at once
-    // cannot both take it.
-    let (dir, name) = (1..)
-        .find_map(|n| {
-            let name = format!("{slug}-{n}");
-            let dir = parent.join(&name);
-            match std::fs::create_dir(&dir) {
-                Ok(()) => Some(Ok((dir, name))),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
-                Err(e) => Some(Err(format!("{}: {e}", dir.display()))),
-            }
-        })
-        .expect("an unbounded range")?;
+    let (dir, name) = protocols_dir::claim(parent, &slug_of(opened)).map_err(|e| e.to_string())?;
 
     let models = dir.join("models");
     std::fs::create_dir(&models).map_err(|e| format!("{}: {e}", models.display()))?;

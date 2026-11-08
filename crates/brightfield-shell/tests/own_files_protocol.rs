@@ -17,13 +17,17 @@ fn scratch() -> &'static Path {
     ROOT.get_or_init(|| {
         let root = std::env::temp_dir().join(format!("bf-own-files-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for sub in ["config", "history", "db", "input"] {
+        for sub in ["config", "history", "db", "protocols", "input"] {
             std::fs::create_dir_all(root.join(sub)).expect("a scratch folder");
         }
         // Set once, before any test in this file reads them, and never changed.
         std::env::set_var(
             brightfield_shell::startup::CONFIG_DIR_VAR,
             root.join("config"),
+        );
+        std::env::set_var(
+            brightfield_shell::protocols_dir::PROTOCOLS_DIR_VAR,
+            root.join("protocols"),
         );
         std::env::set_var("ARCFORM_HISTORY_DIR", root.join("history"));
         std::env::set_var("ARCFORM_DB_DIR", root.join("db"));
@@ -73,14 +77,9 @@ fn creates_numbered_folder() {
     let input = csv_folder("numbered");
     let one = own_files::create(&input).unwrap();
     let two = own_files::create(&input).unwrap();
-    let own = root.join("config");
-    assert!(one.dir.starts_with(&own), "{}", one.dir.display());
-    assert_eq!(one.dir.file_name().unwrap(), "numbered-1");
+    assert_eq!(one.dir.parent().unwrap(), root.join("protocols"));
+    assert_eq!(one.dir.file_name().unwrap(), "numbered");
     assert_eq!(two.dir.file_name().unwrap(), "numbered-2");
-    assert_eq!(
-        one.dir.parent().unwrap().file_name().unwrap(),
-        own_files::OWN_DIR
-    );
 }
 
 #[test]

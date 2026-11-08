@@ -126,6 +126,7 @@ pub mod panel_tiles;
 pub mod pipeline;
 pub mod protocol;
 pub mod protocol_panels;
+pub mod protocols_dir;
 pub mod ranked_bars;
 pub mod remote;
 pub mod representation;
