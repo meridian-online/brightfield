@@ -2197,6 +2197,17 @@ impl OverlayKeys {
     }
 }
 
+/// The verb that raises the open picker, Cmd+O by the registry.
+const OPEN_VERB: &str = "open";
+
+/// The name a banner calls `path` by: its last part, or the whole path when it has none.
+fn display_name(path: &std::path::Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
+}
+
 /// Consume the pressed key a registry keystroke token names, if it is down
 /// this frame. Only the tokens the shell actually wires live — the overlay
 /// openers and open-home — are mapped; an unmapped token is simply never
@@ -2873,9 +2884,19 @@ pub struct MeridianApp {
     /// the `Ui` borrow across a window this process does not own. It is read
     /// after the frame's requests are applied — see [`MeridianApp::draw`].
     pick_requested: bool,
-    /// A path chosen at the door whose open waits one frame, so a notice that a DuckDB extension
-    /// is being fetched is drawn before the open blocks the thread.
-    pending_open: Option<String>,
+    /// Whether the dialog block of the latest frame took an ask for the picker, raised or not.
+    picker_asked: bool,
+    /// How many asks for the picker the dialog block has taken since the window was made, so a
+    /// test can read an ask after the frame it was made in has passed.
+    picker_asks: usize,
+    /// What was chosen to open and waits one frame, so a notice that a DuckDB extension is being
+    /// fetched is drawn before the open blocks the thread: one path, or the several one gesture
+    /// handed over.
+    pending_open: Option<Vec<std::path::PathBuf>>,
+    /// An open asked for while the chart document held edits no file does, kept until they are
+    /// saved or undone rather than dropped or opened over them. Opens asked for after it wait in
+    /// the queue behind it.
+    held_open: Option<crate::open_queue::OpenRequest>,
     /// Every request to open something, from whichever way in, taken at the start of each frame.
     open_queue: crate::open_queue::OpenQueue,
     /// The DuckDB extensions an open takes as installed, when a test names them; `None` asks
@@ -3342,7 +3363,10 @@ impl MeridianApp {
             remote_files: None,
             door_open_file: None,
             pick_requested: false,
+            picker_asked: false,
+            picker_asks: 0,
             pending_open: None,
+            held_open: None,
             open_queue: crate::open_queue::OpenQueue::default(),
             installed_extensions: None,
             own_protocol: None,
@@ -3361,7 +3385,7 @@ impl MeridianApp {
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             open_binding: brightfield_keys::registry()
                 .iter()
-                .find(|v| v.longname == "open")
+                .find(|v| v.longname == OPEN_VERB)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             navigator_binding: brightfield_keys::registry()
                 .iter()
@@ -4651,12 +4675,19 @@ impl MeridianApp {
         self.door_open_file
     }
 
-    /// Whether the last frame's door asked for the file dialog — the test hook
-    /// that proves the control is wired without opening a dialog on anyone's
-    /// desktop.
+    /// Whether the last frame asked for the file dialog, by the door's Open, Cmd+O or the
+    /// palette — the test hook that proves the control is wired without opening a dialog on
+    /// anyone's desktop.
     #[must_use]
     pub fn pick_requested(&self) -> bool {
-        self.pick_requested
+        self.pick_requested || self.picker_asked
+    }
+
+    /// How many frames have asked for the file dialog since this window was made, by Cmd+O, the
+    /// palette or the door's Open: [`Self::pick_requested`] for an ask some frames back.
+    #[must_use]
+    pub fn picker_asks(&self) -> usize {
+        self.picker_asks
     }
 
     /// Permit this app to raise operating-system dialogs — the live window's
@@ -4956,11 +4987,9 @@ impl MeridianApp {
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.open_queue.wake_with(&ctx);
-        // The picker is asked for afresh each frame, by Cmd+O or the door's Open button, and taken
-        // later in this frame, so an ask a headless window cannot answer does not carry over.
-        self.pick_requested = false;
-        // Files dropped on the front door open as the picker's choice does, each in its turn. A
-        // drop onto an open Protocol is left alone here: adding it as a source is that window's.
+        // Files dropped on the front door open as the picker's choice does, the files of one drop
+        // together as one Protocol. A drop onto an open Protocol is left alone here: adding it as
+        // a source is that window's.
         if self.front_door_is_live() {
             let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
                 i.raw
@@ -4969,24 +4998,29 @@ impl MeridianApp {
                     .filter_map(|f| f.path.clone())
                     .collect()
             });
-            for path in dropped {
-                self.open_queue
-                    .push(crate::open_queue::OpenRequest::Path(path));
+            if let Some(request) = crate::open_queue::OpenRequest::of_paths(dropped) {
+                self.open_queue.push(request);
             }
         }
         // An open that waited for the frame before this one to draw what it is fetching: that
         // frame has been presented, so the open runs now.
-        if let Some(path) = self.pending_open.take() {
-            self.open_path_now(&ctx, &path);
+        if let Some(paths) = self.pending_open.take() {
+            self.open_paths_now(&ctx, &paths);
+        }
+        // An open held over unsaved edits, tried again: it goes ahead once they are saved or
+        // undone, and stays held, without a second banner, while they are not.
+        if let Some(request) = self.held_open.take() {
+            self.take_or_hold(&ctx, request, false);
         }
         // Whatever was asked to open since the last frame, from whichever way in, before anything
-        // is laid out, so the frame draws what the open left. A request that has to wait a frame
-        // stops the taking, and the rest wait in the queue behind it.
-        while self.pending_open.is_none() {
+        // is laid out, so the frame draws what the open left. A request that has to wait a frame,
+        // or is held over unsaved edits, stops the taking, and the rest wait in the queue behind
+        // it.
+        while self.pending_open.is_none() && self.held_open.is_none() {
             let Some(request) = self.open_queue.pop() else {
                 break;
             };
-            self.take_open_request(&ctx, request);
+            self.take_or_hold(&ctx, request, true);
         }
         // Before anything is laid out: a fetch that finished since the last
         // frame replaces the documents, and a frame that drew the door first
@@ -6343,9 +6377,9 @@ impl MeridianApp {
         //
         // `dialogs_allowed` is the gate, not an afterthought: every other tier
         // that drives this method has no user in front of it, and a modal
-        // raised there hangs until something kills it. The flag is left set so
-        // a headless test can still assert the control asked; the door rewrites
-        // it on its next frame.
+        // raised there hangs until something kills it. Without a dialog the
+        // ask is still taken and counted, so a headless test can assert that
+        // Cmd+O, the palette or the door's Open asked.
         // The export's save dialog, on the same terms as the picker below it.
         if let Some(picture) = self.picture_to_save.take() {
             if self.dialogs_allowed {
@@ -6357,8 +6391,14 @@ impl MeridianApp {
                 }
             }
         }
-        if self.pick_requested && self.dialogs_allowed {
-            self.pick_requested = false;
+        // Taken whether or not a dialog may be raised, so an ask a headless window cannot answer
+        // does not carry over to the next frame. An ask made after this block, by the palette, is
+        // taken on the next frame's.
+        self.picker_asked = std::mem::take(&mut self.pick_requested);
+        if self.picker_asked {
+            self.picker_asks += 1;
+        }
+        if self.picker_asked && self.dialogs_allowed {
             if let Some(path) = crate::data_file::pick() {
                 self.open_queue
                     .push(crate::open_queue::OpenRequest::Path(path));
@@ -8859,6 +8899,11 @@ impl MeridianApp {
                 Request::Verb(verb) if verb.as_str() == "open-home" => {
                     self.open_home(ctx);
                 }
+                // The open picker is the window's too, for the same reason: chosen from a
+                // palette, it asks for the picker as Cmd+O does, and the dialog runs after this.
+                Request::Verb(verb) if verb.as_str() == OPEN_VERB => {
+                    self.pick_requested = true;
+                }
                 // The model pane's verbs are its own, chosen from the palette it opens.
                 Request::Verb(verb) if crate::model_pane::is_model_verb(verb.as_str()) => {
                     self.perform_model_verb(ctx, verb.as_str());
@@ -9802,7 +9847,24 @@ impl MeridianApp {
 
     /// [`Self::open_path`] told which extensions are installed, so a test can name a set.
     pub fn open_path_knowing(&mut self, ctx: &egui::Context, chosen: &str, installed: &[String]) {
-        let needed = crate::data_file::extensions_likely_needed(std::path::Path::new(chosen));
+        self.open_paths_knowing(ctx, vec![chosen.into()], installed);
+    }
+
+    /// [`Self::open_path_knowing`] for what one gesture handed over, one path or several.
+    fn open_paths_knowing(
+        &mut self,
+        ctx: &egui::Context,
+        paths: Vec<std::path::PathBuf>,
+        installed: &[String],
+    ) {
+        let mut needed: Vec<&'static str> = Vec::new();
+        for path in &paths {
+            for ext in crate::data_file::extensions_likely_needed(path) {
+                if !needed.contains(&ext) {
+                    needed.push(ext);
+                }
+            }
+        }
         if let Some(message) = crate::data_file::fetch_message(&needed, installed) {
             self.notifications.raise(
                 Notification::new(
@@ -9812,11 +9874,101 @@ impl MeridianApp {
                 )
                 .body(message),
             );
-            self.pending_open = Some(chosen.to_string());
+            self.pending_open = Some(paths);
             ctx.request_repaint();
             return;
         }
-        self.open_path_now(ctx, chosen);
+        self.open_paths_now(ctx, &paths);
+    }
+
+    /// What one gesture handed over, opened without the wait for a frame. One path opens as
+    /// [`Self::open_path_now`] says. Several make one Protocol of them all, named after the first,
+    /// unless one is a Protocol already, or an archive of one: then the first such opens, and a
+    /// banner says the rest were not opened, since a Protocol is not a source of another.
+    fn open_paths_now(&mut self, ctx: &egui::Context, paths: &[std::path::PathBuf]) {
+        use crate::open_queue::Route;
+        let [first, rest @ ..] = paths else {
+            return;
+        };
+        if rest.is_empty() {
+            self.open_path_now(ctx, &first.to_string_lossy());
+            return;
+        }
+        let banner = NotificationId::new("open-rest-not-opened");
+        self.notifications
+            .dismiss(NotificationId::new("open-rest-not-opened"));
+        if let Some(protocol) = paths
+            .iter()
+            .find(|p| !matches!(crate::open_queue::route(p), Route::New(_)))
+        {
+            self.open_path_now(ctx, &protocol.to_string_lossy());
+            let others = paths.len() - 1;
+            self.notifications.raise(
+                Notification::new(banner, Severity::Warning, "Only the Protocol was opened").body(
+                    format!(
+                        "{} is a Protocol, so it opened on its own; the other {} {} not opened. \
+                         Open them by themselves to make a Protocol of them.",
+                        display_name(protocol),
+                        others,
+                        if others == 1 { "was" } else { "were" },
+                    ),
+                ),
+            );
+            return;
+        }
+        self.notifications
+            .dismiss(NotificationId::new("open-fetching-extension"));
+        let Some(runner) = self.runner.clone().or_else(crate::run::Runner::this_binary) else {
+            self.say_open_failed(
+                ctx,
+                &first.to_string_lossy(),
+                "no runner to run its Protocol with".to_string(),
+            );
+            return;
+        };
+        match crate::data_file::open_all(paths, &runner) {
+            Ok(crate::data_file::Opened::OneTable(opened, protocol)) => {
+                self.adopt_one_source(ctx, opened, protocol);
+            }
+            Ok(crate::data_file::Opened::Model(protocol)) => {
+                self.open_model_pane(ctx, protocol, runner, true);
+            }
+            Err(e) => self.say_open_failed(ctx, &first.to_string_lossy(), e),
+        }
+    }
+
+    /// Carry out `request`, or hold it while the chart document has edits no file holds and the
+    /// request would replace the document. A fresh hold says so in a banner; one tried again from
+    /// the hold does not say it twice. A request that does not replace the document is never
+    /// held.
+    fn take_or_hold(
+        &mut self,
+        ctx: &egui::Context,
+        request: crate::open_queue::OpenRequest,
+        fresh: bool,
+    ) {
+        use crate::open_queue::OpenRequest;
+        let banner = NotificationId::new("open-held-unsaved");
+        let first = match &request {
+            OpenRequest::Path(path) => Some(path),
+            OpenRequest::Paths(paths) => paths.first(),
+            OpenRequest::Link(_) | OpenRequest::AddSource(_) => None,
+        };
+        if let Some(first) = first.filter(|_| self.carries_unsaved_mark()) {
+            if fresh {
+                self.notifications.raise(
+                    Notification::new(banner, Severity::Warning, "This window has unsaved edits")
+                        .body(format!(
+                            "Save the dashboard, or undo its edits, and {} opens.",
+                            display_name(first)
+                        )),
+                );
+            }
+            self.held_open = Some(request);
+            return;
+        }
+        self.notifications.dismiss(banner);
+        self.take_open_request(ctx, request);
     }
 
     /// [`Self::open_path`] without the wait for a frame. Like a flat file's open it runs on the
@@ -9873,6 +10025,13 @@ impl MeridianApp {
         use crate::open_queue::OpenRequest;
         match request {
             OpenRequest::Path(path) => self.open_path(ctx, &path.to_string_lossy()),
+            OpenRequest::Paths(paths) => {
+                let installed = self
+                    .installed_extensions
+                    .clone()
+                    .unwrap_or_else(crate::data_file::installed_extensions);
+                self.open_paths_knowing(ctx, paths, &installed);
+            }
             OpenRequest::Link(link) => {
                 self.say_open_failed(ctx, &link, "This build cannot open a link yet.".to_string())
             }
@@ -9945,7 +10104,16 @@ impl MeridianApp {
     /// The path whose open is waiting for a frame to draw the fetch notice first.
     #[must_use]
     pub fn pending_open(&self) -> Option<&str> {
-        self.pending_open.as_deref()
+        self.pending_open
+            .as_ref()
+            .and_then(|paths| paths.first())
+            .and_then(|path| path.to_str())
+    }
+
+    /// The open held until the chart document's unsaved edits are saved or undone, if one is.
+    #[must_use]
+    pub fn held_open(&self) -> Option<&crate::open_queue::OpenRequest> {
+        self.held_open.as_ref()
     }
 
     /// Open the model pane over an own-files Protocol, in place of whatever the window held: both

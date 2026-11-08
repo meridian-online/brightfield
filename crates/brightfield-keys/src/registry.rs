@@ -497,7 +497,7 @@ pub fn registry() -> Vec<VerbEntry> {
             longname: "open",
             tier: CommandTier::View,
             binding_specs: vec![global("cmd-o")],
-            scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
+            scope_applicability: vec![Dashboard, View, Protocol],
             drives: D::RuntimeDispatch,
             status: VerbStatus::Built,
             reserved_reason: None,

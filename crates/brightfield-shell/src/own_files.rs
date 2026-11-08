@@ -74,15 +74,34 @@ pub fn create(opened: &Path) -> Result<OwnProtocol, String> {
 ///
 /// The reason when nothing in `opened` can be read, or the folder cannot be written.
 pub fn create_in(parent: &Path, opened: &Path) -> Result<OwnProtocol, String> {
-    let sources = sources::discover(opened)?;
+    create_of(parent, opened, sources::discover(opened)?)
+}
+
+/// Make one Protocol folder in the Protocols folder for everything in `opened` together, named
+/// after the first: what one gesture handed over at once, as [`create`] does for one path.
+///
+/// # Errors
+///
+/// The reason when `opened` is empty, nothing in it can be read, or the folder cannot be written.
+pub fn create_all(opened: &[std::path::PathBuf]) -> Result<OwnProtocol, String> {
+    let first = opened.first().ok_or("nothing was given to open")?;
+    create_of(
+        &protocols_dir::root(),
+        first,
+        sources::discover_all(opened)?,
+    )
+}
+
+/// The Protocol folder for `sources`, in `parent`, named after `named`.
+fn create_of(parent: &Path, named: &Path, sources: SourceSet) -> Result<OwnProtocol, String> {
     if sources.tables.is_empty() {
         return Err(format!(
             "{}: no tables Brightfield can read{}",
-            opened.display(),
+            named.display(),
             skipped_note(&sources)
         ));
     }
-    let (dir, name) = protocols_dir::claim(parent, &slug_of(opened)).map_err(|e| e.to_string())?;
+    let (dir, name) = protocols_dir::claim(parent, &slug_of(named)).map_err(|e| e.to_string())?;
 
     let models = dir.join("models");
     std::fs::create_dir(&models).map_err(|e| format!("{}: {e}", models.display()))?;

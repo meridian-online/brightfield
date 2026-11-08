@@ -19,7 +19,7 @@
 
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, Sel};
-use objc2::{define_class, msg_send, sel, AnyThread, DefinedClass};
+use objc2::{define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadMarker};
 use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager, NSNotification, NSString};
 
 use crate::open_queue::{OpenQueue, OpenRequest};
@@ -54,6 +54,8 @@ struct Ivars {
 define_class!(
     // SAFETY: NSObject has no subclassing requirements, and `OpenHandler` does not implement Drop.
     #[unsafe(super(NSObject))]
+    // Named for this app, so no other class of the same runtime name can make defining it fail.
+    #[name = "BrightfieldOpenHandler"]
     #[ivars = Ivars]
     struct OpenHandler;
 
@@ -62,16 +64,22 @@ define_class!(
         fn handle_open_documents(
             &self,
             event: &NSAppleEventDescriptor,
-            _reply: &NSAppleEventDescriptor,
+            _reply: Option<&NSAppleEventDescriptor>,
         ) {
-            for path in documents(event) {
-                self.ivars().queue.push(OpenRequest::Path(path));
+            // The files of one event are one gesture, such as several chosen together in Finder,
+            // so they go onto the queue together.
+            if let Some(request) = OpenRequest::of_paths(documents(event)) {
+                self.ivars().queue.push(request);
             }
             (self.ivars().wake)();
         }
 
         #[unsafe(method(handleGetURL:withReplyEvent:))]
-        fn handle_get_url(&self, event: &NSAppleEventDescriptor, _reply: &NSAppleEventDescriptor) {
+        fn handle_get_url(
+            &self,
+            event: &NSAppleEventDescriptor,
+            _reply: Option<&NSAppleEventDescriptor>,
+        ) {
             if let Some(link) = direct_object(event).and_then(|d| d.stringValue()) {
                 self.ivars().queue.push(OpenRequest::Link(link.to_string()));
             }
@@ -151,8 +159,15 @@ fn documents(event: &NSAppleEventDescriptor) -> Vec<std::path::PathBuf> {
 }
 
 /// Listen for the Mac's open events for the rest of the process, pushing each onto `queue` and
-/// then calling `wake` so a frame runs. Call it on the main thread, before the event loop starts.
-pub fn install(queue: OpenQueue, wake: impl Fn() + Send + Sync + 'static) {
+/// then calling `wake` so a frame runs. It runs on the main thread, which `_main` proves, before
+/// the event loop starts.
+pub fn install(_main: MainThreadMarker, queue: OpenQueue, wake: impl Fn() + Send + Sync + 'static) {
+    register_for_life(queue, wake);
+}
+
+/// [`install`] without the proof of the main thread, which a test thread cannot give. The handlers
+/// are the process's, so a later call replaces an earlier one's.
+fn register_for_life(queue: OpenQueue, wake: impl Fn() + Send + Sync + 'static) {
     let handler = OpenHandler::new(queue, Box::new(wake));
     handler.register();
     let center = objc2_foundation::NSNotificationCenter::defaultCenter();
@@ -263,14 +278,18 @@ mod tests {
     use objc2::ClassType as _;
 
     #[test]
-    fn an_open_documents_event_queues_each_file_and_wakes_the_window() {
+    fn an_open_documents_event_queues_its_files_together_and_wakes_the_window() {
         let queue = OpenQueue::default();
         let (woken, wake) = counter();
         let handler = handler_for_test(queue.clone(), wake);
         let paths = [
-            // A space survives the trip through a file URL. An accent does too, in the decomposed
-            // form a file URL's path takes, which the file system reads as the same name.
-            PathBuf::from("/tmp/raw data/houses 2024.csv"),
+            PathBuf::from("/tmp/Données brutes/houses 2024.csv"),
+            PathBuf::from("/tmp/shop"),
+        ];
+        // A space survives the trip through a file URL. An accent does too, in the decomposed form
+        // a file URL's path takes, which the Mac's file systems read as the same name.
+        let delivered = [
+            PathBuf::from("/tmp/Donne\u{301}es brutes/houses 2024.csv"),
             PathBuf::from("/tmp/shop"),
         ];
         let event = open_documents(&paths);
@@ -279,11 +298,8 @@ mod tests {
             unsafe { msg_send![&*handler, handleOpenDocuments: &*event, withReplyEvent: &*reply] };
         assert_eq!(
             queue.drain(),
-            paths
-                .iter()
-                .cloned()
-                .map(OpenRequest::Path)
-                .collect::<Vec<_>>()
+            vec![OpenRequest::Paths(delivered.to_vec())],
+            "the files of one event are one request"
         );
         assert_eq!(woken.load(Ordering::SeqCst), 1);
     }
@@ -307,12 +323,14 @@ mod tests {
 
     /// The installed handlers are the ones the event manager calls: an event dispatched through
     /// it lands on the queue `install` was given. This is the manager's own routing, short of
-    /// Launch Services sending the event from Finder.
+    /// Launch Services sending the event from Finder. The handlers it registers are the whole
+    /// process's, so this is the one test that registers any; the others send their events to a
+    /// handler of their own.
     #[test]
     fn the_event_manager_routes_open_events_to_the_installed_queue() {
         let queue = OpenQueue::default();
         let (woken, wake) = counter();
-        install(queue.clone(), wake);
+        register_for_life(queue.clone(), wake);
         let manager = NSAppleEventManager::sharedAppleEventManager();
         let path = PathBuf::from("/tmp/dispatched.csv");
         let link = "brightfield://open?url=https://meridian.online/q.zip";

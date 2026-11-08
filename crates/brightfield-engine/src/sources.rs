@@ -54,6 +54,26 @@ pub struct SourceSet {
 /// entries (a name starting with `.`, such as the `.DS_Store` a file manager leaves) are passed
 /// over without a word: they are the file system's, not files the analyst chose.
 pub fn discover(path: &Path) -> Result<SourceSet, String> {
+    Ok(discover_files(listed(path)?))
+}
+
+/// The tables in every one of `paths`, as [`discover`] finds them in each, taken together: what
+/// one gesture handed over at once, such as several files chosen in Finder. A table whose name
+/// another took first takes a numbered one, as two in one folder do.
+///
+/// # Errors
+///
+/// The first path that names neither a file nor a folder, or a folder that will not list.
+pub fn discover_all(paths: &[PathBuf]) -> Result<SourceSet, String> {
+    let mut files = Vec::new();
+    for path in paths {
+        files.extend(listed(path)?);
+    }
+    Ok(discover_files(files))
+}
+
+/// The candidate files `path` names: a folder's visible top-level entries, sorted, or the file.
+fn listed(path: &Path) -> Result<Vec<PathBuf>, String> {
     let path = std::path::absolute(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let files = if path.is_dir() {
         let mut entries: Vec<PathBuf> = std::fs::read_dir(&path)
@@ -74,7 +94,11 @@ pub fn discover(path: &Path) -> Result<SourceSet, String> {
     } else {
         return Err(format!("{}: no such file or folder", path.display()));
     };
+    Ok(files)
+}
 
+/// The tables in `files`, each probed through the reader that will load it.
+fn discover_files(files: Vec<PathBuf>) -> SourceSet {
     let mut probe = Probe::new();
     let mut set = SourceSet::default();
     let mut found: Vec<(PathBuf, Parts)> = Vec::new();
@@ -137,7 +161,7 @@ pub fn discover(path: &Path) -> Result<SourceSet, String> {
             });
         }
     }
-    Ok(set)
+    set
 }
 
 /// Characters a DuckDB file reader reads as pattern syntax rather than as themselves.

@@ -1276,7 +1276,9 @@ fn main() -> Result<(), String> {
     // and until then the first frame is still to come.
     let open_queue = brightfield_shell::open_queue::OpenQueue::default();
     #[cfg(target_os = "macos")]
-    brightfield_shell::mac_open::install(open_queue.clone(), || {});
+    if let Some(main_thread) = objc2::MainThreadMarker::new() {
+        brightfield_shell::mac_open::install(main_thread, open_queue.clone(), || {});
+    }
     eframe::run_native(
         &title,
         options,

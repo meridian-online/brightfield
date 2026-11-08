@@ -230,7 +230,53 @@ fn info_plist_declares_the_documents_and_the_scheme() {
         "every zip on the Mac is not Brightfield's to open"
     );
 
-    // The two types macOS does not know are imported, each with the extension that names it.
+    // Brightfield is offered for the types other apps own, and is the default only for the two no
+    // app on a Mac owns.
+    let ranks: Vec<(&str, &str)> = info
+        .get("CFBundleDocumentTypes")
+        .and_then(plist::Value::as_array)
+        .expect("CFBundleDocumentTypes is an array")
+        .iter()
+        .filter_map(|t| {
+            let t = t.as_dictionary()?;
+            let rank = t.get("LSHandlerRank")?.as_string()?;
+            let types = t.get("LSItemContentTypes")?.as_array()?;
+            Some(
+                types
+                    .iter()
+                    .filter_map(plist::Value::as_string)
+                    .map(move |uti| (uti, rank))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .flatten()
+        .collect();
+    for (uti, rank) in [
+        ("public.comma-separated-values-text", "Alternate"),
+        ("public.tab-separated-values-text", "Alternate"),
+        ("org.openxmlformats.spreadsheetml.sheet", "Alternate"),
+        ("public.database", "Alternate"),
+        ("public.folder", "Alternate"),
+        ("org.apache.parquet", "Default"),
+        ("org.duckdb.database", "Default"),
+    ] {
+        assert!(
+            ranks.contains(&(uti, rank)),
+            "{uti} is declared at {rank}: {ranks:?}"
+        );
+    }
+    let defaults: Vec<&str> = ranks
+        .iter()
+        .filter(|(_, rank)| *rank == "Default")
+        .map(|(uti, _)| *uti)
+        .collect();
+    assert_eq!(
+        defaults,
+        ["org.apache.parquet", "org.duckdb.database"],
+        "only Parquet and DuckDB take the double-click"
+    );
+
+    // The three types macOS does not know are imported, each with the extension that names it.
     let imported: Vec<(&str, Vec<&str>)> = info
         .get("UTImportedTypeDeclarations")
         .and_then(plist::Value::as_array)
@@ -253,6 +299,7 @@ fn info_plist_declares_the_documents_and_the_scheme() {
     for (uti, extension) in [
         ("org.apache.parquet", "parquet"),
         ("org.duckdb.database", "duckdb"),
+        ("org.sqlite.sqlite3", "sqlite"),
     ] {
         assert!(
             imported
@@ -261,4 +308,185 @@ fn info_plist_declares_the_documents_and_the_scheme() {
             "{uti} is imported with .{extension}: {imported:?}"
         );
     }
+}
+
+/// Rows of the housing sample ordered by a column, applied to the grid and saved nowhere: an edit
+/// the window holds and its files do not.
+fn order_the_grid(app: &mut MeridianApp) {
+    app.chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: None,
+            order: Some("median_income".into()),
+        });
+    assert!(app.chart_doc().has_unsaved_work(), "the order is unsaved");
+}
+
+#[test]
+fn an_open_over_unsaved_edits_waits_until_they_are_saved() {
+    let first = housing_copy("held_first", "held_first.csv");
+    let second = housing_copy("held_second", "held_second.csv");
+    let mut app = app();
+    let ctx = egui::Context::default();
+    app.open_queue().push(OpenRequest::Path(first));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert_opened(&app, "held_first");
+    order_the_grid(&mut app);
+
+    app.open_queue().push(OpenRequest::Path(second.clone()));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    frame(&mut app, &ctx, egui::RawInput::default());
+
+    assert_opened(&app, "held_first");
+    assert!(
+        app.chart_doc().has_unsaved_work(),
+        "the edits are still there"
+    );
+    assert!(
+        app.notifications()
+            .iter()
+            .any(|n| n.title.contains("unsaved edits")),
+        "a banner says why nothing opened: {}",
+        said(&app)
+    );
+    assert_eq!(app.held_open(), Some(&OpenRequest::Path(second)));
+    assert!(
+        !scratch().join("protocols").join("held_second").exists(),
+        "nothing was made of the held open"
+    );
+
+    app.save_protocol(&ctx)
+        .expect("there is a Protocol to save")
+        .expect("the save is written");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while app.own_protocol().map(|p| p.dir.clone())
+        != Some(scratch().join("protocols").join("held_second"))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the held open never went ahead after the save: {}",
+            said(&app)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        frame(&mut app, &ctx, egui::RawInput::default());
+    }
+    assert_opened(&app, "held_second");
+    assert!(app.held_open().is_none());
+    assert!(
+        !app.notifications()
+            .iter()
+            .any(|n| n.title.contains("unsaved edits")),
+        "the banner went with the hold: {}",
+        said(&app)
+    );
+}
+
+/// Two copies of the housing sample, dropped together.
+fn two_dropped(folder: &str) -> egui::RawInput {
+    let files = ["north_houses.csv", "south_houses.csv"]
+        .into_iter()
+        .map(|name| egui::DroppedFile {
+            path: Some(housing_copy(folder, name)),
+            ..Default::default()
+        })
+        .collect();
+    egui::RawInput {
+        dropped_files: files,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn two_files_dropped_together_make_one_protocol_of_both() {
+    let mut app = app();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, egui::RawInput::default());
+    frame(&mut app, &ctx, two_dropped("dropped_two"));
+    frame(&mut app, &ctx, egui::RawInput::default());
+
+    let pane = app
+        .model_pane()
+        .unwrap_or_else(|| panic!("two tables open the model: {}", said(&app)));
+    let tables: Vec<&str> = pane
+        .protocol
+        .sources
+        .tables
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(tables, ["north_houses", "south_houses"]);
+    assert_eq!(
+        pane.protocol.dir,
+        scratch().join("protocols").join("north_houses"),
+        "one Protocol, named after the first"
+    );
+    assert!(
+        !scratch().join("protocols").join("south_houses").exists(),
+        "no Protocol is made of the second on its own"
+    );
+}
+
+#[test]
+fn files_handed_over_together_by_the_mac_make_one_protocol() {
+    // What an open-documents event of two files pushes, as `mac_open`'s tests show.
+    let paths = vec![
+        housing_copy("event_two", "east_houses.csv"),
+        housing_copy("event_two", "west_houses.csv"),
+    ];
+    let mut app = app();
+    app.open_queue().push(OpenRequest::Paths(paths));
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, egui::RawInput::default());
+
+    let pane = app
+        .model_pane()
+        .unwrap_or_else(|| panic!("two tables open the model: {}", said(&app)));
+    assert_eq!(pane.protocol.sources.tables.len(), 2);
+    assert_eq!(
+        pane.protocol.dir,
+        scratch().join("protocols").join("east_houses")
+    );
+}
+
+#[test]
+fn a_protocol_handed_over_with_files_opens_alone_and_says_so() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/shipped-protocol");
+    let dir = scratch()
+        .join("input")
+        .join("batch_protocol")
+        .join("shipped_batch");
+    for file in [
+        "arcform.yaml",
+        "models/measures.sql",
+        "data/measures.csv",
+        "panels/overview.yaml",
+    ] {
+        let to = dir.join(file);
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::copy(fixture.join(file), &to).expect("the fixture copies");
+    }
+    let csv = housing_copy("batch_protocol", "beside_houses.csv");
+    let mut app = app();
+    app.open_queue()
+        .push(OpenRequest::Paths(vec![csv, dir.clone()]));
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, egui::RawInput::default());
+    frame(&mut app, &ctx, egui::RawInput::default());
+
+    assert_eq!(
+        app.panel_tiles().map(|t| t.dir().to_path_buf()),
+        Some(dir),
+        "the Protocol opens where it is: {}",
+        said(&app)
+    );
+    assert!(
+        !scratch().join("protocols").join("beside_houses").exists(),
+        "nothing is made of the file beside it"
+    );
+    assert!(
+        app.notifications()
+            .iter()
+            .any(|n| n.body.as_deref().is_some_and(|b| b.contains("not opened"))),
+        "a banner says the rest were not opened: {}",
+        said(&app)
+    );
 }

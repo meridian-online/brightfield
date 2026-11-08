@@ -1025,6 +1025,12 @@ fn every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen()
                     "{verb} did not go to the front door"
                 );
             }
+            "open" => {
+                let mut at = Window::crosswalk();
+                let before = at.app.picker_asks();
+                at.confirm(verb);
+                assert!(at.app.picker_asks() > before, "{verb} raised no picker");
+            }
             other => panic!(
                 "{other} is offered enabled on the Protocol palette with no proof here that \
                  choosing it does something"

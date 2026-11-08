@@ -1234,15 +1234,38 @@ pub fn open_any_with(
     runner: &crate::run::Runner,
     dovetail: &dyn crate::discovery::Discovery,
 ) -> Result<Opened, String> {
-    let path = accept(&path.to_string_lossy())?;
-    let found = brightfield_engine::sources::discover(&path)?;
+    open_all_with(std::slice::from_ref(&path.to_path_buf()), runner, dovetail)
+}
+
+/// Open everything in `paths` together as one new Protocol, named after the first, with every
+/// table in them as its sources: what one gesture handed over at once. The rest is [`open_any`]'s:
+/// one table lands on its grid and dashboard, and several open the model.
+///
+/// # Errors
+///
+/// As [`open_any`], for the first path refused or the first step that failed.
+pub fn open_all(paths: &[PathBuf], runner: &crate::run::Runner) -> Result<Opened, String> {
+    open_all_with(paths, runner, &crate::discovery::Dovetail::new(runner))
+}
+
+/// [`open_all`] with the discoverer for several tables named.
+fn open_all_with(
+    paths: &[PathBuf],
+    runner: &crate::run::Runner,
+    dovetail: &dyn crate::discovery::Discovery,
+) -> Result<Opened, String> {
+    let paths = paths
+        .iter()
+        .map(|p| accept(&p.to_string_lossy()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let found = brightfield_engine::sources::discover_all(&paths)?;
     let one_part = match found.tables.as_slice() {
         [table] => Some(table.name.clone()),
         _ => None,
     };
 
     use crate::own_files as own;
-    let mut protocol = own::create(&path)?;
+    let mut protocol = own::create_all(&paths)?;
     own::run_loads(&protocol, runner)?;
     own::profile(&mut protocol)?;
     own::write_packages(&protocol)?;

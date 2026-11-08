@@ -21,6 +21,9 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 pub enum OpenRequest {
     /// A file or folder on this Mac: data to make a Protocol of, or a Protocol to open.
     Path(PathBuf),
+    /// Several files or folders handed over by one gesture, such as files chosen together in
+    /// Finder or dropped together on the door: one Protocol is made of them all.
+    Paths(Vec<PathBuf>),
     /// A `brightfield://open` link.
     Link(String),
     /// A file or folder to add as a source to the Protocol open now.
@@ -94,6 +97,19 @@ fn is_protocol_archive(path: &Path) -> bool {
         }
     }
     manifest
+}
+
+impl OpenRequest {
+    /// The request for `paths`, handed over by one gesture: [`Self::Path`] for one, [`Self::Paths`]
+    /// for several, and nothing for none.
+    #[must_use]
+    pub fn of_paths(mut paths: Vec<PathBuf>) -> Option<Self> {
+        match paths.len() {
+            0 => None,
+            1 => paths.pop().map(Self::Path),
+            _ => Some(Self::Paths(paths)),
+        }
+    }
 }
 
 /// The queue the window's ways in fill, shared by clone.
