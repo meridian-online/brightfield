@@ -2216,6 +2216,7 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
             ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::H))
         }
         "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
+        "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
         "cmd-j" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::J)),
         "cmd-enter" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)),
         // egui-winit 0.35 turns a press of C with the command key held, Shift
@@ -2931,6 +2932,9 @@ pub struct MeridianApp {
     /// dispatch, not an overlay opener, and that struct's contents are pinned
     /// by `the_overlay_keys_come_from_the_registry`.
     home_binding: Option<&'static str>,
+    /// The `open` keystroke token, read off the registry at boot — same rule as
+    /// [`Self::home_binding`].
+    open_binding: Option<&'static str>,
     /// The `toggle-outline-rail` keystroke token, read off the registry at
     /// boot — same rule as [`Self::home_binding`]: the shell wires whichever
     /// binding the registry declares, and does not invent one of its own.
@@ -3354,6 +3358,10 @@ impl MeridianApp {
             home_binding: brightfield_keys::registry()
                 .iter()
                 .find(|v| v.longname == "open-home")
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            open_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == "open")
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             navigator_binding: brightfield_keys::registry()
                 .iter()
@@ -4948,6 +4956,24 @@ impl MeridianApp {
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.open_queue.wake_with(&ctx);
+        // The picker is asked for afresh each frame, by Cmd+O or the door's Open button, and taken
+        // later in this frame, so an ask a headless window cannot answer does not carry over.
+        self.pick_requested = false;
+        // Files dropped on the front door open as the picker's choice does, each in its turn. A
+        // drop onto an open Protocol is left alone here: adding it as a source is that window's.
+        if self.front_door_is_live() {
+            let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
+                i.raw
+                    .dropped_files
+                    .iter()
+                    .filter_map(|f| f.path.clone())
+                    .collect()
+            });
+            for path in dropped {
+                self.open_queue
+                    .push(crate::open_queue::OpenRequest::Path(path));
+            }
+        }
         // An open that waited for the frame before this one to draw what it is fetching: that
         // frame has been presented, so the open runs now.
         if let Some(path) = self.pending_open.take() {
@@ -5120,6 +5146,8 @@ impl MeridianApp {
         // it is deliberately not an overlay-opener (so the registry cross-ref
         // that pins those three stays pinned).
         self.home_key(&ctx);
+        // Cmd+O, from anywhere no overlay owns the keyboard.
+        self.open_key(&ctx);
         // The navigator rail's round-trip focus toggle, on the same gate.
         self.navigator_key(&ctx);
         // The grid's move, on the same gate: a window verb, wherever focus is.
@@ -6425,6 +6453,21 @@ impl MeridianApp {
         }
         if self.home_binding.is_some_and(|t| consume_token(ctx, t)) {
             self.open_home(ctx);
+        }
+    }
+
+    /// Ask for the picker if the registry's `open` keystroke was pressed this frame and no overlay
+    /// owns the keyboard.
+    ///
+    /// Unlike [`Self::home_key`] it fires while a text field holds the keyboard, as Cmd+O does in
+    /// any Mac app: no text field here reads the chord, so taking it leaves typing as it was. The
+    /// ask is latched, as the door's Open button's is, and taken later in the frame.
+    fn open_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if self.open_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.pick_requested = true;
         }
     }
 
@@ -9864,6 +9907,19 @@ impl MeridianApp {
         self.open_queue.clone()
     }
 
+    /// This window taking its opens from `queue`, which something made before the window was:
+    /// the Mac's open events are listened for before the event loop starts, so a file a launch by
+    /// double-click delivers has a queue to land in. What the boot already asked to open moves
+    /// onto `queue`, behind anything waiting there.
+    #[must_use]
+    pub fn opening_from(mut self, queue: crate::open_queue::OpenQueue) -> Self {
+        for request in self.open_queue.drain() {
+            queue.push(request);
+        }
+        self.open_queue = queue;
+        self
+    }
+
     /// The one-source Protocol the grid and dashboard on the canvas were opened from, when an open
     /// made one.
     #[must_use]
@@ -11521,8 +11577,11 @@ impl MeridianApp {
             self.overlay = Some(Overlay::Help(Picker::new(HelpSheet::new())));
         }
         // Latched, not acted on: the dialog blocks on the operating system and
-        // the `Ui` borrow is still live here. `draw` takes it after the frame.
-        self.pick_requested = open_file;
+        // the `Ui` borrow is still live here. `draw` takes it after the frame. Set, never
+        // cleared, here: Cmd+O may have asked earlier in the same frame.
+        if open_file {
+            self.pick_requested = true;
+        }
     }
 
     /// The Datasets section: the curated starts, as a wrapping row of cards.

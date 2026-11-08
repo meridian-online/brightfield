@@ -1270,6 +1270,13 @@ fn main() -> Result<(), String> {
     let shot_after = args.shot_after;
     let shot_saved = Arc::new(AtomicBool::new(false));
     let saved = shot_saved.clone();
+    // The Mac's open events go onto the window's queue, listened for before the event loop starts
+    // so the file a launch by double-click delivers lands there; the window takes it on its first
+    // frame. The wake does nothing because the queue wakes the window itself once it has drawn,
+    // and until then the first frame is still to come.
+    let open_queue = brightfield_shell::open_queue::OpenQueue::default();
+    #[cfg(target_os = "macos")]
+    brightfield_shell::mac_open::install(open_queue.clone(), || {});
     eframe::run_native(
         &title,
         options,
@@ -1283,6 +1290,7 @@ fn main() -> Result<(), String> {
                 // dialog. The capture tiers build the same app without it.
                 app: MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode)
                     .allowing_dialogs()
+                    .opening_from(open_queue)
                     .running_with(brightfield_shell::run::Runner::this_binary())
                     .keeping_history(Some(brightfield_protocol::HistoryStore::Arcform)),
                 shot: ShotLatch::new(shot_out, shot_after, saved),

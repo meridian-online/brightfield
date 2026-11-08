@@ -99,10 +99,12 @@ flate2 = "1"
 [workspace.lints.rust]
 unused_must_use = "warn"
 missing_docs = "allow"
-# No crate writes `unsafe` except `brightfield-engine`, which restates the workspace's
-# lints with `deny` in this one place and allows the one function that calls DuckDB's
-# C API. `forbid` cannot be relaxed by an `#[allow]`, so a crate that inherits this
-# table cannot opt out of it either.
+# No crate writes `unsafe` except `brightfield-engine` and `brightfield-shell`, which
+# restate the workspace's lints with `deny` in this one place. The engine allows the one
+# function that calls DuckDB's C API, and the shell the one module, `mac_open`, that
+# registers the Mac's open-event handlers through the Objective-C runtime. `forbid`
+# cannot be relaxed by an `#[allow]`, so a crate that inherits this table cannot opt out
+# of it either.
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]

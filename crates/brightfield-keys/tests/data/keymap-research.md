@@ -39,6 +39,7 @@ by the provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic /
 | `reload-spec` | `cmd-r` | 2 / 4 / 4 | cmd-r = reload (browser); bare `r` NOT bound (dirty-guard) |
 | `reload-data` | `cmd-shift-r` | 1 / 4 / 5 | cmd-shift-r = hard reload (browser convention); distinct chord from cmd-r's spec reload, since this re-reads the DATA file rather than the YAML |
 | `open-home` | `cmd-shift-h` | 3 / 5 / 4 | cmd-shift-h = home; free of the editor chord set; keeps your place under Continue |
+| `open` | `cmd-o` | 3 / 5 / 5 | cmd-o = open (universal Mac convention); global, so it reaches from any pane and a focused text field, where no field reads the chord; raises the door's Open picker |
 | `toggle-presentation` | `p` | 2 / 3 / 3 | `p` = present (shipped fixed point) |
 | `save-spec` | `cmd-s` | 3 / 5 / 5 | cmd-s = save (universal; shipped, editor-scoped) |
 | `run-protocol` | `cmd-enter` | 3 / 3 / 5 | cmd-enter = run (notebook cells, SQL consoles); `cmd-r` is `reload-spec`'s, so the run takes the other run convention; global, so it reaches from the canvas as well as the ledger strip's Run control |

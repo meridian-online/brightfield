@@ -491,6 +491,19 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Return to the front door (keeps your place under Continue)",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "cmd-shift-h = home; free of the editor chord set" }),
         },
+        // The open picker, the door's Open button as a chord. Global, so it reaches from any pane
+        // and from a focused text field, as Cmd+O does in every Mac app; no text field reads it.
+        VerbEntry {
+            longname: "open",
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-o")],
+            scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Open a data file, folder or Protocol",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 5, motor_note: "cmd-o = open (universal Mac convention); free of the editor chord set" }),
+        },
         // ---- presentation + save: shipped fixed points, sourced here so
         //      the registry is the single binding source ----
         VerbEntry {
@@ -1620,6 +1633,7 @@ mod tests {
             "reload-spec",
             "reload-data",
             "open-home",
+            "open",
             "toggle-presentation",
             "save-spec",
             "run-protocol",

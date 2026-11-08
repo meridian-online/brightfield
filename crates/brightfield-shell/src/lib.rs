@@ -68,6 +68,8 @@
 //!   records it leaves beside the spec, read back newest first.
 //! - [`open_queue`] — the window's ways in as one queue of requests, and where each path goes:
 //!   a Protocol opened where it is, or a new one made of the data.
+//! - `mac_open` (macOS only) — the Mac's open events, a file from Finder or the Dock and a
+//!   `brightfield://` link, pushed onto that queue.
 //! - [`own_files`] — the Protocol folder an analyst's own files are written as: a load step
 //!   per table, the raw tables' FineType profile, and a Frictionless data package per source.
 //! - [`shelf_edit`] — a column put on a chart's x or y, as the list of chart
@@ -115,6 +117,10 @@ pub mod housing;
 pub mod inspector;
 pub mod interval_drag;
 pub mod legend;
+// The crate's one module that writes `unsafe`: Objective-C messages to the Apple Event manager.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub mod mac_open;
 pub mod model_file;
 pub mod model_inspector;
 pub mod model_pane;
