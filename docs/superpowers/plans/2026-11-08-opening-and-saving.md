@@ -135,7 +135,7 @@
   - `cmd_s_in_the_editor_saves_the_buffer_then_the_protocol`: both files change.
   - `cmd_s_with_nothing_pending_writes_nothing`: the modification times are unchanged.
 - [ ] **Step 2:** Run `cargo test -p brightfield-shell --test cmd_s_saves_the_protocol`. Expected: FAIL on the first.
-- [ ] **Step 3:** Bind and dispatch as listed under Files.
+- [ ] **Step 3:** Bind and dispatch as listed under Files. Also: after a save into a one-source own-files Protocol, the spine shows the recorded step and the run strip adopts the run record (today re-adoption reads the old one-step shape and goes stale); add `cmd_s_on_a_one_source_protocol_shows_the_step_on_the_spine`.
 - [ ] **Step 4:** Run the test, then `cargo test -p brightfield-keys`. Expected: PASS.
 - [ ] **Step 5:** Commit: "Save the Protocol with Cmd+S wherever the focus is".
 
@@ -372,7 +372,7 @@
 - [ ] **Step 4:** Run the test. Expected: PASS.
 - [ ] **Step 5:** Commit: "Add a dropped file to the open Protocol, or open a dropped Protocol".
 
-### Task 15: Open in Brightfield: the link and the archive
+### Task 15: Open in Brightfield: the link, the archive and trust
 
 **Files:**
 - Create: `crates/brightfield-shell/src/protocol_archive.rs`
@@ -394,7 +394,12 @@
   - `an_archive_that_understates_its_sizes_is_stopped_and_removed`: declared sizes under the limit, real contents over it; nothing is left behind.
   - `an_archive_naming_an_absolute_local_path_is_refused_naming_it`
   - `a_clashing_archive_takes_dash_two`
-  - `a_good_archive_unpacks_runs_and_draws`: serve a fixture zip from a local stand-in HTTP server so the fetch path runs (`Fetched::stand_in` copies files without the network and does not exercise it); it opens, runs (a run record is written) and draws.
+  - `a_source_path_escaping_the_folder_is_refused`: a relative `../..` source in `.sources.json` or a package.
+  - `a_redirect_off_meridian_online_is_refused`: the host is checked again after each redirect.
+  - `an_archived_protocol_opens_restricted_and_draws_its_shipped_results`: no run record is written, no fetch happens, the banner names the host, and the charts draw from the archive's results.
+  - `trust_unlocks_running_and_is_remembered`: Trust, then Run writes a run record; reopening the folder is not restricted.
+  - `a_protocol_folder_from_outside_the_protocols_folder_opens_restricted`; one inside it opens trusted.
+  - `a_good_archive_unpacks_and_draws`: serve a fixture zip from a local stand-in HTTP server so the fetch path runs (`Fetched::stand_in` copies files without the network and does not exercise it); it unpacks, opens restricted and draws its shipped results.
 - [ ] **Step 2:** Run `cargo test -p brightfield-shell --test protocol_archive`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run the test. Expected: PASS. Hand check on a packaged build, in the pull request's checklist: `open 'brightfield://open?url=…'` from Terminal opens the Protocol.

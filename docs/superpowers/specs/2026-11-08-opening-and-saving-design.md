@@ -32,13 +32,19 @@ The person is an early adopter with middling technical depth: someone who uses a
    - Cmd+O.
 
    Dropping a data file or folder onto an open Protocol's window adds it as a source to that Protocol, as the browser's add does. Dropping a Protocol directory or archive there opens that Protocol instead, after the close question if a draft is pending. A folder opens the sources browser only when dovetail senses a join in it (Hugh, 2026-11-09: "We should only open dovetail when we sense a join - e.g. if there's only one file in the folder there's no need to open it."). This holds on every way in, the picker and Cmd+O as much as a gesture. A folder with one table, or whose tables dovetail proposes no join between, is added at once and drawn as goal 1 says; a folder with a proposed join makes its Protocol and opens the browser on that folder's join canvas, so the analyst can accept its joins before the model is drawn.
-3. **Open in Brightfield from a web page.** Brightfield answers the link `brightfield://open?url=<address>`, where the address is an `https` URL on `meridian.online` or one of its subdomains, pointing at a Protocol archive: a zip of a Protocol directory. Brightfield downloads it and unpacks it into the Protocols folder, named after the archive's Protocol (taking `-2` and so on on a clash). It then opens it, runs it and draws it. A link to any other host is refused with a sentence saying why. The website's button builds against this format.
+3. **Open in Brightfield from a web page.** Brightfield answers the link `brightfield://open?url=<address>`, where the address is an `https` URL on `meridian.online` or one of its subdomains, pointing at a Protocol archive: a zip of a Protocol directory. Brightfield downloads it and unpacks it into the Protocols folder, named after the archive's Protocol (taking `-2` and so on on a clash). It then opens it restricted and draws the results the archive carries (see Trust below); it runs nothing until the analyst trusts it. A link to any other host is refused with a sentence saying why. The website's button builds against this format.
 
    **What an archive holds.** A Protocol archive is a `.zip` whose top level is one Protocol directory. Every source it reads is either:
    - a file inside that directory, addressed relative to it; or
    - a remote address its steps fetch, as the example Protocols' `http_fetch` steps fetch from their issuers today.
 
    An archive whose Protocol names an absolute local path is refused, with a sentence naming the path, since it could run on no other Mac. Brightfield does not register for every `.zip` in Finder, because that would take over Finder's handling of all zips. It accepts a zip holding a Protocol through the link, Cmd+O and a drop, and checks for `arcform.yaml` before unpacking.
+   **Trust** (Hugh, 2026-11-09, adopting the shape of VS Code's Workspace Trust). A Protocol's steps are SQL, which can read and write any file on the Mac, so a Protocol Brightfield did not make is not run until the analyst trusts it.
+   - **Restricted.** A Protocol from a link or archive, and a Protocol folder opened from outside `~/Documents/Protocols`, opens restricted: the spine, its steps and their SQL, and the sources it reads and fetches are shown, and nothing runs (no arc run, no fetch, no extension load). A banner names where it came from and offers Trust. There is no dialog.
+   - **The first picture still comes first.** A Protocol archive carries its last run's results, and a restricted Protocol draws its charts from them. Trust unlocks running again. The website's archives include those results.
+   - **Trusted.** Protocols Brightfield makes in `~/Documents/Protocols` are trusted, as VS Code trusts the folders under a trusted parent. Trust is remembered per folder in Brightfield's config, and can be revoked.
+   - Refusing a source path that resolves outside the Protocol's folder, and checking the host again after every redirect, still apply before anything is written.
+
 4. **New Protocols live in `~/Documents/Protocols`, visible in Finder** (Hugh, 2026-10-28, confirmed 2026-11-08). The Protocol's folder exists from the first moment, which matters because arc keys a Protocol's working database by the path of its directory. When a rename, a Finder move, or an Untitled Protocol taking its first source's name changes that path, the database is moved or rebuilt as goal 9 and constraint 3 describe.
 5. **The sources browser adds sources from the keyboard and the mouse alike.** It follows yazi and Hugh's prototype (the `prototype/save-models` branch, `prototypes/protocol-first.html`, at `9189fa7`):
    - three columns: places; the current folder's list; and a preview of the item under the cursor;
@@ -141,7 +147,7 @@ Hugh did not pick between these explicitly. He asked whether a tree of Protocols
 
 ## Calls made on Hugh's behalf
 
-- The link format: `brightfield://open?url=<https address of a Protocol archive>`, limited to `meridian.online` and its subdomains, with the archive unpacked into the Protocols folder. The website builds against this.
+- The link format: `brightfield://open?url=<https address of a Protocol archive>`, limited to `meridian.online` and its subdomains, with the archive unpacked into the Protocols folder and opened restricted. The website builds against this, and its archives carry their last run's results.
 - An archive holds one Protocol directory whose sources are inside it or fetched from remote addresses. One that names an absolute local path is refused. Brightfield takes archives through the link, Cmd+O and a drop, not by registering for every zip in Finder.
 - What the canvas shows follows the spine's selection: a lone source's grid and dashboard, or the model once there are two sources.
 - A run is a whole-Protocol arc run that writes a run record; adding sources only previews.
