@@ -68,7 +68,7 @@
 //!   records it leaves beside the spec, read back newest first.
 //! - [`open_queue`] — the window's ways in as one queue of requests, and where each path goes:
 //!   a Protocol opened where it is, or a new one made of the data.
-//! - `mac_open` (macOS only) — the Mac's open events, a file from Finder or the Dock and a
+//! - `mac_open` (built on macOS) — the Mac's open events, a file from Finder or the Dock and a
 //!   `brightfield://` link, pushed onto that queue.
 //! - [`own_files`] — the Protocol folder an analyst's own files are written as: a load step
 //!   per table, the raw tables' FineType profile, and a Frictionless data package per source.

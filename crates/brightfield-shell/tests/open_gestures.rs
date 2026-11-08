@@ -134,7 +134,7 @@ fn requests_queued_before_the_first_frame_are_opened() {
 }
 
 /// One frame's worth of Cmd+O. `command` is what `consume_key`'s logical match reads, so this
-/// fires the same on every runner.
+/// fires whether the runner names the key Command or Control.
 fn cmd_o() -> egui::RawInput {
     let modifiers = egui::Modifiers {
         command: true,
