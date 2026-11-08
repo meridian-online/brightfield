@@ -497,3 +497,170 @@ fn a_queued_open_that_fetches_an_extension_draws_the_notice_first_and_loses_no_r
         win.said()
     );
 }
+
+/// The names of the columns the grid's table holds.
+fn columns_shown(win: &Window) -> Vec<String> {
+    win.app
+        .protocol_model()
+        .source()
+        .map(|s| s.columns.iter().map(|c| c.column.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// The housing sample with each line passed through `edit`, the header as line 0.
+fn housing_edited(edit: impl Fn(usize, &str) -> String) -> String {
+    let text = std::fs::read_to_string(housing()).expect("the sample reads");
+    text.lines()
+        .enumerate()
+        .map(|(i, l)| format!("{}\n", edit(i, l)))
+        .collect()
+}
+
+#[test]
+fn reloading_after_the_file_gains_a_column_shows_it() {
+    let folder = input("gains");
+    let csv = folder.join("gains.csv");
+    std::fs::copy(housing(), &csv).expect("the housing sample copies");
+    let mut win = Window::new();
+    win.open(&csv);
+    assert!(!columns_shown(&win).contains(&"rating".to_string()));
+
+    std::fs::write(
+        &csv,
+        housing_edited(|i, l| {
+            if i == 0 {
+                format!("{l},rating")
+            } else {
+                format!("{l},{}", i % 5)
+            }
+        }),
+    )
+    .expect("the CSV rewritten");
+    let ctx = win.ctx.clone();
+    win.app.reload_data_file(&ctx);
+    win.frame();
+
+    assert!(
+        columns_shown(&win).contains(&"rating".to_string()),
+        "the new column is listed: {:?}; {}",
+        columns_shown(&win),
+        win.said()
+    );
+    assert_eq!(rows_shown(&win), 240);
+}
+
+#[test]
+fn reloading_after_a_column_is_renamed_shows_the_new_name() {
+    let folder = input("renames");
+    let csv = folder.join("renames.csv");
+    std::fs::copy(housing(), &csv).expect("the housing sample copies");
+    let mut win = Window::new();
+    win.open(&csv);
+    assert!(columns_shown(&win).contains(&"house_age".to_string()));
+
+    std::fs::write(
+        &csv,
+        housing_edited(|i, l| {
+            if i == 0 {
+                l.replace("house_age", "building_age")
+            } else {
+                l.to_string()
+            }
+        }),
+    )
+    .expect("the CSV rewritten");
+    let ctx = win.ctx.clone();
+    win.app.reload_data_file(&ctx);
+    win.frame();
+
+    let columns = columns_shown(&win);
+    assert!(
+        columns.contains(&"building_age".to_string())
+            && !columns.contains(&"house_age".to_string()),
+        "the grid shows the new name: {columns:?}; {}",
+        win.said()
+    );
+    assert!(
+        win.app.notifications().iter().next().is_none(),
+        "{}",
+        win.said()
+    );
+}
+
+#[test]
+fn opening_a_one_source_protocol_again_does_not_rewrite_it() {
+    let folder = input("untouched");
+    let csv = folder.join("untouched.csv");
+    std::fs::copy(housing(), &csv).expect("the housing sample copies");
+    Window::new().open(&csv);
+    let dir = protocols().join("untouched");
+    let manifest = std::fs::read_to_string(dir.join("arcform.yaml")).unwrap();
+    let models = listing(&dir.join("models"));
+
+    let mut win = Window::new();
+    win.open(&dir);
+    assert!(win.app.own_protocol().is_some(), "{}", win.said());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("arcform.yaml")).unwrap(),
+        manifest
+    );
+    assert_eq!(listing(&dir.join("models")), models);
+}
+
+#[test]
+fn reloading_keeps_a_recorded_view_step() {
+    let folder = input("keeps");
+    let csv = folder.join("keeps.csv");
+    std::fs::copy(housing(), &csv).expect("the housing sample copies");
+    let mut win = Window::new();
+    win.open(&csv);
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("house_age > 28".to_string()),
+            order: None,
+        });
+    win.frame();
+    let ctx = win.ctx.clone();
+    win.app
+        .save_protocol(&ctx)
+        .expect("a Protocol to save")
+        .unwrap_or_else(|e| panic!("the Save failed: {e}"));
+    win.frame();
+
+    std::fs::write(
+        &csv,
+        housing_edited(|i, l| {
+            if i == 0 {
+                format!("{l},rating")
+            } else {
+                format!("{l},{}", i % 5)
+            }
+        }),
+    )
+    .expect("the CSV rewritten");
+    win.app.reload_data_file(&ctx);
+    win.frame();
+
+    let dir = protocols().join("keeps");
+    let manifest = std::fs::read_to_string(dir.join("arcform.yaml")).unwrap();
+    let order: Vec<&str> = manifest
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("- name: "))
+        .collect();
+    let at = |prefix: &str| {
+        order
+            .iter()
+            .position(|n| n.trim_matches('\'').trim_matches('"').starts_with(prefix))
+            .unwrap_or_else(|| panic!("{prefix} in {order:?}"))
+    };
+    assert!(
+        at("silver_") < at("keeps_filtered_by_house_age"),
+        "the silver step stays ahead of the view that reads it: {order:?}"
+    );
+    assert!(
+        columns_shown(&win).contains(&"rating".to_string()),
+        "{}",
+        win.said()
+    );
+}

@@ -10105,11 +10105,14 @@ impl MeridianApp {
             return;
         };
         // The grid of a Protocol's one table reads the Protocol's copy of it, which was written
-        // once, so the Protocol is run again to read the analyst's file and the copy is written
-        // afresh from it.
+        // once, so the Protocol is read again from the analyst's file, its columns as they are
+        // now, and the copy is written afresh from it.
         if let Some(dir) = self.own_protocol.as_ref().map(|p| p.dir.clone()) {
             match self.runner.clone().or_else(crate::run::Runner::this_binary) {
-                Some(runner) => self.reopen_one_source(ctx, &dir, &runner),
+                Some(runner) => match crate::data_file::reload_one_table(&dir, &runner) {
+                    Ok((opened, protocol)) => self.adopt_one_source(ctx, opened, protocol),
+                    Err(e) => self.say_open_failed(ctx, &dir.to_string_lossy(), e),
+                },
                 None => self.say_open_failed(
                     ctx,
                     &dir.to_string_lossy(),

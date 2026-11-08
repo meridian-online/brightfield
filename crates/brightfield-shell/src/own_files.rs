@@ -154,7 +154,9 @@ fn silver_datasets(model: &Model, sources: &[&str]) -> Vec<String> {
 /// Every call rewrites them: the new files and manifest are written first and the earlier files
 /// the manifest no longer names are removed after, so a failed write leaves a usable folder. A
 /// dataset that has since been excluded or folded into another loses its silver table's steps. The
-/// load steps are left as they are. Run the Protocol afterwards to make the tables.
+/// load steps are left as they are, and so are steps recorded after them, such as a grid view arc
+/// recorded on a silver table: the silver steps are put back straight after the loads, ahead of
+/// what reads them. Run the Protocol afterwards to make the tables.
 ///
 /// # Errors
 ///
@@ -177,6 +179,14 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
             .unwrap_or("");
         !(name.starts_with(SILVER_STEP) || name.starts_with(FAILED_STEP))
     });
+    let mut at = steps
+        .iter()
+        .rposition(|s| {
+            s.get("name")
+                .and_then(serde_yaml::Value::as_str)
+                .is_some_and(|n| n.starts_with("load_"))
+        })
+        .map_or(0, |i| i + 1);
 
     let mut written: HashSet<String> = HashSet::new();
     let sources: Vec<&str> = p.sources.tables.iter().map(|t| t.name.as_str()).collect();
@@ -203,7 +213,8 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
             std::fs::write(p.dir.join(&file), format!("{sql};\n"))
                 .map_err(|e| format!("{file}: {e}"))?;
             written.insert(file.clone());
-            steps.push(
+            steps.insert(
+                at,
                 serde_yaml::from_str(&format!(
                     "name: {}\nsql: {}\nproduces:\n  - {}\n",
                     quoted_yaml(&step),
@@ -212,6 +223,7 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
                 ))
                 .map_err(|e| e.to_string())?,
             );
+            at += 1;
         }
     }
     let out = serde_yaml::to_string(&manifest).map_err(|e| e.to_string())?;
@@ -729,6 +741,77 @@ pub fn reopen_one_source(dir: &Path, runner: &Runner) -> Result<OwnProtocol, Str
     run_loads(&p, runner)?;
     profile(&mut p)?;
     Ok(p)
+}
+
+/// The own-files Protocol of one source in `dir` with its raw table read afresh from the source
+/// file and profiled, for its silver steps to be written again from what the file holds now: a
+/// column added, renamed or retyped since the Protocol was made.
+///
+/// Only the load steps are run. The steps after them were written for the file's earlier columns,
+/// and a silver step naming a column the file no longer has would fail the run before the new
+/// columns could be profiled. The manifest is put back as it was before this returns, whether the
+/// run succeeded or not.
+///
+/// # Errors
+///
+/// The reason when the folder holds no record of its tables, its manifest cannot be read or
+/// written, the load fails, or the raw table cannot be profiled.
+pub fn reload_one_source(dir: &Path, runner: &Runner) -> Result<OwnProtocol, String> {
+    let mut p = OwnProtocol {
+        dir: dir.to_path_buf(),
+        sources: read_sources(dir)?,
+        profiles: Vec::new(),
+    };
+    let manifest_path = dir.join("arcform.yaml");
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    let mut loads: serde_yaml::Value =
+        serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    if let Some(steps) = loads
+        .get_mut("steps")
+        .and_then(serde_yaml::Value::as_sequence_mut)
+    {
+        steps.retain(|s| {
+            s.get("name")
+                .and_then(serde_yaml::Value::as_str)
+                .is_some_and(|n| n.starts_with("load_"))
+        });
+    }
+    let loads = serde_yaml::to_string(&loads).map_err(|e| e.to_string())?;
+    std::fs::write(&manifest_path, loads)
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    let ran = run_loads(&p, runner);
+    std::fs::write(&manifest_path, text)
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    ran?;
+    forget_after_loads(&p)?;
+    profile(&mut p)?;
+    Ok(p)
+}
+
+/// Forget arc's record of each step after the loads succeeding, so the next run runs them over
+/// the raw tables a loads-only run has just made. Without this, a silver step whose SQL had not
+/// changed sat out the next run as unchanged, though the loads-only run had changed its input
+/// (`reloading_the_data_rereads_the_analysts_file` in `tests/open_makes_a_protocol.rs`).
+fn forget_after_loads(p: &OwnProtocol) -> Result<(), String> {
+    let _writing = database_lock();
+    let db = arc::spec::protocol_db_path(&p.dir).map_err(|e| e.to_string())?;
+    if !db.is_file() {
+        return Ok(());
+    }
+    let conn = duckdb::Connection::open(&db).map_err(|e| format!("{}: {e}", db.display()))?;
+    let state: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = '_arcform_state'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("{}: {e}", db.display()))?;
+    if state == 0 {
+        return Ok(());
+    }
+    conn.execute_batch("DELETE FROM _arcform_state WHERE step_name NOT LIKE 'load\\_%' ESCAPE '\\'")
+        .map_err(|e| format!("{}: {e}", db.display()))
 }
 
 /// The own-files Protocol folders in the Protocols folder and in the older

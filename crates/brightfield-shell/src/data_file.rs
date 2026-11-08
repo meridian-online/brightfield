@@ -1273,6 +1273,32 @@ pub fn open_any_with(
     }
 }
 
+/// Read the own-files Protocol of one source in `dir` again from its source file, and open its
+/// table: what Reload does for a table opened from such a Protocol.
+///
+/// The raw table is loaded and profiled afresh ([`crate::own_files::reload_one_source`]), and the
+/// rest is what a new open does with a profile: the data packages and the silver steps are written
+/// again from it, so a column the file gained is cast and shown and one it renamed or dropped is
+/// no longer asked for. The steps recorded after the silver steps are kept. Then the Protocol is
+/// run and its table opened ([`open_one_table`]).
+///
+/// # Errors
+///
+/// The reason when a step of that fails, naming the folder or file it concerns.
+pub fn reload_one_table(
+    dir: &Path,
+    runner: &crate::run::Runner,
+) -> Result<(OpenedFile, crate::own_files::OwnProtocol), String> {
+    use crate::own_files as own;
+    let protocol = own::reload_one_source(dir, runner)?;
+    own::write_packages(&protocol)?;
+    let model = crate::discovery::sample_pass(&crate::discovery::StandIn, &protocol, None)?;
+    own::write_silver(&protocol, &model)?;
+    own::drop_unmade_silver(&protocol, &model)?;
+    own::run_loads(&protocol, runner)?;
+    open_one_table(&protocol).map(|opened| (opened, protocol))
+}
+
 /// The grid and dashboard of the one table of `protocol`, an own-files Protocol that has been
 /// run: the table is copied to a Parquet file in the Protocol's `.grid/` folder and opened from
 /// there on the flat route.
