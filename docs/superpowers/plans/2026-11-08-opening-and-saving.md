@@ -400,7 +400,10 @@
   - `trust_unlocks_running_and_is_remembered`: Trust, then Run writes a run record; reopening the folder is not restricted.
   - `a_protocol_folder_brightfield_did_not_make_opens_restricted`, wherever it sits; one Brightfield made opens trusted.
   - `an_unpacked_archive_in_the_protocols_folder_is_not_trusted_by_location`
-  - `a_protocol_in_recents_from_before_trust_opens_trusted`
+  - `a_brightfield_made_protocol_in_recents_from_before_trust_opens_trusted`; a foreign folder in Recents opens restricted.
+  - `a_brightfield_made_protocol_moved_in_finder_stays_trusted`
+  - `trusting_a_folder_trusts_protocols_beneath_it_including_later_ones`: trust the Protocols folder, then unpack an archive into it; it opens trusted.
+  - `removing_a_trusted_folder_restricts_what_it_covered`
   - `restricted_drawing_reads_only_shipped_results`: with DuckDB external access and extension autoload off.
   - `a_good_archive_unpacks_and_draws`: serve a fixture zip from a local stand-in HTTP server so the fetch path runs (`Fetched::stand_in` copies files without the network and does not exercise it); it unpacks, opens restricted and draws its shipped results.
 - [ ] **Step 2:** Run `cargo test -p brightfield-shell --test protocol_archive`. Expected: FAIL.
