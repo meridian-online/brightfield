@@ -398,7 +398,10 @@
   - `a_redirect_off_meridian_online_is_refused`: the host is checked again after each redirect.
   - `an_archived_protocol_opens_restricted_and_draws_its_shipped_results`: no run record is written, no fetch happens, the banner names the host, and the charts draw from the archive's results.
   - `trust_unlocks_running_and_is_remembered`: Trust, then Run writes a run record; reopening the folder is not restricted.
-  - `a_protocol_folder_from_outside_the_protocols_folder_opens_restricted`; one inside it opens trusted.
+  - `a_protocol_folder_brightfield_did_not_make_opens_restricted`, wherever it sits; one Brightfield made opens trusted.
+  - `an_unpacked_archive_in_the_protocols_folder_is_not_trusted_by_location`
+  - `a_protocol_in_recents_from_before_trust_opens_trusted`
+  - `restricted_drawing_reads_only_shipped_results`: with DuckDB external access and extension autoload off.
   - `a_good_archive_unpacks_and_draws`: serve a fixture zip from a local stand-in HTTP server so the fetch path runs (`Fetched::stand_in` copies files without the network and does not exercise it); it unpacks, opens restricted and draws its shipped results.
 - [ ] **Step 2:** Run `cargo test -p brightfield-shell --test protocol_archive`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
