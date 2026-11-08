@@ -221,6 +221,7 @@
 
 - [ ] **Step 1: Write the failing tests:**
   - `relaunch_reopens_the_protocol_as_saved`: open, keep a filter without saving, drop the app, and boot a new one from the same config. The Protocol opens without the filter.
+  - `closing_the_window_shows_the_front_door`: closing a Protocol's window (after the close question) shows the door instead of ending the app; Cmd+Q still quits.
   - `closing_to_the_door_relaunches_on_the_door`
   - `an_old_layout_file_with_a_start_id_still_restores_it`
   - `a_restored_protocol_that_was_deleted_opens_the_door`
