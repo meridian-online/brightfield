@@ -688,7 +688,7 @@ fn read_steps<'a>(
 
 /// The steps recorded into the own-files Protocol of one source in `dir` after the steps it was
 /// made with (`made_with`, by name), for `source`, the grid copy of its one table that the window
-/// opened: `Ok(None)` when none have been recorded, or the folder's table is not `source`'s.
+/// opened: `Ok(None)` when the manifest holds only those steps, or the folder's table is not `source`'s.
 ///
 /// Their root is the table the Protocol's silver step makes, which is `source`'s table and the
 /// rows its grid copy holds, so a grid over a recorded step previews it through its chain from

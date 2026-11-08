@@ -1214,8 +1214,9 @@ impl Item<ChartDoc> for EditorPane {
         // binds it: taken only while this text edit holds the keyboard, so a
         // Cmd+S anywhere else is left to the window's own Save. The buffer is
         // saved and then the window's Save is raised, so one press in the
-        // editor saves both; `perform` stays the verb's route in from
-        // everything else.
+        // editor saves both (`cmd_s_in_the_editor_saves_the_buffer_then_the_protocol`
+        // in `tests/cmd_s_saves_the_protocol.rs`); `perform` stays the verb's
+        // route in from a toolbar or a test.
         if out.focused && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
             self.save_and_note(doc);
             cx.request(Verb::new(crate::window::SAVE_PROTOCOL));
