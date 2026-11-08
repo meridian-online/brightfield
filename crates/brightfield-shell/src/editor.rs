@@ -1067,6 +1067,25 @@ impl EditorPane {
     /// edit does, and a watcher that reported it would cry wolf on every
     /// ⌘S. Both save entry points (the keystroke and the verb) come through
     /// here so neither can forget the note.
+    /// Leave the buffer on the document while it holds edits its file does
+    /// not, and nothing there once it does not ([`ChartDoc::editor_buffer`]):
+    /// the window keeps an unsaved buffer as a version when it closes without
+    /// saving, and the buffer is pane state it cannot otherwise reach. The
+    /// buffer changes only while the pane draws or performs a verb, so it is
+    /// published from both.
+    fn publish_buffer(&self, doc: &mut ChartDoc) {
+        let now = match (self.dirty(), &self.file) {
+            (Dirty::Edited, Some(file)) => Some((file.path.as_path(), file.buffer.as_str())),
+            _ => None,
+        };
+        let held = doc
+            .editor_buffer()
+            .map(|(path, text)| (path.as_path(), text.as_str()));
+        if held != now {
+            doc.set_editor_buffer(now.map(|(path, text)| (path.to_path_buf(), text.to_string())));
+        }
+    }
+
     fn save_and_note(&mut self, doc: &mut ChartDoc) {
         let report = self.save_now();
         if matches!(report, SaveReport::Written | SaveReport::ForcedWrite) {
@@ -1221,6 +1240,7 @@ impl Item<ChartDoc> for EditorPane {
             self.save_and_note(doc);
             cx.request(Verb::new(crate::window::SAVE_PROTOCOL));
         }
+        self.publish_buffer(doc);
 
         if self.ack_live() || self.reload_pending_since.is_some() {
             // The ack must expire and the pending reload must re-poll
@@ -1232,6 +1252,7 @@ impl Item<ChartDoc> for EditorPane {
     fn perform(&mut self, doc: &mut ChartDoc, verb: Verb, cx: &mut ItemCtx<'_>) -> Handled {
         if verb.as_str() == "save-spec" {
             self.save_and_note(doc);
+            self.publish_buffer(doc);
             // The buffer first, then the Protocol, as the editor's Cmd+S does.
             cx.request(Verb::new(crate::window::SAVE_PROTOCOL));
             cx.request_repaint();

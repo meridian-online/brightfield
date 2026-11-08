@@ -945,6 +945,12 @@ pub struct ChartDoc {
     typed_stamps: Vec<u64>,
     /// The order stamp the grid view was last applied with.
     grid_view_stamp: u64,
+    /// **The YAML editor's buffer, while it holds edits its file does not**:
+    /// the file it edits and its text. The editor holds its buffer as pane
+    /// state, which the window cannot reach, so the editor leaves it here
+    /// whenever it changes, and a close without saving keeps it as a version
+    /// ([`Self::editor_buffer`]).
+    editor_buffer: Option<(std::path::PathBuf, String)>,
     /// The next order stamp: one counter for kept statements and applied grid
     /// views, so what was made first can be recorded first.
     next_stamp: u64,
@@ -1471,6 +1477,7 @@ impl ChartDoc {
             typed: Vec::new(),
             typed_stamps: Vec::new(),
             grid_view_stamp: 0,
+            editor_buffer: None,
             next_stamp: 0,
             grid_foot: crate::grid_foot::FootState::default(),
             grid_preview: None,
@@ -1545,6 +1552,7 @@ impl ChartDoc {
             typed: Vec::new(),
             typed_stamps: Vec::new(),
             grid_view_stamp: 0,
+            editor_buffer: None,
             next_stamp: 0,
             grid_foot: crate::grid_foot::FootState::default(),
             grid_preview: None,
@@ -1764,6 +1772,19 @@ impl ChartDoc {
     #[must_use]
     pub fn has_unsaved_work(&self) -> bool {
         self.has_unsaved_edit() || self.grid_view_unrecorded() || !self.typed.is_empty()
+    }
+
+    /// Record the YAML editor's unsaved buffer, or that it has none: the
+    /// editor's to say, whenever its buffer changes.
+    pub(crate) fn set_editor_buffer(&mut self, buffer: Option<(std::path::PathBuf, String)>) {
+        self.editor_buffer = buffer;
+    }
+
+    /// The YAML editor's buffer while it holds edits its file does not: the
+    /// file it edits and its text.
+    #[must_use]
+    pub fn editor_buffer(&self) -> Option<&(std::path::PathBuf, String)> {
+        self.editor_buffer.as_ref()
     }
 
     /// The statements kept from the palette and not yet saved, in the order
@@ -2181,9 +2202,12 @@ impl ChartDoc {
     ///
     /// The text is [`Self::save_chart_beside`]'s, read and placed as a Save
     /// reads and places it, and it is recorded as arcform's unsaved kind
-    /// ([`record_unsaved`](brightfield_protocol::record_unsaved)). The chart
-    /// file and `arcform.yaml` are left as they were, and the document too:
-    /// the edits stay held, for the window that closes over them.
+    /// ([`record_unsaved`](brightfield_protocol::record_unsaved)), with the
+    /// grid view and the typed statements no file holds written after it
+    /// ([`Self::pending_steps`]), so a close drops none of them unrecorded.
+    /// The chart file and `arcform.yaml` are left as they were, and the
+    /// document too: the edits stay held, for the window that closes over
+    /// them.
     ///
     /// # Errors
     ///
@@ -2213,11 +2237,51 @@ impl ChartDoc {
         history: Option<&HistoryStore>,
     ) -> Result<(), String> {
         let store = history.ok_or_else(|| NO_STORE.to_string())?;
-        let Some(save) = self.save_text(panel).map_err(|e| e.to_string())? else {
-            return Ok(());
+        let pending = self.pending_steps();
+        let text = match self.save_text(panel).map_err(|e| e.to_string())? {
+            Some(save) => save.text,
+            // No chart text to keep, but steps that would be lost: they are
+            // kept on their own, against the chart file they belong beside.
+            None if !pending.is_empty() => String::new(),
+            None => return Ok(()),
         };
-        brightfield_protocol::record_unsaved(store, &save.target, &save.text)
+        brightfield_protocol::record_unsaved(store, panel, &text, &pending)
             .map_err(|e| e.reason().to_string())
+    }
+
+    /// **The steps this document holds and no file does**, in the order they
+    /// were made, as a close without saving keeps them: the grid view's
+    /// unrecorded part in the close question's words with its condition and
+    /// order as SQL, and each typed statement under its step name with the
+    /// statement as typed.
+    #[must_use]
+    pub fn pending_steps(&self) -> Vec<brightfield_protocol::PendingStep> {
+        self.pending_in_order()
+            .into_iter()
+            .filter_map(|work| match work {
+                PendingWork::View => {
+                    let words = self.grid_view_line()?;
+                    let mut sql = Vec::new();
+                    if let Some(c) = self.grid_condition_unrecorded() {
+                        sql.push(format!("WHERE {c}"));
+                    }
+                    if let Some(o) = &self.grid_view.order {
+                        sql.push(format!("ORDER BY {o}"));
+                    }
+                    Some(brightfield_protocol::PendingStep {
+                        words,
+                        sql: sql.join("\n"),
+                    })
+                }
+                PendingWork::Typed(name) => {
+                    let step = self.typed.iter().find(|s| s.name == name)?;
+                    Some(brightfield_protocol::PendingStep {
+                        words: format!("SQL step \u{b7} {}", step.name),
+                        sql: step.statement.clone(),
+                    })
+                }
+            })
+            .collect()
     }
 
     /// The ledger's Versions panel's state.

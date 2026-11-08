@@ -403,6 +403,11 @@ struct BrightfieldApp {
     /// opened on nothing and took `WindowGeometry`'s default. See the call in
     /// `main` that sets it.
     fit: Option<(f32, f32)>,
+    /// The window's open queue, held until the first frame routes the app menu's Quit onto it
+    /// (`mac_open::route_menu_quit`): the menu is the event loop's, made after this host is, and
+    /// the first frame is the first moment it exists. `None` once routed, and on a host with no
+    /// menu to route.
+    menu_quit: Option<brightfield_shell::open_queue::OpenQueue>,
 }
 
 /// Whether a frame reporting `outcome` is the last one that needs to ask.
@@ -441,6 +446,17 @@ impl BrightfieldApp {
     /// operating-system window and this host does not read it.
     fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+
+        // Cmd+Q and the app menu's Quit, onto the window's queue, so a quit asks the close
+        // question over a draft rather than ending the process unasked.
+        if let Some(queue) = self.menu_quit.take() {
+            #[cfg(target_os = "macos")]
+            if let Some(main_thread) = objc2::MainThreadMarker::new() {
+                brightfield_shell::mac_open::route_menu_quit(main_thread, queue, || {});
+            }
+            #[cfg(not(target_os = "macos"))]
+            drop(queue);
+        }
 
         // The size this window was created at was read outwards from the graph
         // and knows nothing about the screen it landed on. This is the first
@@ -1279,6 +1295,7 @@ fn main() -> Result<(), String> {
     if let Some(main_thread) = objc2::MainThreadMarker::new() {
         brightfield_shell::mac_open::install(main_thread, open_queue.clone(), || {});
     }
+    let menu_quit = Some(open_queue.clone());
     eframe::run_native(
         &title,
         options,
@@ -1298,6 +1315,7 @@ fn main() -> Result<(), String> {
                 shot: ShotLatch::new(shot_out, shot_after, saved),
                 layout_path: path,
                 fit,
+                menu_quit,
             }) as Box<dyn eframe::App>)
         }),
     )
@@ -1614,6 +1632,7 @@ mod tests {
             ),
             layout_path: None,
             fit: None,
+            menu_quit: None,
         };
         let ctx = egui::Context::default();
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0));

@@ -502,6 +502,29 @@ pub fn version_words(change: &VersionChange, tile_of: &dyn Fn(&str) -> String) -
     }
 }
 
+/// A version's *what changed* with the steps it kept after the chart, for a
+/// close without saving that dropped a grid view or a typed statement: each in
+/// the close question's words, after the chart's change, or in its place when
+/// the chart itself did not change.
+fn with_kept_steps(
+    words: String,
+    change: &VersionChange,
+    kept: &[brightfield_protocol::PendingStep],
+) -> String {
+    if kept.is_empty() {
+        return words;
+    }
+    let steps = kept
+        .iter()
+        .map(|step| step.words.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    match change {
+        VersionChange::Changes(changes) if changes.is_empty() => steps,
+        _ => format!("{words}; {steps}"),
+    }
+}
+
 /// A version's *kind*: `saved` for a save, `before a write` for the text the
 /// store recorded before a write replaced it, and [`CLOSED_UNSAVED`] for the
 /// chart a window closed without saving.
@@ -854,7 +877,7 @@ impl Versions {
                 kind: kind_words(v.kind).to_string(),
                 who: who_words(&v.who),
                 changed: if v.on_this_machine {
-                    version_words(&v.change, tile_of)
+                    with_kept_steps(version_words(&v.change, tile_of), &v.change, &v.kept)
                 } else {
                     NOT_ON_THIS_MACHINE.to_string()
                 },

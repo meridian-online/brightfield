@@ -14,6 +14,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// One thing asked to open.
@@ -113,9 +114,15 @@ impl OpenRequest {
 }
 
 /// The queue the window's ways in fill, shared by clone.
+///
+/// It carries the Mac's quit as well as its opens: the app menu's Quit and the Dock's arrive
+/// outside the frame from the same Apple Event handler the opens do, and the window answers a
+/// quit with the close question when a draft is pending.
 #[derive(Clone, Default)]
 pub struct OpenQueue {
     requests: Arc<Mutex<VecDeque<OpenRequest>>>,
+    /// Whether quitting was asked for since the window last looked.
+    quit: Arc<AtomicBool>,
     /// The window's context, once it has drawn, so a push can ask for a frame.
     wake: Arc<OnceLock<egui::Context>>,
 }
@@ -149,6 +156,20 @@ impl OpenQueue {
             .unwrap_or_else(PoisonError::into_inner)
             .drain(..)
             .collect()
+    }
+
+    /// Ask the window to quit on its next frame, as the Mac's Quit does.
+    pub fn ask_quit(&self) {
+        self.quit.store(true, Ordering::SeqCst);
+        if let Some(ctx) = self.wake.get() {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Whether quitting was asked for since the last take, clearing the ask.
+    #[must_use]
+    pub fn take_quit(&self) -> bool {
+        self.quit.swap(false, Ordering::SeqCst)
     }
 
     /// Wake `ctx` on each later push. The first context given is kept.

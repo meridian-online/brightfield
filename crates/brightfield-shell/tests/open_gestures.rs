@@ -13,8 +13,9 @@ use std::sync::OnceLock;
 
 use brightfield_shell::design::Mode;
 use brightfield_shell::open_queue::OpenRequest;
+use brightfield_shell::overlays::CloseAnswer;
 use brightfield_shell::run::Runner;
-use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_shell::window::{Boot, Leaving, MeridianApp};
 
 fn scratch() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -322,7 +323,7 @@ fn order_the_grid(app: &mut MeridianApp) {
 }
 
 #[test]
-fn an_open_over_unsaved_edits_waits_until_they_are_saved() {
+fn an_open_over_unsaved_edits_asks_and_goes_once_they_are_saved() {
     let first = housing_copy("held_first", "held_first.csv");
     let second = housing_copy("held_second", "held_second.csv");
     let mut app = app();
@@ -336,47 +337,45 @@ fn an_open_over_unsaved_edits_waits_until_they_are_saved() {
     frame(&mut app, &ctx, egui::RawInput::default());
     frame(&mut app, &ctx, egui::RawInput::default());
 
+    // Nothing replaces the unsaved edits unasked: the close question is up, and the open waits
+    // for its answer.
     assert_opened(&app, "held_first");
     assert!(
         app.chart_doc().has_unsaved_work(),
         "the edits are still there"
     );
-    assert!(
-        app.notifications()
-            .iter()
-            .any(|n| n.title.contains("unsaved edits")),
-        "a banner says why nothing opened: {}",
-        said(&app)
+    assert_eq!(app.open_overlay(), Some("close-question"), "{}", said(&app));
+    assert_eq!(
+        app.leaving(),
+        Some(&Leaving::Open(OpenRequest::Path(second)))
     );
-    assert_eq!(app.held_open(), Some(&OpenRequest::Path(second)));
     assert!(
         !scratch().join("protocols").join("held_second").exists(),
-        "nothing was made of the held open"
+        "nothing was made of the open before the answer"
     );
 
-    app.save_protocol(&ctx)
-        .expect("there is a Protocol to save")
-        .expect("the save is written");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while app.own_protocol().map(|p| p.dir.clone())
-        != Some(scratch().join("protocols").join("held_second"))
-    {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the held open never went ahead after the save: {}",
-            said(&app)
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        frame(&mut app, &ctx, egui::RawInput::default());
-    }
+    answer_and_frame_until(
+        &mut app,
+        &ctx,
+        CloseAnswer::SaveAndClose,
+        "the open never went ahead after the save",
+        |app| {
+            app.own_protocol().map(|p| p.dir.clone())
+                == Some(scratch().join("protocols").join("held_second"))
+        },
+    );
     assert_opened(&app, "held_second");
-    assert!(app.held_open().is_none());
+    assert!(app.leaving().is_none());
+    let saved = std::fs::read_to_string(
+        scratch()
+            .join("protocols")
+            .join("held_first")
+            .join("arcform.yaml"),
+    )
+    .expect("the first Protocol's manifest reads");
     assert!(
-        !app.notifications()
-            .iter()
-            .any(|n| n.title.contains("unsaved edits")),
-        "the banner went with the hold: {}",
-        said(&app)
+        saved.contains("median_income"),
+        "the first Protocol's order was saved before the open: {saved}"
     );
 }
 
@@ -498,16 +497,17 @@ fn a_protocol_handed_over_with_files_opens_alone_and_says_so() {
     );
 }
 
-/// Save the window's Protocol, then run frames until `done` holds of it, or fail saying `what`.
-fn save_and_frame_until(
+/// Answer the close question with `answer`, then run frames until `done` holds of the window, or
+/// fail saying `what`.
+fn answer_and_frame_until(
     app: &mut MeridianApp,
     ctx: &egui::Context,
+    answer: CloseAnswer,
     what: &str,
     done: impl Fn(&MeridianApp) -> bool,
 ) {
-    app.save_protocol(ctx)
-        .expect("there is a Protocol to save")
-        .expect("the save is written");
+    assert_eq!(app.open_overlay(), Some("close-question"), "{}", said(app));
+    app.answer_close_question(ctx, answer);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while !done(app) {
         assert!(
@@ -533,7 +533,7 @@ fn window_with_unsaved_edits(name: &str) -> (MeridianApp, egui::Context) {
 }
 
 #[test]
-fn a_newer_open_takes_the_place_of_a_held_one() {
+fn a_newer_open_takes_the_place_of_the_one_asked_about() {
     let (mut app, ctx) = window_with_unsaved_edits("held_over");
     let older = housing_copy("held_over_a", "held_older.csv");
     let newer = housing_copy("held_over_b", "held_newer.csv");
@@ -542,12 +542,19 @@ fn a_newer_open_takes_the_place_of_a_held_one() {
     frame(&mut app, &ctx, egui::RawInput::default());
     app.open_queue().push(OpenRequest::Path(newer.clone()));
     frame(&mut app, &ctx, egui::RawInput::default());
-    assert_eq!(app.held_open(), Some(&OpenRequest::Path(newer)));
+    assert_eq!(
+        app.leaving(),
+        Some(&Leaving::Open(OpenRequest::Path(newer)))
+    );
 
     let newer_dir = scratch().join("protocols").join("held_newer");
-    save_and_frame_until(&mut app, &ctx, "the newer open never went ahead", |app| {
-        app.own_protocol().map(|p| p.dir.clone()) == Some(newer_dir.clone())
-    });
+    answer_and_frame_until(
+        &mut app,
+        &ctx,
+        CloseAnswer::SaveAndClose,
+        "the newer open never went ahead",
+        |app| app.own_protocol().map(|p| p.dir.clone()) == Some(newer_dir.clone()),
+    );
     for _ in 0..5 {
         frame(&mut app, &ctx, egui::RawInput::default());
     }
@@ -558,70 +565,26 @@ fn a_newer_open_takes_the_place_of_a_held_one() {
     );
 }
 
-/// Click the close control of the one banner showing, as a person would.
-fn close_the_banner(app: &mut MeridianApp, ctx: &egui::Context) {
-    // A banner's first frame is a sizing pass, drawn where it will not stay, so the control is
-    // read off a frame after it has settled.
-    for _ in 0..2 {
-        frame(app, ctx, egui::RawInput::default());
-    }
-    let layer = egui::LayerId::new(
-        egui::Order::Foreground,
-        egui::Id::new("meridian_notification_layer"),
-    );
-    // The close control is the banner's rightmost small clickable widget.
-    let close = ctx
-        .viewport(|vp| {
-            vp.prev_pass
-                .widgets
-                .get_layer(layer)
-                .filter(|w| w.sense.senses_click() && w.rect.width() < 100.0)
-                .map(|w| w.rect)
-                .max_by(|a, b| a.max.x.total_cmp(&b.max.x))
-        })
-        .expect("the banner draws a close control");
-    let at = close.center();
-    let press = |pressed| egui::Event::PointerButton {
-        pos: at,
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::default(),
-    };
-    frame(
-        app,
-        ctx,
-        egui::RawInput {
-            events: vec![egui::Event::PointerMoved(at), press(true), press(false)],
-            ..Default::default()
-        },
-    );
-}
-
 #[test]
-fn closing_the_held_banner_cancels_the_open() {
+fn keeping_editing_cancels_the_open() {
     let (mut app, ctx) = window_with_unsaved_edits("held_cancel");
     let cancelled = housing_copy("held_cancel_a", "held_cancelled.csv");
     app.open_queue().push(OpenRequest::Path(cancelled));
     frame(&mut app, &ctx, egui::RawInput::default());
-    assert!(app.held_open().is_some(), "{}", said(&app));
-    let others: Vec<String> = app
-        .notifications()
-        .iter()
-        .filter(|n| !n.title.contains("unsaved edits"))
-        .map(|n| n.title.clone())
-        .collect();
-    assert!(others.is_empty(), "only the held banner shows: {others:?}");
+    assert!(app.leaving().is_some(), "{}", said(&app));
 
-    close_the_banner(&mut app, &ctx);
-    frame(&mut app, &ctx, egui::RawInput::default());
-    assert!(
-        app.held_open().is_none(),
-        "closing the banner cancels the hold"
+    answer_and_frame_until(
+        &mut app,
+        &ctx,
+        CloseAnswer::KeepEditing,
+        "the question never went down",
+        |app| app.open_overlay().is_none(),
     );
+    assert!(app.leaving().is_none(), "keeping editing cancels the open");
 
-    save_and_frame_until(&mut app, &ctx, "the save never settled", |app| {
-        !app.chart_doc().has_unsaved_work()
-    });
+    app.save_protocol(&ctx)
+        .expect("there is a Protocol to save")
+        .expect("the save is written");
     for _ in 0..10 {
         frame(&mut app, &ctx, egui::RawInput::default());
     }

@@ -504,6 +504,20 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Open a data file, folder or Protocol",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 5, motor_note: "cmd-o = open (universal Mac convention); free of the editor chord set" }),
         },
+        // Quit, asking the close question first over a draft. Global, as Cmd+Q is in every Mac
+        // app. On the Mac the app menu's Quit item takes the chord before the window does and
+        // reaches the window's same handler; the binding is the route where no menu takes it.
+        VerbEntry {
+            longname: "quit",
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-q")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Quit Brightfield, asking first about anything not saved",
+            scores: Some(Scores { frequency: 2, mnemonic: 5, convention: 5, motor_note: "cmd-q = quit (universal Mac convention); global, asks the close question over a draft" }),
+        },
         // ---- presentation + save: shipped fixed points, sourced here so
         //      the registry is the single binding source ----
         VerbEntry {
@@ -1649,6 +1663,7 @@ mod tests {
             "reload-data",
             "open-home",
             "open",
+            "quit",
             "toggle-presentation",
             "save-spec",
             "save-protocol",

@@ -423,3 +423,175 @@ fn cmd_s_on_a_one_source_protocol_shows_the_step_on_the_spine() {
         win.said()
     );
 }
+
+#[test]
+fn cmd_s_saves_an_edited_buffer_when_the_editor_does_not_have_the_keyboard() {
+    let mut win = Window::opened("cmd_s_buffer_unfocused");
+    win.keep_filter();
+    win.click_into_the_editor();
+    let spec = win
+        .app
+        .chart_doc()
+        .spec_path
+        .clone()
+        .expect("the editor's buffer has a file");
+    win.type_text("# typed, then left\n");
+    // The keyboard and the focus go elsewhere: the grid holds the focus, and no text field the
+    // keys.
+    win.ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    assert!(win
+        .app
+        .focus_pane(PaneKey::new(brightfield_shell::data_grid::DATA)));
+    win.settle();
+    assert!(win.ctx.memory(|m| m.focused()).is_none());
+
+    win.cmd_s();
+
+    let after = std::fs::read_to_string(&spec).expect("the spec reads");
+    assert!(
+        after.contains("# typed, then left"),
+        "Cmd+S away from the editor saved its buffer: {after}"
+    );
+    win.assert_saved("away from an edited editor");
+}
+
+#[test]
+fn a_second_cmd_s_keeps_the_made_with_and_the_recorded_steps() {
+    let mut win = Window::opened("cmd_s_twice");
+    win.keep_filter();
+    win.cmd_s();
+    win.assert_saved("the first time");
+    let first = win.manifest();
+
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some(CONDITION.to_owned()),
+            order: Some("median_income".to_owned()),
+        });
+    win.settle();
+    assert!(
+        win.app.title().contains(UNSAVED_MARK),
+        "the order is a draft"
+    );
+
+    win.cmd_s();
+
+    assert!(
+        !win.app.title().contains(UNSAVED_MARK),
+        "the second Cmd+S took the mark off: {}",
+        win.said()
+    );
+    let manifest = win.manifest();
+    let steps: Vec<String> = brightfield_protocol::parse_manifest_str(&manifest)
+        .expect("the manifest parses")
+        .steps
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    let first_steps: Vec<String> = brightfield_protocol::parse_manifest_str(&first)
+        .expect("the first manifest parses")
+        .steps
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert!(
+        first_steps.iter().all(|s| steps.contains(s)),
+        "every step the first save left is still there: {first_steps:?} in {steps:?}"
+    );
+    assert!(
+        steps.contains(&win.filter_step()),
+        "the recorded filter: {steps:?}"
+    );
+    assert!(
+        steps.iter().any(|s| s.contains("median_income")),
+        "and the recorded order: {steps:?}"
+    );
+    assert!(
+        steps.len() > first_steps.len(),
+        "the second save added a step: {steps:?}"
+    );
+    assert!(
+        first_steps.iter().any(|s| s != &win.filter_step()),
+        "the steps the Protocol was made with are among them: {first_steps:?}"
+    );
+}
+
+#[test]
+fn cmd_s_on_a_protocol_opened_as_a_folder_of_two_tables() {
+    scratch();
+    let dir = scratch().join("input").join("cmd_s_folder");
+    std::fs::create_dir_all(&dir).expect("an input folder");
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/california_housing_sample.csv"),
+        dir.join("cmd_s_houses.csv"),
+    )
+    .expect("the housing sample copies");
+    std::fs::write(
+        dir.join("regions.csv"),
+        "region,manager\nnorth,Ann\nsouth,Bo\n",
+    )
+    .expect("the second table writes");
+    let mut win = Window {
+        app: MeridianApp::headless(Boot::empty(), Mode::Light)
+            .running_with(Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell")))),
+        ctx: egui::Context::default(),
+        name: "cmd_s_folder".to_owned(),
+        time: 0.0,
+    };
+    win.app.open_queue().push(OpenRequest::Path(dir));
+    win.settle();
+    assert!(
+        win.app.model_pane().is_some(),
+        "two tables open the model: {}",
+        win.said()
+    );
+    assert!(!win.app.title().contains(UNSAVED_MARK));
+
+    // On the model, nothing is a draft: making the Protocol and its joins are kept at once.
+    let before = modification_times(&win.dir());
+    std::thread::sleep(Duration::from_millis(1100));
+    win.cmd_s();
+    assert_eq!(
+        modification_times(&win.dir()),
+        before,
+        "Cmd+S on the model writes nothing"
+    );
+    assert!(win.said().is_empty(), "and says nothing: {}", win.said());
+
+    // From a table's grid, a kept filter is a draft that Cmd+S saves.
+    let ctx = win.ctx.clone();
+    assert!(
+        win.app.open_model_in_grid(
+            &ctx,
+            &brightfield_render::model_scene::Selection::Dataset("cmd_s_houses".into())
+        ),
+        "the table opens in the grid: {}",
+        win.said()
+    );
+    win.settle();
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some(CONDITION.to_owned()),
+            order: None,
+        });
+    win.settle();
+    assert!(
+        win.app.title().contains(UNSAVED_MARK),
+        "the filter is a draft"
+    );
+
+    win.cmd_s();
+
+    assert!(
+        !win.app.title().contains(UNSAVED_MARK),
+        "Cmd+S from the folder Protocol's grid saved the filter: {}",
+        win.said()
+    );
+    assert!(win.said().is_empty(), "with no refusal: {}", win.said());
+}

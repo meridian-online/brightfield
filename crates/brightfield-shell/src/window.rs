@@ -2201,8 +2201,31 @@ impl OverlayKeys {
     }
 }
 
-/// The banner that says an open is held over unsaved edits; closing it cancels the hold.
-const HELD_OPEN_BANNER: &str = "open-held-unsaved";
+/// **Where the window is going when it leaves the Protocol it holds**: what the
+/// close question's answer leads to, once it is answered.
+///
+/// Each way out of a Protocol with a draft pending comes through
+/// [`MeridianApp::leave`], which asks first: the window's close, going Home,
+/// opening another Protocol and quitting. A way out with nothing pending goes
+/// at once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Leaving {
+    /// The window's close button, or a close request the system raised.
+    Close,
+    /// Home, by its button, its key or the palette: the front door.
+    Home,
+    /// Something asked to open in this window's place.
+    Open(crate::open_queue::OpenRequest),
+    /// Quitting the app: Cmd+Q, its menu item, or the Dock's Quit.
+    Quit,
+}
+
+/// The banner that says the window closes once the runs it started land.
+const CLOSING_AFTER_RUN_BANNER: &str = "closing-after-run";
+
+/// The `quit` verb's longname: the registry's, spelled once here for the
+/// window's key and dispatch.
+pub const QUIT: &str = "quit";
 
 /// The verb that raises the open picker, Cmd+O by the registry.
 const OPEN_VERB: &str = "open";
@@ -2236,6 +2259,7 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
         "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
         "cmd-s" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)),
+        "cmd-q" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Q)),
         "cmd-j" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::J)),
         "cmd-enter" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)),
         // egui-winit 0.35 turns a press of C with the command key held, Shift
@@ -2901,10 +2925,14 @@ pub struct MeridianApp {
     /// fetched is drawn before the open blocks the thread: one path, or the several one gesture
     /// handed over.
     pending_open: Option<Vec<std::path::PathBuf>>,
-    /// An open asked for while the chart document held edits no file does, kept until they are
-    /// saved or undone rather than opened over them. A newer open takes its place, and closing
-    /// its banner cancels it.
-    held_open: Option<crate::open_queue::OpenRequest>,
+    /// Where the window goes once the close question is answered, while it is up: the way out
+    /// that asked it, or the latest one asked since, which takes its place.
+    leaving: Option<Leaving>,
+    /// A close or quit already answered that waits for the runs this window started, so no
+    /// run's record is lost with the process: the unsaved work as it stood when the question
+    /// was answered, in the question's words. Work that differs when the runs land is asked
+    /// about again rather than closed over.
+    close_after_runs: Option<Vec<String>>,
     /// Every request to open something, from whichever way in, taken at the start of each frame.
     open_queue: crate::open_queue::OpenQueue,
     /// The DuckDB extensions an open takes as installed, when a test names them; `None` asks
@@ -2967,6 +2995,9 @@ pub struct MeridianApp {
     /// The `save-protocol` keystroke token, read off the registry at boot — same rule as
     /// [`Self::home_binding`].
     save_binding: Option<&'static str>,
+    /// The `quit` keystroke token, read off the registry at boot — same rule as
+    /// [`Self::home_binding`].
+    quit_binding: Option<&'static str>,
     /// The `toggle-outline-rail` keystroke token, read off the registry at
     /// boot — same rule as [`Self::home_binding`]: the shell wires whichever
     /// binding the registry declares, and does not invent one of its own.
@@ -3377,7 +3408,8 @@ impl MeridianApp {
             picker_asked: false,
             picker_asks: 0,
             pending_open: None,
-            held_open: None,
+            leaving: None,
+            close_after_runs: None,
             open_queue: crate::open_queue::OpenQueue::default(),
             installed_extensions: None,
             own_protocol: None,
@@ -3401,6 +3433,10 @@ impl MeridianApp {
             save_binding: brightfield_keys::registry()
                 .iter()
                 .find(|v| v.longname == SAVE_PROTOCOL)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            quit_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == QUIT)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             navigator_binding: brightfield_keys::registry()
                 .iter()
@@ -3856,7 +3892,77 @@ impl MeridianApp {
     /// closes is exactly a window that says it has something to lose.
     #[must_use]
     pub fn carries_unsaved_mark(&self) -> bool {
-        self.charts.doc.has_unsaved_work() && !self.front_door_is_live()
+        self.has_unsaved_work() && !self.front_door_is_live()
+    }
+
+    /// Whether this window holds work no file does: the chart document's
+    /// ([`ChartDoc::has_unsaved_work`]), or a YAML editor buffer that differs
+    /// from its file. What the title marks, Cmd+S saves and the close question
+    /// asks about.
+    #[must_use]
+    pub fn has_unsaved_work(&self) -> bool {
+        self.charts.doc.has_unsaved_work() || self.editor_unsaved()
+    }
+
+    /// Whether the YAML editor's buffer holds edits its file does not, as the
+    /// editor itself says it in its pane's subject.
+    fn editor_unsaved(&self) -> bool {
+        self.charts
+            .items
+            .get(&PaneKey::new(EDITOR))
+            .is_some_and(|editor| {
+                editor.describe(&self.charts.doc).dirty == brightfield_workbench::Dirty::Edited
+            })
+    }
+
+    /// The YAML editor's file name, as its pane names it, while its buffer is
+    /// unsaved.
+    fn editor_unsaved_name(&self) -> Option<String> {
+        self.editor_unsaved().then(|| {
+            self.charts
+                .items
+                .get(&PaneKey::new(EDITOR))
+                .map(|editor| editor.describe(&self.charts.doc).title)
+                .unwrap_or_default()
+        })
+    }
+
+    /// Perform `verb` on the YAML editor wherever it is, drawn or not, and
+    /// drop what it asks of the window: the window is the caller, and does
+    /// what follows itself.
+    fn perform_on_editor(&mut self, verb: &'static str) {
+        let key = PaneKey::new(EDITOR);
+        let Some(editor) = self.charts.items.get_mut(&key) else {
+            return;
+        };
+        let mut requests = Vec::new();
+        // Not a tile's draw, so the widget ids hang off a fixed tile, as the model pane's do.
+        let mut cx = brightfield_workbench::ItemCtx::new(
+            self.mode,
+            key,
+            egui_tiles::TileId::from_u64(0),
+            false,
+            &mut requests,
+        );
+        let _ = editor.perform(&mut self.charts.doc, Verb::new(verb), &mut cx);
+    }
+
+    /// Save the YAML editor's buffer when it holds edits its file does not,
+    /// whether or not the editor has the keyboard: the first half of Cmd+S.
+    fn save_editor_buffer(&mut self) {
+        if self.editor_unsaved() {
+            self.perform_on_editor("save-spec");
+        }
+    }
+
+    /// Put a fresh YAML editor in the old one's place, which drops its
+    /// buffer: what a close without saving does to the buffer once it is kept,
+    /// when the window then holds something else.
+    fn drop_editor_buffer(&mut self) {
+        if let Some(editor) = self.charts.items.get_mut(&PaneKey::new(EDITOR)) {
+            *editor = Box::new(crate::editor::EditorPane::new());
+        }
+        self.charts.doc.set_editor_buffer(None);
     }
 
     /// [`Self::title`] without the unsaved mark: the name of the subject, for
@@ -5022,28 +5128,21 @@ impl MeridianApp {
         if let Some(paths) = self.pending_open.take() {
             self.open_paths_now(&ctx, &paths);
         }
-        // An open held over unsaved edits, tried again: it goes ahead once they are saved or
-        // undone, and stays held, without a second banner, while they are not. Closing the
-        // banner that says it is held cancels it, so no open waits unseen.
-        if let Some(request) = self.held_open.take() {
-            let shown = self
-                .notifications
-                .iter()
-                .any(|n| n.id == NotificationId::new(HELD_OPEN_BANNER));
-            if shown {
-                self.take_or_hold(&ctx, request, false);
-            }
-        }
         // Whatever was asked to open since the last frame, from whichever way in, before anything
         // is laid out, so the frame draws what the open left. A request that has to wait a frame
-        // stops the taking, and the rest wait in the queue behind it. One asked for while another
-        // is held over unsaved edits takes the held one's place: the latest choice is the one that
-        // opens once the edits are saved.
+        // stops the taking, and the rest wait in the queue behind it. Over a draft each one asks
+        // the close question, and one asked for while the question is up takes the place of the
+        // one it was asked for: the latest choice is the one that opens once it is answered.
         while self.pending_open.is_none() {
             let Some(request) = self.open_queue.pop() else {
                 break;
             };
-            self.take_or_hold(&ctx, request, true);
+            self.take_or_ask(&ctx, request);
+        }
+        // The Mac's quit, from the app menu or the Dock, which reaches the window on the same
+        // queue as its opens.
+        if self.open_queue.take_quit() {
+            self.leave(&ctx, Leaving::Quit);
         }
         // Before anything is laid out: a fetch that finished since the last
         // frame replaces the documents, and a frame that drew the door first
@@ -5054,6 +5153,8 @@ impl MeridianApp {
         // reloads the Protocol document, and a frame should draw the state the
         // run left rather than one frame of the state before it.
         self.poll_run(&ctx);
+        // A close that waited for those runs, now they have landed.
+        self.close_when_runs_land(&ctx);
         // A Protocol's panel tiles, when its newest run is not the one they
         // were drawn from: for the reason a finished run lands here.
         self.poll_panel_tiles(&ctx);
@@ -5085,7 +5186,7 @@ impl MeridianApp {
         // one sent. The top bar reads `title` each frame; the OS title is
         // pushed, and a tile's switch is thrown mid-frame, after the openers
         // that push one have run.
-        let marked = self.charts.doc.has_unsaved_work();
+        let marked = self.has_unsaved_work();
         if marked != self.title_marked {
             self.title_marked = marked;
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
@@ -6396,6 +6497,7 @@ impl MeridianApp {
         // the keyboard, saves its buffer and raises the window's Save, applied just above, so
         // what reaches here is a press from anywhere else.
         self.save_key(&ctx);
+        self.quit_key(&ctx);
 
         // The file dialog, after the frame and outside every borrow it took:
         // it blocks the thread on a window this process did not lay out, so it
@@ -6448,7 +6550,7 @@ impl MeridianApp {
             }
         }
         if bar.home {
-            self.open_home(&ctx);
+            self.leave(&ctx, Leaving::Home);
         }
         // After the panes have drawn, because the controls rail dispatches a
         // slider's queued value inside its own draw — so this frame's gesture
@@ -6520,7 +6622,7 @@ impl MeridianApp {
             return;
         }
         if self.home_binding.is_some_and(|t| consume_token(ctx, t)) {
-            self.open_home(ctx);
+            self.leave(ctx, Leaving::Home);
         }
     }
 
@@ -6549,7 +6651,29 @@ impl MeridianApp {
         if matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
             return;
         }
-        if self.save_binding.is_some_and(|t| consume_token(ctx, t)) && self.anything_to_save() {
+        if self.save_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.save_everything(ctx);
+        }
+    }
+
+    /// Quit if the registry's `quit` keystroke is down this frame, asking the close question
+    /// first over a draft. On the Mac the app menu's Quit takes Cmd+Q before the window sees it
+    /// and reaches here by the open queue instead; this is the key where no menu takes it.
+    fn quit_key(&mut self, ctx: &egui::Context) {
+        if self.quit_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.leave(ctx, Leaving::Quit);
+        }
+    }
+
+    /// **Save what the window holds that no file does**: the YAML editor's buffer when it is
+    /// edited, whether or not the editor has the keyboard, then the Protocol when anything is
+    /// left to write ([`Self::anything_to_save`]). With nothing pending it writes nothing.
+    fn save_everything(&mut self, ctx: &egui::Context) {
+        if !self.anything_to_save() {
+            return;
+        }
+        self.save_editor_buffer();
+        if self.anything_to_save() {
             self.save_protocol(ctx);
         }
     }
@@ -6558,7 +6682,7 @@ impl MeridianApp {
     /// does, or a Protocol whose manifest is not on disk yet. With neither, Cmd+S writes nothing,
     /// so a habitual press touches no file and wakes no watcher.
     fn anything_to_save(&self) -> bool {
-        self.charts.doc.has_unsaved_work()
+        self.has_unsaved_work()
             || self.protocol.doc.model.source().is_some_and(|source| {
                 !crate::one_step::OneStepProtocol::manifest_path_in(&source.dir).is_file()
             })
@@ -8229,6 +8353,12 @@ impl MeridianApp {
         if !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
+        // A close already answered, waiting for a run to land: it closes then, and a second
+        // request does not ask again what was answered.
+        if self.close_after_runs.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            return;
+        }
         if self.ask_before_closing() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.request_repaint();
@@ -8249,10 +8379,102 @@ impl MeridianApp {
         if self.closing || !self.carries_unsaved_mark() {
             return false;
         }
+        self.ask(Leaving::Close);
+        true
+    }
+
+    /// **Leave the Protocol this window holds for `to`, asking first when a
+    /// draft is pending**: the one door every way out goes through.
+    ///
+    /// Over a window that carries the unsaved mark the close question opens,
+    /// and `to` waits for its answer ([`Self::answer_close_question`]): *Save*
+    /// saves and then goes, *Close without saving* keeps the drafts as a
+    /// version and then goes, and *Keep editing* stays and drops `to`. A way
+    /// out asked for while the question is up takes the place of the one it
+    /// was asked for, so the latest choice is the one that goes. Without the
+    /// mark, `to` goes at once.
+    ///
+    /// Going is [`Self::open_home`] for Home, the open itself for an open,
+    /// and the window's close for a close or a quit, which waits for any run
+    /// the window started so no run's record is lost
+    /// ([`Self::close_when_runs_land`]).
+    pub fn leave(&mut self, ctx: &egui::Context, to: Leaving) {
+        if matches!(to, Leaving::Home) && self.front_door_is_live() {
+            return;
+        }
+        if self.carries_unsaved_mark() {
+            self.ask(to);
+            ctx.request_repaint();
+        } else {
+            self.go(ctx, to);
+        }
+    }
+
+    /// Open the close question for `to`, in place of whatever overlay was
+    /// open; one already up is left as it is, with what it says, and asks for
+    /// `to` from now on.
+    fn ask(&mut self, to: Leaving) {
         if !matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
             self.overlay = Some(Overlay::CloseQuestion(self.close_question_for_now()));
         }
-        true
+        self.leaving = Some(to);
+    }
+
+    /// Go where `to` says, with nothing left to ask.
+    fn go(&mut self, ctx: &egui::Context, to: Leaving) {
+        match to {
+            Leaving::Close | Leaving::Quit => self.close_once_runs_land(ctx),
+            Leaving::Home => self.open_home(ctx),
+            Leaving::Open(request) => self.take_open_request(ctx, request),
+        }
+    }
+
+    /// **Close this window, once every run it started has landed.**
+    ///
+    /// A run is `arc` in a child process writing its record into the
+    /// Protocol's folder, and its output comes back on a pipe to this one: a
+    /// window that closed under it would end the process the run reports to,
+    /// and could cost the run its record. So a close with a run outstanding
+    /// waits, with a banner saying so, and closes when the run lands
+    /// ([`Self::close_when_runs_land`]). The work it was answered over is
+    /// noted, so work made while it waits is not closed over unasked.
+    fn close_once_runs_land(&mut self, ctx: &egui::Context) {
+        if !self.run_outstanding() {
+            self.close_window(ctx);
+            return;
+        }
+        self.close_after_runs = Some(self.unsaved_now());
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new(CLOSING_AFTER_RUN_BANNER),
+                Severity::Info,
+                "Closing once the run finishes",
+            )
+            .body("The run's record is kept in the Protocol's folder; the window closes when it lands."),
+        );
+        ctx.request_repaint();
+    }
+
+    /// The close that waited for this window's runs, once none is
+    /// outstanding: the window closes, unless work no file holds has changed
+    /// since the close was answered, which asks again.
+    fn close_when_runs_land(&mut self, ctx: &egui::Context) {
+        if self.close_after_runs.is_none() || self.run_outstanding() {
+            return;
+        }
+        let answered_over = self.close_after_runs.take();
+        self.notifications
+            .dismiss(NotificationId::new(CLOSING_AFTER_RUN_BANNER));
+        if self.has_unsaved_work() && answered_over.as_ref() != Some(&self.unsaved_now()) {
+            self.leave(ctx, Leaving::Close);
+        } else {
+            self.close_window(ctx);
+        }
+    }
+
+    /// The unsaved work as the close question lists it now.
+    fn unsaved_now(&self) -> Vec<String> {
+        self.close_question_for_now().edits
     }
 
     /// **What the close question says about this window now**: the chart
@@ -8293,6 +8515,10 @@ impl MeridianApp {
         let mut edits = crate::versions::change_lines(&changes, &tile_of);
         edits.extend(self.charts.doc.grid_view_line());
         edits.extend(self.charts.doc.typed_lines());
+        edits.extend(
+            self.editor_unsaved_name()
+                .map(|name| format!("YAML editor \u{b7} {name} edited")),
+        );
         CloseQuestion {
             file,
             edits,
@@ -8318,53 +8544,70 @@ impl MeridianApp {
         self.closing = true;
     }
 
+    /// Whether the window has decided to close and lets the next close request through, as
+    /// [`Self::allow_close`] decides it — a test hook.
+    #[must_use]
+    pub fn is_closing(&self) -> bool {
+        self.closing
+    }
+
     /// **What each answer of the close question does** — the entry point the
     /// question's buttons and keys reach through, and one a test may drive.
+    /// Each answer that goes, goes where the question was asked for
+    /// ([`Self::leave`]): the window's close, Home, an open or a quit.
     ///
-    /// - [`CloseAnswer::SaveAndClose`] writes as the Save verb does
-    ///   ([`Self::save_protocol`]: `arcform.yaml`, its model and the chart
-    ///   beside them) and closes the window when the chart is in, which is
-    ///   when the mark is gone. A write that failed leaves the window open,
-    ///   with the banner the write raised saying why; the question is closed
-    ///   so the banner can be read, and the next close request asks again.
+    /// - [`CloseAnswer::SaveAndClose`] saves the YAML editor's buffer when it
+    ///   is edited, then writes as the Save verb does ([`Self::save_protocol`]:
+    ///   `arcform.yaml`, its model and the chart beside them), and goes once
+    ///   nothing is left unsaved. A write that failed stays, with the banner
+    ///   the write raised saying why; the question is closed so the banner can
+    ///   be read, and the way out is dropped, so the next one asks again.
     /// - [`CloseAnswer::CloseWithoutSaving`] keeps the chart as a Save would
     ///   write it as a version of the chart file, which the Versions panel
-    ///   lists as `closed unsaved` ([`ChartDoc::keep_unsaved_beside`]), and
-    ///   closes. Neither the chart file nor `arcform.yaml` is written. When the
-    ///   chart cannot be kept the window stays open and the question says
-    ///   why, and the same answer given again closes with nothing kept.
-    /// - [`CloseAnswer::KeepEditing`] leaves the window as it was: the edit
-    ///   stays drawn, the mark stays in the title.
+    ///   lists as `closed unsaved` ([`ChartDoc::keep_unsaved_beside`]), with the
+    ///   grid view and typed statements no file holds carried on it, and the
+    ///   YAML editor's buffer as a version of its own file; then it goes.
+    ///   Neither the chart file nor `arcform.yaml` is written. When the chart
+    ///   cannot be kept the window stays and the question says why, and the
+    ///   same answer given again goes with nothing kept.
+    /// - [`CloseAnswer::KeepEditing`] leaves the window as it was, and drops
+    ///   the way out: the edit stays drawn, the mark stays in the title.
     pub fn answer_close_question(&mut self, ctx: &egui::Context, answer: CloseAnswer) {
         match answer {
-            CloseAnswer::KeepEditing => self.put_the_question_down(),
+            CloseAnswer::KeepEditing => {
+                self.put_the_question_down();
+                self.leaving = None;
+            }
             CloseAnswer::CloseWithoutSaving => {
                 let told = self.close_question().is_some_and(|q| q.not_kept.is_some());
-                if told {
-                    self.put_the_question_down();
-                    self.close_window(ctx);
-                } else {
-                    match self.keep_unsaved() {
-                        Ok(()) => {
-                            self.put_the_question_down();
-                            self.close_window(ctx);
+                let kept = if told { Ok(()) } else { self.keep_unsaved() };
+                match kept {
+                    Ok(()) => {
+                        self.put_the_question_down();
+                        let to = self.leaving.take().unwrap_or(Leaving::Close);
+                        // Going somewhere else in this window: the buffer kept as a version is
+                        // not carried into what opens next.
+                        if matches!(to, Leaving::Home | Leaving::Open(_)) {
+                            self.drop_editor_buffer();
                         }
-                        Err(why) => {
-                            eprintln!("the unsaved chart could not be kept: {why}");
-                            let mut question = match self.overlay.take() {
-                                Some(Overlay::CloseQuestion(question)) => question,
-                                _ => self.close_question_for_now(),
-                            };
-                            question.not_kept = Some(why);
-                            self.overlay = Some(Overlay::CloseQuestion(question));
-                        }
+                        self.go(ctx, to);
+                    }
+                    Err(why) => {
+                        eprintln!("the unsaved chart could not be kept: {why}");
+                        let mut question = match self.overlay.take() {
+                            Some(Overlay::CloseQuestion(question)) => question,
+                            _ => self.close_question_for_now(),
+                        };
+                        question.not_kept = Some(why);
+                        self.overlay = Some(Overlay::CloseQuestion(question));
                     }
                 }
             }
             CloseAnswer::SaveAndClose => {
                 self.put_the_question_down();
+                let to = self.leaving.take().unwrap_or(Leaving::Close);
                 if self.save_for_close(ctx) {
-                    self.close_window(ctx);
+                    self.go(ctx, to);
                 }
             }
         }
@@ -8386,6 +8629,10 @@ impl MeridianApp {
     /// Why it could not be kept: a window with no Protocol to keep the
     /// chart's versions beside, and [`ChartDoc::keep_unsaved_beside`]'s.
     fn keep_unsaved(&mut self) -> Result<(), String> {
+        self.keep_editor_buffer()?;
+        if !self.charts.doc.has_unsaved_work() {
+            return Ok(());
+        }
         // A Protocol's panel open from its tile is kept as a version of its
         // own file, the file its Save records versions against.
         if let Some(file) = self.open_tile_path() {
@@ -8408,6 +8655,30 @@ impl MeridianApp {
         kept
     }
 
+    /// Keep the YAML editor's unsaved buffer as a version of the file it
+    /// edits, in arcform's unsaved kind, writing no file: the editor's half of
+    /// a close without saving. Nothing to keep when the buffer is its file's.
+    ///
+    /// # Errors
+    ///
+    /// A window given no store, and a store that does not take the version.
+    fn keep_editor_buffer(&mut self) -> Result<(), String> {
+        if !self.editor_unsaved() {
+            return Ok(());
+        }
+        let Some((file, text)) = self.charts.doc.editor_buffer().cloned() else {
+            return Ok(());
+        };
+        let store = self
+            .history
+            .as_ref()
+            .ok_or_else(|| crate::app::NO_STORE.to_string())?;
+        brightfield_protocol::record_unsaved(store, &file, &text, &[])
+            .map_err(|e| e.reason().to_string())?;
+        self.charts.doc.versions_mut().invalidate();
+        Ok(())
+    }
+
     /// Close this window: let the request through and raise it.
     fn close_window(&mut self, ctx: &egui::Context) {
         self.allow_close();
@@ -8423,8 +8694,14 @@ impl MeridianApp {
     /// that window says so in the chart banner rather than closing over an
     /// edit it did not keep.
     fn save_for_close(&mut self, ctx: &egui::Context) -> bool {
+        // The YAML editor's buffer first, as Cmd+S saves it; a window whose
+        // only unsaved work was the buffer has nothing left to write.
+        self.save_editor_buffer();
+        if !self.has_unsaved_work() {
+            return true;
+        }
         match self.save_protocol(ctx) {
-            Some(Ok(_)) => !self.charts.doc.has_unsaved_work(),
+            Some(Ok(_)) => !self.has_unsaved_work(),
             Some(Err(_)) => false,
             None => {
                 self.notifications.raise(
@@ -8950,7 +9227,12 @@ impl MeridianApp {
                 // an unknown verb — so without this intercept the verb would
                 // reach neither handler.
                 Request::Verb(verb) if verb.as_str() == "open-home" => {
-                    self.open_home(ctx);
+                    self.leave(ctx, Leaving::Home);
+                }
+                // quit is the window's for the same reason: the close question is the window's
+                // to ask, over whichever document holds the draft.
+                Request::Verb(verb) if verb.as_str() == QUIT => {
+                    self.leave(ctx, Leaving::Quit);
                 }
                 // The open picker is the window's too, for the same reason: chosen from a
                 // palette, it asks for the picker as Cmd+O does, and the dialog runs after this.
@@ -8997,9 +9279,7 @@ impl MeridianApp {
                 // save-protocol is the window's for the same reason: the editor raises it after
                 // saving its buffer, and what it writes is the Protocol's, not either document's.
                 Request::Verb(verb) if verb.as_str() == SAVE_PROTOCOL => {
-                    if self.anything_to_save() {
-                        self.save_protocol(ctx);
-                    }
+                    self.save_everything(ctx);
                 }
                 // The picture verbs are the window's: what they draw is the
                 // chart document's, and where a file goes is the window's to
@@ -10030,44 +10310,19 @@ impl MeridianApp {
         }
     }
 
-    /// Carry out `request`, or hold it while the chart document has edits no file holds and the
-    /// request would replace the document. A fresh hold says so in a banner; one tried again from
-    /// the hold does not say it twice. A request that does not replace the document is never
-    /// held.
-    fn take_or_hold(
-        &mut self,
-        ctx: &egui::Context,
-        request: crate::open_queue::OpenRequest,
-        fresh: bool,
-    ) {
+    /// Carry out `request`, asking the close question first when it would replace a Protocol
+    /// with a draft pending ([`Self::leave`]). A request that does not replace the document, a
+    /// link or a source to add, is carried out at once.
+    fn take_or_ask(&mut self, ctx: &egui::Context, request: crate::open_queue::OpenRequest) {
         use crate::open_queue::OpenRequest;
-        let banner = NotificationId::new(HELD_OPEN_BANNER);
-        let first = match &request {
-            OpenRequest::Path(path) => Some(path),
-            OpenRequest::Paths(paths) => paths.first(),
-            OpenRequest::Link(_) | OpenRequest::AddSource(_) => None,
-        };
-        let Some(first) = first else {
-            self.take_open_request(ctx, request);
-            return;
-        };
-        if self.carries_unsaved_mark() {
-            if fresh {
-                self.notifications.raise(
-                    Notification::new(banner, Severity::Warning, "This window has unsaved edits")
-                        .body(format!(
-                            "Save the dashboard, or undo its edits, and {} opens. Close this to \
-                             cancel the open.",
-                            display_name(first)
-                        )),
-                );
+        match request {
+            OpenRequest::Path(_) | OpenRequest::Paths(_) => {
+                self.leave(ctx, Leaving::Open(request));
             }
-            // A newer open replaces one already held, which is dropped with nothing made of it.
-            self.held_open = Some(request);
-            return;
+            OpenRequest::Link(_) | OpenRequest::AddSource(_) => {
+                self.take_open_request(ctx, request);
+            }
         }
-        self.notifications.dismiss(banner);
-        self.take_open_request(ctx, request);
     }
 
     /// [`Self::open_path`] without the wait for a frame. Like a flat file's open it runs on the
@@ -10209,10 +10464,11 @@ impl MeridianApp {
             .and_then(|path| path.to_str())
     }
 
-    /// The open held until the chart document's unsaved edits are saved or undone, if one is.
+    /// Where the window goes once the close question is answered, while the question is up — a
+    /// test hook.
     #[must_use]
-    pub fn held_open(&self) -> Option<&crate::open_queue::OpenRequest> {
-        self.held_open.as_ref()
+    pub fn leaving(&self) -> Option<&Leaving> {
+        self.leaving.as_ref()
     }
 
     /// Open the model pane over an own-files Protocol, in place of whatever the window held: both

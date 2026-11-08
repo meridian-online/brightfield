@@ -13,13 +13,21 @@
 //! again when the app posts that it will finish launching and once more when it has: the
 //! documents a launch opens are delivered between the two, and every later event after both.
 //!
+//! **Quitting comes here too.** The Dock's Quit, and a logout, reach an app as a quit Apple Event,
+//! and the app menu's Quit item, on Cmd+Q, calls `terminate:` on the application, which ends the
+//! process without the window's close request: neither would ask the close question over a
+//! draft. The quit event's handler is replaced with one that asks the window to quit on its queue
+//! ([`OpenQueue::ask_quit`]), and so is the menu item's action once the menu exists
+//! ([`route_menu_quit`]). The window then asks, and closes itself once answered, which ends the
+//! app as closing its one window always has.
+//!
 //! The Apple Event methods that take a four-character code are sent by selector rather than
 //! through the `objc2-foundation` methods that declare them, which need a feature whose crate the
 //! dependency graph does not otherwise hold.
 
 use objc2::rc::Retained;
-use objc2::runtime::{NSObject, Sel};
-use objc2::{define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadMarker};
+use objc2::runtime::{AnyObject, NSObject, Sel};
+use objc2::{class, define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadMarker};
 use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager, NSNotification, NSString};
 
 use crate::open_queue::{OpenQueue, OpenRequest};
@@ -33,6 +41,8 @@ const fn code(c: &[u8; 4]) -> u32 {
 const CORE_EVENT_CLASS: u32 = code(b"aevt");
 /// `kAEOpenDocuments`.
 const OPEN_DOCUMENTS: u32 = code(b"odoc");
+/// `kAEQuitApplication`.
+const QUIT_APPLICATION: u32 = code(b"quit");
 /// `kInternetEventClass` and `kAEGetURL`, which share their code.
 const GET_URL: u32 = code(b"GURL");
 /// `keyDirectObject`: the parameter an event's subject is in.
@@ -86,6 +96,22 @@ define_class!(
             (self.ivars().wake)();
         }
 
+        #[unsafe(method(handleQuit:withReplyEvent:))]
+        fn handle_quit(
+            &self,
+            _event: &NSAppleEventDescriptor,
+            _reply: Option<&NSAppleEventDescriptor>,
+        ) {
+            self.ivars().queue.ask_quit();
+            (self.ivars().wake)();
+        }
+
+        #[unsafe(method(quitFromMenu:))]
+        fn quit_from_menu(&self, _sender: Option<&AnyObject>) {
+            self.ivars().queue.ask_quit();
+            (self.ivars().wake)();
+        }
+
         #[unsafe(method(appFinishingLaunch:))]
         fn app_finishing_launch(&self, _note: &NSNotification) {
             self.register();
@@ -100,16 +126,22 @@ impl OpenHandler {
         unsafe { msg_send![super(this), init] }
     }
 
-    /// Make this object the handler for both events, replacing whichever was registered.
+    /// Make this object the handler for the open, link and quit events, replacing whichever was
+    /// registered.
     fn register(&self) {
         let manager = NSAppleEventManager::sharedAppleEventManager();
-        let handlers: [(Sel, u32, u32); 2] = [
+        let handlers: [(Sel, u32, u32); 3] = [
             (
                 sel!(handleOpenDocuments:withReplyEvent:),
                 CORE_EVENT_CLASS,
                 OPEN_DOCUMENTS,
             ),
             (sel!(handleGetURL:withReplyEvent:), GET_URL, GET_URL),
+            (
+                sel!(handleQuit:withReplyEvent:),
+                CORE_EVENT_CLASS,
+                QUIT_APPLICATION,
+            ),
         ];
         for (selector, class, id) in handlers {
             // SAFETY: `self` responds to `selector`, which takes the event and its reply as the
@@ -187,6 +219,70 @@ fn register_for_life(queue: OpenQueue, wake: impl Fn() + Send + Sync + 'static) 
     // Neither the event manager nor the notification centre keeps the handler alive, and both
     // call it for as long as the process runs.
     std::mem::forget(handler);
+}
+
+/// **Have the app menu's Quit ask the window to quit on `queue`** rather than end the process, so
+/// Cmd+Q asks the close question over a draft. Call it on the main thread, which `_main` proves,
+/// once the event loop has made the menu: the first frame is late enough. Answers whether a Quit
+/// item was found and routed; a menu without one is left as it is.
+///
+/// The item is the one whose action is `terminate:`, in any of the main menu's submenus, which is
+/// where winit's default menu puts it.
+pub fn route_menu_quit(
+    _main: MainThreadMarker,
+    queue: OpenQueue,
+    wake: impl Fn() + Send + Sync + 'static,
+) -> bool {
+    // SAFETY: `sharedApplication`, `mainMenu`, `numberOfItems`, `itemAtIndex:`, `submenu` and
+    // `action` are NSApplication's, NSMenu's and NSMenuItem's, called with the types they declare
+    // on the main thread; each object returned is retained for as long as it is used here.
+    let quit_item = unsafe {
+        let app: Option<Retained<AnyObject>> = msg_send![class!(NSApplication), sharedApplication];
+        let menu: Option<Retained<AnyObject>> = match &app {
+            Some(app) => msg_send![&**app, mainMenu],
+            None => None,
+        };
+        let mut found = None;
+        if let Some(menu) = menu {
+            let items: isize = msg_send![&*menu, numberOfItems];
+            'menus: for i in 0..items {
+                let item: Option<Retained<AnyObject>> = msg_send![&*menu, itemAtIndex: i];
+                let sub: Option<Retained<AnyObject>> = match &item {
+                    Some(item) => msg_send![&**item, submenu],
+                    None => None,
+                };
+                let Some(sub) = sub else {
+                    continue;
+                };
+                let entries: isize = msg_send![&*sub, numberOfItems];
+                for j in 0..entries {
+                    let entry: Option<Retained<AnyObject>> = msg_send![&*sub, itemAtIndex: j];
+                    let Some(entry) = entry else {
+                        continue;
+                    };
+                    let action: Option<Sel> = msg_send![&*entry, action];
+                    if action == Some(sel!(terminate:)) {
+                        found = Some(entry);
+                        break 'menus;
+                    }
+                }
+            }
+        }
+        found
+    };
+    let Some(item) = quit_item else {
+        return false;
+    };
+    let handler = OpenHandler::new(queue, Box::new(wake));
+    // SAFETY: `setTarget:` and `setAction:` are NSMenuItem's; the handler responds to
+    // `quitFromMenu:`, which takes the sender, and the menu item does not retain its target, so
+    // the handler is kept for the life of the process below.
+    unsafe {
+        let () = msg_send![&*item, setTarget: &*handler];
+        let () = msg_send![&*item, setAction: sel!(quitFromMenu:)];
+    }
+    std::mem::forget(handler);
+    true
 }
 
 /// The handler `install` would register, kept by the caller, so a test can send it an event.
@@ -318,6 +414,23 @@ mod tests {
         let reply = NSAppleEventDescriptor::nullDescriptor();
         let () = unsafe { msg_send![&*handler, handleGetURL: &*event, withReplyEvent: &*reply] };
         assert_eq!(queue.drain(), vec![OpenRequest::Link(link.to_string())]);
+        assert_eq!(woken.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_quit_event_asks_the_window_to_quit() {
+        let queue = OpenQueue::default();
+        let (woken, wake) = counter();
+        let handler = handler_for_test(queue.clone(), wake);
+        let event = event(
+            CORE_EVENT_CLASS,
+            QUIT_APPLICATION,
+            &NSAppleEventDescriptor::nullDescriptor(),
+        );
+        let reply = NSAppleEventDescriptor::nullDescriptor();
+        let () = unsafe { msg_send![&*handler, handleQuit: &*event, withReplyEvent: &*reply] };
+        assert!(queue.take_quit(), "the quit reached the queue");
+        assert!(queue.drain().is_empty(), "a quit opens nothing");
         assert_eq!(woken.load(Ordering::SeqCst), 1);
     }
 

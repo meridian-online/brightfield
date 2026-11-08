@@ -1025,6 +1025,14 @@ fn every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen()
                     "{verb} did not go to the front door"
                 );
             }
+            "quit" => {
+                let mut at = Window::crosswalk();
+                at.confirm(verb);
+                assert!(
+                    at.app.is_closing(),
+                    "{verb} did not close a window with nothing to lose"
+                );
+            }
             "open" => {
                 let mut at = Window::crosswalk();
                 let before = at.app.picker_asks();

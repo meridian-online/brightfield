@@ -531,7 +531,7 @@ fn an_unsaved_chart_is_the_newest_version_of_the_unsaved_kind_and_the_file_keeps
     scratch.save("a: 1\n");
     let on_disk = fs::read(scratch.file()).expect("the chart file");
 
-    brightfield_protocol::record_unsaved(&scratch.store(), &scratch.file(), "a: 2\n")
+    brightfield_protocol::record_unsaved(&scratch.store(), &scratch.file(), "a: 2\n", &[])
         .expect("the unsaved chart is recorded");
 
     assert_eq!(fs::read(scratch.file()).expect("the chart file"), on_disk);
@@ -549,6 +549,45 @@ fn an_unsaved_chart_is_the_newest_version_of_the_unsaved_kind_and_the_file_keeps
     );
 }
 
+/// The steps a window held and no file did ride with the unsaved chart, after
+/// its text: the version still reads as the chart, lists the steps in the
+/// window's words with their SQL, and a version recorded without steps is the
+/// chart's text byte for byte.
+#[test]
+fn an_unsaved_chart_carries_the_steps_the_window_held() {
+    use brightfield_protocol::PendingStep;
+    let scratch = Scratch::new("unsaved_steps");
+    scratch.save("a: 1\n");
+    let steps = [
+        PendingStep {
+            words: "Grid view \u{b7} where house_age > 28".to_string(),
+            sql: "WHERE house_age > 28".to_string(),
+        },
+        PendingStep {
+            words: "SQL step \u{b7} housing_sql_by_age".to_string(),
+            sql: "select house_age, count(*)\nfrom housing\ngroup by house_age".to_string(),
+        },
+    ];
+
+    brightfield_protocol::record_unsaved(&scratch.store(), &scratch.file(), "a: 2\n", &steps)
+        .expect("the unsaved chart is recorded");
+
+    let list = scratch.list();
+    assert_eq!(list.versions[0].kind, HistoryKind::Unsaved);
+    assert_eq!(list.versions[0].kept, steps);
+    assert!(list.versions[1].kept.is_empty(), "a save carries no steps");
+    let text = scratch
+        .store()
+        .read_version(&scratch.file(), &list.versions[0].id)
+        .expect("reads back");
+    assert!(text.starts_with("a: 2\n"), "{text}");
+    assert_eq!(brightfield_protocol::pending_steps_in(&text), steps);
+    assert_eq!(
+        brightfield_protocol::pending_steps_in("a: 2\n"),
+        Vec::<PendingStep>::new()
+    );
+}
+
 /// Before a chart file's folder is there, the folder is made empty to key the
 /// version by, and the chart file is not made.
 #[test]
@@ -556,7 +595,7 @@ fn an_unsaved_chart_with_no_folder_yet_makes_the_folder_and_no_file() {
     let scratch = Scratch::new("unsaved_unmade");
     let file = scratch.0.join("panels").join("chart.yaml");
 
-    brightfield_protocol::record_unsaved(&scratch.store(), &file, "a: 1\n")
+    brightfield_protocol::record_unsaved(&scratch.store(), &file, "a: 1\n", &[])
         .expect("the unsaved chart is recorded");
 
     assert!(file.parent().expect("a folder").is_dir());
@@ -582,7 +621,7 @@ fn an_unsaved_chart_that_cannot_be_recorded_takes_away_the_folder_it_made() {
     }
     let file = scratch.0.join("panels").join("chart.yaml");
 
-    let refused = brightfield_protocol::record_unsaved(&scratch.store(), &file, "a: 1\n");
+    let refused = brightfield_protocol::record_unsaved(&scratch.store(), &file, "a: 1\n", &[]);
 
     fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).expect("writable again");
     assert!(refused.is_err(), "a read-only store took the version");
