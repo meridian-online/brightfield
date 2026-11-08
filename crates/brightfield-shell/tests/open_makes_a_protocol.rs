@@ -664,3 +664,147 @@ fn reloading_keeps_a_recorded_view_step() {
         win.said()
     );
 }
+
+/// Save a grid filter on `house_age` in `win`'s Protocol.
+fn save_a_filter(win: &mut Window) {
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("house_age > 28".to_string()),
+            order: None,
+        });
+    win.frame();
+    let ctx = win.ctx.clone();
+    win.app
+        .save_protocol(&ctx)
+        .expect("a Protocol to save")
+        .unwrap_or_else(|e| panic!("the Save failed: {e}"));
+    win.frame();
+}
+
+/// The step names of the manifest at `dir`, in order.
+fn step_order(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("arcform.yaml"))
+        .expect("a manifest")
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("- name: "))
+        .map(|n| n.trim_matches('\'').trim_matches('"').to_string())
+        .collect()
+}
+
+/// The housing sample with a `rating` column added.
+fn housing_with_rating() -> String {
+    housing_edited(|i, l| {
+        if i == 0 {
+            format!("{l},rating")
+        } else {
+            format!("{l},{}", i % 5)
+        }
+    })
+}
+
+#[test]
+fn reloading_a_table_whose_name_starts_like_a_load_keeps_its_view_after_the_silver_step() {
+    let folder = input("load-named");
+    let csv = folder.join("load_something.csv");
+    std::fs::copy(housing(), &csv).expect("the housing sample copies");
+    let mut win = Window::new();
+    win.open(&csv);
+    save_a_filter(&mut win);
+    let dir = protocols().join("load_something");
+    let view = "load_something_filtered_by_house_age";
+    assert!(
+        step_order(&dir).iter().any(|n| n == view),
+        "{:?}",
+        step_order(&dir)
+    );
+
+    std::fs::write(&csv, housing_with_rating()).expect("the CSV rewritten");
+    let ctx = win.ctx.clone();
+    win.app.reload_data_file(&ctx);
+    win.frame();
+
+    let order = step_order(&dir);
+    let at = |name: &str| order.iter().position(|n| n == name);
+    assert!(
+        at("silver_load_something") < at(view) && at(view).is_some(),
+        "the view runs after the new silver step: {order:?}"
+    );
+    assert!(
+        columns_shown(&win).contains(&"rating".to_string()),
+        "the reload succeeded: {}",
+        win.said()
+    );
+    assert!(
+        win.app.notifications().iter().next().is_none(),
+        "{}",
+        win.said()
+    );
+}
+
+#[test]
+fn reloading_never_rewrites_the_protocols_manifest_while_its_loads_run() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let folder = input("held");
+    let csv = folder.join("held.csv");
+    std::fs::copy(housing(), &csv).expect("the housing sample copies");
+    let dir = protocols().join("held");
+    // A runner that notes the Protocol's manifest each time arc is started, then runs arc.
+    let log = folder.join("runs.log");
+    let script = folder.join("runner.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nshasum -a 256 '{}' >> '{}' 2>/dev/null\nexec '{}' \"$@\"\n",
+            dir.join("arcform.yaml").display(),
+            log.display(),
+            env!("CARGO_BIN_EXE_brightfield-shell")
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    scratch();
+    let mut win = Window {
+        app: MeridianApp::headless(Boot::empty(), Mode::Light)
+            .running_with(Some(Runner::at(&script))),
+        ctx: egui::Context::default(),
+    };
+    win.frame();
+    win.open(&csv);
+    save_a_filter(&mut win);
+    let before = std::fs::read(dir.join("arcform.yaml")).unwrap();
+    let _ = std::fs::remove_file(&log);
+
+    std::fs::write(&csv, housing_with_rating()).expect("the CSV rewritten");
+    let ctx = win.ctx.clone();
+    win.app.reload_data_file(&ctx);
+    win.frame();
+
+    let noted = std::fs::read_to_string(&log).expect("arc was started");
+    let first = noted.lines().next().expect("a run").to_string();
+    assert!(
+        noted.lines().count() >= 2,
+        "the loads-only run and the Protocol's run: {noted}"
+    );
+    let manifest_before = {
+        use sha2::Digest as _;
+        format!("{:x}", sha2::Sha256::digest(&before))
+    };
+    assert!(
+        first.starts_with(&manifest_before),
+        "the manifest is the analyst's own while the loads run: {first}"
+    );
+    assert!(
+        columns_shown(&win).contains(&"rating".to_string()),
+        "{}",
+        win.said()
+    );
+
+    // A load that fails leaves the manifest as it was.
+    let kept = std::fs::read(dir.join("arcform.yaml")).unwrap();
+    std::fs::remove_file(&csv).unwrap();
+    win.app.reload_data_file(&ctx);
+    win.frame();
+    assert!(win.said().contains("Could not open"), "{}", win.said());
+    assert_eq!(std::fs::read(dir.join("arcform.yaml")).unwrap(), kept);
+}

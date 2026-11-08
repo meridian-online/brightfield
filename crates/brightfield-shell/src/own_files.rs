@@ -88,7 +88,7 @@ pub fn create_in(parent: &Path, opened: &Path) -> Result<OwnProtocol, String> {
     std::fs::create_dir(&models).map_err(|e| format!("{}: {e}", models.display()))?;
     let mut manifest = format!("name: {name}\nengine: duckdb\nsteps:\n");
     for table in &sources.tables {
-        let step = format!("load_{}", table.name);
+        let step = load_step(&table.name);
         let file = format!("models/01_{step}.sql");
         let sql = format!("{}\n", sources::load_sql(table, &dir));
         std::fs::write(dir.join(&file), sql).map_err(|e| format!("{file}: {e}"))?;
@@ -137,6 +137,29 @@ pub fn run_loads(p: &OwnProtocol, runner: &Runner) -> Result<(), String> {
 /// The datasets that may have a silver table: the source tables, then each dataset of `model` with
 /// a combination, in model order and without repeats. A combined dataset has no source table of
 /// its own, because it is built from its parts' raw tables by a query.
+/// The name of the step that loads the source table `table`.
+fn load_step(table: &str) -> String {
+    format!("load_{table}")
+}
+
+/// The names of `p`'s load steps, one per source table. A step is a load by its exact name, not
+/// by its prefix: a grid view recorded on a table named `load_profile` is named
+/// `load_profile_filtered_by_…`, and is not a load.
+fn load_steps(p: &OwnProtocol) -> HashSet<String> {
+    p.sources
+        .tables
+        .iter()
+        .map(|t| load_step(&t.name))
+        .collect()
+}
+
+/// Whether the manifest step `step` is one of `loads`.
+fn is_load(step: &serde_yaml::Value, loads: &HashSet<String>) -> bool {
+    step.get("name")
+        .and_then(serde_yaml::Value::as_str)
+        .is_some_and(|n| loads.contains(n))
+}
+
 fn silver_datasets(model: &Model, sources: &[&str]) -> Vec<String> {
     let mut names: Vec<String> = sources.iter().map(|s| (*s).to_string()).collect();
     for d in &model.datasets {
@@ -179,13 +202,10 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
             .unwrap_or("");
         !(name.starts_with(SILVER_STEP) || name.starts_with(FAILED_STEP))
     });
+    let loads = load_steps(p);
     let mut at = steps
         .iter()
-        .rposition(|s| {
-            s.get("name")
-                .and_then(serde_yaml::Value::as_str)
-                .is_some_and(|n| n.starts_with("load_"))
-        })
+        .rposition(|s| is_load(s, &loads))
         .map_or(0, |i| i + 1);
 
     let mut written: HashSet<String> = HashSet::new();
@@ -749,13 +769,14 @@ pub fn reopen_one_source(dir: &Path, runner: &Runner) -> Result<OwnProtocol, Str
 ///
 /// Only the load steps are run. The steps after them were written for the file's earlier columns,
 /// and a silver step naming a column the file no longer has would fail the run before the new
-/// columns could be profiled. The manifest is put back as it was before this returns, whether the
-/// run succeeded or not.
+/// columns could be profiled. arc runs a whole manifest, so the loads are run from a manifest of
+/// their own in a temporary folder, naming the Protocol's database by path (arc's `db:` key) so
+/// they write the tables the Protocol reads. The Protocol's own `arcform.yaml` is not touched.
 ///
 /// # Errors
 ///
-/// The reason when the folder holds no record of its tables, its manifest cannot be read or
-/// written, the load fails, or the raw table cannot be profiled.
+/// The reason when the folder holds no record of its tables, its manifest cannot be read, the
+/// temporary manifest cannot be written, the load fails, or the raw table cannot be profiled.
 pub fn reload_one_source(dir: &Path, runner: &Runner) -> Result<OwnProtocol, String> {
     let mut p = OwnProtocol {
         dir: dir.to_path_buf(),
@@ -765,31 +786,52 @@ pub fn reload_one_source(dir: &Path, runner: &Runner) -> Result<OwnProtocol, Str
     let manifest_path = dir.join("arcform.yaml");
     let text = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
-    let mut loads: serde_yaml::Value =
+    let mut manifest: serde_yaml::Value =
         serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", manifest_path.display()))?;
-    if let Some(steps) = loads
+    let loads = load_steps(&p);
+    let mut files = Vec::new();
+    if let Some(steps) = manifest
         .get_mut("steps")
         .and_then(serde_yaml::Value::as_sequence_mut)
     {
-        steps.retain(|s| {
-            s.get("name")
-                .and_then(serde_yaml::Value::as_str)
-                .is_some_and(|n| n.starts_with("load_"))
-        });
+        steps.retain(|s| is_load(s, &loads));
+        files.extend(
+            steps
+                .iter()
+                .filter_map(|s| s.get("sql").and_then(serde_yaml::Value::as_str))
+                .map(str::to_owned),
+        );
     }
-    let loads = serde_yaml::to_string(&loads).map_err(|e| e.to_string())?;
-    std::fs::write(&manifest_path, loads)
-        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
-    let ran = run_loads(&p, runner);
-    std::fs::write(&manifest_path, text)
-        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
-    ran?;
+    let db = arc::spec::protocol_db_path(dir).map_err(|e| e.to_string())?;
+    let db = std::path::absolute(&db).unwrap_or(db);
+    if let Some(map) = manifest.as_mapping_mut() {
+        map.insert("db".into(), db.to_string_lossy().into_owned().into());
+    }
+    let scratch = tempfile::tempdir().map_err(|e| format!("a temporary folder: {e}"))?;
+    for file in &files {
+        let to = scratch.path().join(file);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+        std::fs::copy(dir.join(file), &to).map_err(|e| format!("{file}: {e}"))?;
+    }
+    let loads_only = serde_yaml::to_string(&manifest).map_err(|e| e.to_string())?;
+    let at = scratch.path().join("arcform.yaml");
+    std::fs::write(&at, loads_only).map_err(|e| format!("{}: {e}", at.display()))?;
+    run_loads(
+        &OwnProtocol {
+            dir: scratch.path().to_path_buf(),
+            sources: p.sources.clone(),
+            profiles: Vec::new(),
+        },
+        runner,
+    )?;
     forget_after_loads(&p)?;
     profile(&mut p)?;
     Ok(p)
 }
 
-/// Forget arc's record of each step after the loads succeeding, so the next run runs them over
+/// Forget arc's record of each step other than a load succeeding, so the next run runs them over
 /// the raw tables a loads-only run has just made. Without this, a silver step whose SQL had not
 /// changed sat out the next run as unchanged, though the loads-only run had changed its input
 /// (`reloading_the_data_rereads_the_analysts_file` in `tests/open_makes_a_protocol.rs`).
@@ -810,8 +852,13 @@ fn forget_after_loads(p: &OwnProtocol) -> Result<(), String> {
     if state == 0 {
         return Ok(());
     }
-    conn.execute_batch("DELETE FROM _arcform_state WHERE step_name NOT LIKE 'load\\_%' ESCAPE '\\'")
-        .map_err(|e| format!("{}: {e}", db.display()))
+    let mut loads: Vec<String> = load_steps(p).iter().map(|n| literal(n)).collect();
+    loads.sort();
+    conn.execute_batch(&format!(
+        "DELETE FROM _arcform_state WHERE step_name NOT IN ({})",
+        loads.join(", ")
+    ))
+    .map_err(|e| format!("{}: {e}", db.display()))
 }
 
 /// The own-files Protocol folders in the Protocols folder and in the older
