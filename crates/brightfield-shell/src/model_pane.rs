@@ -381,23 +381,7 @@ impl ModelPane {
     /// open skipped no file.
     #[must_use]
     pub fn skipped_line(&self) -> Option<String> {
-        let skipped = &self.protocol.sources.skipped;
-        if skipped.is_empty() {
-            return None;
-        }
-        let named: Vec<String> = skipped
-            .iter()
-            .map(|(path, reason)| {
-                let reason = reason.lines().next().unwrap_or("").trim();
-                format!("{} ({reason})", file_name(path))
-            })
-            .collect();
-        Some(format!(
-            "{} {} skipped: {}",
-            skipped.len(),
-            if skipped.len() == 1 { "file" } else { "files" },
-            named.join(", ")
-        ))
+        skipped_line_of(&self.protocol.sources.skipped)
     }
 
     /// The Ossie file's text as it is on disk.
@@ -1760,4 +1744,26 @@ impl Item<ModelPane> for ModelItem {
             Handled::No
         }
     }
+}
+
+/// The line that names the files an open passed over, each with the first line of its reason, as
+/// [`ModelPane::skipped_line`] says it. `None` when `skipped` is empty.
+#[must_use]
+pub fn skipped_line_of(skipped: &[(std::path::PathBuf, String)]) -> Option<String> {
+    if skipped.is_empty() {
+        return None;
+    }
+    let named: Vec<String> = skipped
+        .iter()
+        .map(|(path, reason)| {
+            let reason = reason.lines().next().unwrap_or("").trim();
+            format!("{} ({reason})", file_name(path))
+        })
+        .collect();
+    Some(format!(
+        "{} {} skipped: {}",
+        skipped.len(),
+        if skipped.len() == 1 { "file" } else { "files" },
+        named.join(", ")
+    ))
 }

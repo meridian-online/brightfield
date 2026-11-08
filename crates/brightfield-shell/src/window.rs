@@ -9909,6 +9909,8 @@ impl MeridianApp {
         let banner = NotificationId::new("open-rest-not-opened");
         self.notifications
             .dismiss(NotificationId::new("open-rest-not-opened"));
+        self.notifications
+            .dismiss(NotificationId::new("open-skipped"));
         if let Some((handed, route)) = paths
             .iter()
             .map(|p| (p, crate::open_queue::route(p)))
@@ -9958,7 +9960,20 @@ impl MeridianApp {
         };
         match crate::data_file::open_all(paths, &runner) {
             Ok(crate::data_file::Opened::OneTable(opened, protocol)) => {
+                // The model pane names what an open passed over; one table has no pane, so a
+                // banner says it instead, or a file handed over with the table would go unmentioned.
+                let skipped = crate::model_pane::skipped_line_of(&protocol.sources.skipped);
                 self.adopt_one_source(ctx, opened, protocol);
+                if let Some(line) = skipped {
+                    self.notifications.raise(
+                        Notification::new(
+                            NotificationId::new("open-skipped"),
+                            Severity::Warning,
+                            "Some files were not opened",
+                        )
+                        .body(line),
+                    );
+                }
             }
             Ok(crate::data_file::Opened::Model(protocol)) => {
                 self.open_model_pane(ctx, protocol, runner, true);
@@ -10005,14 +10020,6 @@ impl MeridianApp {
         }
         self.notifications.dismiss(banner);
         self.take_open_request(ctx, request);
-    }
-
-    /// Cancel the open held over unsaved edits, if one is, as closing its banner does: nothing is
-    /// made of it, and saving later opens nothing.
-    pub fn cancel_held_open(&mut self) {
-        self.held_open = None;
-        self.notifications
-            .dismiss(NotificationId::new(HELD_OPEN_BANNER));
     }
 
     /// [`Self::open_path`] without the wait for a frame. Like a flat file's open it runs on the

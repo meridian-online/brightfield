@@ -653,5 +653,74 @@ fn a_file_brightfield_does_not_read_among_several_is_skipped() {
         scratch().join("protocols").join("mixed_one")
     );
     let skipped = pane.skipped_line().unwrap_or_default();
-    assert!(skipped.contains("notes.txt"), "{skipped:?}");
+    assert!(skipped.contains("notes.txt ("), "{skipped:?}");
+    assert!(
+        !skipped.contains("/input/mixed/"),
+        "the reason reads without the path the list already names: {skipped:?}"
+    );
+}
+
+#[test]
+fn a_file_skipped_beside_one_table_is_said() {
+    let csv = housing_copy("one_and_notes", "lone_sales.csv");
+    let notes = csv.with_file_name("notes.txt");
+    std::fs::write(&notes, "not a table\n").unwrap();
+    let mut app = app();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, egui::RawInput::default());
+    let dropped = egui::RawInput {
+        dropped_files: [csv, notes]
+            .into_iter()
+            .map(|path| egui::DroppedFile {
+                path: Some(path),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    frame(&mut app, &ctx, dropped);
+    frame(&mut app, &ctx, egui::RawInput::default());
+
+    assert_opened(&app, "lone_sales");
+    let skipped = &app.own_protocol().expect("a Protocol").sources.skipped;
+    assert_eq!(skipped.len(), 1, "{skipped:?}");
+    assert!(
+        !skipped[0].1.contains("notes.txt"),
+        "the recorded reason does not repeat the path: {:?}",
+        skipped[0].1
+    );
+    assert!(
+        app.notifications().iter().any(|n| n
+            .body
+            .as_deref()
+            .is_some_and(|b| b.starts_with("1 file skipped: notes.txt ("))),
+        "a banner says the file beside the table was not opened: {}",
+        said(&app)
+    );
+}
+
+#[test]
+fn a_batch_brightfield_reads_none_of_names_each_file() {
+    let dir = scratch().join("input").join("none_read");
+    std::fs::create_dir_all(&dir).unwrap();
+    let paths: Vec<PathBuf> = ["minutes.txt", "photo.jpg"]
+        .into_iter()
+        .map(|name| {
+            let path = dir.join(name);
+            std::fs::write(&path, "x\n").unwrap();
+            path
+        })
+        .collect();
+    let mut app = app();
+    app.open_queue().push(OpenRequest::Paths(paths));
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, egui::RawInput::default());
+
+    assert!(app.front_door_is_live(), "nothing opened");
+    let words = said(&app);
+    assert!(
+        words.contains("Brightfield opens none of these files. 2 files skipped: minutes.txt (")
+            && words.contains("photo.jpg ("),
+        "the refusal names each file: {words}"
+    );
 }

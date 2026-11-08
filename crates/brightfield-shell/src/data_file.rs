@@ -1261,13 +1261,19 @@ fn open_all_with(
     for path in paths {
         match accept(&path.to_string_lossy()) {
             Ok(path) => accepted.push(path),
-            Err(why) if paths.len() > 1 => refused.push((path.clone(), why)),
+            Err(why) if paths.len() > 1 => {
+                // Recorded as discovery records a file it passes over: the reason alone, since the
+                // list it goes in names the file.
+                let named = format!("{}: ", path.to_string_lossy());
+                let why = why.strip_prefix(&named).map_or(why.clone(), str::to_string);
+                refused.push((path.clone(), why));
+            }
             Err(why) => return Err(why),
         }
     }
     if accepted.is_empty() {
-        let (_, why) = refused.swap_remove(0);
-        return Err(why);
+        let line = crate::model_pane::skipped_line_of(&refused).unwrap_or_default();
+        return Err(format!("Brightfield opens none of these files. {line}."));
     }
     let found = brightfield_engine::sources::discover_all(&accepted)?;
     let one_part = match found.tables.as_slice() {
