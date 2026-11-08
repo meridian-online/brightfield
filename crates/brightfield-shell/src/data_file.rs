@@ -1254,18 +1254,29 @@ fn open_all_with(
     runner: &crate::run::Runner,
     dovetail: &dyn crate::discovery::Discovery,
 ) -> Result<Opened, String> {
-    let paths = paths
-        .iter()
-        .map(|p| accept(&p.to_string_lossy()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let found = brightfield_engine::sources::discover_all(&paths)?;
+    // A path refused among several is passed over with its reason, as a folder passes over a file
+    // it cannot read, and the rest open; only a gesture none of whose paths is accepted fails.
+    let mut accepted = Vec::new();
+    let mut refused = Vec::new();
+    for path in paths {
+        match accept(&path.to_string_lossy()) {
+            Ok(path) => accepted.push(path),
+            Err(why) if paths.len() > 1 => refused.push((path.clone(), why)),
+            Err(why) => return Err(why),
+        }
+    }
+    if accepted.is_empty() {
+        let (_, why) = refused.swap_remove(0);
+        return Err(why);
+    }
+    let found = brightfield_engine::sources::discover_all(&accepted)?;
     let one_part = match found.tables.as_slice() {
         [table] => Some(table.name.clone()),
         _ => None,
     };
 
     use crate::own_files as own;
-    let mut protocol = own::create_all(&paths)?;
+    let mut protocol = own::create_all(&accepted, refused)?;
     own::run_loads(&protocol, runner)?;
     own::profile(&mut protocol)?;
     own::write_packages(&protocol)?;

@@ -465,9 +465,11 @@ fn a_protocol_handed_over_with_files_opens_alone_and_says_so() {
         std::fs::copy(fixture.join(file), &to).expect("the fixture copies");
     }
     let csv = housing_copy("batch_protocol", "beside_houses.csv");
+    // A file inside the Protocol's folder routes to that Protocol.
+    let inside = dir.join("inside_houses.csv");
+    std::fs::copy(&csv, &inside).unwrap();
     let mut app = app();
-    app.open_queue()
-        .push(OpenRequest::Paths(vec![csv, dir.clone()]));
+    app.open_queue().push(OpenRequest::Paths(vec![csv, inside]));
     let ctx = egui::Context::default();
     frame(&mut app, &ctx, egui::RawInput::default());
     frame(&mut app, &ctx, egui::RawInput::default());
@@ -485,8 +487,171 @@ fn a_protocol_handed_over_with_files_opens_alone_and_says_so() {
     assert!(
         app.notifications()
             .iter()
-            .any(|n| n.body.as_deref().is_some_and(|b| b.contains("not opened"))),
-        "a banner says the rest were not opened: {}",
+            .any(|n| n.body.as_deref().is_some_and(|b| {
+                b.contains(
+                "inside_houses.csv belongs to the Protocol shipped_batch, which opened on its own; \
+                 the other 1 was not opened"
+            )
+            })),
+        "a banner names the Protocol the file belongs to and says the rest were not opened: {}",
         said(&app)
     );
+}
+
+/// Save the window's Protocol, then run frames until `done` holds of it, or fail saying `what`.
+fn save_and_frame_until(
+    app: &mut MeridianApp,
+    ctx: &egui::Context,
+    what: &str,
+    done: impl Fn(&MeridianApp) -> bool,
+) {
+    app.save_protocol(ctx)
+        .expect("there is a Protocol to save")
+        .expect("the save is written");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !done(app) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: {}",
+            said(app)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        frame(app, ctx, egui::RawInput::default());
+    }
+}
+
+/// A window holding the one-source Protocol made of `name`, with an unsaved order on its grid.
+fn window_with_unsaved_edits(name: &str) -> (MeridianApp, egui::Context) {
+    let csv = housing_copy(name, &format!("{name}.csv"));
+    let mut app = app();
+    let ctx = egui::Context::default();
+    app.open_queue().push(OpenRequest::Path(csv));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert_opened(&app, name);
+    order_the_grid(&mut app);
+    (app, ctx)
+}
+
+#[test]
+fn a_newer_open_takes_the_place_of_a_held_one() {
+    let (mut app, ctx) = window_with_unsaved_edits("held_over");
+    let older = housing_copy("held_over_a", "held_older.csv");
+    let newer = housing_copy("held_over_b", "held_newer.csv");
+
+    app.open_queue().push(OpenRequest::Path(older));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    app.open_queue().push(OpenRequest::Path(newer.clone()));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert_eq!(app.held_open(), Some(&OpenRequest::Path(newer)));
+
+    let newer_dir = scratch().join("protocols").join("held_newer");
+    save_and_frame_until(&mut app, &ctx, "the newer open never went ahead", |app| {
+        app.own_protocol().map(|p| p.dir.clone()) == Some(newer_dir.clone())
+    });
+    for _ in 0..5 {
+        frame(&mut app, &ctx, egui::RawInput::default());
+    }
+    assert_opened(&app, "held_newer");
+    assert!(
+        !scratch().join("protocols").join("held_older").exists(),
+        "nothing is made of the open the newer one replaced"
+    );
+}
+
+/// Click the close control of the one banner showing, as a person would.
+fn close_the_banner(app: &mut MeridianApp, ctx: &egui::Context) {
+    // A banner's first frame is a sizing pass, drawn where it will not stay, so the control is
+    // read off a frame after it has settled.
+    for _ in 0..2 {
+        frame(app, ctx, egui::RawInput::default());
+    }
+    let layer = egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("meridian_notification_layer"),
+    );
+    // The close control is the banner's rightmost small clickable widget.
+    let close = ctx
+        .viewport(|vp| {
+            vp.prev_pass
+                .widgets
+                .get_layer(layer)
+                .filter(|w| w.sense.senses_click() && w.rect.width() < 100.0)
+                .map(|w| w.rect)
+                .max_by(|a, b| a.max.x.total_cmp(&b.max.x))
+        })
+        .expect("the banner draws a close control");
+    let at = close.center();
+    let press = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    frame(
+        app,
+        ctx,
+        egui::RawInput {
+            events: vec![egui::Event::PointerMoved(at), press(true), press(false)],
+            ..Default::default()
+        },
+    );
+}
+
+#[test]
+fn closing_the_held_banner_cancels_the_open() {
+    let (mut app, ctx) = window_with_unsaved_edits("held_cancel");
+    let cancelled = housing_copy("held_cancel_a", "held_cancelled.csv");
+    app.open_queue().push(OpenRequest::Path(cancelled));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert!(app.held_open().is_some(), "{}", said(&app));
+    let others: Vec<String> = app
+        .notifications()
+        .iter()
+        .filter(|n| !n.title.contains("unsaved edits"))
+        .map(|n| n.title.clone())
+        .collect();
+    assert!(others.is_empty(), "only the held banner shows: {others:?}");
+
+    close_the_banner(&mut app, &ctx);
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert!(
+        app.held_open().is_none(),
+        "closing the banner cancels the hold"
+    );
+
+    save_and_frame_until(&mut app, &ctx, "the save never settled", |app| {
+        !app.chart_doc().has_unsaved_work()
+    });
+    for _ in 0..10 {
+        frame(&mut app, &ctx, egui::RawInput::default());
+    }
+    assert_opened(&app, "held_cancel");
+    assert!(
+        !scratch().join("protocols").join("held_cancelled").exists(),
+        "nothing is made of a cancelled open"
+    );
+}
+
+#[test]
+fn a_file_brightfield_does_not_read_among_several_is_skipped() {
+    let names = ["mixed_one.csv", "mixed_two.csv", "mixed_three.csv"];
+    let mut paths: Vec<PathBuf> = names.iter().map(|n| housing_copy("mixed", n)).collect();
+    let notes = scratch().join("input").join("mixed").join("notes.txt");
+    std::fs::write(&notes, "not a table\n").unwrap();
+    paths.insert(1, notes);
+    let mut app = app();
+    app.open_queue().push(OpenRequest::Paths(paths));
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, egui::RawInput::default());
+
+    let pane = app
+        .model_pane()
+        .unwrap_or_else(|| panic!("three tables open the model: {}", said(&app)));
+    assert_eq!(pane.protocol.sources.tables.len(), 3);
+    assert_eq!(
+        pane.protocol.dir,
+        scratch().join("protocols").join("mixed_one")
+    );
+    let skipped = pane.skipped_line().unwrap_or_default();
+    assert!(skipped.contains("notes.txt"), "{skipped:?}");
 }

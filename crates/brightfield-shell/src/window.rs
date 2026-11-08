@@ -2197,6 +2197,9 @@ impl OverlayKeys {
     }
 }
 
+/// The banner that says an open is held over unsaved edits; closing it cancels the hold.
+const HELD_OPEN_BANNER: &str = "open-held-unsaved";
+
 /// The verb that raises the open picker, Cmd+O by the registry.
 const OPEN_VERB: &str = "open";
 
@@ -2894,8 +2897,8 @@ pub struct MeridianApp {
     /// handed over.
     pending_open: Option<Vec<std::path::PathBuf>>,
     /// An open asked for while the chart document held edits no file does, kept until they are
-    /// saved or undone rather than dropped or opened over them. Opens asked for after it wait in
-    /// the queue behind it.
+    /// saved or undone rather than opened over them. A newer open takes its place, and closing
+    /// its banner cancels it.
     held_open: Option<crate::open_queue::OpenRequest>,
     /// Every request to open something, from whichever way in, taken at the start of each frame.
     open_queue: crate::open_queue::OpenQueue,
@@ -5008,15 +5011,23 @@ impl MeridianApp {
             self.open_paths_now(&ctx, &paths);
         }
         // An open held over unsaved edits, tried again: it goes ahead once they are saved or
-        // undone, and stays held, without a second banner, while they are not.
+        // undone, and stays held, without a second banner, while they are not. Closing the
+        // banner that says it is held cancels it, so no open waits unseen.
         if let Some(request) = self.held_open.take() {
-            self.take_or_hold(&ctx, request, false);
+            let shown = self
+                .notifications
+                .iter()
+                .any(|n| n.id == NotificationId::new(HELD_OPEN_BANNER));
+            if shown {
+                self.take_or_hold(&ctx, request, false);
+            }
         }
         // Whatever was asked to open since the last frame, from whichever way in, before anything
-        // is laid out, so the frame draws what the open left. A request that has to wait a frame,
-        // or is held over unsaved edits, stops the taking, and the rest wait in the queue behind
-        // it.
-        while self.pending_open.is_none() && self.held_open.is_none() {
+        // is laid out, so the frame draws what the open left. A request that has to wait a frame
+        // stops the taking, and the rest wait in the queue behind it. One asked for while another
+        // is held over unsaved edits takes the held one's place: the latest choice is the one that
+        // opens once the edits are saved.
+        while self.pending_open.is_none() {
             let Some(request) = self.open_queue.pop() else {
                 break;
             };
@@ -6392,8 +6403,9 @@ impl MeridianApp {
             }
         }
         // Taken whether or not a dialog may be raised, so an ask a headless window cannot answer
-        // does not carry over to the next frame. An ask made after this block, by the palette, is
-        // taken on the next frame's.
+        // does not carry over to the next frame. The frame's requests are applied above this, but
+        // a palette choice is applied later, in `overlay_ui` below, so an ask chosen from the
+        // palette is taken by the next frame's block.
         self.picker_asked = std::mem::take(&mut self.pick_requested);
         if self.picker_asked {
             self.picker_asks += 1;
@@ -9897,19 +9909,37 @@ impl MeridianApp {
         let banner = NotificationId::new("open-rest-not-opened");
         self.notifications
             .dismiss(NotificationId::new("open-rest-not-opened"));
-        if let Some(protocol) = paths
+        if let Some((handed, route)) = paths
             .iter()
-            .find(|p| !matches!(crate::open_queue::route(p), Route::New(_)))
+            .map(|p| (p, crate::open_queue::route(p)))
+            .find(|(_, route)| !matches!(route, Route::New(_)))
         {
-            self.open_path_now(ctx, &protocol.to_string_lossy());
+            self.open_path_now(ctx, &handed.to_string_lossy());
+            // What opened, named as the route found it: a file inside a Protocol is that
+            // Protocol's, not a Protocol itself.
+            let what = match &route {
+                Route::Existing(dir) if dir == handed => {
+                    format!(
+                        "{} is a Protocol, so it opened on its own",
+                        display_name(dir)
+                    )
+                }
+                Route::Existing(dir) => format!(
+                    "{} belongs to the Protocol {}, which opened on its own",
+                    display_name(handed),
+                    display_name(dir)
+                ),
+                Route::Archive(_) | Route::New(_) => format!(
+                    "{} is a Protocol archive, so it was taken on its own",
+                    display_name(handed)
+                ),
+            };
             let others = paths.len() - 1;
             self.notifications.raise(
                 Notification::new(banner, Severity::Warning, "Only the Protocol was opened").body(
                     format!(
-                        "{} is a Protocol, so it opened on its own; the other {} {} not opened. \
-                         Open them by themselves to make a Protocol of them.",
-                        display_name(protocol),
-                        others,
+                        "{what}; the other {others} {} not opened. Open them by themselves to \
+                         make a Protocol of them.",
                         if others == 1 { "was" } else { "were" },
                     ),
                 ),
@@ -9948,27 +9978,41 @@ impl MeridianApp {
         fresh: bool,
     ) {
         use crate::open_queue::OpenRequest;
-        let banner = NotificationId::new("open-held-unsaved");
+        let banner = NotificationId::new(HELD_OPEN_BANNER);
         let first = match &request {
             OpenRequest::Path(path) => Some(path),
             OpenRequest::Paths(paths) => paths.first(),
             OpenRequest::Link(_) | OpenRequest::AddSource(_) => None,
         };
-        if let Some(first) = first.filter(|_| self.carries_unsaved_mark()) {
+        let Some(first) = first else {
+            self.take_open_request(ctx, request);
+            return;
+        };
+        if self.carries_unsaved_mark() {
             if fresh {
                 self.notifications.raise(
                     Notification::new(banner, Severity::Warning, "This window has unsaved edits")
                         .body(format!(
-                            "Save the dashboard, or undo its edits, and {} opens.",
+                            "Save the dashboard, or undo its edits, and {} opens. Close this to \
+                             cancel the open.",
                             display_name(first)
                         )),
                 );
             }
+            // A newer open replaces one already held, which is dropped with nothing made of it.
             self.held_open = Some(request);
             return;
         }
         self.notifications.dismiss(banner);
         self.take_open_request(ctx, request);
+    }
+
+    /// Cancel the open held over unsaved edits, if one is, as closing its banner does: nothing is
+    /// made of it, and saving later opens nothing.
+    pub fn cancel_held_open(&mut self) {
+        self.held_open = None;
+        self.notifications
+            .dismiss(NotificationId::new(HELD_OPEN_BANNER));
     }
 
     /// [`Self::open_path`] without the wait for a frame. Like a flat file's open it runs on the
