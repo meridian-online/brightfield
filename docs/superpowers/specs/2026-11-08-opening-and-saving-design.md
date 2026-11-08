@@ -31,7 +31,7 @@ The person is an early adopter with middling technical depth: someone who uses a
    - dropping onto the window when the front door shows;
    - Cmd+O.
 
-   Dropping a data file or folder onto an open Protocol's window adds it as a source to that Protocol, as the browser's add does. Dropping a Protocol directory or archive there opens that Protocol instead, after the close question if a draft is pending. Opening a folder of tables by gesture makes its Protocol and opens the sources browser on that folder, so the analyst can accept its joins before anything is added.
+   Dropping a data file or folder onto an open Protocol's window adds it as a source to that Protocol, as the browser's add does. Dropping a Protocol directory or archive there opens that Protocol instead, after the close question if a draft is pending. A folder opens the sources browser only when dovetail senses a join in it (Hugh, 2026-11-09: "We should only open dovetail when we sense a join - e.g. if there's only one file in the folder there's no need to open it."). This holds on every way in, the picker and Cmd+O as much as a gesture. A folder with one table, or whose tables dovetail proposes no join between, is added at once and drawn as goal 1 says; a folder with a proposed join makes its Protocol and opens the browser on that folder's join canvas, so the analyst can accept its joins before the model is drawn.
 3. **Open in Brightfield from a web page.** Brightfield answers the link `brightfield://open?url=<address>`, where the address is an `https` URL on `meridian.online` or one of its subdomains, pointing at a Protocol archive: a zip of a Protocol directory. Brightfield downloads it and unpacks it into the Protocols folder, named after the archive's Protocol (taking `-2` and so on on a clash). It then opens it, runs it and draws it. A link to any other host is refused with a sentence saying why. The website's button builds against this format.
 
    **What an archive holds.** A Protocol archive is a `.zip` whose top level is one Protocol directory. Every source it reads is either:
@@ -158,7 +158,7 @@ Hugh did not pick between these explicitly. He asked whether a tree of Protocols
 - From the prototype's list of undecided calls:
   - Enter on a folder's canvas adds the folder with its accepted joins.
   - Marks survive going into another folder.
-  - A dropped folder makes a Protocol named after it and opens the browser on it.
+  - A folder makes a Protocol named after it, and opens the browser on it only when dovetail proposes a join (Hugh's ruling of 2026-11-09 replaced the gesture-only rule here).
   - New Protocol starts as "Untitled" and takes the name of its first source, renaming its folder, so long as the analyst has not renamed it.
   - A glob comes in as one grouped row on the spine.
   - Relaunch restores the open Protocol.

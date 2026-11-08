@@ -329,7 +329,8 @@
   - `a_file_preview_shows_its_first_rows_without_blocking_the_frame`: the frame returns before the read finishes, and the rows appear on a later frame.
   - `a_folder_preview_draws_dovetails_joins`
   - `it_takes_the_window_theme`: the background and ink are read from the theme tokens in both modes.
-  - `a_dropped_folder_opens_the_browser_on_it_before_adding`
+  - `a_folder_with_a_proposed_join_opens_the_browser_on_it_before_adding`: on every way in (queue `Path` from the picker and from a drop alike), `Route::New` for a folder whose tables dovetail proposes a join between makes the Protocol and opens the browser on its canvas instead of drawing the model.
+  - `a_folder_of_one_table_or_no_joins_is_added_at_once`: it opens as Task 2 opens a folder or a lone file, with no browser.
   - The four baselines.
 - [ ] **Step 2:** Run `cargo test -p brightfield-shell --test sources_browser_view`. Expected: FAIL.
 - [ ] **Step 3:** Implement. Previews read off the frame thread as the grid's summaries do.
@@ -358,12 +359,13 @@
 ### Task 14: Drops onto an open Protocol
 
 **Files:**
-- Modify: `crates/brightfield-shell/src/window.rs` (`dropped_files` with a Protocol open: data pushes `AddSource`, a folder of tables opens the browser on it, and a Protocol or archive pushes `Path` through `leave`)
+- Modify: `crates/brightfield-shell/src/window.rs` (`dropped_files` with a Protocol open: data pushes `AddSource`, a folder in which dovetail proposes a join opens the browser on it and any other folder is added at once, and a Protocol or archive pushes `Path` through `leave`)
 - Test: `crates/brightfield-shell/tests/open_gestures.rs` (extend)
 
 - [ ] **Step 1: Write the failing tests:**
   - `a_csv_dropped_on_an_open_protocol_is_added_as_a_source`
-  - `a_folder_dropped_on_an_open_protocol_opens_the_browser_on_it`
+  - `a_folder_with_a_join_dropped_on_an_open_protocol_opens_the_browser_on_it`
+  - `a_folder_of_one_table_dropped_on_an_open_protocol_is_added_at_once`
   - `a_protocol_dropped_on_an_open_protocol_opens_it_after_the_question`
 - [ ] **Step 2:** Run `cargo test -p brightfield-shell --test open_gestures`. Expected: the new tests FAIL.
 - [ ] **Step 3:** Implement.
