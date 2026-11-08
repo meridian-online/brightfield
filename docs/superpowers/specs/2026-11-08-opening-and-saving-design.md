@@ -19,7 +19,7 @@ The person is an early adopter with middling technical depth: someone who uses a
 1. **Opening makes or opens a Protocol.** Every way in ends with a Protocol open:
    - **A Protocol directory** (a folder holding `arcform.yaml`) opens where it is, whether it sits in the Protocols folder, among its data, or wherever an agent wrote it.
    - **A data file, folder, workbook or database** makes a new Protocol at once in the Protocols folder, named after it, with it as the first source. Each open makes a new one: `earthquakes_2024`, then `earthquakes_2024-2`. Duplicates are accepted, as they are in Excel.
-   - **New Protocol** on the front door makes an empty Protocol and opens the sources browser.
+   - **New Protocol** on the front door asks where to make it, with the Protocols folder preselected and its groups and any other folder on offer, then makes an empty Protocol there and opens the sources browser (Hugh, 2026-11-09). New Protocol is a deliberate make, so this is not the question before the first picture that the anti-goals forbid; opening a data file, folder, workbook or database still asks nothing and makes its Protocol in the Protocols folder.
    - **What the window shows.** Hugh likened the window to a PowerPoint view (2026-10-28): the spine on the left is the Protocol, and what is selected on it occupies the canvas. So:
      - An empty Protocol shows the sources browser over an empty canvas.
      - With one source, its table is selected and the canvas shows its grid and generated dashboard, as a single table opens today.
@@ -47,7 +47,7 @@ The person is an early adopter with middling technical depth: someone who uses a
    - **Restricted drawing is bounded.** A restricted Protocol's charts read only the result files its archive carries, with DuckDB's access to outside files and extension autoloading off.
    - Refusing a source path that resolves outside the Protocol's folder, and checking the host again after every redirect, still apply before anything is written.
 
-4. **New Protocols live in `~/Documents/Protocols`, visible in Finder** (Hugh, 2026-10-28, confirmed 2026-11-08). The Protocol's folder exists from the first moment, which matters because arc keys a Protocol's working database by the path of its directory. When a rename, a Finder move, or an Untitled Protocol taking its first source's name changes that path, the database is moved or rebuilt as goal 9 and constraint 3 describe.
+4. **New Protocols live in the Protocols folder, `~/Documents/Protocols` by default, visible in Finder** (Hugh, 2026-10-28, confirmed 2026-11-08). The folder is a setting in Preferences (Hugh, 2026-11-09). Changing it sends new Protocols to the new folder and offers once to move the old folder's Protocols across; each move goes through the same path as Location below, one Protocol at a time, stopping at the first that fails and saying which moved. A Protocol that is open is moved after the close question, or left. The Protocol's folder exists from the first moment, which matters because arc keys a Protocol's working database by the path of its directory. When a rename, a Finder move, or an Untitled Protocol taking its first source's name changes that path, the database is moved or rebuilt as goal 9 and constraint 3 describe.
 5. **The sources browser adds sources from the keyboard and the mouse alike.** It follows yazi and Hugh's prototype (the `prototype/save-models` branch, `prototypes/protocol-first.html`, at `9189fa7`):
    - three columns: places; the current folder's list; and a preview of the item under the cursor;
    - a file previews its first page of rows, and a folder previews as a dovetail canvas showing the joins dovetail proposes between its tables;
@@ -80,6 +80,8 @@ The person is an early adopter with middling technical depth: someone who uses a
    - **Close without saving keeps a version.** It records the unsaved edits in the Protocol's version history, so nothing is lost silently. Today only the chart's text is recorded this way; a kept grid view and kept typed SQL are recorded too.
 8. **Cmd+S saves the Protocol from anywhere in the window.** In the YAML editor it still saves the editor's buffer, then the Protocol.
 9. **Rename.** A Protocol can be renamed from the window and from its row on the front door. The rename renames its folder in Finder too (Hugh, 2026-11-08). Brightfield moves or rebuilds arc's working database for the new path, and the Protocol's recents entry and version history follow it. Any source path recorded relative to the Protocol's folder that points outside it is rewritten, in the data packages and the model, so the Protocol still finds its sources. The same repair runs when Brightfield opens a Protocol that was moved in Finder. A rename is a change to the Protocol itself, so it is kept at once, like adding a source.
+
+   **Location.** The window's locator band also shows the Protocol's folder, and moving it there moves the folder to another parent (Hugh, 2026-11-09), with the same database move and source-path repair as a rename, kept at once.
 10. **Remove a step.** A step other than a source's load and the model step can be removed from the spine. Removal is a draft until Cmd+S, like any other step edit. A step that later steps read is refused with a sentence naming them.
 11. **The front door shows Recents and the tree of Protocols.**
     - **Recents** lists Protocols most recently opened, wherever they live.
@@ -102,7 +104,7 @@ The person is an early adopter with middling technical depth: someone who uses a
 - **The website's half of Open in Brightfield:** the button on each Protocol page, its link previews, and the fallback for a visitor without Brightfield. That is the website's own work. This design sets the format it builds against.
 - **Moving existing Protocols.** Protocols already made in Application Support stay there and stay on the door, in Recents. Only new ones go to `~/Documents/Protocols`.
 - **Online sources and database servers in the browser.** The browser browses the Mac's disk.
-- **Save As and "move to…".** A Protocol is put elsewhere by moving its folder in Finder.
+- **Save As.** A Protocol is put elsewhere by its Location field or by moving its folder in Finder; a copy is made in Finder.
 - **Linux and Windows.** The gestures are the Mac's; the browser and save model are written portably, but are validated on macOS only, as for the rest of the launch.
 - **The starter datasets** and the door's gallery of them. They are separate work. This design gives them the same open path: a starter opens as a Protocol like any other.
 
@@ -145,6 +147,7 @@ Hugh did not pick between these explicitly. He asked whether a tree of Protocols
 - **The Mac's own gestures are in** (2026-11-08): "This is important and valuable."
 - **Open in Brightfield must be visible** (2026-11-08); whether the website's half was separate work was left to this design, which made it so.
 - **Rename renames the folder** (2026-11-08).
+- **New Protocol asks where; the Protocols folder is a setting** (2026-11-09). Hugh: "choose a location when making a Protocol" and "have a 'Protocols folder' setting in preferences". He chose that only New Protocol asks, opens do not, with a Location field to move one later, and that changing the setting offers to move the old folder's Protocols.
 - **The door shows Recents and a tree of Protocols, nested in directories; organising is Finder's for now** (2026-11-08). A new Protocol is written in the Protocols folder, with no option at creation.
 
 ## Calls made on Hugh's behalf

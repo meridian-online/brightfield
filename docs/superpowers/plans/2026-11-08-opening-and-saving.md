@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- New Protocols live in `~/Documents/Protocols`. Tests set `BRIGHTFIELD_PROTOCOLS_DIR` to a temporary folder, and **no test writes under the home directory**.
+- New Protocols live in the Protocols folder: `$BRIGHTFIELD_PROTOCOLS_DIR` if set, else the Preferences setting, else `~/Documents/Protocols`. Tests set `BRIGHTFIELD_PROTOCOLS_DIR` to a temporary folder, and **no test writes under the home directory**.
 - A new Protocol is named after its first source (`earthquakes_2024`, then `earthquakes_2024-2`); the first takes the bare name, not `-1`.
 - Kept at once: making a Protocol, adding a source, accepting or dropping a join, and rename. A draft until Cmd+S: every other edit.
 - The link is `brightfield://open?url=<address>`, where the address is `https` on `meridian.online` or a subdomain of it, and anything else is refused with a sentence saying why.
@@ -160,7 +160,7 @@
 - [ ] **Step 4:** Run the test, then `close_question_keeps_unsaved` and `chart_save_close_asks`. Expected: PASS.
 - [ ] **Step 5:** Commit: "Ask before Home, another open or quit loses a draft, and keep every draft a discard drops".
 
-### Task 6: Rename, and a Protocol moved in Finder
+### Task 6: Rename, Location, and a Protocol moved in Finder
 
 **Files:**
 - Create: `crates/brightfield-shell/src/rename.rs`
@@ -171,6 +171,7 @@
 - Produces:
   - `rename::rename(dir: &Path, new_name: &str) -> Result<PathBuf, String>`. It renames the folder within its parent (refusing a name that exists, empty, or holding `/`), rewrites `name:` in `arcform.yaml`, calls `repair(&new_dir, dir)`, and moves arc's database for the new path, or deletes it so the next run rebuilds it.
   - `rename::repair(dir: &Path, was: &Path) -> Result<usize, String>`. It rewrites relative source paths that leave the folder, in `packages/*/datapackage.json`, `.sources.json` and `model.ossie.yaml`, and returns the count rewritten.
+  - `rename::relocate(dir: &Path, new_parent: &Path) -> Result<PathBuf, String>`: moves the folder to another parent (claiming `-2` on a clash), sharing rename's manifest, repair and database steps, and refusing a move into the Protocol itself.
   - `rename::moved_since(dir: &Path) -> Option<PathBuf>`: the path the Protocol was last opened at, read from `.sources.json`'s recorded `dir`, when it differs from `dir`.
 
 - [ ] **Step 1: Write the failing tests:**
@@ -179,6 +180,8 @@
   - `rename_to_a_taken_name_is_refused`: the folder is unchanged.
   - `a_protocol_moved_in_finder_finds_its_sources`: move the folder into a subfolder, open it, and its loads run with the paths repaired.
   - `rename_is_kept_at_once`: no unsaved mark after a rename.
+  - `relocate_moves_the_protocol_and_it_still_runs`, and `the_location_field_moves_it`: the locator band's Location field calls `relocate`.
+  - `relocate_across_volumes_copies_then_removes`: when `rename` fails with a cross-device error, it copies, checks, then removes the original.
 - [ ] **Step 2:** Run `cargo test -p brightfield-shell --test rename_protocol`. Expected: FAIL.
 - [ ] **Step 3:** Implement. The window's open path calls `moved_since` and `repair` before `reopen`.
 - [ ] **Step 4:** Run the test. Expected: PASS.
@@ -259,6 +262,7 @@
   - `struct AcceptedJoin { left: (String, String), right: (String, String) }`, each side a table and a column.
 
 - [ ] **Step 1: Write the failing tests:**
+  - `new_protocol_asks_where_with_the_protocols_folder_preselected`: the chooser lists the Protocols folder, its groups, and Other…; the Protocol is made where chosen.
   - `new_protocol_makes_untitled_and_opens_the_browser`
   - `the_first_source_names_an_untitled_protocol`: the folder becomes `earthquakes_2024`.
   - `a_renamed_untitled_keeps_its_name_when_a_source_is_added`
@@ -271,7 +275,33 @@
 - [ ] **Step 4:** Run the test. Expected: PASS.
 - [ ] **Step 5:** Commit: "Make an empty Protocol from the door and add sources to an open one, kept at once".
 
-**Checkpoint.** Tasks 1 to 10 cover the gestures, Cmd+S, rename, the door, relaunch, step removal and adding sources by drop. Push, and offer Hugh a build to drive before the browser.
+### Task 10b: Preferences, with the Protocols folder
+
+**Files:**
+- Create: `crates/brightfield-shell/src/preferences.rs` (the sheet, in the window's theme tokens)
+- Modify: `crates/brightfield-shell/src/protocols_dir.rs` (`root()` reads the env var, then the setting, then the default), `crates/brightfield-workbench/src/persist.rs` or the config the window already keeps (the setting), `crates/brightfield-keys/src/registry.rs` (`open-preferences` on `global("cmd-,")`), `crates/brightfield-shell/src/window.rs`
+- Test: `crates/brightfield-shell/tests/preferences.rs`
+
+**Interfaces:**
+- Consumes: `rename::relocate` (Task 6), `door_tree::read` (Task 7).
+- Produces: `protocols_dir::set_root(path: &Path) -> Result<(), String>` and `protocols_dir::move_all(from: &Path, to: &Path) -> MoveReport { moved: Vec<PathBuf>, failed: Option<(PathBuf, String)>, left_open: Option<PathBuf> }`.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `cmd_comma_opens_preferences`
+  - `the_setting_sends_new_protocols_to_the_new_folder`
+  - `the_env_var_still_wins_over_the_setting`
+  - `changing_the_folder_offers_to_move_and_declining_moves_nothing`: old Protocols stay, still in Recents.
+  - `accepting_moves_each_protocol_and_they_still_run`
+  - `a_failed_move_stops_and_names_what_moved`
+  - `an_open_protocol_is_moved_after_the_close_question_or_left`
+  - `the_door_tree_reads_the_new_folder`
+  - `a_refused_new_folder_says_how_and_keeps_the_old`: the Privacy & Security sentence, as in Task 1.
+- [ ] **Step 2:** Run `cargo test -p brightfield-shell --test preferences`. Expected: FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Run the test. Expected: PASS.
+- [ ] **Step 5:** Commit: "Choose the Protocols folder in Preferences, and offer to move what was in the old one".
+
+**Checkpoint.** Tasks 1 to 10b cover the gestures, Cmd+S, rename, the door, relaunch, step removal and adding sources by drop. Push, and offer Hugh a build to drive before the browser.
 
 ### Task 11: The sources browser's state and keys
 
@@ -434,4 +464,4 @@
 | `cargo xtask ci` | the full gate; CI runs it on each push | 4 to 55 minutes locally; run only to reproduce a CI failure |
 | Packaged-build hand checks | Tasks 3 and 15 | about 10 minutes, Hugh driving |
 
-Dependencies: Task 2 needs 1. Tasks 3, 4, 5, 6 and 7 need 2. Task 8 needs 7. Task 9 needs 5. Task 10 needs 1, 2 and 6. Task 11 needs nothing. Task 12 needs 10 and 11. Task 13 needs 10. Task 14 needs 3, 5 and 12. Task 15 needs 2 and 3. Task 16 is last.
+Dependencies: Task 2 needs 1. Tasks 3, 4, 5, 6 and 7 need 2. Task 8 needs 7. Task 9 needs 5. Task 10 needs 1, 2 and 6. Task 10b needs 6 and 7. Task 11 needs nothing. Task 12 needs 10 and 11. Task 13 needs 10. Task 14 needs 3, 5 and 12. Task 15 needs 2 and 3. Task 16 is last.
