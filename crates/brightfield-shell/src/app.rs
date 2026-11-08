@@ -2204,7 +2204,8 @@ impl ChartDoc {
     /// reads and places it, and it is recorded as arcform's unsaved kind
     /// ([`record_unsaved`](brightfield_protocol::record_unsaved)), with the
     /// grid view and the typed statements no file holds written after it
-    /// ([`Self::pending_steps`]), so a close drops none of them unrecorded.
+    /// ([`Self::pending_steps`]), so a close keeps them with the chart
+    /// (`discard_records_the_kept_filter_and_typed_sql`).
     /// The chart file and `arcform.yaml` are left as they were, and the
     /// document too: the edits stay held, for the window that closes over
     /// them.

@@ -348,8 +348,9 @@ fn with_pending_steps(text: &str, pending: &[PendingStep]) -> String {
 }
 
 /// **The steps an unsaved version carries**, in the order written, read back
-/// from the comments [`record_unsaved`] wrote after the chart: none for a text
-/// without them.
+/// from the comments [`record_unsaved`] wrote after the chart
+/// (`an_unsaved_chart_carries_the_steps_the_window_held`): an empty list for a
+/// text without them.
 #[must_use]
 pub fn pending_steps_in(text: &str) -> Vec<PendingStep> {
     let mut lines = text.lines();
@@ -435,8 +436,9 @@ pub struct ChartVersion {
     /// `HISTORY_MAX_ENTRIES` versions of a file.
     pub on_this_machine: bool,
     /// The steps a window held when it closed without saving, which this
-    /// unsaved version carries after the chart ([`PendingStep`]): none for
-    /// any other version, and for one whose text is not on this machine.
+    /// unsaved version carries after the chart ([`PendingStep`]), read off
+    /// its text. Empty for a save, a checkpoint, and a version whose text is
+    /// not on this machine.
     pub kept: Vec<PendingStep>,
 }
 

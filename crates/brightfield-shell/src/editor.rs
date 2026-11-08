@@ -1068,7 +1068,7 @@ impl EditorPane {
     /// ⌘S. Both save entry points (the keystroke and the verb) come through
     /// here so neither can forget the note.
     /// Leave the buffer on the document while it holds edits its file does
-    /// not, and nothing there once it does not ([`ChartDoc::editor_buffer`]):
+    /// not, and clear it there once it does not ([`ChartDoc::editor_buffer`]):
     /// the window keeps an unsaved buffer as a version when it closes without
     /// saving, and the buffer is pane state it cannot otherwise reach. The
     /// buffer changes only while the pane draws or performs a verb, so it is

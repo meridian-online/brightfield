@@ -6666,8 +6666,9 @@ impl MeridianApp {
     }
 
     /// **Save what the window holds that no file does**: the YAML editor's buffer when it is
-    /// edited, whether or not the editor has the keyboard, then the Protocol when anything is
-    /// left to write ([`Self::anything_to_save`]). With nothing pending it writes nothing.
+    /// edited, whether or not the editor has the keyboard, then the Protocol while work is left
+    /// to write ([`Self::anything_to_save`]). With no work pending it writes no file
+    /// (`cmd_s_with_nothing_pending_writes_nothing`).
     fn save_everything(&mut self, ctx: &egui::Context) {
         if !self.anything_to_save() {
             return;
@@ -8559,7 +8560,7 @@ impl MeridianApp {
     /// - [`CloseAnswer::SaveAndClose`] saves the YAML editor's buffer when it
     ///   is edited, then writes as the Save verb does ([`Self::save_protocol`]:
     ///   `arcform.yaml`, its model and the chart beside them), and goes once
-    ///   nothing is left unsaved. A write that failed stays, with the banner
+    ///   the unsaved mark is gone (`enter_saves_and_leaves`). A write that failed stays, with the banner
     ///   the write raised saying why; the question is closed so the banner can
     ///   be read, and the way out is dropped, so the next one asks again.
     /// - [`CloseAnswer::CloseWithoutSaving`] keeps the chart as a Save would
