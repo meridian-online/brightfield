@@ -105,7 +105,7 @@
 **Files:**
 - Create: `crates/brightfield-shell/src/mac_open.rs`
 - Modify: `crates/brightfield-shell/src/main.rs` (install before the event loop runs), `crates/brightfield-shell/src/window.rs` (egui `raw.dropped_files` on the door pushes `Path`; Cmd+O opens the picker), `crates/brightfield-keys/src/registry.rs` (`open` on `global("cmd-o")`), `packaging/Info.plist`
-- Test: `crates/brightfield-shell/tests/open_gestures.rs`, plus `scripts/package.sh`'s plist lint
+- Test: `crates/brightfield-shell/tests/open_gestures.rs`, plus `scripts/package.sh`'s plist lint; add `plist` (MIT) as a dev-dependency of `brightfield-shell`
 
 **Interfaces:**
 - Consumes: `OpenQueue` (Task 2).
@@ -164,7 +164,7 @@
 
 **Files:**
 - Create: `crates/brightfield-shell/src/rename.rs`
-- Modify: `crates/brightfield-shell/src/window.rs` (the rename field in the locator band and on a door row), `crates/brightfield-keys/src/registry.rs` (`rename-protocol`, `workspace("cmd-r")` until the keymap work rebinds it), `crates/brightfield-workbench/src/persist.rs` (`Recent` repointed)
+- Modify: `crates/brightfield-shell/src/window.rs` (the rename field in the locator band and on a door row), `crates/brightfield-keys/src/registry.rs` (`rename-protocol` on a chord free in its contexts: `cmd-r` is taken by `reload-spec`, so use F2 if the key parser takes function keys, else a free `cmd-shift` chord; plus a registry test that fails when two verbs share a chord in overlapping contexts), `crates/brightfield-workbench/src/persist.rs` (`Recent` repointed)
 - Test: `crates/brightfield-shell/tests/rename_protocol.rs`
 
 **Interfaces:**
@@ -378,10 +378,10 @@
 - Test: `crates/brightfield-shell/tests/protocol_archive.rs`
 
 **Interfaces:**
-- Consumes: `remote::Fetch::begin` (exists), `protocols_dir::claim`, and `zip` 9.
+- Consumes: `remote::Fetch::begin` (exists), `protocols_dir::claim`, and the workspace's `zip` (version 6, as `Cargo.toml` pins it).
 - Produces:
   - `protocol_archive::check_link(link: &str) -> Result<url::Url, String>`. Accepted: scheme `brightfield`, host `open`, one `url` parameter that is `https` with host `meridian.online` or ending `.meridian.online`.
-  - `protocol_archive::unpack(zip: &Path, into: &Path) -> Result<PathBuf, String>`. It checks every entry first: one top-level folder holding `arcform.yaml`; no absolute path, `..`, or symlink; at most 10,000 entries and 2 GiB unpacked. It then claims a name and unpacks, and refuses a Protocol whose `.sources.json` or load SQL names an absolute local path.
+  - `protocol_archive::unpack(zip: &Path, into: &Path) -> Result<PathBuf, String>`. It checks every entry first: one top-level folder holding `arcform.yaml`; no absolute path, `..`, or symlink; at most 10,000 entries and 2 GiB unpacked by the sizes the headers declare. It then claims a name and unpacks, counting the bytes actually written and stopping at the same 2 GiB, removing the partial folder, since headers can understate sizes; and refuses a Protocol whose `.sources.json` or load SQL names an absolute local path.
 
 - [ ] **Step 1: Write the failing tests:**
   - `a_meridian_link_is_accepted`: `brightfield://open?url=https://meridian.online/protocols/usgs/earthquakes_2025.zip`.
@@ -389,9 +389,10 @@
   - `other_hosts_and_http_are_refused_with_a_sentence`: `https://evil.example/x.zip`, `http://meridian.online/x.zip`, `https://meridian.online.evil.example/x.zip`.
   - `an_archive_with_dotdot_or_absolute_entries_writes_nothing`
   - `an_archive_past_the_limits_writes_nothing`
+  - `an_archive_that_understates_its_sizes_is_stopped_and_removed`: declared sizes under the limit, real contents over it; nothing is left behind.
   - `an_archive_naming_an_absolute_local_path_is_refused_naming_it`
   - `a_clashing_archive_takes_dash_two`
-  - `a_good_archive_unpacks_runs_and_draws`: serve a fixture zip through `Fetch::stand_in`; it opens, runs (a run record is written) and draws.
+  - `a_good_archive_unpacks_runs_and_draws`: serve a fixture zip from a local stand-in HTTP server so the fetch path runs (`Fetched::stand_in` copies files without the network and does not exercise it); it opens, runs (a run record is written) and draws.
 - [ ] **Step 2:** Run `cargo test -p brightfield-shell --test protocol_archive`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run the test. Expected: PASS. Hand check on a packaged build, in the pull request's checklist: `open 'brightfield://open?url=…'` from Terminal opens the Protocol.

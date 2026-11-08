@@ -39,7 +39,7 @@ The person is an early adopter with middling technical depth: someone who uses a
    - a remote address its steps fetch, as the example Protocols' `http_fetch` steps fetch from their issuers today.
 
    An archive whose Protocol names an absolute local path is refused, with a sentence naming the path, since it could run on no other Mac. Brightfield does not register for every `.zip` in Finder, because that would take over Finder's handling of all zips. It accepts a zip holding a Protocol through the link, Cmd+O and a drop, and checks for `arcform.yaml` before unpacking.
-4. **New Protocols live in `~/Documents/Protocols`, visible in Finder** (Hugh, 2026-10-28, confirmed 2026-11-08). The Protocol's path is fixed from the first moment, which matters because arc keys a Protocol's working database by the path of its directory.
+4. **New Protocols live in `~/Documents/Protocols`, visible in Finder** (Hugh, 2026-10-28, confirmed 2026-11-08). The Protocol's folder exists from the first moment, which matters because arc keys a Protocol's working database by the path of its directory. When a rename, a Finder move, or an Untitled Protocol taking its first source's name changes that path, the database is moved or rebuilt as goal 9 and constraint 3 describe.
 5. **The sources browser adds sources from the keyboard and the mouse alike.** It follows yazi and Hugh's prototype (the `prototype/save-models` branch, `prototypes/protocol-first.html`, at `9189fa7`):
    - three columns: places; the current folder's list; and a preview of the item under the cursor;
    - a file previews its first page of rows, and a folder previews as a dovetail canvas showing the joins dovetail proposes between its tables;
@@ -62,6 +62,8 @@ The person is an early adopter with middling technical depth: someone who uses a
    | `Esc` | close |
    | `A` | in a Protocol, open the browser |
    | `o` | in a Protocol, organise with dovetail |
+
+   The bare-letter keys apply only while no text field (typed SQL, the YAML editor, a chart edit) has keyboard focus, so typing them into a query never triggers them.
 6. **The spine leads with the model.** Once sources are added, the navigator's spine lists the model's tables first, each beside the tables it joins, with the model step under them and a curve per join in the spine's gutter. The sources with no join follow under a heading.
 7. **The save model is a split** (Hugh, 2026-11-03):
    - **Kept at once.** Making the Protocol, adding a source, and accepting or dropping a join, with the model step the joins make, are written to disk when they happen, with no Save.
