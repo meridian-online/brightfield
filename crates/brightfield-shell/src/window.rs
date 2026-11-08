@@ -2866,6 +2866,11 @@ pub struct MeridianApp {
     /// A path chosen at the door whose open waits one frame, so a notice that a DuckDB extension
     /// is being fetched is drawn before the open blocks the thread.
     pending_open: Option<String>,
+    /// Every request to open something, from whichever way in, taken at the start of each frame.
+    open_queue: crate::open_queue::OpenQueue,
+    /// The Protocol a lone table's grid and dashboard were opened from: the one-source Protocol
+    /// an open made in the Protocols folder. `None` for any other document.
+    own_protocol: Option<crate::own_files::OwnProtocol>,
     /// A saved Protocol whose front-door row was clicked, latched for after the
     /// frame. Latched rather than acted on for the reason `pick_requested` is:
     /// the `Ui` borrow the door drew through is still live at the click, and
@@ -3077,7 +3082,7 @@ impl MeridianApp {
         if let Some(index) = open_panel {
             app.open_panel_with_grid(index);
         }
-        app.pending_open = open_later;
+        app.queue_open_later(open_later);
         app
     }
 
@@ -3131,7 +3136,7 @@ impl MeridianApp {
         if let Some(index) = open_panel {
             app.open_panel_with_grid(index);
         }
-        app.pending_open = open_later;
+        app.queue_open_later(open_later);
         app
     }
 
@@ -3322,6 +3327,8 @@ impl MeridianApp {
             door_open_file: None,
             pick_requested: false,
             pending_open: None,
+            open_queue: crate::open_queue::OpenQueue::default(),
+            own_protocol: None,
             door_open_protocol: None,
             dialogs_allowed: false,
             overlay: None,
@@ -4927,6 +4934,11 @@ impl MeridianApp {
     /// tier-agnostic.
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // Whatever was asked to open since the last frame, from whichever way in, before anything
+        // is laid out, so the frame draws what the open left.
+        for request in self.open_queue.drain() {
+            self.take_open_request(&ctx, request);
+        }
         // Before anything is laid out: a fetch that finished since the last
         // frame replaces the documents, and a frame that drew the door first
         // and adopted the document after would draw one frame of a door for a
@@ -6303,7 +6315,8 @@ impl MeridianApp {
         if self.pick_requested && self.dialogs_allowed {
             self.pick_requested = false;
             if let Some(path) = crate::data_file::pick() {
-                self.open_path(&ctx, &path.to_string_lossy());
+                self.open_queue
+                    .push(crate::open_queue::OpenRequest::Path(path));
             }
         }
         // A saved Protocol picked off the door. No dialog and no gate: the path
@@ -9562,12 +9575,11 @@ impl MeridianApp {
     /// entry: it clears the session, the spec path, the authored record and
     /// everything else that belonged to the outgoing document, so each of them
     /// has to be put back **after** it rather than before.
-    fn adopt_boot(&mut self, boot: Boot) {
+    fn adopt_boot(&mut self, mut boot: Boot) {
         self.landing = None;
         let open_panel = boot.open_panel;
-        if boot.open_later.is_some() {
-            self.pending_open = boot.open_later;
-        }
+        self.queue_open_later(boot.open_later.take());
+        self.own_protocol = None;
         self.tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         // The model pane belongs to the own-files Protocol it was opened for, and a different
         // document is arriving. `open_model_pane` and `open_model_in_grid` put it back after.
@@ -9619,8 +9631,13 @@ impl MeridianApp {
     /// is one line in [`crate::data_file`] and a headless test may not open
     /// one; every decision worth gating — what is refused, what is drawn, what
     /// a failure says — is on this side of that line, so this is the entry
-    /// point a test drives and the entry point the door's button reaches
-    /// through.
+    /// point a test drives.
+    ///
+    /// **Not a way in for new data.** It opens the file as it is, with no
+    /// Protocol made of it: the door's Open… and every other way in go through
+    /// the open queue ([`Self::open_queue`]), which makes one. What still comes
+    /// here is a file the window already holds, reread
+    /// ([`Self::reload_data_file`]).
     ///
     /// A failure raises a banner and changes nothing else. That is the whole of
     /// the contract: the window stays up with whatever was on it, and the
@@ -9700,27 +9717,89 @@ impl MeridianApp {
     /// [`Self::open_path`] without the wait for a frame. Like a flat file's open it runs on the
     /// calling thread, so a folder or workbook holds the window for as long as its tables take to
     /// load and profile.
+    ///
+    /// A Protocol directory, or a file in one, opens where it is ([`Self::open_protocol_path`]).
+    /// Anything else is data, and a new Protocol is made of it in the Protocols folder: one table
+    /// opens on its grid and dashboard, with the Protocol held behind it, and several open the
+    /// model pane. Nothing is written beside the data, and a Protocols folder the system refuses
+    /// is said in a banner with nothing opened.
     fn open_path_now(&mut self, ctx: &egui::Context, chosen: &str) {
+        use crate::open_queue::Route;
         self.notifications
             .dismiss(NotificationId::new("open-fetching-extension"));
-        // The runner this window was given, else this binary, which is the runner when the window
-        // is the app's own.
-        let Some(runner) = self.runner.clone().or_else(crate::run::Runner::this_binary) else {
-            // Without a runner only the flat-file route can work.
-            self.open_data_file(ctx, chosen);
-            return;
-        };
-        if let Some(dir) = crate::own_files::own_protocol_dir(std::path::Path::new(chosen)) {
-            self.reopen_model_pane(ctx, &dir, runner);
-            return;
-        }
-        match crate::data_file::open_any(std::path::Path::new(chosen), &runner) {
-            Ok(crate::data_file::Opened::OneTable(opened)) => self.adopt_opened_file(ctx, opened),
-            Ok(crate::data_file::Opened::Model(protocol)) => {
-                self.open_model_pane(ctx, protocol, runner, true);
+        match crate::open_queue::route(std::path::Path::new(chosen)) {
+            Route::Existing(dir) => {
+                let manifest = dir.join(arc::spec::MANIFEST_FILENAME);
+                self.open_protocol_path(ctx, &manifest.to_string_lossy());
             }
-            Err(e) => self.say_open_failed(ctx, chosen, e),
+            Route::Archive(_) => self.say_open_failed(
+                ctx,
+                chosen,
+                "This build cannot open a Protocol archive yet. Unzip it and open its folder."
+                    .to_string(),
+            ),
+            Route::New(path) => {
+                // The runner this window was given, else this binary, which is the runner when
+                // the window is the app's own.
+                let Some(runner) = self.runner.clone().or_else(crate::run::Runner::this_binary)
+                else {
+                    self.say_open_failed(
+                        ctx,
+                        chosen,
+                        "no runner to run its Protocol with".to_string(),
+                    );
+                    return;
+                };
+                match crate::data_file::open_any(&path, &runner) {
+                    Ok(crate::data_file::Opened::OneTable(opened, protocol)) => {
+                        self.adopt_opened_file(ctx, opened);
+                        self.own_protocol = Some(protocol);
+                    }
+                    Ok(crate::data_file::Opened::Model(protocol)) => {
+                        self.open_model_pane(ctx, protocol, runner, true);
+                    }
+                    Err(e) => self.say_open_failed(ctx, chosen, e),
+                }
+            }
         }
+    }
+
+    /// Carry out one request taken off the open queue.
+    fn take_open_request(&mut self, ctx: &egui::Context, request: crate::open_queue::OpenRequest) {
+        use crate::open_queue::OpenRequest;
+        match request {
+            OpenRequest::Path(path) => self.open_path(ctx, &path.to_string_lossy()),
+            OpenRequest::Link(link) => {
+                self.say_open_failed(ctx, &link, "This build cannot open a link yet.".to_string())
+            }
+            OpenRequest::AddSource(path) => self.say_open_failed(
+                ctx,
+                &path.to_string_lossy(),
+                "This build cannot add a source to an open Protocol yet.".to_string(),
+            ),
+        }
+    }
+
+    /// Queue the path a boot asked to open once the window exists, when it asked.
+    fn queue_open_later(&mut self, path: Option<String>) {
+        if let Some(path) = path {
+            self.open_queue
+                .push(crate::open_queue::OpenRequest::Path(path.into()));
+        }
+    }
+
+    /// The window's open queue, shared: a request pushed on it opens at the start of the next
+    /// frame, after any pushed before it.
+    #[must_use]
+    pub fn open_queue(&self) -> crate::open_queue::OpenQueue {
+        self.open_queue.clone()
+    }
+
+    /// The one-source Protocol the grid and dashboard on the canvas were opened from, when an open
+    /// made one.
+    #[must_use]
+    pub fn own_protocol(&self) -> Option<&crate::own_files::OwnProtocol> {
+        self.own_protocol.as_ref()
     }
 
     /// Open the own-files Protocol in `dir` again into the model pane, with the model its folder
@@ -9956,7 +10035,12 @@ impl MeridianApp {
         else {
             return;
         };
+        // The file reread is the same table of the same Protocol, so the window keeps holding it.
+        let own = self.own_protocol.clone();
         self.open_data_file(ctx, &path.to_string_lossy());
+        if self.own_protocol.is_none() {
+            self.own_protocol = own;
+        }
     }
 
     /// Write this window's Protocol to disk: `arcform.yaml` and its one model,

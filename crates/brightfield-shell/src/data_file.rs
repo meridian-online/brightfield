@@ -1194,20 +1194,22 @@ fn protocol_fields(
 // A flat file's open is the larger value, and one `Opened` lives at a time.
 #[allow(clippy::large_enum_variant)]
 pub enum Opened {
-    /// A single flat file, opened exactly as [`open`] opens it.
-    OneTable(OpenedFile),
+    /// A single table, opened on its grid and dashboard as [`open`] opens a flat file, and the
+    /// Protocol of one source it was read through.
+    OneTable(OpenedFile, crate::own_files::OwnProtocol),
     /// A folder, workbook or database: a Protocol folder holding a load step per table, the raw
     /// tables, the silver tables and the model that relates them.
     Model(crate::own_files::OwnProtocol),
 }
 
-/// Open `path` (a file, a folder, a workbook or a database file) as whatever it holds.
+/// Open `path` (a file, a folder, a workbook or a database file) as a new Protocol in the
+/// Protocols folder, with what it holds as the Protocol's sources.
 ///
-/// A path whose tables come to exactly one flat file takes today's route, [`open`], unchanged.
-/// One sheet of a workbook or one table of a database lands where a flat file does too, on its
-/// grid and dashboard: its Protocol is made and run as below, with no model written, and the
-/// silver table is opened on the flat route from a Parquet copy in the Protocol folder, as already
-/// cast and with the labels its data package records (see [`settled`]). Anything
+/// A path that holds one table, whether a lone CSV or Parquet, one sheet of a workbook or one
+/// table of a database, lands on its grid and dashboard: its Protocol is made and run as below,
+/// with no model written, and the silver table is opened on the flat route from a Parquet copy in
+/// the Protocol folder, as already cast and with the labels its data package records (see
+/// [`settled`]). The file itself is read where it is, and nothing is written beside it. Anything
 /// else takes the own-files flow: the Protocol is made and run, the raw tables are
 /// profiled, a model is discovered from the sample pass and written beside the Protocol, and the
 /// silver steps for it are run. The full pass is the model pane's to run once it opens
@@ -1235,9 +1237,6 @@ pub fn open_any_with(
     let path = accept(&path.to_string_lossy())?;
     let found = brightfield_engine::sources::discover(&path)?;
     let one_part = match found.tables.as_slice() {
-        [table] if is_flat_name(&table.file) => {
-            return open(&table.file.to_string_lossy()).map(Opened::OneTable);
-        }
         [table] => Some(table.name.clone()),
         _ => None,
     };
@@ -1275,7 +1274,7 @@ pub fn open_any_with(
             // Protocol's package records for it and opens it as already cast, reading the
             // packages once.
             open_traced(&rows.to_string_lossy(), &OpenOptions::default())
-                .map(|(o, _)| Opened::OneTable(o))
+                .map(|(o, _)| Opened::OneTable(o, protocol))
         }
         None => Ok(Opened::Model(protocol)),
     }

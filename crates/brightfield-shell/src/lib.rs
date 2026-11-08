@@ -66,6 +66,8 @@
 //! - [`run`] — the ledger strip's Run control underneath: `arc` running that
 //!   Protocol in a child process of this binary, on a worker, and the run
 //!   records it leaves beside the spec, read back newest first.
+//! - [`open_queue`] — every way into the window as one queue of requests, and where each path
+//!   goes: a Protocol opened where it is, or a new one made of the data.
 //! - [`own_files`] — the Protocol folder an analyst's own files are written as: a load step
 //!   per table, the raw tables' FineType profile, and a Frictionless data package per source.
 //! - [`shelf_edit`] — a column put on a chart's x or y, as the list of chart
@@ -118,6 +120,7 @@ pub mod model_inspector;
 pub mod model_pane;
 pub mod navigation;
 pub mod one_step;
+pub mod open_queue;
 pub mod operation;
 pub mod operation_panel;
 pub mod overlays;

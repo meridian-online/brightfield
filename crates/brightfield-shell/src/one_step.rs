@@ -56,6 +56,14 @@
 //! one `arc run` away from being real, where one saved elsewhere carries an
 //! absolute path that breaks the moment either end moves.
 //!
+//! **A new open no longer writes one of these beside the analyst's data.**
+//! Opening a lone file makes a Protocol of one source in the Protocols folder
+//! ([`crate::data_file::open_any`]), and the grid opens on that Protocol's
+//! copy of the table, inside its folder, so the data file this type is built
+//! over, and the directory it saves into, are the Protocol's own. A Protocol
+//! an earlier Brightfield saved beside its CSV still opens and saves through
+//! this type where it is.
+//!
 //! # Why the file is spelled `./name`
 //!
 //! [`brightfield_protocol::graph`] reads a `depends_on:` entry with no path
