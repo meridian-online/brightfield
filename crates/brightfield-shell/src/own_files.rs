@@ -77,7 +77,7 @@ pub fn create_in(parent: &Path, opened: &Path) -> Result<OwnProtocol, String> {
     create_of(parent, opened, sources::discover(opened)?)
 }
 
-/// Make one Protocol folder in the Protocols folder for everything in `opened` together, named
+/// Make one Protocol folder in the Protocols folder for the paths in `opened` together, named
 /// after the first: what one gesture handed over at once, as [`create`] does for one path.
 ///
 /// # Errors

@@ -101,7 +101,7 @@ fn is_protocol_archive(path: &Path) -> bool {
 
 impl OpenRequest {
     /// The request for `paths`, handed over by one gesture: [`Self::Path`] for one, [`Self::Paths`]
-    /// for several, and nothing for none.
+    /// for several, and `None` for an empty list.
     #[must_use]
     pub fn of_paths(mut paths: Vec<PathBuf>) -> Option<Self> {
         match paths.len() {

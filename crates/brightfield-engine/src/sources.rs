@@ -57,7 +57,7 @@ pub fn discover(path: &Path) -> Result<SourceSet, String> {
     Ok(discover_files(listed(path)?))
 }
 
-/// The tables in every one of `paths`, as [`discover`] finds them in each, taken together: what
+/// The tables in `paths`, as [`discover`] finds them in each, taken together: what
 /// one gesture handed over at once, such as several files chosen in Finder. A table whose name
 /// another took first takes a numbered one, as two in one folder do.
 ///
