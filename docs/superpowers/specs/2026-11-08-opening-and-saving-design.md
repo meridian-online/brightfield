@@ -25,7 +25,7 @@ The person is an early adopter with middling technical depth: someone who uses a
      - With one source, its table is selected and the canvas shows its grid and generated dashboard, as a single table opens today.
      - Once a second source is added, the model step is selected and the canvas shows the model, as a folder of tables opens today. Selecting a source's table on the spine shows that table's grid and dashboard.
      - The first picture after any open is drawn without a question first.
-2. **The Mac's own gestures reach every way in.** Brightfield registers as an app that opens CSV, TSV, Parquet, Excel workbooks, DuckDB and SQLite files, and Protocol directories and Protocol archives. Each of these makes or opens a Protocol as in goal 1:
+2. **The Mac's own gestures reach every way in.** Brightfield registers as an app that opens CSV, TSV, Parquet, Excel workbooks, DuckDB and SQLite files, and Protocol directories; Protocol archives arrive by the link, Cmd+O and a drop rather than by registering for every zip (goal 3). Each of these makes or opens a Protocol as in goal 1:
    - double-clicking in Finder, or using Open With;
    - dropping onto the Dock icon;
    - dropping onto the window when the front door shows;
