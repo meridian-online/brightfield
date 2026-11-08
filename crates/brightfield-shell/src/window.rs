@@ -9634,8 +9634,8 @@ impl MeridianApp {
     /// point a test drives.
     ///
     /// **Not a way in for new data.** It opens the file as it is, with no
-    /// Protocol made of it: the door's Open… and every other way in go through
-    /// the open queue ([`Self::open_queue`]), which makes one. What still comes
+    /// Protocol made of it: the door's Open… goes through the open queue
+    /// ([`Self::open_queue`]) instead, which makes one. What still comes
     /// here is a file the window already holds, reread
     /// ([`Self::reload_data_file`]).
     ///
