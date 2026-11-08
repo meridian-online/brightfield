@@ -358,6 +358,43 @@ mod tests {
         }
     }
 
+    /// `cmd-s` is claimed twice on purpose: the window's `save-protocol` everywhere, and the
+    /// editor's `save-spec` layered over it while the editor holds the keys, which saves the
+    /// buffer and then raises `save-protocol`. Nothing else claims the chord.
+    #[test]
+    fn cmd_s_saves_the_protocol_everywhere_and_the_buffer_first_in_the_editor() {
+        let t = table();
+        for dispatch in [
+            DispatchContext::CanvasFocused,
+            DispatchContext::GridFocused,
+            DispatchContext::ProtocolFocused,
+            DispatchContext::ShelfFocused,
+            DispatchContext::VersionsFocused,
+            DispatchContext::OverlayOpen,
+        ] {
+            assert_eq!(
+                t.resolves("cmd-s", dispatch),
+                vec!["save-protocol"],
+                "{dispatch:?}"
+            );
+        }
+        let mut in_editor = t.resolves("cmd-s", DispatchContext::EditorFocused);
+        in_editor.sort_unstable();
+        assert_eq!(in_editor, vec!["save-protocol", "save-spec"]);
+        let claimers: Vec<_> = keymap_bindings(&registry())
+            .into_iter()
+            .filter(|b| b.keystrokes == "cmd-s")
+            .map(|b| (b.longname, b.context))
+            .collect();
+        assert_eq!(
+            claimers,
+            vec![
+                ("save-spec", BindingContext::Editor),
+                ("save-protocol", BindingContext::Global)
+            ]
+        );
+    }
+
     #[test]
     fn toggle_chord_is_unshadowed() {
         let bound = keymap_bindings(&registry());

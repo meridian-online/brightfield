@@ -42,6 +42,7 @@ by the provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic /
 | `open` | `cmd-o` | 3 / 5 / 5 | cmd-o = open (universal Mac convention); global, so it reaches from any pane and a focused text field, where no field reads the chord; raises the door's Open picker |
 | `toggle-presentation` | `p` | 2 / 3 / 3 | `p` = present (shipped fixed point) |
 | `save-spec` | `cmd-s` | 3 / 5 / 5 | cmd-s = save (universal; shipped, editor-scoped) |
+| `save-protocol` | `cmd-s` | 4 / 5 / 5 | cmd-s = save (universal Mac convention); global, so it saves the Protocol from any pane and from a text field that does not read the chord; the editor's `save-spec` layers over it while the editor holds the keys, saving the buffer and then raising this |
 | `run-protocol` | `cmd-enter` | 3 / 3 / 5 | cmd-enter = run (notebook cells, SQL consoles); `cmd-r` is `reload-spec`'s, so the run takes the other run convention; global, so it reaches from the canvas as well as the ledger strip's Run control |
 | `copy-chart-picture` | `cmd-shift-c` | 2 / 4 / 4 | cmd-shift-c = copy as PNG (Figma); `cmd-c` stays the text fields' copy; global, as `export-chart-picture` is |
 | `export-chart-picture` | `cmd-shift-e` | 2 / 5 / 4 | cmd-shift-e = export (Figma's export chord); `cmd-e` is `toggle-focus`'s; global, so it reaches the chart under the pointer from any pane |

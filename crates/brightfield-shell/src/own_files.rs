@@ -765,6 +765,26 @@ pub fn one_source_protocol_dir(path: &Path) -> Option<PathBuf> {
         .then(|| std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()))
 }
 
+/// The names of the steps the own-files Protocol of one source in `dir` was made with, its load
+/// and its silver and failed steps, when `dir` holds one: every other step of its manifest was
+/// recorded after, from the grid or from typed SQL. Known by exact name, as [`load_steps`] knows
+/// a load, so a step recorded on a table whose name starts like one of these is not taken for it.
+#[must_use]
+pub fn one_source_steps(dir: &Path) -> Option<(String, HashSet<String>)> {
+    one_source_protocol_dir(dir)?;
+    let sources = read_sources(dir).ok()?;
+    let [table] = sources.tables.as_slice() else {
+        return None;
+    };
+    let name = &table.name;
+    let steps = [
+        load_step(name),
+        format!("{SILVER_STEP}{name}"),
+        format!("{FAILED_STEP}{name}"),
+    ];
+    Some((name.clone(), steps.into_iter().collect()))
+}
+
 /// Open the own-files Protocol of one source in `dir` again: the table its open recorded, the
 /// Protocol run, which reads the source file afresh where it changed, and the raw table profiled.
 /// No folder is made.

@@ -531,6 +531,10 @@ pub const RUNNING_LABEL: &str = "Running\u{2026}";
 /// the window's dispatch, its key and the palette.
 pub const RUN_PROTOCOL: &str = "run-protocol";
 
+/// The `save-protocol` verb's longname — the registry's, spelled once here for the window's
+/// dispatch, its key, and the editor, which raises it after saving its buffer.
+pub const SAVE_PROTOCOL: &str = "save-protocol";
+
 /// The `copy-chart-picture` verb's longname — the registry's, spelled once here
 /// for the window's dispatch, its key and the palette.
 pub const COPY_CHART_PICTURE: &str = "copy-chart-picture";
@@ -2231,6 +2235,7 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         }
         "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
         "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
+        "cmd-s" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)),
         "cmd-j" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::J)),
         "cmd-enter" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)),
         // egui-winit 0.35 turns a press of C with the command key held, Shift
@@ -2959,6 +2964,9 @@ pub struct MeridianApp {
     /// The `open` keystroke token, read off the registry at boot — same rule as
     /// [`Self::home_binding`].
     open_binding: Option<&'static str>,
+    /// The `save-protocol` keystroke token, read off the registry at boot — same rule as
+    /// [`Self::home_binding`].
+    save_binding: Option<&'static str>,
     /// The `toggle-outline-rail` keystroke token, read off the registry at
     /// boot — same rule as [`Self::home_binding`]: the shell wires whichever
     /// binding the registry declares, and does not invent one of its own.
@@ -3389,6 +3397,10 @@ impl MeridianApp {
             open_binding: brightfield_keys::registry()
                 .iter()
                 .find(|v| v.longname == OPEN_VERB)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            save_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == SAVE_PROTOCOL)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             navigator_binding: brightfield_keys::registry()
                 .iter()
@@ -6380,6 +6392,10 @@ impl MeridianApp {
         self.controls = self.name_controls(std::mem::take(&mut bar.controls));
 
         self.apply(&ctx, graph_on_canvas, requests);
+        // Cmd+S, after the panes have drawn: the YAML editor takes the chord while its text holds
+        // the keyboard, saves its buffer and raises the window's Save, applied just above, so
+        // what reaches here is a press from anywhere else.
+        self.save_key(&ctx);
 
         // The file dialog, after the frame and outside every borrow it took:
         // it blocks the thread on a window this process did not lay out, so it
@@ -6521,6 +6537,31 @@ impl MeridianApp {
         if self.open_binding.is_some_and(|t| consume_token(ctx, t)) {
             self.pick_requested = true;
         }
+    }
+
+    /// Save the Protocol if the registry's `save-protocol` keystroke is down this frame.
+    ///
+    /// It fires whatever pane holds focus, and while a text field holds the keyboard, as Cmd+S
+    /// does in any Mac app: no text field but the YAML editor reads the chord, and the editor has
+    /// taken it already when its text holds the keys ([`crate::editor`]). The close question is
+    /// the one overlay it stands down under, since that question asks about saving itself.
+    fn save_key(&mut self, ctx: &egui::Context) {
+        if matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
+            return;
+        }
+        if self.save_binding.is_some_and(|t| consume_token(ctx, t)) && self.anything_to_save() {
+            self.save_protocol(ctx);
+        }
+    }
+
+    /// Whether `save-protocol` has anything to write: work the chart document holds and no file
+    /// does, or a Protocol whose manifest is not on disk yet. With neither, Cmd+S writes nothing,
+    /// so a habitual press touches no file and wakes no watcher.
+    fn anything_to_save(&self) -> bool {
+        self.charts.doc.has_unsaved_work()
+            || self.protocol.doc.model.source().is_some_and(|source| {
+                !crate::one_step::OneStepProtocol::manifest_path_in(&source.dir).is_file()
+            })
     }
 
     /// Move focus to the navigator rail, or put it back, if the registry's
@@ -8952,6 +8993,13 @@ impl MeridianApp {
                 // which either document's model can do to itself.
                 Request::Verb(verb) if verb.as_str() == RUN_PROTOCOL => {
                     self.run_protocol(ctx);
+                }
+                // save-protocol is the window's for the same reason: the editor raises it after
+                // saving its buffer, and what it writes is the Protocol's, not either document's.
+                Request::Verb(verb) if verb.as_str() == SAVE_PROTOCOL => {
+                    if self.anything_to_save() {
+                        self.save_protocol(ctx);
+                    }
                 }
                 // The picture verbs are the window's: what they draw is the
                 // chart document's, and where a file goes is the window's to

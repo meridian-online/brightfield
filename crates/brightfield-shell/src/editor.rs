@@ -1211,11 +1211,14 @@ impl Item<ChartDoc> for EditorPane {
         }
 
         // The save keystroke, editor-scoped exactly as the keyboard registry
-        // binds it. Consumed here because the focused text edit owns the
-        // keyboard while the author types — the workspace dispatch defers to
-        // it — and `perform` stays the verb's route in from everything else.
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
+        // binds it: taken only while this text edit holds the keyboard, so a
+        // Cmd+S anywhere else is left to the window's own Save. The buffer is
+        // saved and then the window's Save is raised, so one press in the
+        // editor saves both; `perform` stays the verb's route in from
+        // everything else.
+        if out.focused && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
             self.save_and_note(doc);
+            cx.request(Verb::new(crate::window::SAVE_PROTOCOL));
         }
 
         if self.ack_live() || self.reload_pending_since.is_some() {
@@ -1228,6 +1231,8 @@ impl Item<ChartDoc> for EditorPane {
     fn perform(&mut self, doc: &mut ChartDoc, verb: Verb, cx: &mut ItemCtx<'_>) -> Handled {
         if verb.as_str() == "save-spec" {
             self.save_and_note(doc);
+            // The buffer first, then the Protocol, as the editor's Cmd+S does.
+            cx.request(Verb::new(crate::window::SAVE_PROTOCOL));
             cx.request_repaint();
             return Handled::Yes;
         }

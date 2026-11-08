@@ -528,6 +528,21 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Save the Protocol this data file opened as",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 5, motor_note: "cmd-s = save (universal; shipped, editor-scoped)" }),
         },
+        // The window's Save, on the same chord everywhere else. The editor's `save-spec` layers
+        // over it while the YAML editor holds the keys, and raises this after saving its buffer,
+        // so one press saves both there. Global, so it reaches from any pane and from a text
+        // field that does not read the chord, as Cmd+S does in every Mac app.
+        VerbEntry {
+            longname: "save-protocol",
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-s")],
+            scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Save the Protocol: record its draft steps and write its chart",
+            scores: Some(Scores { frequency: 4, mnemonic: 5, convention: 5, motor_note: "cmd-s = save (universal Mac convention); global, with the editor's save-spec layered over it while the editor holds the keys" }),
+        },
         // The run: the verb behind the ledger strip's Run control. It writes
         // the spec as save-spec does and asks `arc` to run it, and what it
         // leaves is `arc`'s run record rather than a change to the document —
@@ -1636,6 +1651,7 @@ mod tests {
             "open",
             "toggle-presentation",
             "save-spec",
+            "save-protocol",
             "run-protocol",
             "copy-chart-picture",
             "export-chart-picture",

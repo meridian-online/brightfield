@@ -337,7 +337,10 @@ impl OneStepProtocol {
         typed: &[crate::typed_sql::TypedStep],
     ) -> Result<ProtocolInputs, String> {
         let mut inputs = self.folder_inputs(typed)?;
-        for view in crate::run::records_newest_first(&self.dir, &self.name) {
+        // By the name the folder's manifest declares, which a run records: this file's own name,
+        // unless it is the grid copy in an own-files Protocol named otherwise.
+        let protocol = inputs.protocol.clone();
+        for view in crate::run::records_newest_first(&self.dir, &protocol) {
             if inputs.adopt_run(&view) {
                 break;
             }
@@ -389,7 +392,9 @@ impl OneStepProtocol {
             }
         }
         let mut inputs = crate::protocol::load_manifest(&manifest, &sources);
-        inputs.hold_table(self.table_id());
+        // Spelled against the manifest's name, as the graph spells the table: this file's own
+        // name, unless it is the grid copy in an own-files Protocol named otherwise.
+        inputs.hold_table(format!("asset.{}.{}", manifest.name, self.name));
         inputs.columns.clone_from(&self.columns);
         inputs.tiles.clone_from(&self.tiles);
         inputs.source = Some(self.clone());
@@ -418,13 +423,37 @@ impl OneStepProtocol {
         };
         let generated = match crate::generated::generated_protocol_for(&text, &self.dir, self) {
             Ok(Some(generated)) => generated,
-            Ok(None) => return one_step(None),
+            Ok(None) => match self.recorded_in_own_folder(&text) {
+                Ok(Some(generated)) => generated,
+                Ok(None) => return one_step(None),
+                Err(e) => return one_step(Some(e)),
+            },
             Err(e) => return one_step(Some(e)),
         };
         let manifest = brightfield_protocol::parse_manifest_str(&text)
             .map_err(|e| format!("protocol parse error: {e}"))?;
         let sources = brightfield_protocol::graph::load_model_sources(&manifest, &self.dir);
         Ok((manifest, sources, Some(generated), None))
+    }
+
+    /// The steps recorded after the load in the own-files Protocol of one source this file is the
+    /// grid copy of, read from its manifest `text`: `Ok(None)` when this file's folder is not one,
+    /// or nothing has been recorded into it.
+    ///
+    /// Such a folder's manifest loads the analyst's file where it is and makes this file's table
+    /// in a silver step, so it is not the one-step shape [`crate::generated::generated_protocol_for`]
+    /// reads; without this, a Save that recorded a view into it would be taken back on as the bare
+    /// load, and a run of its steps refused as a run of other steps.
+    fn recorded_in_own_folder(
+        &self,
+        text: &str,
+    ) -> Result<Option<crate::generated::GeneratedProtocol>, String> {
+        let Some((table, made_with)) = crate::own_files::one_source_steps(&self.dir) else {
+            return Ok(None);
+        };
+        crate::generated::generated_protocol_of_one_source(
+            text, &self.dir, self, &table, &made_with,
+        )
     }
 
     /// The asset id of the table this Protocol produces — the outline row the
