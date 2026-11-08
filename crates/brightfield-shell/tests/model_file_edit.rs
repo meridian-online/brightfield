@@ -31,13 +31,17 @@ fn scratch() -> &'static Path {
     ROOT.get_or_init(|| {
         let root = std::env::temp_dir().join(format!("bf-model-file-edit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for sub in ["config", "history", "db"] {
+        for sub in ["config", "history", "db", "protocols"] {
             std::fs::create_dir_all(root.join(sub)).expect("a scratch folder");
         }
         // Set once, before any test in this file reads them, and never changed.
         std::env::set_var(
             brightfield_shell::startup::CONFIG_DIR_VAR,
             root.join("config"),
+        );
+        std::env::set_var(
+            brightfield_shell::protocols_dir::PROTOCOLS_DIR_VAR,
+            root.join("protocols"),
         );
         std::env::set_var("ARCFORM_HISTORY_DIR", root.join("history"));
         std::env::set_var("ARCFORM_DB_DIR", root.join("db"));

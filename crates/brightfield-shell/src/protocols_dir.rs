@@ -37,18 +37,16 @@ impl fmt::Display for ClaimError {
 impl std::error::Error for ClaimError {}
 
 /// Where new Protocols are made: `$BRIGHTFIELD_PROTOCOLS_DIR`, else `~/Documents/Protocols`.
-///
-/// With no home directory either, a folder in the system's temporary directory, so an open still
-/// has somewhere to go.
 #[must_use]
 pub fn root() -> PathBuf {
     if let Some(dir) = std::env::var_os(PROTOCOLS_DIR_VAR).filter(|v| !v.is_empty()) {
         return PathBuf::from(dir);
     }
-    match std::env::var_os("HOME").filter(|v| !v.is_empty()) {
-        Some(home) => PathBuf::from(home).join("Documents").join("Protocols"),
-        None => std::env::temp_dir().join("brightfield-protocols"),
-    }
+    // A launch from the Mac's desktop always has a home directory.
+    std::env::home_dir()
+        .unwrap_or_default()
+        .join("Documents")
+        .join("Protocols")
 }
 
 /// Make `parent` if it is missing, then claim a new folder in it named `stem`, or `stem-2`,

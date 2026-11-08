@@ -692,17 +692,21 @@ pub fn own_protocol_dir(path: &Path) -> Option<PathBuf> {
         .then(|| std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()))
 }
 
-/// The own-files Protocol folders under `<datasets>/protocols/own/`, the most recently changed
-/// model first.
+/// The own-files Protocol folders in the Protocols folder and in the older
+/// `<datasets>/protocols/own/` (where earlier builds made them), the most recently changed model
+/// first.
 #[must_use]
 pub fn listed() -> Vec<PathBuf> {
-    let parent = starts::datasets_dir().join("protocols").join(OWN_DIR);
-    let Ok(entries) = std::fs::read_dir(&parent) else {
-        return Vec::new();
-    };
+    let old = starts::datasets_dir().join("protocols").join(OWN_DIR);
+    let mut entries: Vec<PathBuf> = Vec::new();
+    for parent in [protocols_dir::root(), old] {
+        if let Ok(read) = std::fs::read_dir(&parent) {
+            entries.extend(read.flatten().map(|e| e.path()));
+        }
+    }
     let mut found: Vec<(std::time::SystemTime, PathBuf)> = entries
-        .flatten()
-        .filter_map(|e| own_protocol_dir(&e.path()))
+        .iter()
+        .filter_map(|e| own_protocol_dir(e))
         .map(|dir| {
             let changed = std::fs::metadata(dir.join(MODEL_FILE))
                 .and_then(|m| m.modified())
@@ -711,6 +715,7 @@ pub fn listed() -> Vec<PathBuf> {
         })
         .collect();
     found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    found.dedup_by(|a, b| a.1 == b.1);
     found.into_iter().map(|(_, dir)| dir).collect()
 }
 
