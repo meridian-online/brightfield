@@ -1268,16 +1268,35 @@ pub fn open_any_with(
     own::write_silver(&protocol, &model)?;
     own::run_loads(&protocol, runner)?;
     match one_part {
-        Some(name) => {
-            let rows = own::grid_copy(&protocol, &name)?;
-            // The copy is under the Protocol's `.grid/` folder, so `settled` finds the labels the
-            // Protocol's package records for it and opens it as already cast, reading the
-            // packages once.
-            open_traced(&rows.to_string_lossy(), &OpenOptions::default())
-                .map(|(o, _)| Opened::OneTable(o, protocol))
-        }
+        Some(_) => open_one_table(&protocol).map(|o| Opened::OneTable(o, protocol)),
         None => Ok(Opened::Model(protocol)),
     }
+}
+
+/// The grid and dashboard of the one table of `protocol`, an own-files Protocol that has been
+/// run: the table is copied to a Parquet file in the Protocol's `.grid/` folder and opened from
+/// there on the flat route.
+///
+/// The copy is under `.grid/`, so [`settled`] finds the labels the Protocol's package records for
+/// it and opens it as already cast, reading the packages once. The opened Protocol's directory is
+/// the Protocol folder, not the copy's, so a Save writes the Protocol's own files and nothing
+/// lands beside the copy.
+///
+/// # Errors
+///
+/// The reason when `protocol` does not hold exactly one table, or the copy or the open fails.
+pub fn open_one_table(protocol: &crate::own_files::OwnProtocol) -> Result<OpenedFile, String> {
+    let [table] = protocol.sources.tables.as_slice() else {
+        return Err(format!(
+            "{}: holds {} tables, not one",
+            protocol.dir.display(),
+            protocol.sources.tables.len()
+        ));
+    };
+    let rows = crate::own_files::grid_copy(protocol, &table.name)?;
+    let (mut opened, _) = open_traced(&rows.to_string_lossy(), &OpenOptions::default())?;
+    opened.protocol.dir.clone_from(&protocol.dir);
+    Ok(opened)
 }
 
 /// The DuckDB extensions opening `path` is likely to need, judged from its name or, for a folder,

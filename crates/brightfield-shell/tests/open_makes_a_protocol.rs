@@ -312,3 +312,188 @@ fn a_protocol_saved_beside_its_csv_by_an_earlier_brightfield_still_opens() {
         "no Protocol is made"
     );
 }
+
+/// The rows of the table the grid holds, as the profile counted them.
+fn rows_shown(win: &Window) -> u64 {
+    win.app
+        .protocol_model()
+        .source()
+        .and_then(|s| s.columns.first())
+        .map_or(0, |c| c.rows)
+}
+
+/// The housing sample cut to its header and first `rows` rows.
+fn housing_rows(rows: usize) -> String {
+    let text = std::fs::read_to_string(housing()).expect("the sample reads");
+    text.lines()
+        .take(rows + 1)
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+#[test]
+fn a_one_source_protocol_opens_again_from_its_folder_and_its_manifest() {
+    let folder = input("reopened");
+    let csv = folder.join("reopened.csv");
+    std::fs::copy(housing(), &csv).expect("the housing sample copies");
+    Window::new().open(&csv);
+    let dir = protocols().join("reopened");
+    assert!(dir.join("arcform.yaml").is_file());
+
+    for path in [dir.clone(), dir.join("arcform.yaml")] {
+        let mut win = Window::new();
+        win.open(&path);
+        assert_eq!(
+            win.app.own_protocol().map(|p| p.dir.clone()),
+            Some(dir.clone()),
+            "{}: the Protocol opens again on its table: {}",
+            path.display(),
+            win.said()
+        );
+        assert!(win.app.chart_doc().is_live(), "{}", win.said());
+        assert_eq!(rows_shown(&win), 240);
+        assert!(
+            win.app.notifications().iter().next().is_none(),
+            "{}",
+            win.said()
+        );
+    }
+    assert_eq!(
+        protocols_named("reopened"),
+        ["reopened"],
+        "opening it again makes no other Protocol"
+    );
+}
+
+#[test]
+fn reloading_the_data_rereads_the_analysts_file() {
+    let folder = input("reloaded");
+    let csv = folder.join("reloaded.csv");
+    std::fs::copy(housing(), &csv).expect("the housing sample copies");
+    let mut win = Window::new();
+    win.open(&csv);
+    assert_eq!(rows_shown(&win), 240, "{}", win.said());
+
+    std::fs::write(&csv, housing_rows(5)).expect("the CSV rewritten");
+    let ctx = win.ctx.clone();
+    win.app.reload_data_file(&ctx);
+    win.frame();
+
+    assert_eq!(
+        rows_shown(&win),
+        5,
+        "the reload reads the file as it now is: {}",
+        win.said()
+    );
+    assert!(win.app.own_protocol().is_some());
+}
+
+#[test]
+fn saving_after_a_new_open_writes_into_the_protocol_and_not_its_grid_copy() {
+    let folder = input("kept");
+    let csv = folder.join("kept.csv");
+    std::fs::copy(housing(), &csv).expect("the housing sample copies");
+    let mut win = Window::new();
+    win.open(&csv);
+    let dir = protocols().join("kept");
+
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("house_age > 28".to_string()),
+            order: None,
+        });
+    win.frame();
+    let ctx = win.ctx.clone();
+    let saved = win
+        .app
+        .save_protocol(&ctx)
+        .expect("the window has a Protocol to save");
+    win.frame();
+    let saved = saved.unwrap_or_else(|e| panic!("the Save failed: {e}; {}", win.said()));
+
+    assert_eq!(saved, dir.join("arcform.yaml"));
+    let manifest = std::fs::read_to_string(dir.join("arcform.yaml")).unwrap();
+    assert!(
+        manifest.contains("filtered_by_house_age"),
+        "the Protocol's manifest carries the filter: {manifest}"
+    );
+    assert!(
+        manifest.contains("load_kept"),
+        "its own load is kept: {manifest}"
+    );
+    let grid: Vec<String> = std::fs::read_dir(dir.join(".grid"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        grid.iter().all(|n| n.ends_with(".parquet")),
+        "nothing but the copy is under .grid/: {grid:?}"
+    );
+    let recent = win
+        .app
+        .layout()
+        .recents
+        .iter()
+        .find(|r| r.id.contains("kept"))
+        .map(|r| PathBuf::from(&r.id))
+        .expect("the Save is remembered");
+    assert_eq!(
+        recent.parent(),
+        Some(dir.as_path()),
+        "Recents names the Protocol folder: {}",
+        recent.display()
+    );
+}
+
+#[test]
+fn a_queued_open_that_fetches_an_extension_draws_the_notice_first_and_loses_no_request() {
+    scratch();
+    let mut win = Window {
+        app: MeridianApp::headless(Boot::empty(), Mode::Light)
+            .running_with(Some(runner()))
+            .knowing_extensions(Vec::new()),
+        ctx: egui::Context::default(),
+    };
+    win.frame();
+    let first = "/tmp/bf-no-such-first-book.xlsx";
+    let second = "/tmp/bf-no-such-second-book.xlsx";
+    let queue = win.app.open_queue();
+    queue.push(OpenRequest::Path(first.into()));
+    queue.push(OpenRequest::Path(second.into()));
+
+    win.frame();
+    assert_eq!(
+        win.app.pending_open(),
+        Some(first),
+        "the first open waits, and the frame that took it draws the notice: {}",
+        win.said()
+    );
+    assert!(
+        win.said().contains("Fetching an extension"),
+        "{}",
+        win.said()
+    );
+    assert!(!win.said().contains("Could not open"), "{}", win.said());
+
+    win.frame();
+    assert!(
+        win.said().contains("bf-no-such-first-book"),
+        "the next frame ran the first open: {}",
+        win.said()
+    );
+    assert_eq!(
+        win.app.pending_open(),
+        Some(second),
+        "the second request waited in the queue"
+    );
+
+    win.frame();
+    assert_eq!(win.app.pending_open(), None);
+    assert!(
+        win.said().contains("bf-no-such-second-book"),
+        "{}",
+        win.said()
+    );
+}

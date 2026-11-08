@@ -1637,7 +1637,16 @@ impl Boot {
     ///
     /// As [`Boot::data_file`], plus a chart file that will not parse or load.
     fn saved_protocol(chosen: &str) -> Result<Self, String> {
-        let mut opened = crate::data_file::open(chosen)?;
+        Self::with_saved_chart(crate::data_file::open(chosen)?)
+    }
+
+    /// `opened`, with the chart Save wrote under its Protocol's `panels/` drawn in place of the
+    /// generated dashboard when that file is there.
+    ///
+    /// # Errors
+    ///
+    /// A chart file that will not parse or load.
+    fn with_saved_chart(mut opened: crate::data_file::OpenedFile) -> Result<Self, String> {
         let chart = panel_file(&opened.protocol.dir, &opened.protocol.name);
         if chart.is_file() {
             // Absolute, as Save names the file it wrote: the chart document's
@@ -2868,6 +2877,9 @@ pub struct MeridianApp {
     pending_open: Option<String>,
     /// Every request to open something, from whichever way in, taken at the start of each frame.
     open_queue: crate::open_queue::OpenQueue,
+    /// The DuckDB extensions an open takes as installed, when a test names them; `None` asks
+    /// DuckDB.
+    installed_extensions: Option<Vec<String>>,
     /// The Protocol a lone table's grid and dashboard were opened from: the one-source Protocol
     /// an open made in the Protocols folder. `None` for any other document.
     own_protocol: Option<crate::own_files::OwnProtocol>,
@@ -3328,6 +3340,7 @@ impl MeridianApp {
             pick_requested: false,
             pending_open: None,
             open_queue: crate::open_queue::OpenQueue::default(),
+            installed_extensions: None,
             own_protocol: None,
             door_open_protocol: None,
             dialogs_allowed: false,
@@ -4934,9 +4947,19 @@ impl MeridianApp {
     /// tier-agnostic.
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        self.open_queue.wake_with(&ctx);
+        // An open that waited for the frame before this one to draw what it is fetching: that
+        // frame has been presented, so the open runs now.
+        if let Some(path) = self.pending_open.take() {
+            self.open_path_now(&ctx, &path);
+        }
         // Whatever was asked to open since the last frame, from whichever way in, before anything
-        // is laid out, so the frame draws what the open left.
-        for request in self.open_queue.drain() {
+        // is laid out, so the frame draws what the open left. A request that has to wait a frame
+        // stops the taking, and the rest wait in the queue behind it.
+        while self.pending_open.is_none() {
+            let Some(request) = self.open_queue.pop() else {
+                break;
+            };
             self.take_open_request(&ctx, request);
         }
         // Before anything is laid out: a fetch that finished since the last
@@ -6295,12 +6318,6 @@ impl MeridianApp {
         // raised there hangs until something kills it. The flag is left set so
         // a headless test can still assert the control asked; the door rewrites
         // it on its next frame.
-        // An open that waited a frame so the canvas could say what it is fetching first. Taken
-        // before the picker, so a path latched on this frame waits for the next one, after this
-        // frame has drawn the notice.
-        if let Some(path) = self.pending_open.take() {
-            self.open_path_now(&ctx, &path);
-        }
         // The export's save dialog, on the same terms as the picker below it.
         if let Some(picture) = self.picture_to_save.take() {
             if self.dialogs_allowed {
@@ -9674,7 +9691,49 @@ impl MeridianApp {
 
     /// Take a flat file that opened into the window and say so.
     fn adopt_opened_file(&mut self, ctx: &egui::Context, opened: crate::data_file::OpenedFile) {
-        self.adopt_boot(Boot::of_opened_file(opened));
+        self.adopt_opened_boot(ctx, Boot::of_opened_file(opened));
+    }
+
+    /// Take the one table of the own-files Protocol `protocol` into the window, `opened` being its
+    /// grid copy opened: the chart its `panels/` holds when Save wrote one, else the dashboard
+    /// generated over it, with the Protocol held behind the grid.
+    fn adopt_one_source(
+        &mut self,
+        ctx: &egui::Context,
+        opened: crate::data_file::OpenedFile,
+        protocol: crate::own_files::OwnProtocol,
+    ) {
+        let dir = protocol.dir.to_string_lossy().into_owned();
+        match Boot::with_saved_chart(opened) {
+            Ok(boot) => {
+                self.adopt_opened_boot(ctx, boot);
+                self.own_protocol = Some(protocol);
+            }
+            Err(e) => self.say_open_failed(ctx, &dir, e),
+        }
+    }
+
+    /// Open the own-files Protocol of one source in `dir` again, where it is: its Protocol run,
+    /// which rereads the source file where it changed, and its table's grid copy written afresh
+    /// and opened.
+    fn reopen_one_source(
+        &mut self,
+        ctx: &egui::Context,
+        dir: &std::path::Path,
+        runner: &crate::run::Runner,
+    ) {
+        let opened = crate::own_files::reopen_one_source(dir, runner).and_then(|protocol| {
+            crate::data_file::open_one_table(&protocol).map(|opened| (opened, protocol))
+        });
+        match opened {
+            Ok((opened, protocol)) => self.adopt_one_source(ctx, opened, protocol),
+            Err(e) => self.say_open_failed(ctx, &dir.to_string_lossy(), e),
+        }
+    }
+
+    /// Take `boot`, an opened data file's, into the window and say so.
+    fn adopt_opened_boot(&mut self, ctx: &egui::Context, boot: Boot) {
+        self.adopt_boot(boot);
         self.notifications
             .dismiss(NotificationId::new("open-data-file"));
         self.toasts.push(Toast::new(
@@ -9691,7 +9750,10 @@ impl MeridianApp {
     /// is being fetched and the open itself waits for the next frame, so the notice is on screen
     /// while the thread is held.
     pub fn open_path(&mut self, ctx: &egui::Context, chosen: &str) {
-        let installed = crate::data_file::installed_extensions();
+        let installed = self
+            .installed_extensions
+            .clone()
+            .unwrap_or_else(crate::data_file::installed_extensions);
         self.open_path_knowing(ctx, chosen, &installed);
     }
 
@@ -9752,8 +9814,7 @@ impl MeridianApp {
                 };
                 match crate::data_file::open_any(&path, &runner) {
                     Ok(crate::data_file::Opened::OneTable(opened, protocol)) => {
-                        self.adopt_opened_file(ctx, opened);
-                        self.own_protocol = Some(protocol);
+                        self.adopt_one_source(ctx, opened, protocol);
                     }
                     Ok(crate::data_file::Opened::Model(protocol)) => {
                         self.open_model_pane(ctx, protocol, runner, true);
@@ -9786,6 +9847,14 @@ impl MeridianApp {
             self.open_queue
                 .push(crate::open_queue::OpenRequest::Path(path.into()));
         }
+    }
+
+    /// This window with the DuckDB extensions its opens take as installed named, so a test can
+    /// drive the wait for a fetch through the open queue.
+    #[must_use]
+    pub fn knowing_extensions(mut self, installed: Vec<String>) -> Self {
+        self.installed_extensions = Some(installed);
+        self
     }
 
     /// The window's open queue, shared: a request pushed on it opens at the start of the next
@@ -10035,12 +10104,21 @@ impl MeridianApp {
         else {
             return;
         };
-        // The file reread is the same table of the same Protocol, so the window keeps holding it.
-        let own = self.own_protocol.clone();
-        self.open_data_file(ctx, &path.to_string_lossy());
-        if self.own_protocol.is_none() {
-            self.own_protocol = own;
+        // The grid of a Protocol's one table reads the Protocol's copy of it, which was written
+        // once, so the Protocol is run again to read the analyst's file and the copy is written
+        // afresh from it.
+        if let Some(dir) = self.own_protocol.as_ref().map(|p| p.dir.clone()) {
+            match self.runner.clone().or_else(crate::run::Runner::this_binary) {
+                Some(runner) => self.reopen_one_source(ctx, &dir, &runner),
+                None => self.say_open_failed(
+                    ctx,
+                    &dir.to_string_lossy(),
+                    "no runner to run its Protocol with".to_string(),
+                ),
+            }
+            return;
         }
+        self.open_data_file(ctx, &path.to_string_lossy());
     }
 
     /// Write this window's Protocol to disk: `arcform.yaml` and its one model,
@@ -10081,6 +10159,21 @@ impl MeridianApp {
     /// row by whichever of the two its id turns out to be. So a saved Protocol
     /// is listed on the next launch and the Protocols section leads with it —
     /// which is the whole of what saving buys a reader who closes the window.
+    /// Write `source`'s declaration where Save and Run write it, and answer its manifest's path.
+    ///
+    /// A one-step Protocol is written to its directory ([`crate::one_step::OneStepProtocol::save_to`]).
+    /// The grid of an own-files Protocol's one table is written nothing: that Protocol's manifest
+    /// was written when it was made and is the file a recorded view extends, so Save and Run
+    /// record into it as it stands.
+    fn write_source(&self, source: &crate::one_step::OneStepProtocol) -> Result<PathBuf, String> {
+        match &self.own_protocol {
+            Some(own) if own.dir == source.dir => {
+                Ok(crate::one_step::OneStepProtocol::manifest_path_in(&own.dir))
+            }
+            _ => source.save_to(&source.dir),
+        }
+    }
+
     pub fn save_protocol(&mut self, ctx: &egui::Context) -> Option<Result<PathBuf, String>> {
         // A Protocol's panel open from its tile is saved to its own file: the
         // Protocol around it is the agent's, and this window writes nothing
@@ -10090,8 +10183,8 @@ impl MeridianApp {
         }
         let banner = NotificationId::new("save-protocol");
         let source = self.protocol.doc.model.source()?.clone();
-        let written = source
-            .save_to(&source.dir)
+        let written = self
+            .write_source(&source)
             .map_err(Refused::Writing)
             .and_then(|path| {
                 let recorded = self.record_pending();
@@ -10898,7 +10991,7 @@ impl MeridianApp {
             ctx.request_repaint();
             false
         };
-        if let Err(e) = source.save_to(&source.dir) {
+        if let Err(e) = self.write_source(&source) {
             return refused(self, e);
         }
         let recorded = self.record_pending();
@@ -11171,6 +11264,18 @@ impl MeridianApp {
         if let Some(dir) = crate::own_files::own_protocol_dir(std::path::Path::new(path)) {
             match self.runner.clone().or_else(crate::run::Runner::this_binary) {
                 Some(runner) => self.reopen_model_pane(ctx, &dir, runner),
+                None => self.say_open_failed(
+                    ctx,
+                    path,
+                    "no runner to run its Protocol with".to_string(),
+                ),
+            }
+            return;
+        }
+        // An own-files Protocol of one source opens on its table's grid and dashboard.
+        if let Some(dir) = crate::own_files::one_source_protocol_dir(std::path::Path::new(path)) {
+            match self.runner.clone().or_else(crate::run::Runner::this_binary) {
+                Some(runner) => self.reopen_one_source(ctx, &dir, &runner),
                 None => self.say_open_failed(
                     ctx,
                     path,

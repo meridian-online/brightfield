@@ -1,15 +1,20 @@
-//! Every way into the window, as one queue: what was asked to open, in the order it was asked.
+//! The window's ways in, as one queue: what was asked to open, in the order it was asked.
 //!
-//! The picker, a path named on the command line, and later the Mac's own open events and the
-//! `brightfield://open` link all push a request here, and the window takes them all at the start
-//! of its next frame. One queue means one way of opening, so a CSV and a folder of tables cannot
-//! drift into two behaviours. The queue is cheap to clone and safe to push from another thread,
-//! because the operating system delivers its open events outside the frame, sometimes before the
-//! first one.
+//! The front door's picker pushes a request here, and so does a folder, workbook, database or
+//! own-files Protocol named on the command line, through [`crate::window::Boot::open_later`].
+//! Later the Mac's own open events and the `brightfield://open` link push here too. The window
+//! takes the requests at the start of its next frame, so a CSV and a folder of tables chosen at
+//! the door open by one route. A lone flat file named on the command line does not come here: it
+//! opens at once through [`crate::window::Boot::data_file`], which is the route the capture
+//! harness and its baselines are drawn through.
+//!
+//! The queue is cheap to clone and safe to push from another thread, because the operating
+//! system delivers its open events outside the frame, sometimes before the first one. Once the
+//! window has drawn a frame, a push asks for another, so a request does not wait for input.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// One thing asked to open.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,26 +96,47 @@ fn is_protocol_archive(path: &Path) -> bool {
     manifest
 }
 
-/// The queue every way in fills, shared by clone.
-#[derive(Debug, Clone, Default)]
-pub struct OpenQueue(Arc<Mutex<VecDeque<OpenRequest>>>);
+/// The queue the window's ways in fill, shared by clone.
+#[derive(Clone, Default)]
+pub struct OpenQueue {
+    requests: Arc<Mutex<VecDeque<OpenRequest>>>,
+    /// The window's context, once it has drawn, so a push can ask for a frame.
+    wake: Arc<OnceLock<egui::Context>>,
+}
 
 impl OpenQueue {
     /// Ask for `request` to open on the window's next frame, after anything asked before it.
     pub fn push(&self, request: OpenRequest) {
-        self.0
+        self.requests
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push_back(request);
+        if let Some(ctx) = self.wake.get() {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Take the oldest request waiting, if there is one.
+    #[must_use]
+    pub fn pop(&self) -> Option<OpenRequest> {
+        self.requests
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop_front()
     }
 
     /// Take every request waiting, oldest first, leaving the queue empty.
     #[must_use]
     pub fn drain(&self) -> Vec<OpenRequest> {
-        self.0
+        self.requests
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .drain(..)
             .collect()
+    }
+
+    /// Wake `ctx` on each later push. The first context given is kept.
+    pub fn wake_with(&self, ctx: &egui::Context) {
+        let _ = self.wake.set(ctx.clone());
     }
 }

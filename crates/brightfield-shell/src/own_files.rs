@@ -692,6 +692,45 @@ pub fn own_protocol_dir(path: &Path) -> Option<PathBuf> {
         .then(|| std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()))
 }
 
+/// The own-files Protocol of one source `path` names, when it names one: the folder itself or its
+/// `arcform.yaml`, holding the record of the tables its open found, that record naming one table,
+/// and no model file, since one table has nothing to relate.
+#[must_use]
+pub fn one_source_protocol_dir(path: &Path) -> Option<PathBuf> {
+    let dir = if path.is_dir() {
+        path
+    } else if path.file_name().is_some_and(|n| n == "arcform.yaml") {
+        path.parent()?
+    } else {
+        return None;
+    };
+    if !dir.join("arcform.yaml").is_file() || dir.join(MODEL_FILE).exists() {
+        return None;
+    }
+    let sources = read_sources(dir).ok()?;
+    (sources.tables.len() == 1)
+        .then(|| std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()))
+}
+
+/// Open the own-files Protocol of one source in `dir` again: the table its open recorded, the
+/// Protocol run, which reads the source file afresh where it changed, and the raw table profiled.
+/// No folder is made.
+///
+/// # Errors
+///
+/// The reason when the folder holds no record of its tables, the run fails, or the raw table
+/// cannot be profiled.
+pub fn reopen_one_source(dir: &Path, runner: &Runner) -> Result<OwnProtocol, String> {
+    let mut p = OwnProtocol {
+        dir: dir.to_path_buf(),
+        sources: read_sources(dir)?,
+        profiles: Vec::new(),
+    };
+    run_loads(&p, runner)?;
+    profile(&mut p)?;
+    Ok(p)
+}
+
 /// The own-files Protocol folders in the Protocols folder and in the older
 /// `<datasets>/protocols/own/` (where earlier builds made them), the most recently changed model
 /// first.
