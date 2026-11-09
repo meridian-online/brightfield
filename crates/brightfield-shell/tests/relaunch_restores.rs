@@ -2,8 +2,8 @@
 //! closing the window shows the front door rather than ending the app.
 //!
 //! A relaunch here is what `main` does: the layout file read through `startup::boot_layout`, the
-//! boot chosen by `startup::opening_boot`, and a Protocol to restore found by
-//! `startup::restored_protocol` and handed to the new window, which reopens it on its first frame.
+//! boot chosen by `startup::opening_boot`, and the window told to restore what the layout
+//! remembers by `MeridianApp::restoring_at_launch`, which reopens it once the launch has finished.
 //!
 //! Every window is headless, with the `brightfield-shell` binary cargo built as its runner, and the
 //! config directory, the Protocols folder and arc's directories point at a scratch folder of this
@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::design::Mode;
-use brightfield_shell::open_queue::OpenRequest;
+use brightfield_shell::open_queue::{OpenQueue, OpenRequest};
 use brightfield_shell::run::Runner;
 use brightfield_shell::starts;
 use brightfield_shell::startup;
@@ -119,17 +119,24 @@ impl Window {
     /// [`Self::relaunched`], with `delivered` on the open queue before the first frame, as a
     /// launch by double-clicking a file delivers it.
     fn relaunched_with(file: &Path, delivered: Option<OpenRequest>) -> Self {
-        let (layout, _) = startup::boot_layout(Some(file));
-        let restore = startup::restored_protocol(None, &layout);
-        let boot = opening(&layout);
-        let mut win = Self::over(
-            MeridianApp::headless_with_layout(boot, layout, Mode::Light).restoring(restore),
-        );
+        let mut win = Self::relaunched_over(file, OpenQueue::default());
         if let Some(request) = delivered {
             win.app.open_queue().push(request);
         }
         win.settle();
         win
+    }
+
+    /// The app launched again over the layout file `file`, taking its opens from `queue`, with no
+    /// frame drawn yet.
+    fn relaunched_over(file: &Path, queue: OpenQueue) -> Self {
+        let (layout, _) = startup::boot_layout(Some(file));
+        let boot = opening(&layout);
+        Self::over(
+            MeridianApp::headless_with_layout(boot, layout, Mode::Light)
+                .opening_from(queue)
+                .restoring_at_launch(None),
+        )
     }
 
     /// End this launch: the layout written as the app's exit writes it, and the window dropped.
@@ -393,7 +400,7 @@ fn an_old_layout_file_with_a_start_id_still_restores_it() {
         outcome.reason()
     );
     assert_eq!(layout.opened.as_deref(), Some(starts::DASHBOARD));
-    assert_eq!(startup::restored_protocol(None, &layout), None);
+    assert_eq!(layout.reopen_protocol, None);
     assert!(
         !opening(&layout).is_empty(),
         "the start is reopened from the old file"
@@ -453,6 +460,96 @@ fn a_file_the_launch_delivers_opens_instead_of_the_remembered_protocol() {
         again.app.layout().reopen_protocol,
         Some(protocol_dir("relaunch_delivered")),
         "and the delivered file is what the next launch reopens"
+    );
+}
+
+#[test]
+fn the_restore_waits_for_the_launch_to_finish() {
+    let file = layout_file("waits");
+    let win = Window::opened("relaunch_waits");
+    win.end(&file);
+    let queue = OpenQueue::awaiting_launch();
+
+    let mut again = Window::relaunched_over(&file, queue.clone());
+    again.settle();
+    assert!(
+        again.app.front_door_is_live(),
+        "nothing reopens before the launch has finished"
+    );
+
+    queue.mark_launched();
+    again.settle();
+    assert_eq!(
+        again.holds(),
+        Some(protocol_dir("relaunch_waits")),
+        "and the remembered Protocol reopens once it has: {}",
+        again.said()
+    );
+}
+
+#[test]
+fn a_file_delivered_before_the_launch_finishes_replaces_the_restore() {
+    let file = layout_file("delivered_early");
+    let win = Window::opened("relaunch_early_remembered");
+    win.end(&file);
+    let runs_before = brightfield_shell::run::record_paths_newest_first(&protocol_dir(
+        "relaunch_early_remembered",
+    ))
+    .len();
+    let queue = OpenQueue::awaiting_launch();
+    let mut again = Window::relaunched_over(&file, queue.clone());
+    again.settle();
+
+    queue.push(OpenRequest::Path(housing_copy("relaunch_early_delivered")));
+    again.settle();
+    queue.mark_launched();
+    again.settle();
+
+    assert_eq!(
+        again.holds(),
+        Some(protocol_dir("relaunch_early_delivered")),
+        "the delivered file is what is open: {}",
+        again.said()
+    );
+    assert_eq!(
+        brightfield_shell::run::record_paths_newest_first(&protocol_dir(
+            "relaunch_early_remembered"
+        ))
+        .len(),
+        runs_before,
+        "the remembered Protocol was not run once the launch finished"
+    );
+}
+
+#[test]
+fn a_launch_naming_a_spec_forgets_the_protocol_to_reopen() {
+    let file = layout_file("spec");
+    let win = Window::opened("relaunch_spec");
+    win.end(&file);
+    assert_eq!(remembered(&file), Some(protocol_dir("relaunch_spec")));
+    let spec = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/rect-bin-count-grouped-shares.yaml");
+    let spec = spec.to_str().expect("a utf-8 path");
+
+    let (layout, _) = startup::boot_layout(Some(&file));
+    let boot = startup::opening_boot(Some(spec), layout.opened.as_deref(), Flow::Vertical, None)
+        .expect("the spec opens");
+    let mut again = Window::over(
+        MeridianApp::headless_with_layout(boot, layout, Mode::Light)
+            .restoring_at_launch(Some(spec)),
+    );
+    again.settle();
+
+    assert_eq!(
+        again.holds(),
+        None,
+        "the remembered Protocol is not reopened"
+    );
+    again.end(&file);
+    assert_eq!(
+        remembered(&file),
+        None,
+        "and the next plain launch does not reopen it either"
     );
 }
 

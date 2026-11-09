@@ -248,19 +248,3 @@ pub fn opening_boot(
         crate::window::Boot::empty()
     }))
 }
-
-/// **The Protocol folder the launch reopens**: the one the layout remembers
-/// ([`SavedLayout::reopen_protocol`]), unless the command line names a spec. `main` hands it to
-/// the window ([`MeridianApp::restoring`](crate::window::MeridianApp::restoring)), which holds it
-/// aside and opens it on its first frame unless a file arrived with the launch, as
-/// `a_file_the_launch_delivers_opens_instead_of_the_remembered_protocol` holds: a file the system
-/// opened the app with is what the analyst asked for, and reopening the last Protocol first would
-/// run it to no purpose. The window, not this function, checks that the folder is still a
-/// Protocol, so that a folder found gone is forgotten in the layout it writes back.
-#[must_use]
-pub fn restored_protocol(spec: Option<&str>, layout: &SavedLayout) -> Option<PathBuf> {
-    if spec.is_some() {
-        return None;
-    }
-    layout.reopen_protocol.clone()
-}

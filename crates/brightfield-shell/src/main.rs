@@ -1210,9 +1210,6 @@ fn main() -> Result<(), String> {
     let (mut layout, outcome) = startup::boot_layout(path.as_deref());
     eprintln!("layout: {}", outcome.reason());
 
-    // A remembered Protocol opens on the window's first frame rather than here before the window
-    // exists: see `startup::restored_protocol`.
-    let restore = startup::restored_protocol(args.spec.as_deref(), &layout);
     let boot = startup::opening_boot(
         args.spec.as_deref(),
         layout.opened.as_deref(),
@@ -1302,6 +1299,7 @@ fn main() -> Result<(), String> {
         ..Default::default()
     };
     let mode = args.mode;
+    let spec = args.spec.clone();
     let shot_out = args.shot_out.clone();
     let shot_after = args.shot_after;
     let shot_saved = Arc::new(AtomicBool::new(false));
@@ -1310,9 +1308,15 @@ fn main() -> Result<(), String> {
     // so the file a launch by double-click delivers lands there; the window takes it on its first
     // frame. The wake does nothing because the queue wakes the window itself once it has drawn,
     // and until then the first frame is still to come.
-    let open_queue = brightfield_shell::open_queue::OpenQueue::default();
+    //
+    // Where they are listened for, the queue waits for the app to finish launching, by which
+    // AppKit has delivered the launch's files, before the window decides whether to reopen the
+    // Protocol the last launch ended on: see `MeridianApp::restoring_at_launch`.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut open_queue = brightfield_shell::open_queue::OpenQueue::default();
     #[cfg(target_os = "macos")]
     if let Some(main_thread) = objc2::MainThreadMarker::new() {
+        open_queue = brightfield_shell::open_queue::OpenQueue::awaiting_launch();
         brightfield_shell::mac_open::install(main_thread, open_queue.clone(), || {});
     }
     let menu_quit = Some((open_queue.clone(), 0));
@@ -1330,7 +1334,7 @@ fn main() -> Result<(), String> {
                 app: MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode)
                     .allowing_dialogs()
                     .opening_from(open_queue)
-                    .restoring(restore)
+                    .restoring_at_launch(spec.as_deref())
                     .running_with(brightfield_shell::run::Runner::this_binary())
                     .keeping_history(Some(brightfield_protocol::HistoryStore::Arcform)),
                 shot: ShotLatch::new(shot_out, shot_after, saved),

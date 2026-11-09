@@ -3019,8 +3019,8 @@ pub struct MeridianApp {
     /// fetched is drawn before the open blocks the thread: one path, or the several one gesture
     /// handed over.
     pending_open: Option<Vec<std::path::PathBuf>>,
-    /// The Protocol folder the last launch ended on, held aside for the first frame
-    /// ([`Self::restoring`]), and `None` once that frame has looked at it.
+    /// The Protocol folder the last launch ended on, held aside until the app has finished
+    /// launching ([`Self::restoring_at_launch`]), and `None` once a frame has decided on it.
     restore: Option<std::path::PathBuf>,
     /// Where the window goes once the close question is answered, while it is up: the way out
     /// that asked it, or the latest one asked since, which takes its place.
@@ -5323,10 +5323,17 @@ impl MeridianApp {
         if let Some(paths) = self.pending_open.take() {
             self.open_paths_now(&ctx, &paths);
         }
-        // The Protocol the last launch ended on, held aside until the first frame, when the files
-        // the system launched the app with are on the queue.
-        if let Some(dir) = self.restore.take() {
-            self.reopen_at_launch(&ctx, &dir);
+        // The Protocol the last launch ended on, held aside until the app has finished launching,
+        // by which the files the system launched it with are on the queue. A request that arrives
+        // before then is the analyst's, and the restore is dropped for it.
+        if self.restore.is_some() {
+            if !self.open_queue.is_empty() {
+                self.restore = None;
+            } else if self.open_queue.has_launched() {
+                if let Some(dir) = self.restore.take() {
+                    self.reopen_at_launch(&ctx, &dir);
+                }
+            }
         }
         // Whatever was asked to open since the last frame, from whichever way in, before anything
         // is laid out, so the frame draws what the open left. A request that has to wait a frame
@@ -9804,15 +9811,13 @@ impl MeridianApp {
     }
 
     /// Return to the front door, **keeping the session** so the door's
-    /// Continue zone still offers the way back in.
+    /// Recents still offer the way back in.
     ///
-    /// [`open_start`](Self::open_start)'s mirror, with one deliberate
-    /// asymmetry: this clears both documents but leaves `layout.opened`
-    /// untouched. `open_start` records the id there so a later launch restores
-    /// rather than greets; going Home wants the greeting *and* the standing
-    /// offer to resume, and the Continue card is drawn from that id — so it has
-    /// to survive the trip home. The product owner locked that: Home keeps your
-    /// place.
+    /// [`open_start`](Self::open_start)'s mirror: this clears both documents
+    /// and what the layout remembers to reopen ([`SavedLayout::reopen_nothing`]),
+    /// so the next launch starts on the door the window is on. The recents list
+    /// is kept, so the door this lands on has a row for what was left, and the
+    /// row reopens it.
     ///
     /// Both documents are emptied **in place** rather than rebuilt, which keeps
     /// the wgpu host this window rasters through. A fresh `ChartDoc::empty()` /
@@ -10808,18 +10813,27 @@ impl MeridianApp {
         self.open_queue.clone()
     }
 
-    /// This window reopening the Protocol in `dir` on its first frame, the one the last launch
-    /// ended on ([`crate::startup::restored_protocol`]), unless a file arrives with the launch
-    /// first: see `Self::reopen_at_launch`.
+    /// **This window, at launch, reopening the Protocol the last launch ended on**
+    /// ([`SavedLayout::reopen_protocol`]) once the app has finished launching, unless a file
+    /// arrives with the launch first: see `Self::reopen_at_launch`.
+    ///
+    /// With `spec`, the chart spec the command line named, nothing is reopened, and what the
+    /// layout remembered is forgotten in the layout this window writes back: a spec is not
+    /// something a launch reopens, so the next plain launch starts on the door rather than on a
+    /// Protocol from before it (`a_launch_naming_a_spec_forgets_the_protocol_to_reopen`).
     #[must_use]
-    pub fn restoring(mut self, dir: Option<std::path::PathBuf>) -> Self {
-        self.restore = dir;
+    pub fn restoring_at_launch(mut self, spec: Option<&str>) -> Self {
+        if spec.is_some() {
+            self.layout.live_mut().reopen_nothing();
+        } else {
+            self.restore = self.layout.live().reopen_protocol.clone();
+        }
         self
     }
 
     /// **Reopen `dir`, the Protocol the last launch ended on**, unless something else is asked to
-    /// open: a file the system launched the app with is on the queue by the first frame, and is
-    /// what the analyst asked for, so the restore is dropped and that file records itself.
+    /// open: a file the system launched the app with is what the analyst asked for, so the restore
+    /// is dropped and that file records itself. Called once the app has finished launching.
     ///
     /// A folder that is gone or no longer holds its manifest opens nothing and raises nothing, and
     /// is forgotten in the layout this window writes back, so the next launch does not look for it

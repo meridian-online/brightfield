@@ -50,10 +50,14 @@ const DIRECT_OBJECT: u32 = code(b"----");
 /// `typeAEList`.
 const LIST: u32 = code(b"list");
 
+/// The moment AppKit has finished launching, by which it has delivered the documents a launch
+/// opens, named as AppKit posts it.
+const DID_FINISH_LAUNCHING: &str = "NSApplicationDidFinishLaunchingNotification";
+
 /// The two moments AppKit may have replaced the handlers by, named as AppKit posts them.
 const LAUNCH_NOTIFICATIONS: [&str; 2] = [
     "NSApplicationWillFinishLaunchingNotification",
-    "NSApplicationDidFinishLaunchingNotification",
+    DID_FINISH_LAUNCHING,
 ];
 
 struct Ivars {
@@ -113,8 +117,9 @@ define_class!(
         }
 
         #[unsafe(method(appFinishingLaunch:))]
-        fn app_finishing_launch(&self, _note: &NSNotification) {
+        fn app_finishing_launch(&self, note: &NSNotification) {
             self.register();
+            self.launch_moment(&note.name().to_string());
         }
     }
 );
@@ -124,6 +129,16 @@ impl OpenHandler {
         let this = Self::alloc().set_ivars(Ivars { queue, wake });
         // SAFETY: NSObject's `init` is its designated initializer.
         unsafe { msg_send![super(this), init] }
+    }
+
+    /// Mark the queue launched when `name` is AppKit's post that it has finished launching: the
+    /// documents a launch opens are delivered before it, so from here the queue holds every one
+    /// of them. The post before it, that it will finish, leaves the queue waiting.
+    fn launch_moment(&self, name: &str) {
+        if name == DID_FINISH_LAUNCHING {
+            self.ivars().queue.mark_launched();
+            (self.ivars().wake)();
+        }
     }
 
     /// Make this object the handler for the open, link and quit events, replacing whichever was
@@ -398,6 +413,23 @@ mod tests {
             "the files of one event are one request"
         );
         assert_eq!(woken.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn finishing_launching_marks_the_queue_launched() {
+        let queue = OpenQueue::awaiting_launch();
+        let (woken, wake) = counter();
+        let handler = handler_for_test(queue.clone(), wake);
+
+        handler.launch_moment(LAUNCH_NOTIFICATIONS[0]);
+        assert!(
+            !queue.has_launched(),
+            "will-finish leaves the queue waiting"
+        );
+
+        handler.launch_moment(DID_FINISH_LAUNCHING);
+        assert!(queue.has_launched(), "did-finish marks it launched");
+        assert_eq!(woken.load(Ordering::SeqCst), 1, "and wakes the window");
     }
 
     #[test]

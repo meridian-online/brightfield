@@ -118,16 +118,57 @@ impl OpenRequest {
 /// It carries the Mac's quit as well as its opens: the app menu's Quit and the Dock's arrive
 /// outside the frame from the same Apple Event handler the opens do, and the window answers a
 /// quit with the close question when a draft is pending.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct OpenQueue {
     requests: Arc<Mutex<VecDeque<OpenRequest>>>,
     /// Whether quitting was asked for since the window last looked.
     quit: Arc<AtomicBool>,
+    /// Whether the app has finished launching, so every file the launch was asked to open is on
+    /// the queue: see [`Self::awaiting_launch`].
+    launched: Arc<AtomicBool>,
     /// The window's context, once it has drawn, so a push can ask for a frame.
     wake: Arc<OnceLock<egui::Context>>,
 }
 
+/// A queue whose launch has finished, as one with no system launch to wait for is: a build
+/// without the Mac's open events, and a headless window.
+impl Default for OpenQueue {
+    fn default() -> Self {
+        Self {
+            requests: Arc::default(),
+            quit: Arc::default(),
+            launched: Arc::new(AtomicBool::new(true)),
+            wake: Arc::default(),
+        }
+    }
+}
+
 impl OpenQueue {
+    /// A queue whose launch has not finished: the files a launch by double-click delivers are
+    /// still to come, and [`Self::mark_launched`] says when they have. The Mac's open events are
+    /// listened for on this one ([`crate::mac_open::install`]), whose observer of the app having
+    /// finished launching marks it.
+    #[must_use]
+    pub fn awaiting_launch() -> Self {
+        let queue = Self::default();
+        queue.launched.store(false, Ordering::SeqCst);
+        queue
+    }
+
+    /// Say the app has finished launching, and ask for a frame, so a window waiting on it decides.
+    pub fn mark_launched(&self) {
+        self.launched.store(true, Ordering::SeqCst);
+        if let Some(ctx) = self.wake.get() {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Whether the app has finished launching ([`Self::awaiting_launch`]).
+    #[must_use]
+    pub fn has_launched(&self) -> bool {
+        self.launched.load(Ordering::SeqCst)
+    }
+
     /// Ask for `request` to open on the window's next frame, after anything asked before it.
     pub fn push(&self, request: OpenRequest) {
         self.requests
