@@ -354,8 +354,8 @@ pub const CHANGED_MEANWHILE: &str = "The Protocol changed while the step was bei
 /// step's position and arc's own read, or after arc's write. So the manifest is read immediately
 /// before arc is asked, and read again after:
 ///
-/// - exactly the step `name` gone and every other step read before still there: the delete
-///   stands, [`StepRemoval::Removed`];
+/// - the read after holds the steps read before, in order, less the step `name`: the delete
+///   stands, [`StepRemoval::Removed`] (`removing_a_typed_sql_step_is_a_draft_until_save`);
 /// - the step `name` gone, with other changes beside it: arc took out the step asked for and
 ///   someone else wrote too, and their changes are kept, [`StepRemoval::Removed`] with
 ///   `changed_meanwhile`. When the read after does not load, the history of arc's edit says
@@ -543,7 +543,7 @@ fn removed_between(before: &[String], left: &[String], name: &str) -> Option<Str
     only_one(before.iter().filter(|n| *n != name && !left.contains(n)))
 }
 
-/// The one item of `items`, or `None` for none or several.
+/// The one item of `items`, when it holds exactly one.
 fn only_one<'a>(mut items: impl Iterator<Item = &'a String>) -> Option<String> {
     let one = items.next()?;
     items.next().is_none().then(|| one.clone())
