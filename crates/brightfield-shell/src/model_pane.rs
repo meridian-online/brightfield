@@ -1001,7 +1001,9 @@ impl ModelPane {
     /// not read refuses the run, rather than running the steps of the model before it.
     ///
     /// It holds the database while it runs, as the pane's own runs do, so discovery's pass does
-    /// not copy a database arc is writing. The model is left as it is.
+    /// not copy a database arc is writing. When an edit owed the run, a run that succeeds measures
+    /// each join's evidence again over the new tables and writes the model when that changed it;
+    /// otherwise the model is left as it is.
     ///
     /// # Errors
     ///
@@ -1011,14 +1013,23 @@ impl ModelPane {
         self.settle_file_edit()?;
         own_files::write_silver(&self.protocol, &self.model)?;
         own_files::drop_unmade_silver(&self.protocol, &self.model)?;
-        // This run is the one the edit was owed.
-        self.run_owed = false;
+        // This run is the one the edit was owed, so it measures the joins afterwards as that run
+        // would have. With nothing owed, the joins were measured over the model's last run, and
+        // the model is not written again.
+        let owed = std::mem::take(&mut self.run_owed);
         let finished = {
             let _writing = own_files::database_lock();
             crate::run::Run::begin(&self.runner, &self.protocol.dir, || {}).wait()
         };
         // The run changed the tables under the model the inspector last read.
         self.inspected = None;
+        if owed && finished.succeeded {
+            // The run's outcome stands either way; a measurement that fails is said in the file
+            // view, as the owed run's own failure would have been.
+            if let Err(e) = self.reverify(true) {
+                self.file_error = Some(e);
+            }
+        }
         Ok(finished)
     }
 

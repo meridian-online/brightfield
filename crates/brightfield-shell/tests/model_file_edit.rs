@@ -1748,3 +1748,82 @@ fn run_refuses_an_edit_that_does_not_read() {
         "nothing ran"
     );
 }
+
+/// The evidence of join `name` in `pane`'s model.
+fn join_evidence(pane: &ModelPane, name: &str) -> brightfield_ossie::Evidence {
+    pane.model
+        .relationships
+        .iter()
+        .find(|r| r.name == name)
+        .expect("the join is in the model")
+        .meta
+        .evidence
+        .clone()
+}
+
+#[test]
+fn run_before_the_pause_ends_measures_the_edited_joins_again() {
+    let (mut pane, _held) = opened();
+    assert_eq!(join_evidence(&pane, "transactions_stores").orphans, 0);
+    // Joined from customer_id, stores' three ids miss the transactions of customers 4 and 5. A
+    // hand edit does not claim evidence, so the join keeps the old numbers until it is measured.
+    let typed = replaced(
+        pane.file_draft(),
+        "- name: transactions_stores\n  from: transactions\n  to: stores\n  from_columns:\n  - store_id\n",
+        "- name: transactions_stores\n  from: transactions\n  to: stores\n  from_columns:\n  - customer_id\n",
+    );
+    pane.set_file_draft(typed);
+    assert_eq!(pane.tick_file_edit(0), None, "the edit waits out its pause");
+
+    let finished = pane.run_whole().expect("the run starts");
+    assert!(finished.succeeded, "{}", finished.log);
+    assert_eq!(
+        pane.model
+            .relationships
+            .iter()
+            .find(|r| r.name == "transactions_stores")
+            .unwrap()
+            .from_columns,
+        ["customer_id"],
+        "the run is of the edit"
+    );
+    let measured = brightfield_shell::model_pane::measure_joins(&pane.protocol.dir, &pane.model)
+        .expect("the run's database reads");
+    assert_eq!(
+        pane.model, measured,
+        "the joins are measured over the new tables"
+    );
+    let evidence = join_evidence(&pane, "transactions_stores");
+    assert_eq!((evidence.orphans, evidence.child_rows), (2, 8));
+    assert_eq!(
+        brightfield_ossie::read(&on_disk(&pane)).unwrap(),
+        pane.model,
+        "the measured model is written"
+    );
+    assert_eq!(pane.file_error(), None);
+}
+
+#[test]
+fn a_run_with_nothing_owed_leaves_the_model_unwritten() {
+    let (mut pane, _held) = opened();
+    assert!(!pane.run_waiting());
+    let written = on_disk(&pane);
+    // Evidence that differs from what the tables measure, put on the pane without an edit, so a
+    // measurement after the run would have something to write.
+    let r = pane
+        .model
+        .relationships
+        .iter_mut()
+        .find(|r| r.name == "transactions_customers")
+        .expect("the join is in the model");
+    r.meta.evidence.child_rows = 99;
+
+    let finished = pane.run_whole().expect("the run starts");
+    assert!(finished.succeeded, "{}", finished.log);
+    assert_eq!(on_disk(&pane), written, "the model file is not written");
+    assert_eq!(
+        join_evidence(&pane, "transactions_customers").child_rows,
+        99,
+        "the joins are not measured again"
+    );
+}
