@@ -479,6 +479,32 @@ fn shop_folder(root: &Path, name: &str) -> PathBuf {
 }
 
 #[test]
+fn a_failed_run_in_the_model_pane_says_so_in_a_toast() {
+    let (_held, root) = folders_of("model_pane_failed_run");
+    let mut win = Window::new();
+    win.settle();
+    let shop = shop_folder(&root, "shop_broken");
+    win.app.open_queue().push(OpenRequest::Path(shop.clone()));
+    win.settle();
+    win.app
+        .model_pane_mut()
+        .expect("the folder opens into the model pane")
+        .finish_discovery();
+    win.settle();
+    // A source taken away, so the run's load of it fails.
+    std::fs::remove_file(shop.join("items.csv")).unwrap();
+    win.run(vec![press(egui::Key::Enter, command())]);
+    win.settle();
+    let said = win
+        .app
+        .model_pane_run_said()
+        .expect("the run's outcome is said")
+        .to_string();
+    assert!(said.starts_with("The run of "), "{said}");
+    assert!(said.contains(" failed: "), "{said}");
+}
+
+#[test]
 fn run_in_the_model_pane_is_the_protocols_run_and_a_reopen_keeps_it_fresh() {
     let (_held, root) = folders_of("model_pane_run");
     let mut win = Window::new();
@@ -506,6 +532,11 @@ fn run_in_the_model_pane_is_the_protocols_run_and_a_reopen_keeps_it_fresh() {
         brightfield_protocol::contract::Outcome::Success,
         "{}",
         win.said()
+    );
+    assert_eq!(
+        win.app.model_pane_run_said(),
+        Some(format!("Ran {}", run.protocol).as_str()),
+        "the toast says it ran"
     );
     win.go_home();
     assert_eq!(

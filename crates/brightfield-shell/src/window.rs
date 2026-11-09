@@ -2728,6 +2728,8 @@ struct ModelDoc {
     in_grid: Option<String>,
     /// The record of the last whole run Run started from the pane, read by the manifest's name.
     last_run: Option<brightfield_protocol::RunView>,
+    /// What the toast said when that run landed, since the pane draws no strip to say it.
+    last_run_said: Option<String>,
 }
 
 impl ModelDoc {
@@ -11195,6 +11197,7 @@ impl MeridianApp {
             items: crate::model_pane::model_registry().instantiate(),
             in_grid: None,
             last_run: None,
+            last_run_said: None,
         });
         self.remember_own_protocol(&dir, false);
         self.toasts.push(Toast::new(
@@ -12379,20 +12382,46 @@ impl MeridianApp {
         };
         let dir = model.doc.protocol.dir.clone();
         let name = arc::spec::Manifest::load(&dir).map_or_else(|_| display_name(&dir), |m| m.name);
-        let finished = model.doc.run_whole();
+        let finished = match model.doc.run_whole() {
+            Ok(finished) => finished,
+            Err(why) => {
+                self.notifications.raise(
+                    Notification::new(banner, Severity::Error, "Could not run this Protocol")
+                        .body(why),
+                );
+                ctx.request_repaint();
+                return false;
+            }
+        };
         model.last_run = finished
             .record
             .as_deref()
             .and_then(|record| brightfield_protocol::load_contract(record).ok())
             .filter(|view| view.run.protocol == name)
             .map(|view| view.run);
+        let succeeded = finished.succeeded
+            && model
+                .last_run
+                .as_ref()
+                .is_some_and(|run| run.outcome == brightfield_protocol::contract::Outcome::Success);
+        // The pane draws no strip, so the toast is where the run's outcome is said.
+        let (severity, said) = if succeeded {
+            (Severity::Success, format!("Ran {name}"))
+        } else {
+            (
+                Severity::Error,
+                format!(
+                    "The run of {name} failed: {}",
+                    first_error_line(&finished.log)
+                ),
+            )
+        };
+        model.last_run_said = Some(said.clone());
         let landed = model.last_run.is_some();
         // The door reads this Protocol's rows afresh.
         self.door_runs.clear();
-        if finished.succeeded && landed {
+        if succeeded {
             self.notifications.dismiss(banner);
-            self.toasts
-                .push(Toast::new(Severity::Success, format!("Ran {name}")));
         } else {
             eprintln!("the run of {name} did not finish:\n{}", finished.log);
             self.notifications.raise(
@@ -12400,8 +12429,16 @@ impl MeridianApp {
                     .body(finished.log.trim().to_string()),
             );
         }
+        self.toasts.push(Toast::new(severity, said));
         ctx.request_repaint();
         landed
+    }
+
+    /// What the toast said when the last run Run started from the model pane landed — a test
+    /// hook.
+    #[must_use]
+    pub fn model_pane_run_said(&self) -> Option<&str> {
+        self.model.as_ref().and_then(|m| m.last_run_said.as_deref())
     }
 
     /// The record of the last whole run Run started from the model pane, while the window holds
@@ -14326,6 +14363,17 @@ fn door_group_row(
         text,
         ink,
     );
+}
+
+/// The line of a run's `log` that says what went wrong: the first that mentions an error, else
+/// the first with anything on it, else words saying the run printed nothing.
+fn first_error_line(log: &str) -> &str {
+    let mut lines = log.lines().map(str::trim).filter(|l| !l.is_empty());
+    log.lines()
+        .map(str::trim)
+        .find(|l| l.to_lowercase().contains("error"))
+        .or_else(|| lines.next())
+        .unwrap_or("it printed nothing")
 }
 
 /// Whether `a` and `b` name one folder, reached by two spellings or one.

@@ -1694,3 +1694,57 @@ fn an_edit_of_text_from_the_sample_keeps_what_the_full_pass_wrote_of_the_model()
     assert_eq!(edited.meta.pass.as_deref(), Some("by hand"));
     assert_eq!(edited.meta.sample_rows, None);
 }
+
+#[test]
+fn run_before_the_pause_ends_runs_the_edit_and_owes_nothing_after() {
+    let (mut pane, _held) = opened();
+    assert!(promo_silver_step(&pane) && promo_silver_table(&pane));
+    let dir = pane.protocol.dir.clone();
+    let previews = brightfield_shell::run::preview_ids(&dir);
+    let typed = replaced(
+        pane.file_draft(),
+        PROMO_KEPT,
+        &PROMO_KEPT.replace("false", "true"),
+    );
+    pane.set_file_draft(typed);
+    assert_eq!(pane.tick_file_edit(0), None, "the edit waits out its pause");
+
+    let finished = pane.run_whole().expect("the run starts");
+    assert!(finished.succeeded, "{}", finished.log);
+    assert!(
+        !promo_silver_step(&pane),
+        "the run's silver steps are the edit's"
+    );
+    assert!(
+        !promo_silver_table(&pane),
+        "the run dropped the table the edit left out"
+    );
+    assert!(!pane.run_waiting(), "the run was the one the edit owed");
+    assert_eq!(
+        pane.tick_file_edit(FILE_PAUSE_MS * 4),
+        None,
+        "no run follows it"
+    );
+    assert_eq!(
+        brightfield_shell::run::preview_ids(&dir),
+        previews,
+        "no preview run follows it, and the run is not marked as one"
+    );
+}
+
+#[test]
+fn run_refuses_an_edit_that_does_not_read() {
+    let (mut pane, _held) = opened();
+    let records = brightfield_shell::run::record_paths_newest_first(&pane.protocol.dir).len();
+    let broken = replaced(pane.file_text(), "\ndatasets:\n", "\ndatasets: :\n");
+    pane.set_file_draft(broken);
+    assert!(
+        pane.run_whole().is_err(),
+        "a draft that does not read stops the run"
+    );
+    assert_eq!(
+        brightfield_shell::run::record_paths_newest_first(&pane.protocol.dir).len(),
+        records,
+        "nothing ran"
+    );
+}

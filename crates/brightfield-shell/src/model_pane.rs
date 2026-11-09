@@ -993,16 +993,33 @@ impl ModelPane {
 
     /// Run the whole Protocol through arc and wait for it, as Run does in any window: a run the
     /// analyst asked for, so it is not marked as a preview, and the door reads it as the
-    /// Protocol's run. It holds the database while it runs, as the pane's own runs do, so
-    /// discovery's pass does not copy a database arc is writing. The model is left as it is.
-    pub fn run_whole(&mut self) -> crate::run::Finished {
+    /// Protocol's run.
+    ///
+    /// What the pane owes the folder is paid first, so the run is of the model the pane shows: an
+    /// edit still waiting out its pause in the file view is read, and the silver steps are
+    /// rewritten for the model, which settles a run an earlier edit left owed. An edit that does
+    /// not read refuses the run, rather than running the steps of the model before it.
+    ///
+    /// It holds the database while it runs, as the pane's own runs do, so discovery's pass does
+    /// not copy a database arc is writing. The model is left as it is.
+    ///
+    /// # Errors
+    ///
+    /// Why the run was not started: an edit that does not read, or silver steps that could not
+    /// be written.
+    pub fn run_whole(&mut self) -> Result<crate::run::Finished, String> {
+        self.settle_file_edit()?;
+        own_files::write_silver(&self.protocol, &self.model)?;
+        own_files::drop_unmade_silver(&self.protocol, &self.model)?;
+        // This run is the one the edit was owed.
+        self.run_owed = false;
         let finished = {
             let _writing = own_files::database_lock();
             crate::run::Run::begin(&self.runner, &self.protocol.dir, || {}).wait()
         };
         // The run changed the tables under the model the inspector last read.
         self.inspected = None;
-        finished
+        Ok(finished)
     }
 
     /// Rewrite the silver steps for the pane's model, run the Protocol and measure the joins
