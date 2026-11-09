@@ -287,6 +287,9 @@ pub struct ModelPane {
     drag_from: Option<String>,
     /// Discovery's full pass, while it runs on its worker.
     full_pass: Option<FullPass>,
+    /// The full pass's answer once it has landed, while it waits for the file view's edit to be
+    /// settled before it is folded in.
+    landed: Option<Result<Model, String>>,
 }
 
 /// What became of a [`ModelAction`] the pane dispatched.
@@ -350,6 +353,7 @@ impl ModelPane {
             status: None,
             drag_from: None,
             full_pass: None,
+            landed: None,
         };
         // A Protocol already run has silver tables to measure the joins over; one not yet run
         // has none, and nothing is measured.
@@ -452,23 +456,14 @@ impl ModelPane {
     }
 
     /// Settle what the pane holds and no run has followed, as Save does before the window leaves
-    /// it: an edit in the file view still waiting out its pause is read, and a run it owes, or an
+    /// it: the file view's edit is settled ([`Self::settle_file_edit`]), and a run it owes, or an
     /// earlier read owed, is made, as Run settles them ([`Self::run_whole`]).
     ///
     /// # Errors
     ///
-    /// An edit that does not read, or the run's failure.
+    /// An edit that does not read, a file that could not be written, or the run's failure.
     pub fn save_draft(&mut self) -> Result<(), String> {
-        // Read here rather than through `settle_file_edit`, so a text that reads but whose file
-        // cannot be written stops the save rather than being let go.
-        if self.file_draft != self.file_read || self.draft_unwritten {
-            self.read_file_draft()?;
-        }
-        if self.draft_refused {
-            return Err(
-                "The file has an edit that doesn't read — fix or discard it first".to_string(),
-            );
-        }
+        self.settle_file_edit()?;
         if self.run_owed {
             self.run_silver(true)?;
         }
@@ -597,17 +592,26 @@ impl ModelPane {
         result
     }
 
-    /// Before a reshape saves: read an edit still waiting out its pause, and refuse when the
-    /// editor holds one that does not read.
+    /// Settle the file view's edit before anything writes the model, runs it or folds discovery
+    /// into it, so none of them works from the model before the edit or puts the file's text over
+    /// it: Save, a reshape or an inspector action, Rediscover, Run, and a full pass landing all
+    /// come through here. An edit still waiting out its pause is read, and so is one read before
+    /// that was refused or whose file could not be written, which may read or write now.
+    ///
+    /// # Errors
+    ///
+    /// An edit that does not read, or the reason its file could not be written; either way the
+    /// edit stays in the file view as typed, and the caller stops.
     fn settle_file_edit(&mut self) -> Result<(), String> {
-        if self.file_draft != self.file_read {
-            // Its outcome stands in the file view; what matters here is whether it was refused.
-            let _ = self.read_file_draft();
+        if self.file_draft == self.file_read && !self.draft_refused && !self.draft_unwritten {
+            return Ok(());
         }
-        if self.draft_refused {
-            Err("The file has an edit that doesn't read — fix or discard it first".to_string())
-        } else {
-            Ok(())
+        // What the read made of the text stands in the file view either way.
+        match self.read_file_draft() {
+            Err(_) if self.draft_refused => {
+                Err("The file has an edit that doesn't read — fix or discard it first".to_string())
+            }
+            read => read,
         }
     }
 
@@ -855,8 +859,9 @@ impl ModelPane {
         if let Err(e) = self.settle_file_edit() {
             return Dispatched::Failed(e);
         }
-        // A pass still running answers for a model this one replaces.
+        // A pass still running, or landed and waiting, answers for a model this one replaces.
         self.full_pass = None;
+        self.landed = None;
         let model = match sample_pass(&*discovery, &self.protocol, Some(&self.model)) {
             Ok(model) => model,
             Err(e) => return Dispatched::Failed(format!("Discovery failed: {e}")),
@@ -883,36 +888,50 @@ impl ModelPane {
     /// which is told to stop, to land through [`Self::poll_discovery`]. The window starts one when the pane opens, whose
     /// model is the sample pass's.
     pub fn start_full_pass(&mut self, discovery: impl Discovery + Send + 'static) {
+        self.landed = None;
         self.full_pass = Some(FullPass::start(Box::new(discovery), &self.protocol));
     }
 
-    /// Whether discovery's full pass is still to land, so the window keeps polling.
+    /// Whether discovery's full pass is still to land, or has landed and waits for the file
+    /// view's edit to be settled, so the window keeps polling.
     #[must_use]
     pub fn discovering(&self) -> bool {
-        self.full_pass.is_some()
+        self.full_pass.is_some() || self.landed.is_some()
     }
 
     /// Fold discovery's full pass into the model once it has landed, and answer what came of it;
-    /// `None` while it runs, or while it waits for a hand edit in the file view to be read or
-    /// discarded, so the fold sees the model the edit made. A fold that changes the model saves
-    /// it, as an action's model is, and says so in the status line, as a failed pass does; what
-    /// the analyst decided stays as it is.
+    /// `None` while it runs, while a hand edit in the file view waits out its pause, or while
+    /// the edit does not settle ([`Self::settle_file_edit`]): one that does not read, or whose
+    /// file cannot be written. The fold then sees the model the edit made. A fold that changes the
+    /// model saves it, as an action's model is, and says so in the status line, as a failed pass
+    /// does; what the analyst decided stays as it is.
     pub fn poll_discovery(&mut self) -> Option<Dispatched> {
-        if self.file_edit_armed() || self.draft_refused {
+        // The pane's tick reads an edit once its pause is out; the fold waits for that read.
+        if self.file_edit_armed() {
             return None;
         }
-        let answer = self.full_pass.as_ref()?.try_take()?;
-        self.full_pass = None;
+        if self.landed.is_none() {
+            let answer = self.full_pass.as_ref()?.try_take()?;
+            self.full_pass = None;
+            self.landed = Some(answer);
+        }
+        self.settle_file_edit().ok()?;
+        let answer = self.landed.take()?;
         Some(self.fold_full_pass(answer))
     }
 
-    /// [`Self::poll_discovery`], waiting for the full pass to land: `None` when no pass is out,
-    /// or a hand edit in the file view waits to be read.
+    /// [`Self::poll_discovery`], waiting for the full pass to land, and reading an edit still
+    /// waiting out its pause rather than waiting for it: `None` when no pass is out, or the edit
+    /// does not settle.
     pub fn finish_discovery(&mut self) -> Option<Dispatched> {
-        if self.file_edit_armed() || self.draft_refused {
+        if self.full_pass.is_none() && self.landed.is_none() {
             return None;
         }
-        let answer = self.full_pass.take()?.wait();
+        self.settle_file_edit().ok()?;
+        let answer = match self.landed.take() {
+            Some(answer) => answer,
+            None => self.full_pass.take()?.wait(),
+        };
         Some(self.fold_full_pass(answer))
     }
 
@@ -1043,10 +1062,11 @@ impl ModelPane {
     /// analyst asked for, so it is not marked as a preview, and the door reads it as the
     /// Protocol's run.
     ///
-    /// What the pane owes the folder is paid first, so the run is of the model the pane shows: an
-    /// edit still waiting out its pause in the file view is read, and the silver steps are
+    /// What the pane owes the folder is paid first, so the run is of the model the pane shows: the
+    /// file view's edit is settled ([`Self::settle_file_edit`]), and the silver steps are
     /// rewritten for the model, which settles a run an earlier edit left owed. An edit that does
-    /// not read refuses the run, rather than running the steps of the model before it.
+    /// not read, or whose file cannot be written, refuses the run, rather than running the steps
+    /// of the model before it.
     ///
     /// It holds the database while it runs, as the pane's own runs do, so discovery's pass does
     /// not copy a database arc is writing. When an edit owed the run, a run that succeeds measures
@@ -1056,8 +1076,8 @@ impl ModelPane {
     ///
     /// # Errors
     ///
-    /// Why the run was not started: an edit that does not read, or silver steps that could not
-    /// be written.
+    /// Why the run was not started: an edit that does not read, a file or silver steps that could
+    /// not be written.
     pub fn run_whole(&mut self) -> Result<crate::run::Finished, String> {
         self.settle_file_edit()?;
         own_files::write_silver(&self.protocol, &self.model)?;

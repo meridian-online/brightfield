@@ -1887,3 +1887,134 @@ fn run_after_an_owed_run_failed_measures_the_edited_joins() {
     );
     assert_eq!(join_evidence(&pane, "transactions_stores").orphans, 2);
 }
+
+/// A folder made read-only, made writable again when dropped, so a test that fails midway leaves
+/// nothing it cannot clear away.
+struct ReadOnly(PathBuf);
+
+impl ReadOnly {
+    fn new(dir: &Path) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        Self(dir.to_path_buf())
+    }
+}
+
+impl Drop for ReadOnly {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// Type an edit that makes customers an event table while the Protocol folder is read-only, so it
+/// reads but its file cannot be written, and answer the folder, still read-only, with the text as
+/// typed. `None` when this process ignores directory permissions, so the write cannot be refused.
+fn unwritten_edit(pane: &mut ModelPane) -> Option<(ReadOnly, String)> {
+    let edited = replaced(
+        pane.file_text(),
+        CUSTOMERS_ROLE,
+        &CUSTOMERS_ROLE.replace("entity", "event"),
+    );
+    let read_only = ReadOnly::new(&pane.protocol.dir);
+    pane.set_file_draft(edited.clone());
+    assert_eq!(pane.tick_file_edit(0), None, "an edit arms the pause");
+    let read = pane.tick_file_edit(FILE_PAUSE_MS);
+    if read == Some(Ok(())) {
+        eprintln!("this process ignores directory permissions; the write cannot be refused");
+        return None;
+    }
+    assert!(matches!(read, Some(Err(_))), "{read:?}");
+    assert!(
+        pane.file_edit_unsaved(),
+        "the edit is kept for the next Save"
+    );
+    assert_eq!(pane.file_draft(), edited);
+    Some((read_only, edited))
+}
+
+/// Whether the model on disk makes customers an event table, as the unwritten edit does.
+fn edit_on_disk(pane: &ModelPane) -> bool {
+    let disk = brightfield_ossie::read(&on_disk(pane)).unwrap();
+    disk.datasets
+        .iter()
+        .any(|d| d.name == "customers" && d.meta.role == Role::Event)
+}
+
+#[test]
+fn an_inspector_action_writes_an_unwritten_edit_first() {
+    let (mut pane, _held) = opened();
+    let Some((read_only, edited)) = unwritten_edit(&mut pane) else {
+        return;
+    };
+    pane.focus.selected = Some(Selection::Relationship("transactions_stores".into()));
+
+    // While the folder still refuses the write, the action is refused and the edit stays.
+    let refused = pane.perform_reshape("drop-join").expect("a reshape verb");
+    assert!(matches!(refused, Dispatched::Failed(_)), "{refused:?}");
+    assert_eq!(pane.file_draft(), edited, "the edit is not replaced");
+    assert!(pane.file_edit_unsaved());
+
+    drop(read_only);
+    let done = pane.perform_reshape("drop-join").expect("a reshape verb");
+    assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
+    assert!(edit_on_disk(&pane), "the edit was written with the action");
+    let disk = brightfield_ossie::read(&on_disk(&pane)).unwrap();
+    assert!(!disk
+        .relationships
+        .iter()
+        .any(|r| r.name == "transactions_stores"));
+    assert!(!pane.file_edit_unsaved());
+}
+
+#[test]
+fn rediscover_writes_an_unwritten_edit_first() {
+    let (mut pane, _held) = opened();
+    let Some((read_only, _)) = unwritten_edit(&mut pane) else {
+        return;
+    };
+    drop(read_only);
+    let done = pane.rediscover(Proposes(retail_model()));
+    assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
+    assert!(edit_on_disk(&pane), "the edit was written before the pass");
+    assert!(pane.finish_discovery().is_some(), "the pass lands");
+    assert!(edit_on_disk(&pane), "the full pass kept the edit");
+    assert!(!pane.file_edit_unsaved());
+}
+
+#[test]
+fn run_in_the_model_pane_runs_an_unwritten_edit() {
+    let (mut pane, _held) = opened();
+    let Some((read_only, _)) = unwritten_edit(&mut pane) else {
+        return;
+    };
+    drop(read_only);
+    let finished = pane.run_whole().expect("the run starts");
+    assert!(finished.succeeded, "the run succeeds");
+    assert!(edit_on_disk(&pane), "the edit was written before the run");
+    assert!(pane
+        .model
+        .datasets
+        .iter()
+        .any(|d| d.name == "customers" && d.meta.role == Role::Event));
+    assert!(!pane.file_edit_unsaved());
+}
+
+#[test]
+fn a_full_pass_waits_for_an_unwritten_edit_and_then_writes_it() {
+    let (mut pane, _held) = opened();
+    let Some((read_only, edited)) = unwritten_edit(&mut pane) else {
+        return;
+    };
+    pane.start_full_pass(Proposes(retail_model()));
+
+    // While the folder still refuses the write, the pass waits and the edit stays.
+    assert_eq!(pane.finish_discovery(), None, "the pass waits for the edit");
+    assert!(pane.discovering());
+    assert_eq!(pane.file_draft(), edited, "the edit is not replaced");
+
+    drop(read_only);
+    assert!(pane.finish_discovery().is_some(), "the pass lands");
+    assert!(edit_on_disk(&pane), "the edit was written before the fold");
+    assert!(!pane.file_edit_unsaved());
+}
