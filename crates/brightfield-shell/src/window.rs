@@ -2263,6 +2263,74 @@ enum Overlay {
     /// statement. [`MeridianApp::open_overlay`] names it the palette, which is
     /// what it is to the person typing.
     Statement(StatementCard),
+    /// The question New Protocol asks: where to make the Protocol, the Protocols folder
+    /// preselected, its groups and any other folder on offer.
+    NewProtocol(NewProtocolSheet),
+}
+
+/// One place the New Protocol sheet offers to make the Protocol in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum NewProtocolPlace {
+    /// A folder named as the sheet lists it.
+    Folder { name: String, dir: PathBuf },
+    /// Any other folder, chosen with the system's folder picker.
+    Other,
+}
+
+impl NewProtocolPlace {
+    fn label(&self) -> &str {
+        match self {
+            Self::Folder { name, .. } => name,
+            Self::Other => NEW_PROTOCOL_OTHER,
+        }
+    }
+}
+
+/// The New Protocol sheet: the places on offer, the one chosen, and where each row was drawn on
+/// the last frame.
+#[derive(Debug)]
+struct NewProtocolSheet {
+    places: Vec<NewProtocolPlace>,
+    selected: usize,
+    rows: Vec<egui::Rect>,
+}
+
+/// The New Protocol sheet's last row, which raises the folder picker.
+const NEW_PROTOCOL_OTHER: &str = "Other\u{2026}";
+
+/// The name the New Protocol sheet gives the Protocols folder, whatever the folder is called on
+/// disk: it is the folder every new Protocol goes to unless another is chosen.
+const NEW_PROTOCOL_ROOT: &str = "Protocols";
+
+/// What the canvas of a Protocol with no sources says, `name` being the Protocol's.
+fn empty_canvas_words(name: &str) -> String {
+    format!(
+        "{name} has no sources yet. Drop a data file or a folder of them onto this window, or \
+         choose one with Add source\u{2026}"
+    )
+}
+
+/// Draw the New Protocol sheet's body: the places, the chosen one marked, and Make. A click on a
+/// row chooses it; answers whether Make was clicked.
+fn new_protocol_body(ui: &mut egui::Ui, sheet: &mut NewProtocolSheet) -> bool {
+    use meridian_egui::MeridianUi as _;
+    let gap = ui.tokens().section_gap;
+    let sem = meridian_design::semantic(ui.visuals().dark_mode);
+    ui.label(
+        egui::RichText::new("Where should the new Protocol go?")
+            .color(chrome::colour(sem.text.secondary)),
+    );
+    ui.add_space(gap);
+    sheet.rows.clear();
+    for (at, place) in sheet.places.iter().enumerate() {
+        let row = ui.selectable_label(sheet.selected == at, place.label());
+        sheet.rows.push(row.rect);
+        if row.clicked() {
+            sheet.selected = at;
+        }
+    }
+    ui.add_space(gap);
+    ui.button("Make").clicked()
 }
 
 /// The registry-bound keystrokes that open overlays, resolved once at boot.
@@ -2366,6 +2434,9 @@ const LEFT_BEHIND_BANNER: &str = "move-protocol-left-behind";
 /// The banner that says what did not follow a renamed or moved Protocol: its sources, its
 /// recorded place, or its working database.
 pub const NOT_FOLLOWED_BANNER: &str = "move-protocol-not-followed";
+
+/// The banner that says New Protocol could not make the Protocol, and why.
+pub const NEW_PROTOCOL_BANNER: &str = "new-protocol";
 
 /// The banner that says the YAML editor's buffer was not saved, and why.
 const EDITOR_NOT_SAVED_BANNER: &str = "editor-not-saved";
@@ -3115,6 +3186,23 @@ pub struct MeridianApp {
     /// The Protocol a lone table's grid and dashboard were opened from: the one-source Protocol
     /// an open made in the Protocols folder. `None` for any other document.
     own_protocol: Option<crate::own_files::OwnProtocol>,
+    /// The Protocol New Protocol made, while it has no source: its canvas says how to add one.
+    /// `None` for any other document.
+    empty_protocol: Option<crate::own_files::OwnProtocol>,
+    /// Whether the open Protocol asks for the sources browser: New Protocol made it with nothing
+    /// in it. The browser itself is not built yet; until it is, the empty canvas says how to add
+    /// a source, and this is what the browser will answer to.
+    browser_requested: bool,
+    /// What the empty canvas said on the last frame, when it was drawn.
+    empty_canvas_said: Option<String>,
+    /// The empty canvas's Add source… was clicked: the file picker is raised after the frame, as
+    /// the door's Open is, and what it chooses is added to the open Protocol.
+    add_source_pick_requested: bool,
+    /// Where the front door drew New Protocol on the last frame.
+    door_new_protocol: Option<egui::Rect>,
+    /// The New Protocol sheet's Other… was chosen: the folder picker is raised after the frame,
+    /// and the Protocol is made in the folder it chooses.
+    new_protocol_pick_requested: bool,
     /// A saved Protocol whose front-door row was clicked, latched for after the
     /// frame. Latched rather than acted on for the reason `pick_requested` is:
     /// the `Ui` borrow the door drew through is still live at the click, and
@@ -3629,6 +3717,12 @@ impl MeridianApp {
             open_queue: crate::open_queue::OpenQueue::default(),
             installed_extensions: None,
             own_protocol: None,
+            empty_protocol: None,
+            browser_requested: false,
+            empty_canvas_said: None,
+            add_source_pick_requested: false,
+            door_new_protocol: None,
+            new_protocol_pick_requested: false,
             door_open_protocol: None,
             door_hovered: None,
             door_tree: None,
@@ -4253,6 +4347,9 @@ impl MeridianApp {
         // "Brightfield"), so this fixes the reached-from-a-graph case.
         if self.front_door_is_live() {
             return "Brightfield".to_string();
+        }
+        if let Some(empty) = &self.empty_protocol {
+            return format!("Protocol \u{b7} {}", display_name(&empty.dir));
         }
         if self.tiles.is_some() {
             // The Protocol, and the panel open from its tile when one is: the
@@ -4998,6 +5095,7 @@ impl MeridianApp {
             && !self.protocol.doc.model.has_assets()
             && self.tiles.is_none()
             && !self.model.as_ref().is_some_and(ModelDoc::shown)
+            && self.empty_protocol.is_none()
     }
 
     /// The rect the front door drew the gallery card for the start `id` at,
@@ -5728,6 +5826,7 @@ impl MeridianApp {
         let mut requests: Vec<Request> = Vec::new();
         // What the model inspector's buttons chose, dispatched once the canvas has drawn.
         let mut model_actions = Vec::new();
+        self.empty_canvas_said = None;
         if door {
             // ---- the navigator rail, on the door.
             //
@@ -5837,6 +5936,7 @@ impl MeridianApp {
             self.door_rows.clear();
             self.door_help = None;
             self.door_open_file = None;
+            self.door_new_protocol = None;
             let drawn = CentralPanel::default()
                 .frame(chrome::region_frame(canvas.frame, ui, mode))
                 .show(ui, |ui| {
@@ -5844,6 +5944,29 @@ impl MeridianApp {
                 });
             self.regions.push((canvas.id, drawn.response.rect));
             model_actions = model.doc.take_actions();
+        } else if let Some(name) = self.empty_protocol.as_ref().map(|p| display_name(&p.dir)) {
+            // A Protocol with no sources, across the canvas region in place of the dock, as the
+            // model pane is: both documents are empty, so every rail would draw its empty state.
+            // The canvas says how to add a source and offers the file picker for one.
+            self.door_cards.clear();
+            self.door_card_feet.clear();
+            self.door_sections.clear();
+            self.door_rows.clear();
+            self.door_help = None;
+            self.door_open_file = None;
+            self.door_new_protocol = None;
+            let said = empty_canvas_words(&name);
+            let mut add = false;
+            let drawn = CentralPanel::default()
+                .frame(chrome::region_frame(canvas.frame, ui, mode))
+                .show(ui, |ui| {
+                    add = draw_empty_canvas(ui, &said, mode);
+                });
+            self.regions.push((canvas.id, drawn.response.rect));
+            self.empty_canvas_said = Some(said);
+            if add {
+                self.add_source_pick_requested = true;
+            }
         } else {
             // Content somewhere, so the regions — and no stale door geometry: a
             // test that asks where a card was after the door has gone must
@@ -5854,6 +5977,7 @@ impl MeridianApp {
             self.door_rows.clear();
             self.door_help = None;
             self.door_open_file = None;
+            self.door_new_protocol = None;
 
             // The inspector's own read of "what is selected" — the same value
             // `status_rail_ui` reads for the rail's status lines, computed here
@@ -6846,6 +6970,23 @@ impl MeridianApp {
         }
         if let Some(to) = self.place_move.take() {
             self.leave(&ctx, Leaving::Move(to));
+        }
+        // New Protocol's Other…, and the empty canvas's Add source…: each raises a system picker,
+        // after the frame and only where dialogs are allowed, as Choose… does.
+        if std::mem::take(&mut self.new_protocol_pick_requested) && self.dialogs_allowed {
+            if let Some(chosen) = rfd::FileDialog::new()
+                .set_title("Make the Protocol in")
+                .set_directory(crate::protocols_dir::root())
+                .pick_folder()
+            {
+                self.make_new_protocol_in(&ctx, &chosen);
+            }
+        }
+        if std::mem::take(&mut self.add_source_pick_requested) && self.dialogs_allowed {
+            if let Some(chosen) = crate::data_file::pick() {
+                self.open_queue
+                    .push(crate::open_queue::OpenRequest::AddSource(chosen));
+            }
         }
         if let Some((id, name)) = self.door_renamed.take() {
             self.rename_door_row(&ctx, &id, &name);
@@ -8154,6 +8295,7 @@ impl MeridianApp {
         let mut becomes = None;
         let mut kept: Option<(TypedAnswer, Option<String>)> = None;
         let mut where_kept: Option<String> = None;
+        let mut make_in: Option<NewProtocolPlace> = None;
         match &mut overlay {
             Overlay::Palette(picker) => {
                 let chrome = ModalChrome::new().title("Commands").enter_hint("run");
@@ -8289,6 +8431,27 @@ impl MeridianApp {
                 // without saving that could not keep the chart leaves it up.
                 close = false;
             }
+            Overlay::NewProtocol(sheet) => {
+                // Enter makes the Protocol in the place chosen, as Make does; Esc and a click on
+                // the backdrop make nothing. Enter is read before the card draws, so no control
+                // inside it takes the press as well.
+                let enter =
+                    ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                let chrome = ModalChrome::new()
+                    .title("New Protocol")
+                    .enter_hint("make")
+                    .esc_hint("cancel")
+                    .narrow();
+                let shown = ModalLayer::show(ctx, "bf-overlay-new-protocol", &chrome, |ui| {
+                    new_protocol_body(ui, sheet)
+                });
+                if enter || shown.inner {
+                    make_in = sheet.places.get(sheet.selected).cloned();
+                    close = true;
+                } else {
+                    close = shown.dismissed;
+                }
+            }
         }
         if let Some(next) = becomes {
             overlay = next;
@@ -8310,6 +8473,11 @@ impl MeridianApp {
         }
         if let Some(answer) = answered {
             self.answer_close_question(ctx, answer);
+        }
+        match make_in {
+            Some(NewProtocolPlace::Folder { dir, .. }) => self.make_new_protocol_in(ctx, &dir),
+            Some(NewProtocolPlace::Other) => self.new_protocol_pick_requested = true,
+            None => {}
         }
     }
 
@@ -9304,6 +9472,7 @@ impl MeridianApp {
             Overlay::Jump(_) => "jump",
             Overlay::CloseQuestion(_) => "close-question",
             Overlay::Statement(_) => "palette",
+            Overlay::NewProtocol(_) => "new-protocol",
         })
     }
 
@@ -10018,6 +10187,8 @@ impl MeridianApp {
         }
         self.tiles = None;
         self.model = None;
+        self.empty_protocol = None;
+        self.browser_requested = false;
         self.open_chart(Composed::empty());
         self.protocol.doc.open(ProtocolInputs::empty());
         // Going Home is a document swap, so the fetched files go with the
@@ -10589,6 +10760,8 @@ impl MeridianApp {
         let open_panel = boot.open_panel;
         self.queue_open_later(boot.open_later.take());
         self.own_protocol = None;
+        self.empty_protocol = None;
+        self.browser_requested = false;
         self.tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         // The model pane belongs to the own-files Protocol it was opened for, and a different
         // document is arriving. `open_model_pane` and `open_model_in_grid` put it back after.
@@ -10954,11 +11127,7 @@ impl MeridianApp {
             OpenRequest::Link(link) => {
                 self.say_open_failed(ctx, &link, "This build cannot open a link yet.".to_string())
             }
-            OpenRequest::AddSource(path) => self.say_open_failed(
-                ctx,
-                &path.to_string_lossy(),
-                "This build cannot add a source to an open Protocol yet.".to_string(),
-            ),
+            OpenRequest::AddSource(path) => self.add_source(ctx, &path),
         }
     }
 
@@ -11057,6 +11226,238 @@ impl MeridianApp {
             .as_ref()
             .map(|p| p.dir.clone())
             .or_else(|| self.model.as_ref().map(|m| m.doc.protocol.dir.clone()))
+            .or_else(|| self.empty_protocol.as_ref().map(|p| p.dir.clone()))
+    }
+
+    /// The Protocol New Protocol made, while it has no source.
+    #[must_use]
+    pub fn empty_protocol(&self) -> Option<&crate::own_files::OwnProtocol> {
+        self.empty_protocol.as_ref()
+    }
+
+    /// Whether the open Protocol asks for the sources browser, as one New Protocol has just made
+    /// does: the hook the browser will answer to. Until the browser is built, such a Protocol's
+    /// canvas says how to add a source ([`Self::empty_canvas_said`]).
+    #[must_use]
+    pub fn browser_requested(&self) -> bool {
+        self.browser_requested
+    }
+
+    /// What the canvas of a Protocol with no sources said on the last frame, when it drew one.
+    #[must_use]
+    pub fn empty_canvas_said(&self) -> Option<&str> {
+        self.empty_canvas_said.as_deref()
+    }
+
+    /// Where the front door drew New Protocol on the last frame, when it drew the door.
+    #[must_use]
+    pub fn front_door_new_protocol_rect(&self) -> Option<egui::Rect> {
+        self.door_new_protocol
+    }
+
+    /// The places the New Protocol sheet offers, in order, while it is open.
+    #[must_use]
+    pub fn new_protocol_places(&self) -> Option<Vec<String>> {
+        match &self.overlay {
+            Some(Overlay::NewProtocol(sheet)) => {
+                Some(sheet.places.iter().map(|p| p.label().to_string()).collect())
+            }
+            _ => None,
+        }
+    }
+
+    /// Which of the New Protocol sheet's places is chosen, while it is open.
+    #[must_use]
+    pub fn new_protocol_selected(&self) -> Option<usize> {
+        match &self.overlay {
+            Some(Overlay::NewProtocol(sheet)) => Some(sheet.selected),
+            _ => None,
+        }
+    }
+
+    /// Where the New Protocol sheet drew its place `at` on the last frame.
+    #[must_use]
+    pub fn new_protocol_place_rect(&self, at: usize) -> Option<egui::Rect> {
+        match &self.overlay {
+            Some(Overlay::NewProtocol(sheet)) => sheet.rows.get(at).copied(),
+            _ => None,
+        }
+    }
+
+    /// **New Protocol**: ask where to make it, in a sheet listing the Protocols folder, chosen to
+    /// begin with, the groups in it, and Other… for any folder.
+    pub fn ask_new_protocol(&mut self) {
+        let root = crate::protocols_dir::root();
+        let mut places = vec![NewProtocolPlace::Folder {
+            name: NEW_PROTOCOL_ROOT.to_string(),
+            dir: root.clone(),
+        }];
+        for node in crate::door_tree::read(&root) {
+            if let crate::door_tree::Node::Group { name, .. } = node {
+                let dir = root.join(&name);
+                places.push(NewProtocolPlace::Folder { name, dir });
+            }
+        }
+        places.push(NewProtocolPlace::Other);
+        self.overlay = Some(Overlay::NewProtocol(NewProtocolSheet {
+            places,
+            selected: 0,
+            rows: Vec::new(),
+        }));
+    }
+
+    /// Make an empty Protocol in `parent` and open it, as New Protocol does once it is told where:
+    /// it is named `Untitled`, or `Untitled-2` and so on, and is kept at once. A folder the system
+    /// refuses, or one that cannot be written, is said in a banner and nothing opens.
+    pub fn make_new_protocol_in(&mut self, ctx: &egui::Context, parent: &std::path::Path) {
+        match crate::own_files::create_empty(parent) {
+            Ok(protocol) => {
+                let said = format!(
+                    "Made {} in {}",
+                    display_name(&protocol.dir),
+                    parent.display()
+                );
+                self.adopt_empty_protocol(ctx, protocol, said);
+            }
+            Err(e) => {
+                eprintln!("could not make a Protocol in {}: {e}", parent.display());
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new(NEW_PROTOCOL_BANNER),
+                        Severity::Error,
+                        "Could not make the Protocol",
+                    )
+                    .body(e),
+                );
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    /// Take the Protocol `protocol`, which has no sources, into the window in place of what it
+    /// held, and say `said` in a toast. Its canvas says how to add a source, and the window asks
+    /// for the sources browser.
+    fn adopt_empty_protocol(
+        &mut self,
+        ctx: &egui::Context,
+        protocol: crate::own_files::OwnProtocol,
+        said: String,
+    ) {
+        self.notifications
+            .dismiss(NotificationId::new("open-data-file"));
+        self.notifications
+            .dismiss(NotificationId::new(NEW_PROTOCOL_BANNER));
+        self.adopt_boot(Boot::empty());
+        let dir = protocol.dir.clone();
+        self.empty_protocol = Some(protocol);
+        self.browser_requested = true;
+        self.remember_own_protocol(&dir, false);
+        // The door lists the Protocol from the moment it is made.
+        self.forget_door_listing();
+        self.toasts.push(Toast::new(Severity::Success, said));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        ctx.request_repaint();
+    }
+
+    /// **Add what `path` holds to the open Protocol as a source**, kept at once: it is not leaving
+    /// the Protocol, so nothing is asked first and nothing is left unsaved. The first source names
+    /// a Protocol New Protocol made, unless the analyst has named it, and its folder is renamed;
+    /// one source shows its grid and dashboard, and a second shows the model. With no Protocol
+    /// open, `path` is opened as a new Protocol, as an open of it would be.
+    fn add_source(&mut self, ctx: &egui::Context, path: &std::path::Path) {
+        // On the door nothing is open to add to, though the Protocol last open may still be held
+        // behind it.
+        let held = (!self.front_door_is_live())
+            .then(|| {
+                self.empty_protocol
+                    .clone()
+                    .or_else(|| self.own_protocol.clone())
+                    .or_else(|| self.model.as_ref().map(|m| m.doc.protocol.clone()))
+            })
+            .flatten();
+        let Some(mut protocol) = held else {
+            self.open_path(ctx, &path.to_string_lossy());
+            return;
+        };
+        let chosen = path.to_string_lossy().into_owned();
+        if self.run_outstanding() {
+            self.say_open_failed(
+                ctx,
+                &chosen,
+                "A run is writing into the Protocol's folder. Add the source once it finishes."
+                    .to_string(),
+            );
+            return;
+        }
+        let Some(runner) = self.runner.clone().or_else(crate::run::Runner::this_binary) else {
+            self.say_open_failed(
+                ctx,
+                &chosen,
+                "no runner to run its Protocol with".to_string(),
+            );
+            return;
+        };
+        let was = protocol.dir.clone();
+        let canonical = was.canonicalize().ok();
+        let discoverer = crate::discovery::Dovetail::new(&runner);
+        let added =
+            crate::own_files::add_source_with(&mut protocol, path, &[], &runner, &discoverer);
+        // The first source renamed the folder: what remembers the Protocol follows it, whether or
+        // not the rest of the add went through, since the rename is kept either way.
+        if protocol.dir != was {
+            let layout = self.layout.live_mut();
+            layout.repoint(&was, &protocol.dir);
+            if let Some(canonical) = canonical.filter(|c| *c != was) {
+                layout.repoint(&canonical, &protocol.dir);
+            }
+            self.forget_door_listing();
+            if let Some(empty) = self.empty_protocol.as_mut() {
+                empty.dir.clone_from(&protocol.dir);
+            }
+        }
+        let warnings = match added {
+            Ok(warnings) => warnings,
+            Err(e) => {
+                self.say_open_failed(ctx, &chosen, e);
+                return;
+            }
+        };
+        self.notifications
+            .dismiss(NotificationId::new(NOT_FOLLOWED_BANNER));
+        self.say_not_followed(&Move::Rename(display_name(&protocol.dir)), &warnings);
+        let name = display_name(&protocol.dir);
+        if protocol.sources.tables.len() > 1 {
+            self.open_model_pane(ctx, protocol, runner, true);
+        } else {
+            match crate::data_file::open_one_table(&protocol) {
+                Ok(opened) => self.adopt_one_source(ctx, opened, protocol),
+                Err(e) => {
+                    self.say_open_failed(ctx, &chosen, e);
+                    return;
+                }
+            }
+        }
+        self.toasts.push(Toast::new(
+            Severity::Success,
+            format!("Added {} to {name}", display_name(path)),
+        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        ctx.request_repaint();
+    }
+
+    /// **Select the source `table` on the spine**: the canvas shows that table's grid and
+    /// dashboard. Over the model, its rows open in the grid with the model kept behind them; a
+    /// Protocol of one source shows its table's already. Answers whether the table is shown.
+    pub fn select_source(&mut self, ctx: &egui::Context, table: &str) -> bool {
+        if self.model.is_some() {
+            return self.open_model_in_grid(
+                ctx,
+                &brightfield_render::model_scene::Selection::Dataset(table.to_string()),
+            );
+        }
+        self.own_protocol
+            .as_ref()
+            .is_some_and(|p| p.sources.tables.iter().any(|t| t.name == table))
     }
 
     /// **Rename the open Protocol to `name`**: its folder and its `name:` together, asking the
@@ -13011,10 +13412,22 @@ impl MeridianApp {
         let named = std::path::Path::new(path);
         if let Some(dir) = crate::own_files::own_protocol_dir(named)
             .or_else(|| crate::own_files::one_source_protocol_dir(named))
+            .or_else(|| crate::own_files::empty_protocol_dir(named))
         {
             if let Err(e) = crate::rename::follow_a_move(&dir) {
                 eprintln!("warning: {}: its move was not followed: {e}", dir.display());
             }
+        }
+        // A Protocol with no sources yet opens on its empty canvas.
+        if let Some(dir) = crate::own_files::empty_protocol_dir(named) {
+            let protocol = crate::own_files::OwnProtocol {
+                dir,
+                sources: Default::default(),
+                profiles: Vec::new(),
+            };
+            let said = format!("Opened {}", display_name(&protocol.dir));
+            self.adopt_empty_protocol(ctx, protocol, said);
+            return;
         }
         // An own-files Protocol opens into the model pane over the model its folder holds.
         if let Some(dir) = crate::own_files::own_protocol_dir(std::path::Path::new(path)) {
@@ -13137,6 +13550,7 @@ impl MeridianApp {
         self.door_hovered = None;
         self.door_help = None;
         self.door_open_file = None;
+        self.door_new_protocol = None;
         self.affordances.clear();
         self.ensure_door_thumbs(ui.ctx());
 
@@ -13208,6 +13622,7 @@ impl MeridianApp {
         let now = now_secs();
         let mut open_help = false;
         let mut open_file = false;
+        let mut new_protocol = false;
 
         egui::ScrollArea::vertical()
             .id_salt("bf-front-door")
@@ -13287,6 +13702,16 @@ impl MeridianApp {
                                 .color(chrome::colour(sem.text.secondary)),
                         );
                         ui.add_space(spacing::CONTROL_GAP);
+                        // New Protocol asks where, then makes an empty Protocol there: a
+                        // deliberate make, unlike an open, which makes its Protocol in the
+                        // Protocols folder and asks nothing.
+                        let new =
+                            ui.button(egui::RichText::new("New Protocol\u{2026}").font(ui_font()));
+                        self.door_new_protocol = Some(new.rect);
+                        if new.clicked() {
+                            new_protocol = true;
+                        }
+                        ui.add_space(spacing::CONTROL_GAP);
                         let help_label = match help_key {
                             Some(k) => format!("Keyboard help  {k}"),
                             None => "Keyboard help".to_string(),
@@ -13320,6 +13745,9 @@ impl MeridianApp {
 
         if open_help {
             self.overlay = Some(Overlay::Help(Picker::new(HelpSheet::new())));
+        }
+        if new_protocol {
+            self.ask_new_protocol();
         }
         // Latched, not acted on: the dialog blocks on the operating system and
         // the `Ui` borrow is still live here. `draw` takes it after the frame. Set, never
@@ -14722,7 +15150,8 @@ fn door_row_dir(id: &str) -> Option<PathBuf> {
         path
     };
     (crate::own_files::own_protocol_dir(dir).is_some()
-        || crate::own_files::one_source_protocol_dir(dir).is_some())
+        || crate::own_files::one_source_protocol_dir(dir).is_some()
+        || crate::own_files::empty_protocol_dir(dir).is_some())
     .then(|| dir.to_path_buf())
 }
 
@@ -16377,6 +16806,27 @@ fn subject_icon(
         Some(_) => brightfield_workbench::subject::Icon("map-pin"),
         None => brightfield_workbench::subject::Icon("chart-bar"),
     }
+}
+
+/// The canvas of a Protocol with no sources, into the whole of `ui`: `said`, how to add one,
+/// over Add source…, in the window's theme. Answers whether Add source… was clicked.
+fn draw_empty_canvas(ui: &mut egui::Ui, said: &str, mode: Mode) -> bool {
+    let sem = semantic(mode.is_dark());
+    let mut add = false;
+    ui.vertical_centered(|ui| {
+        ui.add_space(spacing::SECTION_GAP);
+        ui.set_max_width(DOOR_COLUMN_WIDTH.min(ui.available_width()));
+        ui.label(
+            egui::RichText::new(said)
+                .font(ui_font())
+                .color(chrome::colour(sem.text.secondary)),
+        );
+        ui.add_space(spacing::CONTROL_GAP);
+        add = ui
+            .button(egui::RichText::new("Add source\u{2026}").font(ui_font()))
+            .clicked();
+    });
+    add
 }
 
 /// The model pane, framed with its header band, into the whole of `ui`: its empty state when

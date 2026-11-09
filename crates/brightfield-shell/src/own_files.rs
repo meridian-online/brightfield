@@ -126,6 +126,318 @@ fn create_of(parent: &Path, named: &Path, sources: SourceSet) -> Result<OwnProto
     })
 }
 
+/// The name New Protocol gives the Protocol it makes, before a source names it: `Untitled`, then
+/// `Untitled-2` and so on in the same folder.
+pub const UNTITLED: &str = "Untitled";
+
+/// The file in a Protocol folder that records the name New Protocol gave it, while nobody has
+/// named it since. The first source names the Protocol after itself only while this is there and
+/// the folder still has that name, so whether the analyst named it is decided by what happened to
+/// the folder, not by whether its name looks like one Brightfield gives: an analyst who renames a
+/// Protocol to `Untitled` keeps that name. A rename takes it away
+/// ([`crate::rename::rename_with`]).
+pub(crate) const UNTITLED_FILE: &str = ".untitled";
+
+/// A join the analyst accepted between two sources, each side a table and one of its columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedJoin {
+    /// The table and column the join reads from, the side with many rows to each of the other's.
+    pub left: (String, String),
+    /// The table and column it finds a row of for each.
+    pub right: (String, String),
+}
+
+/// Make an empty Protocol in `parent`, as New Protocol does: a folder named [`UNTITLED`] (or
+/// `Untitled-2` and so on when that is taken), an `arcform.yaml` with no steps, and a record of
+/// no sources, so it opens again as the empty Protocol it is. Sources are added with
+/// [`add_source`].
+///
+/// # Errors
+///
+/// The reason the folder could not be claimed, such as the system refusing a write in `parent`,
+/// or a file in it not written; a folder half written is taken away again.
+pub fn create_empty(parent: &Path) -> Result<OwnProtocol, String> {
+    let (dir, name) = protocols_dir::claim(parent, UNTITLED).map_err(|e| e.to_string())?;
+    let written = (|| -> Result<(), String> {
+        let models = dir.join("models");
+        std::fs::create_dir(&models).map_err(|e| format!("{}: {e}", models.display()))?;
+        let path = dir.join("arcform.yaml");
+        std::fs::write(&path, format!("name: {name}\nengine: duckdb\nsteps: []\n"))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        write_sources(&dir, &SourceSet::default())?;
+        let marker = dir.join(UNTITLED_FILE);
+        std::fs::write(&marker, format!("{name}\n"))
+            .map_err(|e| format!("{}: {e}", marker.display()))
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(e);
+    }
+    Ok(OwnProtocol {
+        dir,
+        sources: SourceSet::default(),
+        profiles: Vec::new(),
+    })
+}
+
+/// Whether the Protocol in `dir` still has the name New Protocol gave it, nobody having named it
+/// since: see [`UNTITLED_FILE`].
+#[must_use]
+pub fn still_untitled(dir: &Path) -> bool {
+    let Ok(given) = std::fs::read_to_string(dir.join(UNTITLED_FILE)) else {
+        return false;
+    };
+    dir.file_name()
+        .is_some_and(|n| n.to_string_lossy() == given.trim())
+}
+
+/// The empty Protocol `path` names, when it names one: the folder itself or its `arcform.yaml`,
+/// holding a record of its sources that names none, and no model file.
+#[must_use]
+pub fn empty_protocol_dir(path: &Path) -> Option<PathBuf> {
+    let dir = if path.is_dir() {
+        path
+    } else if path.file_name().is_some_and(|n| n == "arcform.yaml") {
+        path.parent()?
+    } else {
+        return None;
+    };
+    if !dir.join("arcform.yaml").is_file() || dir.join(MODEL_FILE).exists() {
+        return None;
+    }
+    let sources = read_sources(dir).ok()?;
+    sources
+        .tables
+        .is_empty()
+        .then(|| std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()))
+}
+
+/// Add what `path` holds (a data file, a folder, a workbook or a database) to the Protocol `p` as
+/// more sources, with the join the analyst accepted in `joins` written into its model, run by this
+/// binary. See [`add_source_with`].
+///
+/// # Errors
+///
+/// As [`add_source_with`], and a binary that cannot say where it is.
+pub fn add_source(p: &mut OwnProtocol, path: &Path, joins: &[AcceptedJoin]) -> Result<(), String> {
+    let runner = Runner::this_binary().ok_or("no runner to run the Protocol with")?;
+    add_source_with(
+        p,
+        path,
+        joins,
+        &runner,
+        &crate::discovery::Dovetail::new(&runner),
+    )
+    .map(|_| ())
+}
+
+/// Add what `path` holds to the Protocol `p` as more sources, kept at once: nothing waits for a
+/// save. Answers what did not follow a rename, each in a sentence, as a rename's warnings say it.
+///
+/// The tables `path` holds are appended to `p`'s with a load step each, after its other loads, and
+/// the record of its sources is written again. A table whose name one of `p`'s already has, or
+/// would make, takes `_2` and so on. The Protocol is run with `runner` to load and profile them,
+/// and the run is marked a preview, so the door does not say the Protocol has been run. With two
+/// tables or more, `discovery` finds the model again over all of them, keeping what the analyst
+/// decided in the model on disk, `joins` are written into it as the analyst's, and it is written;
+/// one table has nothing to relate and has no model. The silver steps are written for the model
+/// and the Protocol run again.
+///
+/// The first source added to a Protocol New Protocol made, which nobody has named since
+/// ([`still_untitled`]), names it after itself, renaming its folder ([`crate::rename::rename_claiming`])
+/// and taking `-2` and so on when the name is taken, as a Protocol made from that source would.
+///
+/// # Errors
+///
+/// The reason `path` holds no table Brightfield reads, or a step of the add failed. When a step
+/// fails, the manifest and the record of sources are put back as they were, so the Protocol is as
+/// it was before the add, except for a rename already done, which is kept and is in `p.dir`.
+pub fn add_source_with(
+    p: &mut OwnProtocol,
+    path: &Path,
+    joins: &[AcceptedJoin],
+    runner: &Runner,
+    discovery: &dyn crate::discovery::Discovery,
+) -> Result<Vec<String>, String> {
+    let mut found = sources::discover(path)?;
+    if found.tables.is_empty() {
+        return Err(format!(
+            "{}: no tables Brightfield can read{}",
+            path.display(),
+            skipped_note(&found)
+        ));
+    }
+    let mut taken: HashSet<String> = p
+        .sources
+        .tables
+        .iter()
+        .flat_map(|t| derived_names(&t.name))
+        .collect();
+    for table in &mut found.tables {
+        table.name = unclashed(&table.name, &mut taken);
+    }
+
+    let mut warnings = Vec::new();
+    if p.sources.tables.is_empty() && still_untitled(&p.dir) {
+        let moved = crate::rename::rename_claiming(&p.dir, &slug_of(path))?;
+        p.dir = moved.to;
+        warnings = moved.warnings;
+    }
+
+    let manifest_path = p.dir.join("arcform.yaml");
+    let manifest_before = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    let sources_path = p.dir.join(SOURCES_FILE);
+    let sources_before = std::fs::read_to_string(&sources_path).ok();
+    let mut next = p.clone();
+    next.profiles.clear();
+    next.sources.tables.extend(found.tables.iter().cloned());
+    next.sources.skipped.extend(found.skipped);
+    let mut load_files: Vec<PathBuf> = Vec::new();
+    let added = (|| -> Result<(), String> {
+        let mut manifest: serde_yaml::Value = serde_yaml::from_str(&manifest_before)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        let map = manifest
+            .as_mapping_mut()
+            .ok_or_else(|| format!("{}: not a manifest", manifest_path.display()))?;
+        if !map.get("steps").is_some_and(serde_yaml::Value::is_sequence) {
+            map.insert("steps".into(), serde_yaml::Value::Sequence(Vec::new()));
+        }
+        let steps = map
+            .get_mut("steps")
+            .and_then(serde_yaml::Value::as_sequence_mut)
+            .expect("made a sequence above");
+        let loads = load_steps(p);
+        let after = steps
+            .iter()
+            .rposition(|s| is_load(s, &loads))
+            .map_or(0, |i| i + 1);
+        for (at, table) in (after..).zip(&found.tables) {
+            let step = load_step(&table.name);
+            let file = format!("models/01_{step}.sql");
+            let sql = format!("{}\n", sources::load_sql(table, &next.dir));
+            let to = next.dir.join(&file);
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("{}: {e}", parent.display()))?;
+            }
+            std::fs::write(&to, sql).map_err(|e| format!("{file}: {e}"))?;
+            load_files.push(to);
+            steps.insert(
+                at,
+                serde_yaml::from_str(&format!(
+                    "name: {}\nsql: {}\nproduces:\n  - {}\n",
+                    quoted_yaml(&step),
+                    quoted_yaml(&file),
+                    quoted_yaml(&format!("raw_{}", table.name))
+                ))
+                .map_err(|e| e.to_string())?,
+            );
+        }
+        let out = serde_yaml::to_string(&manifest).map_err(|e| e.to_string())?;
+        std::fs::write(&manifest_path, out)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        write_sources(&next.dir, &next.sources)?;
+
+        run_loads(&next, runner)?;
+        profile(&mut next)?;
+        write_packages(&next)?;
+        let stand_in = crate::discovery::StandIn;
+        let model = if next.sources.tables.len() > 1 {
+            // When dovetail's sample pass fails, the tables are still added, each unclear with no
+            // joins but those accepted, as an open of several tables does.
+            let mut model = crate::discovery::sample_pass(discovery, &next, None).or_else(|e| {
+                eprintln!("dovetail's sample pass failed, so the tables are added unclear: {e}");
+                crate::discovery::sample_pass(&stand_in, &next, None)
+            })?;
+            for join in joins {
+                model = accept_join(&model, join)?;
+            }
+            crate::discovery::write_model_file(&next.dir, &brightfield_ossie::write(&model))?;
+            model
+        } else {
+            crate::discovery::sample_pass(&stand_in, &next, None)?
+        };
+        write_silver(&next, &model)?;
+        drop_unmade_silver(&next, &model)?;
+        run_loads(&next, runner)
+    })();
+    if let Err(e) = added {
+        let _ = std::fs::write(&manifest_path, &manifest_before);
+        if let Some(before) = &sources_before {
+            let _ = std::fs::write(&sources_path, before);
+        }
+        for file in &load_files {
+            let _ = std::fs::remove_file(file);
+        }
+        return Err(e);
+    }
+    // The Protocol has a source, so it is no longer waiting for one to name it.
+    let _ = std::fs::remove_file(next.dir.join(UNTITLED_FILE));
+    *p = next;
+    Ok(warnings)
+}
+
+/// `model` with the join `join` in it as the analyst's: a join it has already, either way round,
+/// is marked as decided by the analyst, and any other is added.
+fn accept_join(model: &Model, join: &AcceptedJoin) -> Result<Model, String> {
+    let (from, from_column) = &join.left;
+    let (to, to_column) = &join.right;
+    let one = |c: &String| vec![c.clone()];
+    let found = model.relationships.iter().position(|r| {
+        (r.from == *from
+            && r.to == *to
+            && r.from_columns == one(from_column)
+            && r.to_columns == one(to_column))
+            || (r.from == *to
+                && r.to == *from
+                && r.from_columns == one(to_column)
+                && r.to_columns == one(from_column))
+    });
+    if let Some(at) = found {
+        let mut model = model.clone();
+        model.relationships[at].meta.decided_by = brightfield_ossie::DecidedBy::Analyst;
+        return Ok(model);
+    }
+    brightfield_ossie::apply(
+        model,
+        &brightfield_ossie::Edit::AddJoin {
+            from: from.clone(),
+            from_columns: one(from_column),
+            to: to.clone(),
+            to_columns: one(to_column),
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// The names a source table called `name` gives to what is made of it: the table, its raw and
+/// failed-value tables, and its load, silver and failed steps. Two tables clash when any of these
+/// are shared.
+fn derived_names(name: &str) -> [String; 6] {
+    [
+        name.to_string(),
+        format!("raw_{name}"),
+        format!("{name}__failed"),
+        load_step(name),
+        format!("{SILVER_STEP}{name}"),
+        format!("{FAILED_STEP}{name}"),
+    ]
+}
+
+/// `base`, or `base_2`, `base_3` and so on when what it would make is `taken`, as tables found
+/// together are named; what the chosen name makes is added to `taken`.
+fn unclashed(base: &str, taken: &mut HashSet<String>) -> String {
+    let mut name = base.to_string();
+    let mut n = 2;
+    while derived_names(&name).iter().any(|d| taken.contains(d)) {
+        name = format!("{base}_{n}");
+        n += 1;
+    }
+    taken.extend(derived_names(&name));
+    name
+}
+
 /// Held by the own-files flow's writes to a Protocol's database, [`run_loads`] and
 /// [`drop_unmade_silver`], for their whole run, and by a discovery pass while it copies the
 /// database for its child, so the copy is not taken part way through one of those writes. The
@@ -1168,6 +1480,26 @@ fn quoted_yaml(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_protocols_manifest_is_one_arc_reads() {
+        let parent = tempfile::tempdir().expect("a temporary folder");
+        let p = create_empty(parent.path()).expect("an empty Protocol");
+        let text = std::fs::read_to_string(p.dir.join("arcform.yaml")).expect("the manifest");
+        let manifest = arc::spec::Manifest::from_yaml_str(&text).expect("arc reads it");
+        assert_eq!(manifest.name, "Untitled");
+        assert!(still_untitled(&p.dir));
+        assert_eq!(empty_protocol_dir(&p.dir), Some(p.dir.clone()));
+    }
+
+    #[test]
+    fn a_table_named_as_one_already_there_takes_a_number() {
+        let mut taken: HashSet<String> = derived_names("orders").into_iter().collect();
+        assert_eq!(unclashed("orders", &mut taken), "orders_2");
+        // `orders` loads into `raw_orders`, and `orders_2` into `raw_orders_2`, so both are taken.
+        assert_eq!(unclashed("raw_orders", &mut taken), "raw_orders_3");
+        assert_eq!(unclashed("customers", &mut taken), "customers");
+    }
 
     #[test]
     fn storage_types_win_and_labels_type_varchar() {

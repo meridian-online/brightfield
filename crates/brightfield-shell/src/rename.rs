@@ -129,6 +129,40 @@ pub fn rename(dir: &Path, new_name: &str) -> Result<PathBuf, String> {
 ///
 /// As [`rename`].
 pub fn rename_with(dir: &Path, new_name: &str, ops: &FolderOps) -> Result<Moved, String> {
+    let moved = rename_unmarked(dir, new_name, ops)?;
+    // The analyst has named the Protocol, so its first source no longer names it, whatever name
+    // was chosen.
+    let _ = std::fs::remove_file(moved.to.join(crate::own_files::UNTITLED_FILE));
+    Ok(moved)
+}
+
+/// Rename the Protocol in `dir` after `stem`, within the folder it is in, taking `stem-2`,
+/// `stem-3` and so on when that name is taken, as a new Protocol is named
+/// ([`crate::protocols_dir::claim`]): what the first source added to an Untitled Protocol does.
+/// Otherwise as [`rename`]: the `name:` changes with the folder, its sources are repaired and
+/// arc's database moved.
+///
+/// # Errors
+///
+/// A `stem` that cannot name a folder, a folder with no parent, and a folder or manifest that
+/// cannot be read, claimed or moved.
+pub fn rename_claiming(dir: &Path, stem: &str) -> Result<Moved, String> {
+    let stem = checked_name(stem)?;
+    let dir = std::path::absolute(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let parent = dir
+        .parent()
+        .ok_or_else(|| format!("{}: has no folder above it", dir.display()))?;
+    let (to, name) = crate::protocols_dir::claim(parent, stem).map_err(|e| e.to_string())?;
+    let (left_behind, warnings) = move_to(&dir, &to, Some(&name), true, &FolderOps::system())?;
+    Ok(Moved {
+        to,
+        left_behind,
+        warnings,
+    })
+}
+
+/// [`rename_with`], leaving the record of the name New Protocol gave the folder as it is.
+fn rename_unmarked(dir: &Path, new_name: &str, ops: &FolderOps) -> Result<Moved, String> {
     let name = checked_name(new_name)?;
     let dir = std::path::absolute(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let parent = dir
@@ -231,6 +265,12 @@ pub fn relocate_with(dir: &Path, new_parent: &Path, ops: &FolderOps) -> Result<M
     let (to, name) = crate::protocols_dir::claim(&new_parent, &stem).map_err(|e| e.to_string())?;
     let renamed = (name != stem).then_some(name.as_str());
     let (left_behind, warnings) = move_to(&dir, &to, renamed, true, ops)?;
+    // A move is not a naming: an Untitled Protocol that took `-2` in its new folder is still
+    // waiting for its first source to name it.
+    let marker = to.join(crate::own_files::UNTITLED_FILE);
+    if marker.is_file() {
+        let _ = std::fs::write(&marker, format!("{name}\n"));
+    }
     Ok(Moved {
         to,
         left_behind,
