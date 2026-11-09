@@ -1827,3 +1827,63 @@ fn a_run_with_nothing_owed_leaves_the_model_unwritten() {
         "the joins are not measured again"
     );
 }
+
+/// The retail extract copied to a scratch folder of `name` and opened as `opened` opens it, so a
+/// test can take a source away without touching the fixture.
+fn opened_copy(name: &str) -> (ModelPane, PathBuf, MutexGuard<'static, ()>) {
+    let held = folder_lock();
+    let copy = scratch().join(name);
+    let _ = std::fs::remove_dir_all(&copy);
+    std::fs::create_dir_all(&copy).unwrap();
+    for entry in std::fs::read_dir(retail()).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "csv") {
+            std::fs::copy(&path, copy.join(path.file_name().unwrap())).unwrap();
+        }
+    }
+    let Opened::Model(protocol) = data_file::open_any(&copy, &runner()).expect("it opens") else {
+        panic!("several tables are a model");
+    };
+    let mut pane = ModelPane::open(protocol, runner()).expect("the model reads");
+    pane.save_model(retail_model())
+        .expect("the written model runs");
+    (pane, copy, held)
+}
+
+#[test]
+fn run_after_an_owed_run_failed_measures_the_edited_joins() {
+    let (mut pane, copy, _held) = opened_copy("owed-run-failed");
+    assert_eq!(join_evidence(&pane, "transactions_stores").orphans, 0);
+    // A source taken away, so the run the edit owes fails before it measures anything.
+    let away = copy.join("transactions.csv.away");
+    std::fs::rename(copy.join("transactions.csv"), &away).unwrap();
+    let typed = replaced(
+        pane.file_draft(),
+        "- name: transactions_stores\n  from: transactions\n  to: stores\n  from_columns:\n  - store_id\n",
+        "- name: transactions_stores\n  from: transactions\n  to: stores\n  from_columns:\n  - customer_id\n",
+    );
+    pane.set_file_draft(typed);
+    assert_eq!(pane.tick_file_edit(0), None, "the edit arms the pause");
+    assert!(
+        matches!(pane.tick_file_edit(FILE_PAUSE_MS), Some(Err(_))),
+        "the owed run fails"
+    );
+    assert!(!pane.run_waiting(), "the failed run paid what was owed");
+    assert_eq!(
+        join_evidence(&pane, "transactions_stores").orphans,
+        0,
+        "nothing was measured"
+    );
+
+    // The cause put right, Run measures what the failed run did not.
+    std::fs::rename(&away, copy.join("transactions.csv")).unwrap();
+    let finished = pane.run_whole().expect("the run starts");
+    assert!(finished.succeeded, "{}", finished.log);
+    let measured = brightfield_shell::model_pane::measure_joins(&pane.protocol.dir, &pane.model)
+        .expect("the run's database reads");
+    assert_eq!(
+        pane.model, measured,
+        "the joins are measured over the new tables"
+    );
+    assert_eq!(join_evidence(&pane, "transactions_stores").orphans, 2);
+}

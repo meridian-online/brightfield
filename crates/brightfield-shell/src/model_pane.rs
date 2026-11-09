@@ -262,6 +262,9 @@ pub struct ModelPane {
     /// Whether a text the editor read was written as the model without the Protocol run for it,
     /// which happens once the editor lets go of the keyboard or the file view is left.
     run_owed: bool,
+    /// Whether a run for the model was started without its joins then being measured, because it
+    /// failed or the measurement did, so the next Run that succeeds measures them.
+    joins_unmeasured: bool,
     /// Bumped whenever the model changes, so the diagram is drawn again.
     generation: u64,
     raster: Option<(DiagramKey, egui::TextureId)>,
@@ -326,6 +329,7 @@ impl ModelPane {
             file_focused: false,
             draft_refused: false,
             run_owed: false,
+            joins_unmeasured: false,
             generation: 0,
             raster: None,
             drawn: ModelDrawn::default(),
@@ -1002,8 +1006,9 @@ impl ModelPane {
     ///
     /// It holds the database while it runs, as the pane's own runs do, so discovery's pass does
     /// not copy a database arc is writing. When an edit owed the run, a run that succeeds measures
-    /// each join's evidence again over the new tables and writes the model when that changed it;
-    /// otherwise the model is left as it is.
+    /// each join's evidence again over the new tables and writes the model when that changed it,
+    /// as does one after a run that failed before it measured them; otherwise the model is left as
+    /// it is.
     ///
     /// # Errors
     ///
@@ -1014,16 +1019,19 @@ impl ModelPane {
         own_files::write_silver(&self.protocol, &self.model)?;
         own_files::drop_unmade_silver(&self.protocol, &self.model)?;
         // This run is the one the edit was owed, so it measures the joins afterwards as that run
-        // would have. With nothing owed, the joins were measured over the model's last run, and
-        // the model is not written again.
-        let owed = std::mem::take(&mut self.run_owed);
+        // would have, and so does a run after one that stopped short of measuring them. With
+        // neither, the joins were measured over the model's last run, and the model is not
+        // written again.
+        if std::mem::take(&mut self.run_owed) {
+            self.joins_unmeasured = true;
+        }
         let finished = {
             let _writing = own_files::database_lock();
             crate::run::Run::begin(&self.runner, &self.protocol.dir, || {}).wait()
         };
         // The run changed the tables under the model the inspector last read.
         self.inspected = None;
-        if owed && finished.succeeded {
+        if self.joins_unmeasured && finished.succeeded {
             // The run's outcome stands either way; a measurement that fails is said in the file
             // view, as the owed run's own failure would have been.
             if let Err(e) = self.reverify(true) {
@@ -1039,6 +1047,8 @@ impl ModelPane {
     /// frame.
     fn run_silver(&mut self, from_editor: bool) -> Result<(), String> {
         self.run_owed = false;
+        // Until the measurement below succeeds, the next Run owes it.
+        self.joins_unmeasured = true;
         own_files::write_silver(&self.protocol, &self.model)?;
         own_files::drop_unmade_silver(&self.protocol, &self.model)?;
         own_files::run_loads(&self.protocol, &self.runner)?;
@@ -1071,12 +1081,13 @@ impl ModelPane {
     /// when that changed it. `from_editor` is as [`Self::save_with`] takes it.
     fn reverify(&mut self, from_editor: bool) -> Result<(), String> {
         let measured = measure_joins(&self.protocol.dir, &self.model)?;
-        if measured == self.model {
-            return Ok(());
+        if measured != self.model {
+            // Measuring renames and removes nothing, so what the file kept beside the model stands.
+            let kept = self.kept.clone();
+            self.write_model(measured, kept, from_editor)?;
         }
-        // Measuring renames and removes nothing, so what the file kept beside the model stands.
-        let kept = self.kept.clone();
-        self.write_model(measured, kept, from_editor)
+        self.joins_unmeasured = false;
+        Ok(())
     }
 
     /// Raster the diagram through `host` when it is showing and what it depends on changed.
