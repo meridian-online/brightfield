@@ -707,8 +707,8 @@ fn says_the_folder_is_gone(win: &Window) -> bool {
         .any(|n| n.title == FOLDER_GONE_TITLE)
 }
 
-/// With the window's Protocol folder at `dir` gone, try every write a person can ask for: a draft
-/// and Cmd+S, then Cmd+Enter. The window says the folder is gone, and the folder stays gone.
+/// With the window's Protocol folder at `dir` gone, try the writes a person asks for from the
+/// keyboard: a draft and Cmd+S, then Cmd+Enter. The window says the folder is gone, and the folder stays gone.
 fn nothing_makes_it_again(win: &mut Window, dir: &Path, condition: &str) {
     win.settle();
     assert!(says_the_folder_is_gone(win), "{}", win.said());

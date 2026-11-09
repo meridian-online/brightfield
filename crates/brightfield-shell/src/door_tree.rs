@@ -99,8 +99,9 @@ fn read_level(dir: &Path, depth: usize, budget: &mut usize) -> Vec<Node> {
 
 /// What the Protocol in `dir` reads as on the door: what its newest whole run's record says, read
 /// now. Runs Brightfield started itself to preview the sources ([`crate::run::mark_preview`]) are
-/// not whole runs and are passed over, and only records of this Protocol's own `name:` count,
-/// since two Protocols in one folder write their records into one place.
+/// not whole runs and are passed over (`a_previewed_protocol_reads_previewed_not_run` in
+/// `tests/door_tree.rs`), and records of another Protocol's `name:` are passed over too, since
+/// two Protocols in one folder write their records into one place.
 ///
 /// - A run whose outcome is an error or partial is [`RunState::Failed`].
 /// - A run that never finished, stopped before arc completed its record, counts as no run.
@@ -153,7 +154,7 @@ pub fn run_state(dir: &Path) -> RunState {
 }
 
 /// When the newest whole run of the Protocol named `protocol` in `dir` was recorded: its record's
-/// modification time, or `None` when it has none.
+/// modification time, or `None` when it has no whole run on record.
 #[must_use]
 pub fn newest_whole_run_at(dir: &Path, protocol: &str) -> Option<std::time::SystemTime> {
     let (path, _) = newest_whole_run(dir, protocol)?;

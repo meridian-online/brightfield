@@ -369,7 +369,7 @@ pub fn preview_ids(dir: &Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// The paths of the records of whole runs under `dir`, newest first: every record but those
+/// The paths of the records of whole runs under `dir`, newest first: the records less those
 /// [`mark_preview`] marked. A whole run is one the analyst asked for, Run in the window or the run
 /// an open from a link starts.
 #[must_use]
