@@ -86,11 +86,16 @@ struct Window {
 impl Window {
     /// The window, with the Protocol named `name` opened on it through the open queue.
     fn opened(name: &str) -> Self {
+        Self::opened_with(name, Runner::at(env!("CARGO_BIN_EXE_brightfield-shell")))
+    }
+
+    /// [`Self::opened`], handing the window `runner` to open, record and run with.
+    fn opened_with(name: &str, runner: Runner) -> Self {
         scratch();
         let csv = housing_copy(name);
         let mut win = Self {
             app: MeridianApp::headless(Boot::empty(), Mode::Light)
-                .running_with(Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))))
+                .running_with(Some(runner))
                 .keeping_history(Some(brightfield_protocol::HistoryStore::At(
                     scratch().join("versions"),
                 ))),
@@ -335,6 +340,12 @@ impl Window {
     /// the asset row under the step's.
     fn select_made_by(&mut self, step: &str) {
         self.graph_to_canvas();
+        self.click_made_by(step);
+        self.graph_to_canvas();
+    }
+
+    /// Click the asset row under the step `step`'s row, whatever the canvas holds.
+    fn click_made_by(&mut self, step: &str) {
         let rows = self.rows();
         let at = rows
             .iter()
@@ -346,7 +357,6 @@ impl Window {
             .unwrap_or_else(|| panic!("no asset row under {step}: {:?}", self.labels()))
             .clone();
         self.click(made.rect.center());
-        self.graph_to_canvas();
         assert_eq!(
             self.app
                 .protocol_model()
@@ -374,6 +384,15 @@ impl Window {
             "escape left the palette open"
         );
         rows
+    }
+
+    /// The banner titled `title`'s body, if one is up.
+    fn banner(&self, title: &str) -> Option<String> {
+        self.app
+            .notifications()
+            .iter()
+            .find(|n| n.title == title)
+            .map(|n| n.body.clone().unwrap_or_default())
     }
 
     fn versions_listed(&mut self) -> Listing {
@@ -634,5 +653,213 @@ fn close_without_saving_keeps_the_step() {
         row.changed.contains(&format!("Removed step \u{b7} {step}")),
         "the version names the removal: {:?}",
         row.changed
+    );
+}
+
+/// The step text an agent might add to the manifest: `entry` inserted as a step before the step
+/// `before`, at the same indent as the manifest's own step entries.
+fn with_step_before(manifest: &str, before: &str, entry: &[&str]) -> String {
+    let mut out = String::new();
+    let mut done = false;
+    for line in manifest.lines() {
+        if !done && line.trim_start() == format!("- name: {before}") {
+            let indent = &line[..line.len() - line.trim_start().len()];
+            for (i, part) in entry.iter().enumerate() {
+                let lead = if i == 0 { "- " } else { "  " };
+                out.push_str(&format!("{indent}{lead}{part}\n"));
+            }
+            done = true;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    assert!(done, "the manifest has no step {before}: {manifest}");
+    out
+}
+
+/// A runner that, the first time it is asked to edit the Protocol, puts `inject` in place of
+/// `arcform.yaml` first, as an agent writing between Brightfield's read and arc's would, and hands
+/// everything to the real runner.
+#[cfg(unix)]
+fn injecting(dir: &Path, inject: &Path) -> Runner {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("injecting.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *edit-protocol*) if [ -f '{inject}' ]; then cp '{inject}' arcform.yaml; rm '{inject}'; fi;;\nesac\nexec '{}' \"$@\"\n",
+            env!("CARGO_BIN_EXE_brightfield-shell"),
+            inject = inject.display()
+        ),
+    )
+    .expect("the script writes");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+        .expect("the script is executable");
+    Runner::at(script)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_removal_is_not_applied_when_the_manifest_changes_under_it() {
+    let shims = scratch().join("shims").join("changed");
+    std::fs::create_dir_all(&shims).expect("a shim folder");
+    let inject = shims.join("agent.yaml");
+    let mut win = Window::opened_with("remove_changed", injecting(&shims, &inject));
+    let step = win.saved_grouping();
+    let model = win.model_file(&step);
+    // What an agent writes between the read that finds the step and arc's delete: a step of its
+    // own before it, so the position read names the agent's step.
+    let changed = with_step_before(
+        &win.manifest(),
+        &step,
+        &["name: agent_note", "command: echo agent"],
+    );
+    std::fs::write(&inject, &changed).expect("the agent's manifest writes");
+    win.select_made_by(&step);
+    win.d_d();
+
+    win.cmd_s();
+
+    assert!(!inject.exists(), "the agent's write happened");
+    let said = win
+        .banner("Could not remove the step")
+        .unwrap_or_else(|| panic!("no banner said why: {}", win.said()));
+    assert_eq!(said, brightfield_shell::operation::CHANGED_MEANWHILE);
+    assert_eq!(
+        win.manifest(),
+        changed,
+        "the manifest is the agent's, with both steps in it"
+    );
+    assert!(model.is_file(), "and the step's SQL file is kept");
+    assert!(win.marked(), "the removal is still a draft");
+}
+
+#[test]
+fn a_statement_that_reads_a_removed_step_is_not_kept() {
+    let mut win = Window::opened("remove_then_keep");
+    let step = win.saved_grouping();
+    win.select_made_by(&step);
+    win.d_d();
+    // The graph chip again puts back the dashboard the graph was reached from.
+    let chip = win
+        .app
+        .spine_rows()
+        .iter()
+        .find_map(|r| r.chip)
+        .expect("the graph chip");
+    win.click(chip.rect.center());
+    assert!(!win.app.graph_on_canvas());
+
+    win.key(egui::Key::Space, egui::Modifiers::NONE);
+    win.type_text(&format!("select house_age from {step} where n > 10"));
+    assert!(win.app.finish_typed_reads(Duration::from_secs(60)));
+    win.key(egui::Key::Enter, egui::Modifiers::COMMAND);
+
+    let said = win
+        .banner(brightfield_shell::window::NOT_KEPT_READS_REMOVED)
+        .unwrap_or_else(|| panic!("no banner said why: {}", win.said()));
+    assert!(said.contains(&step), "it names {step}: {said}");
+    assert!(
+        win.app.chart_doc().typed_steps().is_empty(),
+        "nothing is kept"
+    );
+}
+
+#[test]
+fn a_reader_an_agent_adds_before_save_refuses_the_removal() {
+    let mut win = Window::opened("remove_agent_reader");
+    let step = win.saved_grouping();
+    win.select_made_by(&step);
+    win.d_d();
+    assert!(win.marked());
+
+    // An agent adds a step that reads it, after the removal was drafted.
+    std::fs::write(
+        win.dir().join("models").join("agent_reader.sql"),
+        format!("CREATE OR REPLACE TABLE \"agent_reader\" AS\nselect * from {step}\n"),
+    )
+    .expect("the agent's model writes");
+    let manifest = format!(
+        "{}- name: agent_reader\n  sql: models/agent_reader.sql\n",
+        win.manifest()
+    );
+    std::fs::write(win.dir().join("arcform.yaml"), &manifest).expect("the agent's manifest writes");
+    assert!(
+        brightfield_protocol::parse_manifest_str(&manifest).is_ok(),
+        "the agent's manifest loads: {manifest}"
+    );
+    win.settle();
+
+    win.cmd_s();
+
+    let said = win
+        .banner("Could not remove the step")
+        .unwrap_or_else(|| panic!("no banner said why: {}", win.said()));
+    assert!(said.contains("agent_reader"), "it names the reader: {said}");
+    assert_eq!(win.manifest(), manifest, "the manifest is unchanged");
+    assert!(win.marked(), "the removal is still a draft");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_sql_file_that_cannot_be_deleted_is_left_with_a_notice() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut win = Window::opened("remove_left_behind");
+    let step = win.saved_grouping();
+    let model = win.model_file(&step);
+    win.select_made_by(&step);
+    win.d_d();
+    let models = model.parent().expect("the models folder").to_path_buf();
+    std::fs::set_permissions(&models, std::fs::Permissions::from_mode(0o555))
+        .expect("the models folder is made read-only");
+
+    win.cmd_s();
+    let _ = std::fs::set_permissions(&models, std::fs::Permissions::from_mode(0o755));
+
+    assert!(
+        !win.manifest_steps().contains(&step),
+        "the step is out of the manifest: {}",
+        win.said()
+    );
+    assert!(model.is_file(), "its file is left behind");
+    let said = win
+        .banner(brightfield_shell::window::SQL_FILE_LEFT_BEHIND)
+        .unwrap_or_else(|| panic!("no notice names the file: {}", win.said()));
+    assert!(said.contains(&model.display().to_string()), "{said}");
+    assert!(!win.marked(), "the removal is saved: {}", win.app.title());
+}
+
+#[test]
+fn d_d_on_the_spine_removes_with_the_dashboard_on_the_canvas() {
+    let mut win = Window::opened("remove_from_outline");
+    let step = win.saved_grouping();
+    assert!(!win.app.graph_on_canvas(), "the canvas holds no graph");
+    win.click_made_by(&step);
+    assert!(
+        !win.app.graph_on_canvas(),
+        "the click put no graph on the canvas"
+    );
+
+    win.d_d();
+
+    assert!(
+        win.step_row(&step).is_some_and(|r| r.struck),
+        "{step} is removed: {:?}",
+        win.labels()
+    );
+    assert!(win.marked());
+    // The Versions panel's row for what is not yet saved names the removal.
+    win.versions_listed();
+    let words = win
+        .app
+        .chart_doc()
+        .versions()
+        .unsaved_words()
+        .map(str::to_owned);
+    assert!(
+        words
+            .as_deref()
+            .is_some_and(|w| w.contains(&format!("Removed step \u{b7} {step}"))),
+        "{words:?}"
     );
 }

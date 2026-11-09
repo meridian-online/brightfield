@@ -969,6 +969,33 @@ fn fixed_steps(source: Option<&OneStepProtocol>, graph: &AssetGraph) -> BTreeSet
     fixed
 }
 
+/// **The later steps that read what the step `step` makes in `graph`**, in the
+/// order the Protocol runs them: each step through which an asset `step` makes
+/// flows on. What [`ProtocolModel::readers_of`] answers over the graph it
+/// draws, and what a Save asks again over the Protocol as it stands then.
+#[must_use]
+pub fn readers_in(graph: &AssetGraph, step: &str) -> Vec<String> {
+    let made: BTreeSet<&AssetId> = graph
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.step.as_deref() == Some(step))
+        .map(|(id, _)| id)
+        .collect();
+    let mut readers: BTreeSet<&StepId> = BTreeSet::new();
+    for edge in graph.edges.iter().filter(|e| made.contains(&e.from)) {
+        let reader = edge
+            .via
+            .as_ref()
+            .or_else(|| graph.nodes.get(&edge.to).and_then(|n| n.step.as_ref()));
+        if let Some(reader) = reader.filter(|r| r.as_str() != step) {
+            readers.insert(reader);
+        }
+    }
+    let mut readers: Vec<&StepId> = readers.into_iter().collect();
+    readers.sort_by_key(|r| graph.seams.get(*r).map_or(usize::MAX, |s| s.index));
+    readers.into_iter().cloned().collect()
+}
+
 /// The verbs that put the Outline's column on a channel of the hero's shelf,
 /// each with its channel. Their keys are the registry's (`z x`, `z y`, `z c`),
 /// read through `protocol_key_table` as the other Protocol bindings are; what
@@ -2131,26 +2158,19 @@ impl ProtocolModel {
     /// reader a family tile or a fold hides is still named.
     #[must_use]
     pub fn readers_of(&self, step: &str) -> Vec<String> {
-        let graph = &self.graph_full;
-        let made: BTreeSet<&AssetId> = graph
+        readers_in(&self.graph_full, step)
+    }
+
+    /// The tables the step `step` makes, by the labels the unfolded graph gives
+    /// them, case folded as DuckDB resolves a name.
+    #[must_use]
+    pub fn tables_of_step(&self, step: &str) -> Vec<String> {
+        self.graph_full
             .nodes
-            .iter()
-            .filter(|(_, node)| node.step.as_deref() == Some(step))
-            .map(|(id, _)| id)
-            .collect();
-        let mut readers: BTreeSet<&StepId> = BTreeSet::new();
-        for edge in graph.edges.iter().filter(|e| made.contains(&e.from)) {
-            let reader = edge
-                .via
-                .as_ref()
-                .or_else(|| graph.nodes.get(&edge.to).and_then(|n| n.step.as_ref()));
-            if let Some(reader) = reader.filter(|r| r.as_str() != step) {
-                readers.insert(reader);
-            }
-        }
-        let mut readers: Vec<&StepId> = readers.into_iter().collect();
-        readers.sort_by_key(|r| graph.seams.get(*r).map_or(usize::MAX, |s| s.index));
-        readers.into_iter().cloned().collect()
+            .values()
+            .filter(|node| node.kind.is_tabular() && node.step.as_deref() == Some(step))
+            .map(|node| node.label.to_lowercase())
+            .collect()
     }
 
     /// Mirror in the steps the chart document holds removed and not yet saved,
@@ -2236,14 +2256,30 @@ impl ProtocolModel {
         true
     }
 
-    /// **The Outline's `z` and a channel**: what the window feeds the model
-    /// while a dashboard holds the canvas and the Outline holds the keys. The
-    /// rest of the Protocol grammar drives the graph, and is fed while the
-    /// graph is on the canvas ([`Self::feed_events`]).
+    /// **The Outline's `z` and a channel, and its `d d`**: what the window
+    /// feeds the model while a dashboard holds the canvas and the Outline holds
+    /// the keys. The rest of the Protocol grammar drives the graph, and is fed
+    /// while the graph is on the canvas ([`Self::feed_events`]).
     ///
-    /// Returns whether the key was the chord's: a `z`, or the channel's letter
-    /// after one. Any other key after a `z` lets the chord go and is not taken.
+    /// Returns whether the key was a chord's: a `z`, or the channel's letter
+    /// after one, or a `d` while the selected asset's step can be removed. Any
+    /// other key after a `z` or a `d` lets the chord go and is not taken.
     pub fn feed_column_chord(&mut self, key: egui::Key, mods: egui::Modifiers) -> bool {
+        // `d d` on a spine row whose step can be removed, as with the graph on
+        // the canvas: the Outline holds the keys, so the chart's own `d` is not
+        // pressed by it.
+        if key == egui::Key::D && mods.is_none() && self.removable_step().is_some() {
+            self.pending_z = false;
+            if std::mem::take(&mut self.pending_d) {
+                if let Some(verb) = self.key_table.get(REMOVE_STEP_KEYS).copied() {
+                    self.dispatch(verb, None);
+                }
+            } else {
+                self.pending_d = true;
+            }
+            return true;
+        }
+        self.pending_d = false;
         if self.pending_z {
             self.pending_z = false;
             let verb = self

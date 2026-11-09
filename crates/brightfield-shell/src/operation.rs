@@ -313,52 +313,124 @@ pub fn record_sql(runner: &Runner, dir: &Path, sql: &str, name: &str) -> Result<
     }
 }
 
+/// What [`remove_step`] did to the Protocol.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StepRemoval {
+    /// The step was not in `arcform.yaml`, such as one an agent took out meanwhile, and nothing
+    /// was written.
+    Gone,
+    /// The step is out of `arcform.yaml`. `left_behind` says why its SQL file could not be
+    /// deleted, naming it, when it could not: the removal stands all the same.
+    Removed {
+        /// The file left behind and why, when its delete failed.
+        left_behind: Option<String>,
+    },
+}
+
+/// The sentence a removal says when `arcform.yaml` changed under it, so that arc's delete did not
+/// take out exactly the step it was asked for.
+pub const CHANGED_MEANWHILE: &str = "The Protocol changed while the step was being removed, so it was not removed. Save again to remove it from the Protocol as it is now.";
+
 /// **Remove the step `name` from the Protocol in `dir`, through arc**: `arc edit-protocol delete
 /// steps[<i>]`, which takes the step's entry out of `arcform.yaml` with the comment flush above it,
 /// leaves every other byte as it was, checks the result still loads before it writes, and keeps the
 /// state it replaces in the Protocol's history. arc refuses a result a later step's `depends_on`
 /// breaks, and the folder is then left as it was.
 ///
-/// The step's SQL file is deleted after arc has written, unless another step names it too, so a
-/// refusal leaves the file where the step still reads it. A file outside the Protocol's folder is
-/// never deleted: only a path inside it, written relative to it, is the step's own.
+/// arc deletes by position, and an agent may write `arcform.yaml` between the read that finds the
+/// step's position and arc's own read. So the manifest is read immediately before arc is asked,
+/// and read again after: the delete stands only when exactly the step `name` is gone and every
+/// other step read before is still there. Otherwise no file is deleted, the manifest is put back
+/// as arc found it ([`restore_before_delete`]), and the refusal is [`CHANGED_MEANWHILE`].
 ///
-/// Read off `arcform.yaml` as it is now, which an agent may have written since the step was
-/// removed from the spine. Answers `false`, writing nothing, when the step is not there.
+/// Once the delete stands, the SQL file the step `name` named in the manifest read before is
+/// deleted, unless a step still in the manifest names it too. A file outside the Protocol's folder
+/// is never deleted: only a path inside it, written relative to it, is the step's own.
 ///
 /// # Errors
 ///
-/// Why the manifest could not be read, arc's refusal without its `error: ` prefix, or why the
-/// step's file could not be deleted.
-pub fn remove_step(runner: &Runner, dir: &Path, name: &str) -> Result<bool, String> {
+/// Why the manifest could not be read, arc's refusal without its `error: ` prefix, or
+/// [`CHANGED_MEANWHILE`].
+pub fn remove_step(runner: &Runner, dir: &Path, name: &str) -> Result<StepRemoval, String> {
     let manifest_path = dir.join("arcform.yaml");
-    let text = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
-    let manifest = brightfield_protocol::parse_manifest_str(&text)
-        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
-    let Some(at) = manifest.steps.iter().position(|s| s.name == name) else {
-        return Ok(false);
+    let read = || -> Result<brightfield_protocol::Manifest, String> {
+        let text = std::fs::read_to_string(&manifest_path)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        brightfield_protocol::parse_manifest_str(&text)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))
+    };
+    let before = read()?;
+    let Some(at) = before.steps.iter().position(|s| s.name == name) else {
+        return Ok(StepRemoval::Gone);
     };
     let path = format!("steps[{at}]");
     let out = arc_with_args(runner, dir, &["edit-protocol", "delete", &path]);
     if !out.succeeded {
         return Err(refusal(&out.stderr));
     }
-    let model = manifest.steps[at].sql.as_deref().filter(|model| {
-        !manifest
-            .steps
-            .iter()
-            .enumerate()
-            .any(|(i, s)| i != at && s.sql.as_deref() == Some(*model))
-    });
-    if let Some(file) = model.and_then(|model| own_file(dir, model)) {
-        match std::fs::remove_file(&file) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("{}: {e}", file.display())),
+    let after = read().ok();
+    let expected: Vec<&str> = before
+        .steps
+        .iter()
+        .map(|s| s.name.as_str())
+        .filter(|n| *n != name)
+        .collect();
+    let left: Option<Vec<&str>> = after
+        .as_ref()
+        .map(|m| m.steps.iter().map(|s| s.name.as_str()).collect());
+    if left.as_deref() != Some(expected.as_slice()) {
+        if !restore_before_delete(runner, dir) {
+            eprintln!(
+                "{}: arc's delete took out another step than {name}, and the manifest could not be put back",
+                manifest_path.display()
+            );
         }
+        return Err(CHANGED_MEANWHILE.to_string());
     }
-    Ok(true)
+    let Some(after) = after else {
+        return Err(CHANGED_MEANWHILE.to_string());
+    };
+    let model = before.steps[at]
+        .sql
+        .as_deref()
+        .filter(|model| !after.steps.iter().any(|s| s.sql.as_deref() == Some(*model)));
+    let left_behind = model
+        .and_then(|model| own_file(dir, model))
+        .and_then(|file| match std::fs::remove_file(&file) {
+            Ok(()) => None,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => Some(format!("{}: {e}", file.display())),
+        });
+    Ok(StepRemoval::Removed { left_behind })
+}
+
+/// **Put `arcform.yaml` back as arc found it before its last edit**, from the checkpoint that edit
+/// recorded in the Protocol's history: the entry before the newest, the newest being the save of
+/// what arc wrote. Put back through `arc history restore`, which checkpoints what it replaces.
+///
+/// Only while the file is still what arc wrote: a file written again since is someone's newer
+/// work, and is left as it is. Answers whether the manifest was put back.
+fn restore_before_delete(runner: &Runner, dir: &Path) -> bool {
+    let out = arc_with_args(runner, dir, &["history", "list", "--json"]);
+    if !out.succeeded {
+        return false;
+    }
+    let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&out.stdout) else {
+        return false;
+    };
+    let ids: Vec<&str> = entries
+        .iter()
+        .filter_map(|entry| entry.get("id").and_then(serde_json::Value::as_str))
+        .collect();
+    let [.., earlier, newest] = ids[..] else {
+        return false;
+    };
+    let shown = arc_with_args(runner, dir, &["history", "show", newest]);
+    let now = std::fs::read_to_string(dir.join("arcform.yaml")).unwrap_or_default();
+    if !shown.succeeded || shown.stdout != now {
+        return false;
+    }
+    arc_with_args(runner, dir, &["history", "restore", earlier]).succeeded
 }
 
 /// The file `relative` names inside `dir`, when it is a path inside it written relative to it:

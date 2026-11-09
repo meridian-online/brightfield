@@ -539,6 +539,13 @@ pub const SAVE_PROTOCOL: &str = "save-protocol";
 /// The banner's title when a step later steps read is asked to be removed.
 pub const REMOVE_STEP_REFUSED: &str = "This step cannot be removed";
 
+/// The notice's title when a removed step's SQL file could not be deleted after arc took the step
+/// out of `arcform.yaml`.
+pub const SQL_FILE_LEFT_BEHIND: &str = "The removed step's SQL file was left behind";
+
+/// The banner's title when a statement that reads a step removed and not yet saved is kept.
+pub const NOT_KEPT_READS_REMOVED: &str = "This statement was not kept";
+
 /// The banner's title when a removed step that reads one removed after it is asked to be put back.
 pub const PUT_BACK_REFUSED: &str = "This step cannot be put back";
 
@@ -558,6 +565,19 @@ fn readers_sentence(step: &str, readers: &[String]) -> String {
     format!(
         "{} {verb} what {step} makes. Remove {them} first, then {step}.",
         named_list(readers)
+    )
+}
+
+/// The sentence a statement not kept says when it reads what the removed steps `removed` make.
+fn reads_removed_sentence(removed: &[String]) -> String {
+    let (makes, is, them) = if removed.len() == 1 {
+        ("makes", "is", "it")
+    } else {
+        ("make", "are", "them")
+    };
+    format!(
+        "It reads what {} {makes}, which {is} removed. Put {them} back first.",
+        named_list(removed)
     )
 }
 
@@ -5220,6 +5240,7 @@ impl MeridianApp {
         };
         let target = source.as_ref().map(|s| s.file.clone());
         let mut versions = std::mem::take(self.charts.doc.versions_mut());
+        versions.set_removed(self.charts.doc.removal_lines());
         versions.sync(
             source,
             shown,
@@ -8518,6 +8539,35 @@ impl MeridianApp {
                     "This statement was not kept",
                 )
                 .body(NOT_KEPT_ON_A_JOIN_BODY),
+            );
+            ctx.request_repaint();
+            return;
+        }
+        // A statement that reads what a step removed and not yet saved makes would read a table
+        // the Save takes out, so it is refused, naming the step.
+        let reads_removed: Vec<String> = {
+            let model = &self.protocol.doc.model;
+            let read: Vec<String> = answer
+                .reading
+                .tables
+                .iter()
+                .map(|t| t.to_lowercase())
+                .collect();
+            self.charts
+                .doc
+                .removing_steps()
+                .into_iter()
+                .filter(|step| model.tables_of_step(step).iter().any(|t| read.contains(t)))
+                .collect()
+        };
+        if !reads_removed.is_empty() {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new("remove-step"),
+                    Severity::Warning,
+                    NOT_KEPT_READS_REMOVED,
+                )
+                .body(reads_removed_sentence(&reads_removed)),
             );
             ctx.request_repaint();
             return;
@@ -11826,12 +11876,40 @@ impl MeridianApp {
                 // Applied to `arcform.yaml` as it stands at this Save, which an agent may have
                 // written meanwhile: a step already gone from it is a draft with nothing left to
                 // do, and goes quietly.
+                //
+                // Whether later steps read it is asked again here, over the Protocol as it stands
+                // with the statements still kept: a reader an agent added, or a statement kept,
+                // since the removal was drafted refuses it, naming them, and the draft stays. A
+                // reader also being removed does not count. A removal is not one of the steps
+                // this answers, which are the steps a Save added.
                 PendingWork::Remove(name) => {
-                    let removed = crate::operation::remove_step(&runner, &source.dir, &name)?;
-                    self.charts.doc.mark_removal_recorded(&name);
-                    if removed {
-                        recorded.push(name);
+                    let inputs = source.inputs_with_typed(self.charts.doc.typed_steps())?;
+                    let readers: Vec<String> =
+                        crate::protocol::readers_in(&inputs.graph_full, &name)
+                            .into_iter()
+                            .filter(|r| !self.charts.doc.is_removing(r))
+                            .collect();
+                    if !readers.is_empty() {
+                        return Err(readers_sentence(&name, &readers));
                     }
+                    let removal = crate::operation::remove_step(&runner, &source.dir, &name)?;
+                    if let crate::operation::StepRemoval::Removed {
+                        left_behind: Some(why),
+                    } = removal
+                    {
+                        eprintln!("the removed step's SQL file was left behind: {why}");
+                        self.notifications.raise(
+                            Notification::new(
+                                NotificationId::new("remove-step-file"),
+                                Severity::Warning,
+                                SQL_FILE_LEFT_BEHIND,
+                            )
+                            .body(format!(
+                                "{name} is out of the Protocol, but its SQL file could not be deleted. {why}"
+                            )),
+                        );
+                    }
+                    self.charts.doc.mark_removal_recorded(&name);
                 }
             }
         }

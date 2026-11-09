@@ -611,6 +611,11 @@ pub enum Listing {
     },
 }
 
+/// What the row for the change not yet saved was read from, and what it reads:
+/// the version stepped back to, the edits held, the removals in words, and the
+/// row's words.
+type UnsavedRead = (Option<String>, Vec<ChartEdit>, Vec<String>, String);
+
 /// The ledger's Versions panel's state: what it lists and when it last listed.
 #[derive(Debug)]
 pub struct Versions {
@@ -621,8 +626,12 @@ pub struct Versions {
     stale: bool,
     listing: Listing,
     /// What the change not yet saved reads, and what it was read from: the
-    /// version the chart was stepped back to, by its id, and the edits held.
-    unsaved: Option<(Option<String>, Vec<ChartEdit>, String)>,
+    /// version the chart was stepped back to, by its id, the edits held, and
+    /// the steps removed and not yet saved, in words.
+    unsaved: Option<UnsavedRead>,
+    /// The steps removed from the spine and not yet saved, in words, as the
+    /// window last handed them over ([`Self::set_removed`]).
+    removed: Vec<String>,
     /// Where each row drew in the last frame, the unsaved row first when it
     /// drew.
     drawn: Vec<egui::Rect>,
@@ -651,6 +660,7 @@ impl Default for Versions {
             stale: false,
             listing: Listing::NoSource,
             unsaved: None,
+            removed: Vec::new(),
             drawn: Vec::new(),
             cursor: None,
             step_back_drawn: None,
@@ -677,6 +687,13 @@ impl Versions {
         self.unsaved = None;
     }
 
+    /// Hand over the steps removed from the spine and not yet saved, in words,
+    /// for the row of the change not yet saved to name at the next
+    /// [`Self::sync`].
+    pub fn set_removed(&mut self, removed: Vec<String>) {
+        self.removed = removed;
+    }
+
     /// What the panel has to say as of the last [`Self::sync`].
     #[must_use]
     pub fn listing(&self) -> &Listing {
@@ -687,7 +704,7 @@ impl Versions {
     /// the chart is saved.
     #[must_use]
     pub fn unsaved_words(&self) -> Option<&str> {
-        self.unsaved.as_ref().map(|(_, _, words)| words.as_str())
+        self.unsaved.as_ref().map(|(_, _, _, words)| words.as_str())
     }
 
     /// The version the cursor is on, by its id: `None` with the chart drawn as
@@ -835,14 +852,29 @@ impl Versions {
         let read = self
             .unsaved
             .as_ref()
-            .map(|(was, edits, _)| (was.as_deref(), edits.as_slice()));
-        if held.is_empty() && stepped.is_none() {
+            .map(|(was, edits, removed, _)| (was.as_deref(), edits.as_slice(), removed.as_slice()));
+        let removed = self.removed.as_slice();
+        if held.is_empty() && stepped.is_none() && removed.is_empty() {
             self.unsaved = None;
-        } else if read != Some((stepped, held)) {
+        } else if read != Some((stepped, held, removed)) {
+            // A removal is a change to the Protocol rather than to the chart,
+            // so it is named after the chart's changes, as a close keeps it.
+            let words = if held.is_empty() && stepped.is_none() {
+                removed.join("; ")
+            } else if removed.is_empty() {
+                change_words(&unsaved(), tile_of)
+            } else {
+                format!(
+                    "{}; {}",
+                    change_words(&unsaved(), tile_of),
+                    removed.join("; ")
+                )
+            };
             self.unsaved = Some((
                 stepped.map(str::to_string),
                 held.to_vec(),
-                change_words(&unsaved(), tile_of),
+                removed.to_vec(),
+                words,
             ));
         }
     }
