@@ -961,6 +961,12 @@ pub struct ChartDoc {
     /// the rows and there is no table to record it on. Set again whenever the
     /// document is replaced.
     views_are_steps: bool,
+    /// **The chart file this document was opened past without adopting it**, because it would
+    /// not parse or load ([`Self::set_unread_chart`]): the document shows the generated dashboard
+    /// instead. A Save to that file writes the generated text with the edits placed into it, and
+    /// keeps the unread text as the version it replaces; nothing is placed into the unread text.
+    /// Cleared by the Save that replaces it, and whenever the document is replaced.
+    unread_chart: Option<std::path::PathBuf>,
     /// The next order stamp: one counter for kept statements and applied grid
     /// views, so what was made first can be recorded first.
     next_stamp: u64,
@@ -1491,6 +1497,7 @@ impl ChartDoc {
             editor_save_ask: false,
             editor_save_report: None,
             views_are_steps: true,
+            unread_chart: None,
             next_stamp: 0,
             grid_foot: crate::grid_foot::FootState::default(),
             grid_preview: None,
@@ -1569,6 +1576,7 @@ impl ChartDoc {
             editor_save_ask: false,
             editor_save_report: None,
             views_are_steps: true,
+            unread_chart: None,
             next_stamp: 0,
             grid_foot: crate::grid_foot::FootState::default(),
             grid_preview: None,
@@ -1700,6 +1708,7 @@ impl ChartDoc {
         self.grid_view = brightfield_engine::RowsView::default();
         self.grid_condition_held = None;
         self.views_are_steps = true;
+        self.unread_chart = None;
         self.pending_settled = false;
         self.typed.clear();
         self.typed_stamps.clear();
@@ -2029,6 +2038,21 @@ impl ChartDoc {
         self.views_are_steps = are;
     }
 
+    /// Say that this document was opened past the chart file `chart`, which would not parse or
+    /// load, and shows the generated dashboard in its place: a Save to `chart` replaces it with
+    /// the generated text and its edits, keeping its own text as a version, and a close without
+    /// saving keeps the edits made from the generated text.
+    pub fn set_unread_chart(&mut self, chart: std::path::PathBuf) {
+        self.unread_chart = Some(std::path::absolute(&chart).unwrap_or(chart));
+    }
+
+    /// Whether `target` is the chart file this document was opened past without adopting it.
+    fn unread(&self, target: &std::path::Path) -> bool {
+        self.unread_chart.as_deref().is_some_and(|unread| {
+            std::path::absolute(target).is_ok_and(|target| target.as_path() == unread)
+        })
+    }
+
     /// Whether a view or a kept statement on this document's grid is a step
     /// of the Protocol: false over rows no manifest step makes, such as a
     /// model's join ([`Self::set_views_are_steps`]).
@@ -2172,6 +2196,9 @@ impl ChartDoc {
         let path = std::path::absolute(&written).unwrap_or(written);
         self.pending_edits.clear();
         self.stepped_back = None;
+        // The file now holds what the document shows: it is adopted, and the next Save places
+        // into it as into any chart file.
+        self.unread_chart = None;
         // What the Save wrote is in the file: `u` takes back no edit before it.
         self.shelf_undo.seal();
         if self.spec_path.as_deref() == Some(path.as_path()) {
@@ -2192,6 +2219,9 @@ impl ChartDoc {
     /// into, and no edit.
     fn save_text(&self, target: &std::path::Path) -> Result<Option<SaveText>, ChartSaveError> {
         let target = target.to_path_buf();
+        if self.unread(&target) && self.stepped_back.is_none() {
+            return self.save_text_over_unread(target);
+        }
         let (text, on_disk) = match std::fs::read_to_string(&target) {
             Ok(text) => (text, true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -2237,6 +2267,50 @@ impl ChartDoc {
         Ok(Some(SaveText {
             target,
             replaced: on_disk.then_some(text),
+            text: placed,
+        }))
+    }
+
+    /// [`Self::save_text`] for the chart file this document was opened past without adopting it
+    /// ([`Self::set_unread_chart`]): the edits are placed into the text the document shows, the
+    /// generated dashboard [`Self::spec_path`] names, and the unread file's text, when it is there,
+    /// is what the Save replaces, so it is recorded as a version rather than written into.
+    fn save_text_over_unread(
+        &self,
+        target: std::path::PathBuf,
+    ) -> Result<Option<SaveText>, ChartSaveError> {
+        let replaced = match std::fs::read_to_string(&target) {
+            Ok(text) => Some(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(ChartSaveError::Read {
+                    path: target,
+                    error,
+                })
+            }
+        };
+        // With no edit there is nothing to save: the unread file stays as it is until an edit is.
+        if self.pending_edits.is_empty() {
+            return Ok(None);
+        }
+        let Some(from) = self.spec_path.clone() else {
+            return Err(ChartSaveError::NoText);
+        };
+        let mut placed = std::fs::read_to_string(&from)
+            .map_err(|error| ChartSaveError::Read { path: from, error })?;
+        for edit in &self.pending_edits {
+            placed =
+                write_chart_edit(&placed, edit).map_err(|refusal| ChartSaveError::Unplaced {
+                    edit: self.describe_edit(edit),
+                    refusal,
+                })?;
+        }
+        if !self.protocol_tables.is_empty() {
+            placed = crate::protocol_panels::strip_protocol_tables(&placed, &self.protocol_tables);
+        }
+        Ok(Some(SaveText {
+            target,
+            replaced,
             text: placed,
         }))
     }

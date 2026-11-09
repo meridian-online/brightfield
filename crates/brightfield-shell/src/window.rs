@@ -10750,13 +10750,16 @@ impl MeridianApp {
                 });
                 // The chart saved for these rows, when one was, from the file a Save writes. One
                 // that will not be read does not keep the rows from opening: they open on their
-                // generated dashboard, and a warning names the file, which is left as it was.
+                // generated dashboard, and a warning names the file. The document remembers it was
+                // not adopted, so a Save replaces it with what is shown, keeping its text as a
+                // version, and nothing is placed into it.
                 let chart = opened.protocol.chart_file();
                 let unread = Boot::read_saved_chart(&mut opened).err();
                 self.adopt_boot(Boot::of_opened_file(opened));
                 let unread_banner = NotificationId::new("model-grid-chart-unread");
                 match unread {
                     Some(e) => {
+                        self.charts.doc.set_unread_chart(chart.clone());
                         self.notifications.raise(
                             Notification::new(
                                 unread_banner,
@@ -10764,8 +10767,9 @@ impl MeridianApp {
                                 "The saved chart for these rows could not be read",
                             )
                             .body(format!(
-                                "{} was left as it is, and the rows open on their generated \
-                                 dashboard: {e}",
+                                "{} could not be read, so these rows show their generated \
+                                 dashboard. Saving replaces it; the old chart is kept in \
+                                 Versions. {e}",
                                 chart.display()
                             )),
                         );

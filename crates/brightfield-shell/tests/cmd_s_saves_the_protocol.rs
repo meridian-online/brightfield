@@ -156,6 +156,26 @@ impl Window {
         }
     }
 
+    /// Raise a close request, as the window's close button does, then let the window settle.
+    fn close_request(&mut self) {
+        self.time += 1.0;
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1440.0, 900.0),
+            )),
+            time: Some(self.time),
+            ..Default::default()
+        };
+        raw.viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .events
+            .push(egui::ViewportEvent::Close);
+        let _ = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+        self.settle();
+    }
+
     /// Press Cmd+S, as one frame, then let the window settle.
     fn cmd_s(&mut self) {
         self.run(vec![press(egui::Key::S, command())]);
@@ -1184,4 +1204,167 @@ fn a_table_named_as_its_protocol_keeps_its_chart_apart_from_the_protocols_panel(
         Some(table_chart),
         "the table's grid opens its own saved chart"
     );
+}
+
+/// How a saved chart cannot be read: its YAML will not parse, or it parses and its marks read a
+/// data source it does not define, so the engine will not load it.
+#[derive(Clone, Copy, Debug)]
+enum Unread {
+    Unparseable,
+    Unloadable,
+}
+
+/// A window over a folder Protocol named `name`, keeping chart versions in the scratch store, with
+/// the orders table's saved chart made unreadable as `how` and its grid opened past it. Answers
+/// the window and the chart file with the text it was left holding.
+fn opened_past_an_unread_chart(name: &str, how: Unread) -> (Window, PathBuf, String) {
+    use brightfield_render::model_scene::Selection;
+    let mut win = orders_and_stores(name, "orders");
+    win.app
+        .set_history(Some(brightfield_protocol::HistoryStore::At(
+            scratch().join("history"),
+        )));
+    let chart = std::path::absolute(brightfield_model::panel_capture::table_panel_file(
+        &win.dir(),
+        "orders",
+    ))
+    .expect("an absolute path");
+    let broken = match how {
+        Unread::Unparseable => "data: [unclosed\n".to_owned(),
+        Unread::Unloadable => {
+            // The dashboard the grid generates, with its marks reading a source it no longer has.
+            open_in_grid(&mut win, Selection::Dataset("orders".into()));
+            let generated = win
+                .app
+                .chart_doc()
+                .spec_path
+                .clone()
+                .expect("the generated dashboard has a file");
+            let text = std::fs::read_to_string(generated).expect("the generated dashboard reads");
+            assert!(text.contains("from: \"opened\""), "{text}");
+            assert!(win.app.back_to_model(), "{}", win.said());
+            win.settle();
+            text.replace("from: \"opened\"", "from: \"gone\"")
+        }
+    };
+    std::fs::create_dir_all(chart.parent().expect("a parent")).expect("panels/tables/");
+    std::fs::write(&chart, &broken).expect("the unread chart writes");
+
+    open_in_grid(&mut win, Selection::Dataset("orders".into()));
+    assert!(
+        win.app.notifications().iter().any(|n| n.title
+            == "The saved chart for these rows could not be read"
+            && n.body
+                .as_deref()
+                .is_some_and(|b| b.contains("Saving replaces it"))),
+        "{how:?}: a warning says what Save will do: {}",
+        win.said()
+    );
+    assert_ne!(
+        grid_chart(&win),
+        Some(chart.clone()),
+        "{how:?}: not adopted"
+    );
+    (win, chart, broken)
+}
+
+/// The texts the scratch store holds for `chart`, oldest first, with their kinds.
+fn versions_of(chart: &Path) -> Vec<(brightfield_protocol::chart_history::HistoryKind, String)> {
+    let history =
+        brightfield_protocol::chart_history::LocalHistory::at_root(scratch().join("history"));
+    history
+        .entries_for_file(chart)
+        .expect("the chart's history lists")
+        .into_iter()
+        .map(|entry| {
+            let text = history
+                .read_for_file(chart, &entry.id)
+                .expect("the version reads back");
+            (entry.kind, text)
+        })
+        .collect()
+}
+
+#[test]
+fn a_save_past_an_unread_chart_replaces_it_and_keeps_it_in_versions() {
+    for (name, how) in [
+        ("cmd_s_save_unparsed", Unread::Unparseable),
+        ("cmd_s_save_unloaded", Unread::Unloadable),
+    ] {
+        let (mut win, chart, broken) = opened_past_an_unread_chart(name, how);
+        throw_a_log_scale(&mut win);
+
+        win.cmd_s();
+
+        assert!(
+            !win.app.title().contains(UNSAVED_MARK),
+            "{how:?}: Cmd+S saved the chart: {}",
+            win.said()
+        );
+        let saved = std::fs::read_to_string(&chart).expect("the chart reads");
+        assert!(
+            saved.contains("log")
+                && !saved.contains("unclosed")
+                && !saved.contains("from: \"gone\""),
+            "{how:?}: the chart is the generated dashboard with the edit: {saved}"
+        );
+        brightfield_spec::parse_spec_path(&chart)
+            .unwrap_or_else(|e| panic!("{how:?}: the saved chart parses: {e}"));
+        assert!(
+            versions_of(&chart).iter().any(|(_, text)| *text == broken),
+            "{how:?}: Versions keeps the old chart"
+        );
+        assert_eq!(
+            grid_chart(&win),
+            Some(chart.clone()),
+            "{how:?}: the grid now names the chart it saved"
+        );
+    }
+}
+
+#[test]
+fn close_without_saving_past_an_unread_chart_closes_and_keeps_the_edit() {
+    for (name, how) in [
+        ("cmd_s_close_unparsed", Unread::Unparseable),
+        ("cmd_s_close_unloaded", Unread::Unloadable),
+    ] {
+        let (mut win, chart, broken) = opened_past_an_unread_chart(name, how);
+        throw_a_log_scale(&mut win);
+        let before = versions_of(&chart).len();
+
+        win.close_request();
+        assert!(
+            win.app.close_question().is_some(),
+            "{how:?}: the close asks: {}",
+            win.said()
+        );
+        win.run(vec![press(egui::Key::D, egui::Modifiers::NONE)]);
+        win.settle();
+
+        assert!(
+            win.app.is_closing(),
+            "{how:?}: close without saving closes: {}",
+            win.said()
+        );
+        assert!(
+            win.app.close_question().is_none(),
+            "{how:?}: and asks no more"
+        );
+        let versions = versions_of(&chart);
+        assert_eq!(versions.len(), before + 1, "{how:?}: one version is kept");
+        let (kind, kept) = versions.last().expect("a newest version");
+        assert_eq!(
+            *kind,
+            brightfield_protocol::chart_history::HistoryKind::Unsaved
+        );
+        assert!(
+            kept.contains("log") && !kept.contains("unclosed") && !kept.contains("from: \"gone\""),
+            "{how:?}: the version is the generated dashboard with the edit: {kept}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&chart).expect("the chart reads"),
+            broken,
+            "{how:?}: no file is written"
+        );
+    }
 }
