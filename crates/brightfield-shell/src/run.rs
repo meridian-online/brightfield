@@ -327,6 +327,12 @@ pub fn records_newest_first<'a>(
 /// the folder when it is renamed or moved.
 pub const PREVIEWS_FILE: &str = ".previews";
 
+/// How many preview run ids [`PREVIEWS_FILE`] keeps: the most recent, so the file stays small
+/// however many records arc keeps. A preview whose id has been dropped reads as a whole run again,
+/// which takes more than this many previews since the Protocol's last run with their records all
+/// still kept.
+pub const MAX_PREVIEWS: usize = 200;
+
 /// Mark the run `finished` left in `dir` as a preview, so the door does not read it as the
 /// Protocol's run. Ids whose record has gone are dropped as the file is written again. A run that
 /// left no record has nothing to mark, and a file that cannot be written is reported, not fatal:
@@ -348,6 +354,10 @@ pub fn mark_preview(dir: &Path, finished: &Finished) {
     ids.sort();
     if !ids.contains(&id) {
         ids.push(id);
+    }
+    // Run ids lead with their time, so sorted they run oldest to newest; the oldest go first.
+    if ids.len() > MAX_PREVIEWS {
+        ids.drain(..ids.len() - MAX_PREVIEWS);
     }
     let file = dir.join(PREVIEWS_FILE);
     if let Err(e) = std::fs::write(&file, ids.join("\n") + "\n") {

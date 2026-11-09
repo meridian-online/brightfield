@@ -438,6 +438,95 @@ fn the_runs_outcome_is_read_before_its_steps() {
         state("stopped_previewed", Ran::Cancelled, true),
         RunState::Previewed
     );
+    // A run stopped after a clean one does not hide it.
+    let dir = protocol_at(&root.join("protocols/ran_then_stopped"), "ran_then_stopped");
+    record_a_run(&dir, "ran_then_stopped", Ran::Clean);
+    record_a_run(&dir, "ran_then_stopped", Ran::Cancelled);
+    assert_eq!(door_tree::run_state(&dir), RunState::Fresh);
+}
+
+#[test]
+fn the_previews_file_keeps_the_most_recent_ids() {
+    let (_held, root) = folders_of("previews_cap");
+    let dir = protocol_at(&root.join("protocols/many"), "many");
+    let mut last = String::new();
+    for _ in 0..brightfield_shell::run::MAX_PREVIEWS + 50 {
+        last = record_a_run(&dir, "many", Ran::Clean);
+        brightfield_shell::run::mark_preview(
+            &dir,
+            &brightfield_shell::run::Finished {
+                record: Some(brightfield_shell::run::runs_dir(&dir).join(format!("{last}.json"))),
+                log: String::new(),
+                succeeded: true,
+            },
+        );
+    }
+    let ids = brightfield_shell::run::preview_ids(&dir);
+    assert_eq!(ids.len(), brightfield_shell::run::MAX_PREVIEWS);
+    assert!(ids.contains(&last), "the newest preview is kept");
+}
+
+/// Copy the committed folder of related tables into `root/input/<name>`, to open as one Protocol.
+fn shop_folder(root: &Path, name: &str) -> PathBuf {
+    let from = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../brightfield-engine/tests/data/own_files");
+    let to = root.join("input").join(name);
+    std::fs::create_dir_all(&to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap().flatten() {
+        std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+    }
+    to
+}
+
+#[test]
+fn run_in_the_model_pane_is_the_protocols_run_and_a_reopen_keeps_it_fresh() {
+    let (_held, root) = folders_of("model_pane_run");
+    let mut win = Window::new();
+    win.settle();
+    win.app
+        .open_queue()
+        .push(OpenRequest::Path(shop_folder(&root, "shop")));
+    win.settle();
+    win.app
+        .model_pane_mut()
+        .expect("the folder opens into the model pane")
+        .finish_discovery();
+    win.settle();
+    let dir = win
+        .app
+        .open_protocol_dir()
+        .expect("the pane holds a Protocol");
+    assert_eq!(door_tree::run_state(&dir), RunState::Previewed);
+
+    win.run(vec![press(egui::Key::Enter, command())]);
+    win.settle();
+    let run = win.app.model_pane_run().expect("the run's record landed");
+    assert_eq!(
+        run.outcome,
+        brightfield_protocol::contract::Outcome::Success,
+        "{}",
+        win.said()
+    );
+    win.go_home();
+    assert_eq!(
+        win.rows_of(&dir).1.expect("a tree row").state,
+        RunState::Fresh.label()
+    );
+
+    // Opened again from its row: the open's preview leaves the run standing.
+    let row = in_tree_row_rect(&win, &dir);
+    win.click(row.center());
+    win.app
+        .model_pane_mut()
+        .expect("the Protocol reopens into the model pane")
+        .finish_discovery();
+    win.settle();
+    win.go_home();
+    assert_eq!(
+        win.rows_of(&dir).1.expect("a tree row").state,
+        RunState::Fresh.label(),
+        "a reopen left the Protocol reading as edited or not run"
+    );
 }
 
 #[test]

@@ -991,6 +991,20 @@ impl ModelPane {
         self.run_silver(from_editor)
     }
 
+    /// Run the whole Protocol through arc and wait for it, as Run does in any window: a run the
+    /// analyst asked for, so it is not marked as a preview, and the door reads it as the
+    /// Protocol's run. It holds the database while it runs, as the pane's own runs do, so
+    /// discovery's pass does not copy a database arc is writing. The model is left as it is.
+    pub fn run_whole(&mut self) -> crate::run::Finished {
+        let finished = {
+            let _writing = own_files::database_lock();
+            crate::run::Run::begin(&self.runner, &self.protocol.dir, || {}).wait()
+        };
+        // The run changed the tables under the model the inspector last read.
+        self.inspected = None;
+        finished
+    }
+
     /// Rewrite the silver steps for the pane's model, run the Protocol and measure the joins
     /// again, as [`Self::save_model`] does after writing the file. A run the editor's text owed is
     /// paid by it, whether it succeeds or not, so a failed run is said once and not retried each

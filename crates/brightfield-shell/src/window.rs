@@ -2726,6 +2726,8 @@ struct ModelDoc {
     items: ItemMap<crate::model_pane::ModelPane>,
     /// What the grid holds while the pane waits behind it: `None` while the pane is on the canvas.
     in_grid: Option<String>,
+    /// The record of the last whole run Run started from the pane, read by the manifest's name.
+    last_run: Option<brightfield_protocol::RunView>,
 }
 
 impl ModelDoc {
@@ -10940,12 +10942,11 @@ impl MeridianApp {
     /// door was shown, and kept while it stays shown.
     fn door_run_state(&mut self, dir: &std::path::Path) -> (RunState, Option<u64>) {
         *self.door_runs.entry(dir.to_path_buf()).or_insert_with(|| {
-            let ran_at = arc::spec::Manifest::load(dir)
-                .ok()
-                .and_then(|m| crate::door_tree::newest_whole_run_at(dir, &m.name))
+            let (state, ran_at) = crate::door_tree::door_state(dir);
+            let ran_at = ran_at
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs());
-            (crate::door_tree::run_state(dir), ran_at)
+            (state, ran_at)
         })
     }
 
@@ -11193,6 +11194,7 @@ impl MeridianApp {
             doc,
             items: crate::model_pane::model_registry().instantiate(),
             in_grid: None,
+            last_run: None,
         });
         self.remember_own_protocol(&dir, false);
         self.toasts.push(Toast::new(
@@ -12318,6 +12320,9 @@ impl MeridianApp {
             return false;
         }
         let Some(source) = self.protocol.doc.model.source().cloned() else {
+            if self.model.as_ref().is_some_and(ModelDoc::shown) {
+                return self.run_model_protocol(ctx);
+            }
             return self.run_panel_protocol(ctx);
         };
         if self.run_in_progress() || self.runs_folder(&source.dir) {
@@ -12361,6 +12366,49 @@ impl MeridianApp {
         });
         ctx.request_repaint();
         true
+    }
+
+    /// Run the whole Protocol the model pane is over, from Run in its window: through arc, as a
+    /// run the analyst asked for, and waited on as the pane's own runs are. Its record, found by
+    /// the manifest's name, is kept on the pane ([`Self::model_pane_run`]), and a toast or a
+    /// banner says how it went.
+    fn run_model_protocol(&mut self, ctx: &egui::Context) -> bool {
+        let banner = NotificationId::new("run-protocol");
+        let Some(model) = self.model.as_mut() else {
+            return false;
+        };
+        let dir = model.doc.protocol.dir.clone();
+        let name = arc::spec::Manifest::load(&dir).map_or_else(|_| display_name(&dir), |m| m.name);
+        let finished = model.doc.run_whole();
+        model.last_run = finished
+            .record
+            .as_deref()
+            .and_then(|record| brightfield_protocol::load_contract(record).ok())
+            .filter(|view| view.run.protocol == name)
+            .map(|view| view.run);
+        let landed = model.last_run.is_some();
+        // The door reads this Protocol's rows afresh.
+        self.door_runs.clear();
+        if finished.succeeded && landed {
+            self.notifications.dismiss(banner);
+            self.toasts
+                .push(Toast::new(Severity::Success, format!("Ran {name}")));
+        } else {
+            eprintln!("the run of {name} did not finish:\n{}", finished.log);
+            self.notifications.raise(
+                Notification::new(banner, Severity::Error, "The run did not finish")
+                    .body(finished.log.trim().to_string()),
+            );
+        }
+        ctx.request_repaint();
+        landed
+    }
+
+    /// The record of the last whole run Run started from the model pane, while the window holds
+    /// the pane — a test hook, and what a run strip over the pane would read.
+    #[must_use]
+    pub fn model_pane_run(&self) -> Option<&brightfield_protocol::RunView> {
+        self.model.as_ref().and_then(|m| m.last_run.as_ref())
     }
 
     /// Whether a run this window started is under way **for the document it

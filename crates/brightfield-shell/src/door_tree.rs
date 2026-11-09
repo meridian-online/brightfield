@@ -8,6 +8,9 @@
 //! shows the result the next time it is shown.
 
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+use sha2::Digest;
 
 use brightfield_protocol::contract::Outcome;
 use brightfield_protocol::{ContractView, SeamStatus};
@@ -97,24 +100,39 @@ fn read_level(dir: &Path, depth: usize, budget: &mut usize) -> Vec<Node> {
     groups
 }
 
-/// What the Protocol in `dir` reads as on the door: what its newest whole run's record says, read
-/// now. Runs Brightfield started itself to preview the sources ([`crate::run::mark_preview`]) are
-/// not whole runs and are passed over (`a_previewed_protocol_reads_previewed_not_run` in
-/// `tests/door_tree.rs`), and records of another Protocol's `name:` are passed over too, since
-/// two Protocols in one folder write their records into one place.
+/// What the Protocol in `dir` reads as on the door: what its newest finished whole run's record
+/// says, read now. Runs Brightfield started itself to preview the sources
+/// ([`crate::run::mark_preview`]) are not whole runs and are passed over
+/// (`a_previewed_protocol_reads_previewed_not_run` in `tests/door_tree.rs`), and records of another
+/// Protocol's `name:` are passed over too, since two Protocols in one folder write their records
+/// into one place.
 ///
+/// - A record arc did not finish, a run stopped or one still going, is passed over, so a stopped
+///   run again does not hide the good run before it.
 /// - A run whose outcome is an error or partial is [`RunState::Failed`].
-/// - A run that never finished, stopped before arc completed its record, counts as no run.
 /// - Otherwise the steps decide: one that failed is [`RunState::Failed`]; steps that ran or were
 ///   skipped as current are [`RunState::Fresh`], or [`RunState::StaleOwnEdit`] when the manifest
 ///   is no longer the one the run ran.
-/// - With no whole run, a Protocol that has been previewed (a preview run, or arc's working
-///   database) is [`RunState::Previewed`], and one that has not, or a folder whose manifest will
-///   not read, is [`RunState::NeverRun`].
+/// - With no finished whole run, a Protocol that has been previewed (a preview run, or arc's
+///   working database) is [`RunState::Previewed`], and one that has not, or a folder whose
+///   manifest will not read, is [`RunState::NeverRun`].
 #[must_use]
 pub fn run_state(dir: &Path) -> RunState {
-    let Ok(manifest) = arc::spec::Manifest::load(dir) else {
-        return RunState::NeverRun;
+    door_state(dir).0
+}
+
+/// [`run_state`] for the Protocol in `dir`, with when the run it was read from was recorded: its
+/// record's modification time, or `None` when no finished whole run is on record. The manifest is
+/// read once and each record at most once.
+#[must_use]
+pub fn door_state(dir: &Path) -> (RunState, Option<SystemTime>) {
+    let Ok(manifest_bytes) = std::fs::read(dir.join(arc::spec::MANIFEST_FILENAME)) else {
+        return (RunState::NeverRun, None);
+    };
+    let Ok(manifest) =
+        brightfield_protocol::parse_manifest_str(&String::from_utf8_lossy(&manifest_bytes))
+    else {
+        return (RunState::NeverRun, None);
     };
     let not_run = || {
         let previewed = !crate::run::preview_ids(dir).is_empty()
@@ -125,71 +143,71 @@ pub fn run_state(dir: &Path) -> RunState {
             RunState::NeverRun
         }
     };
-    let Some((path, view)) = newest_whole_run(dir, &manifest.name) else {
-        return not_run();
+    let Some(run) = newest_finished_whole_run(dir, &manifest.name) else {
+        return (not_run(), None);
     };
-    if !view.run.complete {
-        return not_run();
-    }
-    match view.run.outcome {
-        Outcome::Error | Outcome::Partial => return RunState::Failed,
-        Outcome::Success | Outcome::Unknown => {}
-    }
-    let statuses = view.seam_statuses();
-    let ran = if statuses.values().any(|s| *s == SeamStatus::Failed) {
-        RunState::Failed
-    } else if statuses
-        .values()
-        .any(|s| matches!(s, SeamStatus::Ok | SeamStatus::Skipped))
-        || view.run.outcome == Outcome::Success
-    {
-        RunState::Fresh
-    } else {
-        return not_run();
+    let view = &run.view;
+    let state = match view.run.outcome {
+        Outcome::Error | Outcome::Partial => RunState::Failed,
+        Outcome::Success | Outcome::Unknown => {
+            let statuses = view.seam_statuses();
+            if statuses.values().any(|s| *s == SeamStatus::Failed) {
+                RunState::Failed
+            } else if statuses
+                .values()
+                .any(|s| matches!(s, SeamStatus::Ok | SeamStatus::Skipped))
+                || view.run.outcome == Outcome::Success
+            {
+                let ran_this_manifest = run.manifest_sha256.as_ref().is_none_or(|recorded| {
+                    *recorded == format!("{:x}", sha2::Sha256::digest(&manifest_bytes))
+                });
+                if ran_this_manifest {
+                    RunState::Fresh
+                } else {
+                    RunState::StaleOwnEdit
+                }
+            } else {
+                return (not_run(), None);
+            }
+        }
     };
-    if ran == RunState::Fresh && !ran_this_manifest(&path, dir) {
-        return RunState::StaleOwnEdit;
-    }
-    ran
+    (state, Some(run.at))
 }
 
-/// When the newest whole run of the Protocol named `protocol` in `dir` was recorded: its record's
-/// modification time, or `None` when it has no whole run on record.
-#[must_use]
-pub fn newest_whole_run_at(dir: &Path, protocol: &str) -> Option<std::time::SystemTime> {
-    let (path, _) = newest_whole_run(dir, protocol)?;
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+/// One finished whole run, as the door reads it.
+struct FinishedRun {
+    view: ContractView,
+    /// The SHA-256 arc recorded of the manifest the run ran, when it recorded one. A record with
+    /// none is taken as having run the manifest there now, so a row is not called stale on
+    /// evidence that is not there.
+    manifest_sha256: Option<String>,
+    /// When the record was written.
+    at: SystemTime,
 }
 
-/// The newest whole run of the Protocol named `protocol` in `dir`: its record's path and the view
-/// read from it. A record that will not parse is passed over.
-fn newest_whole_run(dir: &Path, protocol: &str) -> Option<(PathBuf, ContractView)> {
+/// The newest finished whole run of the Protocol named `protocol` in `dir`. A record that will not
+/// parse, or that arc did not finish, is passed over.
+fn newest_finished_whole_run(dir: &Path, protocol: &str) -> Option<FinishedRun> {
     crate::run::whole_run_paths_newest_first(dir)
         .into_iter()
-        .find_map(|path| match brightfield_protocol::load_contract(&path) {
-            Ok(view) if view.run.protocol == protocol => Some((path, view)),
-            _ => None,
-        })
-}
-
-/// Whether the run recorded at `record` ran the manifest `dir` holds now: arc records the SHA-256
-/// of the manifest's bytes on each run. A record with no hash, or a manifest that cannot be read,
-/// is taken as the same, so a row is not called stale on evidence that is not there.
-fn ran_this_manifest(record: &Path, dir: &Path) -> bool {
-    use sha2::Digest;
-    let recorded = std::fs::read(record)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|json| {
-            json.pointer("/run/protocol/manifest_sha256")
+        .find_map(|path| {
+            let bytes = std::fs::read(&path).ok()?;
+            let view = brightfield_protocol::view_from_contract_bytes(&bytes).ok()?;
+            if view.run.protocol != protocol || !view.run.complete {
+                return None;
+            }
+            let manifest_sha256 = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()?
+                .pointer("/run/protocol/manifest_sha256")
                 .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        });
-    let (Some(recorded), Ok(bytes)) = (
-        recorded,
-        std::fs::read(dir.join(arc::spec::MANIFEST_FILENAME)),
-    ) else {
-        return true;
-    };
-    format!("{:x}", sha2::Sha256::digest(&bytes)) == recorded
+                .map(str::to_string);
+            let at = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            Some(FinishedRun {
+                view,
+                manifest_sha256,
+                at,
+            })
+        })
 }
