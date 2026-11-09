@@ -138,6 +138,7 @@ pub mod protocol_panels;
 pub mod protocols_dir;
 pub mod ranked_bars;
 pub mod remote;
+pub mod rename;
 pub mod representation;
 pub mod resample;
 pub mod run;

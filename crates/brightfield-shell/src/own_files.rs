@@ -39,7 +39,7 @@ const PROFILE_DIR: &str = ".profile";
 
 /// The file in the Protocol folder recording the tables the open found and the files it passed
 /// over, so the folder can be opened again ([`reopen`]) without finding them afresh.
-const SOURCES_FILE: &str = ".sources.json";
+pub(crate) const SOURCES_FILE: &str = ".sources.json";
 
 /// The name prefixes of the silver steps and the files holding their SQL.
 const SILVER_STEP: &str = "silver_";
@@ -710,7 +710,7 @@ fn frictionless_type(label: Option<&str>, duckdb_type: &str) -> &'static str {
 }
 
 /// The path from `base` (a directory) to `target`, both absolute.
-fn relative_to(target_path: &Path, base: &Path) -> Result<String, String> {
+pub(crate) fn relative_to(target_path: &Path, base: &Path) -> Result<String, String> {
     let target: Vec<Component> = target_path.components().collect();
     let base: Vec<Component> = base.components().collect();
     let common = target.iter().zip(&base).take_while(|(a, b)| a == b).count();
@@ -1004,7 +1004,8 @@ pub fn grid_copy(p: &OwnProtocol, name: &str) -> Result<PathBuf, String> {
     )
 }
 
-/// Record `set` in the Protocol folder `dir`, for [`reopen`].
+/// Record `set` in the Protocol folder `dir`, for [`reopen`], with the folder's canonical path as
+/// `dir`, which is how an open notices the folder was moved since ([`crate::rename::moved_since`]).
 fn write_sources(dir: &Path, set: &SourceSet) -> Result<(), String> {
     let tables: Vec<Value> = set
         .tables
@@ -1024,8 +1025,15 @@ fn write_sources(dir: &Path, set: &SourceSet) -> Result<(), String> {
         .iter()
         .map(|(path, reason)| json!({ "path": path.to_string_lossy(), "reason": reason }))
         .collect();
-    let text = serde_json::to_string_pretty(&json!({ "tables": tables, "skipped": skipped }))
-        .map_err(|e| e.to_string())?;
+    let place = dir
+        .canonicalize()
+        .unwrap_or_else(|_| dir.to_path_buf())
+        .to_string_lossy()
+        .into_owned();
+    let text = serde_json::to_string_pretty(
+        &json!({ "dir": place, "tables": tables, "skipped": skipped }),
+    )
+    .map_err(|e| e.to_string())?;
     let path = dir.join(SOURCES_FILE);
     std::fs::write(&path, text + "\n").map_err(|e| format!("{}: {e}", path.display()))
 }

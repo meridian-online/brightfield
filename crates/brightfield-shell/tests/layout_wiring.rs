@@ -1011,3 +1011,48 @@ fn a_restored_session_is_titled_for_the_surface_it_draws() {
         "the boot summary describes something that was not loaded: {described}"
     );
 }
+
+/// A Protocol renamed or moved keeps its row: every recent and the restored document naming a
+/// path inside the old folder name the same path inside the new one, at the same place in the list
+/// and with the grid's state it had, and a row for anything else is left as it was.
+#[test]
+fn a_renamed_protocols_row_and_restore_follow_it() {
+    let mut layout = default_layout();
+    layout.remember(
+        "/p/other/arcform.yaml",
+        "other",
+        RunState::NeverRun,
+        GridLayout::Rows,
+        brightfield_workbench::GridSpot::Canvas,
+        1_000,
+    );
+    layout.remember(
+        "/p/sales/arcform.yaml",
+        "sales",
+        RunState::Fresh,
+        GridLayout::Columns,
+        brightfield_workbench::GridSpot::Ledger,
+        2_000,
+    );
+    layout.opened = Some("/p/sales/arcform.yaml".to_string());
+
+    let count = layout.repoint(
+        std::path::Path::new("/p/sales"),
+        std::path::Path::new("/q/revenue"),
+    );
+
+    assert_eq!(count, 2, "the row and the restored document");
+    assert_eq!(layout.recents[0].id, "/q/revenue/arcform.yaml");
+    assert_eq!(layout.recents[0].grid_layout, GridLayout::Columns);
+    assert_eq!(layout.recents[0].run, RunState::Fresh);
+    assert_eq!(layout.recents[1].id, "/p/other/arcform.yaml");
+    assert_eq!(layout.opened.as_deref(), Some("/q/revenue/arcform.yaml"));
+    assert_eq!(
+        layout.repoint(
+            std::path::Path::new("/p/sales-2"),
+            std::path::Path::new("/x")
+        ),
+        0,
+        "a folder whose name only starts the same is another folder"
+    );
+}

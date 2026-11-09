@@ -497,6 +497,33 @@ impl SavedLayout {
         self.recents.truncate(RECENTS_KEPT);
     }
 
+    /// **Point every row and the restored document that name a path inside
+    /// the folder `from` at the same path inside `to`**: a Protocol renamed
+    /// or moved keeps its row, its place in the list and its grid's state,
+    /// rather than leaving a row whose file is gone beside a new one. Answers
+    /// how many were repointed. An id that is not a path inside `from` is
+    /// left as it is.
+    pub fn repoint(&mut self, from: &Path, to: &Path) -> usize {
+        let moved = |id: &str| {
+            Path::new(id)
+                .strip_prefix(from)
+                .ok()
+                .map(|rest| to.join(rest).to_string_lossy().into_owned())
+        };
+        let mut count = 0;
+        for recent in &mut self.recents {
+            if let Some(id) = moved(&recent.id) {
+                recent.id = id;
+                count += 1;
+            }
+        }
+        if let Some(id) = self.opened.as_deref().and_then(moved) {
+            self.opened = Some(id);
+            count += 1;
+        }
+        count
+    }
+
     /// **Which way the grid pane was reading the document `id` names**, or
     /// `None` for a document this file has no row for.
     ///

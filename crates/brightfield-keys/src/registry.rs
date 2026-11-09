@@ -557,6 +557,22 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Save the Protocol: record its draft steps and write its chart",
             scores: Some(Scores { frequency: 4, mnemonic: 5, convention: 5, motor_note: "cmd-s = save (universal Mac convention); global, with the editor's save-spec layered over it while the editor holds the keys" }),
         },
+        // Rename the open Protocol, its folder and its name together: the locator band's name
+        // field, opened from the keyboard. F2 is rename in the Finder's neighbours (Windows
+        // Explorer, VS Code and most file managers); cmd-r, the other candidate, is reload-spec.
+        // Global, so it reaches from any pane; no text field reads a function key. A rename is
+        // kept at once and writes no step, so View, as save-protocol is.
+        VerbEntry {
+            longname: "rename-protocol",
+            tier: CommandTier::View,
+            binding_specs: vec![global("f2")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Rename the Protocol and its folder",
+            scores: Some(Scores { frequency: 1, mnemonic: 2, convention: 4, motor_note: "f2 = rename (Windows Explorer, VS Code, file managers); cmd-r is taken by reload-spec" }),
+        },
         // The run: the verb behind the ledger strip's Run control. It writes
         // the spec as save-spec does and asks `arc` to run it, and what it
         // leaves is `arc`'s run record rather than a change to the document —
@@ -1533,6 +1549,57 @@ pub fn help_sheet(reg: &[VerbEntry]) -> Vec<HelpRow> {
 mod tests {
     use super::*;
 
+    /// Whether a binding in `a` and one in `b` can both fire on one press: the same context, or
+    /// either of them global, since a global binding fires from every focus.
+    fn contexts_overlap(a: BindingContext, b: BindingContext) -> bool {
+        a == b || a == BindingContext::Global || b == BindingContext::Global
+    }
+
+    /// No two verbs share a chord where both could fire, so a new key cannot quietly take one an
+    /// older verb holds. The one sharing allowed is a deliberate layer of an editor binding over a
+    /// global one, named here: the editor's `save-spec` over the window's `save-protocol`, which
+    /// saves the buffer and then raises the window's Save.
+    #[test]
+    fn no_two_verbs_share_a_chord_in_overlapping_contexts() {
+        const LAYERED_OVER_GLOBAL: &[(&str, &str)] = &[("save-spec", "save-protocol")];
+        let bound = keymap_bindings(&registry());
+        let mut clashes = Vec::new();
+        for (i, a) in bound.iter().enumerate() {
+            for b in &bound[i + 1..] {
+                if a.keystrokes != b.keystrokes
+                    || a.longname == b.longname
+                    || !contexts_overlap(a.context, b.context)
+                {
+                    continue;
+                }
+                let layered = |editor: &BoundKey, global: &BoundKey| {
+                    editor.context == BindingContext::Editor
+                        && global.context == BindingContext::Global
+                        && LAYERED_OVER_GLOBAL.contains(&(editor.longname, global.longname))
+                };
+                if layered(a, b) || layered(b, a) {
+                    continue;
+                }
+                clashes.push(format!(
+                    "{} ({:?}) and {} ({:?}) on {}",
+                    a.longname, a.context, b.longname, b.context, a.keystrokes
+                ));
+            }
+        }
+        assert!(clashes.is_empty(), "chords shared: {clashes:#?}");
+    }
+
+    #[test]
+    fn rename_protocol_has_a_chord_of_its_own() {
+        let reg = registry();
+        let verb = reg
+            .iter()
+            .find(|v| v.longname == "rename-protocol")
+            .expect("rename-protocol is in the registry");
+        assert_eq!(verb.primary_key(), Some("f2"));
+        assert_eq!(verb.binding_specs[0].context, BindingContext::Global);
+    }
+
     fn is_kebab_case(s: &str) -> bool {
         !s.is_empty()
             && s.chars()
@@ -1667,6 +1734,7 @@ mod tests {
             "toggle-presentation",
             "save-spec",
             "save-protocol",
+            "rename-protocol",
             "run-protocol",
             "copy-chart-picture",
             "export-chart-picture",

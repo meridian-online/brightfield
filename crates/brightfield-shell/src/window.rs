@@ -534,6 +534,9 @@ pub const RUN_PROTOCOL: &str = "run-protocol";
 /// dispatch, its key, and the editor, which raises it after saving its buffer.
 pub const SAVE_PROTOCOL: &str = "save-protocol";
 
+/// The `rename-protocol` verb's longname: the registry's, spelled once here for the window's key.
+pub const RENAME_PROTOCOL: &str = "rename-protocol";
+
 /// The `copy-chart-picture` verb's longname — the registry's, spelled once here
 /// for the window's dispatch, its key and the palette.
 pub const COPY_CHART_PICTURE: &str = "copy-chart-picture";
@@ -2229,7 +2232,41 @@ pub enum Leaving {
     Open(crate::open_queue::OpenRequest),
     /// Quitting the app: Cmd+Q, its menu item, or the Dock's Quit.
     Quit,
+    /// Renaming the Protocol or moving its folder, after which the window opens it again at its
+    /// new path: the folder cannot move under edits the window holds and no file does.
+    Move(Move),
 }
+
+/// **A change to where the open Protocol's folder is**: its name, or the folder it is in. Each is
+/// kept at once, as adding a source is, and is not a draft.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Move {
+    /// Rename the Protocol and its folder to this name ([`crate::rename::rename`]).
+    Rename(String),
+    /// Move the folder into this one ([`crate::rename::relocate`]).
+    Relocate(PathBuf),
+}
+
+/// Which of the locator band's two place fields is open for typing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceField {
+    /// The Protocol's name, which is its folder's name.
+    Name,
+    /// The folder the Protocol's folder is in.
+    Location,
+}
+
+/// A place field open for typing: which one, what it holds, and whether it is still to take the
+/// keyboard, which it does on the frame after it opens.
+#[derive(Debug, Clone)]
+struct PlaceEdit {
+    field: PlaceField,
+    text: String,
+    focus: bool,
+}
+
+/// The banner that says a rename or a move of the Protocol was refused, and why.
+const MOVE_PROTOCOL_BANNER: &str = "move-protocol";
 
 /// The banner that says the YAML editor's buffer was not saved, and why.
 const EDITOR_NOT_SAVED_BANNER: &str = "editor-not-saved";
@@ -2290,6 +2327,7 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
         "cmd-s" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)),
         "cmd-q" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Q)),
+        "f2" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F2)),
         "cmd-j" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::J)),
         "cmd-enter" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)),
         // egui-winit 0.35 turns a press of C with the command key held, Shift
@@ -2976,6 +3014,22 @@ pub struct MeridianApp {
     /// the `Ui` borrow the door drew through is still live at the click, and
     /// reopening replaces both documents.
     door_open_protocol: Option<String>,
+    /// The front-door row the pointer was over on the last frame, by its id: what F2 renames
+    /// while the door shows.
+    door_hovered: Option<String>,
+    /// A front-door row whose name is open for typing, by its id, with what the field holds.
+    door_rename: Option<PlaceEdit>,
+    /// The id of the front-door row whose rename field was opened for, kept beside it.
+    door_rename_id: Option<String>,
+    /// A front-door row's new name, typed and entered, latched for after the frame with the row's
+    /// id, for the reason `door_open_protocol` is.
+    door_renamed: Option<(String, String)>,
+    /// The locator band's place field open for typing, when one is.
+    place_edit: Option<PlaceEdit>,
+    /// Where the locator band drew the Protocol's name and Location fields on the last frame.
+    place_rects: Option<(egui::Rect, egui::Rect)>,
+    /// A rename or move typed into a place field and entered, latched for after the frame.
+    place_move: Option<Move>,
     /// Whether this app may raise an operating-system dialog at all.
     ///
     /// **Off unless the live window turns it on**, which is the safe default
@@ -3025,6 +3079,9 @@ pub struct MeridianApp {
     /// The `save-protocol` keystroke token, read off the registry at boot — same rule as
     /// [`Self::home_binding`].
     save_binding: Option<&'static str>,
+    /// The `rename-protocol` keystroke token, read off the registry at boot — same rule as
+    /// [`Self::home_binding`].
+    rename_binding: Option<&'static str>,
     /// The `quit` keystroke token, read off the registry at boot — same rule as
     /// [`Self::home_binding`].
     quit_binding: Option<&'static str>,
@@ -3444,6 +3501,13 @@ impl MeridianApp {
             installed_extensions: None,
             own_protocol: None,
             door_open_protocol: None,
+            door_hovered: None,
+            door_rename: None,
+            door_rename_id: None,
+            door_renamed: None,
+            place_edit: None,
+            place_rects: None,
+            place_move: None,
             dialogs_allowed: false,
             overlay: None,
             typed: None,
@@ -3463,6 +3527,10 @@ impl MeridianApp {
             save_binding: brightfield_keys::registry()
                 .iter()
                 .find(|v| v.longname == SAVE_PROTOCOL)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            rename_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == RENAME_PROTOCOL)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             quit_binding: brightfield_keys::registry()
                 .iter()
@@ -5654,12 +5722,16 @@ impl MeridianApp {
                 .is_some_and(|tiles| tiles.selected().is_some())
                 || self.model_behind_grid();
             let mut crumb_back = false;
+            // The open Protocol's name and the folder it is in, each a field the band opens for
+            // typing: a rename and a move, both kept at once.
+            let place = self.open_protocol_dir();
+            let mut edit = self.place_edit.take().filter(|_| place.is_some());
             let drawn = Panel::top(panel_id(locator, false))
                 .resizable(false)
                 .exact_size(band_extent(locator))
                 .frame(chrome::region_frame(locator.frame, ui, mode))
                 .show(ui, |ui| {
-                    locator_band_ui(
+                    let link = locator_band_ui(
                         ui,
                         &crumbs,
                         counts.as_deref(),
@@ -5667,12 +5739,27 @@ impl MeridianApp {
                         source_about.as_deref(),
                         crumb_link,
                         mode,
-                    )
+                    );
+                    let placed = place
+                        .as_deref()
+                        .map(|dir| place_band_ui(ui, dir, source.as_deref(), &mut edit, mode));
+                    (link, placed)
                 });
             self.regions.push((locator.id, drawn.response.rect));
-            self.crumb_link_rect = drawn.inner.map(|(rect, _)| rect);
-            if drawn.inner.is_some_and(|(_, clicked)| clicked) {
+            let (link, placed) = drawn.inner;
+            self.crumb_link_rect = link.map(|(rect, _)| rect);
+            if link.is_some_and(|(_, clicked)| clicked) {
                 crumb_back = true;
+            }
+            self.place_edit = edit;
+            self.place_rects = placed.as_ref().map(|p| p.rects);
+            if let Some(placed) = placed {
+                if let Some(field) = placed.opened {
+                    self.open_place_field(field);
+                }
+                if placed.entered.is_some() {
+                    self.place_move = placed.entered;
+                }
             }
 
             // The key-hint band belongs to a key grammar, so it is drawn where
@@ -6570,6 +6657,15 @@ impl MeridianApp {
         // what reaches here is a press from anywhere else.
         self.save_key(&ctx);
         self.quit_key(&ctx);
+        // F2, and a place field entered this frame: a rename or move reopens the Protocol, so it
+        // waits until every pane has drawn.
+        self.rename_key(&ctx);
+        if let Some(to) = self.place_move.take() {
+            self.leave(&ctx, Leaving::Move(to));
+        }
+        if let Some((id, name)) = self.door_renamed.take() {
+            self.rename_door_row(&ctx, &id, &name);
+        }
 
         // The file dialog, after the frame and outside every borrow it took:
         // it blocks the thread on a window this process did not lay out, so it
@@ -8502,7 +8598,7 @@ impl MeridianApp {
                     self.stop_waiting_for_runs();
                     self.close_window(ctx);
                 }
-                Leaving::Home => self.say_waiting_for_runs(ctx),
+                Leaving::Home | Leaving::Move(_) => self.say_waiting_for_runs(ctx),
                 Leaving::Open(request) => {
                     self.say_not_opened_while_closing(&request);
                     self.say_waiting_for_runs(ctx);
@@ -8537,6 +8633,7 @@ impl MeridianApp {
             Leaving::Close | Leaving::Quit => self.close_once_runs_land(ctx),
             Leaving::Home => self.open_home(ctx),
             Leaving::Open(request) => self.take_open_request(ctx, request),
+            Leaving::Move(to) => self.move_open_protocol(ctx, &to),
         }
     }
 
@@ -8737,7 +8834,7 @@ impl MeridianApp {
                         let to = self.leaving.take().unwrap_or(Leaving::Close);
                         // Going somewhere else in this window: the buffer kept as a version is
                         // not carried into what opens next.
-                        if matches!(to, Leaving::Home | Leaving::Open(_)) {
+                        if matches!(to, Leaving::Home | Leaving::Open(_) | Leaving::Move(_)) {
                             self.drop_editor_buffer();
                         }
                         self.go(ctx, to);
@@ -10592,6 +10689,180 @@ impl MeridianApp {
         self.own_protocol.as_ref()
     }
 
+    /// The folder of the own-files Protocol the window holds: the one-source Protocol under the
+    /// grid and dashboard, or the Protocol under the model pane. `None` for any other document.
+    #[must_use]
+    pub fn open_protocol_dir(&self) -> Option<PathBuf> {
+        self.own_protocol
+            .as_ref()
+            .map(|p| p.dir.clone())
+            .or_else(|| self.model.as_ref().map(|m| m.doc.protocol.dir.clone()))
+    }
+
+    /// **Rename the open Protocol to `name`**: its folder and its `name:` together, asking the
+    /// close question first over a draft, since the window opens the Protocol again at its new
+    /// path. A refused name says why in a banner, and the Protocol stays as it was.
+    pub fn rename_protocol(&mut self, ctx: &egui::Context, name: &str) {
+        self.leave(ctx, Leaving::Move(Move::Rename(name.to_string())));
+    }
+
+    /// **Move the open Protocol's folder into `parent`**, as [`Self::rename_protocol`] renames it.
+    pub fn relocate_protocol(&mut self, ctx: &egui::Context, parent: &std::path::Path) {
+        self.leave(ctx, Leaving::Move(Move::Relocate(parent.to_path_buf())));
+    }
+
+    /// Which of the locator band's place fields is open for typing — a test hook.
+    #[must_use]
+    pub fn place_field(&self) -> Option<PlaceField> {
+        self.place_edit.as_ref().map(|e| e.field)
+    }
+
+    /// Where the locator band drew the Protocol's name on the last frame, the field F2 and a
+    /// click open.
+    #[must_use]
+    pub fn locator_name_rect(&self) -> Option<egui::Rect> {
+        self.place_rects.map(|(name, _)| name)
+    }
+
+    /// Where the locator band drew the Protocol's Location on the last frame.
+    #[must_use]
+    pub fn locator_location_rect(&self) -> Option<egui::Rect> {
+        self.place_rects.map(|(_, location)| location)
+    }
+
+    /// The front-door row whose name is open for typing, by its id — a test hook.
+    #[must_use]
+    pub fn door_rename_row(&self) -> Option<&str> {
+        self.door_rename_id.as_deref()
+    }
+
+    /// Open the field `field` for typing, holding what it names now.
+    fn open_place_field(&mut self, field: PlaceField) {
+        let Some(dir) = self.open_protocol_dir() else {
+            return;
+        };
+        let text = match field {
+            PlaceField::Name => display_name(&dir),
+            PlaceField::Location => dir
+                .parent()
+                .map_or_else(String::new, |p| p.to_string_lossy().into_owned()),
+        };
+        self.place_edit = Some(PlaceEdit {
+            field,
+            text,
+            focus: true,
+        });
+    }
+
+    /// F2: with the front door showing, rename the row under the pointer; with a Protocol open,
+    /// open the locator band's name field. No overlay may own the keyboard.
+    fn rename_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if !self.rename_binding.is_some_and(|t| consume_token(ctx, t)) {
+            return;
+        }
+        if self.front_door_is_live() {
+            if let Some(id) = self.door_hovered.clone() {
+                self.open_door_rename(&id);
+            }
+        } else {
+            self.open_place_field(PlaceField::Name);
+        }
+        ctx.request_repaint();
+    }
+
+    /// Open the name field on the front-door row `id`, when it names a Protocol on disk.
+    fn open_door_rename(&mut self, id: &str) {
+        let Some(dir) = door_row_dir(id) else {
+            return;
+        };
+        self.door_rename = Some(PlaceEdit {
+            field: PlaceField::Name,
+            text: display_name(&dir),
+            focus: true,
+        });
+        self.door_rename_id = Some(id.to_string());
+    }
+
+    /// Rename the Protocol the front-door row `id` names to `name`, and point its row at the new
+    /// folder. A refused name says why in a banner.
+    fn rename_door_row(&mut self, ctx: &egui::Context, id: &str, name: &str) {
+        let Some(dir) = door_row_dir(id) else {
+            return;
+        };
+        match crate::rename::rename(&dir, name) {
+            Ok(to) => {
+                self.layout.live_mut().repoint(&dir, &to);
+                self.notifications
+                    .dismiss(NotificationId::new(MOVE_PROTOCOL_BANNER));
+            }
+            Err(why) => self.say_not_moved(&Move::Rename(name.to_string()), why),
+        }
+        ctx.request_repaint();
+    }
+
+    /// Raise the banner that says `to` was not done, and why.
+    fn say_not_moved(&mut self, to: &Move, why: String) {
+        let title = match to {
+            Move::Rename(_) => "The Protocol was not renamed",
+            Move::Relocate(_) => "The Protocol was not moved",
+        };
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new(MOVE_PROTOCOL_BANNER),
+                Severity::Error,
+                title,
+            )
+            .body(why),
+        );
+    }
+
+    /// **Rename or move the open Protocol, then open it again where it now is**, so the window's
+    /// paths, its run strip, the Versions panel and the watcher all read the new folder; its
+    /// Recents row is pointed at the new folder first. A run in flight writes into the folder, so
+    /// the move waits for it, and says so.
+    fn move_open_protocol(&mut self, ctx: &egui::Context, to: &Move) {
+        let Some(dir) = self.open_protocol_dir() else {
+            return;
+        };
+        if self.run_outstanding() {
+            self.say_not_moved(
+                to,
+                "A run is writing into its folder. Try again once it finishes.".to_string(),
+            );
+            return;
+        }
+        let canonical = dir.canonicalize().ok();
+        let moved = match to {
+            Move::Rename(name) => crate::rename::rename(&dir, name),
+            Move::Relocate(parent) => crate::rename::relocate(&dir, parent),
+        };
+        match moved {
+            Ok(new) => {
+                self.notifications
+                    .dismiss(NotificationId::new(MOVE_PROTOCOL_BANNER));
+                if new == dir {
+                    return;
+                }
+                let layout = self.layout.live_mut();
+                layout.repoint(&dir, &new);
+                if let Some(canonical) = canonical.filter(|c| *c != dir) {
+                    layout.repoint(&canonical, &new);
+                }
+                self.open_protocol_path(ctx, &new.to_string_lossy());
+                let said = match to {
+                    Move::Rename(_) => format!("Renamed to {}", display_name(&new)),
+                    Move::Relocate(_) => format!("Moved to {}", new.display()),
+                };
+                self.toasts.push(Toast::new(Severity::Success, said));
+            }
+            Err(why) => self.say_not_moved(to, why),
+        }
+        ctx.request_repaint();
+    }
+
     /// Open the own-files Protocol in `dir` again into the model pane, with the model its folder
     /// holds: the Protocol is run for that model ([`crate::own_files::reopen`]) and its joins are
     /// measured again as the pane opens. No folder is made, and no discovery pass runs.
@@ -12045,6 +12316,16 @@ impl MeridianApp {
     /// banner and changes nothing, exactly as a data file that will not read
     /// does.
     pub fn open_protocol_path(&mut self, ctx: &egui::Context, path: &str) {
+        // A Protocol moved in the Finder since it was last open: its sources are repaired from
+        // where it was, and arc's database moved to its new path, before anything reads them.
+        let named = std::path::Path::new(path);
+        if let Some(dir) = crate::own_files::own_protocol_dir(named)
+            .or_else(|| crate::own_files::one_source_protocol_dir(named))
+        {
+            if let Err(e) = crate::rename::follow_a_move(&dir) {
+                eprintln!("warning: {}: its move was not followed: {e}", dir.display());
+            }
+        }
         // An own-files Protocol opens into the model pane over the model its folder holds.
         if let Some(dir) = crate::own_files::own_protocol_dir(std::path::Path::new(path)) {
             match self.runner.clone().or_else(crate::run::Runner::this_binary) {
@@ -12153,6 +12434,7 @@ impl MeridianApp {
         self.door_sections.clear();
         self.door_rows.clear();
         self.door_open_protocol = None;
+        self.door_hovered = None;
         self.door_help = None;
         self.door_open_file = None;
         self.affordances.clear();
@@ -12486,17 +12768,40 @@ impl MeridianApp {
             when: drawn_glyphs(&when),
             rect,
         });
+        if response.hovered() {
+            self.door_hovered = Some(recent.id.clone());
+        }
+        // A row naming a Protocol on disk is renamed from its context menu, or by F2 while the
+        // pointer is over it; its name is then a field until Enter or Esc.
+        let renaming = self.door_rename_id.as_deref() == Some(recent.id.as_str());
+        if door_row_dir(&recent.id).is_some() {
+            let mut rename = false;
+            response.context_menu(|ui| {
+                if ui.button("Rename…").clicked() {
+                    rename = true;
+                    ui.close();
+                }
+            });
+            if rename {
+                self.open_door_rename(&recent.id);
+            }
+        }
+        if renaming {
+            self.door_rename_field(ui, rect, &recent.id);
+        }
         if ui.is_rect_visible(rect) {
             let painter = ui.painter().with_clip_rect(rect);
             if response.hovered() {
                 painter.rect_filled(rect, radius::CONTROL, chrome::colour(sem.surfaces.raised));
             }
             let mid = rect.center().y;
-            painter.galley(
-                egui::pos2(rect.min.x + spacing::SPACE_4, mid - name.size().y / 2.0),
-                name,
-                chrome::colour(sem.text.primary),
-            );
+            if !renaming {
+                painter.galley(
+                    egui::pos2(rect.min.x + spacing::SPACE_4, mid - name.size().y / 2.0),
+                    name,
+                    chrome::colour(sem.text.primary),
+                );
+            }
             painter.galley(
                 egui::pos2(
                     rect.min.x + PROTOCOL_ROW_NAME_WIDTH,
@@ -12514,7 +12819,7 @@ impl MeridianApp {
                 chrome::colour(sem.text.muted),
             );
         }
-        if response.clicked() {
+        if response.clicked() && !renaming {
             // Two kinds of row, because there are two kinds of thing a window
             // can have been. A shipped start is leaked into the request queue
             // as a `&'static str`, which is what `Request::Open` carries, and
@@ -12533,6 +12838,37 @@ impl MeridianApp {
             } else {
                 self.door_open_protocol = Some(recent.id.clone());
             }
+        }
+    }
+
+    /// The name field over the front-door row `id` at `rect`, while it is being renamed: Enter
+    /// latches the rename for after the frame, and Esc or a click elsewhere closes it unchanged.
+    fn door_rename_field(&mut self, ui: &mut egui::Ui, rect: egui::Rect, id: &str) {
+        let Some(open) = self.door_rename.as_mut() else {
+            return;
+        };
+        let field = egui::Rect::from_min_size(
+            egui::pos2(rect.min.x + spacing::SPACE_2, rect.min.y + spacing::SPACE_1),
+            egui::vec2(
+                PROTOCOL_ROW_NAME_WIDTH - spacing::SPACE_4,
+                rect.height() - spacing::SPACE_1 * 2.0,
+            ),
+        );
+        let text_id = ui.id().with(("door-rename", id));
+        let output = egui::TextEdit::singleline(&mut open.text)
+            .id(text_id)
+            .font(ui_font())
+            .desired_width(field.width())
+            .show(&mut ui.new_child(egui::UiBuilder::new().max_rect(field)));
+        if open.focus {
+            open.focus = false;
+            output.response.request_focus();
+        } else if output.response.lost_focus() {
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                self.door_renamed = Some((id.to_string(), open.text.clone()));
+            }
+            self.door_rename = None;
+            self.door_rename_id = None;
         }
     }
 
@@ -13439,6 +13775,23 @@ fn own_protocol_recent(dir: &std::path::Path, id: String) -> Recent {
         grid_spot: Default::default(),
         opened_at,
     }
+}
+
+/// The Protocol folder a front-door row's id names, when it names one on disk: a row is
+/// remembered by the Protocol's `arcform.yaml`, or by its folder.
+fn door_row_dir(id: &str) -> Option<PathBuf> {
+    let path = std::path::Path::new(id);
+    let dir = if path
+        .file_name()
+        .is_some_and(|n| n == arc::spec::MANIFEST_FILENAME)
+    {
+        path.parent()?
+    } else {
+        path
+    };
+    dir.join(arc::spec::MANIFEST_FILENAME)
+        .is_file()
+        .then(|| dir.to_path_buf())
 }
 
 /// Whether a recorded recent is something this build can reopen — the filter
@@ -15340,6 +15693,155 @@ fn locator_band_ui(
         );
     }
     link
+}
+
+/// What the locator band's place fields did on a frame: where the name and the Location were
+/// drawn, which one a click opened, and the rename or move typed into one and entered.
+struct PlaceDrawn {
+    rects: (egui::Rect, egui::Rect),
+    opened: Option<PlaceField>,
+    entered: Option<Move>,
+}
+
+/// The open Protocol's place, at the locator band's right, before the source note: its name and
+/// the folder it is in, each drawn as a link that opens a field for typing. The folder is named by
+/// its last part and its whole path is the tooltip, so a picture of the band is not a picture of
+/// one Mac's folders. Enter in a field enters it, and Esc or a click elsewhere closes it unchanged.
+fn place_band_ui(
+    ui: &mut egui::Ui,
+    dir: &std::path::Path,
+    source: Option<&str>,
+    edit: &mut Option<PlaceEdit>,
+    mode: Mode,
+) -> PlaceDrawn {
+    let sem = semantic(mode.is_dark());
+    let rect = ui.max_rect();
+    let note_font = egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0);
+    let mut right = rect.right() - spacing::SPACE_4;
+    if let Some(source) = source {
+        let width = ui
+            .painter()
+            .layout_no_wrap(source.to_owned(), note_font, egui::Color32::PLACEHOLDER)
+            .size()
+            .x;
+        right -= width + spacing::SPACE_6;
+    }
+    let parent = dir.parent();
+    let fields = [
+        (
+            PlaceField::Location,
+            "Location",
+            parent.map_or_else(String::new, display_name),
+            parent.map_or_else(String::new, |p| p.display().to_string()),
+        ),
+        (
+            PlaceField::Name,
+            "Name",
+            display_name(dir),
+            "Rename the Protocol and its folder".to_string(),
+        ),
+    ];
+    let mut rects = [egui::Rect::NOTHING; 2];
+    let mut opened = None;
+    let mut entered = None;
+    let mut closed = false;
+    for (at, (field, label, value, about)) in fields.into_iter().enumerate() {
+        let label_galley = ui.painter().layout_no_wrap(
+            label.to_owned(),
+            ui_font(),
+            chrome::colour(sem.text.muted),
+        );
+        let value_galley =
+            ui.painter()
+                .layout_no_wrap(value, ui_font(), chrome::colour(sem.text.secondary));
+        let editing = edit.as_ref().is_some_and(|e| e.field == field);
+        let value_width = if editing {
+            match field {
+                PlaceField::Name => 200.0,
+                PlaceField::Location => 320.0,
+            }
+        } else {
+            value_galley.size().x
+        };
+        let width = label_galley.size().x + spacing::SPACE_2 + value_width;
+        let left = right - width;
+        let y = rect.center().y;
+        let whole = egui::Rect::from_min_max(
+            egui::pos2(left, rect.top()),
+            egui::pos2(right, rect.bottom()),
+        );
+        rects[at] = whole;
+        ui.painter().galley(
+            egui::pos2(left, y - label_galley.size().y / 2.0),
+            label_galley.clone(),
+            chrome::colour(sem.text.muted),
+        );
+        let value_left = left + label_galley.size().x + spacing::SPACE_2;
+        if editing {
+            let id = ui.id().with(("locator-place-field", at));
+            let field_rect = egui::Rect::from_min_size(
+                egui::pos2(value_left, rect.top() + spacing::SPACE_1),
+                egui::vec2(value_width, rect.height() - spacing::SPACE_1 * 2.0),
+            );
+            let open = edit.as_mut().expect("the field being edited");
+            let output = egui::TextEdit::singleline(&mut open.text)
+                .id(id)
+                .font(ui_font())
+                .desired_width(value_width)
+                .show(&mut ui.new_child(egui::UiBuilder::new().max_rect(field_rect)));
+            if open.focus {
+                open.focus = false;
+                output.response.request_focus();
+                let mut state = output.state;
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(open.text.chars().count()),
+                    )));
+                state.store(ui.ctx(), id);
+            } else if output.response.lost_focus() {
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    entered = Some(match field {
+                        PlaceField::Name => Move::Rename(open.text.clone()),
+                        PlaceField::Location => Move::Relocate(PathBuf::from(open.text.trim())),
+                    });
+                }
+                closed = true;
+            }
+        } else {
+            let at_value = egui::pos2(value_left, y - value_galley.size().y / 2.0);
+            let hit = egui::Rect::from_min_size(at_value, value_galley.size());
+            let response = ui
+                .interact(
+                    hit,
+                    ui.id().with(("locator-place", at)),
+                    egui::Sense::click(),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(about);
+            if response.hovered() {
+                ui.painter().line_segment(
+                    [hit.left_bottom(), hit.right_bottom()],
+                    egui::Stroke::new(1.0, chrome::colour(sem.text.secondary)),
+                );
+            }
+            ui.painter()
+                .galley(at_value, value_galley, chrome::colour(sem.text.secondary));
+            if response.clicked() {
+                opened = Some(field);
+            }
+        }
+        right = left - spacing::SPACE_6;
+    }
+    if closed {
+        *edit = None;
+    }
+    PlaceDrawn {
+        rects: (rects[1], rects[0]),
+        opened,
+        entered,
+    }
 }
 
 /// How wide the top bar's right-hand group would be if it drew: the renderer
