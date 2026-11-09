@@ -161,6 +161,10 @@ pub const RESHAPE_VERBS: [&str; 10] = [
 /// The verb that runs discovery again and folds what it proposes around the analyst's decisions.
 pub const REDISCOVER_MODEL: &str = "rediscover-model";
 
+/// How long a full pass held for an edit whose file could not be written waits before it tries
+/// the write again, in milliseconds.
+pub const WRITE_RETRY_MS: u64 = 2_000;
+
 /// Whether `longname` is one of the model pane's verbs.
 #[must_use]
 pub fn is_model_verb(longname: &str) -> bool {
@@ -290,6 +294,9 @@ pub struct ModelPane {
     /// The full pass's answer once it has landed, while it waits for the file view's edit to be
     /// settled before it is folded in.
     landed: Option<Result<Model, String>>,
+    /// When a held full pass next tries the write of an edit whose file could not be written, on
+    /// the frame clock, so a folder that refuses it is not written to on every poll.
+    write_retry_due: Option<u64>,
 }
 
 /// What became of a [`ModelAction`] the pane dispatched.
@@ -354,6 +361,7 @@ impl ModelPane {
             drag_from: None,
             full_pass: None,
             landed: None,
+            write_retry_due: None,
         };
         // A Protocol already run has silver tables to measure the joins over; one not yet run
         // has none, and nothing is measured.
@@ -570,6 +578,8 @@ impl ModelPane {
                 Ok(())
             }
             Ok(edit) => {
+                // The text reads, so whatever came of its write, it is no longer a refused one.
+                self.draft_refused = false;
                 // The next edit of this text starts from it, as typed, once it is written.
                 let base = std::mem::replace(&mut self.file_base, edit.typed);
                 // The run waits until the typing is done ([`Self::run_if_owed`]).
@@ -606,11 +616,14 @@ impl ModelPane {
         if self.file_draft == self.file_read && !self.draft_refused && !self.draft_unwritten {
             return Ok(());
         }
-        // What the read made of the text stands in the file view either way.
+        // What the read made of the text stands in the file view either way. A text that does
+        // not read is named by its first line, as the file view names it; one that reads but
+        // could not be written answers the write's own error.
         match self.read_file_draft() {
-            Err(_) if self.draft_refused => {
-                Err("The file has an edit that doesn't read — fix or discard it first".to_string())
-            }
+            Err(e) if self.draft_refused => Err(format!(
+                "The file has an edit that doesn't read — fix or discard it first. {}",
+                e.lines().next().unwrap_or_default()
+            )),
             read => read,
         }
     }
@@ -862,6 +875,7 @@ impl ModelPane {
         // A pass still running, or landed and waiting, answers for a model this one replaces.
         self.full_pass = None;
         self.landed = None;
+        self.write_retry_due = None;
         let model = match sample_pass(&*discovery, &self.protocol, Some(&self.model)) {
             Ok(model) => model,
             Err(e) => return Dispatched::Failed(format!("Discovery failed: {e}")),
@@ -889,6 +903,7 @@ impl ModelPane {
     /// model is the sample pass's.
     pub fn start_full_pass(&mut self, discovery: impl Discovery + Send + 'static) {
         self.landed = None;
+        self.write_retry_due = None;
         self.full_pass = Some(FullPass::start(Box::new(discovery), &self.protocol));
     }
 
@@ -905,7 +920,10 @@ impl ModelPane {
     /// file cannot be written. The fold then sees the model the edit made. A fold that changes the
     /// model saves it, as an action's model is, and says so in the status line, as a failed pass
     /// does; what the analyst decided stays as it is.
-    pub fn poll_discovery(&mut self) -> Option<Dispatched> {
+    ///
+    /// `now_ms` is the frame clock. While the edit is one whose file could not be written, its
+    /// write is tried again at most every [`WRITE_RETRY_MS`], rather than on every poll.
+    pub fn poll_discovery(&mut self, now_ms: u64) -> Option<Dispatched> {
         // The pane's tick reads an edit once its pause is out; the fold waits for that read.
         if self.file_edit_armed() {
             return None;
@@ -915,7 +933,16 @@ impl ModelPane {
             self.full_pass = None;
             self.landed = Some(answer);
         }
-        self.settle_file_edit().ok()?;
+        if self.draft_unwritten && self.write_retry_due.is_some_and(|due| now_ms < due) {
+            return None;
+        }
+        if self.settle_file_edit().is_err() {
+            self.write_retry_due = self
+                .draft_unwritten
+                .then_some(now_ms.saturating_add(WRITE_RETRY_MS));
+            return None;
+        }
+        self.write_retry_due = None;
         let answer = self.landed.take()?;
         Some(self.fold_full_pass(answer))
     }
@@ -1041,11 +1068,15 @@ impl ModelPane {
     /// ([`measure_joins`]), and when that changes the model it is written again, without a run:
     /// evidence is what the file says about the data, not a step of the Protocol.
     ///
+    /// The file view's edit is settled first ([`Self::settle_file_edit`]), so a save never puts
+    /// the file's text over an edit that is still to be read, refused or unwritten.
+    ///
     /// # Errors
     ///
-    /// The reason the file or the silver steps could not be written, or what arc printed when
-    /// the run failed.
+    /// An edit in the file view that does not settle, the reason the file or the silver steps
+    /// could not be written, or what arc printed when the run failed.
     pub fn save_model(&mut self, model: Model) -> Result<(), String> {
+        self.settle_file_edit()?;
         let kept = model_file::still_kept(&model, &self.kept);
         self.save_with(model, kept, false)
     }

@@ -299,7 +299,7 @@ fn sample_then_full_merges_without_flicker() {
         assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
     }
     analyst_decisions_stand(&pane.model);
-    assert_eq!(pane.poll_discovery(), None, "the full pass has not landed");
+    assert_eq!(pane.poll_discovery(0), None, "the full pass has not landed");
     analyst_decisions_stand(&pane.model);
 
     // The full pass lands with a proposal that would undo both, and that changes what Dovetail
@@ -318,7 +318,7 @@ fn sample_then_full_merges_without_flicker() {
     let due = Instant::now() + Duration::from_secs(30);
     let landed = loop {
         // Each poll is a frame: none shows the analyst's decisions undone.
-        let polled = pane.poll_discovery();
+        let polled = pane.poll_discovery(0);
         analyst_decisions_stand(&pane.model);
         if let Some(landed) = polled {
             break landed;
@@ -365,14 +365,14 @@ fn full_pass_waits_for_a_file_edit_to_be_read() {
     }
     release.send(full).unwrap();
     std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(pane.poll_discovery(), None, "the edit is read first");
+    assert_eq!(pane.poll_discovery(0), None, "the edit is read first");
     assert!(pane.discovering());
 
     // Once the edit is read, the full pass folds in around it.
     assert_eq!(pane.tick_file_edit(0), None);
     assert_eq!(pane.tick_file_edit(10_000), Some(Ok(())));
     let due = Instant::now() + Duration::from_secs(30);
-    while pane.poll_discovery().is_none() {
+    while pane.poll_discovery(0).is_none() {
         assert!(Instant::now() < due, "the full pass never landed");
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -679,12 +679,12 @@ fn a_superseded_full_pass_is_stopped_and_never_merged() {
         "the superseded pass was asked to stop"
     );
     std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(pane.poll_discovery(), None, "only the newer pass can land");
+    assert_eq!(pane.poll_discovery(0), None, "only the newer pass can land");
     assert_eq!(role_of(&pane.model, "stores"), Role::Entity);
 
     release_new.send(retail_model()).unwrap();
     let due = Instant::now() + Duration::from_secs(30);
-    while pane.poll_discovery().is_none() {
+    while pane.poll_discovery(0).is_none() {
         assert!(Instant::now() < due, "the newer pass never landed");
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -800,7 +800,7 @@ fn a_save_during_a_full_pass_runs_the_protocol() {
 
     let due = Instant::now() + Duration::from_secs(120);
     let landed = loop {
-        if let Some(landed) = pane.poll_discovery() {
+        if let Some(landed) = pane.poll_discovery(0) {
             break landed;
         }
         assert!(Instant::now() < due, "the full pass never landed");

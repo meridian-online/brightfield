@@ -17080,7 +17080,7 @@ fn draw_model_pane(
     }
     // Discovery's full pass, on its worker: a fold draws again at once, and a pass still running
     // is looked for again shortly.
-    if doc.poll_discovery().is_some() {
+    if doc.poll_discovery(now_ms).is_some() {
         ui.ctx().request_repaint();
     }
     if doc.discovering() {

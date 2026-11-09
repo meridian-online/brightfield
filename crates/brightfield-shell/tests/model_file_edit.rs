@@ -906,11 +906,10 @@ fn a_refused_edit_blocks_a_reshape_until_discarded() {
     pane.focus.selected = Some(Selection::Relationship("transactions_stores".into()));
 
     let refused = pane.perform_reshape("drop-join").expect("a reshape verb");
-    assert_eq!(
-        refused,
-        Dispatched::Failed(
-            "The file has an edit that doesn't read — fix or discard it first".to_string()
-        )
+    assert!(
+        matches!(&refused, Dispatched::Failed(e)
+            if e.starts_with("The file has an edit that doesn't read — fix or discard it first. Line 3:")),
+        "{refused:?}"
     );
     assert_eq!(on_disk(&pane), disk, "nothing is written");
     assert_eq!(pane.file_draft(), broken, "the edit stays to be put right");
@@ -2017,4 +2016,92 @@ fn a_full_pass_waits_for_an_unwritten_edit_and_then_writes_it() {
     assert!(pane.finish_discovery().is_some(), "the pass lands");
     assert!(edit_on_disk(&pane), "the edit was written before the fold");
     assert!(!pane.file_edit_unsaved());
+}
+
+/// The retail model's text with the datasets key broken, so it does not read at line 3.
+fn broken(pane: &ModelPane) -> String {
+    replaced(pane.file_text(), "\ndatasets:\n", "\ndatasets: :\n")
+}
+
+#[test]
+fn a_corrected_edit_whose_file_cannot_be_written_says_why_on_save() {
+    let (mut pane, _held) = opened();
+    let text = broken(&pane);
+    type_and_pause(&mut pane, text);
+    assert!(pane.file_error().is_some_and(|e| e.starts_with("Line 3:")));
+
+    // Put right, but typed while the folder refuses the write.
+    let Some((read_only, _)) = unwritten_edit(&mut pane) else {
+        return;
+    };
+    let said = pane.save_draft().expect_err("the write still fails");
+    assert!(
+        !said.contains("doesn't read"),
+        "the save says the write failed, not that the edit does not read: {said}"
+    );
+    let ctx = egui::Context::default();
+    pane.view = ModelView::File;
+    draw(&ctx, &mut pane, Vec::new());
+    assert_eq!(
+        pane.drawn().file_discard,
+        None,
+        "an edit that reads is not offered as one to discard"
+    );
+    drop(read_only);
+    pane.save_draft().expect("the save writes the edit");
+    assert!(edit_on_disk(&pane));
+}
+
+#[test]
+fn saving_a_refused_edit_says_the_line_that_does_not_read() {
+    let (mut pane, _held) = opened();
+    let text = broken(&pane);
+    type_and_pause(&mut pane, text);
+    let said = pane.save_draft().expect_err("the edit does not read");
+    assert!(said.contains("doesn't read"), "{said}");
+    assert!(said.contains("Line 3:"), "the line is named: {said}");
+}
+
+#[test]
+fn save_model_settles_the_file_view_first() {
+    let (mut pane, _held) = opened();
+    let disk = on_disk(&pane);
+    let text = broken(&pane);
+    type_and_pause(&mut pane, text.clone());
+    assert!(
+        pane.save_model(retail_model()).is_err(),
+        "a refused edit refuses the save"
+    );
+    assert_eq!(on_disk(&pane), disk, "nothing is written");
+    assert_eq!(pane.file_draft(), text, "the edit stays to be put right");
+}
+
+#[test]
+fn a_held_full_pass_retries_an_unwritten_edit_only_every_so_often() {
+    use brightfield_shell::model_pane::WRITE_RETRY_MS;
+    let (mut pane, _held) = opened();
+    let Some((read_only, _)) = unwritten_edit(&mut pane) else {
+        return;
+    };
+    pane.start_full_pass(Proposes(retail_model()));
+    // The pass answers at once; give its worker time to send.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(
+        pane.poll_discovery(0),
+        None,
+        "the write is tried, and fails"
+    );
+    drop(read_only);
+    assert_eq!(
+        pane.poll_discovery(WRITE_RETRY_MS - 1),
+        None,
+        "no write is tried again before the retry is due"
+    );
+    assert!(!edit_on_disk(&pane), "nothing was written yet");
+    assert!(pane.discovering(), "the pass still waits");
+    assert!(
+        pane.poll_discovery(WRITE_RETRY_MS).is_some(),
+        "once the retry is due, the edit is written and the pass folds in"
+    );
+    assert!(edit_on_disk(&pane));
 }
