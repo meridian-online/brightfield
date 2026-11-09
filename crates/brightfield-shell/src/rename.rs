@@ -98,8 +98,8 @@ pub fn relocate(dir: &Path, new_parent: &Path) -> Result<PathBuf, String> {
 
 /// [`relocate`], moving the folder with `rename_folder` in place of [`std::fs::rename`], so a test
 /// can make it fail as a move to another volume does. When it fails with
-/// [`io::ErrorKind::CrossesDevices`], the folder is copied, the copy checked against it, and only
-/// then the original removed.
+/// [`io::ErrorKind::CrossesDevices`], the folder is copied, the copy checked against it, and then
+/// the original removed (`relocate_across_volumes_copies_then_removes`).
 ///
 /// # Errors
 ///

@@ -619,7 +619,7 @@ fn relocate_across_volumes_copies_then_removes() {
     assert!(database(&new).is_file(), "arc's database moved with it");
 }
 
-/// Every file under `dir`, sorted.
+/// The files under `dir`, sorted.
 fn walk(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
