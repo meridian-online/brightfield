@@ -860,11 +860,14 @@ fn sources_are_added_only_to_protocols_brightfield_made() {
     win.app.open_queue().push(OpenRequest::Path(dir.clone()));
     win.settle();
     assert!(!win.app.front_door_is_live(), "{}", win.said());
-    let listed = files_of(&scratch().join("places")).len();
+    // The opened Protocol's own folder, which no other test writes to: the
+    // shared places folder grows while the binary's other tests run beside
+    // this one, so a count of it says nothing about this add.
+    let held = files_of(&dir);
     win.add(&csv("by-hand", "customers.csv", CUSTOMERS));
     assert!(win.raised(ADD_SOURCE_REFUSED_BANNER), "{}", win.said());
     assert!(win.app.own_protocol().is_none() && win.app.model_pane().is_none());
-    assert_eq!(files_of(&scratch().join("places")).len(), listed);
+    assert_eq!(files_of(&dir), held, "the refused add left the Protocol as it was");
 }
 
 #[test]
