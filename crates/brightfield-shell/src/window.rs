@@ -4267,8 +4267,8 @@ impl MeridianApp {
     }
 
     /// Settle the model pane's draft, as Save does ([`crate::model_pane::ModelPane::save_draft`]),
-    /// answering whether nothing of it is left unsaved. A draft that does not read, or a run that
-    /// fails, is said in a banner.
+    /// answering whether it was settled. A draft that does not read, or a run that fails, is said
+    /// in a banner.
     fn save_model_draft(&mut self, ctx: &egui::Context) -> bool {
         if !self.model_draft_unsaved() {
             return true;

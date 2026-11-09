@@ -106,7 +106,7 @@ fn failing_runner(name: &str, passing: u32) -> Runner {
     Runner::at(script)
 }
 
-/// The folders under `dir`, relative to it, at any depth: a failed add leaves none it made.
+/// The folders under `dir`, relative to it, at any depth: what a failed add puts back.
 fn folders_of(dir: &Path) -> std::collections::BTreeSet<PathBuf> {
     let mut found = std::collections::BTreeSet::new();
     let mut stack = vec![dir.to_path_buf()];
