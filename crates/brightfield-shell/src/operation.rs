@@ -426,7 +426,7 @@ pub fn remove_step(runner: &Runner, dir: &Path, name: &str) -> Result<StepRemova
     Ok(StepRemoval::Removed { left_behind })
 }
 
-/// The steps of the manifest text `text`, by name, or none when it does not load.
+/// The steps of the manifest text `text`, by name, while it loads as a manifest.
 fn step_names(text: &str) -> Option<Vec<String>> {
     brightfield_protocol::parse_manifest_str(text)
         .ok()
