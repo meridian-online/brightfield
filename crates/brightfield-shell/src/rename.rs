@@ -35,6 +35,65 @@ const PROTOCOL_PATH_FILE: &str = "protocol-path";
 /// The manifest every Protocol folder holds.
 const MANIFEST: &str = "arcform.yaml";
 
+/// What a move did: where the Protocol is now, and, after a copy to another volume whose original
+/// could not all be removed, the sentence naming what was left behind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moved {
+    /// The Protocol's folder now.
+    pub to: PathBuf,
+    /// The original folder, or what is left of it, when a copy to another volume could not
+    /// remove it all. The move is done all the same: the copy was checked first.
+    pub left_behind: Option<String>,
+}
+
+/// The two folder operations a move makes, so a test can make either fail: renaming the folder,
+/// and removing the original once a copy to another volume has been checked.
+pub struct FolderOps<'a> {
+    /// Rename a folder, as [`std::fs::rename`] does.
+    pub rename: &'a dyn Fn(&Path, &Path) -> io::Result<()>,
+    /// Remove a folder and everything in it, as [`std::fs::remove_dir_all`] does.
+    pub remove: &'a dyn Fn(&Path) -> io::Result<()>,
+}
+
+fn system_rename(from: &Path, to: &Path) -> io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+fn system_remove(dir: &Path) -> io::Result<()> {
+    std::fs::remove_dir_all(dir)
+}
+
+impl FolderOps<'static> {
+    /// The file system's own operations.
+    #[must_use]
+    pub fn system() -> Self {
+        Self {
+            rename: &system_rename,
+            remove: &system_remove,
+        }
+    }
+}
+
+/// Where a Location typed as `typed` names, read from the folder the Protocol is in now,
+/// `parent`: a leading `~` is the home folder, and a relative path is read from `parent`.
+#[must_use]
+pub fn resolve_location(typed: &str, parent: &Path) -> PathBuf {
+    let typed = typed.trim();
+    let home = || std::env::home_dir().unwrap_or_default();
+    let named = if typed == "~" {
+        home()
+    } else if let Some(rest) = typed.strip_prefix("~/") {
+        home().join(rest)
+    } else {
+        PathBuf::from(typed)
+    };
+    if named.is_absolute() {
+        folded(&named)
+    } else {
+        folded(&parent.join(named))
+    }
+}
+
 /// Rename the Protocol in `dir` to `new_name`: its folder within its parent and the `name:` in its
 /// `arcform.yaml` together, then repair its sources ([`repair`]) and move arc's database to the
 /// new path. Answers the new folder.
@@ -47,6 +106,15 @@ const MANIFEST: &str = "arcform.yaml";
 /// A name that is empty, holds a `/`, starts with a `.` or is taken; a folder with no parent; and
 /// a folder or manifest that cannot be read or moved.
 pub fn rename(dir: &Path, new_name: &str) -> Result<PathBuf, String> {
+    rename_with(dir, new_name, &FolderOps::system()).map(|m| m.to)
+}
+
+/// [`rename`], with the folder operations `ops`, answering what the move did.
+///
+/// # Errors
+///
+/// As [`rename`].
+pub fn rename_with(dir: &Path, new_name: &str, ops: &FolderOps) -> Result<Moved, String> {
     let name = checked_name(new_name)?;
     let dir = std::path::absolute(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let parent = dir
@@ -62,7 +130,10 @@ pub fn rename(dir: &Path, new_name: &str) -> Result<PathBuf, String> {
         if let Err(e) = move_database(database, &canonical) {
             eprintln!("warning: {}: {e}", dir.display());
         }
-        return Ok(dir);
+        return Ok(Moved {
+            to: dir,
+            left_behind: None,
+        });
     }
     // A change of case alone, on a file system that ignores case, names the folder itself.
     let itself = to.exists() && same_folder(&to, &dir);
@@ -78,10 +149,8 @@ pub fn rename(dir: &Path, new_name: &str) -> Result<PathBuf, String> {
             Err(e) => return Err(format!("{}: {e}", to.display())),
         }
     }
-    move_to(&dir, &to, Some(name), !itself, &|from, to| {
-        std::fs::rename(from, to)
-    })?;
-    Ok(to)
+    let left_behind = move_to(&dir, &to, Some(name), !itself, ops)?;
+    Ok(Moved { to, left_behind })
 }
 
 /// Move the Protocol in `dir` into `new_parent`, keeping its name, or taking `-2`, `-3` and so on
@@ -93,23 +162,21 @@ pub fn rename(dir: &Path, new_name: &str) -> Result<PathBuf, String> {
 /// A `new_parent` that is not a folder or is inside the Protocol, and a folder or manifest that
 /// cannot be read, claimed or moved.
 pub fn relocate(dir: &Path, new_parent: &Path) -> Result<PathBuf, String> {
-    relocate_with(dir, new_parent, &|from, to| std::fs::rename(from, to))
+    relocate_with(dir, new_parent, &FolderOps::system()).map(|m| m.to)
 }
 
-/// [`relocate`], moving the folder with `rename_folder` in place of [`std::fs::rename`], so a test
-/// can make it fail as a move to another volume does. When it fails with
-/// [`io::ErrorKind::CrossesDevices`], the folder is copied, the copy checked against it, and then
-/// the original removed (`relocate_across_volumes_copies_then_removes`).
+/// [`relocate`], with the folder operations `ops`, so a test can make the rename fail as a move to
+/// another volume does, or the removal after it. When the rename fails with
+/// [`io::ErrorKind::CrossesDevices`], the folder is copied, the copy checked against it by the
+/// path and size of each file in it (not by content), and then the original removed
+/// (`relocate_across_volumes_copies_then_removes`). Once the copy is checked the move is done: an
+/// original that cannot all be removed is named in [`Moved::left_behind`].
 ///
 /// # Errors
 ///
 /// As [`relocate`], and a copy that cannot be made or does not match the original, which is then
-/// left where it was.
-pub fn relocate_with(
-    dir: &Path,
-    new_parent: &Path,
-    rename_folder: &dyn Fn(&Path, &Path) -> io::Result<()>,
-) -> Result<PathBuf, String> {
+/// taken away again with the original left as it was.
+pub fn relocate_with(dir: &Path, new_parent: &Path, ops: &FolderOps) -> Result<Moved, String> {
     let dir = std::path::absolute(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let was = dir
         .canonicalize()
@@ -129,7 +196,10 @@ pub fn relocate_with(
         ));
     }
     if was.parent() == Some(parent.as_path()) {
-        return Ok(dir);
+        return Ok(Moved {
+            to: dir,
+            left_behind: None,
+        });
     }
     let stem = dir
         .file_name()
@@ -137,8 +207,8 @@ pub fn relocate_with(
         .ok_or_else(|| format!("{}: names no folder", dir.display()))?;
     let (to, name) = crate::protocols_dir::claim(&new_parent, &stem).map_err(|e| e.to_string())?;
     let renamed = (name != stem).then_some(name.as_str());
-    move_to(&dir, &to, renamed, true, rename_folder)?;
-    Ok(to)
+    let left_behind = move_to(&dir, &to, renamed, true, ops)?;
+    Ok(Moved { to, left_behind })
 }
 
 /// The folder the Protocol in `dir` was last recorded at, when that is not where it is now: it was
@@ -244,37 +314,123 @@ fn repair_panels(panels: &Path, dir: &Path, was: &Path) -> Result<usize, String>
     Ok(count)
 }
 
-/// `line` with the absolute path its `file:` names written again inside `dir`, when that path is
-/// inside `was` and reads differently from inside `dir`. `None` for a line needing no change.
+/// `line` with the absolute path its `file:` key names written again inside `dir`, when that path
+/// is inside `was` and reads differently from inside `dir`. `None` for a line needing no change.
+///
+/// The key is `file:` where a YAML key starts (at the line's start after its indent or a `- `, or
+/// after a flow mapping's `{` or `,`), followed by a space or the line's end, so neither
+/// `profile:` nor a `file:///` address inside a value is taken for it. The value is read as YAML
+/// reads a scalar, a single-quoted one's `''` and a double-quoted one's escapes included, and
+/// written back in the same style, escaped as that style needs.
 fn moved_file_line(line: &str, dir: &Path, was: &Path) -> Option<String> {
-    let key = line.find("file:")?;
+    let mut from = 0;
+    while let Some(found) = line[from..].find("file:") {
+        let key = from + found;
+        from = key + "file:".len();
+        if let Some(fixed) = file_value_at(line, key, dir, was) {
+            return Some(fixed);
+        }
+    }
+    None
+}
+
+/// [`moved_file_line`] for the `file:` at byte `key` of `line`.
+fn file_value_at(line: &str, key: usize, dir: &Path, was: &Path) -> Option<String> {
+    let before = line[..key].trim_end_matches(' ');
+    let starts_a_key = before.is_empty()
+        || before.ends_with('{')
+        || before.ends_with(',')
+        || before.trim_start() == "-"
+        || (before.ends_with('-') && before[..before.len() - 1].trim().is_empty());
     let after = key + "file:".len();
-    let rest = &line[after..];
-    let value_at = after + (rest.len() - rest.trim_start().len());
-    let value = &line[value_at..];
-    let (quote, body) = match value.chars().next()? {
-        q @ ('\'' | '"') => (Some(q), &value[1..]),
-        _ => (None, value),
-    };
-    let end = match quote {
-        Some(q) => body.find(q)?,
-        None => body
-            .find(|c: char| c.is_whitespace() || c == ',' || c == '}')
-            .unwrap_or(body.len()),
-    };
-    let named = &body[..end];
-    let inside = inside_of(Path::new(named), was)?;
+    if !starts_a_key || !line[after..].is_empty() && !line[after..].starts_with(' ') {
+        return None;
+    }
+    let value_at = after + (line[after..].len() - line[after..].trim_start().len());
+    let (named, end, style) = read_scalar(&line[value_at..])?;
+    let inside = inside_of(Path::new(&named), was)?;
     let fixed = dir.join(inside).to_string_lossy().into_owned();
     if fixed == named {
         return None;
     }
-    let start = value_at + usize::from(quote.is_some());
     Some(format!(
         "{}{}{}",
-        &line[..start],
-        fixed,
-        &line[start + end..]
+        &line[..value_at],
+        write_scalar(&fixed, style),
+        &line[value_at + end..]
     ))
+}
+
+/// How a scalar was written.
+#[derive(Clone, Copy)]
+enum Style {
+    Plain,
+    Single,
+    Double,
+}
+
+/// The scalar at the start of `text`, unescaped, with how many bytes of `text` it took and its
+/// style. `None` for a quoted scalar left open.
+fn read_scalar(text: &str) -> Option<(String, usize, Style)> {
+    let mut chars = text.char_indices().peekable();
+    match chars.peek()?.1 {
+        '\'' => {
+            chars.next();
+            let mut out = String::new();
+            while let Some((at, c)) = chars.next() {
+                if c == '\'' {
+                    if chars.peek().is_some_and(|(_, n)| *n == '\'') {
+                        chars.next();
+                        out.push('\'');
+                    } else {
+                        return Some((out, at + 1, Style::Single));
+                    }
+                } else {
+                    out.push(c);
+                }
+            }
+            None
+        }
+        '"' => {
+            chars.next();
+            let mut out = String::new();
+            while let Some((at, c)) = chars.next() {
+                match c {
+                    '"' => return Some((out, at + 1, Style::Double)),
+                    '\\' => match chars.next()?.1 {
+                        'n' => out.push('\n'),
+                        't' => out.push('\t'),
+                        other => out.push(other),
+                    },
+                    other => out.push(other),
+                }
+            }
+            None
+        }
+        _ => {
+            let end = text
+                .find([',', '}'])
+                .or_else(|| text.find(" #"))
+                .unwrap_or(text.len());
+            let value = text[..end].trim_end();
+            Some((value.to_string(), value.len(), Style::Plain))
+        }
+    }
+}
+
+/// `value` written as a scalar in `style`, escaped as it needs; a plain scalar that would not read
+/// back as itself is single-quoted.
+fn write_scalar(value: &str, style: Style) -> String {
+    let plain_safe = !value.is_empty()
+        && !value.contains(['\'', '"', '#', ',', '{', '}', '[', ']'])
+        && !value.contains(": ")
+        && !value.ends_with(':')
+        && value.trim() == value;
+    match style {
+        Style::Plain if plain_safe => value.to_string(),
+        Style::Plain | Style::Single => format!("'{}'", value.replace('\'', "''")),
+        Style::Double => format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")),
+    }
 }
 
 /// The part of the absolute `path` inside the folder `was`, which is canonical. On the Mac
@@ -391,14 +547,19 @@ fn repair_value(value: Option<&mut Value>, from: &Path, to: &Path, was: &Path) -
 }
 
 /// `path`, written relative to the folder `from`, written again relative to `to`, when it is
-/// relative, points outside the Protocol folder `was`, and reads differently from `to`. `None`
-/// when it needs no rewriting: absolute, an address, inside the folder, or the same from both.
+/// relative, points outside the Protocol folder `was`, names nothing from `to`, and named a file
+/// that is still there from `from`. `None` when it needs no rewriting: absolute, an address,
+/// inside the folder, still found from the new place (a parent holding the Protocol and its data
+/// moved together, or copied), or naming nothing from either place.
 fn repaired(path: &str, from: &Path, to: &Path, was: &Path) -> Option<String> {
     if path.is_empty() || path.contains("://") || Path::new(path).is_absolute() {
         return None;
     }
+    if folded(&to.join(path)).exists() {
+        return None;
+    }
     let target = folded(&from.join(path));
-    if target.starts_with(was) {
+    if target.starts_with(was) || !target.exists() {
         return None;
     }
     let fixed = crate::own_files::relative_to(&target, to).ok()?;
@@ -447,35 +608,37 @@ fn same_folder(a: &Path, b: &Path) -> bool {
 
 /// Move the Protocol in `dir` to `to`, which is a folder claimed for it when `claimed`, renaming it
 /// `name` in its manifest when one is given; then repair, record and move the database. A move that
-/// fails puts the manifest back and gives up the claim.
+/// fails, at any step before the folder has moved, puts the manifest back and gives up the claim.
+/// Answers what an original copied to another volume left behind, if anything.
 fn move_to(
     dir: &Path,
     to: &Path,
     name: Option<&str>,
     claimed: bool,
-    rename_folder: &dyn Fn(&Path, &Path) -> io::Result<()>,
-) -> Result<(), String> {
-    let was = dir
-        .canonicalize()
-        .map_err(|e| format!("{}: {e}", dir.display()))?;
-    let database = working_database(dir);
-    let manifest = dir.join(MANIFEST);
-    let before =
-        std::fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
-    let give_up = |why: String| {
-        let _ = std::fs::write(&manifest, &before);
+    ops: &FolderOps,
+) -> Result<Option<String>, String> {
+    let release = |why: String| {
         if claimed {
             let _ = std::fs::remove_dir(to);
         }
         why
     };
+    let was = dir
+        .canonicalize()
+        .map_err(|e| release(format!("{}: {e}", dir.display())))?;
+    let database = working_database(dir);
+    let manifest = dir.join(MANIFEST);
+    let before = std::fs::read_to_string(&manifest)
+        .map_err(|e| release(format!("{}: {e}", manifest.display())))?;
+    let give_up = |why: String| {
+        let _ = std::fs::write(&manifest, &before);
+        release(why)
+    };
     if let Some(name) = name {
         set_manifest_name(dir, name).map_err(give_up)?;
     }
-    move_folder(dir, to, claimed, rename_folder).map_err(give_up)?;
-    let now = to
-        .canonicalize()
-        .map_err(|e| format!("{}: {e}", to.display()))?;
+    let left_behind = move_folder(dir, to, claimed, ops).map_err(give_up)?;
+    let now = to.canonicalize().unwrap_or_else(|_| to.to_path_buf());
     // The folder has moved, so what follows cannot fail the move: each step says what it left.
     if let Err(e) = repair(&now, &was) {
         eprintln!(
@@ -491,7 +654,7 @@ fn move_to(
     if let Err(e) = move_database(database, &now) {
         eprintln!("warning: {}: {e}", now.display());
     }
-    Ok(())
+    Ok(left_behind)
 }
 
 /// Move the folder `dir` to `to`. A move to another volume is a copy, checked, and then the
@@ -501,8 +664,8 @@ fn move_folder(
     dir: &Path,
     to: &Path,
     claimed: bool,
-    rename_folder: &dyn Fn(&Path, &Path) -> io::Result<()>,
-) -> Result<(), String> {
+    ops: &FolderOps,
+) -> Result<Option<String>, String> {
     let failed = |e: io::Error| {
         format!(
             "{} could not be moved to {}: {e}",
@@ -510,16 +673,16 @@ fn move_folder(
             to.display()
         )
     };
-    match rename_folder(dir, to) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::CrossesDevices => copy_then_remove(dir, to),
+    match (ops.rename)(dir, to) {
+        Ok(()) => Ok(None),
+        Err(e) if e.kind() == io::ErrorKind::CrossesDevices => copy_then_remove(dir, to, ops),
         Err(_) if claimed => {
             let _ = std::fs::remove_dir(to);
-            match rename_folder(dir, to) {
-                Ok(()) => Ok(()),
+            match (ops.rename)(dir, to) {
+                Ok(()) => Ok(None),
                 Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
                     std::fs::create_dir(to).map_err(failed)?;
-                    copy_then_remove(dir, to)
+                    copy_then_remove(dir, to, ops)
                 }
                 Err(e) => Err(failed(e)),
             }
@@ -528,10 +691,11 @@ fn move_folder(
     }
 }
 
-/// Copy the folder `dir` into the empty folder `to`, check the copy holds every file at its size,
-/// and only then remove `dir`. A copy that fails or does not match is taken away again, leaving
-/// `to` empty and `dir` as it was.
-fn copy_then_remove(dir: &Path, to: &Path) -> Result<(), String> {
+/// Copy the folder `dir` into the empty folder `to`, check the copy holds each file of `dir` by its
+/// path and size (not by its content), and only then remove `dir`. A copy that fails or does not
+/// match is taken away again, leaving `to` empty and `dir` as it was. Once it matches, the move
+/// is done: an original that cannot all be removed is answered as the sentence naming it.
+fn copy_then_remove(dir: &Path, to: &Path, ops: &FolderOps) -> Result<Option<String>, String> {
     let copied = copy_tree(dir, to).and_then(|()| {
         if listing(dir)? == listing(to)? {
             Ok(())
@@ -558,13 +722,14 @@ fn copy_then_remove(dir: &Path, to: &Path) -> Result<(), String> {
             to.display()
         ));
     }
-    std::fs::remove_dir_all(dir).map_err(|e| {
+    Ok((ops.remove)(dir).err().map(|e| {
         format!(
-            "{} was copied to {}, but the original could not be removed: {e}",
+            "{} was copied to {}, but the original could not all be removed: {e}. \
+             Remove what is left of it in the Finder.",
             dir.display(),
             to.display()
         )
-    })
+    }))
 }
 
 /// Copy everything in `from` into the folder `to`, links as links.
@@ -760,30 +925,103 @@ fn move_database(old: Option<PathBuf>, now: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// A scratch tree under the system's temporary folder, made afresh for `name`.
+    fn tree(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("bf-rename-unit-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("p/old")).unwrap();
+        std::fs::create_dir_all(root.join("p/data")).unwrap();
+        std::fs::write(root.join("p/data/x.csv"), "a\n1\n").unwrap();
+        root
+    }
+
     #[test]
     fn a_path_leaving_the_folder_is_written_from_the_new_place() {
-        let was = Path::new("/p/old");
-        let fixed = repaired("../data/x.csv", was, Path::new("/p/group/old"), was);
+        let root = tree("leaving");
+        let was = root.join("p/old");
+        let fixed = repaired("../data/x.csv", &was, &root.join("p/group/old"), &was);
         assert_eq!(fixed.as_deref(), Some("../../data/x.csv"));
     }
 
     #[test]
     fn a_path_inside_the_folder_an_absolute_path_and_an_address_are_left() {
-        let was = Path::new("/p/old");
-        let to = Path::new("/q/new");
-        assert_eq!(repaired("data/x.csv", was, to, was), None);
-        assert_eq!(repaired("/data/x.csv", was, to, was), None);
-        assert_eq!(repaired("https://example.org/x.csv", was, to, was), None);
-        assert_eq!(repaired("../old/x.csv", was, to, was), None);
+        let root = tree("left");
+        let was = root.join("p/old");
+        let to = root.join("q/new");
+        assert_eq!(repaired("data/x.csv", &was, &to, &was), None);
+        assert_eq!(repaired("/data/x.csv", &was, &to, &was), None);
+        assert_eq!(repaired("https://example.org/x.csv", &was, &to, &was), None);
+        assert_eq!(repaired("../old/x.csv", &was, &to, &was), None);
     }
 
     #[test]
-    fn a_rename_within_the_parent_leaves_a_path_that_reads_the_same() {
-        let was = Path::new("/p/old");
+    fn a_path_still_found_from_the_new_place_or_found_from_neither_is_left() {
+        let root = tree("found");
+        let was = root.join("p/old");
+        // A rename within the parent reads the same.
         assert_eq!(
-            repaired("../data/x.csv", was, Path::new("/p/new"), was),
+            repaired("../data/x.csv", &was, &root.join("p/new"), &was),
             None
         );
+        // The parent and its data copied together: the copy finds its own data.
+        std::fs::create_dir_all(root.join("copy/data")).unwrap();
+        std::fs::write(root.join("copy/data/x.csv"), "a\n1\n").unwrap();
+        assert_eq!(
+            repaired("../data/x.csv", &was, &root.join("copy/old"), &was),
+            None
+        );
+        // Nothing at the old place either: nothing better to point at.
+        assert_eq!(
+            repaired("../data/gone.csv", &was, &root.join("q/new"), &was),
+            None
+        );
+    }
+
+    #[test]
+    fn a_file_key_is_read_and_written_as_yaml_reads_it() {
+        let was = Path::new("/p/hugh's old");
+        let dir = Path::new("/p/new's");
+        assert_eq!(
+            moved_file_line("    file: '/p/hugh''s old/.grid/t.parquet'", dir, was).as_deref(),
+            Some("    file: '/p/new''s/.grid/t.parquet'")
+        );
+        assert_eq!(
+            moved_file_line(r#"  - file: "/p/hugh's old/a \"b\".parquet""#, dir, was).as_deref(),
+            Some(r#"  - file: "/p/new's/a \"b\".parquet""#)
+        );
+        assert_eq!(
+            moved_file_line(
+                "  { file: /p/hugh's old/t.parquet }",
+                Path::new("/q/n"),
+                was
+            )
+            .as_deref(),
+            Some("  { file: /q/n/t.parquet }")
+        );
+        // Not the key: another key ending in it, and an address inside a value.
+        assert_eq!(
+            moved_file_line("    profile: '/p/hugh''s old/x'", dir, was),
+            None
+        );
+        assert_eq!(
+            moved_file_line("    url: 'file:///p/hugh''s old/x'", dir, was),
+            None
+        );
+    }
+
+    #[test]
+    fn a_location_is_read_from_the_folder_the_protocol_is_in() {
+        let parent = Path::new("/p/protocols");
+        assert_eq!(
+            resolve_location("group", parent),
+            Path::new("/p/protocols/group")
+        );
+        assert_eq!(resolve_location("../other", parent), Path::new("/p/other"));
+        assert_eq!(resolve_location(" /q/abs ", parent), Path::new("/q/abs"));
+        let home = std::env::home_dir().unwrap_or_default();
+        assert_eq!(resolve_location("~/Work", parent), home.join("Work"));
+        assert_eq!(resolve_location("~", parent), home);
     }
 
     #[test]

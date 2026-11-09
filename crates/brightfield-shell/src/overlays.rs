@@ -775,6 +775,25 @@ pub const CLOSE_ANSWERS: [(CloseAnswer, &str, &str); 3] = [
     (CloseAnswer::KeepEditing, "Keep editing", "Esc"),
 ];
 
+/// The headline of the question asked before a rename of the Protocol.
+pub const RENAME_QUESTION_TITLE: &str = "Save before renaming?";
+
+/// The headline of the question asked before the Protocol's folder is moved.
+pub const MOVE_QUESTION_TITLE: &str = "Save before moving?";
+
+/// What the close question is asked before: the window closing or the Protocol left, or its
+/// folder renamed or moved, after which the window opens it again where it now is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AskedBefore {
+    /// Closing the window, going Home, opening another Protocol or quitting.
+    #[default]
+    Leaving,
+    /// Renaming the Protocol.
+    Renaming,
+    /// Moving the Protocol's folder.
+    Moving,
+}
+
 /// How many rows the list of unsaved edits takes at most: the two the accepted
 /// frame draws, so the card is no taller with more edits than it is there.
 /// Past them, the last row counts the edits not listed.
@@ -801,9 +820,41 @@ pub struct CloseQuestion {
     /// The answer that held the keyboard focus when the card last drew, which
     /// Enter gives: `None` before the card has drawn.
     pub focused: Option<CloseAnswer>,
+    /// What the question is asked before, which words its title and answers.
+    pub before: AskedBefore,
 }
 
 impl CloseQuestion {
+    /// The title row of the card: [`CLOSE_QUESTION_TITLE`] before leaving, and the rename's or
+    /// the move's own before those.
+    #[must_use]
+    pub fn title(&self) -> &'static str {
+        match self.before {
+            AskedBefore::Leaving => CLOSE_QUESTION_TITLE,
+            AskedBefore::Renaming => RENAME_QUESTION_TITLE,
+            AskedBefore::Moving => MOVE_QUESTION_TITLE,
+        }
+    }
+
+    /// The label of the answer `which`: [`CLOSE_ANSWERS`]' before leaving, and before a rename or
+    /// a move the words of what it does there. Not saving still keeps the edits as a version, and
+    /// then renames or moves.
+    #[must_use]
+    pub fn answer_label(&self, which: CloseAnswer) -> &'static str {
+        match (self.before, which) {
+            (AskedBefore::Renaming, CloseAnswer::SaveAndClose) => "Save and rename",
+            (AskedBefore::Renaming, CloseAnswer::CloseWithoutSaving) => {
+                "Keep as a version and rename"
+            }
+            (AskedBefore::Moving, CloseAnswer::SaveAndClose) => "Save and move",
+            (AskedBefore::Moving, CloseAnswer::CloseWithoutSaving) => "Keep as a version and move",
+            _ => CLOSE_ANSWERS
+                .iter()
+                .find(|(answer, _, _)| *answer == which)
+                .map_or("", |(_, label, _)| label),
+        }
+    }
+
     /// The line under the title: the file and how many edits are not saved.
     #[must_use]
     pub fn headline(&self) -> String {
@@ -917,7 +968,8 @@ pub fn close_question_body(ui: &mut egui::Ui, question: &mut CloseQuestion) -> O
     let mut focused = None;
     let mut save = None;
     ui.horizontal(|ui| {
-        for (i, (which, label, key)) in CLOSE_ANSWERS.into_iter().enumerate() {
+        for (i, (which, _, key)) in CLOSE_ANSWERS.into_iter().enumerate() {
+            let label = question.answer_label(which);
             if i > 0 {
                 ui.add_space(control_gap);
             }

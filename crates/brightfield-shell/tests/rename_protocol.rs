@@ -12,9 +12,11 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use brightfield_protocol::chart_history::HistoryKind;
 use brightfield_protocol::HistoryStore;
 use brightfield_shell::design::Mode;
 use brightfield_shell::open_queue::OpenRequest;
+use brightfield_shell::overlays::{CloseAnswer, MOVE_QUESTION_TITLE, RENAME_QUESTION_TITLE};
 use brightfield_shell::rename;
 use brightfield_shell::run::Runner;
 use brightfield_shell::window::{Boot, Leaving, MeridianApp, PlaceField, UNSAVED_MARK};
@@ -420,6 +422,8 @@ fn repair_rewrites_paths_that_the_move_broke_and_nothing_else() {
     let now = root.join("new").join("deeper").join("p");
     std::fs::create_dir_all(now.join("packages/sales")).expect("the fixture");
     std::fs::create_dir_all(root.join("data")).expect("the data folder");
+    // The data the paths name, still where it was: the Protocol moved without it.
+    std::fs::write(root.join("data").join("sales.csv"), "a\n1\n").expect("the data");
     std::fs::write(
         now.join("packages/sales/datapackage.json"),
         r#"{"resources":[{"name":"sales","path":"../../../../data/sales.csv"},{"name":"inside","path":"../../local/x.csv"}]}"#,
@@ -520,6 +524,12 @@ fn a_rename_over_a_draft_asks_the_close_question_first() {
         "the rename waits for the question: {:?}",
         win.app.leaving()
     );
+    let question = win.app.close_question().expect("the question is up");
+    assert_eq!(question.title(), RENAME_QUESTION_TITLE);
+    assert_eq!(
+        question.answer_label(CloseAnswer::CloseWithoutSaving),
+        "Keep as a version and rename"
+    );
     assert!(
         scratch()
             .join("protocols")
@@ -527,10 +537,8 @@ fn a_rename_over_a_draft_asks_the_close_question_first() {
             .exists(),
         "nothing moved yet"
     );
-    win.app.answer_close_question(
-        &win.ctx.clone(),
-        brightfield_shell::overlays::CloseAnswer::SaveAndClose,
-    );
+    win.app
+        .answer_close_question(&win.ctx.clone(), CloseAnswer::SaveAndClose);
     win.settle();
     let new = scratch().join("protocols").join("rename_over_draft_2");
     assert_eq!(win.dir(), Some(new.clone()), "{}", win.said());
@@ -599,11 +607,21 @@ fn relocate_across_volumes_copies_then_removes() {
     std::fs::create_dir_all(&to).expect("the new parent");
     let tried = std::cell::Cell::new(0);
 
-    let new = rename::relocate_with(&old, &to, &|_, _| {
+    let crosses = |_: &Path, _: &Path| {
         tried.set(tried.get() + 1);
         Err(std::io::Error::from(std::io::ErrorKind::CrossesDevices))
-    })
+    };
+    let moved = rename::relocate_with(
+        &old,
+        &to,
+        &rename::FolderOps {
+            rename: &crosses,
+            remove: &|dir| std::fs::remove_dir_all(dir),
+        },
+    )
     .expect("the move copies instead");
+    assert_eq!(moved.left_behind, None);
+    let new = moved.to;
 
     assert!(tried.get() >= 1, "the rename was tried first");
     assert_eq!(new, to.join("across_volumes"));
@@ -639,17 +657,23 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn a_front_door_row_renames_its_protocol() {
-    let mut win = Window::opened("door_row");
-    let old = win.dir().expect("a Protocol");
-    win.keep_filter();
-    win.run(vec![press(egui::Key::S, command())]);
+    let mut saved = Window::opened("door_row");
+    let old = saved.dir().expect("a Protocol");
+    saved.keep_filter();
+    saved.run(vec![press(egui::Key::S, command())]);
+    saved.settle();
+    let layout = saved.app.layout().clone();
+    drop(saved);
+
+    // A window holding nothing, its door listing the Protocol.
+    let mut win = Window {
+        app: MeridianApp::headless_with_layout(Boot::empty(), layout, Mode::Light)
+            .keeping_history(Some(history())),
+        ctx: egui::Context::default(),
+        time: 0.0,
+    };
     win.settle();
-    win.run(vec![press(
-        egui::Key::H,
-        command() | egui::Modifiers::SHIFT,
-    )]);
-    win.settle();
-    assert!(win.app.front_door_is_live(), "Home showed the door");
+    assert!(win.app.front_door_is_live(), "the door shows");
     let row = win
         .app
         .front_door_rows()
@@ -669,6 +693,7 @@ fn a_front_door_row_renames_its_protocol() {
     assert!(new.join("arcform.yaml").is_file(), "{}", win.said());
     assert!(!old.exists(), "the old folder is gone");
     assert_eq!(manifest_name(&new), "door_row_renamed");
+    assert!(win.app.front_door_is_live(), "the door stays");
     assert!(
         win.app
             .front_door_rows()
@@ -677,4 +702,479 @@ fn a_front_door_row_renames_its_protocol() {
         "the row names the new folder: {:?}",
         win.app.front_door_rows()
     );
+}
+
+#[test]
+fn a_door_row_of_the_protocol_held_behind_home_renames_it_as_the_window_does() {
+    let mut win = Window::opened("door_held");
+    let old = win.dir().expect("a Protocol");
+    win.keep_filter();
+    win.run(vec![press(egui::Key::S, command())]);
+    win.settle();
+    win.run(vec![press(
+        egui::Key::H,
+        command() | egui::Modifiers::SHIFT,
+    )]);
+    win.settle();
+    let row = win
+        .app
+        .front_door_rows()
+        .iter()
+        .find(|r| Path::new(&r.id).starts_with(&old))
+        .cloned()
+        .expect("a row");
+    win.run(vec![egui::Event::PointerMoved(row.rect.center())]);
+    win.run(vec![press(egui::Key::F2, egui::Modifiers::NONE)]);
+    win.settle();
+    win.type_over("door_held_renamed");
+
+    let new = scratch().join("protocols").join("door_held_renamed");
+    assert_eq!(
+        win.dir(),
+        Some(new),
+        "the window follows it: {}",
+        win.said()
+    );
+    assert!(!old.exists());
+}
+
+/// Make files and folders under `dir` writable again, so the scratch folder can be cleaned up.
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("permissions");
+}
+
+#[test]
+fn keeping_the_draft_as_a_version_then_renames() {
+    let mut win = Window::opened("keep_version");
+    win.keep_filter();
+    win.app.rename_protocol(&win.ctx.clone(), "keep_version_2");
+    win.settle();
+    let file = win
+        .app
+        .close_question()
+        .expect("the question is up")
+        .file
+        .clone();
+
+    win.app
+        .answer_close_question(&win.ctx.clone(), CloseAnswer::CloseWithoutSaving);
+    win.settle();
+
+    let new = scratch().join("protocols").join("keep_version_2");
+    assert_eq!(win.dir(), Some(new.clone()), "{}", win.said());
+    assert!(
+        !std::fs::read_to_string(new.join("arcform.yaml"))
+            .expect("the manifest")
+            .contains("_filtered_by_house_age"),
+        "the draft was not written to the manifest"
+    );
+    let versions = history()
+        .versions(&new.join(&file))
+        .expect("the versions list")
+        .versions;
+    assert!(
+        versions.iter().any(|v| v.kind == HistoryKind::Unsaved),
+        "the draft was kept as a version under the new path: {versions:?}"
+    );
+    assert!(!win.app.title().contains(UNSAVED_MARK));
+}
+
+#[test]
+fn keep_editing_leaves_the_protocol_where_it_is() {
+    let mut win = Window::opened("keep_editing");
+    let dir = win.dir().expect("a Protocol");
+    win.keep_filter();
+    win.app
+        .relocate_protocol(&win.ctx.clone(), &scratch().join("elsewhere"));
+    win.settle();
+    assert_eq!(
+        win.app.close_question().map(|q| q.title()),
+        Some(MOVE_QUESTION_TITLE)
+    );
+
+    win.app
+        .answer_close_question(&win.ctx.clone(), CloseAnswer::KeepEditing);
+    win.settle();
+
+    assert_eq!(win.dir(), Some(dir.clone()));
+    assert!(dir.join("arcform.yaml").is_file());
+    assert!(win.app.leaving().is_none());
+    assert!(
+        win.app.title().contains(UNSAVED_MARK),
+        "the draft is still there"
+    );
+}
+
+#[test]
+fn a_name_holding_a_quote_keeps_its_saved_charts_reading() {
+    let mut win = Window::opened("quoted");
+    win.keep_filter();
+    win.run(vec![press(egui::Key::S, command())]);
+    win.settle();
+    assert!(!win.app.title().contains(UNSAVED_MARK), "{}", win.said());
+
+    win.app.rename_protocol(&win.ctx.clone(), "hugh's sales");
+    win.settle();
+
+    let new = scratch().join("protocols").join("hugh's sales");
+    assert_eq!(win.dir(), Some(new.clone()), "{}", win.said());
+    assert_eq!(manifest_name(&new), "hugh's sales");
+    let canonical = new.canonicalize().expect("the folder");
+    for entry in std::fs::read_dir(new.join("panels"))
+        .expect("the panels")
+        .flatten()
+    {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "yaml") {
+            let text = std::fs::read_to_string(&path).expect("a chart");
+            let value: serde_yaml::Value = serde_yaml::from_str(&text).expect("the chart parses");
+            let file = value["data"]["opened"]["file"]
+                .as_str()
+                .expect("the chart reads a file");
+            assert!(
+                Path::new(file).starts_with(&canonical),
+                "{} reads from the new folder: {file}",
+                path.display()
+            );
+            assert!(Path::new(file).is_file(), "and it is there: {file}");
+        }
+    }
+    // Opened again, it draws.
+    let mut again = Window::new();
+    again.open(OpenRequest::Path(new.clone()));
+    assert_eq!(again.dir(), Some(new), "{}", again.said());
+}
+
+#[test]
+fn a_cloned_parent_keeps_paths_that_still_resolve_and_runs() {
+    // A parent holding a Protocol and its data, copied whole: the copy's packages still find the
+    // copy's data, so their paths are left as they were.
+    let bundle = scratch().join("bundle");
+    let _ = std::fs::remove_dir_all(&bundle);
+    std::fs::create_dir_all(bundle.join("data")).expect("the bundle");
+    let csv = bundle.join("data").join("bundle_sales.csv");
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/california_housing_sample.csv"),
+        &csv,
+    )
+    .expect("the sample copies");
+    let win = {
+        let mut win = Window::new();
+        win.open(OpenRequest::Path(csv));
+        win
+    };
+    let made = win.dir().expect("a Protocol");
+    drop(win);
+    // One level deeper than it was made, so its package's path no longer finds the data.
+    std::fs::create_dir_all(bundle.join("deep")).expect("a group in the bundle");
+    let inside = bundle.join("deep").join("protocol");
+    std::fs::rename(&made, &inside).expect("moved into the bundle");
+    let package = |dir: &Path| -> String {
+        let text = std::fs::read_to_string(dir.join("packages/bundle_sales/datapackage.json"))
+            .expect("the package");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("it parses");
+        value["resources"][0]["path"]
+            .as_str()
+            .expect("a path")
+            .to_owned()
+    };
+    // Opened in the bundle, the move is followed and the path points at the bundle's data.
+    let mut win = Window::new();
+    win.open(OpenRequest::Path(inside.clone()));
+    assert_eq!(win.dir(), Some(inside.clone()), "{}", win.said());
+    let in_bundle = package(&inside);
+    assert_eq!(in_bundle, "../../../../data/bundle_sales.csv");
+    drop(win);
+
+    let clone = scratch().join("bundle_clone");
+    let _ = std::fs::remove_dir_all(&clone);
+    copy_dir(&bundle, &clone);
+    let cloned = clone.join("deep").join("protocol");
+    assert!(
+        rename::moved_since(&cloned).is_some(),
+        "the clone records the bundle's place"
+    );
+
+    let mut win = Window::new();
+    win.open(OpenRequest::Path(cloned.clone()));
+    assert_eq!(win.dir(), Some(cloned.clone()), "{}", win.said());
+    assert_eq!(
+        package(&cloned),
+        in_bundle,
+        "the clone's path is left as it was"
+    );
+    assert_eq!(
+        cloned
+            .join("packages/bundle_sales")
+            .join(&in_bundle)
+            .canonicalize()
+            .expect("it names a file"),
+        clone
+            .join("data/bundle_sales.csv")
+            .canonicalize()
+            .expect("the clone's data"),
+        "and finds the clone's own data"
+    );
+    win.run_and_succeed();
+}
+
+/// Copy the folder `from` to `to`, as the Finder's duplicate does.
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("a folder");
+    for entry in std::fs::read_dir(from).expect("a folder").flatten() {
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("a file copies");
+        }
+    }
+}
+
+#[test]
+fn a_checked_copy_whose_original_cannot_all_be_removed_is_still_a_move() {
+    let win = Window::opened("left_behind");
+    let old = win.dir().expect("a Protocol");
+    drop(win);
+    let to = scratch().join("elsewhere").join("left_behind_volume");
+    std::fs::create_dir_all(&to).expect("the new parent");
+
+    let moved = rename::relocate_with(
+        &old,
+        &to,
+        &rename::FolderOps {
+            rename: &|_, _| Err(std::io::Error::from(std::io::ErrorKind::CrossesDevices)),
+            // Part of the original goes, then the removal fails.
+            remove: &|dir| {
+                std::fs::remove_dir_all(dir.join("packages"))?;
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            },
+        },
+    )
+    .expect("the checked copy is the move");
+
+    let new = to.join("left_behind");
+    assert_eq!(moved.to, new);
+    let left = moved.left_behind.expect("what was left is named");
+    assert!(left.contains("left_behind"), "{left}");
+    assert_eq!(manifest_name(&new), "left_behind");
+    assert!(database(&new).is_file(), "arc's database moved to the copy");
+    assert_eq!(
+        rename::moved_since(&new),
+        None,
+        "the copy's place is recorded"
+    );
+    assert!(new.join("packages").is_dir(), "the copy is whole");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_copy_that_fails_is_taken_away_and_the_original_is_untouched() {
+    let win = Window::opened("copy_fails");
+    let old = win.dir().expect("a Protocol");
+    drop(win);
+    let to = scratch().join("elsewhere").join("copy_fails_volume");
+    std::fs::create_dir_all(&to).expect("the new parent");
+    let before = walk(&old);
+    let unreadable = old.join("arcform-log.txt");
+    let unreadable = if unreadable.is_file() {
+        unreadable
+    } else {
+        old.join(".sources.json")
+    };
+    set_mode(&unreadable, 0o000);
+
+    let refused = rename::relocate_with(
+        &old,
+        &to,
+        &rename::FolderOps {
+            rename: &|_, _| Err(std::io::Error::from(std::io::ErrorKind::CrossesDevices)),
+            remove: &|dir| std::fs::remove_dir_all(dir),
+        },
+    );
+    set_mode(&unreadable, 0o644);
+
+    assert!(refused.is_err(), "a copy that cannot be made is refused");
+    assert!(
+        !to.join("copy_fails").exists(),
+        "the copy and its claim are taken away"
+    );
+    assert_eq!(walk(&old), before, "the original is as it was");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_rename_that_cannot_read_its_manifest_leaves_no_folder_behind() {
+    let win = Window::opened("unreadable");
+    let dir = win.dir().expect("a Protocol");
+    drop(win);
+    let manifest = dir.join("arcform.yaml");
+    set_mode(&manifest, 0o000);
+
+    let refused = rename::rename(&dir, "unreadable_2");
+    set_mode(&manifest, 0o644);
+
+    assert!(refused.is_err(), "the rename is refused");
+    assert!(
+        !scratch().join("protocols").join("unreadable_2").exists(),
+        "the claimed folder is given up"
+    );
+    assert!(dir.join("arcform.yaml").is_file());
+}
+
+#[test]
+fn a_door_row_is_not_renamed_under_a_run() {
+    let mut win = Window::opened("door_run");
+    let old = win.dir().expect("a Protocol");
+    win.keep_filter();
+    win.run(vec![press(egui::Key::S, command())]);
+    win.settle();
+    win.run(vec![press(egui::Key::Enter, command())]);
+    assert!(win.app.run_in_progress(), "a run started: {}", win.said());
+    win.run(vec![press(
+        egui::Key::H,
+        command() | egui::Modifiers::SHIFT,
+    )]);
+    win.settle();
+    assert!(win.app.front_door_is_live(), "Home showed the door");
+    assert!(win.app.run_outstanding(), "the run is still going");
+    let row = win
+        .app
+        .front_door_rows()
+        .iter()
+        .find(|r| Path::new(&r.id).starts_with(&old))
+        .cloned()
+        .expect("the door has a row for the Protocol");
+    win.run(vec![egui::Event::PointerMoved(row.rect.center())]);
+    win.run(vec![press(egui::Key::F2, egui::Modifiers::NONE)]);
+    win.settle();
+    win.type_over("door_run_renamed");
+
+    assert!(
+        old.join("arcform.yaml").is_file(),
+        "the folder is where it was"
+    );
+    assert!(!scratch()
+        .join("protocols")
+        .join("door_run_renamed")
+        .exists());
+    assert!(
+        win.said().contains("run"),
+        "a banner says a run is writing: {}",
+        win.said()
+    );
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while win.app.run_outstanding() {
+        assert!(Instant::now() < deadline, "the run did not land");
+        win.run(Vec::new());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_door_row_of_a_protocol_the_window_would_not_rename_offers_no_rename() {
+    // A Protocol folder an agent wrote: a manifest, and none of the own-files records.
+    let dir = scratch().join("elsewhere").join("agent_written");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("the folder");
+    std::fs::write(
+        dir.join("arcform.yaml"),
+        "name: agent_written\nengine: duckdb\nsteps: []\n",
+    )
+    .expect("a manifest");
+    let id = dir.join("arcform.yaml").to_string_lossy().into_owned();
+    let mut layout = brightfield_shell::startup::default_layout();
+    layout.remember(
+        &id,
+        "agent_written",
+        brightfield_workbench::RunState::NeverRun,
+        brightfield_workbench::GridLayout::Rows,
+        brightfield_workbench::GridSpot::Canvas,
+        1_000,
+    );
+    scratch();
+    let mut win = Window {
+        app: MeridianApp::headless_with_layout(Boot::empty(), layout, Mode::Light),
+        ctx: egui::Context::default(),
+        time: 0.0,
+    };
+    win.settle();
+    let row = win
+        .app
+        .front_door_rows()
+        .iter()
+        .find(|r| r.id == id)
+        .cloned()
+        .expect("the door lists the row");
+
+    win.run(vec![egui::Event::PointerMoved(row.rect.center())]);
+    win.run(vec![press(egui::Key::F2, egui::Modifiers::NONE)]);
+    win.settle();
+
+    assert_eq!(win.app.door_rename_row(), None, "F2 opened no field");
+}
+
+#[test]
+fn a_door_rename_field_does_not_outlive_the_door() {
+    let mut win = Window::opened("door_leaves");
+    let old = win.dir().expect("a Protocol");
+    win.keep_filter();
+    win.run(vec![press(egui::Key::S, command())]);
+    win.settle();
+    win.run(vec![press(
+        egui::Key::H,
+        command() | egui::Modifiers::SHIFT,
+    )]);
+    win.settle();
+    let row = win
+        .app
+        .front_door_rows()
+        .iter()
+        .find(|r| Path::new(&r.id).starts_with(&old))
+        .cloned()
+        .expect("a row");
+    win.run(vec![egui::Event::PointerMoved(row.rect.center())]);
+    win.run(vec![press(egui::Key::F2, egui::Modifiers::NONE)]);
+    win.settle();
+    assert!(win.app.door_rename_row().is_some());
+
+    // The door goes away with the field open, and comes back.
+    win.open(OpenRequest::Path(old.clone()));
+    assert!(!win.app.front_door_is_live(), "{}", win.said());
+    win.run(vec![press(
+        egui::Key::H,
+        command() | egui::Modifiers::SHIFT,
+    )]);
+    win.settle();
+    assert!(win.app.front_door_is_live());
+    assert_eq!(
+        win.app.door_rename_row(),
+        None,
+        "the row is not stuck mid-rename"
+    );
+}
+
+#[test]
+fn the_location_field_reads_a_relative_path_from_where_the_protocol_is_and_offers_choose() {
+    let mut win = Window::opened("relative_location");
+    let old = win.dir().expect("a Protocol");
+    let field = win.app.locator_location_rect().expect("the Location field");
+    win.click(field.center());
+    assert_eq!(win.app.place_field(), Some(PlaceField::Location));
+    assert!(
+        win.app.locator_choose_rect().is_some(),
+        "Choose… is beside the open field"
+    );
+    std::fs::create_dir_all(scratch().join("elsewhere").join("relative")).expect("a folder");
+
+    win.type_over("../elsewhere/relative");
+
+    let new = scratch()
+        .join("elsewhere")
+        .join("relative")
+        .join("relative_location");
+    assert!(new.join("arcform.yaml").is_file(), "{}", win.said());
+    assert!(!old.exists());
 }
