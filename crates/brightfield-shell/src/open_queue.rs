@@ -123,8 +123,8 @@ pub struct OpenQueue {
     requests: Arc<Mutex<VecDeque<OpenRequest>>>,
     /// Whether quitting was asked for since the window last looked.
     quit: Arc<AtomicBool>,
-    /// Whether the app has finished launching, so every file the launch was asked to open is on
-    /// the queue: see [`Self::awaiting_launch`].
+    /// Whether the app has finished launching, by which the files the launch was asked to open
+    /// are on the queue: see [`Self::awaiting_launch`].
     launched: Arc<AtomicBool>,
     /// The window's context, once it has drawn, so a push can ask for a frame.
     wake: Arc<OnceLock<egui::Context>>,
