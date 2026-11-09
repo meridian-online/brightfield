@@ -190,10 +190,10 @@ pub struct SavedLayout {
     ///
     /// So a starting point the binary ships is recorded by its id, which cannot
     /// go missing: an id this build does not recognise means the same thing as
-    /// `None`, open on nothing. A Protocol is recorded by its folder, which can
+    /// `None`, open on the door. A Protocol is recorded by its folder, which can
     /// go missing, so the boot's policy for that is the door: a folder that is
-    /// gone, or no longer holds its manifest, opens nothing and says nothing
-    /// (`a_restored_protocol_that_was_deleted_opens_the_door`).
+    /// gone, or no longer holds its manifest, opens the door with no banner, as
+    /// `a_restored_protocol_that_was_deleted_opens_the_door` holds.
     ///
     /// # Why this is not a [`LAYOUT_VERSION`] bump
     ///
@@ -503,8 +503,8 @@ impl SavedLayout {
         }
     }
 
-    /// The id of the start [`Self::opened`] names, or `None` when it names a Protocol or
-    /// nothing.
+    /// The id of the start [`Self::opened`] names, or `None` when it names a Protocol or is
+    /// `None`.
     #[must_use]
     pub fn opened_start(&self) -> Option<&str> {
         match &self.opened {
@@ -556,7 +556,7 @@ impl SavedLayout {
         self.recents.truncate(RECENTS_KEPT);
     }
 
-    /// **Point every row and the restored document that name a path inside
+    /// **Point the rows and the restored document that name a path inside
     /// the folder `from` at the same path inside `to`**: a Protocol renamed
     /// or moved keeps its row, its place in the list and its grid's state,
     /// rather than leaving a row whose file is gone beside a new one. Answers
