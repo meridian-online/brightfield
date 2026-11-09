@@ -3244,6 +3244,8 @@ pub struct MeridianApp {
     new_protocol_pick_requested: bool,
     /// Preferences' Choose… was pressed, and the folder picker is raised after the frame.
     preferences_pick_requested: bool,
+    /// Whether the Preferences file has been checked for a setting it could not read.
+    preferences_checked: bool,
     /// What the last move of the old Protocols folder's Protocols did.
     move_report: Option<crate::protocols_dir::MoveReport>,
     /// A saved Protocol whose front-door row was clicked, latched for after the
@@ -3773,6 +3775,7 @@ impl MeridianApp {
             door_new_protocol: None,
             new_protocol_pick_requested: false,
             preferences_pick_requested: false,
+            preferences_checked: false,
             move_report: None,
             door_open_protocol: None,
             door_hovered: None,
@@ -5660,6 +5663,20 @@ impl MeridianApp {
         // queue as its opens.
         if self.open_queue.take_quit() {
             self.leave(&ctx, Leaving::Quit);
+        }
+        // A Preferences file that is there but will not read sends new Protocols to the default
+        // folder, which is not the one the analyst chose, so the first frame says so.
+        if !std::mem::replace(&mut self.preferences_checked, true) {
+            if let Some(said) = crate::protocols_dir::setting_problem() {
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new(PREFERENCES_BANNER),
+                        Severity::Warning,
+                        "The Protocols folder setting could not be read",
+                    )
+                    .body(said),
+                );
+            }
         }
         // The app menu's Preferences…, which takes Cmd+, before the window sees it.
         if self.open_queue.take_preferences() {
@@ -8443,6 +8460,7 @@ impl MeridianApp {
         let mut where_kept: Option<String> = None;
         let mut make_in: Option<NewProtocolPlace> = None;
         let mut preferences_action = None;
+        let mut question_dismissed = false;
         match &mut overlay {
             Overlay::Palette(picker) => {
                 let chrome = ModalChrome::new().title("Commands").enter_hint("run");
@@ -8571,9 +8589,10 @@ impl MeridianApp {
                 let shown = ModalLayer::show(ctx, "bf-overlay-close-question", &chrome, |ui| {
                     close_question_body(ui, question)
                 });
-                answered = typed
-                    .or(shown.inner)
-                    .or(shown.dismissed.then_some(CloseAnswer::KeepEditing));
+                answered = typed.or(shown.inner);
+                // Esc and a click outside are Keep editing, except where the question words them
+                // otherwise ([`Self::dismiss_close_question`]).
+                question_dismissed = answered.is_none() && shown.dismissed;
                 // The answer decides whether the question stays: a close
                 // without saving that could not keep the chart leaves it up.
                 close = false;
@@ -8615,9 +8634,7 @@ impl MeridianApp {
             }
             Overlay::Preferences(sheet) => {
                 let folder = crate::protocols_dir::root();
-                let overridden = std::env::var_os(crate::protocols_dir::PROTOCOLS_DIR_VAR)
-                    .filter(|v| !v.is_empty())
-                    .map(|_| crate::protocols_dir::PROTOCOLS_DIR_VAR);
+                let overridden = protocols_dir_override();
                 let chrome = ModalChrome::new().title("Preferences").esc_hint("close");
                 let shown = ModalLayer::show(ctx, "bf-overlay-preferences", &chrome, |ui| {
                     crate::preferences::body(ui, sheet, &folder, overridden)
@@ -8648,6 +8665,9 @@ impl MeridianApp {
         }
         if let Some(answer) = answered {
             self.answer_close_question(ctx, answer);
+        }
+        if question_dismissed {
+            self.dismiss_close_question(ctx);
         }
         match make_in {
             Some(NewProtocolPlace::Folder { dir, .. }) => self.leave(ctx, Leaving::Make(dir)),
@@ -9452,7 +9472,11 @@ impl MeridianApp {
     ///   cannot be kept the window stays and the question says why, and the
     ///   same answer given again goes with nothing kept.
     /// - [`CloseAnswer::KeepEditing`] leaves the window as it was, and drops
-    ///   the way out: the edit stays drawn, the mark stays in the title.
+    ///   the way out: the edit stays drawn, the mark stays in the title. Before
+    ///   the move into a new Protocols folder it is that question's own button,
+    ///   which leaves the open Protocol where it is and moves the rest; Esc and
+    ///   a click outside cancel that move instead ([`Self::dismiss_close_question`]).
+    ///   A Save that fails there moves nothing, and a banner says so.
     pub fn answer_close_question(&mut self, ctx: &egui::Context, answer: CloseAnswer) {
         match answer {
             CloseAnswer::KeepEditing => {
@@ -9493,10 +9517,49 @@ impl MeridianApp {
                 let to = self.leaving.take().unwrap_or(Leaving::Close);
                 if self.save_for_close(ctx) {
                     self.go(ctx, to);
+                } else if let Leaving::MoveAll { from, .. } = &to {
+                    self.say_protocols_stayed(
+                        from,
+                        "The Protocol open could not be saved, so no Protocol was moved. \
+                         Nothing else changed.",
+                    );
                 }
             }
         }
         ctx.request_repaint();
+    }
+
+    /// Esc, or a click outside the card, on the close question: Keep editing, except before the
+    /// move into a new Protocols folder, where it cancels the whole move. Nothing moves there; the
+    /// Protocols folder stays the new one, and a banner says the old one's Protocols stayed. Only
+    /// that question's own Keep editing button moves the rest and leaves the open one.
+    pub fn dismiss_close_question(&mut self, ctx: &egui::Context) {
+        if let Some(Leaving::MoveAll { from, .. }) = &self.leaving {
+            let from = from.clone();
+            self.put_the_question_down();
+            self.leaving = None;
+            self.say_protocols_stayed(&from, "The move was cancelled.");
+            ctx.request_repaint();
+        } else {
+            self.answer_close_question(ctx, CloseAnswer::KeepEditing);
+        }
+    }
+
+    /// Raise the banner that says the Protocols in the old Protocols folder `from` stayed where
+    /// they are, after `why`.
+    fn say_protocols_stayed(&mut self, from: &std::path::Path, why: &str) {
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new(MOVE_ALL_BANNER),
+                Severity::Warning,
+                "The Protocols were not moved",
+            )
+            .body(format!(
+                "{why} The Protocols in {} stayed where they are, and new Protocols go to {}.",
+                from.display(),
+                crate::protocols_dir::root().display()
+            )),
+        );
     }
 
     /// Take the close question down, leaving any other overlay as it is.
@@ -11849,6 +11912,14 @@ impl MeridianApp {
         matches!(self.overlay, Some(Overlay::Preferences(_))).then(crate::protocols_dir::root)
     }
 
+    /// Whether the Preferences sheet offers Choose…, while it is open: not while
+    /// `BRIGHTFIELD_PROTOCOLS_DIR` sets the folder for this launch.
+    #[must_use]
+    pub fn preferences_can_choose(&self) -> Option<bool> {
+        matches!(self.overlay, Some(Overlay::Preferences(_)))
+            .then(|| protocols_dir_override().is_none())
+    }
+
     /// Make `dir` the Protocols folder, as the Preferences sheet's Choose… does once the folder
     /// picker answers ([`crate::protocols_dir::set_root`]). The door's tree reads the new folder
     /// on its next frame. When the old folder holds Protocols, the sheet offers once to move them
@@ -11856,20 +11927,39 @@ impl MeridianApp {
     /// the old one or holding it, is said in a banner, and the old setting stays.
     pub fn choose_protocols_folder(&mut self, ctx: &egui::Context, dir: &std::path::Path) {
         let old = crate::protocols_dir::root();
-        if let Err(why) = crate::protocols_dir::set_root(dir) {
+        let set = match protocols_dir_override() {
+            Some(var) => Err(format!(
+                "{var} sets the Protocols folder for this launch, so it is not changed here."
+            )),
+            None => crate::protocols_dir::set_root_saying(dir),
+        };
+        let said = match set {
+            Ok(said) => said,
+            Err(why) => {
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new(PREFERENCES_BANNER),
+                        Severity::Error,
+                        "The Protocols folder was not changed",
+                    )
+                    .body(why),
+                );
+                ctx.request_repaint();
+                return;
+            }
+        };
+        self.notifications
+            .dismiss(NotificationId::new(PREFERENCES_BANNER));
+        if let Some(said) = said {
             self.notifications.raise(
                 Notification::new(
                     NotificationId::new(PREFERENCES_BANNER),
-                    Severity::Error,
-                    "The Protocols folder was not changed",
+                    Severity::Info,
+                    "The Protocols folder is set",
                 )
-                .body(why),
+                .body(said),
             );
-            ctx.request_repaint();
-            return;
         }
-        self.notifications
-            .dismiss(NotificationId::new(PREFERENCES_BANNER));
         self.forget_door_listing();
         let new = crate::protocols_dir::root();
         let same = old == new
@@ -11950,15 +12040,26 @@ impl MeridianApp {
         to: &std::path::Path,
         leave_open: bool,
     ) {
+        use crate::protocols_dir::Left;
         let open = self.open_protocol_dir().filter(|dir| is_within(dir, from));
-        let leave = open
-            .as_ref()
-            .filter(|_| leave_open || self.run_outstanding());
+        // A run writing its record into a folder, the open Protocol's or one left running after
+        // Home, keeps that folder where it is; the open one is left too for its own draft when
+        // the analyst chose to keep editing.
+        let mut leave: Vec<(PathBuf, Left)> = self
+            .running
+            .iter()
+            .map(|pending| (pending.run.dir().to_path_buf(), Left::Running))
+            .collect();
+        if let Some(open) = open.as_ref().filter(|_| leave_open) {
+            if !leave.iter().any(|(dir, _)| dir == open) {
+                leave.push((open.clone(), Left::Draft));
+            }
+        }
         let canonical_from = from.canonicalize().ok();
         let report = crate::protocols_dir::move_all_with(
             from,
             to,
-            leave.map(PathBuf::as_path),
+            &leave,
             &crate::rename::FolderOps::system(),
         );
         let layout = self.layout.live_mut();
@@ -11995,7 +12096,7 @@ impl MeridianApp {
                 )
                 .body(said),
             );
-        } else if report.left_open.is_some() || !report.warnings.is_empty() {
+        } else if !report.left.is_empty() || !report.warnings.is_empty() {
             self.notifications.raise(
                 Notification::new(
                     NotificationId::new(MOVE_ALL_BANNER),
@@ -15538,8 +15639,6 @@ fn tree_indent(depth: usize) -> f32 {
     depth as f32 * spacing::SPACE_6
 }
 
-/// The Protocol folder a door row's id names, when it names a Protocol's `arcform.yaml` on disk:
-/// the folder whose run records the row's run state is read from. A shipped start's id names none.
 /// How many Protocols the door's tree `nodes` holds, in every group.
 fn count_protocols(nodes: &[crate::door_tree::Node]) -> usize {
     nodes
@@ -15560,6 +15659,16 @@ fn is_within(dir: &std::path::Path, folder: &std::path::Path) -> bool {
         )
 }
 
+/// The variable that sets the Protocols folder for this launch, when it is set: Preferences then
+/// shows the folder and does not change the setting.
+fn protocols_dir_override() -> Option<&'static str> {
+    std::env::var_os(crate::protocols_dir::PROTOCOLS_DIR_VAR)
+        .filter(|v| !v.is_empty())
+        .map(|_| crate::protocols_dir::PROTOCOLS_DIR_VAR)
+}
+
+/// The Protocol folder a door row's id names, when it names a Protocol's `arcform.yaml` on disk:
+/// the folder whose run records the row's run state is read from. A shipped start's id names none.
 fn protocol_dir_of(id: &str) -> Option<PathBuf> {
     if crate::starts::find(id).is_some() {
         return None;

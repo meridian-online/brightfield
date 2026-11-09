@@ -18,10 +18,12 @@ use brightfield_protocol::HistoryStore;
 use brightfield_shell::design::Mode;
 use brightfield_shell::open_queue::OpenRequest;
 use brightfield_shell::overlays::{CloseAnswer, MOVE_TO_FOLDER_QUESTION_TITLE};
-use brightfield_shell::protocols_dir::{self, MoveReport};
+use brightfield_shell::protocols_dir::{self, Left, MoveReport};
 use brightfield_shell::rename::FolderOps;
 use brightfield_shell::run::Runner;
-use brightfield_shell::window::{Boot, Leaving, MeridianApp, PREFERENCES_BANNER, UNSAVED_MARK};
+use brightfield_shell::window::{
+    Boot, Leaving, MeridianApp, MOVE_ALL_BANNER, PREFERENCES_BANNER, UNSAVED_MARK,
+};
 
 fn scratch() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -206,6 +208,36 @@ impl Window {
             .join("; ")
     }
 
+    /// The title and body of the banner `id`, when it is up.
+    fn banner(&self, id: &str) -> Option<String> {
+        self.app
+            .notifications()
+            .iter()
+            .find(|n| n.id == meridian_egui::NotificationId::new(id))
+            .map(|n| format!("{} {}", n.title, n.body.clone().unwrap_or_default()))
+    }
+
+    /// Start a whole run with Cmd+Enter, and leave it running.
+    fn start_run(&mut self) {
+        self.run(vec![press(egui::Key::Enter, command())]);
+        assert!(
+            self.app.run_in_progress(),
+            "cmd-enter started a run: {}",
+            self.said()
+        );
+    }
+
+    /// Run frames until every run the window started has landed.
+    fn wait_for_runs(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while self.app.run_outstanding() {
+            assert!(Instant::now() < deadline, "the run did not land");
+            self.run(Vec::new());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.settle();
+    }
+
     fn report(&self) -> MoveReport {
         self.app
             .move_report()
@@ -376,7 +408,7 @@ fn a_failed_move_stops_and_names_what_moved() {
         rename: &rename,
         remove: &remove,
     };
-    let report = protocols_dir::move_all_with(&old, &new, None, &ops);
+    let report = protocols_dir::move_all_with(&old, &new, &[], &ops);
     assert_eq!(report.moved.len(), 1, "{report:?}");
     assert_eq!(report.moved[0].1, new.join("Untitled"));
     let (failed, why) = report.failed.clone().expect("the second failed");
@@ -415,7 +447,7 @@ fn an_open_protocol_is_moved_after_the_close_question_or_left() {
         win.said()
     );
     assert!(!win.app.title().contains(UNSAVED_MARK), "it was saved");
-    assert_eq!(win.report().left_open, None);
+    assert_eq!(win.report().left, Vec::new());
 
     // Kept editing, so left where it is while the others move.
     let (old, new) = roots("open_left");
@@ -429,7 +461,7 @@ fn an_open_protocol_is_moved_after_the_close_question_or_left() {
         .answer_close_question(&win.ctx.clone(), CloseAnswer::KeepEditing);
     win.settle();
     let report = win.report();
-    assert_eq!(report.left_open, Some(left.clone()), "{report:?}");
+    assert_eq!(report.left, vec![(left.clone(), Left::Draft)], "{report:?}");
     assert!(new.join("other_one").join("arcform.yaml").is_file());
     assert_eq!(win.dir(), Some(old.join("left_one")), "the open one stays");
     assert!(win.app.title().contains(UNSAVED_MARK), "with its draft");
@@ -497,4 +529,225 @@ fn a_folder_inside_the_old_one_or_around_it_is_refused() {
     let around = protocols_dir::set_root(old.parent().unwrap()).expect_err("a folder around it");
     assert!(around.contains("inside"), "{around}");
     assert_eq!(protocols_dir::root(), old);
+}
+
+/// The Preferences file in this file's config folder.
+fn preferences_file() -> PathBuf {
+    scratch()
+        .join("config")
+        .join(protocols_dir::PREFERENCES_FILE)
+}
+
+/// The folder new Protocols go to when no setting reads.
+fn default_root() -> PathBuf {
+    std::env::home_dir()
+        .unwrap()
+        .join("Documents")
+        .join("Protocols")
+}
+
+#[test]
+fn a_protocol_a_run_is_writing_into_is_left_and_named_while_the_others_move() {
+    let _serial = serial();
+    let (old, new) = roots("running");
+    let mut win = Window::opened("moves_on");
+    win.open("still_running");
+    let running = win.dir().expect("a Protocol");
+    win.start_run();
+    // The run goes on after Home, writing its record into the folder.
+    win.home();
+    assert!(win.app.run_outstanding(), "the run is still out");
+    win.choose(&new);
+    win.answer_offer(true);
+    let report = win.report();
+    assert_eq!(
+        report.left,
+        vec![(running.clone(), Left::Running)],
+        "{report:?}"
+    );
+    assert!(running.join("arcform.yaml").is_file(), "it was not moved");
+    assert!(
+        new.join("moves_on").join("arcform.yaml").is_file(),
+        "the other moved"
+    );
+    assert!(!old.join("moves_on").exists());
+    let said = report.said();
+    assert!(
+        said.contains("still_running") && said.contains("a run is writing into its folder"),
+        "it is named with its reason: {said}"
+    );
+    assert!(!said.contains("unsaved"), "{said}");
+    win.wait_for_runs();
+}
+
+#[test]
+fn a_protocol_left_is_worded_for_why() {
+    let report = MoveReport {
+        left: vec![
+            (PathBuf::from("/p/drafted"), Left::Draft),
+            (PathBuf::from("/p/running"), Left::Running),
+        ],
+        ..MoveReport::default()
+    };
+    let said = report.said();
+    assert!(
+        said.contains("drafted is open with unsaved edits"),
+        "{said}"
+    );
+    assert!(
+        said.contains("running stayed in /p: a run is writing into its folder"),
+        "{said}"
+    );
+}
+
+#[test]
+fn an_unreadable_setting_says_so_and_new_protocols_go_to_the_default_for_now() {
+    let _serial = serial();
+    let (old, _new) = roots("unreadable");
+    std::fs::write(preferences_file(), "{ not json").unwrap();
+    let read = protocols_dir::root();
+    let problem = protocols_dir::setting_problem();
+    let win = Window::new();
+    let banner = win.banner(PREFERENCES_BANNER);
+    // Put a readable setting back before asserting, so a failure leaves the file whole.
+    std::fs::remove_file(preferences_file()).unwrap();
+    protocols_dir::set_root(&old).unwrap();
+    assert_eq!(read, default_root(), "the default stands in for now");
+    let problem = problem.expect("the problem is said");
+    let banner = banner.unwrap_or_else(|| panic!("a banner says so: {}", win.said()));
+    assert!(banner.contains("could not be read"), "{banner}");
+    assert!(
+        banner.contains(&preferences_file().display().to_string()),
+        "it names the file: {banner}"
+    );
+    assert!(problem.contains("could not be read"), "{problem}");
+}
+
+#[test]
+fn choosing_again_sets_an_unreadable_setting_aside_and_says_so() {
+    let _serial = serial();
+    let (_old, new) = roots("set_aside");
+    std::fs::write(preferences_file(), "[1, 2").unwrap();
+    assert!(
+        protocols_dir::set_root(&preferences_file()).is_err(),
+        "a file is not a folder"
+    );
+    assert_eq!(
+        std::fs::read_to_string(preferences_file()).unwrap(),
+        "[1, 2",
+        "a refused choice leaves the unreadable file as it was"
+    );
+    let mut win = Window::new();
+    win.choose(&new);
+    let aside = scratch().join("config").join("preferences.json.unreadable");
+    assert_eq!(
+        std::fs::read_to_string(&aside).ok().as_deref(),
+        Some("[1, 2"),
+        "the unreadable file is kept beside: {}",
+        win.said()
+    );
+    assert_eq!(protocols_dir::root(), new);
+    let banner = win.banner(PREFERENCES_BANNER).unwrap_or_default();
+    assert!(
+        banner.contains("preferences.json.unreadable"),
+        "{}",
+        win.said()
+    );
+    let _ = std::fs::remove_file(aside);
+}
+
+#[test]
+fn esc_on_the_move_question_cancels_the_whole_move() {
+    let _serial = serial();
+    let (old, new) = roots("esc_cancels");
+    let mut win = Window::opened("waits_here");
+    win.open("drafted_here");
+    win.keep_filter();
+    win.choose(&new);
+    win.answer_offer(true);
+    let question = win.app.close_question().expect("the close question is up");
+    assert_eq!(question.title(), MOVE_TO_FOLDER_QUESTION_TITLE);
+    win.run(vec![press(egui::Key::Escape, egui::Modifiers::NONE)]);
+    win.settle();
+    assert!(win.app.close_question().is_none(), "the question is down");
+    assert!(win.app.move_report().is_none(), "nothing was moved");
+    assert!(old.join("waits_here").join("arcform.yaml").is_file());
+    assert!(old.join("drafted_here").join("arcform.yaml").is_file());
+    assert!(!new.join("waits_here").exists());
+    assert_eq!(
+        protocols_dir::root(),
+        new,
+        "the setting changed all the same"
+    );
+    assert!(win.app.title().contains(UNSAVED_MARK), "the draft is kept");
+    let banner = win
+        .banner(MOVE_ALL_BANNER)
+        .unwrap_or_else(|| panic!("a banner says so: {}", win.said()));
+    assert!(banner.contains("stayed where they are"), "{banner}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_save_before_the_move_moves_nothing_and_says_so() {
+    let _serial = serial();
+    let (old, new) = roots("save_fails");
+    let mut win = Window::opened("cannot_save");
+    let dir = win.dir().expect("a Protocol");
+    win.keep_filter();
+    win.choose(&new);
+    win.answer_offer(true);
+    let chmod = |mode: &str| {
+        let ok = std::process::Command::new("chmod")
+            .args(["-R", mode])
+            .arg(&dir)
+            .status()
+            .expect("chmod runs")
+            .success();
+        assert!(ok, "chmod {mode}");
+    };
+    chmod("a-w");
+    win.app
+        .answer_close_question(&win.ctx.clone(), CloseAnswer::SaveAndClose);
+    win.settle();
+    chmod("u+w");
+    assert!(win.app.move_report().is_none(), "nothing was moved");
+    assert!(old.join("cannot_save").join("arcform.yaml").is_file());
+    assert!(!new.join("cannot_save").exists());
+    let banner = win
+        .banner(MOVE_ALL_BANNER)
+        .unwrap_or_else(|| panic!("a banner says so: {}", win.said()));
+    assert!(
+        banner.contains("could not be saved") && banner.contains("no Protocol was moved"),
+        "{banner}"
+    );
+}
+
+#[test]
+fn the_variable_shows_its_folder_and_the_setting_is_not_changed() {
+    let _serial = serial();
+    let (old, new) = roots("variable");
+    let elsewhere = scratch().join("roots").join("variable").join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::env::set_var(protocols_dir::PROTOCOLS_DIR_VAR, &elsewhere);
+    let mut win = Window::new();
+    win.app.open_preferences();
+    win.settle();
+    let shown = win.app.preferences_folder();
+    let can_choose = win.app.preferences_can_choose();
+    win.app.choose_protocols_folder(&win.ctx.clone(), &new);
+    win.settle();
+    let banner = win.banner(PREFERENCES_BANNER);
+    std::env::remove_var(protocols_dir::PROTOCOLS_DIR_VAR);
+    assert_eq!(
+        shown,
+        Some(elsewhere),
+        "the sheet shows the variable's folder"
+    );
+    assert_eq!(can_choose, Some(false), "and offers no Choose…");
+    assert_eq!(protocols_dir::root(), old, "the setting is unchanged");
+    assert!(
+        banner.is_some_and(|b| b.contains(protocols_dir::PROTOCOLS_DIR_VAR)),
+        "{}",
+        win.said()
+    );
 }

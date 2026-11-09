@@ -59,15 +59,16 @@ pub fn body(
     ui.add_space(gap);
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(folder.display().to_string()).monospace());
-        if ui.button("Choose\u{2026}").clicked() {
+        // The variable is for tests and portable installs, and wins over the setting, so the
+        // sheet does not offer to change a setting that would not be used.
+        if overridden.is_none() && ui.button("Choose\u{2026}").clicked() {
             action = Some(PreferencesAction::Choose);
         }
     });
     if let Some(var) = overridden {
         ui.label(
             egui::RichText::new(format!(
-                "{var} sets the folder for this launch, so a folder chosen here is used once it \
-                 is unset."
+                "{var} sets the Protocols folder for this launch, so it cannot be changed here."
             ))
             .color(chrome::colour(sem.text.secondary)),
         );

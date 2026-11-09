@@ -860,6 +860,15 @@ impl CloseQuestion {
         }
     }
 
+    /// The key chip beside the answer `which`, whose key is `key` in [`CLOSE_ANSWERS`]: none beside
+    /// Keep editing before the move into a new Protocols folder, where Esc cancels the whole move
+    /// rather than keeping editing.
+    #[must_use]
+    pub fn answer_key(&self, which: CloseAnswer, key: &'static str) -> Option<&'static str> {
+        (!(self.before == AskedBefore::MovingToNewFolder && which == CloseAnswer::KeepEditing))
+            .then_some(key)
+    }
+
     /// The label of the answer `which`: [`CLOSE_ANSWERS`]' before leaving, and before a rename or
     /// a move the words of what it does there. Not saving still keeps the edits as a version, and
     /// then renames or moves.
@@ -1027,8 +1036,10 @@ pub fn close_question_body(ui: &mut egui::Ui, question: &mut CloseQuestion) -> O
             if which == CloseAnswer::SaveAndClose {
                 save = Some(button.clone());
             }
-            ui.add_space(chip_gap);
-            meridian_egui::key_chip(ui, key);
+            if let Some(key) = question.answer_key(which, key) {
+                ui.add_space(chip_gap);
+                meridian_egui::key_chip(ui, key);
+            }
             if button.clicked() {
                 answer = Some(which);
             }
