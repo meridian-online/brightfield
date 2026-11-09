@@ -9,8 +9,8 @@
 //! * a workflow that a pull request triggers calling a gate script or cargo
 //!   directly rather than through the command, which CI would run and a local
 //!   run would not. The one call that is not a gate is named in
-//!   `DIRECT_CALLS_ALLOWED`, and the one such workflow that stays outside the
-//!   command is named in `WORKFLOWS_OUTSIDE_THE_COMMAND`, each with its reason.
+//!   `DIRECT_CALLS_ALLOWED`, and the workflows that stay outside the command
+//!   are named in `WORKFLOWS_OUTSIDE_THE_COMMAND`, each with its reason.
 //!
 //! The reader is line-based rather than a YAML parser: it reads `run:` values
 //! (a single line, or a block scalar's more-indented lines) and the `on:`

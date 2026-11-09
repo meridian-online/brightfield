@@ -27,7 +27,7 @@
 # What it cannot prove is that Apple accepts the result: that waits on the real
 # certificate and the real key.
 #
-# Only on the paths that decide signing, because it compiles the release
+# Only on the paths that decide signing and what is nested in the bundle, because it compiles the release
 # binary, which takes most of the job's time. `workflow_dispatch` runs it by
 # hand on a branch once this file is on the default branch.
 
@@ -38,6 +38,9 @@ on:
     paths:
       - scripts/release-signing.sh
       - scripts/package.sh
+      - scripts/set-extension-rpath-id.sh
+      - scripts/fetch-finetype-bundle.sh
+      - scripts/fetch-duckdb-cli.sh
       - .github/workflows/release.yml
       - .github/workflows/signing-rehearsal.yml
   workflow_dispatch:
