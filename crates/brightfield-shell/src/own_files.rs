@@ -268,17 +268,19 @@ pub fn add_source_with(
 /// analyst's, and it is written; one table has nothing to relate and has no model. The silver
 /// steps are written for the model and the Protocol run again.
 ///
-/// Once all of that has gone through, the first sources added to a Protocol New Protocol made,
-/// which nobody has named since ([`still_untitled`]), name it after the first of `paths`,
-/// renaming its folder ([`crate::rename::rename_claiming`]) and taking `-2` and so on when the name
-/// is taken, as a Protocol made from that source would. A rename that fails leaves the sources
-/// added and says why among the warnings.
+/// Once that has gone through, the first sources added to a Protocol New Protocol made, which
+/// nobody has named since ([`still_untitled`]), name it after the first of `paths`, renaming its
+/// folder ([`crate::rename::rename_claiming`]) and taking `-2` and so on when the name is taken,
+/// as a Protocol made from that source would
+/// (`a_failed_first_add_leaves_it_untitled_and_a_later_add_names_it` in `tests/new_protocol.rs`).
+/// A rename that fails leaves the sources added and says why among the warnings.
 ///
 /// # Errors
 ///
 /// The reason `paths` hold no table Brightfield reads, or a step of the add failed. When a step
-/// fails, every file the add may write in the folder is put back as it was, and any it made is
-/// taken away (see `FilesBefore`), so the Protocol opens as the kind it was before.
+/// fails, the files the add may write in the folder are put back as they were, and those it made
+/// are taken away (see `FilesBefore`), so the Protocol opens as the kind it was before
+/// (`a_failed_add_puts_a_one_source_protocol_back` in `tests/new_protocol.rs`).
 pub fn add_sources_with(
     p: &mut OwnProtocol,
     paths: &[PathBuf],
