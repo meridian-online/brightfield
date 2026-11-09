@@ -867,7 +867,11 @@ fn sources_are_added_only_to_protocols_brightfield_made() {
     win.add(&csv("by-hand", "customers.csv", CUSTOMERS));
     assert!(win.raised(ADD_SOURCE_REFUSED_BANNER), "{}", win.said());
     assert!(win.app.own_protocol().is_none() && win.app.model_pane().is_none());
-    assert_eq!(files_of(&dir), held, "the refused add left the Protocol as it was");
+    assert_eq!(
+        files_of(&dir),
+        held,
+        "the refused add left the Protocol as it was"
+    );
 }
 
 #[test]
