@@ -550,10 +550,15 @@ pub const OTHER_STEP_REMOVED: &str = "Another step was removed";
 /// What that banner says: `step` is still there, `removed` (when it is known) went instead, and
 /// where the version before is kept.
 fn other_removed_sentence(step: &str, removed: Option<&str>) -> String {
-    let other = removed.map_or_else(|| "another step".to_string(), |r| format!("the step {r}"));
-    format!(
-        "The Protocol changed while {step} was being removed, and {other} was removed instead. It could not be put back automatically. The version from before is in the Protocol's history, where `arc history list` and `arc history restore` put it back. {step} is still in the Protocol."
-    )
+    const HISTORY: &str = "It could not be put back automatically. The version from before is in the Protocol's history, where `arc history list` and `arc history restore` put it back.";
+    match removed {
+        Some(other) => format!(
+            "The Protocol changed while {step} was being removed, and the step {other} was removed instead. {HISTORY} {step} is still in the Protocol."
+        ),
+        None => format!(
+            "The Protocol changed while {step} was being removed, and another step may have been removed instead; which one cannot be told. {HISTORY}"
+        ),
+    }
 }
 
 /// The banner's title when a statement that reads a step removed and not yet saved is kept.
@@ -11913,7 +11918,8 @@ impl MeridianApp {
                         return Err(readers_sentence(&name, &readers));
                     }
                     use crate::operation::StepRemoval;
-                    match crate::operation::remove_step(&runner, &source.dir, &name)? {
+                    let removal = crate::operation::remove_step(&runner, &source.dir, &name)?;
+                    match &removal {
                         // The step asked for is still there, so the draft stays; the banner says
                         // which step went instead, under a title of its own.
                         StepRemoval::OtherRemoved { removed } => {
@@ -11922,6 +11928,7 @@ impl MeridianApp {
                         }
                         StepRemoval::Removed {
                             left_behind: Some(why),
+                            ..
                         } => {
                             eprintln!("the removed step's SQL file was left behind: {why}");
                             self.notifications.raise(
@@ -11935,7 +11942,24 @@ impl MeridianApp {
                                 )),
                             );
                         }
-                        StepRemoval::Removed { left_behind: None } | StepRemoval::Gone => {}
+                        StepRemoval::Removed {
+                            left_behind: None, ..
+                        }
+                        | StepRemoval::Gone => {}
+                    }
+                    // The step went, and someone else wrote the manifest too: what they wrote is
+                    // kept, and said quietly.
+                    if matches!(
+                        removal,
+                        StepRemoval::Removed {
+                            changed_meanwhile: true,
+                            ..
+                        }
+                    ) {
+                        self.toasts.push(Toast::new(
+                            Severity::Info,
+                            format!("Removed {name}. The Protocol also changed while it was being removed, and those changes are kept."),
+                        ));
                     }
                     self.charts.doc.mark_removal_recorded(&name);
                 }
