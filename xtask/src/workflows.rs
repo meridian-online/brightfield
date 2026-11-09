@@ -36,10 +36,16 @@ pub const DIRECT_CALLS_ALLOWED: &[(&str, &str, &str)] = &[(
 
 /// Workflows a pull request can trigger that call scripts directly and stay
 /// outside the command, by file name, with the reason.
-pub const WORKFLOWS_OUTSIDE_THE_COMMAND: &[(&str, &str)] = &[(
-    "brew-install-branch.yml",
-    "it runs only on a pull request that changes packaging or the formula, builds the release binary and installs it through Homebrew; that is not a step to run on a person's machine before each commit, and release.yml runs the installed-copy check on a tag",
-)];
+pub const WORKFLOWS_OUTSIDE_THE_COMMAND: &[(&str, &str)] = &[
+    (
+        "brew-install-branch.yml",
+        "it runs only on a pull request that changes packaging or the formula, builds the release binary and installs it through Homebrew; that is not a step to run on a person's machine before each commit, and release.yml runs the installed-copy check on a tag",
+    ),
+    (
+        "signing-rehearsal.yml",
+        "it runs only on a pull request that changes release signing, builds the release binary and signs it with a throwaway identity in a keychain it creates and deletes; that changes a machine's keychain search list, which is not a step to run on a person's machine before each commit",
+    ),
+];
 
 /// Every `.yml` and `.yaml` file in `.github/workflows`, sorted by path.
 pub fn read_all(root: &Path) -> Result<Vec<Workflow>, String> {

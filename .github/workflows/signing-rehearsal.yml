@@ -1,0 +1,193 @@
+# Rehearse release signing on a pull request, before the Developer ID
+# certificate exists and without it.
+#
+# release.yml's build job runs scripts/release-signing.sh before it packages:
+# with no Apple secrets it signs ad-hoc, and with all five it imports the
+# Developer ID certificate into a keychain of its own, stores a notarytool
+# profile there, and package.sh signs with the hardened runtime, notarises and
+# staples. Only a tag runs that job, so without this file the first run of the
+# signed path would be the first signed release.
+#
+# This job drives the same script and the same package.sh with an identity it
+# generates on the runner: a self-signed code-signing certificate and an App
+# Store Connect API key Apple has never issued. Both live only in this job's
+# $RUNNER_TEMP and its environment. Nothing here is a repository secret, so a
+# tagged release cannot read any of it; and `setup --rehearsal`, the only form
+# that accepts an identity that is not Developer ID, refuses to run on a tag.
+#
+# What it proves, in order:
+#   1. with no secrets, setup says the build is ad-hoc and exports nothing;
+#   2. with some but not all, setup refuses;
+#   3. with all five, the certificate imports, codesign signs the tarball's
+#      Mach-O and the app bundle with the hardened runtime and a secure
+#      timestamp, without a keychain prompt, and package.sh reaches
+#      `notarytool submit` — where Apple refuses the throwaway key, and the job
+#      requires that it does, since it means the step after signing ran;
+#   4. cleanup deletes the keychain and takes it off the search list.
+# What it cannot prove is that Apple accepts the result: that waits on the real
+# certificate and the real key.
+#
+# Only on the paths that decide signing, because it compiles the release
+# binary, which takes most of the job's time. `workflow_dispatch` runs it by
+# hand on a branch once this file is on the default branch.
+
+name: signing-rehearsal
+
+on:
+  pull_request:
+    paths:
+      - scripts/release-signing.sh
+      - scripts/package.sh
+      - .github/workflows/release.yml
+      - .github/workflows/signing-rehearsal.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  signing-rehearsal:
+    name: Release signing runs end to end with a throwaway self-signed identity
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: signing-rehearsal-aarch64-apple-darwin
+
+      # package.sh refuses a tag whose number is not the crate's; the suffix
+      # keeps the rehearsal's file names from passing for a release's.
+      - name: Read the version this branch packages
+        id: version
+        run: |
+          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/brightfield-shell/Cargo.toml | head -1)"
+          test -n "$VERSION"
+          echo "tag=v${VERSION}-rehearsal" >> "$GITHUB_OUTPUT"
+
+      - name: With no secrets, setup signs ad-hoc and exports nothing
+        run: |
+          out="${RUNNER_TEMP}/adhoc.env"
+          : > "$out"
+          GITHUB_ENV="$out" scripts/release-signing.sh setup | tee "${RUNNER_TEMP}/adhoc.log"
+          grep -q '^== signing: ad-hoc' "${RUNNER_TEMP}/adhoc.log"
+          test ! -s "$out"
+
+      - name: With some secrets and not others, setup refuses
+        run: |
+          out="${RUNNER_TEMP}/partial.env"
+          : > "$out"
+          status=0
+          APPLE_NOTARY_KEY_ID=XXXXXXXXXX GITHUB_ENV="$out" scripts/release-signing.sh setup || status=$?
+          test "$status" -eq 1
+          test ! -s "$out"
+
+      # /usr/bin/openssl is LibreSSL, whose PKCS#12 encryption `security import`
+      # reads; OpenSSL 3's default does not import without -legacy.
+      - name: Generate a throwaway self-signed identity and API key
+        run: |
+          dir="${RUNNER_TEMP}/rehearsal-identity"
+          mkdir -p "$dir"
+          cat > "$dir/cert.cnf" <<'EOF'
+          [req]
+          distinguished_name = dn
+          prompt = no
+          [dn]
+          CN = Brightfield signing rehearsal (self-signed)
+          [codesign]
+          basicConstraints = critical, CA:false
+          keyUsage = critical, digitalSignature
+          extendedKeyUsage = critical, codeSigning
+          EOF
+          /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -config "$dir/cert.cnf" -extensions codesign \
+            -keyout "$dir/key.pem" -out "$dir/cert.pem"
+          password=$(/usr/bin/openssl rand -hex 16)
+          /usr/bin/openssl pkcs12 -export -inkey "$dir/key.pem" -in "$dir/cert.pem" \
+            -name "Brightfield signing rehearsal" -passout "pass:${password}" -out "$dir/identity.p12"
+          /usr/bin/openssl ecparam -name prime256v1 -genkey -noout -out "$dir/ec.pem"
+          /usr/bin/openssl pkcs8 -topk8 -nocrypt -in "$dir/ec.pem" -out "$dir/AuthKey.p8"
+          {
+            echo "MACOS_DEVELOPER_ID_P12_BASE64=$(base64 < "$dir/identity.p12" | tr -d '\n')"
+            echo "MACOS_DEVELOPER_ID_P12_PASSWORD=${password}"
+            echo "APPLE_NOTARY_KEY_P8_BASE64=$(base64 < "$dir/AuthKey.p8" | tr -d '\n')"
+            echo "APPLE_NOTARY_KEY_ID=REHEARSAL0"
+            echo "APPLE_NOTARY_ISSUER_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')"
+          } >> "$GITHUB_ENV"
+          rm -rf "$dir"
+
+      - name: Signing identity (rehearsal)
+        run: scripts/release-signing.sh setup --rehearsal
+
+      - name: The handed-over identity is the self-signed one
+        run: |
+          test -n "$BRIGHTFIELD_SIGN_IDENTITY"
+          test "$BRIGHTFIELD_NOTARY_PROFILE" = brightfield-notary
+          test -f "$BRIGHTFIELD_NOTARY_KEYCHAIN"
+          security find-identity -p codesigning "$BRIGHTFIELD_NOTARY_KEYCHAIN" \
+            | grep -F "$BRIGHTFIELD_SIGN_IDENTITY" | grep -F 'Brightfield signing rehearsal'
+
+      - name: Fetch the FineType bundle
+        run: scripts/fetch-finetype-bundle.sh aarch64-apple-darwin "${RUNNER_TEMP}/finetype-bundle"
+
+      - name: Fetch the DuckDB CLI
+        run: scripts/fetch-duckdb-cli.sh aarch64-apple-darwin "${RUNNER_TEMP}/duckdb-cli"
+
+      # package.sh must fail, and at notarytool submit: signing both artefacts
+      # comes before it, and stapling and the disk image after it.
+      - name: Package signs both artefacts and stops at Apple's refusal
+        env:
+          BRIGHTFIELD_FINETYPE_BUNDLE: ${{ runner.temp }}/finetype-bundle
+          BRIGHTFIELD_DUCKDB_CLI: ${{ runner.temp }}/duckdb-cli
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -o pipefail
+          status=0
+          scripts/package.sh "$TAG" aarch64-apple-darwin 2>&1 \
+            | tee "${RUNNER_TEMP}/package.log" || status=$?
+          echo "package.sh exited ${status}"
+          test "$status" -ne 0
+          NAME="brightfield-${TAG}-aarch64-apple-darwin"
+          grep -Fxq "== sign: dist/${NAME}/brightfield" "${RUNNER_TEMP}/package.log"
+          grep -q '^== notarize: ' "${RUNNER_TEMP}/package.log"
+          # `! cmd` does not stop a `bash -e` step, so each negative is an if.
+          if grep -q '^== distribution check' "${RUNNER_TEMP}/package.log"; then
+            echo "::error::package.sh went past notarytool submit"; exit 1
+          fi
+          test ! -e "dist/${NAME}.dmg"
+
+      - name: Both signatures carry the identity, the hardened runtime and a timestamp
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          NAME="brightfield-${TAG}-aarch64-apple-darwin"
+          mkdir -p "${RUNNER_TEMP}/unpacked"
+          tar -xzf "dist/${NAME}.tar.gz" -C "${RUNNER_TEMP}/unpacked"
+          for code in "${RUNNER_TEMP}/unpacked/${NAME}/brightfield" "dist/${NAME}.image/Brightfield.app"; do
+            echo "== ${code}"
+            codesign --verify --strict "$code"
+            info=$(codesign -dvv "$code" 2>&1)
+            echo "$info"
+            grep -q '^Authority=Brightfield signing rehearsal (self-signed)$' <<<"$info"
+            grep -Eq '^CodeDirectory .*flags=0x[0-9a-f]*\(runtime\)' <<<"$info"
+            grep -q '^Timestamp=' <<<"$info"
+          done
+
+      - name: Delete the signing keychain
+        if: ${{ always() }}
+        run: scripts/release-signing.sh cleanup
+
+      - name: The keychain is gone and off the search list
+        if: ${{ always() }}
+        run: |
+          KEYCHAIN="${RUNNER_TEMP}/brightfield-signing.keychain-db"
+          security list-keychains -d user
+          test ! -e "$KEYCHAIN"
+          if security list-keychains -d user | grep -F "$KEYCHAIN"; then exit 1; fi
+          if security find-identity -p codesigning | grep -F 'Brightfield signing rehearsal'; then exit 1; fi

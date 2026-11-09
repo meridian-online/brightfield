@@ -162,6 +162,32 @@ jobs:
       - name: Fetch the DuckDB CLI for this target
         run: scripts/fetch-duckdb-cli.sh "${{ matrix.target }}" "${RUNNER_TEMP}/duckdb-cli"
 
+      # THE SIGNING IDENTITY, from repository secrets. With none of the five
+      # set, this step says so in the log and the run summary and exports
+      # nothing, and the Package step below signs ad-hoc exactly as every
+      # release before it did. With all five, it imports the Developer ID
+      # Application certificate into a keychain of this job's own, stores the
+      # App Store Connect API key as a notarytool profile in it, and exports
+      # BRIGHTFIELD_SIGN_IDENTITY, BRIGHTFIELD_NOTARY_PROFILE and
+      # BRIGHTFIELD_NOTARY_KEYCHAIN, which package.sh reads to sign with the
+      # hardened runtime, notarise and staple. A partial set fails here, as
+      # does an identity that is not Developer ID. The script's header names
+      # each secret and what goes in it.
+      #
+      # It runs before the build so wrong credentials cost a minute, not an
+      # hour: notarytool validates the API key with Apple as it stores it.
+      # signing-rehearsal.yml drives the same script with a throwaway
+      # self-signed identity on pull requests that change it; nothing it
+      # generates is stored where this job reads.
+      - name: Signing identity (ad-hoc when no Developer ID secrets are set)
+        env:
+          MACOS_DEVELOPER_ID_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
+          MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: scripts/release-signing.sh setup
+
       - name: Package
         env:
           BRIGHTFIELD_FINETYPE_BUNDLE: ${{ runner.temp }}/finetype-bundle
@@ -266,6 +292,13 @@ jobs:
             dist/brightfield-*.dmg
             dist/brightfield-*.sha256
           if-no-files-found: error
+
+      # Last, and whatever happened above: a failed build still leaves the
+      # keychain behind otherwise. The script checks the keychain and the key
+      # files are gone and fails the job if they are not.
+      - name: Delete the signing keychain
+        if: ${{ always() }}
+        run: scripts/release-signing.sh cleanup
 
   # Deliberately NOT a gate on `release`. This step needs a real window on a
   # hosted runner, which nothing has ever proven — test.yml only renders

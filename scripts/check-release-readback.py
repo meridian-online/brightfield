@@ -382,6 +382,12 @@ def resolve(text: str, leg: dict[str, object], where: str, temp: str) -> str:
             return FIXTURE_REF
         if body in ("runner.temp", "env.RUNNER_TEMP"):
             return temp
+        # A secret resolves to the empty string, which is what a run without it
+        # sees: a pull request, a fork, and every release before the signing
+        # secrets were entered. The signing step then takes its ad-hoc branch,
+        # which is the one this reader can drive without a keychain.
+        if re.fullmatch(r"secrets\.[A-Za-z_][A-Za-z0-9_]*", body):
+            return ""
         raise Unreadable(
             f"{where}: `${{{{ {body} }}}}` is an expression this reader cannot resolve, so what "
             "the step would actually run is unknown to it"
