@@ -179,6 +179,40 @@ jobs:
             grep -q '^Timestamp=' <<<"$info"
           done
 
+      # A report, not a gate. package.sh signs the bundle and the bare Mach-O
+      # with the identity, and leaves the code nested in the bundle as it was
+      # staged: the DuckDB CLI with its upstream Developer ID signature, and the
+      # FineType extension ad-hoc, because its DuckDB metadata trailer sits past
+      # the signature. Notarisation refuses nested code without a Developer ID
+      # signature and a timestamp, and the hardened runtime's library
+      # validation refuses to load an extension signed by another team. Making
+      # the nested code pass is separate work; this step writes down, on every
+      # rehearsal, what each nested Mach-O carries, so that work starts from
+      # the record rather than from the first signed tag.
+      - name: Report the signature on each Mach-O nested in the bundle
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          APP="dist/brightfield-${TAG}-aarch64-apple-darwin.image/Brightfield.app"
+          {
+            echo "### Nested code in the rehearsal bundle"
+            echo
+            echo "| file | authority | timestamp | hardened runtime |"
+            echo "| --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          find "$APP/Contents" -type f -not -path "$APP/Contents/MacOS/brightfield" -print0 \
+            | while IFS= read -r -d '' f; do
+                file -b "$f" | grep -q '^Mach-O' || continue
+                info=$(codesign -dvv "$f" 2>&1 || true)
+                authority=$(sed -n 's/^Authority=//p' <<<"$info" | head -1)
+                if grep -q '^Signature=adhoc' <<<"$info"; then authority="ad-hoc"; fi
+                timestamp=$(grep -q '^Timestamp=' <<<"$info" && echo yes || echo no)
+                runtime=$(grep -Eq 'flags=0x[0-9a-f]*\([^)]*runtime' <<<"$info" && echo yes || echo no)
+                rel="${f#"$APP"/}"
+                echo "${rel}: ${authority:-unsigned}, timestamp ${timestamp}, runtime ${runtime}"
+                echo "| \`${rel}\` | ${authority:-unsigned} | ${timestamp} | ${runtime} |" >> "$GITHUB_STEP_SUMMARY"
+              done
+
       - name: Delete the signing keychain
         if: ${{ always() }}
         run: scripts/release-signing.sh cleanup
