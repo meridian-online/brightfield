@@ -138,6 +138,21 @@ jobs:
           security find-identity -p codesigning "$BRIGHTFIELD_NOTARY_KEYCHAIN" \
             | grep -F "$BRIGHTFIELD_SIGN_IDENTITY" | grep -F 'Brightfield signing rehearsal'
 
+      # Seconds, where the Package step below takes most of an hour to reach
+      # the same call. Through the stored profile and the job's keychain, the
+      # way package.sh asks, notarytool must reach Apple and be refused the
+      # throwaway key with a 401. A crash, or any other failure, means the
+      # profile is not usable as stored, which a real key would hit too.
+      - name: notarytool reads the stored profile and Apple refuses the throwaway key
+        run: |
+          status=0
+          xcrun notarytool history --keychain-profile "$BRIGHTFIELD_NOTARY_PROFILE" \
+            --keychain "$BRIGHTFIELD_NOTARY_KEYCHAIN" > "${RUNNER_TEMP}/history.log" 2>&1 || status=$?
+          cat "${RUNNER_TEMP}/history.log"
+          echo "notarytool exited ${status}"
+          test "$status" -eq 1
+          grep -q 'HTTP status code: 401' "${RUNNER_TEMP}/history.log"
+
       - name: Fetch the FineType bundle
         run: scripts/fetch-finetype-bundle.sh aarch64-apple-darwin "${RUNNER_TEMP}/finetype-bundle"
 
@@ -161,6 +176,8 @@ jobs:
           NAME="brightfield-${TAG}-aarch64-apple-darwin"
           grep -Fxq "== sign: dist/${NAME}/brightfield" "${RUNNER_TEMP}/package.log"
           grep -q '^== notarize: ' "${RUNNER_TEMP}/package.log"
+          # Apple's refusal of the throwaway key, not a crash or a local error.
+          grep -q 'HTTP status code: 401' "${RUNNER_TEMP}/package.log"
           # `! cmd` does not stop a `bash -e` step, so each negative is an if.
           if grep -q '^== distribution check' "${RUNNER_TEMP}/package.log"; then
             echo "::error::package.sh went past notarytool submit"; exit 1
