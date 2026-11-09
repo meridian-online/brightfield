@@ -41,6 +41,8 @@ on:
       - scripts/set-extension-rpath-id.sh
       - scripts/fetch-finetype-bundle.sh
       - scripts/fetch-duckdb-cli.sh
+      - scripts/finetype-pin.sh
+      - packaging/finetype-pin.env
       - .github/workflows/release.yml
       - .github/workflows/signing-rehearsal.yml
   workflow_dispatch:

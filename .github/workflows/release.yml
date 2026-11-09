@@ -175,8 +175,9 @@ jobs:
       # each secret and what goes in it.
       #
       # Notarisation also judges the code nested in the bundle, which package.sh
-      # does not re-sign: until the FineType extension and the DuckDB CLI pass
-      # under the hardened runtime, a tag with the secrets set stops at
+      # does not re-sign: the DuckDB CLI keeps its upstream Developer ID
+      # signature, and the FineType extension is ad-hoc. Until the extension
+      # passes under the hardened runtime, a tag with the secrets set stops at
       # notarisation and publishes nothing. The script's header says more.
       #
       # It runs before the build so wrong credentials cost a minute, not an
