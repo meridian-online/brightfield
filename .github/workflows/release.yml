@@ -177,7 +177,7 @@ jobs:
       # Notarisation also judges the code nested in the bundle, which package.sh
       # does not re-sign: until the FineType extension and the DuckDB CLI pass
       # under the hardened runtime, a tag with the secrets set stops at
-      # `notarytool submit` and publishes nothing. The script's header says more.
+      # notarisation and publishes nothing. The script's header says more.
       #
       # It runs before the build so wrong credentials cost a minute, not an
       # hour: notarytool validates the API key with Apple as it stores it.
