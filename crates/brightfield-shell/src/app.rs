@@ -2030,6 +2030,14 @@ impl ChartDoc {
         self.views_are_steps = are;
     }
 
+    /// Whether a view or a kept statement on this document's grid is a step
+    /// of the Protocol: false over rows no manifest step makes, such as a
+    /// model's join ([`Self::set_views_are_steps`]).
+    #[must_use]
+    pub const fn views_are_steps(&self) -> bool {
+        self.views_are_steps
+    }
+
     /// The applied condition, when no file holds it.
     #[must_use]
     pub fn grid_condition_unrecorded(&self) -> Option<&str> {

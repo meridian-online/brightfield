@@ -65,7 +65,6 @@ use egui::containers::{CentralPanel, Panel};
 use egui_tiles::{Behavior, Container, Tile};
 
 use brightfield_keys::{Altitude, RecencyCounter};
-use brightfield_model::panel_capture::panel_file;
 use brightfield_protocol::graph::AssetId;
 use brightfield_protocol::layout::{Flow, Layout};
 use brightfield_sql::ir::SampleRate;
@@ -1651,7 +1650,7 @@ impl Boot {
     ///
     /// A chart file that will not parse or load.
     fn with_saved_chart(mut opened: crate::data_file::OpenedFile) -> Result<Self, String> {
-        let chart = panel_file(&opened.protocol.dir, &opened.protocol.name);
+        let chart = opened.protocol.chart_file();
         if chart.is_file() {
             // Absolute, as Save names the file it wrote: the chart document's
             // spec path then equals what a later Save compares it to, and the
@@ -2231,6 +2230,13 @@ pub const WAITING_FOR_RUN_TITLE: &str = "Waiting for the run to finish before cl
 /// The banner's body.
 pub const WAITING_FOR_RUN_BODY: &str =
     "Quit or close again to close now; the run's record may be lost.";
+
+/// The banner that says a statement typed over a join's rows was not kept, and why.
+const NOT_KEPT_ON_A_JOIN_BANNER: &str = "not-kept-on-a-join";
+/// What it says.
+pub const NOT_KEPT_ON_A_JOIN_BODY: &str =
+    "A view or statement on a join is not kept as a step yet. \
+     Keep it on one of the join's tables.";
 
 /// The banner that says an open asked for while the window waits to close was not done.
 const NOT_OPENED_WHILE_CLOSING_BANNER: &str = "not-opened-while-closing";
@@ -5028,7 +5034,7 @@ impl MeridianApp {
             let protocol = self.protocol.doc.model.source()?;
             Some(crate::versions::Source {
                 store: store.clone(),
-                file: brightfield_model::panel_capture::panel_file(&protocol.dir, &protocol.name),
+                file: protocol.chart_file(),
                 dir: protocol.dir.clone(),
             })
         });
@@ -8243,12 +8249,30 @@ impl MeridianApp {
     /// Protocol is laid out again with it, its table is brought to the front
     /// in the grid with the cursor on its first cell and the keys, and its
     /// rows are counted on a worker.
+    ///
+    /// Over a join's rows nothing is kept: the join is no table of the
+    /// Protocol's a step could stand on, so a banner says so
+    /// (`a_statement_typed_on_a_joins_grid_is_not_kept`).
     fn keep_statement(
         &mut self,
         ctx: &egui::Context,
         answer: &TypedAnswer,
         replacing: Option<&str>,
     ) {
+        // Over a join's rows a statement has no table of the Protocol's to be a step on, so it
+        // is refused rather than held as work no Save could record.
+        if !self.charts.doc.views_are_steps() {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(NOT_KEPT_ON_A_JOIN_BANNER),
+                    Severity::Warning,
+                    "This statement was not kept",
+                )
+                .body(NOT_KEPT_ON_A_JOIN_BODY),
+            );
+            ctx.request_repaint();
+            return;
+        }
         let name = self.kept_name(answer, replacing);
         let reads = answer.reading.tables.clone();
         if replacing == Some(name.as_str()) {
@@ -8601,9 +8625,7 @@ impl MeridianApp {
     fn close_question_for_now(&self) -> CloseQuestion {
         let protocol = self.protocol.doc.model.source();
         let target = match protocol {
-            Some(p) => Some(brightfield_model::panel_capture::panel_file(
-                &p.dir, &p.name,
-            )),
+            Some(p) => Some(p.chart_file()),
             None => self.charts.doc.spec_path.clone(),
         };
         let file = match (&target, protocol) {
@@ -8762,10 +8784,10 @@ impl MeridianApp {
         let Some(source) = self.protocol.doc.model.source() else {
             return Err(NO_PROTOCOL_TO_KEEP_BESIDE.to_string());
         };
-        let kept =
-            self.charts
-                .doc
-                .keep_unsaved_beside(&source.dir, &source.name, self.history.as_ref());
+        let kept = self
+            .charts
+            .doc
+            .keep_unsaved_at(&source.chart_file(), self.history.as_ref());
         // A version may have been recorded; the panel reads the store again.
         self.charts.doc.versions_mut().invalidate();
         kept
@@ -10709,7 +10731,25 @@ impl MeridianApp {
                     target,
                     brightfield_render::model_scene::Selection::Relationship(_)
                 );
-                self.adopt_boot(Boot::of_opened_file(opened));
+                opened.protocol.join = join;
+                // The chart saved for these rows, when one was, from the file a Save writes.
+                let boot = match Boot::with_saved_chart(opened) {
+                    Ok(boot) => boot,
+                    Err(e) => {
+                        self.model = Some(model);
+                        self.notifications.raise(
+                            Notification::new(
+                                NotificationId::new("open-model-grid"),
+                                Severity::Error,
+                                "Could not open these rows in the grid",
+                            )
+                            .body(e),
+                        );
+                        ctx.request_repaint();
+                        return false;
+                    }
+                };
+                self.adopt_boot(boot);
                 self.charts.doc.set_views_are_steps(!join);
                 let showing = match target {
                     brightfield_render::model_scene::Selection::Dataset(name) => {
@@ -11231,10 +11271,10 @@ impl MeridianApp {
     /// failure's words rather than stacking beside them, and a Save that
     /// writes the chart takes it down.
     fn save_chart_beside_protocol(&mut self, source: &crate::one_step::OneStepProtocol) {
-        let saved =
-            self.charts
-                .doc
-                .save_chart_beside(&source.dir, &source.name, self.history.as_ref());
+        let saved = self
+            .charts
+            .doc
+            .save_chart_at(&source.chart_file(), self.history.as_ref());
         let _ = self.say_chart_saved(saved);
     }
 

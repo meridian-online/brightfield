@@ -686,10 +686,11 @@ fn discovery_landed(win: &mut Window) {
     win.settle();
 }
 
-#[test]
-fn a_joins_grid_writes_nothing_manifest_like_and_its_view_is_no_draft() {
+/// A window over a folder Protocol of orders and the stores they were taken in, named `name`,
+/// with the grid of the model's join between them open, and the join's name.
+fn joined_grid(name: &str) -> (Window, String) {
     scratch();
-    let dir = scratch().join("input").join("cmd_s_joined");
+    let dir = scratch().join("input").join(name);
     std::fs::create_dir_all(&dir).expect("an input folder");
     let mut orders = String::from("order_id,store_id,amount\n");
     for i in 1..=60 {
@@ -705,7 +706,7 @@ fn a_joins_grid_writes_nothing_manifest_like_and_its_view_is_no_draft() {
         app: MeridianApp::headless(Boot::empty(), Mode::Light)
             .running_with(Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell")))),
         ctx: egui::Context::default(),
-        name: "cmd_s_joined".to_owned(),
+        name: name.to_owned(),
         time: 0.0,
     };
     win.app.open_queue().push(OpenRequest::Path(dir));
@@ -733,6 +734,12 @@ fn a_joins_grid_writes_nothing_manifest_like_and_its_view_is_no_draft() {
         win.said()
     );
     win.settle();
+    (win, join)
+}
+
+#[test]
+fn a_joins_grid_writes_nothing_manifest_like_and_its_view_is_no_draft() {
+    let (mut win, join) = joined_grid("cmd_s_joined");
     let before = modification_times(&win.dir());
     std::thread::sleep(Duration::from_millis(1100));
 
@@ -851,5 +858,137 @@ fn cmd_s_away_from_the_editor_never_writes_over_a_change_on_disk() {
     assert!(
         win.app.title().contains(UNSAVED_MARK),
         "the buffer is still unsaved"
+    );
+}
+
+#[test]
+fn a_statement_typed_on_a_joins_grid_is_not_kept() {
+    let (mut win, join) = joined_grid("cmd_s_join_typed");
+    let manifest = win.manifest();
+
+    win.run(vec![press(egui::Key::Space, egui::Modifiers::NONE)]);
+    win.settle();
+    win.type_text(&format!("select * from \"{join}\""));
+    assert!(
+        win.app.finish_typed_reads(Duration::from_secs(60)),
+        "the read did not finish: {}",
+        win.said()
+    );
+    win.run(vec![press(egui::Key::Enter, command())]);
+    win.settle();
+
+    assert!(
+        win.app.chart_doc().typed_steps().is_empty(),
+        "nothing is kept"
+    );
+    assert!(
+        win.app
+            .notifications()
+            .iter()
+            .any(|n| n.body.as_deref() == Some(brightfield_shell::window::NOT_KEPT_ON_A_JOIN_BODY)),
+        "a banner says why: {}",
+        win.said()
+    );
+    assert!(
+        !win.app.title().contains(UNSAVED_MARK),
+        "nothing is unsaved"
+    );
+    win.cmd_s();
+    assert_eq!(win.manifest(), manifest, "and nothing is recorded");
+}
+
+#[test]
+fn run_on_a_joins_grid_runs_the_protocol_and_shows_its_run() {
+    let (mut win, _) = joined_grid("cmd_s_join_run");
+    let before = win.app.protocol_model().run().map(|r| r.run_id.clone());
+
+    win.run(vec![press(egui::Key::Enter, command())]);
+    assert!(
+        win.app.run_in_progress(),
+        "cmd-enter started a run: {}",
+        win.said()
+    );
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while win.app.run_outstanding() {
+        assert!(Instant::now() < deadline, "the run did not land");
+        win.run(Vec::new());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    win.settle();
+
+    let ran = win.app.protocol_model().run().map(|r| r.run_id.clone());
+    assert!(
+        ran.is_some() && ran != before,
+        "the strip shows the run of the Protocol: {ran:?}; {}",
+        win.said()
+    );
+    assert_eq!(
+        win.app.protocol_model().run().map(|r| r.protocol.clone()),
+        Some("cmd_s_join_run".to_owned()),
+        "the run is the Protocol's own"
+    );
+}
+
+#[test]
+fn a_joins_chart_is_saved_apart_from_the_tables_and_read_back() {
+    let (mut win, join) = joined_grid("cmd_s_join_chart");
+    // A table's panel of the same name as the join, which the join's chart must not touch.
+    let panels = win.dir().join("panels");
+    std::fs::create_dir_all(&panels).expect("the panels folder");
+    let table_panel = brightfield_model::panel_capture::panel_file(&win.dir(), &join);
+    std::fs::write(&table_panel, "# a table's panel\n").expect("the table's panel writes");
+    let join_panel = brightfield_model::panel_capture::join_panel_file(&win.dir(), &join);
+
+    let thrown = (0..8).any(|plot| {
+        win.app.chart_doc_mut().set_plot_scale(
+            plot,
+            brightfield_spec::layout::PlotAxis::Y,
+            brightfield_spec::layout::ScaleType::Log,
+        )
+    });
+    assert!(thrown, "a tile took the log scale: {}", win.said());
+    win.settle();
+    assert!(
+        win.app.title().contains(UNSAVED_MARK),
+        "the chart edit is a draft"
+    );
+
+    win.cmd_s();
+
+    assert!(
+        !win.app.title().contains(UNSAVED_MARK),
+        "Cmd+S saved the join's chart: {}",
+        win.said()
+    );
+    let saved = std::fs::read_to_string(&join_panel).expect("the join's chart is written");
+    assert!(saved.contains("log"), "{saved}");
+    assert_eq!(
+        std::fs::read_to_string(&table_panel).expect("the table's panel reads"),
+        "# a table's panel\n",
+        "the table's panel of the same name is its own"
+    );
+    assert_eq!(
+        grid_files(&win.dir()),
+        [format!("{join}.parquet")],
+        "nothing is written beside the join's rows"
+    );
+
+    // Back to the model and into the join's grid again: the chart reads back from its file.
+    assert!(win.app.back_to_model(), "{}", win.said());
+    win.settle();
+    let ctx = win.ctx.clone();
+    assert!(win.app.open_model_in_grid(
+        &ctx,
+        &brightfield_render::model_scene::Selection::Relationship(join.clone())
+    ));
+    win.settle();
+    assert_eq!(
+        win.app
+            .chart_doc()
+            .spec_path
+            .as_deref()
+            .map(|p| std::path::absolute(p).unwrap()),
+        Some(std::path::absolute(&join_panel).unwrap()),
+        "the join's grid opens its saved chart"
     );
 }

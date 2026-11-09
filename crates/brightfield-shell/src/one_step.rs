@@ -223,9 +223,24 @@ pub struct OneStepProtocol {
     /// it, so a read of the file outside the session, such as a typed statement's preview, reads
     /// the columns as the session does. Empty for a file read as it is.
     pub casts: Vec<(String, String)>,
+    /// Whether the file is the copy of a model's joined rows, whose chart is
+    /// kept apart from the tables' panels ([`Self::chart_file`]).
+    pub join: bool,
 }
 
 impl OneStepProtocol {
+    /// **The chart file a Save of this Protocol's chart writes**, and an open
+    /// reads back: the panel file for its name, or, for a join's rows, the
+    /// join's own file under `panels/joins/`.
+    #[must_use]
+    pub fn chart_file(&self) -> PathBuf {
+        if self.join {
+            brightfield_model::panel_capture::join_panel_file(&self.dir, &self.name)
+        } else {
+            brightfield_model::panel_capture::panel_file(&self.dir, &self.name)
+        }
+    }
+
     /// The Protocol for `path`, over the columns the engine profiled and the
     /// dashboard the generator chose from them.
     #[must_use]
@@ -251,6 +266,7 @@ impl OneStepProtocol {
             data: path.to_path_buf(),
             dir,
             spelled,
+            join: false,
         }
     }
 
@@ -456,6 +472,17 @@ impl OneStepProtocol {
             return Ok(crate::generated::generated_protocol_of_folder_table(
                 text, &self.dir, self, &made_with,
             ));
+        }
+        // A copy of a model's joined rows in a folder Protocol: no step starts at the join, and
+        // the folder's manifest is still the Protocol a Run runs, so it is read whole, with its
+        // runs, and no step after it.
+        if self.join && crate::own_files::own_protocol_dir(&self.dir).is_some() {
+            return Ok(Some(crate::generated::GeneratedProtocol {
+                data: self.data.clone(),
+                dir: self.dir.clone(),
+                root_table: self.name.clone(),
+                steps: Vec::new(),
+            }));
         }
         let Some((table, made_with)) = crate::own_files::one_source_steps(&self.dir) else {
             return Ok(None);
