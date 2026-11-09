@@ -143,6 +143,24 @@ jobs:
       # way package.sh asks, notarytool must reach Apple and be refused the
       # throwaway key with a 401. A crash, or any other failure, means the
       # profile is not usable as stored, which a real key would hit too.
+      - name: DIAGNOSTIC notarytool variants
+        run: |
+          key="${RUNNER_TEMP}/diag.p8"
+          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 --decode > "$key"
+          xcrun notarytool --version
+          for v in flags profile-search-list profile-keychain; do
+            case $v in
+              flags) args=(--key "$key" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID") ;;
+              profile-search-list) args=(--keychain-profile "$BRIGHTFIELD_NOTARY_PROFILE") ;;
+              profile-keychain) args=(--keychain-profile "$BRIGHTFIELD_NOTARY_PROFILE" --keychain "$BRIGHTFIELD_NOTARY_KEYCHAIN") ;;
+            esac
+            st=0; xcrun notarytool history "${args[@]}" > "${RUNNER_TEMP}/d.log" 2>&1 || st=$?
+            echo "VARIANT $v exit=$st :: $(tr '\n' ' ' < "${RUNNER_TEMP}/d.log" | cut -c1-300)"
+          done
+          rm -f "$key"
+          security show-keychain-info "$BRIGHTFIELD_NOTARY_KEYCHAIN" || true
+          security dump-keychain "$BRIGHTFIELD_NOTARY_KEYCHAIN" | grep -E 'class|svce|acct|labl' | head -20 || true
+
       - name: notarytool reads the stored profile and Apple refuses the throwaway key
         run: |
           status=0
