@@ -107,6 +107,7 @@ pub mod data_file;
 pub mod data_grid;
 pub mod devtools;
 pub mod discovery;
+pub mod door_tree;
 pub mod editor;
 pub mod export;
 pub(crate) mod flat_cast;

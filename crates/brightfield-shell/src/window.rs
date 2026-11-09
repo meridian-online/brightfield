@@ -407,6 +407,8 @@ pub struct DoorRow {
     /// Where the row was laid out, in window-space logical points — where a
     /// test aims the click.
     pub rect: egui::Rect,
+    /// Whether the row is in the tree of the Protocols folder rather than in Recents.
+    pub in_tree: bool,
 }
 
 /// A remote start whose sources are being moved to local files while the
@@ -2272,6 +2274,12 @@ pub const MOVE_PROTOCOL_BANNER: &str = "move-protocol";
 pub const DOOR_RENAME_UNDER_A_RUN: &str =
     "A run is writing into a Protocol's folder. Try again once it finishes.";
 
+/// The banner a window raises when the folder of the Protocol it holds is no longer there.
+pub const FOLDER_GONE_BANNER: &str = "protocol-folder-gone";
+
+/// The title of that banner.
+pub const FOLDER_GONE_TITLE: &str = "This Protocol's folder is no longer there";
+
 /// The banner that names what is left of a Protocol's old folder after a move to another volume
 /// could not remove all of it.
 const LEFT_BEHIND_BANNER: &str = "move-protocol-left-behind";
@@ -3026,13 +3034,26 @@ pub struct MeridianApp {
     /// the `Ui` borrow the door drew through is still live at the click, and
     /// reopening replaces both documents.
     door_open_protocol: Option<String>,
-    /// The front-door row the pointer was over on the last frame, by its id: what F2 renames
-    /// while the door shows.
-    door_hovered: Option<String>,
+    /// The front-door row the pointer was over on the last frame, by its id and whether it is a
+    /// row of the tree: what F2 renames while the door shows.
+    door_hovered: Option<(String, bool)>,
+    /// The tree of the Protocols folder the door draws, read on the first door frame after the
+    /// door was hidden and kept while it stays shown. `None` until then.
+    door_tree: Option<Vec<crate::door_tree::Node>>,
+    /// The run state of each Protocol folder the door has drawn a row for, read from its newest
+    /// run record the first time the row is drawn after the door is shown or after a run of this
+    /// window's lands, so a frame reads no database or record it read on the frame before.
+    door_runs: std::collections::HashMap<PathBuf, RunState>,
+    /// Whether the last frame drew the door, so the first frame that draws it again rereads what
+    /// it lists.
+    door_was_live: bool,
     /// A front-door row whose name is open for typing, by its id, with what the field holds.
     door_rename: Option<PlaceEdit>,
     /// The id of the front-door row whose rename field was opened for, kept beside it.
     door_rename_id: Option<String>,
+    /// Whether that row is the tree's rather than Recents', since one Protocol can have a row in
+    /// each and only the one renamed draws the field.
+    door_rename_in_tree: bool,
     /// A front-door row's new name, typed and entered, latched for after the frame with the row's
     /// id, for the reason `door_open_protocol` is.
     door_renamed: Option<(String, String)>,
@@ -3519,8 +3540,12 @@ impl MeridianApp {
             own_protocol: None,
             door_open_protocol: None,
             door_hovered: None,
+            door_tree: None,
+            door_runs: std::collections::HashMap::new(),
+            door_was_live: false,
             door_rename: None,
             door_rename_id: None,
+            door_rename_in_tree: false,
             door_renamed: None,
             place_edit: None,
             place_rects: None,
@@ -5501,6 +5526,16 @@ impl MeridianApp {
         // so the door is a state of the window's content plane rather than a
         // mode of the window.
         let door = self.front_door_is_live();
+        // Shown again after being hidden: the tree and the rows' run states are read afresh, so
+        // what was arranged in the Finder and what ran meanwhile is what the door draws.
+        if door && !self.door_was_live {
+            self.forget_door_listing();
+        }
+        self.door_was_live = door;
+        // A Protocol open while its folder is deleted or moved in the Finder says so.
+        if !door {
+            self.say_if_the_folder_is_gone(&ctx);
+        }
         // A door row's name field belongs to the door: once the door is gone, so is the field, so
         // a row drawn again later is not drawn mid-rename.
         if !door {
@@ -10437,6 +10472,7 @@ impl MeridianApp {
         match Boot::with_saved_chart(opened) {
             Ok(boot) => {
                 self.adopt_opened_boot(ctx, boot);
+                self.remember_own_protocol(&protocol.dir);
                 self.own_protocol = Some(protocol);
             }
             Err(e) => self.say_open_failed(ctx, &dir, e),
@@ -10824,8 +10860,8 @@ impl MeridianApp {
             return;
         }
         if self.front_door_is_live() {
-            if let Some(id) = self.door_hovered.clone() {
-                self.open_door_rename(&id);
+            if let Some((id, in_tree)) = self.door_hovered.clone() {
+                self.open_door_rename(&id, in_tree);
             }
         } else {
             self.open_place_field(PlaceField::Name);
@@ -10833,8 +10869,9 @@ impl MeridianApp {
         ctx.request_repaint();
     }
 
-    /// Open the name field on the front-door row `id`, when it names a Protocol on disk.
-    fn open_door_rename(&mut self, id: &str) {
+    /// Open the name field on the front-door row `id`, of the tree or of Recents, when it names a
+    /// Protocol on disk.
+    fn open_door_rename(&mut self, id: &str, in_tree: bool) {
         let Some(dir) = door_row_dir(id) else {
             return;
         };
@@ -10844,6 +10881,7 @@ impl MeridianApp {
             focus: true,
         });
         self.door_rename_id = Some(id.to_string());
+        self.door_rename_in_tree = in_tree;
     }
 
     /// Rename the Protocol the front-door row `id` names to `name`, and point its row at the new
@@ -10872,6 +10910,8 @@ impl MeridianApp {
         match crate::rename::rename_with(&dir, name, &crate::rename::FolderOps::system()) {
             Ok(moved) => {
                 self.layout.live_mut().repoint(&dir, &moved.to);
+                // The tree names the folder by its old name until it is read again.
+                self.forget_door_listing();
                 self.notifications
                     .dismiss(NotificationId::new(MOVE_PROTOCOL_BANNER));
                 self.say_not_followed(&to, &moved.warnings);
@@ -10879,6 +10919,83 @@ impl MeridianApp {
             Err(why) => self.say_not_moved(&Move::Rename(name.to_string()), why),
         }
         ctx.request_repaint();
+    }
+
+    /// Forget the door's tree and the run states its rows read, so the next door frame reads
+    /// them from disk again.
+    fn forget_door_listing(&mut self) {
+        self.door_tree = None;
+        self.door_runs.clear();
+    }
+
+    /// The run state the door draws for the Protocol in `dir`: its newest run record's, read the
+    /// first time a row asks after the door was shown, and kept while it stays shown.
+    fn door_run_state(&mut self, dir: &std::path::Path) -> RunState {
+        *self
+            .door_runs
+            .entry(dir.to_path_buf())
+            .or_insert_with(|| crate::door_tree::run_state(dir))
+    }
+
+    /// The folder of the Protocol this window holds, when it holds one and the folder is no
+    /// longer where it was opened from: deleted, or moved or renamed in the Finder.
+    fn gone_protocol_dir(&self) -> Option<PathBuf> {
+        self.open_protocol_dir().filter(|dir| !dir.is_dir())
+    }
+
+    /// Say, while the Protocol this window holds has no folder, that it is gone and that nothing
+    /// can be written for it; and stop saying it once the folder is back.
+    ///
+    /// Nothing makes the folder again. Every write into a Protocol's folder makes the folders it
+    /// writes beneath, so a Save, a run or a model edit landing on a missing folder would make an
+    /// empty Protocol where the analyst removed one; [`Self::refuse_if_the_folder_is_gone`]
+    /// refuses them first.
+    fn say_if_the_folder_is_gone(&mut self, ctx: &egui::Context) {
+        let banner = NotificationId::new(FOLDER_GONE_BANNER);
+        match self.gone_protocol_dir() {
+            Some(dir) => {
+                if self.notifications.iter().any(|n| n.id == banner) {
+                    return;
+                }
+                self.notifications.raise(
+                    Notification::new(banner, Severity::Error, FOLDER_GONE_TITLE).body(format!(
+                        "{} was deleted, or moved or renamed in the Finder, while it was open. \
+                         Save cannot write it, and nothing here makes it again. Open the \
+                         Protocol from where it is now to keep working on it.",
+                        dir.display()
+                    )),
+                );
+                ctx.request_repaint();
+            }
+            None => {
+                self.notifications.dismiss(banner);
+            }
+        }
+    }
+
+    /// Whether the Protocol this window holds has lost its folder, saying so when it has: the
+    /// guard ahead of each write into that folder.
+    fn refuse_if_the_folder_is_gone(&mut self, ctx: &egui::Context) -> bool {
+        if self.gone_protocol_dir().is_none() {
+            return false;
+        }
+        self.say_if_the_folder_is_gone(ctx);
+        true
+    }
+
+    /// Put the own-files Protocol in `dir` at the head of Recents, from the moment it is made or
+    /// opened, saved or not, so the door lists it the next time it is shown.
+    fn remember_own_protocol(&mut self, dir: &std::path::Path) {
+        let id = remembered_id(&dir.join(arc::spec::MANIFEST_FILENAME).to_string_lossy());
+        let run = crate::door_tree::run_state(dir);
+        self.layout.live_mut().remember(
+            &id,
+            &display_name(dir),
+            run,
+            self.grid_layout,
+            self.grid_spot,
+            now_secs(),
+        );
     }
 
     /// Raise the banner that names what did not follow `to`, done, when anything did not: the
@@ -11047,6 +11164,7 @@ impl MeridianApp {
             items: crate::model_pane::model_registry().instantiate(),
             in_grid: None,
         });
+        self.remember_own_protocol(&dir);
         self.toasts.push(Toast::new(
             Severity::Success,
             format!(
@@ -11071,6 +11189,9 @@ impl MeridianApp {
         ctx: &egui::Context,
         action: crate::model_inspector::ModelAction,
     ) {
+        if self.refuse_if_the_folder_is_gone(ctx) {
+            return;
+        }
         let Some(model) = self.model.as_mut() else {
             return;
         };
@@ -11349,6 +11470,10 @@ impl MeridianApp {
     }
 
     pub fn save_protocol(&mut self, ctx: &egui::Context) -> Option<Result<PathBuf, String>> {
+        // A folder deleted or moved in the Finder is not made again by a Save.
+        if self.refuse_if_the_folder_is_gone(ctx) {
+            return Some(Err(FOLDER_GONE_TITLE.to_string()));
+        }
         // A Protocol's panel open from its tile is saved to its own file: the
         // Protocol around it is the agent's, and this window writes nothing
         // else of it.
@@ -12149,6 +12274,9 @@ impl MeridianApp {
     /// started one, and when one was already running for this document — a
     /// second press while it runs is the same press.
     pub fn run_protocol(&mut self, ctx: &egui::Context) -> bool {
+        if self.refuse_if_the_folder_is_gone(ctx) {
+            return false;
+        }
         let Some(source) = self.protocol.doc.model.source().cloned() else {
             return self.run_panel_protocol(ctx);
         };
@@ -12278,6 +12406,8 @@ impl MeridianApp {
         pending: PendingRun,
         finished: crate::run::Finished,
     ) {
+        // A run wrote a record, so the door reads its rows' run states again.
+        self.door_runs.clear();
         let dir = pending.run.dir().to_path_buf();
         let protocol = pending.protocol;
         let shipped = pending.shipped;
@@ -12586,6 +12716,34 @@ impl MeridianApp {
             }
             recents.push(own_protocol_recent(&dir, id));
         }
+        // A row naming a Protocol on disk says what its newest run record says now, rather than
+        // what was remembered when it was last opened or saved: a run that landed since, with no
+        // save after it, is what the row is for.
+        for recent in &mut recents {
+            if let Some(dir) = protocol_dir_of(&recent.id) {
+                recent.run = self.door_run_state(&dir);
+            }
+        }
+        // The tree of the Protocols folder, read on the first door frame after the door was
+        // hidden. A Protocol whose folder has gone since, deleted or moved in the Finder, loses
+        // its row on this frame without the whole tree being read again.
+        let root = crate::protocols_dir::root();
+        let tree = self
+            .door_tree
+            .get_or_insert_with(|| crate::door_tree::read(&root))
+            .clone();
+        let mut lines = Vec::new();
+        tree_lines(&tree, &root, 0, &mut lines);
+        let tree: Vec<TreeLine> = lines
+            .into_iter()
+            .map(|line| match line {
+                TreeLine::Protocol { depth, dir, .. } => {
+                    let run = self.door_run_state(&dir);
+                    TreeLine::Protocol { depth, dir, run }
+                }
+                group => group,
+            })
+            .collect();
         let now = now_secs();
         let mut open_help = false;
         let mut open_file = false;
@@ -12687,11 +12845,11 @@ impl MeridianApp {
                         // flip to "Welcome back", which is a deliberate
                         // departure from the Zed precedent the rest of this
                         // door follows.
-                        if recents.is_empty() {
+                        if recents.is_empty() && tree.is_empty() {
                             self.datasets_section(ui, width, sem, requests);
-                            self.protocols_section(ui, width, sem, &recents, now, requests);
+                            self.protocols_section(ui, width, sem, &recents, &tree, now, requests);
                         } else {
-                            self.protocols_section(ui, width, sem, &recents, now, requests);
+                            self.protocols_section(ui, width, sem, &recents, &tree, now, requests);
                             self.datasets_section(ui, width, sem, requests);
                         }
                         ui.add_space(spacing::SECTION_GAP);
@@ -12739,27 +12897,59 @@ impl MeridianApp {
     /// the populated one, and the section's heading is present in both — a
     /// Protocols heading that is absent until there is something under it is
     /// the failure this arm exists to make impossible.
+    ///
+    /// Recents first, and then the tree of the Protocols folder, its groups nested and its
+    /// Protocols as leaves. Each half is headed only when both are drawn, so a door with only
+    /// recents reads as it did before the tree was there.
+    #[allow(clippy::too_many_arguments)]
     fn protocols_section(
         &mut self,
         ui: &mut egui::Ui,
         width: f32,
         sem: &semantic::Semantic,
         recents: &[Recent],
+        tree: &[TreeLine],
         now: u64,
         requests: &mut Vec<Request>,
     ) {
-        let note = if recents.is_empty() {
+        let note = if recents.is_empty() && tree.is_empty() {
             PROTOCOLS_NOTE_EMPTY
         } else {
             PROTOCOLS_NOTE
         };
         self.door_section_heading(ui, PROTOCOLS_SECTION, note, width, sem);
-        if recents.is_empty() {
+        if recents.is_empty() && tree.is_empty() {
             door_empty_protocols(ui, width, sem);
             return;
         }
+        let headed = !recents.is_empty() && !tree.is_empty();
+        if headed {
+            door_part_heading(ui, RECENTS_HEADING, sem);
+        }
         for recent in recents {
-            self.door_row(ui, width, recent, now, sem, requests);
+            self.door_row(ui, width, recent, now, None, sem, requests);
+        }
+        if headed {
+            ui.add_space(spacing::SPACE_4);
+            door_part_heading(ui, TREE_HEADING, sem);
+        }
+        for line in tree {
+            match line {
+                TreeLine::Group { depth, name } => door_group_row(ui, width, *depth, name, sem),
+                TreeLine::Protocol { depth, dir, run } => {
+                    let recent = Recent {
+                        id: remembered_id(
+                            &dir.join(arc::spec::MANIFEST_FILENAME).to_string_lossy(),
+                        ),
+                        name: display_name(dir),
+                        run: *run,
+                        grid_layout: Default::default(),
+                        grid_spot: Default::default(),
+                        opened_at: 0,
+                    };
+                    self.door_row(ui, width, &recent, now, Some(*depth), sem, requests);
+                }
+            }
         }
     }
 
@@ -12809,15 +12999,23 @@ impl MeridianApp {
     /// One Protocols row: the Protocol's name, the run state it was last seen
     /// in, and when that was — the whole row clickable, raising the same
     /// [`Request::Open`] its Datasets card raises.
+    ///
+    /// `depth` is `None` for a row of Recents, and for a row of the tree how many groups deep its
+    /// Protocol is: the row is indented that far, and draws no time, since the tree says where a
+    /// Protocol is rather than when it was opened.
+    #[allow(clippy::too_many_arguments)]
     fn door_row(
         &mut self,
         ui: &mut egui::Ui,
         width: f32,
         recent: &Recent,
         now: u64,
+        depth: Option<usize>,
         sem: &semantic::Semantic,
         requests: &mut Vec<Request>,
     ) {
+        let in_tree = depth.is_some();
+        let indent = depth.map_or(0.0, tree_indent);
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(width, PROTOCOL_ROW_HEIGHT), egui::Sense::click());
         // Laid out ahead of the visibility test rather than inside it, because
@@ -12833,12 +13031,16 @@ impl MeridianApp {
             recent.name.clone(),
             ui_font(),
             chrome::colour(sem.text.primary),
-            PROTOCOL_ROW_NAME_WIDTH - spacing::SPACE_4,
+            (PROTOCOL_ROW_NAME_WIDTH - spacing::SPACE_4 - indent).max(spacing::SPACE_9),
         );
         // The time is laid out first because it is the field set against the
         // right edge, and the run state between the two gets what is left.
         let when = ui.painter().layout_no_wrap(
-            relative_time(now, recent.opened_at),
+            if in_tree {
+                String::new()
+            } else {
+                relative_time(now, recent.opened_at)
+            },
             mono_font(),
             chrome::colour(sem.text.muted),
         );
@@ -12885,13 +13087,15 @@ impl MeridianApp {
             state: drawn_glyphs(&state),
             when: drawn_glyphs(&when),
             rect,
+            in_tree,
         });
         if response.hovered() {
-            self.door_hovered = Some(recent.id.clone());
+            self.door_hovered = Some((recent.id.clone(), in_tree));
         }
         // A row naming a Protocol on disk is renamed from its context menu, or by F2 while the
         // pointer is over it; its name is then a field until Enter or Esc.
-        let renaming = self.door_rename_id.as_deref() == Some(recent.id.as_str());
+        let renaming = self.door_rename_id.as_deref() == Some(recent.id.as_str())
+            && self.door_rename_in_tree == in_tree;
         if door_row_dir(&recent.id).is_some() {
             let mut rename = false;
             response.context_menu(|ui| {
@@ -12901,11 +13105,11 @@ impl MeridianApp {
                 }
             });
             if rename {
-                self.open_door_rename(&recent.id);
+                self.open_door_rename(&recent.id, in_tree);
             }
         }
         if renaming {
-            self.door_rename_field(ui, rect, &recent.id);
+            self.door_rename_field(ui, rect.with_min_x(rect.min.x + indent), &recent.id);
         }
         if ui.is_rect_visible(rect) {
             let painter = ui.painter().with_clip_rect(rect);
@@ -12915,7 +13119,10 @@ impl MeridianApp {
             let mid = rect.center().y;
             if !renaming {
                 painter.galley(
-                    egui::pos2(rect.min.x + spacing::SPACE_4, mid - name.size().y / 2.0),
+                    egui::pos2(
+                        rect.min.x + spacing::SPACE_4 + indent,
+                        mid - name.size().y / 2.0,
+                    ),
                     name,
                     chrome::colour(sem.text.primary),
                 );
@@ -13871,9 +14078,9 @@ fn canvas_occupants(region: &Region) -> (&'static [Projection], ItemId) {
 }
 
 /// The front door's row for the own-files Protocol in `dir`, under `id`: named for its folder,
-/// fresh once it has a database, and opened when its model file last changed.
+/// and opened when its model file last changed. Its run state is read from its run records when
+/// the door draws it.
 fn own_protocol_recent(dir: &std::path::Path, id: String) -> Recent {
-    let ran = arc::spec::protocol_db_path(dir).is_ok_and(|db| db.is_file());
     let opened_at = std::fs::metadata(dir.join(crate::discovery::MODEL_FILE))
         .and_then(|m| m.modified())
         .ok()
@@ -13884,15 +14091,144 @@ fn own_protocol_recent(dir: &std::path::Path, id: String) -> Recent {
         name: dir
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
-        run: if ran {
-            RunState::Fresh
-        } else {
-            RunState::NeverRun
-        },
+        run: RunState::NeverRun,
         grid_layout: Default::default(),
         grid_spot: Default::default(),
         opened_at,
     }
+}
+
+/// The words over the door's Recents, drawn when the tree is drawn beneath them.
+pub const RECENTS_HEADING: &str = "Recent";
+
+/// The words over the door's tree of the Protocols folder, drawn when Recents are drawn above it.
+pub const TREE_HEADING: &str = "In the Protocols folder";
+
+/// One line of the door's tree, flattened for drawing: a group's name, or a Protocol, each with
+/// how many groups deep it is.
+#[derive(Clone, Debug)]
+enum TreeLine {
+    Group {
+        depth: usize,
+        name: String,
+    },
+    Protocol {
+        depth: usize,
+        dir: PathBuf,
+        run: RunState,
+    },
+}
+
+/// Flatten `nodes`, the tree under `parent`, into `out` depth first, leaving out what is no
+/// longer on disk: a group whose folder has gone, with all it held, and a Protocol whose folder or
+/// manifest has gone. A stat per line, so a folder deleted or moved in the Finder loses its row on
+/// the next frame without the tree being read again.
+fn tree_lines(
+    nodes: &[crate::door_tree::Node],
+    parent: &std::path::Path,
+    depth: usize,
+    out: &mut Vec<TreeLine>,
+) {
+    for node in nodes {
+        match node {
+            crate::door_tree::Node::Group { name, children } => {
+                let path = parent.join(name);
+                if !path.is_dir() {
+                    continue;
+                }
+                out.push(TreeLine::Group {
+                    depth,
+                    name: name.clone(),
+                });
+                tree_lines(children, &path, depth + 1, out);
+            }
+            crate::door_tree::Node::Protocol { dir, .. } => {
+                if dir.join(arc::spec::MANIFEST_FILENAME).is_file() {
+                    out.push(TreeLine::Protocol {
+                        depth,
+                        dir: dir.clone(),
+                        run: RunState::NeverRun,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// How far a line of the tree `depth` groups deep is set in from the column's edge.
+fn tree_indent(depth: usize) -> f32 {
+    depth as f32 * spacing::SPACE_6
+}
+
+/// The Protocol folder a door row's id names, when it names a Protocol's `arcform.yaml` on disk:
+/// the folder whose run records the row's run state is read from. A shipped start's id names none.
+fn protocol_dir_of(id: &str) -> Option<PathBuf> {
+    if crate::starts::find(id).is_some() {
+        return None;
+    }
+    let path = std::path::Path::new(id);
+    (path
+        .file_name()
+        .is_some_and(|n| n == arc::spec::MANIFEST_FILENAME)
+        && path.is_file())
+    .then(|| path.parent().map(std::path::Path::to_path_buf))
+    .flatten()
+}
+
+/// The words over one half of the door's Protocols section, Recents or the tree: quieter than the
+/// section's own heading, which they sit under.
+fn door_part_heading(ui: &mut egui::Ui, name: &str, sem: &semantic::Semantic) {
+    ui.label(
+        egui::RichText::new(name)
+            .text_style(egui::TextStyle::Small)
+            .color(chrome::colour(sem.text.muted)),
+    );
+    ui.add_space(spacing::SPACE_2);
+}
+
+/// One group of the door's tree: a folder's glyph and its name, set in by its depth. Not
+/// clickable: organising Protocols is the Finder's, and the door shows what it holds.
+fn door_group_row(
+    ui: &mut egui::Ui,
+    width: f32,
+    depth: usize,
+    name: &str,
+    sem: &semantic::Semantic,
+) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(width, PROTOCOL_ROW_HEIGHT), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter().with_clip_rect(rect);
+    let ink = chrome::colour(sem.text.secondary);
+    let left = rect.min.x + spacing::SPACE_4 + tree_indent(depth);
+    let glyph = spacing::SPACE_6;
+    let mid = rect.center().y;
+    if let Some(folder) = meridian_egui::Icon::by_name("folder") {
+        folder.paint(
+            &painter,
+            egui::Rect::from_min_size(
+                egui::pos2(left, mid - glyph / 2.0),
+                egui::vec2(glyph, glyph),
+            ),
+            ink,
+        );
+    }
+    let text = painter.layout(
+        name.to_string(),
+        ui_font(),
+        ink,
+        (width - (left - rect.min.x) - glyph - spacing::ICON_LABEL_GAP).max(spacing::SPACE_9),
+    );
+    painter.galley(
+        egui::pos2(
+            left + glyph + spacing::ICON_LABEL_GAP,
+            mid - text.size().y / 2.0,
+        ),
+        text,
+        ink,
+    );
 }
 
 /// Whether `a` and `b` name one folder, reached by two spellings or one.

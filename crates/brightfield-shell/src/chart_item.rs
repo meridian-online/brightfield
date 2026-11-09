@@ -224,6 +224,7 @@ pub fn run_state_icon(state: RunState) -> meridian_egui::Icon {
         RunState::StaleOwnEdit => "refresh",
         RunState::StaleUpstream => "alert-triangle",
         RunState::Failed => "circle-x",
+        RunState::Previewed => "eye",
     };
     meridian_egui::Icon::by_name(name).unwrap_or_else(|| {
         unreachable!("run-state icon {name:?} is in the Meridian icon set — pinned by test")
