@@ -39,6 +39,46 @@ pub enum PreferencesAction {
     Leave,
 }
 
+/// Width kept beside the path for the Choose… button and the gap before it.
+const CHOOSE_ROOM: f32 = 110.0;
+
+/// `path` shortened in the middle to fit `room` points in `font`: the start and as many of the
+/// last folders as fit, joined by an ellipsis, such as `/Users/…/Documents/Protocols`. The final
+/// folder is always kept, even where it alone is wider than `room`.
+fn elide_path(ui: &egui::Ui, path: &Path, font: &egui::FontId, room: f32) -> String {
+    let full = path.display().to_string();
+    let width = |text: &str| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::WHITE)
+            .size()
+            .x
+    };
+    if width(&full) <= room {
+        return full;
+    }
+    let parts: Vec<String> = path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    // The root and the first folder lead; the root's own text is the separator.
+    let head = parts.len().min(2);
+    let join = |part: &[String]| part.join("/").replacen("//", "/", 1);
+    let mut best = String::new();
+    for keep in (1..=parts.len().saturating_sub(head)).rev() {
+        let tail = &parts[parts.len() - keep..];
+        let candidate = format!("{}/\u{2026}/{}", join(&parts[..head]), tail.join("/"));
+        best = candidate;
+        if width(&best) <= room {
+            break;
+        }
+    }
+    if best.is_empty() {
+        full
+    } else {
+        best
+    }
+}
+
 /// Draw the sheet's body: the Protocols folder `folder`, and the offer while one waits.
 /// `overridden` is the variable that sets the folder for this launch, when it is set.
 pub fn body(
@@ -58,7 +98,16 @@ pub fn body(
     );
     ui.add_space(gap);
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(folder.display().to_string()).monospace());
+        // Room for Choose… beside the path, so a long path gives up its middle rather than
+        // widening the card past its rung.
+        let room = if overridden.is_none() {
+            (ui.available_width() - CHOOSE_ROOM).max(0.0)
+        } else {
+            ui.available_width()
+        };
+        let font = egui::TextStyle::Monospace.resolve(ui.style());
+        ui.label(egui::RichText::new(elide_path(ui, folder, &font, room)).monospace())
+            .on_hover_text(folder.display().to_string());
         // The variable is for tests and portable installs, and wins over the setting, so the
         // sheet does not offer to change a setting that would not be used.
         if overridden.is_none() && ui.button("Choose\u{2026}").clicked() {
@@ -80,9 +129,16 @@ pub fn body(
         } else {
             format!("the {} Protocols", offer.count)
         };
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let room = ui.available_width() * 0.4;
         ui.label(format!(
             "Move {what} in {} to {}? Each moves as Location moves one, and the move stops at the \
              first that cannot.",
+            elide_path(ui, &offer.from, &font, room),
+            elide_path(ui, &offer.to, &font, room)
+        ))
+        .on_hover_text(format!(
+            "{} to {}",
             offer.from.display(),
             offer.to.display()
         ));

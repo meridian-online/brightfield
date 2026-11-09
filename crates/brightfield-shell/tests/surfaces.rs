@@ -1044,10 +1044,11 @@ impl OverlayCase {
 fn hermetic_protocols_folder() {
     static FOLDER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     let folder = FOLDER.get_or_init(|| {
-        // A short path on purpose: Preferences shows the folder on one unwrapped line, so a long
-        // per-user temp path would widen the card past its width rung and make the width
-        // assertion about this machine's temp directory rather than about the sheet.
-        let dir = PathBuf::from("/tmp").join(format!("bf-surf-{}", std::process::id()));
+        // Deep and long on purpose, as a macOS per-user temp path is: the Preferences sheet must
+        // keep its width rung whatever the folder's path, so it elides the path's middle.
+        let dir = std::env::temp_dir()
+            .join("a-long-folder-name-for-the-surfaces-test")
+            .join(format!("bf-surf-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a scratch Protocols folder");
         dir
     });
