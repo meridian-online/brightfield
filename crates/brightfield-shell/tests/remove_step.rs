@@ -679,16 +679,22 @@ fn with_step_before(manifest: &str, before: &str, entry: &[&str]) -> String {
 
 /// A runner that, the first time it is asked to edit the Protocol, puts `inject` in place of
 /// `arcform.yaml` first, as an agent writing between Brightfield's read and arc's would, and hands
-/// everything to the real runner.
+/// everything to the real runner. With `again`, the agent writes once more after arc's edit, adding
+/// a comment line, so the file is no longer what arc wrote.
 #[cfg(unix)]
-fn injecting(dir: &Path, inject: &Path) -> Runner {
+fn injecting(dir: &Path, inject: &Path, again: bool) -> Runner {
     use std::os::unix::fs::PermissionsExt;
     let script = dir.join("injecting.sh");
+    let after = if again {
+        "  echo '# the agent again' >> arcform.yaml\n"
+    } else {
+        ""
+    };
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\ncase \"$*\" in\n  *edit-protocol*) if [ -f '{inject}' ]; then cp '{inject}' arcform.yaml; rm '{inject}'; fi;;\nesac\nexec '{}' \"$@\"\n",
-            env!("CARGO_BIN_EXE_brightfield-shell"),
+            "#!/bin/sh\nedit=\ncase \"$*\" in\n  *edit-protocol*) if [ -f '{inject}' ]; then cp '{inject}' arcform.yaml; rm '{inject}'; edit=1; fi;;\nesac\n'{runner}' \"$@\"\nstatus=$?\nif [ -n \"$edit\" ]; then\n{after}  :\nfi\nexit $status\n",
+            runner = env!("CARGO_BIN_EXE_brightfield-shell"),
             inject = inject.display()
         ),
     )
@@ -704,7 +710,7 @@ fn a_removal_is_not_applied_when_the_manifest_changes_under_it() {
     let shims = scratch().join("shims").join("changed");
     std::fs::create_dir_all(&shims).expect("a shim folder");
     let inject = shims.join("agent.yaml");
-    let mut win = Window::opened_with("remove_changed", injecting(&shims, &inject));
+    let mut win = Window::opened_with("remove_changed", injecting(&shims, &inject, false));
     let step = win.saved_grouping();
     let model = win.model_file(&step);
     // What an agent writes between the read that finds the step and arc's delete: a step of its
@@ -862,4 +868,48 @@ fn d_d_on_the_spine_removes_with_the_dashboard_on_the_canvas() {
             .is_some_and(|w| w.contains(&format!("Removed step \u{b7} {step}"))),
         "{words:?}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_wrong_step_removed_that_cannot_be_put_back_is_named() {
+    let shims = scratch().join("shims").join("again");
+    std::fs::create_dir_all(&shims).expect("a shim folder");
+    let inject = shims.join("agent.yaml");
+    let mut win = Window::opened_with("remove_again", injecting(&shims, &inject, true));
+    let step = win.saved_grouping();
+    let model = win.model_file(&step);
+    let changed = with_step_before(
+        &win.manifest(),
+        &step,
+        &["name: agent_note", "command: echo agent"],
+    );
+    std::fs::write(&inject, &changed).expect("the agent's manifest writes");
+    win.select_made_by(&step);
+    win.d_d();
+
+    win.cmd_s();
+
+    assert!(!inject.exists(), "the agent's write happened");
+    let said = win
+        .banner(brightfield_shell::window::OTHER_STEP_REMOVED)
+        .unwrap_or_else(|| panic!("no banner said another step went: {}", win.said()));
+    assert!(
+        said.contains("agent_note"),
+        "it names the step removed instead: {said}"
+    );
+    assert!(said.contains(&step), "and the step still there: {said}");
+    assert!(
+        win.banner("Could not remove the step").is_none(),
+        "and does not say nothing was removed: {}",
+        win.said()
+    );
+    assert!(
+        win.manifest_steps().contains(&step)
+            && !win.manifest_steps().contains(&"agent_note".to_string()),
+        "arc took out the agent's step and left {step}: {:?}",
+        win.manifest_steps()
+    );
+    assert!(model.is_file(), "the step's SQL file is kept");
+    assert!(win.marked(), "the removal is still a draft");
 }

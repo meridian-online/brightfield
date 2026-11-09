@@ -319,6 +319,14 @@ pub enum StepRemoval {
     /// The step was not in `arcform.yaml`, such as one an agent took out meanwhile, and nothing
     /// was written.
     Gone,
+    /// `arcform.yaml` changed while the step was being removed, so arc's delete took out another
+    /// step, and the manifest could not be put back as arc found it. The step asked for is still
+    /// there, and no file was deleted. `removed` names the step arc took out, when the history of
+    /// its edit, or failing that the manifest read before and after, says which.
+    OtherRemoved {
+        /// The step arc took out instead.
+        removed: Option<String>,
+    },
     /// The step is out of `arcform.yaml`. `left_behind` says why its SQL file could not be
     /// deleted, naming it, when it could not: the removal stands even then
     /// (`a_sql_file_that_cannot_be_deleted_is_left_with_a_notice`).
@@ -380,13 +388,26 @@ pub fn remove_step(runner: &Runner, dir: &Path, name: &str) -> Result<StepRemova
         .as_ref()
         .map(|m| m.steps.iter().map(|s| s.name.as_str()).collect());
     if left.as_deref() != Some(expected.as_slice()) {
-        if !restore_before_delete(runner, dir) {
-            eprintln!(
-                "{}: arc's delete took out another step than {name}, and the manifest could not be put back",
-                manifest_path.display()
-            );
+        if restore_before_delete(runner, dir) {
+            return Err(CHANGED_MEANWHILE.to_string());
         }
-        return Err(CHANGED_MEANWHILE.to_string());
+        // What arc read and wrote, from its edit's history, says which step it took out; the
+        // manifest read before and after says it when the history does not.
+        let removed = removed_by_last_edit(runner, dir).or_else(|| {
+            let left = left.unwrap_or_default();
+            before
+                .steps
+                .iter()
+                .map(|s| s.name.as_str())
+                .find(|n| *n != name && !left.contains(n))
+                .map(str::to_owned)
+        });
+        eprintln!(
+            "{}: arc's delete took out {} rather than {name}, and the manifest could not be put back",
+            manifest_path.display(),
+            removed.as_deref().unwrap_or("another step")
+        );
+        return Ok(StepRemoval::OtherRemoved { removed });
     }
     let Some(after) = after else {
         return Err(CHANGED_MEANWHILE.to_string());
@@ -405,6 +426,46 @@ pub fn remove_step(runner: &Runner, dir: &Path, name: &str) -> Result<StepRemova
     Ok(StepRemoval::Removed { left_behind })
 }
 
+/// The steps of the manifest text `text`, by name, or none when it does not load.
+fn step_names(text: &str) -> Option<Vec<String>> {
+    brightfield_protocol::parse_manifest_str(text)
+        .ok()
+        .map(|m| m.steps.into_iter().map(|s| s.name).collect())
+}
+
+/// **The step arc's last edit of `arcform.yaml` took out**: in the checkpoint of what it read
+/// and not in the save of what it wrote, the two newest entries of the Protocol's history. `None`
+/// when the history cannot be read or names no one step.
+fn removed_by_last_edit(runner: &Runner, dir: &Path) -> Option<String> {
+    let (earlier, newest) = last_two_entries(runner, dir)?;
+    let show = |id: &str| {
+        let out = arc_with_args(runner, dir, &["history", "show", id]);
+        out.succeeded.then_some(out.stdout)
+    };
+    let read = step_names(&show(&earlier)?)?;
+    let wrote = step_names(&show(&newest)?)?;
+    let mut gone = read.into_iter().filter(|n| !wrote.contains(n));
+    let removed = gone.next()?;
+    gone.next().is_none().then_some(removed)
+}
+
+/// The ids of the two newest entries of the Protocol's history, older first.
+fn last_two_entries(runner: &Runner, dir: &Path) -> Option<(String, String)> {
+    let out = arc_with_args(runner, dir, &["history", "list", "--json"]);
+    if !out.succeeded {
+        return None;
+    }
+    let entries = serde_json::from_str::<Vec<serde_json::Value>>(&out.stdout).ok()?;
+    let ids: Vec<&str> = entries
+        .iter()
+        .filter_map(|entry| entry.get("id").and_then(serde_json::Value::as_str))
+        .collect();
+    let [.., earlier, newest] = ids[..] else {
+        return None;
+    };
+    Some((earlier.to_owned(), newest.to_owned()))
+}
+
 /// **Put `arcform.yaml` back as arc found it before its last edit**, from the checkpoint that edit
 /// recorded in the Protocol's history: the entry before the newest, the newest being the save of
 /// what arc wrote. Put back through `arc history restore`, which checkpoints what it replaces.
@@ -412,26 +473,15 @@ pub fn remove_step(runner: &Runner, dir: &Path, name: &str) -> Result<StepRemova
 /// Only while the file is still what arc wrote: a file written again since is someone's newer
 /// work, and is left as it is. Answers whether the manifest was put back.
 fn restore_before_delete(runner: &Runner, dir: &Path) -> bool {
-    let out = arc_with_args(runner, dir, &["history", "list", "--json"]);
-    if !out.succeeded {
-        return false;
-    }
-    let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&out.stdout) else {
+    let Some((earlier, newest)) = last_two_entries(runner, dir) else {
         return false;
     };
-    let ids: Vec<&str> = entries
-        .iter()
-        .filter_map(|entry| entry.get("id").and_then(serde_json::Value::as_str))
-        .collect();
-    let [.., earlier, newest] = ids[..] else {
-        return false;
-    };
-    let shown = arc_with_args(runner, dir, &["history", "show", newest]);
+    let shown = arc_with_args(runner, dir, &["history", "show", &newest]);
     let now = std::fs::read_to_string(dir.join("arcform.yaml")).unwrap_or_default();
     if !shown.succeeded || shown.stdout != now {
         return false;
     }
-    arc_with_args(runner, dir, &["history", "restore", earlier]).succeeded
+    arc_with_args(runner, dir, &["history", "restore", &earlier]).succeeded
 }
 
 /// The file `relative` names inside `dir`, when it is a path inside it written relative to it:

@@ -543,6 +543,19 @@ pub const REMOVE_STEP_REFUSED: &str = "This step cannot be removed";
 /// out of `arcform.yaml`.
 pub const SQL_FILE_LEFT_BEHIND: &str = "The removed step's SQL file was left behind";
 
+/// The banner's title when the Protocol changed while a step was being removed, so another step
+/// was removed, and it could not be put back.
+pub const OTHER_STEP_REMOVED: &str = "Another step was removed";
+
+/// What that banner says: `step` is still there, `removed` (when it is known) went instead, and
+/// where the version before is kept.
+fn other_removed_sentence(step: &str, removed: Option<&str>) -> String {
+    let other = removed.map_or_else(|| "another step".to_string(), |r| format!("the step {r}"));
+    format!(
+        "The Protocol changed while {step} was being removed, and {other} was removed instead. It could not be put back automatically. The version from before is in the Protocol's history, where `arc history list` and `arc history restore` put it back. {step} is still in the Protocol."
+    )
+}
+
 /// The banner's title when a statement that reads a step removed and not yet saved is kept.
 pub const NOT_KEPT_READS_REMOVED: &str = "This statement was not kept";
 
@@ -3260,6 +3273,9 @@ pub struct MeridianApp {
     diagnostic_banners: Vec<NotificationId>,
     /// Transient, self-expiring toasts — confirmations, not conditions.
     toasts: ToastLayer,
+    /// The title the banner of the refusal [`Self::record_pending`] just answered is said under,
+    /// when it is not the one its kind of pending work takes: taken by the Save that says it.
+    refusal_title: Option<&'static str>,
     /// What the status rail drew last frame — the ids in draw order and any
     /// dismissals — recorded for the reason [`Self::regions`] is: a headless
     /// test that asks "did the rail say it?" reads this rather than a second
@@ -3683,6 +3699,7 @@ impl MeridianApp {
             last_chart_fault: None,
             diagnostic_banners: Vec::new(),
             toasts: ToastLayer::new(),
+            refusal_title: None,
             rail: chrome::StatusDrawn::default(),
             // In place before the reconcile and the rail defaults below, so
             // the one pass of each sees them and the grid's spot, put through
@@ -11797,6 +11814,9 @@ impl MeridianApp {
             Err(refused) => {
                 let (title, why) = match refused {
                     Refused::Writing(why) => ("Could not save this Protocol", why),
+                    Refused::Recording(why) if self.refusal_title.is_some() => {
+                        (self.refusal_title.take().unwrap_or_default(), why)
+                    }
                     Refused::Recording(why) => match refused_first {
                         Some(crate::app::PendingWork::View) => {
                             ("Could not record the grid view", why)
@@ -11892,22 +11912,30 @@ impl MeridianApp {
                     if !readers.is_empty() {
                         return Err(readers_sentence(&name, &readers));
                     }
-                    let removal = crate::operation::remove_step(&runner, &source.dir, &name)?;
-                    if let crate::operation::StepRemoval::Removed {
-                        left_behind: Some(why),
-                    } = removal
-                    {
-                        eprintln!("the removed step's SQL file was left behind: {why}");
-                        self.notifications.raise(
-                            Notification::new(
-                                NotificationId::new("remove-step-file"),
-                                Severity::Warning,
-                                SQL_FILE_LEFT_BEHIND,
-                            )
-                            .body(format!(
-                                "{name} is out of the Protocol, but its SQL file could not be deleted. {why}"
-                            )),
-                        );
+                    use crate::operation::StepRemoval;
+                    match crate::operation::remove_step(&runner, &source.dir, &name)? {
+                        // The step asked for is still there, so the draft stays; the banner says
+                        // which step went instead, under a title of its own.
+                        StepRemoval::OtherRemoved { removed } => {
+                            self.refusal_title = Some(OTHER_STEP_REMOVED);
+                            return Err(other_removed_sentence(&name, removed.as_deref()));
+                        }
+                        StepRemoval::Removed {
+                            left_behind: Some(why),
+                        } => {
+                            eprintln!("the removed step's SQL file was left behind: {why}");
+                            self.notifications.raise(
+                                Notification::new(
+                                    NotificationId::new("remove-step-file"),
+                                    Severity::Warning,
+                                    SQL_FILE_LEFT_BEHIND,
+                                )
+                                .body(format!(
+                                    "{name} is out of the Protocol, but its SQL file could not be deleted. {why}"
+                                )),
+                            );
+                        }
+                        StepRemoval::Removed { left_behind: None } | StepRemoval::Gone => {}
                     }
                     self.charts.doc.mark_removal_recorded(&name);
                 }
@@ -12626,6 +12654,8 @@ impl MeridianApp {
             return refused(self, e);
         }
         let recorded = self.record_pending();
+        // A Run says a refusal under its own title.
+        self.refusal_title = None;
         // A part recorded before a refusal is in the folder all the same.
         if self.charts.doc.take_pending_settled() {
             self.adopt_saved_protocol();
