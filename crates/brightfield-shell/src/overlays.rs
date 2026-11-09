@@ -790,6 +790,11 @@ pub const ADD_SOURCE_QUESTION_TITLE: &str = "Save before adding a source?";
 /// The headline of the question asked before New Protocol makes a Protocol in the window's place.
 pub const MAKE_QUESTION_TITLE: &str = "Save before making a new Protocol?";
 
+/// The headline of the question asked before the open Protocol is moved into a new Protocols
+/// folder chosen in Preferences, with the others in the old one.
+pub const MOVE_TO_FOLDER_QUESTION_TITLE: &str =
+    "Save before moving it to the new Protocols folder?";
+
 /// What the close question is asked before: the window closing or the Protocol left, or its
 /// folder renamed or moved, after which the window opens it again where it now is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -805,6 +810,9 @@ pub enum AskedBefore {
     AddingSource,
     /// Making a new Protocol, which takes the window's place.
     Making,
+    /// Moving the open Protocol into the new Protocols folder with the others. Keeping editing
+    /// leaves it where it is, and the others still move.
+    MovingToNewFolder,
 }
 
 /// How many rows the list of unsaved edits takes at most: the two the accepted
@@ -848,6 +856,7 @@ impl CloseQuestion {
             AskedBefore::Moving => MOVE_QUESTION_TITLE,
             AskedBefore::AddingSource => ADD_SOURCE_QUESTION_TITLE,
             AskedBefore::Making => MAKE_QUESTION_TITLE,
+            AskedBefore::MovingToNewFolder => MOVE_TO_FOLDER_QUESTION_TITLE,
         }
     }
 
@@ -869,6 +878,13 @@ impl CloseQuestion {
             }
             (AskedBefore::Making, CloseAnswer::SaveAndClose) => "Save and make",
             (AskedBefore::Making, CloseAnswer::CloseWithoutSaving) => "Keep as a version and make",
+            (AskedBefore::MovingToNewFolder, CloseAnswer::SaveAndClose) => "Save and move",
+            (AskedBefore::MovingToNewFolder, CloseAnswer::CloseWithoutSaving) => {
+                "Keep as a version and move"
+            }
+            (AskedBefore::MovingToNewFolder, CloseAnswer::KeepEditing) => {
+                "Keep editing, and leave it"
+            }
             _ => CLOSE_ANSWERS
                 .iter()
                 .find(|(answer, _, _)| *answer == which)

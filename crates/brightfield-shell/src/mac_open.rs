@@ -19,7 +19,9 @@
 //! draft. The quit event's handler is replaced with one that asks the window to quit on its queue
 //! ([`OpenQueue::ask_quit`]), and so is the menu item's action once the menu exists
 //! ([`route_menu_quit`]). The window then asks, and closes itself once answered, which ends the
-//! app as closing its one window always has.
+//! app as closing its one window always has. The same call adds Preferences… on Cmd+, to the app
+//! menu, which asks the window to open Preferences on its queue
+//! ([`OpenQueue::ask_preferences`]).
 //!
 //! The Apple Event methods that take a four-character code are sent by selector rather than
 //! through the `objc2-foundation` methods that declare them, which need a feature whose crate the
@@ -113,6 +115,12 @@ define_class!(
         #[unsafe(method(quitFromMenu:))]
         fn quit_from_menu(&self, _sender: Option<&AnyObject>) {
             self.ivars().queue.ask_quit();
+            (self.ivars().wake)();
+        }
+
+        #[unsafe(method(preferencesFromMenu:))]
+        fn preferences_from_menu(&self, _sender: Option<&AnyObject>) {
+            self.ivars().queue.ask_preferences();
             (self.ivars().wake)();
         }
 
@@ -242,7 +250,9 @@ fn register_for_life(queue: OpenQueue, wake: impl Fn() + Send + Sync + 'static) 
 /// item was found and routed; a menu without one is left as it is.
 ///
 /// The item is the one whose action is `terminate:`, in any of the main menu's submenus, which is
-/// where winit's default menu puts it.
+/// where winit's default menu puts it. That submenu is the app menu, and Preferences… on Cmd+, is
+/// added to it after its first item, About, between separators as the Mac lays it out, unless an
+/// item already has that action.
 pub fn route_menu_quit(
     _main: MainThreadMarker,
     queue: OpenQueue,
@@ -257,7 +267,7 @@ pub fn route_menu_quit(
             Some(app) => msg_send![&**app, mainMenu],
             None => None,
         };
-        let mut found = None;
+        let mut found: Option<(Retained<AnyObject>, Retained<AnyObject>)> = None;
         if let Some(menu) = menu {
             let items: isize = msg_send![&*menu, numberOfItems];
             'menus: for i in 0..items {
@@ -277,7 +287,7 @@ pub fn route_menu_quit(
                     };
                     let action: Option<Sel> = msg_send![&*entry, action];
                     if action == Some(sel!(terminate:)) {
-                        found = Some(entry);
+                        found = Some((entry, sub.clone()));
                         break 'menus;
                     }
                 }
@@ -285,10 +295,43 @@ pub fn route_menu_quit(
         }
         found
     };
-    let Some(item) = quit_item else {
+    let Some((item, app_menu)) = quit_item else {
         return false;
     };
     let handler = OpenHandler::new(queue, Box::new(wake));
+    // SAFETY: `numberOfItems`, `itemAtIndex:`, `action`, `separatorItem`, `insertItem:atIndex:`,
+    // and NSMenuItem's `new`, `setTitle:`, `setAction:`, `setKeyEquivalent:` and `setTarget:` are
+    // AppKit's, called with the types they declare on the main thread; the menu retains what is
+    // inserted, and the handler is kept for the life of the process below.
+    unsafe {
+        let entries: isize = msg_send![&*app_menu, numberOfItems];
+        let mut present = false;
+        for j in 0..entries {
+            let entry: Option<Retained<AnyObject>> = msg_send![&*app_menu, itemAtIndex: j];
+            if let Some(entry) = entry {
+                let action: Option<Sel> = msg_send![&*entry, action];
+                present |= action == Some(sel!(preferencesFromMenu:));
+            }
+        }
+        if !present {
+            let title = NSString::from_str("Preferences\u{2026}");
+            let key = NSString::from_str(",");
+            let preferences: Option<Retained<AnyObject>> = msg_send![class!(NSMenuItem), new];
+            if let Some(preferences) = preferences {
+                let () = msg_send![&*preferences, setTitle: &*title];
+                let () = msg_send![&*preferences, setAction: sel!(preferencesFromMenu:)];
+                let () = msg_send![&*preferences, setKeyEquivalent: &*key];
+                let () = msg_send![&*preferences, setTarget: &*handler];
+                let at = entries.min(1);
+                let () = msg_send![&*app_menu, insertItem: &*preferences, atIndex: at];
+                let separator: Option<Retained<AnyObject>> =
+                    msg_send![class!(NSMenuItem), separatorItem];
+                if let Some(separator) = separator {
+                    let () = msg_send![&*app_menu, insertItem: &*separator, atIndex: at];
+                }
+            }
+        }
+    }
     // SAFETY: `setTarget:` and `setAction:` are NSMenuItem's; the handler responds to
     // `quitFromMenu:`, which takes the sender, and the menu item does not retain its target, so
     // the handler is kept for the life of the process below.

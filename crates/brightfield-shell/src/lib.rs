@@ -134,6 +134,7 @@ pub mod overlays;
 pub mod own_files;
 pub mod panel_tiles;
 pub mod pipeline;
+pub mod preferences;
 pub mod protocol;
 pub mod protocol_panels;
 pub mod protocols_dir;

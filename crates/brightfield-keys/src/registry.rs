@@ -518,6 +518,19 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Make a new, empty Protocol, choosing where it goes",
             scores: Some(Scores { frequency: 2, mnemonic: 5, convention: 5, motor_note: "cmd-n = new (universal Mac convention); global, asks where first" }),
         },
+        // Preferences, where the Protocols folder is chosen. Global, as Cmd+, is in every Mac app;
+        // no text field reads it. It writes no step, so View, as open is.
+        VerbEntry {
+            longname: "open-preferences",
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-,")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Open Preferences, where the Protocols folder is chosen",
+            scores: Some(Scores { frequency: 1, mnemonic: 3, convention: 5, motor_note: "cmd-, = preferences (universal Mac convention); global" }),
+        },
         // Quit, asking the close question first over a draft. Global, as Cmd+Q is in every Mac
         // app. On the Mac the app menu's Quit item takes the chord before the window does and
         // reaches the window's same handler; the binding is the route where no menu takes it.
@@ -1759,6 +1772,7 @@ mod tests {
             "open-home",
             "open",
             "new-protocol",
+            "open-preferences",
             "quit",
             "toggle-presentation",
             "save-spec",

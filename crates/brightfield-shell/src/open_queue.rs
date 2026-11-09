@@ -126,6 +126,8 @@ pub struct OpenQueue {
     requests: Arc<Mutex<VecDeque<OpenRequest>>>,
     /// Whether quitting was asked for since the window last looked.
     quit: Arc<AtomicBool>,
+    /// Whether Preferences was asked for from the app menu since the window last looked.
+    preferences: Arc<AtomicBool>,
     /// Whether the app has finished launching, by which the files the launch was asked to open
     /// are on the queue: see [`Self::awaiting_launch`].
     launched: Arc<AtomicBool>,
@@ -140,6 +142,7 @@ impl Default for OpenQueue {
         Self {
             requests: Arc::default(),
             quit: Arc::default(),
+            preferences: Arc::default(),
             launched: Arc::new(AtomicBool::new(true)),
             wake: Arc::default(),
         }
@@ -223,6 +226,20 @@ impl OpenQueue {
     #[must_use]
     pub fn take_quit(&self) -> bool {
         self.quit.swap(false, Ordering::SeqCst)
+    }
+
+    /// Ask the window to open Preferences on its next frame, as the app menu's Preferences… does.
+    pub fn ask_preferences(&self) {
+        self.preferences.store(true, Ordering::SeqCst);
+        if let Some(ctx) = self.wake.get() {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Whether Preferences was asked for since the last take, clearing the ask.
+    #[must_use]
+    pub fn take_preferences(&self) -> bool {
+        self.preferences.swap(false, Ordering::SeqCst)
     }
 
     /// Wake `ctx` on each later push. The first context given is kept.

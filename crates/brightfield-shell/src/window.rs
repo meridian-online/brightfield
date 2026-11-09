@@ -2266,6 +2266,9 @@ enum Overlay {
     /// The question New Protocol asks: where to make the Protocol, the Protocols folder
     /// preselected, its groups and any other folder on offer.
     NewProtocol(NewProtocolSheet),
+    /// Preferences: the Protocols folder, and the offer to move the old one's Protocols once it
+    /// changes.
+    Preferences(crate::preferences::PreferencesSheet),
 }
 
 /// One place the New Protocol sheet offers to make the Protocol in.
@@ -2386,6 +2389,10 @@ pub enum Leaving {
     Move(Move),
     /// Making an empty Protocol in this folder, as New Protocol does, and opening it.
     Make(PathBuf),
+    /// Moving the Protocols in the old Protocols folder `from` into the new one, `to`, the open
+    /// Protocol among them, as Preferences offers once the folder changes. Keeping editing
+    /// leaves the open one where it is and moves the rest.
+    MoveAll { from: PathBuf, to: PathBuf },
 }
 
 /// **A change to where the open Protocol's folder is**: its name, or the folder it is in. Each is
@@ -2452,6 +2459,18 @@ pub const NOT_NAMED_BANNER: &str = "add-source-not-named";
 /// The banner that says New Protocol could not make the Protocol, and why.
 pub const NEW_PROTOCOL_BANNER: &str = "new-protocol";
 
+/// The banner that says a folder chosen in Preferences was not taken as the Protocols folder,
+/// and why.
+pub const PREFERENCES_BANNER: &str = "preferences";
+
+/// The banner that says what moving the old Protocols folder's Protocols did, when not all of
+/// them moved or something did not follow one.
+pub const MOVE_ALL_BANNER: &str = "move-all-protocols";
+
+/// The `open-preferences` verb's longname: the registry's, spelled once here for the window's key
+/// and the palette.
+pub const OPEN_PREFERENCES: &str = "open-preferences";
+
 /// The banner that says the YAML editor's buffer was not saved, and why.
 const EDITOR_NOT_SAVED_BANNER: &str = "editor-not-saved";
 
@@ -2514,6 +2533,7 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
         "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
         "cmd-n" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)),
+        "cmd-," => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Comma)),
         "cmd-s" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)),
         "cmd-q" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Q)),
         "f2" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F2)),
@@ -3222,6 +3242,10 @@ pub struct MeridianApp {
     /// The New Protocol sheet's Other… was chosen: the folder picker is raised after the frame,
     /// and the Protocol is made in the folder it chooses.
     new_protocol_pick_requested: bool,
+    /// Preferences' Choose… was pressed, and the folder picker is raised after the frame.
+    preferences_pick_requested: bool,
+    /// What the last move of the old Protocols folder's Protocols did.
+    move_report: Option<crate::protocols_dir::MoveReport>,
     /// A saved Protocol whose front-door row was clicked, latched for after the
     /// frame. Latched rather than acted on for the reason `pick_requested` is:
     /// the `Ui` borrow the door drew through is still live at the click, and
@@ -3320,6 +3344,9 @@ pub struct MeridianApp {
     /// The `new-protocol` keystroke token, read off the registry at boot — same rule as
     /// [`Self::home_binding`].
     new_protocol_binding: Option<&'static str>,
+    /// The `open-preferences` keystroke token, read off the registry at boot — same rule as
+    /// [`Self::home_binding`].
+    preferences_binding: Option<&'static str>,
     /// The `toggle-outline-rail` keystroke token, read off the registry at
     /// boot — same rule as [`Self::home_binding`]: the shell wires whichever
     /// binding the registry declares, and does not invent one of its own.
@@ -3745,6 +3772,8 @@ impl MeridianApp {
             add_source_pick_requested: false,
             door_new_protocol: None,
             new_protocol_pick_requested: false,
+            preferences_pick_requested: false,
+            move_report: None,
             door_open_protocol: None,
             door_hovered: None,
             door_tree: None,
@@ -3786,6 +3815,10 @@ impl MeridianApp {
             new_protocol_binding: brightfield_keys::registry()
                 .iter()
                 .find(|v| v.longname == NEW_PROTOCOL)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            preferences_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == OPEN_PREFERENCES)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             quit_binding: brightfield_keys::registry()
                 .iter()
@@ -5628,6 +5661,10 @@ impl MeridianApp {
         if self.open_queue.take_quit() {
             self.leave(&ctx, Leaving::Quit);
         }
+        // The app menu's Preferences…, which takes Cmd+, before the window sees it.
+        if self.open_queue.take_preferences() {
+            self.open_preferences();
+        }
         // Before anything is laid out: a fetch that finished since the last
         // frame replaces the documents, and a frame that drew the door first
         // and adopted the document after would draw one frame of a door for a
@@ -7052,6 +7089,7 @@ impl MeridianApp {
         // waits until every pane has drawn.
         self.rename_key(&ctx);
         self.new_protocol_key(&ctx);
+        self.preferences_key(&ctx);
         if std::mem::take(&mut self.location_pick_requested) && self.dialogs_allowed {
             if let Some(parent) = self
                 .open_protocol_dir()
@@ -7078,6 +7116,16 @@ impl MeridianApp {
                 .pick_folder()
             {
                 self.leave(&ctx, Leaving::Make(chosen));
+            }
+        }
+        // Preferences' Choose…, on the same terms.
+        if std::mem::take(&mut self.preferences_pick_requested) && self.dialogs_allowed {
+            if let Some(chosen) = rfd::FileDialog::new()
+                .set_title("Use as the Protocols folder")
+                .set_directory(crate::protocols_dir::root())
+                .pick_folder()
+            {
+                self.choose_protocols_folder(&ctx, &chosen);
             }
         }
         if std::mem::take(&mut self.add_source_pick_requested) && self.dialogs_allowed {
@@ -8394,6 +8442,7 @@ impl MeridianApp {
         let mut kept: Option<(TypedAnswer, Option<String>)> = None;
         let mut where_kept: Option<String> = None;
         let mut make_in: Option<NewProtocolPlace> = None;
+        let mut preferences_action = None;
         match &mut overlay {
             Overlay::Palette(picker) => {
                 let chrome = ModalChrome::new().title("Commands").enter_hint("run");
@@ -8564,6 +8613,20 @@ impl MeridianApp {
                     close = shown.dismissed;
                 }
             }
+            Overlay::Preferences(sheet) => {
+                let folder = crate::protocols_dir::root();
+                let overridden = std::env::var_os(crate::protocols_dir::PROTOCOLS_DIR_VAR)
+                    .filter(|v| !v.is_empty())
+                    .map(|_| crate::protocols_dir::PROTOCOLS_DIR_VAR);
+                let chrome = ModalChrome::new().title("Preferences").esc_hint("close");
+                let shown = ModalLayer::show(ctx, "bf-overlay-preferences", &chrome, |ui| {
+                    crate::preferences::body(ui, sheet, &folder, overridden)
+                });
+                preferences_action = shown.inner;
+                // Closing the sheet with an offer waiting leaves the Protocols where they are:
+                // the offer is made once.
+                close = shown.dismissed;
+            }
         }
         if let Some(next) = becomes {
             overlay = next;
@@ -8589,6 +8652,16 @@ impl MeridianApp {
         match make_in {
             Some(NewProtocolPlace::Folder { dir, .. }) => self.leave(ctx, Leaving::Make(dir)),
             Some(NewProtocolPlace::Other) => self.new_protocol_pick_requested = true,
+            None => {}
+        }
+        match preferences_action {
+            Some(crate::preferences::PreferencesAction::Choose) => {
+                self.preferences_pick_requested = true;
+            }
+            Some(crate::preferences::PreferencesAction::Move) => self.answer_move_offer(ctx, true),
+            Some(crate::preferences::PreferencesAction::Leave) => {
+                self.answer_move_offer(ctx, false);
+            }
             None => {}
         }
     }
@@ -9116,7 +9189,7 @@ impl MeridianApp {
                     self.stop_waiting_for_runs();
                     self.close_window(ctx);
                 }
-                Leaving::Home | Leaving::Move(_) | Leaving::Make(_) => {
+                Leaving::Home | Leaving::Move(_) | Leaving::Make(_) | Leaving::MoveAll { .. } => {
                     self.say_waiting_for_runs(ctx);
                 }
                 Leaving::Open(request) => {
@@ -9154,6 +9227,7 @@ impl MeridianApp {
                     | crate::open_queue::OpenRequest::AddSources(_),
                 ) => crate::overlays::AskedBefore::AddingSource,
                 Leaving::Make(_) => crate::overlays::AskedBefore::Making,
+                Leaving::MoveAll { .. } => crate::overlays::AskedBefore::MovingToNewFolder,
                 _ => crate::overlays::AskedBefore::Leaving,
             };
         }
@@ -9170,6 +9244,7 @@ impl MeridianApp {
             Leaving::Open(request) => self.take_open_request(ctx, request),
             Leaving::Move(to) => self.move_open_protocol(ctx, &to),
             Leaving::Make(parent) => self.make_new_protocol_in(ctx, &parent),
+            Leaving::MoveAll { from, to } => self.move_all_protocols(ctx, &from, &to, false),
         }
     }
 
@@ -9382,7 +9457,11 @@ impl MeridianApp {
         match answer {
             CloseAnswer::KeepEditing => {
                 self.put_the_question_down();
-                self.leaving = None;
+                // Keeping editing before the move into a new Protocols folder leaves the open
+                // Protocol where it is, and the rest still move.
+                if let Some(Leaving::MoveAll { from, to }) = self.leaving.take() {
+                    self.move_all_protocols(ctx, &from, &to, true);
+                }
             }
             CloseAnswer::CloseWithoutSaving => {
                 let told = self.close_question().is_some_and(|q| q.not_kept.is_some());
@@ -9616,6 +9695,7 @@ impl MeridianApp {
             Overlay::CloseQuestion(_) => "close-question",
             Overlay::Statement(_) => "palette",
             Overlay::NewProtocol(_) => "new-protocol",
+            Overlay::Preferences(_) => "preferences",
         })
     }
 
@@ -10097,6 +10177,10 @@ impl MeridianApp {
                 // new-protocol is the window's as Cmd+N is: chosen from a palette, it asks where.
                 Request::Verb(verb) if verb.as_str() == NEW_PROTOCOL => {
                     self.ask_new_protocol();
+                }
+                // open-preferences is the window's as Cmd+, is.
+                Request::Verb(verb) if verb.as_str() == OPEN_PREFERENCES => {
+                    self.open_preferences();
                 }
                 Request::Verb(verb) if verb.as_str() == RENAME_PROTOCOL => {
                     self.open_place_field(PlaceField::Name);
@@ -11734,6 +11818,197 @@ impl MeridianApp {
             self.ask_new_protocol();
             ctx.request_repaint();
         }
+    }
+
+    /// Cmd+,: Preferences, from anywhere in the window. No overlay may own the keyboard.
+    fn preferences_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if self
+            .preferences_binding
+            .is_some_and(|t| consume_token(ctx, t))
+        {
+            self.open_preferences();
+            ctx.request_repaint();
+        }
+    }
+
+    /// **Preferences**: open the sheet that shows the Protocols folder and chooses another.
+    pub fn open_preferences(&mut self) {
+        if !matches!(self.overlay, Some(Overlay::Preferences(_))) {
+            self.overlay = Some(Overlay::Preferences(
+                crate::preferences::PreferencesSheet::default(),
+            ));
+        }
+    }
+
+    /// The Protocols folder the Preferences sheet shows, while it is open.
+    #[must_use]
+    pub fn preferences_folder(&self) -> Option<PathBuf> {
+        matches!(self.overlay, Some(Overlay::Preferences(_))).then(crate::protocols_dir::root)
+    }
+
+    /// Make `dir` the Protocols folder, as the Preferences sheet's Choose… does once the folder
+    /// picker answers ([`crate::protocols_dir::set_root`]). The door's tree reads the new folder
+    /// on its next frame. When the old folder holds Protocols, the sheet offers once to move them
+    /// across ([`Self::answer_move_offer`]). A folder refused, by the system or for being inside
+    /// the old one or holding it, is said in a banner, and the old setting stays.
+    pub fn choose_protocols_folder(&mut self, ctx: &egui::Context, dir: &std::path::Path) {
+        let old = crate::protocols_dir::root();
+        if let Err(why) = crate::protocols_dir::set_root(dir) {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(PREFERENCES_BANNER),
+                    Severity::Error,
+                    "The Protocols folder was not changed",
+                )
+                .body(why),
+            );
+            ctx.request_repaint();
+            return;
+        }
+        self.notifications
+            .dismiss(NotificationId::new(PREFERENCES_BANNER));
+        self.forget_door_listing();
+        let new = crate::protocols_dir::root();
+        let same = old == new
+            || matches!((old.canonicalize(), new.canonicalize()), (Ok(a), Ok(b)) if a == b);
+        let count = if same {
+            0
+        } else {
+            count_protocols(&crate::door_tree::read(&old))
+        };
+        self.open_preferences();
+        if let Some(Overlay::Preferences(sheet)) = self.overlay.as_mut() {
+            sheet.offer = (count > 0).then_some(crate::preferences::MoveOffer {
+                from: old,
+                to: new,
+                count,
+            });
+        }
+        ctx.request_repaint();
+    }
+
+    /// The offer to move the old Protocols folder's Protocols, as the folder it moves them from
+    /// and the folder it moves them to, while the Preferences sheet makes it.
+    #[must_use]
+    pub fn move_offer(&self) -> Option<(&std::path::Path, &std::path::Path)> {
+        match &self.overlay {
+            Some(Overlay::Preferences(sheet)) => sheet
+                .offer
+                .as_ref()
+                .map(|o| (o.from.as_path(), o.to.as_path())),
+            _ => None,
+        }
+    }
+
+    /// Answer the offer to move the old Protocols folder's Protocols. Declining moves nothing:
+    /// they stay where they are, and in Recents. Accepting moves each one
+    /// ([`crate::protocols_dir::move_all_with`]); when the Protocol open in the window is among
+    /// them it is moved through [`Self::leave`], so a draft is asked about first.
+    pub fn answer_move_offer(&mut self, ctx: &egui::Context, accept: bool) {
+        let offer = match self.overlay.as_mut() {
+            Some(Overlay::Preferences(sheet)) => sheet.offer.take(),
+            _ => None,
+        };
+        let Some(offer) = offer else {
+            return;
+        };
+        ctx.request_repaint();
+        if !accept {
+            return;
+        }
+        self.overlay = None;
+        let holds_one_there = self
+            .open_protocol_dir()
+            .is_some_and(|dir| is_within(&dir, &offer.from));
+        let to = Leaving::MoveAll {
+            from: offer.from,
+            to: offer.to,
+        };
+        if holds_one_there {
+            self.leave(ctx, to);
+        } else {
+            self.go(ctx, to);
+        }
+    }
+
+    /// What the last move of the old Protocols folder's Protocols did — a test hook.
+    #[must_use]
+    pub fn move_report(&self) -> Option<&crate::protocols_dir::MoveReport> {
+        self.move_report.as_ref()
+    }
+
+    /// Move each Protocol in `from` into `to`, the open one among them unless `leave_open`, then
+    /// repoint Recents, open the window's Protocol again at its new place when it moved, and say
+    /// what moved. A run writing into the open Protocol's folder leaves it where it is too.
+    fn move_all_protocols(
+        &mut self,
+        ctx: &egui::Context,
+        from: &std::path::Path,
+        to: &std::path::Path,
+        leave_open: bool,
+    ) {
+        let open = self.open_protocol_dir().filter(|dir| is_within(dir, from));
+        let leave = open
+            .as_ref()
+            .filter(|_| leave_open || self.run_outstanding());
+        let canonical_from = from.canonicalize().ok();
+        let report = crate::protocols_dir::move_all_with(
+            from,
+            to,
+            leave.map(PathBuf::as_path),
+            &crate::rename::FolderOps::system(),
+        );
+        let layout = self.layout.live_mut();
+        for (was, now) in &report.moved {
+            layout.repoint(was, now);
+            if let Some(rest) = canonical_from
+                .as_ref()
+                .and_then(|c| was.strip_prefix(from).ok().map(|rest| c.join(rest)))
+                .filter(|c| c != was)
+            {
+                layout.repoint(&rest, now);
+            }
+        }
+        if let Some(open) = &open {
+            let moved_to = report
+                .moved
+                .iter()
+                .find(|(was, _)| was == open || open.canonicalize().ok().as_ref() == Some(was))
+                .map(|(_, now)| now.clone());
+            if let Some(now) = moved_to {
+                self.open_protocol_path(ctx, &now.to_string_lossy());
+            }
+        }
+        self.forget_door_listing();
+        self.notifications
+            .dismiss(NotificationId::new(MOVE_ALL_BANNER));
+        let said = report.said();
+        if report.failed.is_some() {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(MOVE_ALL_BANNER),
+                    Severity::Error,
+                    "Not every Protocol moved to the new Protocols folder",
+                )
+                .body(said),
+            );
+        } else if report.left_open.is_some() || !report.warnings.is_empty() {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(MOVE_ALL_BANNER),
+                    Severity::Warning,
+                    "The Protocols moved, with something to see to",
+                )
+                .body(said),
+            );
+        } else {
+            self.toasts.push(Toast::new(Severity::Success, said));
+        }
+        self.move_report = Some(report);
+        ctx.request_repaint();
     }
 
     /// F2: with the front door showing, rename the row under the pointer; with a Protocol open,
@@ -15265,6 +15540,26 @@ fn tree_indent(depth: usize) -> f32 {
 
 /// The Protocol folder a door row's id names, when it names a Protocol's `arcform.yaml` on disk:
 /// the folder whose run records the row's run state is read from. A shipped start's id names none.
+/// How many Protocols the door's tree `nodes` holds, in every group.
+fn count_protocols(nodes: &[crate::door_tree::Node]) -> usize {
+    nodes
+        .iter()
+        .map(|node| match node {
+            crate::door_tree::Node::Group { children, .. } => count_protocols(children),
+            crate::door_tree::Node::Protocol { .. } => 1,
+        })
+        .sum()
+}
+
+/// Whether `dir` is inside `folder`, as written or once both are resolved.
+fn is_within(dir: &std::path::Path, folder: &std::path::Path) -> bool {
+    dir.starts_with(folder)
+        || matches!(
+            (dir.canonicalize(), folder.canonicalize()),
+            (Ok(d), Ok(f)) if d.starts_with(&f)
+        )
+}
+
 fn protocol_dir_of(id: &str) -> Option<PathBuf> {
     if crate::starts::find(id).is_some() {
         return None;
