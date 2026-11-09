@@ -1213,8 +1213,7 @@ fn a_fetch_the_reader_gave_up_on_does_not_arrive_and_take_the_window() {
     let opened = win
         .app
         .layout()
-        .opened
-        .clone()
+        .opened_start()
         .expect("the local start recorded itself");
     assert_eq!(
         opened,
@@ -1245,7 +1244,7 @@ fn a_fetch_the_reader_gave_up_on_does_not_arrive_and_take_the_window() {
          holding the Protocol they had moved to"
     );
     assert_eq!(
-        win.app.layout().opened.as_deref(),
+        win.app.layout().opened_start(),
         Some(starts::CROSSWALK_RUN),
         "the abandoned fetch rewrote what the next launch restores"
     );

@@ -85,7 +85,9 @@ fn a_boot_publishes_before_it_reads_and_the_window_opens_where_it_was_left() {
     let mut saved = default_layout();
     saved.window.size = [903.0, 617.0];
     saved.window.position = Some([41.0, 62.0]);
-    saved.opened = Some(starts::DASHBOARD.to_string());
+    saved.opened = Some(brightfield_workbench::Opened::Start(
+        starts::DASHBOARD.to_string(),
+    ));
     std::fs::write(&path, saved.to_json().expect("a layout serialises")).expect("writes");
 
     assert!(
@@ -109,7 +111,7 @@ fn a_boot_publishes_before_it_reads_and_the_window_opens_where_it_was_left() {
     );
     assert_eq!(restored.window.size, [903.0, 617.0]);
     assert_eq!(restored.window.position, Some([41.0, 62.0]));
-    assert_eq!(restored.opened.as_deref(), Some(starts::DASHBOARD));
+    assert_eq!(restored.opened_start(), Some(starts::DASHBOARD));
 
     // ---- 3. And it published *both* registries, not only the one whose
     //         document the launch is about. The window's one tree carries
@@ -129,7 +131,7 @@ fn a_boot_publishes_before_it_reads_and_the_window_opens_where_it_was_left() {
     // ---- 4. A launch with no spec on the command line restores the
     //         through `opening_boot`, which is what `main` calls, and not
     //         through a hand-built `Boot::empty()`.
-    let boot = opening_boot(None, restored.opened.as_deref(), Flow::Vertical, None)
+    let boot = opening_boot(None, restored.opened_start(), Flow::Vertical, None)
         .expect("a launch that named nothing cannot fail");
     let mut app = MeridianApp::headless_with_layout(boot, restored.clone(), Mode::Light);
     assert!(
@@ -162,7 +164,7 @@ fn a_boot_publishes_before_it_reads_and_the_window_opens_where_it_was_left() {
     //         asked for that one.
     let named = opening_boot(
         Some("../../examples/dashboard.yaml"),
-        restored.opened.as_deref(),
+        restored.opened_start(),
         Flow::Vertical,
         None,
     )

@@ -1342,8 +1342,8 @@ fn close_without_saving_past_an_unread_chart_closes_and_keeps_the_edit() {
         win.settle();
 
         assert!(
-            win.app.is_closing(),
-            "{how:?}: close without saving closes: {}",
+            win.app.front_door_is_live(),
+            "{how:?}: close without saving goes to the door: {}",
             win.said()
         );
         assert!(

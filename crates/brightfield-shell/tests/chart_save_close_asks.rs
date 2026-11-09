@@ -286,10 +286,13 @@ impl Session {
         std::mem::take(&mut self.sent)
     }
 
-    /// What eframe does with a `ViewportCommand::Close` the window sent: it
-    /// comes back as a close request on the next frame.
+    /// A close the question's answer made shows the front door, and a close
+    /// request on the door is the app ending: it goes through unasked.
     fn feed_the_close_back(&mut self) -> Sent {
-        assert!(self.sent.close, "no Close was sent to feed back");
+        assert!(
+            self.app.front_door_is_live(),
+            "the answer did not go to the door"
+        );
         self.take_sent();
         self.request_close();
         self.take_sent()
@@ -488,8 +491,8 @@ fn a_close_request_over_the_mark_leaves_the_window_open_and_asks() {
 // ---------------------------------------------------------------------------
 
 /// **AC2.** Save writes the chart and `arcform.yaml` exactly as the Save verb
-/// does, and then the window closes: `Close` is sent, and when eframe hands it
-/// back as a request it is not asked about again.
+/// does, and then the window goes to the front door, where a close request is
+/// not asked about again.
 #[test]
 fn save_writes_the_chart_as_the_save_verb_does_and_closes() {
     // The Save verb's own write, in a window of its own, is the reference.
@@ -522,8 +525,8 @@ fn save_writes_the_chart_as_the_save_verb_does_and_closes() {
         "the chart is in and the mark stayed"
     );
     assert!(
-        session.sent.close,
-        "the window did not close after the save"
+        session.app.front_door_is_live(),
+        "the window did not go to the door after the save"
     );
     let back = session.feed_the_close_back();
     assert!(
@@ -536,11 +539,11 @@ fn save_writes_the_chart_as_the_save_verb_does_and_closes() {
 // AC3 — close without saving
 // ---------------------------------------------------------------------------
 
-/// **AC3.** Close without saving closes the window and writes nothing of its
+/// **AC3.** Close without saving goes to the front door and writes nothing of its
 /// own in the data folder: the chart file and `arcform.yaml`, both there from
 /// an earlier Save, are byte-identical, and no file was added. arc's log gains
-/// the one line it writes for the unsaved version the close keeps. The close it sends is not asked about again, though
-/// the edit is still pending when it comes back.
+/// the one line it writes for the unsaved version the close keeps. A close
+/// request on the door it lands on is not asked about again.
 #[test]
 fn close_without_saving_closes_and_leaves_the_files_byte_identical() {
     let mut session = Session::marked("ac3");
@@ -551,14 +554,18 @@ fn close_without_saving_closes_and_leaves_the_files_byte_identical() {
     let before = snapshot(&session.folder);
     let logged = arc::spec::read_log(&session.folder).expect("the log reads");
     session.take_sent();
+    assert!(
+        session.carries_mark(),
+        "the edit was not pending: this test discarded nothing"
+    );
 
     session.request_close();
     assert_eq!(session.app.open_overlay(), Some(QUESTION));
     session.answer("Close without saving");
 
     assert!(
-        session.sent.close,
-        "closing without saving did not close the window"
+        session.app.front_door_is_live(),
+        "closing without saving did not go to the door"
     );
     let after = snapshot(&session.folder);
     assert_only_an_unsaved_version_was_logged(
@@ -567,10 +574,6 @@ fn close_without_saving_closes_and_leaves_the_files_byte_identical() {
         &after,
         &logged,
         &format!("panels/{CHART_FILE}"),
-    );
-    assert!(
-        session.carries_mark(),
-        "the edit was not pending: this test discarded nothing"
     );
     let back = session.feed_the_close_back();
     assert!(
@@ -591,7 +594,7 @@ fn close_without_saving_before_any_save_writes_no_file() {
     session.request_close();
     session.answer("Close without saving");
 
-    assert!(session.sent.close);
+    assert!(session.app.front_door_is_live());
     assert_eq!(snapshot(&session.folder), before);
 }
 
@@ -649,9 +652,9 @@ fn keep_editing_returns_to_the_window_with_the_edit_and_the_mark() {
 // AC5 — no mark, no question
 // ---------------------------------------------------------------------------
 
-/// **AC5.** A close request on a window without the mark closes with no
-/// question: nothing cancels it and no overlay opens — on a window that was
-/// never edited, and on one whose edit a Save wrote.
+/// **AC5.** A close request on a window without the mark goes to the front
+/// door with no question: no overlay opens, and the app does not end — on a
+/// window that was never edited, and on one whose edit a Save wrote.
 #[test]
 fn a_close_request_without_the_mark_closes_with_no_question() {
     let mut clean = Session::open("ac5-clean");
@@ -659,9 +662,10 @@ fn a_close_request_without_the_mark_closes_with_no_question() {
     clean.take_sent();
     clean.request_close();
     assert!(
-        !clean.take_sent().cancel_close,
-        "a window with nothing to lose was kept open"
+        clean.app.front_door_is_live(),
+        "a window with nothing to lose did not go to the door"
     );
+    assert!(!clean.take_sent().close);
     assert_eq!(clean.app.open_overlay(), None);
 
     let mut saved = Session::marked("ac5-saved");
@@ -670,9 +674,10 @@ fn a_close_request_without_the_mark_closes_with_no_question() {
     saved.take_sent();
     saved.request_close();
     assert!(
-        !saved.take_sent().cancel_close,
-        "a window whose edit was saved was kept open"
+        saved.app.front_door_is_live(),
+        "a window whose edit was saved did not go to the door"
     );
+    assert!(!saved.take_sent().close);
     assert_eq!(saved.app.open_overlay(), None);
 }
 
@@ -734,7 +739,10 @@ fn a_save_whose_chart_write_fails_keeps_the_window_open_and_says_why() {
         "the window did not ask again"
     );
     session.answer("Save and close");
-    assert!(session.sent.close, "the mended save did not close");
+    assert!(
+        session.app.front_door_is_live(),
+        "the mended save did not go to the door"
+    );
     assert!(session.chart_file().exists());
 }
 

@@ -1210,9 +1210,12 @@ fn main() -> Result<(), String> {
     let (mut layout, outcome) = startup::boot_layout(path.as_deref());
     eprintln!("layout: {}", outcome.reason());
 
+    // A remembered Protocol opens on the window's first frame, through its open queue, rather than
+    // here before the window exists: see `startup::restored_protocol`.
+    let restore = startup::restored_protocol(args.spec.as_deref(), &mut layout);
     let boot = startup::opening_boot(
         args.spec.as_deref(),
-        layout.opened.as_deref(),
+        layout.opened_start(),
         args.flow,
         args.force_sample,
     )?;
@@ -1311,6 +1314,9 @@ fn main() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     if let Some(main_thread) = objc2::MainThreadMarker::new() {
         brightfield_shell::mac_open::install(main_thread, open_queue.clone(), || {});
+    }
+    if let Some(dir) = restore {
+        open_queue.push(brightfield_shell::open_queue::OpenRequest::Path(dir));
     }
     let menu_quit = Some((open_queue.clone(), 0));
     eframe::run_native(

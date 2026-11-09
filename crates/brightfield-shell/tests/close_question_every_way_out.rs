@@ -706,16 +706,16 @@ fn a_second_quit_while_waiting_for_a_run_closes_now() {
 }
 
 #[test]
-fn a_second_close_while_waiting_for_a_run_closes_now() {
+fn a_close_while_a_quit_waits_for_a_run_closes_now() {
     let (mut win, held) = waiting_on_a_held_run("close_twice");
-    win.frame(Vec::new(), true);
-    win.settle();
+    win.cmd_q();
     assert!(win.asking());
     win.key(egui::Key::D, egui::Modifiers::NONE);
     assert!(win.says_waiting(), "{}", win.said());
     win.forget_sent();
 
-    // The window's close button again: the request is let through, which is how eframe closes.
+    // The window's close button while the quit waits: the request is let through, which is how
+    // eframe closes.
     win.frame(Vec::new(), true);
 
     assert!(!win.cancelled_close, "the second close is not cancelled");
@@ -731,8 +731,9 @@ fn discard_records_the_kept_filter_and_typed_sql() {
     let step =
         win.keep_statement("select house_age, count(*) as n from discard_keeps group by house_age");
 
-    win.frame(Vec::new(), true);
-    win.settle();
+    // Asked by a quit, which leaves the window holding the Protocol for the Versions panel to be
+    // read below; the close button would take it to the door.
+    win.cmd_q();
     assert!(win.asking());
     let edits = win
         .app
@@ -831,7 +832,7 @@ fn an_edited_yaml_buffer_is_unsaved_work_and_a_discard_keeps_it() {
     );
     let before = std::fs::read_to_string(&spec).expect("the spec reads");
     win.key(egui::Key::D, egui::Modifiers::NONE);
-    assert!(win.closed);
+    assert!(win.app.front_door_is_live() && !win.closed);
     assert_eq!(
         std::fs::read_to_string(&spec).expect("the spec reads"),
         before,

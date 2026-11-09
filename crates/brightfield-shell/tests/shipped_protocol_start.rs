@@ -618,7 +618,7 @@ fn a_landing_over_unsaved_edits_keeps_them_and_says_so() {
         win.banners()
     );
     assert_ne!(
-        win.app.layout().opened.as_deref(),
+        win.app.layout().opened_start(),
         Some(ID),
         "the start was recorded as landed on a panel it did not open"
     );
@@ -847,7 +847,7 @@ fn a_start_whose_panel_does_not_open_is_not_recorded_as_landed() {
         "a panel that cannot draw was opened"
     );
     assert_ne!(
-        win.app.layout().opened.as_deref(),
+        win.app.layout().opened_start(),
         Some(ID),
         "the run's landing recorded a start whose panel did not open"
     );
@@ -867,7 +867,7 @@ fn a_start_whose_panel_does_not_open_is_not_recorded_as_landed() {
         again.banners()
     );
     assert_ne!(
-        again.app.layout().opened.as_deref(),
+        again.app.layout().opened_start(),
         Some(ID),
         "a click on a run folder recorded a start whose panel did not open"
     );

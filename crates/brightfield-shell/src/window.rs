@@ -72,9 +72,9 @@ use brightfield_workbench::arrangement::{self, Occupant, Projection, Region, Reg
 use brightfield_workbench::channel::{ShelfChannel, BAND_HEIGHT};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
-    chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemId, ItemMap, PaneChrome,
-    PaneKey, Recent, Request, RunState, SavedLayout, StatusEntry, StatusSide, Subject, Tone,
-    ToolbarEntry, Verb, WindowGeometry, Workspace,
+    chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemId, ItemMap, Opened,
+    PaneChrome, PaneKey, Recent, Request, RunState, SavedLayout, StatusEntry, StatusSide, Subject,
+    Tone, ToolbarEntry, Verb, WindowGeometry, Workspace,
 };
 use meridian_egui::{
     ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker, PickerEvent,
@@ -2226,7 +2226,9 @@ impl OverlayKeys {
 /// at once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Leaving {
-    /// The window's close button, or a close request the system raised.
+    /// The window's close button, or a close request the system raised: the
+    /// front door, as Home is. Only a quit ends the app, and a close on the
+    /// door, which has nowhere else to go.
     Close,
     /// Home, by its button, its key or the palette: the front door.
     Home,
@@ -8607,36 +8609,46 @@ impl MeridianApp {
         }
     }
 
-    /// **Read a close request and, over a window that carries the unsaved
-    /// mark, answer it with the question instead of the close.**
+    /// **Read a close request and answer it with the front door**, asking the
+    /// close question first over a window that carries the unsaved mark.
     ///
     /// The request is `ViewportInfo::close_requested` in this frame's input:
     /// the window's close button, and `ViewportCommand::Close` sent by anyone,
-    /// this window included. eframe closes the root viewport unless the frame
-    /// sends `ViewportCommand::CancelClose`, so a window that read no request
-    /// closed and took its edit with it. This sends the cancel and opens
-    /// [`Overlay::CloseQuestion`] in the window's one modal slot, replacing
-    /// whatever overlay was open; a second request while the question is up
-    /// is cancelled again and leaves it as it is, with what it says.
+    /// this window included. eframe closes the root viewport, which ends the
+    /// app, unless the frame sends `ViewportCommand::CancelClose`. So a close
+    /// over a Protocol is cancelled and goes through [`Self::leave`] as
+    /// [`Leaving::Close`]: over a draft the question opens in the window's one
+    /// modal slot, and its answer goes to the door; with nothing pending the
+    /// door shows at once. A request while the question is up is cancelled
+    /// and leaves the question as it is, with what it says and where it goes. The window stays, as a Mac app's does when its
+    /// last document closes, and only a quit ends the app.
     ///
-    /// A window without the mark, and one whose close was already decided
-    /// ([`Self::allow_close`]), is not touched: the request goes through
-    /// uncancelled, which is how eframe closes it.
+    /// A close on the door has nowhere else to go, and one whose close was
+    /// already decided ([`Self::allow_close`]: a quit, the screenshot
+    /// countdown) is the app ending: both go through uncancelled, which is how
+    /// eframe closes the window.
     fn observe_close_request(&mut self, ctx: &egui::Context) {
         if !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
-        // A close already answered, waiting for a run to land: a second close is the analyst
-        // closing now, whatever the run, so it goes through uncancelled.
+        // A quit already answered, waiting for a run to land: a close is the analyst ending the
+        // app now, whatever the run, so it goes through uncancelled.
         if self.close_after_runs.is_some() {
             self.stop_waiting_for_runs();
             self.allow_close();
             return;
         }
-        if self.ask_before_closing() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.request_repaint();
+        if self.closing || self.front_door_is_live() {
+            return;
         }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        // A close while the question is up leaves it as it is, asking for what it was asked
+        // for: the system raises a close of its own around a quit, and the quit is the one
+        // the analyst chose.
+        if self.close_question().is_none() {
+            self.leave(ctx, Leaving::Close);
+        }
+        ctx.request_repaint();
     }
 
     /// **Open the close question, as a close request over the unsaved mark
@@ -8668,9 +8680,9 @@ impl MeridianApp {
     /// was asked for, so the latest choice is the one that goes. Without the
     /// mark, `to` goes at once.
     ///
-    /// Going is `Self::open_home` for Home, the open itself for an open,
-    /// and the window's close for a close or a quit, which waits for any run
-    /// the window started so no run's record is lost
+    /// Going is `Self::open_home` for Home and for the window's close, the
+    /// open itself for an open, and the app's end for a quit, which waits for
+    /// any run the window started so no run's record is lost
     /// (`Self::close_when_runs_land`).
     pub fn leave(&mut self, ctx: &egui::Context, to: Leaving) {
         // A close or quit already answered and waiting for a run: a second one closes now, so
@@ -8722,8 +8734,10 @@ impl MeridianApp {
     /// Go where `to` says, with nothing left to ask.
     fn go(&mut self, ctx: &egui::Context, to: Leaving) {
         match to {
-            Leaving::Close | Leaving::Quit => self.close_once_runs_land(ctx),
-            Leaving::Home => self.open_home(ctx),
+            // The window's close shows the door and leaves the app running, so a run the window
+            // started goes on and lands as it does after Home.
+            Leaving::Close | Leaving::Home => self.open_home(ctx),
+            Leaving::Quit => self.close_once_runs_land(ctx),
             Leaving::Open(request) => self.take_open_request(ctx, request),
             Leaving::Move(to) => self.move_open_protocol(ctx, &to),
         }
@@ -8807,7 +8821,7 @@ impl MeridianApp {
         let answered_over = self.close_after_runs.clone();
         self.stop_waiting_for_runs();
         if self.has_unsaved_work() && answered_over.as_ref() != Some(&self.unsaved_now()) {
-            self.leave(ctx, Leaving::Close);
+            self.leave(ctx, Leaving::Quit);
         } else {
             self.close_window(ctx);
         }
@@ -8927,7 +8941,7 @@ impl MeridianApp {
                         let to = self.leaving.take().unwrap_or(Leaving::Close);
                         // Going somewhere else in this window: the buffer kept as a version is
                         // not carried into what opens next.
-                        if matches!(to, Leaving::Home | Leaving::Open(_) | Leaving::Move(_)) {
+                        if !matches!(to, Leaving::Quit) {
                             self.drop_editor_buffer();
                         }
                         self.go(ctx, to);
@@ -9812,6 +9826,8 @@ impl MeridianApp {
         // one, rather than here and at each of the other openers.
         self.remote_files = None;
         self.documents_changed();
+        // On the door, the next launch starts on the door too.
+        self.layout.live_mut().opened = None;
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         ctx.request_repaint();
     }
@@ -10255,7 +10271,7 @@ impl MeridianApp {
     /// whose run landed later.
     fn record_landed(&mut self, ctx: &egui::Context, id: &'static str) {
         self.dismiss_start_banner(id);
-        self.layout.live_mut().opened = Some(id.to_string());
+        self.layout.live_mut().opened = Some(Opened::Start(id.to_string()));
         // …and remembered as a Protocol, which is the other half: `opened` is
         // what the next launch restores, and this is what the door lists. The
         // name and the run state are read off **this window** rather than off
@@ -11021,6 +11037,8 @@ impl MeridianApp {
             self.set_grid_spot(grid_spot);
         }
         let run = crate::door_tree::run_state(dir);
+        // And what the next launch reopens, as it was last saved.
+        self.layout.live_mut().opened = Some(Opened::Protocol(dir.to_path_buf()));
         self.layout.live_mut().remember(
             &id,
             &display_name(dir),
@@ -12738,6 +12756,13 @@ impl MeridianApp {
         };
         self.adopt_boot(boot);
         self.notifications.dismiss(banner);
+        // A Protocol's folder is what the next launch reopens; a chart spec or data file opened
+        // by this route has no folder to reopen and leaves what was recorded as it was.
+        if let crate::open_queue::Route::Existing(dir) =
+            crate::open_queue::route(std::path::Path::new(path))
+        {
+            self.layout.live_mut().opened = Some(Opened::Protocol(dir));
+        }
         // Saved already, by construction: it was opened off its own file.
         let name = self.protocol.doc.model.protocol.clone();
         let run = self.recorded_run_state();

@@ -172,7 +172,13 @@ pub struct SavedLayout {
     pub window: WindowGeometry,
     /// The arrangement.
     pub workspace: Workspace,
-    /// The shipped starting point the window last opened, if any.
+    /// What the window was on when the app last ended, to open again at the next launch: a
+    /// shipped starting point or a Protocol folder, or `None` for the front door.
+    ///
+    /// Opening a Protocol records its folder, so a launch reopens it as macOS restores a
+    /// window; going to the door, by Home or by closing the window, clears it, so the next
+    /// launch starts on the door. What is reopened is the folder as saved: drafts are not
+    /// carried across a launch, because the quit's close question settled each one.
     ///
     /// # Why the arrangement is not enough
     ///
@@ -182,12 +188,12 @@ pub struct SavedLayout {
     /// empty. That is not a restored session, and a surface that invites a
     /// first action would be right to go on inviting one.
     ///
-    /// So the id of a starting point the binary ships is recorded here and
-    /// re-opened at boot. An id rather than a path, deliberately: a path drags
-    /// in a file that has since moved or been deleted, and a boot that can
-    /// fail is a boot that needs a policy for failing. A shipped start cannot
-    /// go missing, and an id this build does not recognise means the same
-    /// thing as `None` — open on nothing.
+    /// So a starting point the binary ships is recorded by its id, which cannot
+    /// go missing: an id this build does not recognise means the same thing as
+    /// `None`, open on nothing. A Protocol is recorded by its folder, which can
+    /// go missing, so the boot's policy for that is the door: a folder that is
+    /// gone, or no longer holds its manifest, opens nothing and says nothing
+    /// (`a_restored_protocol_that_was_deleted_opens_the_door`).
     ///
     /// # Why this is not a [`LAYOUT_VERSION`] bump
     ///
@@ -213,19 +219,19 @@ pub struct SavedLayout {
     /// And removing the attribute from this field, an `Option`, leaves that
     /// test green.
     #[serde(default)]
-    pub opened: Option<String>,
+    pub opened: Option<Opened>,
     /// The Protocols this window has opened, most recent first — what the
     /// front door's Protocols section draws a row from.
     ///
     /// # Why this is not [`Self::opened`] with a longer name
     ///
     /// They answer different questions. `opened` is *what to restore on the
-    /// next launch*, so it is one id and the boot path reads it before a
+    /// next launch*, so it is one entry and the boot path reads it before a
     /// window exists. This is *what the analyst has been working on*, so it is
     /// a list, it outlives the restore, and nothing boots from it. A window
-    /// that restores its work and is then sent Home has both: `opened` still
-    /// naming the restored start, and this naming it plus everything before
-    /// it.
+    /// that restores its work and is then sent Home has `opened` cleared, so
+    /// the next launch is on the door, and this still naming what it restored
+    /// plus everything before it.
     ///
     /// `#[serde(default)]` is load-bearing here in the way the comment on
     /// `opened` says it is **not** load-bearing there: this is a `Vec`, not an
@@ -273,6 +279,49 @@ pub struct SavedLayout {
     /// and leaving a bare `#[serde(default)]` is what it watches redden.
     #[serde(default = "even_canvas_split")]
     pub canvas_split: f32,
+}
+
+/// **What a launch opens again**: [`SavedLayout::opened`].
+///
+/// A start is written as its bare id, the form every layout file had before a Protocol could be
+/// restored, so a file from an older build reads as a start and an older build reads a start this
+/// one wrote. A Protocol is written as `{"protocol": "<folder>"}`, which no older build has a
+/// reading for: one that meets it reports the file corrupt, which is what any newer shape costs
+/// a downgrade.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "OpenedOnDisk", into = "OpenedOnDisk")]
+pub enum Opened {
+    /// The id of a starting point this binary ships.
+    Start(String),
+    /// The folder of a Protocol, the one that holds its `arcform.yaml`.
+    Protocol(PathBuf),
+}
+
+/// How [`Opened`] is spelled in the layout file: a start as a bare string, a Protocol as an
+/// object, so the two cannot be read as each other.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum OpenedOnDisk {
+    Start(String),
+    Protocol { protocol: PathBuf },
+}
+
+impl From<OpenedOnDisk> for Opened {
+    fn from(on_disk: OpenedOnDisk) -> Self {
+        match on_disk {
+            OpenedOnDisk::Start(id) => Self::Start(id),
+            OpenedOnDisk::Protocol { protocol } => Self::Protocol(protocol),
+        }
+    }
+}
+
+impl From<Opened> for OpenedOnDisk {
+    fn from(opened: Opened) -> Self {
+        match opened {
+            Opened::Start(id) => Self::Start(id),
+            Opened::Protocol(protocol) => Self::Protocol { protocol },
+        }
+    }
 }
 
 /// **Which way a grid pane draws the file it is over** — the file's own rows,
@@ -454,6 +503,16 @@ impl SavedLayout {
         }
     }
 
+    /// The id of the start [`Self::opened`] names, or `None` when it names a Protocol or
+    /// nothing.
+    #[must_use]
+    pub fn opened_start(&self) -> Option<&str> {
+        match &self.opened {
+            Some(Opened::Start(id)) => Some(id),
+            _ => None,
+        }
+    }
+
     /// Record that `id` was opened at `opened_at`, at the head of
     /// [`Self::recents`].
     ///
@@ -517,9 +576,11 @@ impl SavedLayout {
                 count += 1;
             }
         }
-        if let Some(id) = self.opened.as_deref().and_then(moved) {
-            self.opened = Some(id);
-            count += 1;
+        if let Some(Opened::Protocol(dir)) = &mut self.opened {
+            if let Ok(rest) = dir.strip_prefix(from) {
+                *dir = to.join(rest);
+                count += 1;
+            }
         }
         count
     }

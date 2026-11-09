@@ -375,7 +375,7 @@ fn a_layout_that_moved_is_written_and_reads_back() {
     let (restored, outcome) = persist::load(&path, default_layout);
     assert_eq!(outcome, LoadOutcome::Restored, "{}", outcome.reason());
     assert_eq!(
-        restored.opened.as_deref(),
+        restored.opened_start(),
         Some(brightfield_shell::starts::CROSSWALK_RUN),
         "the file did not record what was open, so the next launch restores an \
          arrangement around panes that are all still empty"
@@ -986,10 +986,12 @@ fn a_restored_steps_tab_survives_the_first_frame() {
 #[test]
 fn a_restored_session_is_titled_for_the_surface_it_draws() {
     let mut saved = default_layout();
-    saved.opened = Some(brightfield_shell::starts::CROSSWALK.to_string());
+    saved.opened = Some(brightfield_workbench::Opened::Start(
+        brightfield_shell::starts::CROSSWALK.to_string(),
+    ));
 
     // Exactly what `main` does, in the order it does it.
-    let boot = opening_boot(None, saved.opened.as_deref(), Flow::Vertical, None)
+    let boot = opening_boot(None, saved.opened_start(), Flow::Vertical, None)
         .expect("the remembered start loads");
     let title = boot.title();
     let described = boot.describe();
@@ -1034,7 +1036,7 @@ fn a_renamed_protocols_row_and_restore_follow_it() {
         brightfield_workbench::GridSpot::Ledger,
         2_000,
     );
-    layout.opened = Some("/p/sales/arcform.yaml".to_string());
+    layout.opened = Some(brightfield_workbench::Opened::Protocol("/p/sales".into()));
 
     let count = layout.repoint(
         std::path::Path::new("/p/sales"),
@@ -1046,7 +1048,10 @@ fn a_renamed_protocols_row_and_restore_follow_it() {
     assert_eq!(layout.recents[0].grid_layout, GridLayout::Columns);
     assert_eq!(layout.recents[0].run, RunState::Fresh);
     assert_eq!(layout.recents[1].id, "/p/other/arcform.yaml");
-    assert_eq!(layout.opened.as_deref(), Some("/q/revenue/arcform.yaml"));
+    assert_eq!(
+        layout.opened,
+        Some(brightfield_workbench::Opened::Protocol("/q/revenue".into()))
+    );
     assert_eq!(
         layout.repoint(
             std::path::Path::new("/p/sales-2"),
