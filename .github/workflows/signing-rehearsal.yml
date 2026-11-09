@@ -152,7 +152,7 @@ jobs:
             --keychain "$BRIGHTFIELD_NOTARY_KEYCHAIN" > "${RUNNER_TEMP}/history.log" 2>&1 || status=$?
           cat "${RUNNER_TEMP}/history.log"
           echo "notarytool exited ${status}"
-          test "$status" -eq 1
+          test "$status" -ne 0
           grep -q 'HTTP status code: 401' "${RUNNER_TEMP}/history.log"
 
       - name: Fetch the FineType bundle

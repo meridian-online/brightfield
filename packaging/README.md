@@ -38,5 +38,6 @@ header names are entered, the release job imports the Developer ID certificate
 into a keychain of its own and hands package.sh the identity and a notarisation
 profile; with none entered it builds ad-hoc as before. The FineType extension
 nested in the bundle is still signed ad-hoc, so a signed tag stops at
-notarisation until that is fixed. `signing-rehearsal.yml` runs the signed path
-on pull requests with a throwaway self-signed identity.
+notarisation until that is fixed. `signing-rehearsal.yml` runs the signed path,
+with a throwaway self-signed identity, on pull requests that change signing or
+the code nested in the bundle, and by hand.

@@ -52,7 +52,7 @@
 # outer bundle, and leaves the code nested in the bundle as it was staged: the
 # DuckDB CLI with its upstream signature, and the FineType extension ad-hoc.
 # Apple's notary service refuses a bundle with ad-hoc nested code, so until the
-# nested code is signed too, a tag built with these secrets stops at
+# FineType extension is signed too, a tag built with these secrets stops at
 # notarisation (`notarytool submit`, or `stapler staple` when there is no
 # ticket to staple) and publishes nothing. That fails closed: no build goes
 # out half-signed, and removing the secrets restores the ad-hoc release.
