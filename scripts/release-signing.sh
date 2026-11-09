@@ -47,6 +47,15 @@
 # a release validates it, so wrong credentials fail here, before the build,
 # rather than forty minutes later at `notarytool submit`.
 #
+# WHAT THIS DOES NOT YET MAKE PASS. package.sh signs the bare Mach-O and the
+# outer bundle, and leaves the code nested in the bundle as it was staged: the
+# DuckDB CLI with its upstream signature, and the FineType extension ad-hoc.
+# Apple's notary service refuses a bundle with ad-hoc nested code, so until the
+# nested code is signed too, a tag built with these secrets stops at
+# `notarytool submit` and publishes nothing. That fails closed: no build goes
+# out half-signed, and removing the secrets restores the ad-hoc release.
+# signing-rehearsal.yml records what each nested Mach-O carries on every run.
+#
 # `cleanup` takes the keychain off the search list, deletes it and the key file,
 # and checks both are gone. It is safe to run when `setup` signed ad-hoc or
 # failed half way, and release.yml runs it with `if: always()`.
