@@ -70,6 +70,16 @@
 #                               `xcrun notarytool store-credentials`. Read only
 #                               when an identity is also set. Submits the
 #                               bundle once and staples the ticket to it.
+#   BRIGHTFIELD_NOTARY_KEYCHAIN the keychain file that profile is stored in,
+#                               when it is not on the default search list.
+#                               scripts/release-signing.sh sets it on a CI
+#                               runner; a local run leaves it unset.
+#   BRIGHTFIELD_NOTARY_DEVELOPER_DIR
+#                               the developer directory notarytool and stapler
+#                               run from, when it is not the selected Xcode's.
+#                               scripts/release-signing.sh sets it on a CI
+#                               runner, whose default notarytool crashes; its
+#                               header says why.
 #
 # The chain runs in this order: sign the bare Mach-O → sign the bundle → zip the
 # bundle for submission → one `notarytool submit` → one `stapler staple` on the
@@ -83,6 +93,18 @@ cd "$(dirname "$0")/.."
 
 SIGN_IDENTITY="${BRIGHTFIELD_SIGN_IDENTITY:-}"
 NOTARY_PROFILE="${BRIGHTFIELD_NOTARY_PROFILE:-}"
+NOTARY_KEYCHAIN="${BRIGHTFIELD_NOTARY_KEYCHAIN:-}"
+NOTARY_DEVELOPER_DIR="${BRIGHTFIELD_NOTARY_DEVELOPER_DIR:-}"
+
+# xcrun for notarisation only: from NOTARY_DEVELOPER_DIR when it is set, so the
+# build itself keeps the selected Xcode.
+notary_xcrun() {
+  if [ -n "$NOTARY_DEVELOPER_DIR" ]; then
+    DEVELOPER_DIR="$NOTARY_DEVELOPER_DIR" xcrun "$@"
+  else
+    xcrun "$@"
+  fi
+}
 
 # The repo's exact toolchain pin — the same one CI nails via its toolchain
 # action and the same one rust-toolchain.toml carries for a bare `cargo`.
@@ -529,8 +551,9 @@ case "$TARGET" in
       # ditto -c -k --keepParent is the form notarytool accepts: a zip that
       # preserves the bundle's symlinks, extended attributes and top directory.
       ditto -c -k --keepParent "$APP" "$ZIP"
-      xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
-      xcrun stapler staple "$APP"
+      notary_xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" \
+        ${NOTARY_KEYCHAIN:+--keychain "$NOTARY_KEYCHAIN"} --wait
+      notary_xcrun stapler staple "$APP"
       rm -f "$ZIP"
       STAPLED=1
     fi

@@ -9,8 +9,8 @@
 //! * a workflow that a pull request triggers calling a gate script or cargo
 //!   directly rather than through the command, which CI would run and a local
 //!   run would not. The one call that is not a gate is named in
-//!   `DIRECT_CALLS_ALLOWED`, and the one such workflow that stays outside the
-//!   command is named in `WORKFLOWS_OUTSIDE_THE_COMMAND`, each with its reason.
+//!   `DIRECT_CALLS_ALLOWED`, and the workflows that stay outside the command
+//!   are named in `WORKFLOWS_OUTSIDE_THE_COMMAND`, each with its reason.
 //!
 //! The reader is line-based rather than a YAML parser: it reads `run:` values
 //! (a single line, or a block scalar's more-indented lines) and the `on:`
@@ -36,10 +36,16 @@ pub const DIRECT_CALLS_ALLOWED: &[(&str, &str, &str)] = &[(
 
 /// Workflows a pull request can trigger that call scripts directly and stay
 /// outside the command, by file name, with the reason.
-pub const WORKFLOWS_OUTSIDE_THE_COMMAND: &[(&str, &str)] = &[(
-    "brew-install-branch.yml",
-    "it runs only on a pull request that changes packaging or the formula, builds the release binary and installs it through Homebrew; that is not a step to run on a person's machine before each commit, and release.yml runs the installed-copy check on a tag",
-)];
+pub const WORKFLOWS_OUTSIDE_THE_COMMAND: &[(&str, &str)] = &[
+    (
+        "brew-install-branch.yml",
+        "it runs only on a pull request that changes packaging or the formula, builds the release binary and installs it through Homebrew; that is not a step to run on a person's machine before each commit, and release.yml runs the installed-copy check on a tag",
+    ),
+    (
+        "signing-rehearsal.yml",
+        "it runs only on a pull request that changes release signing or the code nested in the bundle, builds the release binary and signs it with a throwaway identity in a keychain it creates and deletes; that changes a machine's keychain search list, which is not a step to run on a person's machine before each commit",
+    ),
+];
 
 /// Every `.yml` and `.yaml` file in `.github/workflows`, sorted by path.
 pub fn read_all(root: &Path) -> Result<Vec<Workflow>, String> {

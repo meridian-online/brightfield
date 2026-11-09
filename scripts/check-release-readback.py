@@ -382,6 +382,14 @@ def resolve(text: str, leg: dict[str, object], where: str, temp: str) -> str:
             return FIXTURE_REF
         if body in ("runner.temp", "env.RUNNER_TEMP"):
             return temp
+        # A secret resolves to the empty string, which is what a run without it
+        # sees: a pull request, a fork, and every release before the signing
+        # secrets were entered. That only lets this reader parse the signing
+        # step; the sandbox has no scripts/release-signing.sh, so the step
+        # exits 127 there and establishes nothing. signing-rehearsal.yml is
+        # what runs it.
+        if re.fullmatch(r"secrets\.[A-Za-z_][A-Za-z0-9_]*", body):
+            return ""
         raise Unreadable(
             f"{where}: `${{{{ {body} }}}}` is an expression this reader cannot resolve, so what "
             "the step would actually run is unknown to it"
