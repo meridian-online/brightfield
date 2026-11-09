@@ -779,6 +779,18 @@ pub enum SaveReport {
     Failed(String),
 }
 
+impl SaveReport {
+    /// Whether the file holds the buffer after this save: it was written,
+    /// already agreed, or there was no file to save.
+    #[must_use]
+    pub const fn wrote(&self) -> bool {
+        matches!(
+            self,
+            Self::Written | Self::ForcedWrite | Self::Unchanged | Self::NoFile
+        )
+    }
+}
+
 /// One open spec file: the path, the live buffer, and the last text the
 /// buffer was synced with (seed or successful save) — the three texts
 /// `spec_save::decide_save` arbitrates.
@@ -1251,9 +1263,13 @@ impl Item<ChartDoc> for EditorPane {
         // saved and then the window's Save is raised, so one press in the
         // editor saves both (`cmd_s_in_the_editor_saves_the_buffer_then_the_protocol`
         // in `tests/cmd_s_saves_the_protocol.rs`); `perform` stays the verb's
-        // route in from a toolbar or a test.
-        if out.focused && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
-            let _ = self.save_and_note(doc, true);
+        // route in from a toolbar or a test. A buffer this save did not write
+        // stops there, with the editor's own warning saying why and what the
+        // next press does: the window's Save would only say it again.
+        if out.focused
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
+            && self.save_and_note(doc, true).wrote()
+        {
             cx.request(Verb::new(crate::window::SAVE_PROTOCOL));
         }
         self.publish_buffer(doc);
@@ -1271,12 +1287,16 @@ impl Item<ChartDoc> for EditorPane {
             // overwrite, and the window reads what it did; any other is the editor's own.
             let from_window = doc.take_editor_save_ask();
             let report = self.save_and_note(doc, !from_window);
+            let wrote = report.wrote();
             if from_window {
                 doc.set_editor_save_report(report);
             }
             self.publish_buffer(doc);
-            // The buffer first, then the Protocol, as the editor's Cmd+S does.
-            cx.request(Verb::new(crate::window::SAVE_PROTOCOL));
+            // The buffer first, then the Protocol, as the editor's Cmd+S does, and only when the
+            // buffer is in its file.
+            if wrote {
+                cx.request(Verb::new(crate::window::SAVE_PROTOCOL));
+            }
             cx.request_repaint();
             return Handled::Yes;
         }

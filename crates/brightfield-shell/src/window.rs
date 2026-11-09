@@ -2232,6 +2232,9 @@ pub const WAITING_FOR_RUN_TITLE: &str = "Waiting for the run to finish before cl
 pub const WAITING_FOR_RUN_BODY: &str =
     "Quit or close again to close now; the run's record may be lost.";
 
+/// The banner that says an open asked for while the window waits to close was not done.
+const NOT_OPENED_WHILE_CLOSING_BANNER: &str = "not-opened-while-closing";
+
 /// The `quit` verb's longname: the registry's, spelled once here for the
 /// window's key and dispatch.
 pub const QUIT: &str = "quit";
@@ -8463,7 +8466,11 @@ impl MeridianApp {
                     self.stop_waiting_for_runs();
                     self.close_window(ctx);
                 }
-                Leaving::Home | Leaving::Open(_) => self.say_waiting_for_runs(ctx),
+                Leaving::Home => self.say_waiting_for_runs(ctx),
+                Leaving::Open(request) => {
+                    self.say_not_opened_while_closing(&request);
+                    self.say_waiting_for_runs(ctx);
+                }
             }
             return;
         }
@@ -8530,6 +8537,32 @@ impl MeridianApp {
             .body(WAITING_FOR_RUN_BODY),
         );
         ctx.request_repaint();
+    }
+
+    /// Say that `request` was not opened, because the window is closing once a run lands: an open
+    /// refused during the wait is not kept, and is not dropped unsaid.
+    fn say_not_opened_while_closing(&mut self, request: &crate::open_queue::OpenRequest) {
+        use crate::open_queue::OpenRequest;
+        let what = match request {
+            OpenRequest::Path(path) => display_name(path),
+            OpenRequest::Paths(paths) => paths.first().map_or_else(String::new, |p| {
+                if paths.len() > 1 {
+                    format!("{} and {} more", display_name(p), paths.len() - 1)
+                } else {
+                    display_name(p)
+                }
+            }),
+            OpenRequest::Link(link) => link.clone(),
+            OpenRequest::AddSource(path) => display_name(path),
+        };
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new(NOT_OPENED_WHILE_CLOSING_BANNER),
+                Severity::Warning,
+                format!("{what} was not opened"),
+            )
+            .body("The window is closing once the run finishes. Open it again after."),
+        );
     }
 
     /// Stop waiting for runs to land before closing, and take the banner that said so down.
@@ -10665,17 +10698,19 @@ impl MeridianApp {
             .and_then(|path| crate::data_file::open(&path.to_string_lossy()));
         match opened {
             Ok(mut opened) => {
-                // A table's grid is the Protocol's own, as the grid of a Protocol of one source
-                // is: a view kept on it is a step of the Protocol, recorded into its manifest,
-                // not into the folder its rows were copied to. A join's rows are no table of the
-                // Protocol's, so they stay where they were copied.
-                if matches!(
+                // The grid is the Protocol's own, as the grid of a Protocol of one source is:
+                // what a Save writes for it goes into the Protocol's folder, never into the
+                // folder its rows were copied to, which holds data only. A view kept on a
+                // table's rows is a step recorded into the Protocol's manifest. A join's rows are
+                // no table a manifest step makes, so a view on them only shows them, and its
+                // chart is saved beside the Protocol's panels under the join's name.
+                opened.protocol.dir.clone_from(&model.doc.protocol.dir);
+                let join = matches!(
                     target,
-                    brightfield_render::model_scene::Selection::Dataset(_)
-                ) {
-                    opened.protocol.dir.clone_from(&model.doc.protocol.dir);
-                }
+                    brightfield_render::model_scene::Selection::Relationship(_)
+                );
                 self.adopt_boot(Boot::of_opened_file(opened));
+                self.charts.doc.set_views_are_steps(!join);
                 let showing = match target {
                     brightfield_render::model_scene::Selection::Dataset(name) => {
                         format!("Table {name}")

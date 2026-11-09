@@ -553,13 +553,7 @@ fn cmd_s_on_a_protocol_opened_as_a_folder_of_two_tables() {
     assert!(!win.app.title().contains(UNSAVED_MARK));
     // Discovery's full pass rewrites the folder's steps when it lands; it is let land first, so
     // what is measured is Cmd+S alone.
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while win.app.model_pane().is_some_and(|pane| pane.discovering()) {
-        assert!(Instant::now() < deadline, "discovery's pass did not land");
-        win.run(Vec::new());
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    win.settle();
+    discovery_landed(&mut win);
 
     // On the model, nothing is a draft: making the Protocol and its joins are kept at once.
     let before = modification_times(&win.dir());
@@ -612,6 +606,167 @@ fn cmd_s_on_a_protocol_opened_as_a_folder_of_two_tables() {
         !win.dir().join(".grid").join("arcform.yaml").exists(),
         "and nothing manifest-like is left beside the grid's rows"
     );
+    let step = "cmd_s_houses_filtered_by_house_age";
+    let drawn: Vec<String> = win
+        .app
+        .spine_rows()
+        .iter()
+        .map(|r| r.label.clone())
+        .collect();
+    assert!(
+        drawn.iter().any(|l| l == step),
+        "the spine shows the recorded step after the Save: {drawn:?}"
+    );
+
+    // Run it: the record of the run of the Protocol's steps is taken onto the strip.
+    win.run(vec![press(egui::Key::Enter, command())]);
+    assert!(
+        win.app.run_in_progress(),
+        "cmd-enter started a run: {}",
+        win.said()
+    );
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while win.app.run_outstanding() {
+        assert!(Instant::now() < deadline, "the run did not land");
+        win.run(Vec::new());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    win.settle();
+    assert!(
+        win.app.protocol_model().run().is_some(),
+        "the strip took on the run's record: {}",
+        win.said()
+    );
+    assert!(
+        win.app.protocol_model().step_ran(step),
+        "the record says the recorded step ran: {}",
+        win.said()
+    );
+    assert_eq!(
+        grid_files(&win.dir()),
+        ["cmd_s_houses.parquet"],
+        "the grid's folder holds its rows alone"
+    );
+}
+
+/// The files the grid's copies of a folder Protocol's rows are kept in, by name.
+fn grid_files(dir: &Path) -> Vec<String> {
+    fn walk(at: &Path, base: &Path, into: &mut Vec<String>) {
+        if let Ok(entries) = std::fs::read_dir(at) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, base, into);
+                } else {
+                    into.push(
+                        path.strip_prefix(base)
+                            .expect("under the folder")
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                }
+            }
+        }
+    }
+    let base = dir.join(".grid");
+    let mut found = Vec::new();
+    walk(&base, &base, &mut found);
+    found.sort();
+    found
+}
+
+/// Wait for the model pane's discovery pass to land.
+fn discovery_landed(win: &mut Window) {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while win.app.model_pane().is_some_and(|pane| pane.discovering()) {
+        assert!(Instant::now() < deadline, "discovery's pass did not land");
+        win.run(Vec::new());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    win.settle();
+}
+
+#[test]
+fn a_joins_grid_writes_nothing_manifest_like_and_its_view_is_no_draft() {
+    scratch();
+    let dir = scratch().join("input").join("cmd_s_joined");
+    std::fs::create_dir_all(&dir).expect("an input folder");
+    let mut orders = String::from("order_id,store_id,amount\n");
+    for i in 1..=60 {
+        orders.push_str(&format!("{i},{},{}\n", i % 5 + 1, i * 3));
+    }
+    std::fs::write(dir.join("orders.csv"), orders).expect("the orders write");
+    std::fs::write(
+        dir.join("stores.csv"),
+        "store_id,city\n1,Perth\n2,Darwin\n3,Hobart\n4,Cairns\n5,Broome\n",
+    )
+    .expect("the stores write");
+    let mut win = Window {
+        app: MeridianApp::headless(Boot::empty(), Mode::Light)
+            .running_with(Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell")))),
+        ctx: egui::Context::default(),
+        name: "cmd_s_joined".to_owned(),
+        time: 0.0,
+    };
+    win.app.open_queue().push(OpenRequest::Path(dir));
+    win.settle();
+    discovery_landed(&mut win);
+    let join = {
+        let pane = win
+            .app
+            .model_pane()
+            .unwrap_or_else(|| panic!("two tables open the model: {}", win.said()));
+        pane.model
+            .relationships
+            .first()
+            .unwrap_or_else(|| panic!("the model joins orders to stores: {:?}", pane.model))
+            .name
+            .clone()
+    };
+    let ctx = win.ctx.clone();
+    assert!(
+        win.app.open_model_in_grid(
+            &ctx,
+            &brightfield_render::model_scene::Selection::Relationship(join.clone())
+        ),
+        "the join opens in the grid: {}",
+        win.said()
+    );
+    win.settle();
+    let before = modification_times(&win.dir());
+    std::thread::sleep(Duration::from_millis(1100));
+
+    win.cmd_s();
+
+    assert_eq!(
+        modification_times(&win.dir()),
+        before,
+        "an idle Cmd+S on a join's grid writes nothing"
+    );
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("\"orders.amount\" > 30".to_owned()),
+            order: None,
+        });
+    win.settle();
+    assert!(
+        !win.app.title().contains(UNSAVED_MARK),
+        "a view on a join's rows is no draft: {}",
+        win.app.title()
+    );
+    win.cmd_s();
+    assert_eq!(
+        modification_times(&win.dir()),
+        before,
+        "and Cmd+S writes nothing for it"
+    );
+    assert_eq!(
+        grid_files(&win.dir()),
+        [format!("{join}.parquet")],
+        "the grid's folder holds the join's rows alone"
+    );
+    assert!(win.said().is_empty(), "nothing is refused: {}", win.said());
 }
 
 #[test]

@@ -748,6 +748,60 @@ pub fn generated_protocol_of_one_source(
     }))
 }
 
+/// **The steps recorded into the own-files Protocol of several tables in `dir` from the grid of
+/// `source`'s table**: each step after the ones it was made with (`made_with`, by name) whose
+/// chain starts at that table, in the manifest's order, rooted at the table.
+///
+/// A step recorded from another table's grid, and a step whose model is not one brightfield can
+/// read, are another chain's and are left out: they are the Protocol's all the same, and the
+/// grid of this table shows the steps that start at it.
+#[must_use]
+pub fn generated_protocol_of_folder_table(
+    manifest_text: &str,
+    dir: &Path,
+    source: &crate::one_step::OneStepProtocol,
+    made_with: &std::collections::HashSet<String>,
+) -> Option<GeneratedProtocol> {
+    let manifest = brightfield_protocol::parse_manifest_str(manifest_text).ok()?;
+    let mut chain: BTreeSet<String> = [source.name.to_lowercase()].into_iter().collect();
+    let mut steps = Vec::new();
+    for step in manifest
+        .steps
+        .iter()
+        .filter(|step| !made_with.contains(&step.name))
+    {
+        let Some(model) = step
+            .sql
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(dir.join(p)).ok())
+        else {
+            continue;
+        };
+        let parsed = if has_header(&model) {
+            parse_generated(&step.name, &model)
+        } else {
+            parse_sql_step(&step.name, &model)
+        };
+        let Ok(parsed) = parsed else {
+            continue;
+        };
+        if parsed
+            .reads
+            .iter()
+            .any(|table| chain.contains(&table.to_lowercase()))
+        {
+            chain.insert(step.name.to_lowercase());
+            steps.push(parsed);
+        }
+    }
+    Some(GeneratedProtocol {
+        data: source.data.clone(),
+        dir: dir.to_path_buf(),
+        root_table: source.name.clone(),
+        steps,
+    })
+}
+
 /// Whether the data file `data` sits in `dir`, the folder of the manifest that
 /// names it. A Protocol opened through its data file is kept in the data
 /// file's own folder ([`crate::one_step`]), so a manifest elsewhere naming it

@@ -436,18 +436,27 @@ impl OneStepProtocol {
         Ok((manifest, sources, Some(generated), None))
     }
 
-    /// The steps recorded after the load in the own-files Protocol of one source this file is the
-    /// grid copy of, read from its manifest `text`: `Ok(None)` when this file's folder is not one,
-    /// or nothing has been recorded into it.
+    /// The steps recorded after the steps it was made with in the own-files Protocol this file
+    /// is the grid copy of one table of, read from its manifest `text`: `Ok(None)` when this
+    /// file's folder is not one, or its table is not this file's. A Protocol with nothing
+    /// recorded yet answers its made-with steps and no recorded one, so its manifest is read
+    /// whole and its runs are taken on.
     ///
-    /// Such a folder's manifest loads the analyst's file where it is and makes this file's table
-    /// in a silver step, so it is not the one-step shape [`crate::generated::generated_protocol_for`]
-    /// reads; without this, a Save that recorded a view into it would be taken back on as the bare
-    /// load, and a run of its steps refused as a run of other steps.
+    /// Such a folder's manifest loads the analyst's files where they are and makes this file's
+    /// table in a silver step, so it is not the one-step shape
+    /// [`crate::generated::generated_protocol_for`] reads; without this, a Save that recorded a
+    /// view into it would be taken back on as the bare load, and a run of its steps refused as a
+    /// run of other steps. A folder of several tables answers the recorded steps whose chain starts
+    /// at this file's table ([`crate::generated::generated_protocol_of_folder_table`]).
     fn recorded_in_own_folder(
         &self,
         text: &str,
     ) -> Result<Option<crate::generated::GeneratedProtocol>, String> {
+        if let Some(made_with) = crate::own_files::folder_table_steps(&self.dir, &self.name) {
+            return Ok(crate::generated::generated_protocol_of_folder_table(
+                text, &self.dir, self, &made_with,
+            ));
+        }
         let Some((table, made_with)) = crate::own_files::one_source_steps(&self.dir) else {
             return Ok(None);
         };

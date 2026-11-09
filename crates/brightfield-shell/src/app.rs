@@ -956,6 +956,12 @@ pub struct ChartDoc {
     /// window cannot reach the editor's report any other way.
     editor_save_ask: bool,
     editor_save_report: Option<crate::editor::SaveReport>,
+    /// **Whether a view applied to the grid is a step of the Protocol**, a
+    /// draft a Save records: true for a table's rows, false for rows no
+    /// manifest step makes, such as a model's join, where a view only shows
+    /// the rows and there is no table to record it on. Set again whenever the
+    /// document is replaced.
+    views_are_steps: bool,
     /// The next order stamp: one counter for kept statements and applied grid
     /// views, so what was made first can be recorded first.
     next_stamp: u64,
@@ -1485,6 +1491,7 @@ impl ChartDoc {
             editor_buffer: None,
             editor_save_ask: false,
             editor_save_report: None,
+            views_are_steps: true,
             next_stamp: 0,
             grid_foot: crate::grid_foot::FootState::default(),
             grid_preview: None,
@@ -1562,6 +1569,7 @@ impl ChartDoc {
             editor_buffer: None,
             editor_save_ask: false,
             editor_save_report: None,
+            views_are_steps: true,
             next_stamp: 0,
             grid_foot: crate::grid_foot::FootState::default(),
             grid_preview: None,
@@ -1692,6 +1700,7 @@ impl ChartDoc {
         self.grid_cursor_reveal = false;
         self.grid_view = brightfield_engine::RowsView::default();
         self.grid_condition_held = None;
+        self.views_are_steps = true;
         self.pending_settled = false;
         self.typed.clear();
         self.typed_stamps.clear();
@@ -2010,12 +2019,23 @@ impl ChartDoc {
     /// shows rows no file says it should.
     #[must_use]
     pub fn grid_view_unrecorded(&self) -> bool {
-        self.grid_condition_unrecorded().is_some() || self.grid_view.order.is_some()
+        self.views_are_steps
+            && (self.grid_condition_unrecorded().is_some() || self.grid_view.order.is_some())
+    }
+
+    /// Say that a view applied to this document's grid is not a step: the
+    /// rows are no table a manifest step makes, so a view only shows them,
+    /// marks nothing unsaved and is recorded by no Save.
+    pub fn set_views_are_steps(&mut self, are: bool) {
+        self.views_are_steps = are;
     }
 
     /// The applied condition, when no file holds it.
     #[must_use]
     pub fn grid_condition_unrecorded(&self) -> Option<&str> {
+        if !self.views_are_steps {
+            return None;
+        }
         self.grid_condition_held
             .is_none()
             .then_some(self.grid_view.condition.as_deref())

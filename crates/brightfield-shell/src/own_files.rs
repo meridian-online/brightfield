@@ -785,6 +785,35 @@ pub fn one_source_steps(dir: &Path) -> Option<(String, HashSet<String>)> {
     Some((name.clone(), steps.into_iter().collect()))
 }
 
+/// The names of the steps the own-files Protocol of several tables in `dir` was made with, each
+/// table's load and its silver and failed steps, when `dir` holds one and `table` is one of its
+/// tables: what a step recorded from that table's grid comes after.
+#[must_use]
+pub fn folder_table_steps(dir: &Path, table: &str) -> Option<HashSet<String>> {
+    own_protocol_dir(dir)?;
+    let sources = read_sources(dir).ok()?;
+    if !sources
+        .tables
+        .iter()
+        .any(|t| t.name.eq_ignore_ascii_case(table))
+    {
+        return None;
+    }
+    Some(
+        sources
+            .tables
+            .iter()
+            .flat_map(|t| {
+                [
+                    load_step(&t.name),
+                    format!("{SILVER_STEP}{}", t.name),
+                    format!("{FAILED_STEP}{}", t.name),
+                ]
+            })
+            .collect(),
+    )
+}
+
 /// Open the own-files Protocol of one source in `dir` again: the table its open recorded, the
 /// Protocol run, which reads the source file afresh where it changed, and the raw table profiled.
 /// No folder is made.

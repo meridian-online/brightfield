@@ -677,6 +677,26 @@ fn a_second_quit_while_waiting_for_a_run_closes_now() {
     assert!(win.says_waiting());
     assert!(!win.closed);
 
+    // An open asked for during the wait is not done, and the window says so rather than drop it
+    // unsaid.
+    let other = housing_copy("quit_twice_other");
+    win.app.open_queue().push(OpenRequest::Path(other));
+    win.settle();
+    win.assert_holds("quit_twice");
+    assert!(
+        !Window::dir_of("quit_twice_other").exists(),
+        "nothing is made of it"
+    );
+    assert!(
+        win.app
+            .notifications()
+            .iter()
+            .any(|n| n.title == "quit_twice_other.csv was not opened"),
+        "a banner says the open was not done: {}",
+        win.said()
+    );
+    assert!(win.says_waiting() && !win.asking());
+
     win.cmd_q();
 
     assert!(win.closed, "a second quit closes at once: {}", win.said());
