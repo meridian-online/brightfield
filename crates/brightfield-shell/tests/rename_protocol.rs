@@ -19,7 +19,10 @@ use brightfield_shell::open_queue::OpenRequest;
 use brightfield_shell::overlays::{CloseAnswer, MOVE_QUESTION_TITLE, RENAME_QUESTION_TITLE};
 use brightfield_shell::rename;
 use brightfield_shell::run::Runner;
-use brightfield_shell::window::{Boot, Leaving, MeridianApp, PlaceField, UNSAVED_MARK};
+use brightfield_shell::window::{
+    Boot, Leaving, MeridianApp, PlaceField, DOOR_RENAME_UNDER_A_RUN, MOVE_PROTOCOL_BANNER,
+    NOT_FOLLOWED_BANNER, UNSAVED_MARK,
+};
 
 fn scratch() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -1050,8 +1053,21 @@ fn a_door_row_is_not_renamed_under_a_run() {
     win.run(vec![egui::Event::PointerMoved(row.rect.center())]);
     win.run(vec![press(egui::Key::F2, egui::Modifiers::NONE)]);
     win.settle();
+    assert_eq!(
+        win.app.door_rename_row(),
+        Some(row.id.as_str()),
+        "F2 opened the row's name field"
+    );
     win.type_over("door_run_renamed");
-
+    assert_eq!(win.app.door_rename_row(), None, "Enter committed the field");
+    let refused = win
+        .app
+        .notifications()
+        .iter()
+        .find(|n| n.id == meridian_egui::NotificationId::new(MOVE_PROTOCOL_BANNER))
+        .expect("the rename was refused in a banner");
+    assert_eq!(refused.title, "The Protocol was not renamed");
+    assert_eq!(refused.body.as_deref(), Some(DOOR_RENAME_UNDER_A_RUN));
     assert!(
         old.join("arcform.yaml").is_file(),
         "the folder is where it was"
@@ -1060,11 +1076,6 @@ fn a_door_row_is_not_renamed_under_a_run() {
         .join("protocols")
         .join("door_run_renamed")
         .exists());
-    assert!(
-        win.said().contains("run"),
-        "a banner says a run is writing: {}",
-        win.said()
-    );
     let deadline = Instant::now() + Duration::from_secs(120);
     while win.app.run_outstanding() {
         assert!(Instant::now() < deadline, "the run did not land");
@@ -1177,4 +1188,39 @@ fn the_location_field_reads_a_relative_path_from_where_the_protocol_is_and_offer
         .join("relative_location");
     assert!(new.join("arcform.yaml").is_file(), "{}", win.said());
     assert!(!old.exists());
+}
+
+#[test]
+fn a_rename_says_what_did_not_follow_it() {
+    let mut win = Window::opened("not_followed");
+    let dir = win.dir().expect("a Protocol");
+    // A package that cannot be read, so the repair after the rename fails.
+    let package = dir.join("packages/not_followed/datapackage.json");
+    std::fs::write(&package, "{ not json").expect("the package is spoiled");
+
+    win.app
+        .rename_protocol(&win.ctx.clone(), "not_followed_renamed");
+    win.settle();
+
+    let new = scratch().join("protocols").join("not_followed_renamed");
+    assert!(
+        new.join("arcform.yaml").is_file(),
+        "the rename is done: {}",
+        win.said()
+    );
+    assert!(!dir.exists());
+    let said = win
+        .app
+        .notifications()
+        .iter()
+        .find(|n| n.id == meridian_egui::NotificationId::new(NOT_FOLLOWED_BANNER))
+        .expect("a banner says what did not follow");
+    assert_eq!(said.title, "Renamed, but not everything followed it");
+    assert!(
+        said.body
+            .as_deref()
+            .is_some_and(|b| b.starts_with(rename::SOURCES_NOT_FOLLOWED)),
+        "{:?}",
+        said.body
+    );
 }

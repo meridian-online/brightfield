@@ -44,7 +44,21 @@ pub struct Moved {
     /// The original folder, or what is left of it, when a copy to another volume could not
     /// remove it all. The move is done all the same: the copy was checked first.
     pub left_behind: Option<String>,
+    /// What did not follow the folder, each in a sentence: sources that could not all be pointed
+    /// at from the new place, a place not recorded, a working database that will be built again.
+    /// The move is done all the same.
+    pub warnings: Vec<String>,
 }
+
+/// What a source repair that failed after a move says.
+pub const SOURCES_NOT_FOLLOWED: &str = "Its sources could not all be found from the new place";
+
+/// What a place not recorded after a move says.
+pub const PLACE_NOT_RECORDED: &str =
+    "Its new place was not recorded, so the next open repairs its sources again";
+
+/// What a working database that did not move says.
+pub const DATABASE_NOT_FOLLOWED: &str = "Its working data will be rebuilt on the next run";
 
 /// The two folder operations a move makes, so a test can make either fail: renaming the folder,
 /// and removing the original once a copy to another volume has been checked.
@@ -127,12 +141,15 @@ pub fn rename_with(dir: &Path, new_name: &str, ops: &FolderOps) -> Result<Moved,
         let database = working_database(&dir);
         set_manifest_name(&dir, name)?;
         let canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());
-        if let Err(e) = move_database(database, &canonical) {
-            eprintln!("warning: {}: {e}", dir.display());
-        }
+        let warnings = move_database(database, &canonical)
+            .err()
+            .map(|e| format!("{DATABASE_NOT_FOLLOWED}: {e}"))
+            .into_iter()
+            .collect();
         return Ok(Moved {
             to: dir,
             left_behind: None,
+            warnings,
         });
     }
     // A change of case alone, on a file system that ignores case, names the folder itself.
@@ -149,8 +166,12 @@ pub fn rename_with(dir: &Path, new_name: &str, ops: &FolderOps) -> Result<Moved,
             Err(e) => return Err(format!("{}: {e}", to.display())),
         }
     }
-    let left_behind = move_to(&dir, &to, Some(name), !itself, ops)?;
-    Ok(Moved { to, left_behind })
+    let (left_behind, warnings) = move_to(&dir, &to, Some(name), !itself, ops)?;
+    Ok(Moved {
+        to,
+        left_behind,
+        warnings,
+    })
 }
 
 /// Move the Protocol in `dir` into `new_parent`, keeping its name, or taking `-2`, `-3` and so on
@@ -200,6 +221,7 @@ pub fn relocate_with(dir: &Path, new_parent: &Path, ops: &FolderOps) -> Result<M
         return Ok(Moved {
             to: dir,
             left_behind: None,
+            warnings: Vec::new(),
         });
     }
     let stem = dir
@@ -208,8 +230,12 @@ pub fn relocate_with(dir: &Path, new_parent: &Path, ops: &FolderOps) -> Result<M
         .ok_or_else(|| format!("{}: names no folder", dir.display()))?;
     let (to, name) = crate::protocols_dir::claim(&new_parent, &stem).map_err(|e| e.to_string())?;
     let renamed = (name != stem).then_some(name.as_str());
-    let left_behind = move_to(&dir, &to, renamed, true, ops)?;
-    Ok(Moved { to, left_behind })
+    let (left_behind, warnings) = move_to(&dir, &to, renamed, true, ops)?;
+    Ok(Moved {
+        to,
+        left_behind,
+        warnings,
+    })
 }
 
 /// The folder the Protocol in `dir` was last recorded at, when that is not where it is now: it was
@@ -348,7 +374,8 @@ fn file_value_at(line: &str, key: usize, dir: &Path, was: &Path) -> Option<Strin
         return None;
     }
     let value_at = after + (line[after..].len() - line[after..].trim_start().len());
-    let (named, end, style) = read_scalar(&line[value_at..])?;
+    let in_flow = before.ends_with('{') || before.ends_with(',');
+    let (named, end, style) = read_scalar(&line[value_at..], in_flow)?;
     let inside = inside_of(Path::new(&named), was)?;
     let fixed = dir.join(inside).to_string_lossy().into_owned();
     if fixed == named {
@@ -371,8 +398,8 @@ enum Style {
 }
 
 /// The scalar at the start of `text`, unescaped, with how many bytes of `text` it took and its
-/// style. `None` for a quoted scalar left open.
-fn read_scalar(text: &str) -> Option<(String, usize, Style)> {
+/// style, read inside a flow mapping when `in_flow`. `None` for a quoted scalar left open.
+fn read_scalar(text: &str, in_flow: bool) -> Option<(String, usize, Style)> {
     let mut chars = text.char_indices().peekable();
     match chars.peek()?.1 {
         '\'' => {
@@ -409,10 +436,10 @@ fn read_scalar(text: &str) -> Option<(String, usize, Style)> {
             None
         }
         _ => {
-            let end = text
-                .find([',', '}'])
-                .or_else(|| text.find(" #"))
-                .unwrap_or(text.len());
+            // A `,` or `}` ends a plain scalar only inside a flow mapping; in a block it is part
+            // of the value.
+            let flow_end = if in_flow { text.find([',', '}']) } else { None };
+            let end = flow_end.or_else(|| text.find(" #")).unwrap_or(text.len());
             let value = text[..end].trim_end();
             Some((value.to_string(), value.len(), Style::Plain))
         }
@@ -611,14 +638,15 @@ fn same_folder(a: &Path, b: &Path) -> bool {
 /// Move the Protocol in `dir` to `to`, which is a folder claimed for it when `claimed`, renaming it
 /// `name` in its manifest when one is given; then repair, record and move the database. A move that
 /// fails, at any step before the folder has moved, puts the manifest back and gives up the claim.
-/// Answers what an original copied to another volume left behind, if anything.
+/// Answers what an original copied to another volume left behind, if anything, and what did not
+/// follow the folder.
 fn move_to(
     dir: &Path,
     to: &Path,
     name: Option<&str>,
     claimed: bool,
     ops: &FolderOps,
-) -> Result<Option<String>, String> {
+) -> Result<(Option<String>, Vec<String>), String> {
     let release = |why: String| {
         if claimed {
             let _ = std::fs::remove_dir(to);
@@ -641,22 +669,21 @@ fn move_to(
     }
     let left_behind = move_folder(dir, to, claimed, ops).map_err(give_up)?;
     let now = to.canonicalize().unwrap_or_else(|_| to.to_path_buf());
-    // The folder has moved, so what follows cannot fail the move: each step says what it left.
+    // The folder has moved, so what follows cannot fail the move: each step that fails says what
+    // did not follow it.
+    let mut warnings = Vec::new();
     if let Err(e) = repair(&now, &was) {
-        eprintln!(
-            "warning: {}: a source path was not repaired: {e}",
-            now.display()
-        );
+        warnings.push(format!("{SOURCES_NOT_FOLLOWED}: {e}"));
     }
     if now.join(SOURCES_FILE).is_file() {
         if let Err(e) = record_dir(&now) {
-            eprintln!("warning: {e}");
+            warnings.push(format!("{PLACE_NOT_RECORDED}: {e}"));
         }
     }
     if let Err(e) = move_database(database, &now) {
-        eprintln!("warning: {}: {e}", now.display());
+        warnings.push(format!("{DATABASE_NOT_FOLLOWED}: {e}"));
     }
-    Ok(left_behind)
+    Ok((left_behind, warnings))
 }
 
 /// Move the folder `dir` to `to`. A move to another volume is a copy, checked, and then the
@@ -1001,6 +1028,12 @@ mod tests {
             .as_deref(),
             Some("  { file: /q/n/t.parquet }")
         );
+        // A comma in a block's plain value is part of it, and the value is quoted once it needs to be.
+        let fixed = moved_file_line("    file: /p/hugh's old/a,b.parquet", dir, was)
+            .expect("the line is rewritten");
+        assert_eq!(fixed, "    file: '/p/new''s/a,b.parquet'");
+        let read: serde_yaml::Value = serde_yaml::from_str(fixed.trim()).expect("it parses");
+        assert_eq!(read["file"].as_str(), Some("/p/new's/a,b.parquet"));
         // Not the key: another key ending in it, and an address inside a value.
         assert_eq!(
             moved_file_line("    profile: '/p/hugh''s old/x'", dir, was),

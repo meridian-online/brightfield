@@ -2266,11 +2266,19 @@ struct PlaceEdit {
 }
 
 /// The banner that says a rename or a move of the Protocol was refused, and why.
-const MOVE_PROTOCOL_BANNER: &str = "move-protocol";
+pub const MOVE_PROTOCOL_BANNER: &str = "move-protocol";
+
+/// What that banner says of a front-door row renamed while a run is writing.
+pub const DOOR_RENAME_UNDER_A_RUN: &str =
+    "A run is writing into a Protocol's folder. Try again once it finishes.";
 
 /// The banner that names what is left of a Protocol's old folder after a move to another volume
 /// could not remove all of it.
 const LEFT_BEHIND_BANNER: &str = "move-protocol-left-behind";
+
+/// The banner that says what did not follow a renamed or moved Protocol: its sources, its
+/// recorded place, or its working database.
+pub const NOT_FOLLOWED_BANNER: &str = "move-protocol-not-followed";
 
 /// The banner that says the YAML editor's buffer was not saved, and why.
 const EDITOR_NOT_SAVED_BANNER: &str = "editor-not-saved";
@@ -10850,11 +10858,7 @@ impl MeridianApp {
         };
         let to = Move::Rename(name.to_string());
         if self.run_outstanding() {
-            self.say_not_moved(
-                &to,
-                "A run is writing into a Protocol's folder. Try again once it finishes."
-                    .to_string(),
-            );
+            self.say_not_moved(&to, DOOR_RENAME_UNDER_A_RUN.to_string());
             ctx.request_repaint();
             return;
         }
@@ -10917,6 +10921,7 @@ impl MeridianApp {
             Ok(crate::rename::Moved {
                 to: new,
                 left_behind,
+                warnings,
             }) => {
                 self.notifications
                     .dismiss(NotificationId::new(MOVE_PROTOCOL_BANNER));
@@ -10930,6 +10935,22 @@ impl MeridianApp {
                             "The Protocol moved, and part of its old folder is left",
                         )
                         .body(left),
+                    );
+                }
+                self.notifications
+                    .dismiss(NotificationId::new(NOT_FOLLOWED_BANNER));
+                if !warnings.is_empty() {
+                    let title = match to {
+                        Move::Rename(_) => "Renamed, but not everything followed it",
+                        Move::Relocate(_) => "Moved, but not everything followed it",
+                    };
+                    self.notifications.raise(
+                        Notification::new(
+                            NotificationId::new(NOT_FOLLOWED_BANNER),
+                            Severity::Warning,
+                            title,
+                        )
+                        .body(warnings.join(". ")),
                     );
                 }
                 if new == dir {
