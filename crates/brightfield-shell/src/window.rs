@@ -9520,8 +9520,7 @@ impl MeridianApp {
                 } else if let Leaving::MoveAll { from, .. } = &to {
                     self.say_protocols_stayed(
                         from,
-                        "The Protocol open could not be saved, so no Protocol was moved. \
-                         Nothing else changed.",
+                        "The Protocol open could not be saved, so no Protocol was moved.",
                     );
                 }
             }
@@ -9555,9 +9554,9 @@ impl MeridianApp {
                 "The Protocols were not moved",
             )
             .body(format!(
-                "{why} The Protocols in {} stayed where they are, and new Protocols go to {}.",
-                from.display(),
-                crate::protocols_dir::root().display()
+                "{why} New Protocols now go to {}, and the Protocols in {} are where they were.",
+                crate::protocols_dir::root().display(),
+                from.display()
             )),
         );
     }
@@ -12040,21 +12039,17 @@ impl MeridianApp {
         to: &std::path::Path,
         leave_open: bool,
     ) {
-        use crate::protocols_dir::Left;
         let open = self.open_protocol_dir().filter(|dir| is_within(dir, from));
         // A run writing its record into a folder, the open Protocol's or one left running after
         // Home, keeps that folder where it is; the open one is left too for its own draft when
         // the analyst chose to keep editing.
-        let mut leave: Vec<(PathBuf, Left)> = self
+        let running: Vec<PathBuf> = self
             .running
             .iter()
-            .map(|pending| (pending.run.dir().to_path_buf(), Left::Running))
+            .map(|pending| pending.run.dir().to_path_buf())
             .collect();
-        if let Some(open) = open.as_ref().filter(|_| leave_open) {
-            if !leave.iter().any(|(dir, _)| dir == open) {
-                leave.push((open.clone(), Left::Draft));
-            }
-        }
+        let leave =
+            crate::protocols_dir::left_behind(&running, open.as_deref().filter(|_| leave_open));
         let canonical_from = from.canonicalize().ok();
         let report = crate::protocols_dir::move_all_with(
             from,

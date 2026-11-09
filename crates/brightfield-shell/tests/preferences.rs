@@ -683,7 +683,11 @@ fn esc_on_the_move_question_cancels_the_whole_move() {
     let banner = win
         .banner(MOVE_ALL_BANNER)
         .unwrap_or_else(|| panic!("a banner says so: {}", win.said()));
-    assert!(banner.contains("stayed where they are"), "{banner}");
+    assert!(
+        banner.contains("are where they were")
+            && banner.contains(&format!("New Protocols now go to {}", new.display())),
+        "{banner}"
+    );
 }
 
 #[cfg(unix)]
@@ -720,6 +724,11 @@ fn a_failed_save_before_the_move_moves_nothing_and_says_so() {
         banner.contains("could not be saved") && banner.contains("no Protocol was moved"),
         "{banner}"
     );
+    assert!(
+        banner.contains(&format!("New Protocols now go to {}", new.display()))
+            && !banner.contains("Nothing else changed"),
+        "it says the setting changed: {banner}"
+    );
 }
 
 #[test]
@@ -750,4 +759,52 @@ fn the_variable_shows_its_folder_and_the_setting_is_not_changed() {
         "{}",
         win.said()
     );
+}
+
+#[test]
+fn a_second_unreadable_file_is_kept_beside_the_first() {
+    let _serial = serial();
+    let (_old, new) = roots("second_aside");
+    let config = scratch().join("config");
+    let first = config.join("preferences.json.unreadable");
+    let second = config.join("preferences.json.unreadable-2");
+    std::fs::write(&first, "kept before").unwrap();
+    std::fs::write(preferences_file(), "{ broken").unwrap();
+    let mut win = Window::new();
+    win.choose(&new);
+    let kept = std::fs::read_to_string(&first).ok();
+    let beside = std::fs::read_to_string(&second).ok();
+    let banner = win.banner(PREFERENCES_BANNER).unwrap_or_default();
+    let _ = std::fs::remove_file(&first);
+    let _ = std::fs::remove_file(&second);
+    assert_eq!(
+        kept.as_deref(),
+        Some("kept before"),
+        "the earlier one is kept"
+    );
+    assert_eq!(beside.as_deref(), Some("{ broken"), "{}", win.said());
+    assert!(banner.contains("preferences.json.unreadable-2"), "{banner}");
+    assert_eq!(protocols_dir::root(), new);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_folder_running_and_drafted_is_left_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("protocols").join("busy");
+    std::fs::create_dir_all(&dir).unwrap();
+    let link = tmp.path().join("linked");
+    std::os::unix::fs::symlink(tmp.path().join("protocols"), &link).unwrap();
+    let written_otherwise = tmp.path().join("protocols").join(".").join("busy");
+    let left = protocols_dir::left_behind(&[link.join("busy")], Some(&written_otherwise));
+    assert_eq!(left, vec![(link.join("busy"), Left::Running)]);
+    let other = tmp.path().join("protocols").join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let left = protocols_dir::left_behind(&[link.join("busy")], Some(&other));
+    assert_eq!(
+        left.len(),
+        2,
+        "a drafted folder of its own is listed: {left:?}"
+    );
+    assert_eq!(left[1], (other, Left::Draft));
 }

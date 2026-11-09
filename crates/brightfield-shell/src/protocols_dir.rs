@@ -245,8 +245,7 @@ pub fn set_root_saying(dir: &Path) -> Result<Option<String>, String> {
     let mut preferences = match read_preferences(&path) {
         Ok(fields) => fields,
         Err(why) => {
-            let aside = path.with_extension(format!("json.{UNREADABLE_SUFFIX}"));
-            std::fs::rename(&path, &aside).map_err(|e| {
+            let aside = set_aside(&path).map_err(|e| {
                 format!(
                     "{} could not be read ({why}) and could not be set aside ({e}), so it was \
                      left as it is and the Protocols folder was not changed.",
@@ -285,6 +284,62 @@ pub enum Left {
     Draft,
     /// A run is writing into its folder.
     Running,
+}
+
+/// Move the unreadable Preferences file at `path` aside, to `preferences.json.unreadable`, or
+/// `-2`, `-3` and so on after it when that name is taken, never replacing a file kept aside
+/// before. Answers the name used.
+///
+/// The claim is a hard link, which fails when the name is taken, so two set-asides cannot take one
+/// name; the original is removed once linked. A file system without hard links is checked for the
+/// name and then renamed.
+fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
+    for n in 1u32.. {
+        let suffix = if n == 1 {
+            UNREADABLE_SUFFIX.to_string()
+        } else {
+            format!("{UNREADABLE_SUFFIX}-{n}")
+        };
+        let aside = path.with_extension(format!("json.{suffix}"));
+        match std::fs::hard_link(path, &aside) {
+            Ok(()) => {
+                std::fs::remove_file(path)?;
+                return Ok(aside);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) if !aside.exists() => {
+                std::fs::rename(path, &aside)?;
+                return Ok(aside);
+            }
+            Err(_) => {}
+        }
+    }
+    unreachable!("an unbounded range")
+}
+
+/// Whether `a` and `b` name one folder, as written or once both are resolved.
+fn same_folder(a: &Path, b: &Path) -> bool {
+    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
+}
+
+/// The Protocols a move into a new Protocols folder leaves where they are: each folder in
+/// `running`, which a run is writing into, and `drafted`, the open Protocol whose analyst kept
+/// editing, unless it is one of those already. Each folder is listed once however its path is
+/// written (`a_folder_running_and_drafted_is_left_once`).
+#[must_use]
+pub fn left_behind(running: &[PathBuf], drafted: Option<&Path>) -> Vec<(PathBuf, Left)> {
+    let mut leave: Vec<(PathBuf, Left)> = Vec::new();
+    for dir in running {
+        if !leave.iter().any(|(kept, _)| same_folder(kept, dir)) {
+            leave.push((dir.clone(), Left::Running));
+        }
+    }
+    if let Some(open) = drafted {
+        if !leave.iter().any(|(kept, _)| same_folder(kept, open)) {
+            leave.push((open.to_path_buf(), Left::Draft));
+        }
+    }
+    leave
 }
 
 /// What moving the old Protocols folder's Protocols into a new one did.
@@ -391,9 +446,7 @@ pub fn move_all_with(
     let mut report = MoveReport::default();
     let mut protocols = Vec::new();
     protocols_in(&crate::door_tree::read(from), from, &mut protocols);
-    let same = |a: &Path, b: &Path| {
-        a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
-    };
+    let same = same_folder;
     for dir in protocols {
         if let Some((_, why)) = leave.iter().find(|(kept, _)| same(kept, &dir)) {
             report.left.push((dir, *why));
