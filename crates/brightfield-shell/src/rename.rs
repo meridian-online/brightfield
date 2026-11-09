@@ -51,7 +51,7 @@ pub struct Moved {
 pub struct FolderOps<'a> {
     /// Rename a folder, as [`std::fs::rename`] does.
     pub rename: &'a dyn Fn(&Path, &Path) -> io::Result<()>,
-    /// Remove a folder and everything in it, as [`std::fs::remove_dir_all`] does.
+    /// Remove a folder with what it holds, as [`std::fs::remove_dir_all`] does.
     pub remove: &'a dyn Fn(&Path) -> io::Result<()>,
 }
 
@@ -170,7 +170,8 @@ pub fn relocate(dir: &Path, new_parent: &Path) -> Result<PathBuf, String> {
 /// [`io::ErrorKind::CrossesDevices`], the folder is copied, the copy checked against it by the
 /// path and size of each file in it (not by content), and then the original removed
 /// (`relocate_across_volumes_copies_then_removes`). Once the copy is checked the move is done: an
-/// original that cannot all be removed is named in [`Moved::left_behind`].
+/// original that cannot all be removed is named in [`Moved::left_behind`]
+/// (`a_checked_copy_whose_original_cannot_all_be_removed_is_still_a_move`).
 ///
 /// # Errors
 ///
@@ -547,10 +548,11 @@ fn repair_value(value: Option<&mut Value>, from: &Path, to: &Path, was: &Path) -
 }
 
 /// `path`, written relative to the folder `from`, written again relative to `to`, when it is
-/// relative, points outside the Protocol folder `was`, names nothing from `to`, and named a file
+/// relative, points outside the Protocol folder `was`, names no file from `to`, and named a file
 /// that is still there from `from`. `None` when it needs no rewriting: absolute, an address,
 /// inside the folder, still found from the new place (a parent holding the Protocol and its data
-/// moved together, or copied), or naming nothing from either place.
+/// moved together, or copied), or found from neither place
+/// (`a_path_still_found_from_the_new_place_or_found_from_neither_is_left`).
 fn repaired(path: &str, from: &Path, to: &Path, was: &Path) -> Option<String> {
     if path.is_empty() || path.contains("://") || Path::new(path).is_absolute() {
         return None;
