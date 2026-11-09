@@ -3041,9 +3041,10 @@ pub struct MeridianApp {
     /// door was hidden and kept while it stays shown. `None` until then.
     door_tree: Option<Vec<crate::door_tree::Node>>,
     /// The run state of each Protocol folder the door has drawn a row for, read from its newest
-    /// run record the first time the row is drawn after the door is shown or after a run of this
-    /// window's lands, so a frame reads no database or record it read on the frame before.
-    door_runs: std::collections::HashMap<PathBuf, RunState>,
+    /// whole run's record, with when that run was recorded: read the first time the row is drawn
+    /// after the door is shown or after a run of this window's lands, so a frame reads no database
+    /// or record it read on the frame before.
+    door_runs: std::collections::HashMap<PathBuf, (RunState, Option<u64>)>,
     /// Whether the last frame drew the door, so the first frame that draws it again rereads what
     /// it lists.
     door_was_live: bool,
@@ -10478,7 +10479,7 @@ impl MeridianApp {
         match Boot::with_saved_chart(opened) {
             Ok(boot) => {
                 self.adopt_opened_boot(ctx, boot);
-                self.remember_own_protocol(&protocol.dir);
+                self.remember_own_protocol(&protocol.dir, true);
                 self.own_protocol = Some(protocol);
             }
             Err(e) => self.say_open_failed(ctx, &dir, e),
@@ -10934,19 +10935,31 @@ impl MeridianApp {
         self.door_runs.clear();
     }
 
-    /// The run state the door draws for the Protocol in `dir`: its newest run record's, read the
-    /// first time a row asks after the door was shown, and kept while it stays shown.
-    fn door_run_state(&mut self, dir: &std::path::Path) -> RunState {
-        *self
-            .door_runs
-            .entry(dir.to_path_buf())
-            .or_insert_with(|| crate::door_tree::run_state(dir))
+    /// The run state the door draws for the Protocol in `dir`, its newest whole run's, and when
+    /// that run was recorded in seconds since the epoch: read the first time a row asks after the
+    /// door was shown, and kept while it stays shown.
+    fn door_run_state(&mut self, dir: &std::path::Path) -> (RunState, Option<u64>) {
+        *self.door_runs.entry(dir.to_path_buf()).or_insert_with(|| {
+            let ran_at = arc::spec::Manifest::load(dir)
+                .ok()
+                .and_then(|m| crate::door_tree::newest_whole_run_at(dir, &m.name))
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs());
+            (crate::door_tree::run_state(dir), ran_at)
+        })
     }
 
     /// The folder of the Protocol this window holds, when it holds one and the folder is no
     /// longer where it was opened from: deleted, or moved or renamed in the Finder.
+    ///
+    /// Every kind of Protocol a window holds: one made from the analyst's own files or its model
+    /// pane, an agent's Protocol drawn as panel tiles, and a Protocol of one step opened from its
+    /// manifest, whose folder is the one its source's Save writes.
     fn gone_protocol_dir(&self) -> Option<PathBuf> {
-        self.open_protocol_dir().filter(|dir| !dir.is_dir())
+        self.open_protocol_dir()
+            .or_else(|| self.tiles.as_ref().map(|t| t.dir().to_path_buf()))
+            .or_else(|| self.protocol.doc.model.source().map(|s| s.dir.clone()))
+            .filter(|dir| !dir.as_os_str().is_empty() && !dir.is_dir())
     }
 
     /// Say, while the Protocol this window holds has no folder, that it is gone and that nothing
@@ -10991,15 +11004,26 @@ impl MeridianApp {
 
     /// Put the own-files Protocol in `dir` at the head of Recents, from the moment it is made or
     /// opened, saved or not, so the door lists it the next time it is shown.
-    fn remember_own_protocol(&mut self, dir: &std::path::Path) {
+    ///
+    /// Its entry keeps the way its grid was reading and where it sat, which the window that held
+    /// another document before this one has no say in. With `restore`, for a Protocol that opens
+    /// on its grid, the window takes those settings on as [`Self::open_protocol_path`] does; the
+    /// model pane, which shows no grid, leaves the window's own alone.
+    fn remember_own_protocol(&mut self, dir: &std::path::Path, restore: bool) {
         let id = remembered_id(&dir.join(arc::spec::MANIFEST_FILENAME).to_string_lossy());
+        let grid_layout = self.layout.live().grid_layout_of(&id).unwrap_or_default();
+        let grid_spot = self.layout.live().grid_spot_of(&id).unwrap_or_default();
+        if restore {
+            self.grid_layout = grid_layout;
+            self.set_grid_spot(grid_spot);
+        }
         let run = crate::door_tree::run_state(dir);
         self.layout.live_mut().remember(
             &id,
             &display_name(dir),
             run,
-            self.grid_layout,
-            self.grid_spot,
+            grid_layout,
+            grid_spot,
             now_secs(),
         );
     }
@@ -11170,7 +11194,7 @@ impl MeridianApp {
             items: crate::model_pane::model_registry().instantiate(),
             in_grid: None,
         });
-        self.remember_own_protocol(&dir);
+        self.remember_own_protocol(&dir, false);
         self.toasts.push(Toast::new(
             Severity::Success,
             format!(
@@ -11998,6 +12022,16 @@ impl MeridianApp {
 
     /// Write an exported picture to `path` and say where it went, or why not.
     fn save_picture(&mut self, ctx: &egui::Context, image: &image::RgbaImage, path: &Path) {
+        // A picture bound for a folder inside a Protocol's folder that has gone, the default
+        // `exports` beside the Protocol, would make that folder again; it is refused with the
+        // banner that says the folder is gone.
+        if self
+            .gone_protocol_dir()
+            .is_some_and(|gone| path.starts_with(&gone))
+        {
+            self.say_if_the_folder_is_gone(ctx);
+            return;
+        }
         let written = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -12725,9 +12759,18 @@ impl MeridianApp {
         // A row naming a Protocol on disk says what its newest run record says now, rather than
         // what was remembered when it was last opened or saved: a run that landed since, with no
         // save after it, is what the row is for.
+        //
+        // Staleness the window recorded is kept while no whole run has been recorded since it was
+        // remembered: an edit saved after the run is still not run, though the run's record says
+        // fresh.
         for recent in &mut recents {
             if let Some(dir) = protocol_dir_of(&recent.id) {
-                recent.run = self.door_run_state(&dir);
+                let (read, ran_at) = self.door_run_state(&dir);
+                let still_stale =
+                    recent.run.is_stale() && ran_at.is_none_or(|ran| recent.opened_at >= ran);
+                if !still_stale {
+                    recent.run = read;
+                }
             }
         }
         // The tree of the Protocols folder, read on the first door frame after the door was
@@ -12744,7 +12787,7 @@ impl MeridianApp {
             .into_iter()
             .map(|line| match line {
                 TreeLine::Protocol { depth, dir, .. } => {
-                    let run = self.door_run_state(&dir);
+                    let (run, _) = self.door_run_state(&dir);
                     TreeLine::Protocol { depth, dir, run }
                 }
                 group => group,

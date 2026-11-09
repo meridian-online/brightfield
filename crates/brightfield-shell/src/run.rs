@@ -317,6 +317,73 @@ pub fn records_newest_first<'a>(
         )
 }
 
+/// The file in a Protocol's folder that names, one run id a line, the runs Brightfield started
+/// itself to preview the Protocol's sources: the runs on an open, a reload and a model save.
+///
+/// A file of Brightfield's own beside the manifest, because the record arc writes cannot carry
+/// the mark: arc records only the params a manifest declares, so a `--param` the manifest does not
+/// declare is not on the record, and the manifest is the analyst's and is not written to mark a
+/// run. Kept in the folder rather than in the window, so the mark survives a relaunch and goes with
+/// the folder when it is renamed or moved.
+pub const PREVIEWS_FILE: &str = ".previews";
+
+/// Mark the run `finished` left in `dir` as a preview, so the door does not read it as the
+/// Protocol's run. Ids whose record has gone are dropped as the file is written again. A run that
+/// left no record has nothing to mark, and a file that cannot be written is reported, not fatal:
+/// the run's tables are made either way.
+pub fn mark_preview(dir: &Path, finished: &Finished) {
+    let Some(id) = finished
+        .record
+        .as_deref()
+        .and_then(Path::file_stem)
+        .map(|stem| stem.to_string_lossy().into_owned())
+    else {
+        return;
+    };
+    let runs = runs_dir(dir);
+    let mut ids: Vec<String> = preview_ids(dir)
+        .into_iter()
+        .filter(|kept| runs.join(format!("{kept}.json")).is_file())
+        .collect();
+    ids.sort();
+    if !ids.contains(&id) {
+        ids.push(id);
+    }
+    let file = dir.join(PREVIEWS_FILE);
+    if let Err(e) = std::fs::write(&file, ids.join("\n") + "\n") {
+        eprintln!("could not mark a preview run in {}: {e}", file.display());
+    }
+}
+
+/// The ids of the runs in `dir` marked as previews by [`mark_preview`].
+#[must_use]
+pub fn preview_ids(dir: &Path) -> BTreeSet<String> {
+    std::fs::read_to_string(dir.join(PREVIEWS_FILE))
+        .map(|text| {
+            text.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The paths of the records of whole runs under `dir`, newest first: every record but those
+/// [`mark_preview`] marked. A whole run is one the analyst asked for, Run in the window or the run
+/// an open from a link starts.
+#[must_use]
+pub fn whole_run_paths_newest_first(dir: &Path) -> Vec<PathBuf> {
+    let previews = preview_ids(dir);
+    record_paths_newest_first(dir)
+        .into_iter()
+        .filter(|path| {
+            path.file_stem()
+                .is_none_or(|stem| !previews.contains(stem.to_string_lossy().as_ref()))
+        })
+        .collect()
+}
+
 /// What a finished run hands back to the window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finished {

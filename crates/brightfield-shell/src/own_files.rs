@@ -140,7 +140,8 @@ pub fn database_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Run the Protocol's steps with `runner`, which makes the raw tables, and wait for it.
+/// Run the Protocol's steps with `runner`, which makes the raw tables, and wait for it. The run is
+/// a preview, and is marked as one ([`crate::run::mark_preview`]).
 ///
 /// # Errors
 ///
@@ -148,6 +149,9 @@ pub fn database_lock() -> std::sync::MutexGuard<'static, ()> {
 pub fn run_loads(p: &OwnProtocol, runner: &Runner) -> Result<(), String> {
     let _writing = database_lock();
     let finished: Finished = Run::begin(runner, &p.dir, || {}).wait();
+    // Brightfield ran it to make the tables it previews, so it is marked as a preview: the door
+    // says the Protocol has not been run until the analyst runs it.
+    crate::run::mark_preview(&p.dir, &finished);
     if finished.succeeded {
         Ok(())
     } else {

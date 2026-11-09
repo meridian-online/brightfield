@@ -81,24 +81,61 @@ fn protocol_at(dir: &Path, name: &str) -> PathBuf {
     dir.to_path_buf()
 }
 
+/// How a recorded run went, for [`record_a_run`].
+#[derive(Clone, Copy, Debug)]
+enum Ran {
+    /// Every step succeeded.
+    Clean,
+    /// arc recorded a success, but a step's own state says it failed.
+    FailedStep,
+    /// arc recorded the run as an error, with every step it ran succeeding.
+    Error,
+    /// arc recorded the run as partial, with every step it ran succeeding.
+    Partial,
+    /// The run was stopped before arc finished its record.
+    Cancelled,
+}
+
 /// Leave a run record in the Protocol at `dir` named `name`, from the committed sample contract,
-/// that says the run succeeded or that a step failed.
-fn record_a_run(dir: &Path, name: &str, failed: bool) {
+/// going as `ran` says and naming the manifest the folder holds now. Answers the run's id.
+fn record_a_run(dir: &Path, name: &str, ran: Ran) -> String {
+    use sha2::Digest;
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../brightfield-protocol/fixtures/sample_run.contract.json");
     let mut text = std::fs::read_to_string(sample).expect("the sample contract reads");
     text = text.replace("\"widgets_demo\"", &format!("\"{name}\""));
-    if failed {
-        text = text.replacen(
+    let manifest = std::fs::read(dir.join("arcform.yaml")).expect("the manifest reads");
+    text = text.replace(
+        "4023a24abdbbbaca090c018d70aaa6f7cabbb52b4edd0db6ea7949cf6609b1fa",
+        &format!("{:x}", sha2::Sha256::digest(&manifest)),
+    );
+    let outcome = |text: String, to: &str| {
+        text.replace(
+            "\"outcome\": \"success\"",
+            &format!("\"outcome\": \"{to}\""),
+        )
+    };
+    text = match ran {
+        Ran::Clean => text,
+        Ran::FailedStep => text.replacen(
             "\"status\": { \"state\": \"success\"",
             "\"status\": { \"state\": \"failed\"",
             1,
-        );
-        text = text.replace("\"outcome\": \"success\"", "\"outcome\": \"failed\"");
-    }
+        ),
+        Ran::Error => outcome(text, "error"),
+        Ran::Partial => outcome(text, "partial"),
+        Ran::Cancelled => text.replace(
+            "\"finished_at\": \"2026-07-18T10:01:07Z\"",
+            "\"finished_at\": null",
+        ),
+    };
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let id = format!("20260718-10{n:04}-208baa40");
     let runs = brightfield_shell::run::runs_dir(dir);
     std::fs::create_dir_all(&runs).expect("a runs folder");
-    std::fs::write(runs.join("20260718-100107-208baa40.json"), text).expect("a run record");
+    std::fs::write(runs.join(format!("{id}.json")), text).expect("a run record");
+    id
 }
 
 /// Make the working database arc keeps for the Protocol at `dir`, as its loads do.
@@ -215,6 +252,22 @@ impl Window {
         }
     }
 
+    /// Click at `at` and let the frames after it draw.
+    fn click(&mut self, at: egui::Pos2) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        self.run(vec![
+            egui::Event::PointerMoved(at),
+            button(true),
+            button(false),
+        ]);
+        self.settle();
+    }
+
     /// Press the registry's `open-home` keystroke and draw the door.
     fn go_home(&mut self) {
         self.run(vec![press(
@@ -307,13 +360,13 @@ fn a_previewed_protocol_reads_previewed_not_run() {
     let unrun = protocol_at(&root.join("protocols/unrun"), "unrun");
     let ran = protocol_at(&root.join("protocols/ran"), "ran");
     compute_its_loads(&ran);
-    record_a_run(&ran, "ran", false);
+    record_a_run(&ran, "ran", Ran::Clean);
     let broke = protocol_at(&root.join("protocols/broke"), "broke");
-    record_a_run(&broke, "broke", true);
+    record_a_run(&broke, "broke", Ran::FailedStep);
     // A record of another Protocol sharing the folder is not this one's run.
     let other = protocol_at(&root.join("protocols/other"), "other");
     compute_its_loads(&other);
-    record_a_run(&other, "someone_else", false);
+    record_a_run(&other, "someone_else", Ran::Clean);
 
     assert_eq!(door_tree::run_state(&previewed), RunState::Previewed);
     assert_eq!(RunState::Previewed.label(), "previewed, not run");
@@ -326,6 +379,30 @@ fn a_previewed_protocol_reads_previewed_not_run() {
         RunState::NeverRun
     );
 
+    // A run Brightfield marked as a preview is passed over, newest or not.
+    let marked = protocol_at(&root.join("protocols/marked"), "marked");
+    let id = record_a_run(&marked, "marked", Ran::Clean);
+    std::fs::write(
+        marked.join(brightfield_shell::run::PREVIEWS_FILE),
+        format!("{id}\n"),
+    )
+    .unwrap();
+    assert_eq!(door_tree::run_state(&marked), RunState::Previewed);
+    record_a_run(&marked, "marked", Ran::Clean);
+    assert_eq!(
+        door_tree::run_state(&marked),
+        RunState::Fresh,
+        "a whole run after the preview is the Protocol's run"
+    );
+
+    // Edited since its run: the manifest is no longer the one the run recorded.
+    std::fs::write(
+        ran.join("arcform.yaml"),
+        "name: ran\nengine: duckdb\nsteps: []\n# edited\n",
+    )
+    .unwrap();
+    assert_eq!(door_tree::run_state(&ran), RunState::StaleOwnEdit);
+
     // …and the door draws it in those words.
     let mut win = Window::new();
     win.settle();
@@ -333,6 +410,187 @@ fn a_previewed_protocol_reads_previewed_not_run() {
     assert_eq!(
         row.expect("the tree draws the previewed Protocol").state,
         "previewed, not run"
+    );
+}
+
+#[test]
+fn the_runs_outcome_is_read_before_its_steps() {
+    let (_held, root) = folders_of("outcomes");
+    let state = |name: &str, ran: Ran, previewed: bool| {
+        let dir = protocol_at(&root.join("protocols").join(name), name);
+        if previewed {
+            compute_its_loads(&dir);
+        }
+        record_a_run(&dir, name, ran);
+        door_tree::run_state(&dir)
+    };
+    // Every step the run reached succeeded, and the run still did not succeed.
+    assert_eq!(state("errored", Ran::Error, false), RunState::Failed);
+    assert_eq!(state("partial", Ran::Partial, false), RunState::Failed);
+    assert_eq!(
+        state("failed_step", Ran::FailedStep, false),
+        RunState::Failed
+    );
+    assert_eq!(state("clean", Ran::Clean, false), RunState::Fresh);
+    // Stopped by the analyst: not run, and not failed.
+    assert_eq!(state("stopped", Ran::Cancelled, false), RunState::NeverRun);
+    assert_eq!(
+        state("stopped_previewed", Ran::Cancelled, true),
+        RunState::Previewed
+    );
+}
+
+#[test]
+fn an_opened_protocol_reads_previewed_until_it_is_run() {
+    let (_held, root) = folders_of("previewed_then_run");
+    let mut win = Window::opened(&root, "previewed_first");
+    let dir = win.dir().expect("a Protocol");
+    assert!(
+        !brightfield_shell::run::preview_ids(&dir).is_empty(),
+        "the open's runs are marked as previews"
+    );
+    win.go_home();
+    let (recent, in_tree) = win.rows_of(&dir);
+    assert_eq!(recent.expect("a Recents row").state, "previewed, not run");
+    assert_eq!(in_tree.expect("a tree row").state, "previewed, not run");
+
+    let row = in_tree_row_rect(&win, &dir);
+    win.click(row.center());
+    assert_eq!(win.dir(), Some(dir.clone()), "{}", win.said());
+    win.run_it();
+    win.go_home();
+    let (recent, in_tree) = win.rows_of(&dir);
+    assert_eq!(
+        recent.expect("a Recents row").state,
+        RunState::Fresh.label()
+    );
+    assert_eq!(in_tree.expect("a tree row").state, RunState::Fresh.label());
+}
+
+/// Where the door drew the tree's row for the Protocol in `dir`.
+fn in_tree_row_rect(win: &Window, dir: &Path) -> egui::Rect {
+    win.rows_of(dir).1.expect("a tree row").rect
+}
+
+#[test]
+fn a_symlinked_folder_is_not_followed_and_the_walk_is_bounded() {
+    let root = tempfile::tempdir().expect("a temp root");
+    let root = root.path();
+    protocol_at(&root.join("Work/kept"), "kept");
+    std::os::unix::fs::symlink("..", root.join("Work/loop")).expect("a link back up");
+    std::os::unix::fs::symlink(root.join("Work"), root.join("again")).expect("a link across");
+    assert_eq!(
+        outline(&door_tree::read(root)),
+        vec!["Work/", "  kept"],
+        "no group for a link"
+    );
+
+    // Deeper than the bound: the walk stops there.
+    let mut deep = root.join("deep");
+    for i in 0..door_tree::MAX_DEPTH + 4 {
+        deep = deep.join(format!("d{i}"));
+    }
+    protocol_at(&deep, "too_deep");
+    let tree = door_tree::read(root);
+    let lines = outline(&tree);
+    assert!(
+        !lines.iter().any(|l| l.trim() == "too_deep"),
+        "a Protocol past the depth bound is not read: {}",
+        lines.len()
+    );
+
+    // Wider than the bound: the walk stops quietly, and promptly.
+    let wide = tempfile::tempdir().expect("a temp root");
+    for i in 0..door_tree::MAX_ENTRIES + 500 {
+        std::fs::create_dir(wide.path().join(format!("g{i:05}"))).unwrap();
+    }
+    let started = Instant::now();
+    let tree = door_tree::read(wide.path());
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(tree.len() <= door_tree::MAX_ENTRIES, "{}", tree.len());
+}
+
+#[test]
+fn opening_a_protocol_keeps_its_own_grid_settings_in_recents() {
+    use brightfield_workbench::{GridLayout, GridSpot, Recent};
+    let (_held, root) = folders_of("grid_settings");
+    let b = protocols_dir::root().join("second");
+    let b_id = b.join("arcform.yaml").to_string_lossy().into_owned();
+    let mut layout = brightfield_shell::startup::default_layout();
+    layout.recents.push(Recent {
+        id: b_id.clone(),
+        name: "second".into(),
+        run: RunState::NeverRun,
+        grid_layout: GridLayout::Columns,
+        grid_spot: GridSpot::Ledger,
+        opened_at: 1,
+    });
+    let mut win = Window {
+        app: MeridianApp::headless_with_layout(Boot::empty(), layout, Mode::Light)
+            .running_with(Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell")))),
+        ctx: egui::Context::default(),
+        time: 0.0,
+    };
+    win.settle();
+    win.open(&root, "first");
+    win.open(&root, "second");
+    let entry = win
+        .app
+        .layout()
+        .recents
+        .iter()
+        .find(|r| r.id == b_id)
+        .expect("the second Protocol is in Recents")
+        .clone();
+    assert_eq!(
+        (entry.grid_layout, entry.grid_spot),
+        (GridLayout::Columns, GridSpot::Ledger),
+        "the first Protocol's grid settings were written over the second's"
+    );
+}
+
+#[test]
+fn a_recent_edited_since_its_run_still_reads_stale() {
+    use brightfield_workbench::Recent;
+    let (_held, root) = folders_of("recent_stale");
+    let dir = protocol_at(&root.join("protocols/edited"), "edited");
+    record_a_run(&dir, "edited", Ran::Clean);
+    let ran_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let id = dir.join("arcform.yaml").to_string_lossy().into_owned();
+    let window_remembering = |run: RunState, opened_at: u64| {
+        let mut layout = brightfield_shell::startup::default_layout();
+        layout.recents.push(Recent {
+            id: id.clone(),
+            name: "edited".into(),
+            run,
+            grid_layout: Default::default(),
+            grid_spot: Default::default(),
+            opened_at,
+        });
+        let mut win = Window {
+            app: MeridianApp::headless_with_layout(Boot::empty(), layout, Mode::Light),
+            ctx: egui::Context::default(),
+            time: 0.0,
+        };
+        win.settle();
+        win.rows_of(&dir).0.expect("a Recents row").state
+    };
+    // Remembered stale after the run: still stale.
+    assert_eq!(
+        window_remembering(RunState::StaleOwnEdit, ran_at + 60),
+        RunState::StaleOwnEdit.label()
+    );
+    assert_eq!(
+        window_remembering(RunState::StaleUpstream, ran_at + 60),
+        RunState::StaleUpstream.label()
+    );
+    // Remembered stale before the run: the run's record answers.
+    assert_eq!(
+        window_remembering(RunState::StaleOwnEdit, 1),
+        RunState::Fresh.label()
     );
 }
 
@@ -441,6 +699,97 @@ fn a_folder_deleted_in_finder_drops_its_row_and_an_open_window_says_so() {
     );
 }
 
+/// Whether the window says its Protocol's folder is gone.
+fn says_the_folder_is_gone(win: &Window) -> bool {
+    win.app
+        .notifications()
+        .iter()
+        .any(|n| n.title == FOLDER_GONE_TITLE)
+}
+
+/// With the window's Protocol folder at `dir` gone, try every write a person can ask for: a draft
+/// and Cmd+S, then Cmd+Enter. The window says the folder is gone, and the folder stays gone.
+fn nothing_makes_it_again(win: &mut Window, dir: &Path, condition: &str) {
+    win.settle();
+    assert!(says_the_folder_is_gone(win), "{}", win.said());
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some(condition.to_owned()),
+            order: None,
+        });
+    win.settle();
+    win.run(vec![press(egui::Key::S, command())]);
+    win.settle();
+    win.run(vec![press(egui::Key::Enter, command())]);
+    win.settle();
+    assert!(
+        !dir.exists(),
+        "no save, run or redraw makes {} again: {}",
+        dir.display(),
+        win.said()
+    );
+    assert!(says_the_folder_is_gone(win), "still said: {}", win.said());
+}
+
+/// A Protocol of one step written by hand in the Protocols folder, opened from its tree row.
+fn hand_written_opened(root: &Path, name: &str) -> (Window, PathBuf) {
+    let dir = root.join("protocols").join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("readings.csv"), "station,reading\nA,1\nB,2\nC,3\n").unwrap();
+    std::fs::write(
+        dir.join("arcform.yaml"),
+        "name: readings\nengine: duckdb\nsteps:\n  - name: load\n    sql: models/load.sql\n    \
+         depends_on:\n      - './readings.csv'\n    produces:\n      - readings\n",
+    )
+    .unwrap();
+    let mut win = Window::new();
+    win.settle();
+    let row = in_tree_row_rect(&win, &dir);
+    win.click(row.center());
+    assert!(
+        !win.app.front_door_is_live(),
+        "the hand-written Protocol opened: {}",
+        win.said()
+    );
+    (win, dir)
+}
+
+#[test]
+fn a_hand_written_protocol_deleted_or_moved_while_open_is_not_made_again() {
+    let (_held, root) = folders_of("hand_written_gone");
+    let (mut win, dir) = hand_written_opened(&root, "deleted_by_hand");
+    std::fs::remove_dir_all(&dir).unwrap();
+    nothing_makes_it_again(&mut win, &dir, "reading > 1");
+
+    let (mut win, dir) = hand_written_opened(&root, "moved_by_hand");
+    std::fs::create_dir_all(root.join("elsewhere")).unwrap();
+    std::fs::rename(&dir, root.join("elsewhere/moved_by_hand")).unwrap();
+    nothing_makes_it_again(&mut win, &dir, "reading > 1");
+}
+
+#[test]
+fn a_panel_tile_protocol_deleted_while_open_is_not_made_again() {
+    let (_held, _root) = folders_of("tiles_gone");
+    let fixture = agent_protocol::ran_fixture("co2-per-capita");
+    let mut win = Window::new();
+    win.settle();
+    let ctx = win.ctx.clone();
+    win.app
+        .open_protocol_path(&ctx, &fixture.dir.join("arcform.yaml").to_string_lossy());
+    win.settle();
+    assert!(!win.app.front_door_is_live(), "{}", win.said());
+    std::fs::remove_dir_all(&fixture.dir).unwrap();
+    win.settle();
+    assert!(says_the_folder_is_gone(&win), "{}", win.said());
+    win.run(vec![press(egui::Key::S, command())]);
+    win.settle();
+    win.run(vec![press(egui::Key::Enter, command())]);
+    win.settle();
+    assert!(!fixture.dir.exists(), "{}", win.said());
+    assert!(says_the_folder_is_gone(&win), "{}", win.said());
+}
+
 #[test]
 fn old_own_protocols_stay_in_recents() {
     let (_held, _root) = folders_of("old_own");
@@ -474,9 +823,9 @@ fn baseline_tree(root: &Path) {
     let protocols = root.join("protocols");
     let fresh = protocol_at(&protocols.join("Work/2026/earthquakes_2024"), "eq");
     compute_its_loads(&fresh);
-    record_a_run(&fresh, "eq", false);
+    record_a_run(&fresh, "eq", Ran::Clean);
     let failed = protocol_at(&protocols.join("Work/2026/shipments"), "shipments");
-    record_a_run(&failed, "shipments", true);
+    record_a_run(&failed, "shipments", Ran::Error);
     let previewed = protocol_at(&protocols.join("Work/housing"), "housing");
     compute_its_loads(&previewed);
     protocol_at(&protocols.join("Personal/budget"), "budget");
@@ -502,6 +851,62 @@ fn door_tree_surface(mode: Mode, name: &str) {
         .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
         .to_rgba8();
     egui_kittest::image_snapshot(&image, name);
+}
+
+/// The door over the fixed tree with two of its Protocols in Recents, so both halves and their
+/// headings are drawn.
+fn door_tree_with_recents_surface(mode: Mode, name: &str) {
+    use brightfield_workbench::Recent;
+    let (_held, root) = folders_of(name);
+    baseline_tree(&root);
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let protocols = root.join("protocols");
+    let mut layout = brightfield_shell::startup::default_layout();
+    // Two hours and four days back: well inside the buckets `relative_time` draws, so a slow
+    // capture does not tip one over.
+    for (dir, ago) in [
+        (protocols.join("Work/2026/earthquakes_2024"), 2 * 3600 + 600),
+        (protocols.join("Work/housing"), 4 * 86_400 + 3600),
+    ] {
+        layout.recents.push(Recent {
+            id: dir.join("arcform.yaml").to_string_lossy().into_owned(),
+            name: dir.file_name().unwrap().to_string_lossy().into_owned(),
+            run: RunState::NeverRun,
+            grid_layout: Default::default(),
+            grid_spot: Default::default(),
+            opened_at: now - ago,
+        });
+    }
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}.capture.png"));
+    let (w, h) = brightfield_shell::capture::capture_png_at_with_layout(
+        Boot::empty(),
+        layout,
+        mode,
+        1.0,
+        (1280.0, 820.0),
+        &out,
+        Vec::new(),
+    )
+    .unwrap_or_else(|e| panic!("capture {name}: {e}"));
+    assert!(w > 0 && h > 0, "{name}: empty capture");
+    let image = image::open(&out)
+        .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
+        .to_rgba8();
+    egui_kittest::image_snapshot(&image, name);
+}
+
+#[test]
+fn door_tree_recents_light_surface() {
+    door_tree_with_recents_surface(Mode::Light, "door_tree_recents_light");
+}
+
+#[test]
+fn door_tree_recents_dark_surface() {
+    door_tree_with_recents_surface(Mode::Dark, "door_tree_recents_dark");
 }
 
 #[test]

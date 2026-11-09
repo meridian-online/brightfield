@@ -9,7 +9,8 @@
 
 use std::path::{Path, PathBuf};
 
-use brightfield_protocol::SeamStatus;
+use brightfield_protocol::contract::Outcome;
+use brightfield_protocol::{ContractView, SeamStatus};
 use brightfield_workbench::RunState;
 
 /// One entry of the tree: a folder of other entries, or a Protocol.
@@ -31,31 +32,56 @@ impl Node {
     }
 }
 
+/// How many groups deep the tree is read. A folder deeper than this is not listed.
+pub const MAX_DEPTH: usize = 16;
+
+/// How many directory entries one reading of the tree looks at before it stops.
+pub const MAX_ENTRIES: usize = 5_000;
+
 /// The tree under `root`: at each level the groups first and then the Protocols, each sorted by
 /// name with case ignored. Hidden folders, whose names start with a dot, are skipped, and so is
 /// anything that is not a folder. A root that is missing or cannot be read is an empty tree, and
 /// is not made.
+///
+/// It is read on the window's own thread each time the door is shown, so it is bounded. A link to
+/// a folder is not followed, since a link back up the tree would be read for ever, and the walk
+/// stops quietly, keeping what it has read, past [`MAX_DEPTH`] groups deep or [`MAX_ENTRIES`]
+/// entries.
 #[must_use]
 pub fn read(root: &Path) -> Vec<Node> {
-    let Ok(entries) = std::fs::read_dir(root) else {
+    let mut budget = MAX_ENTRIES;
+    read_level(root, 0, &mut budget)
+}
+
+fn read_level(dir: &Path, depth: usize, budget: &mut usize) -> Vec<Node> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut groups = Vec::new();
     let mut protocols = Vec::new();
     for entry in entries.flatten() {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') {
             continue;
         }
-        let path = entry.path();
-        // Followed through a link, as the Finder shows a linked folder's contents.
-        if !path.is_dir() {
+        // The entry's own type, not the type of what it points at: a link is neither a group
+        // nor a Protocol here.
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
+        let path = entry.path();
         if path.join(arc::spec::MANIFEST_FILENAME).is_file() {
             protocols.push(Node::Protocol { name, dir: path });
         } else {
-            let children = read(&path);
+            let children = if depth + 1 < MAX_DEPTH {
+                read_level(&path, depth + 1, budget)
+            } else {
+                Vec::new()
+            };
             groups.push(Node::Group { name, children });
         }
     }
@@ -71,39 +97,98 @@ pub fn read(root: &Path) -> Vec<Node> {
     groups
 }
 
-/// What the Protocol in `dir` reads as on the door: what its newest run record says, read now.
+/// What the Protocol in `dir` reads as on the door: what its newest whole run's record says, read
+/// now. Runs Brightfield started itself to preview the sources ([`crate::run::mark_preview`]) are
+/// not whole runs and are passed over, and only records of this Protocol's own `name:` count,
+/// since two Protocols in one folder write their records into one place.
 ///
-/// A record says the Protocol is [`RunState::Failed`] when any step failed, and
-/// [`RunState::Fresh`] when its steps ran or were skipped as current. With no record, a Protocol
-/// whose loads computed while its sources were added has arc's working database, and is
-/// [`RunState::Previewed`]; one without it, or a folder whose manifest will not read, is
-/// [`RunState::NeverRun`]. Only records of this Protocol's own `name:` count, since two Protocols
-/// in one folder write their records into one place.
+/// - A run whose outcome is an error or partial is [`RunState::Failed`].
+/// - A run that never finished, stopped before arc completed its record, counts as no run.
+/// - Otherwise the steps decide: one that failed is [`RunState::Failed`]; steps that ran or were
+///   skipped as current are [`RunState::Fresh`], or [`RunState::StaleOwnEdit`] when the manifest
+///   is no longer the one the run ran.
+/// - With no whole run, a Protocol that has been previewed (a preview run, or arc's working
+///   database) is [`RunState::Previewed`], and one that has not, or a folder whose manifest will
+///   not read, is [`RunState::NeverRun`].
 #[must_use]
 pub fn run_state(dir: &Path) -> RunState {
     let Ok(manifest) = arc::spec::Manifest::load(dir) else {
         return RunState::NeverRun;
     };
-    if let Some(view) = crate::run::records_newest_first(dir, &manifest.name).next() {
-        let statuses = view.seam_statuses();
-        if statuses.values().any(|s| *s == SeamStatus::Failed) {
-            return RunState::Failed;
+    let not_run = || {
+        let previewed = !crate::run::preview_ids(dir).is_empty()
+            || arc::spec::protocol_db_path(dir).is_ok_and(|db| db.is_file());
+        if previewed {
+            RunState::Previewed
+        } else {
+            RunState::NeverRun
         }
-        if statuses
-            .values()
-            .any(|s| matches!(s, SeamStatus::Ok | SeamStatus::Skipped))
-        {
-            return RunState::Fresh;
-        }
-        return match view.run.outcome {
-            brightfield_protocol::contract::Outcome::Success => RunState::Fresh,
-            _ => RunState::Failed,
-        };
+    };
+    let Some((path, view)) = newest_whole_run(dir, &manifest.name) else {
+        return not_run();
+    };
+    if !view.run.complete {
+        return not_run();
     }
-    let previewed = arc::spec::protocol_db_path(dir).is_ok_and(|db| db.is_file());
-    if previewed {
-        RunState::Previewed
+    match view.run.outcome {
+        Outcome::Error | Outcome::Partial => return RunState::Failed,
+        Outcome::Success | Outcome::Unknown => {}
+    }
+    let statuses = view.seam_statuses();
+    let ran = if statuses.values().any(|s| *s == SeamStatus::Failed) {
+        RunState::Failed
+    } else if statuses
+        .values()
+        .any(|s| matches!(s, SeamStatus::Ok | SeamStatus::Skipped))
+        || view.run.outcome == Outcome::Success
+    {
+        RunState::Fresh
     } else {
-        RunState::NeverRun
+        return not_run();
+    };
+    if ran == RunState::Fresh && !ran_this_manifest(&path, dir) {
+        return RunState::StaleOwnEdit;
     }
+    ran
+}
+
+/// When the newest whole run of the Protocol named `protocol` in `dir` was recorded: its record's
+/// modification time, or `None` when it has none.
+#[must_use]
+pub fn newest_whole_run_at(dir: &Path, protocol: &str) -> Option<std::time::SystemTime> {
+    let (path, _) = newest_whole_run(dir, protocol)?;
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// The newest whole run of the Protocol named `protocol` in `dir`: its record's path and the view
+/// read from it. A record that will not parse is passed over.
+fn newest_whole_run(dir: &Path, protocol: &str) -> Option<(PathBuf, ContractView)> {
+    crate::run::whole_run_paths_newest_first(dir)
+        .into_iter()
+        .find_map(|path| match brightfield_protocol::load_contract(&path) {
+            Ok(view) if view.run.protocol == protocol => Some((path, view)),
+            _ => None,
+        })
+}
+
+/// Whether the run recorded at `record` ran the manifest `dir` holds now: arc records the SHA-256
+/// of the manifest's bytes on each run. A record with no hash, or a manifest that cannot be read,
+/// is taken as the same, so a row is not called stale on evidence that is not there.
+fn ran_this_manifest(record: &Path, dir: &Path) -> bool {
+    use sha2::Digest;
+    let recorded = std::fs::read(record)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|json| {
+            json.pointer("/run/protocol/manifest_sha256")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        });
+    let (Some(recorded), Ok(bytes)) = (
+        recorded,
+        std::fs::read(dir.join(arc::spec::MANIFEST_FILENAME)),
+    ) else {
+        return true;
+    };
+    format!("{:x}", sha2::Sha256::digest(&bytes)) == recorded
 }
