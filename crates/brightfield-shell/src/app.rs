@@ -60,7 +60,6 @@ use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::nearest::{NearestProbe, NearestRead};
 use brightfield_engine::{AxisExtent, ColumnProfile, NavigationExtent};
 use brightfield_keys::BindingContext;
-use brightfield_model::panel_capture::panel_file;
 use brightfield_protocol::{write_chart_edit, ChartVersions, HistoryStore, NotRecorded};
 use brightfield_render::canvas_host::{ChartSurface, Color, PixelSize};
 use brightfield_spec::analysis::ComponentPath;
@@ -1161,7 +1160,7 @@ pub struct ChartDoc {
     shelf_refusal: Option<String>,
     /// The edits made to the live spec since the last Save, in the order they
     /// were made — what [`Self::has_unsaved_edit`] reads, and what
-    /// [`Self::save_chart_beside`] places into the text on disk.
+    /// [`Self::save_chart_at`] places into the text on disk.
     ///
     /// **The edits, and not the spec.** The live spec is what the picture was
     /// composed from and holds none of the comments in the file it came from;
@@ -1270,7 +1269,7 @@ struct CanvasKey {
     dark: bool,
 }
 
-/// Why [`ChartDoc::save_chart_beside`] did not write the chart. Each variant's
+/// Why [`ChartDoc::save_chart_at`] did not write the chart. Each variant's
 /// [`fmt::Display`](std::fmt::Display) is the reason the window says.
 #[derive(Debug)]
 pub enum ChartSaveError {
@@ -1770,7 +1769,7 @@ impl ChartDoc {
     /// previewing and has not kept ([`Self::preview_shelf_column`]), nor a
     /// version the Versions panel's cursor is drawing
     /// ([`Self::move_version_cursor`]). A Save that wrote the edits clears it
-    /// ([`Self::save_chart_beside`]); one that could not leaves it.
+    /// ([`Self::save_chart_at`]); one that could not leaves it.
     #[must_use]
     pub const fn has_unsaved_edit(&self) -> bool {
         !self.pending_edits.is_empty() || self.stepped_back.is_some()
@@ -2092,10 +2091,12 @@ impl ChartDoc {
         std::mem::take(&mut self.pending_settled)
     }
 
-    /// **Save the chart beside the Protocol: write the edits made since the
-    /// last Save into the chart file's text.**
+    /// **Save the chart: write the edits made since the last Save into the
+    /// text of the chart file `panel`.**
     ///
-    /// The chart file is [`panel_file`]`(dir, name)`. The text the edits are
+    /// The window passes the file its Protocol keeps the chart in
+    /// ([`OneStepProtocol::chart_file`](crate::one_step::OneStepProtocol::chart_file)),
+    /// or an arc Protocol's own panel opened from its tile. The text the edits are
     /// placed into is the text on disk at this Save — the chart file when one
     /// is there, and otherwise the file [`Self::spec_path`] names, which for a
     /// data file's first Save is the scratch spec the generator wrote at open.
@@ -2135,32 +2136,15 @@ impl ChartDoc {
     /// does not hold the Save back: a store that cannot be opened leaves the chart
     /// written and comes back as the `Ok` value, for the window to say.
     ///
-    /// # Errors
-    ///
-    /// [`ChartSaveError`] for an edit that cannot be placed, a file that cannot
-    /// be read, and a write that fails. The document is as it was.
-    pub fn save_chart_beside(
-        &mut self,
-        dir: &std::path::Path,
-        name: &str,
-        history: Option<&HistoryStore>,
-    ) -> Result<Option<NotRecorded>, ChartSaveError> {
-        self.save_chart_at(&panel_file(dir, name), history)
-    }
-
-    /// [`Self::save_chart_beside`] to the panel file `panel`, wherever it is:
-    /// the Save of an arc Protocol's own panel opened from its tile, which
-    /// writes that panel's file rather than Brightfield's one chart file.
-    ///
-    /// What is written is read and placed as [`Self::save_chart_beside`] says,
-    /// and then has the table entries [`Self::protocol_tables`] names taken out
+    /// What is written has the table entries [`Self::protocol_tables`] names taken out
     /// ([`strip_protocol_tables`](crate::protocol_panels::strip_protocol_tables)),
     /// so the snapshot a tile was drawn from stays out of the panel's file
     /// (`saving_a_tile_writes_the_panel_without_injected_tables`).
     ///
     /// # Errors
     ///
-    /// As [`Self::save_chart_beside`].
+    /// [`ChartSaveError`] for an edit that cannot be placed, a file that cannot
+    /// be read, and a write that fails. The document is as it was.
     pub fn save_chart_at(
         &mut self,
         panel: &std::path::Path,
@@ -2202,7 +2186,7 @@ impl ChartDoc {
 
     /// **What a Save of this document to the panel file `target` would
     /// write**, and the text on disk it would replace, read and placed as
-    /// [`Self::save_chart_beside`] reads and places them, with
+    /// [`Self::save_chart_at`] reads and places them, with
     /// [`Self::protocol_tables`] taken out; this writes no file.
     /// `None` when a Save would write no file: no chart file, no text to place
     /// into, and no edit.
@@ -2258,10 +2242,11 @@ impl ChartDoc {
     }
 
     /// **Keep the chart as a Save would write it, as a version of the chart
-    /// file beside the Protocol in `dir`, and write no chart file**: what a
-    /// close without saving records.
+    /// file `panel`, and write no chart file**: what a close without saving
+    /// records. `panel` is the file [`Self::save_chart_at`] would write and
+    /// records its versions against.
     ///
-    /// The text is [`Self::save_chart_beside`]'s, read and placed as a Save
+    /// The text is [`Self::save_chart_at`]'s, read and placed as a Save
     /// reads and places it, and it is recorded as arcform's unsaved kind
     /// ([`record_unsaved`](brightfield_protocol::record_unsaved)), with the
     /// grid view and the typed statements no file holds written after it
@@ -2276,23 +2261,6 @@ impl ChartDoc {
     /// Why the chart could not be kept, in the words the close question says
     /// it in: a window given no store, an edit the text cannot take, a file
     /// that cannot be read, and a store that does not take the version.
-    pub fn keep_unsaved_beside(
-        &self,
-        dir: &std::path::Path,
-        name: &str,
-        history: Option<&HistoryStore>,
-    ) -> Result<(), String> {
-        self.keep_unsaved_at(&panel_file(dir, name), history)
-    }
-
-    /// [`Self::keep_unsaved_beside`] for the panel file `panel`, wherever it
-    /// is: the close without saving of a Protocol's own panel opened from its
-    /// tile, kept as a version of that panel's file, which is the file
-    /// [`Self::save_chart_at`] records its versions against.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::keep_unsaved_beside`].
     pub fn keep_unsaved_at(
         &self,
         panel: &std::path::Path,
@@ -3599,7 +3567,7 @@ impl ChartDoc {
     ///
     /// The version is left drawn, the window is marked unsaved, and the chart
     /// file is as it was until Save, which writes the version's text
-    /// ([`Self::save_chart_beside`];
+    /// ([`Self::save_chart_at`];
     /// `enter_steps_back_as_an_unsaved_edit_and_save_writes_the_versions_bytes`). The change it steps over —
     /// the edits held and any step back before it — is put on the undo stack
     /// as one edit, so `u` draws the chart with it again and holds it as it

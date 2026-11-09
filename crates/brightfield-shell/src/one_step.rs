@@ -223,22 +223,40 @@ pub struct OneStepProtocol {
     /// it, so a read of the file outside the session, such as a typed statement's preview, reads
     /// the columns as the session does. Empty for a file read as it is.
     pub casts: Vec<(String, String)>,
-    /// Whether the file is the copy of a model's joined rows, whose chart is
-    /// kept apart from the tables' panels ([`Self::chart_file`]).
-    pub join: bool,
+    /// Which of a model's rows the file is the grid copy of, when it was opened from the model
+    /// pane: a table's or a join's. Each keeps its chart apart from the Protocol's own panel
+    /// ([`Self::chart_file`]). `None` for a file opened as itself.
+    pub model_grid: Option<ModelGrid>,
+}
+
+/// Which of a model's rows a grid opened from the model pane copies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelGrid {
+    /// One of the model's tables.
+    Table,
+    /// One of the model's joins, whose rows no manifest step makes.
+    Join,
 }
 
 impl OneStepProtocol {
     /// **The chart file a Save of this Protocol's chart writes**, and an open
-    /// reads back: the panel file for its name, or, for a join's rows, the
-    /// join's own file under `panels/joins/`.
+    /// reads back: the panel file for its name, or, for rows opened from the
+    /// model, the table's own file under `panels/tables/` or the join's under
+    /// `panels/joins/`.
     #[must_use]
     pub fn chart_file(&self) -> PathBuf {
-        if self.join {
-            brightfield_model::panel_capture::join_panel_file(&self.dir, &self.name)
-        } else {
-            brightfield_model::panel_capture::panel_file(&self.dir, &self.name)
+        use brightfield_model::panel_capture::{join_panel_file, panel_file, table_panel_file};
+        match self.model_grid {
+            Some(ModelGrid::Join) => join_panel_file(&self.dir, &self.name),
+            Some(ModelGrid::Table) => table_panel_file(&self.dir, &self.name),
+            None => panel_file(&self.dir, &self.name),
         }
+    }
+
+    /// Whether the file is the grid copy of a model's joined rows.
+    #[must_use]
+    pub fn is_join(&self) -> bool {
+        self.model_grid == Some(ModelGrid::Join)
     }
 
     /// The Protocol for `path`, over the columns the engine profiled and the
@@ -266,7 +284,7 @@ impl OneStepProtocol {
             data: path.to_path_buf(),
             dir,
             spelled,
-            join: false,
+            model_grid: None,
         }
     }
 
@@ -468,21 +486,22 @@ impl OneStepProtocol {
         &self,
         text: &str,
     ) -> Result<Option<crate::generated::GeneratedProtocol>, String> {
-        if let Some(made_with) = crate::own_files::folder_table_steps(&self.dir, &self.name) {
-            return Ok(crate::generated::generated_protocol_of_folder_table(
-                text, &self.dir, self, &made_with,
-            ));
-        }
         // A copy of a model's joined rows in a folder Protocol: no step starts at the join, and
         // the folder's manifest is still the Protocol a Run runs, so it is read whole, with its
-        // runs, and no step after it.
-        if self.join && crate::own_files::own_protocol_dir(&self.dir).is_some() {
+        // runs, and no step after it. Asked before the tables are, because a join can be named
+        // as one of the folder's tables is, and must not take that table's steps.
+        if self.is_join() && crate::own_files::own_protocol_dir(&self.dir).is_some() {
             return Ok(Some(crate::generated::GeneratedProtocol {
                 data: self.data.clone(),
                 dir: self.dir.clone(),
                 root_table: self.name.clone(),
                 steps: Vec::new(),
             }));
+        }
+        if let Some(made_with) = crate::own_files::folder_table_steps(&self.dir, &self.name) {
+            return Ok(crate::generated::generated_protocol_of_folder_table(
+                text, &self.dir, self, &made_with,
+            ));
         }
         let Some((table, made_with)) = crate::own_files::one_source_steps(&self.dir) else {
             return Ok(None);

@@ -686,17 +686,17 @@ fn discovery_landed(win: &mut Window) {
     win.settle();
 }
 
-/// A window over a folder Protocol of orders and the stores they were taken in, named `name`,
-/// with the grid of the model's join between them open, and the join's name.
-fn joined_grid(name: &str) -> (Window, String) {
+/// A window over a folder Protocol named `name`, of orders, in a table named `orders`, and the
+/// stores they were taken in, with the model on it and discovery landed.
+fn orders_and_stores(name: &str, orders: &str) -> Window {
     scratch();
     let dir = scratch().join("input").join(name);
     std::fs::create_dir_all(&dir).expect("an input folder");
-    let mut orders = String::from("order_id,store_id,amount\n");
+    let mut rows = String::from("order_id,store_id,amount\n");
     for i in 1..=60 {
-        orders.push_str(&format!("{i},{},{}\n", i % 5 + 1, i * 3));
+        rows.push_str(&format!("{i},{},{}\n", i % 5 + 1, i * 3));
     }
-    std::fs::write(dir.join("orders.csv"), orders).expect("the orders write");
+    std::fs::write(dir.join(format!("{orders}.csv")), rows).expect("the orders write");
     std::fs::write(
         dir.join("stores.csv"),
         "store_id,city\n1,Perth\n2,Darwin\n3,Hobart\n4,Cairns\n5,Broome\n",
@@ -712,29 +712,70 @@ fn joined_grid(name: &str) -> (Window, String) {
     win.app.open_queue().push(OpenRequest::Path(dir));
     win.settle();
     discovery_landed(&mut win);
-    let join = {
-        let pane = win
-            .app
-            .model_pane()
-            .unwrap_or_else(|| panic!("two tables open the model: {}", win.said()));
-        pane.model
-            .relationships
-            .first()
-            .unwrap_or_else(|| panic!("the model joins orders to stores: {:?}", pane.model))
-            .name
-            .clone()
-    };
+    win
+}
+
+/// The name of the model's join between orders and stores.
+fn the_join(win: &Window) -> String {
+    let pane = win
+        .app
+        .model_pane()
+        .unwrap_or_else(|| panic!("two tables open the model: {}", win.said()));
+    pane.model
+        .relationships
+        .first()
+        .unwrap_or_else(|| panic!("the model joins orders to stores: {:?}", pane.model))
+        .name
+        .clone()
+}
+
+/// Open the model's `target` in the grid, asserting it opened.
+fn open_in_grid(win: &mut Window, target: brightfield_render::model_scene::Selection) {
     let ctx = win.ctx.clone();
     assert!(
-        win.app.open_model_in_grid(
-            &ctx,
-            &brightfield_render::model_scene::Selection::Relationship(join.clone())
-        ),
-        "the join opens in the grid: {}",
+        win.app.open_model_in_grid(&ctx, &target),
+        "{target:?} opens in the grid: {}",
         win.said()
     );
     win.settle();
+}
+
+/// A window over a folder Protocol of orders and the stores they were taken in, named `name`,
+/// with the grid of the model's join between them open, and the join's name.
+fn joined_grid(name: &str) -> (Window, String) {
+    let mut win = orders_and_stores(name, "orders");
+    let join = the_join(&win);
+    open_in_grid(
+        &mut win,
+        brightfield_render::model_scene::Selection::Relationship(join.clone()),
+    );
     (win, join)
+}
+
+/// Throw a log scale on a tile of the grid's dashboard, as an unsaved chart edit.
+fn throw_a_log_scale(win: &mut Window) {
+    let thrown = (0..8).any(|plot| {
+        win.app.chart_doc_mut().set_plot_scale(
+            plot,
+            brightfield_spec::layout::PlotAxis::Y,
+            brightfield_spec::layout::ScaleType::Log,
+        )
+    });
+    assert!(thrown, "a tile took the log scale: {}", win.said());
+    win.settle();
+    assert!(
+        win.app.title().contains(UNSAVED_MARK),
+        "the chart edit is a draft"
+    );
+}
+
+/// The grid's chart file, absolute, as the chart document names it.
+fn grid_chart(win: &Window) -> Option<PathBuf> {
+    win.app
+        .chart_doc()
+        .spec_path
+        .as_deref()
+        .map(|p| std::path::absolute(p).expect("an absolute path"))
 }
 
 #[test]
@@ -939,19 +980,7 @@ fn a_joins_chart_is_saved_apart_from_the_tables_and_read_back() {
     std::fs::write(&table_panel, "# a table's panel\n").expect("the table's panel writes");
     let join_panel = brightfield_model::panel_capture::join_panel_file(&win.dir(), &join);
 
-    let thrown = (0..8).any(|plot| {
-        win.app.chart_doc_mut().set_plot_scale(
-            plot,
-            brightfield_spec::layout::PlotAxis::Y,
-            brightfield_spec::layout::ScaleType::Log,
-        )
-    });
-    assert!(thrown, "a tile took the log scale: {}", win.said());
-    win.settle();
-    assert!(
-        win.app.title().contains(UNSAVED_MARK),
-        "the chart edit is a draft"
-    );
+    throw_a_log_scale(&mut win);
 
     win.cmd_s();
 
@@ -990,5 +1019,169 @@ fn a_joins_chart_is_saved_apart_from_the_tables_and_read_back() {
             .map(|p| std::path::absolute(p).unwrap()),
         Some(std::path::absolute(&join_panel).unwrap()),
         "the join's grid opens its saved chart"
+    );
+}
+
+#[test]
+fn a_join_named_as_a_table_takes_none_of_the_tables_steps() {
+    use brightfield_render::model_scene::Selection;
+    let mut win = orders_and_stores("cmd_s_join_named_orders", "orders");
+    let spine = |win: &Window| -> Vec<String> {
+        win.app
+            .spine_rows()
+            .iter()
+            .map(|r| r.label.clone())
+            .collect()
+    };
+
+    // A step recorded on the orders table's grid.
+    open_in_grid(&mut win, Selection::Dataset("orders".into()));
+    let before = spine(&win);
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("amount > 30".to_owned()),
+            order: None,
+        });
+    win.settle();
+    win.cmd_s();
+    assert!(
+        !win.app.title().contains(UNSAVED_MARK),
+        "the filter was saved: {}",
+        win.said()
+    );
+    let step = "orders_filtered_by_amount";
+    assert!(
+        !before.iter().any(|l| l == step) && spine(&win).iter().any(|l| l == step),
+        "the table's grid shows the step it recorded: {:?}",
+        spine(&win)
+    );
+
+    // The join renamed to the table's name, which the model allows.
+    assert!(win.app.back_to_model(), "{}", win.said());
+    win.settle();
+    let join = the_join(&win);
+    let pane = win.app.model_pane_mut().expect("the model is open");
+    let mut model = pane.model.clone();
+    model
+        .relationships
+        .iter_mut()
+        .find(|r| r.name == join)
+        .expect("the join")
+        .name = "orders".to_owned();
+    pane.save_model(model).expect("the renamed join is written");
+    win.settle();
+
+    open_in_grid(&mut win, Selection::Relationship("orders".into()));
+
+    // The grid copy the window opened, read as the window reads it: its chain holds no step, where
+    // the orders table's holds the filter. The spine is the Protocol's manifest whole on every
+    // grid of a folder Protocol, so it is the chain that tells the two apart.
+    let rows = std::path::absolute(win.dir().join(".grid").join("orders.parquet"))
+        .expect("an absolute path");
+    let mut opened =
+        brightfield_shell::data_file::open(&rows.to_string_lossy()).expect("the join's rows open");
+    opened.protocol.dir = win.dir();
+    let chain = |grid| {
+        let mut protocol = opened.protocol.clone();
+        protocol.model_grid = Some(grid);
+        protocol
+            .inputs_with_last_run()
+            .expect("the grid's Protocol builds")
+            .generated
+            .map(|g| g.steps.into_iter().map(|s| s.name).collect::<Vec<_>>())
+    };
+    assert_eq!(
+        chain(brightfield_shell::one_step::ModelGrid::Table),
+        Some(vec![step.to_owned()]),
+        "the orders table's chain holds its filter"
+    );
+    assert_eq!(
+        chain(brightfield_shell::one_step::ModelGrid::Join),
+        Some(Vec::new()),
+        "the join's grid takes none of the table's steps"
+    );
+}
+
+#[test]
+fn a_saved_chart_that_will_not_read_opens_the_rows_on_their_dashboard_and_warns() {
+    use brightfield_render::model_scene::Selection;
+    let mut win = orders_and_stores("cmd_s_unread_chart", "orders");
+    let chart = brightfield_model::panel_capture::table_panel_file(&win.dir(), "orders");
+    std::fs::create_dir_all(chart.parent().expect("a parent")).expect("panels/tables/");
+    let broken = "data: [unclosed\n";
+    std::fs::write(&chart, broken).expect("the broken chart writes");
+
+    open_in_grid(&mut win, Selection::Dataset("orders".into()));
+
+    assert_ne!(
+        grid_chart(&win),
+        Some(std::path::absolute(&chart).expect("an absolute path")),
+        "the grid did not take the broken chart"
+    );
+    let chart_name = chart.display().to_string();
+    assert!(
+        win.app.notifications().iter().any(|n| n.title
+            == "The saved chart for these rows could not be read"
+            && n.body.as_deref().is_some_and(|b| b.contains(&chart_name))),
+        "a warning names the chart file: {}",
+        win.said()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&chart).expect("the chart reads"),
+        broken,
+        "the broken chart is left as it was"
+    );
+    assert!(
+        win.app.back_to_model(),
+        "the rows opened in the grid over the model: {}",
+        win.said()
+    );
+}
+
+#[test]
+fn a_table_named_as_its_protocol_keeps_its_chart_apart_from_the_protocols_panel() {
+    use brightfield_render::model_scene::Selection;
+    let name = "cmd_s_named_orders";
+    let mut win = orders_and_stores(name, name);
+    let own = brightfield_model::panel_capture::panel_file(&win.dir(), name);
+    std::fs::create_dir_all(own.parent().expect("a parent")).expect("panels/");
+    let own_text = "# the Protocol's own panel\n";
+    std::fs::write(&own, own_text).expect("the Protocol's panel writes");
+    let table_chart = std::path::absolute(brightfield_model::panel_capture::table_panel_file(
+        &win.dir(),
+        name,
+    ))
+    .expect("an absolute path");
+
+    open_in_grid(&mut win, Selection::Dataset(name.into()));
+    assert!(
+        win.said().is_empty(),
+        "the table's grid read nothing of the Protocol's panel: {}",
+        win.said()
+    );
+    throw_a_log_scale(&mut win);
+    win.cmd_s();
+
+    assert!(
+        !win.app.title().contains(UNSAVED_MARK),
+        "Cmd+S saved the table's chart: {}",
+        win.said()
+    );
+    let saved = std::fs::read_to_string(&table_chart).expect("the table's chart is written");
+    assert!(saved.contains("log"), "{saved}");
+    assert_eq!(
+        std::fs::read_to_string(&own).expect("the Protocol's panel reads"),
+        own_text,
+        "the Protocol's own panel is untouched"
+    );
+
+    assert!(win.app.back_to_model(), "{}", win.said());
+    win.settle();
+    open_in_grid(&mut win, Selection::Dataset(name.into()));
+    assert_eq!(
+        grid_chart(&win),
+        Some(table_chart),
+        "the table's grid opens its own saved chart"
     );
 }

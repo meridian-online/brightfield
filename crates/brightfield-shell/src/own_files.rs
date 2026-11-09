@@ -767,7 +767,7 @@ pub fn one_source_protocol_dir(path: &Path) -> Option<PathBuf> {
 
 /// The names of the steps the own-files Protocol of one source in `dir` was made with, its load
 /// and its silver and failed steps, when `dir` holds one: every other step of its manifest was
-/// recorded after, from the grid or from typed SQL. Known by exact name, as [`load_steps`] knows
+/// recorded after, from the grid or from typed SQL. Known by exact name, as `load_steps` knows
 /// a load, so a step recorded on a table whose name starts like one of these is not taken for it.
 #[must_use]
 pub fn one_source_steps(dir: &Path) -> Option<(String, HashSet<String>)> {

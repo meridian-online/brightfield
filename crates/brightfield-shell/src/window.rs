@@ -1622,8 +1622,8 @@ impl Boot {
     /// The file is opened as a data file first, because that is what gives the
     /// window its rails, its Protocol source (Save needs it to write again) and
     /// the facts of each tile. The chart file is then looked for where Save
-    /// writes it — [`panel_file`] over the Protocol's own directory and name,
-    /// the call [`ChartDoc::save_chart_beside`] makes — and, when it is there,
+    /// writes it — [`OneStepProtocol::chart_file`](crate::one_step::OneStepProtocol::chart_file),
+    /// the file [`ChartDoc::save_chart_at`] is given — and, when it is there,
     /// it replaces the generated dashboard: the live session, the composition
     /// and the spec path the editor pane opens and the watch follows. A folder
     /// with no chart file opens as a data file does, with a generated
@@ -1650,6 +1650,18 @@ impl Boot {
     ///
     /// A chart file that will not parse or load.
     fn with_saved_chart(mut opened: crate::data_file::OpenedFile) -> Result<Self, String> {
+        Self::read_saved_chart(&mut opened)?;
+        Ok(Self::of_opened_file(opened))
+    }
+
+    /// Put the chart Save wrote under `opened`'s Protocol's `panels/` in place of its generated
+    /// dashboard, when that file is there. `opened` is left as it was when the file is not there,
+    /// and when it will not parse or load.
+    ///
+    /// # Errors
+    ///
+    /// A chart file that will not parse or load.
+    fn read_saved_chart(opened: &mut crate::data_file::OpenedFile) -> Result<(), String> {
         let chart = opened.protocol.chart_file();
         if chart.is_file() {
             // Absolute, as Save names the file it wrote: the chart document's
@@ -1661,7 +1673,7 @@ impl Boot {
             opened.composed = composed;
             opened.spec_file = Some(chart);
         }
-        Ok(Self::of_opened_file(opened))
+        Ok(())
     }
 
     /// What an opened data file becomes, for **both** routes that open one.
@@ -8476,10 +8488,10 @@ impl MeridianApp {
     /// was asked for, so the latest choice is the one that goes. Without the
     /// mark, `to` goes at once.
     ///
-    /// Going is [`Self::open_home`] for Home, the open itself for an open,
+    /// Going is `Self::open_home` for Home, the open itself for an open,
     /// and the window's close for a close or a quit, which waits for any run
     /// the window started so no run's record is lost
-    /// ([`Self::close_when_runs_land`]).
+    /// (`Self::close_when_runs_land`).
     pub fn leave(&mut self, ctx: &egui::Context, to: Leaving) {
         // A close or quit already answered and waiting for a run: a second one closes now, so
         // a run that never finishes cannot keep the app open, and any other way out is refused
@@ -8702,7 +8714,7 @@ impl MeridianApp {
     ///   be read, and the way out is dropped, so the next one asks again.
     /// - [`CloseAnswer::CloseWithoutSaving`] keeps the chart as a Save would
     ///   write it as a version of the chart file, which the Versions panel
-    ///   lists as `closed unsaved` ([`ChartDoc::keep_unsaved_beside`]), with the
+    ///   lists as `closed unsaved` ([`ChartDoc::keep_unsaved_at`]), with the
     ///   grid view and typed statements no file holds carried on it, and the
     ///   YAML editor's buffer as a version of its own file; then it goes.
     ///   Neither the chart file nor `arcform.yaml` is written. When the chart
@@ -8765,7 +8777,7 @@ impl MeridianApp {
     /// # Errors
     ///
     /// Why it could not be kept: a window with no Protocol to keep the
-    /// chart's versions beside, and [`ChartDoc::keep_unsaved_beside`]'s.
+    /// chart's versions beside, and [`ChartDoc::keep_unsaved_at`]'s.
     fn keep_unsaved(&mut self) -> Result<(), String> {
         self.keep_editor_buffer()?;
         if !self.charts.doc.has_unsaved_work() {
@@ -10731,25 +10743,37 @@ impl MeridianApp {
                     target,
                     brightfield_render::model_scene::Selection::Relationship(_)
                 );
-                opened.protocol.join = join;
-                // The chart saved for these rows, when one was, from the file a Save writes.
-                let boot = match Boot::with_saved_chart(opened) {
-                    Ok(boot) => boot,
-                    Err(e) => {
-                        self.model = Some(model);
+                opened.protocol.model_grid = Some(if join {
+                    crate::one_step::ModelGrid::Join
+                } else {
+                    crate::one_step::ModelGrid::Table
+                });
+                // The chart saved for these rows, when one was, from the file a Save writes. One
+                // that will not be read does not keep the rows from opening: they open on their
+                // generated dashboard, and a warning names the file, which is left as it was.
+                let chart = opened.protocol.chart_file();
+                let unread = Boot::read_saved_chart(&mut opened).err();
+                self.adopt_boot(Boot::of_opened_file(opened));
+                let unread_banner = NotificationId::new("model-grid-chart-unread");
+                match unread {
+                    Some(e) => {
                         self.notifications.raise(
                             Notification::new(
-                                NotificationId::new("open-model-grid"),
-                                Severity::Error,
-                                "Could not open these rows in the grid",
+                                unread_banner,
+                                Severity::Warning,
+                                "The saved chart for these rows could not be read",
                             )
-                            .body(e),
+                            .body(format!(
+                                "{} was left as it is, and the rows open on their generated \
+                                 dashboard: {e}",
+                                chart.display()
+                            )),
                         );
-                        ctx.request_repaint();
-                        return false;
                     }
-                };
-                self.adopt_boot(boot);
+                    None => {
+                        self.notifications.dismiss(unread_banner);
+                    }
+                }
                 self.charts.doc.set_views_are_steps(!join);
                 let showing = match target {
                     brightfield_render::model_scene::Selection::Dataset(name) => {
@@ -10888,8 +10912,9 @@ impl MeridianApp {
     /// the statements still kept laid out after it.
     ///
     /// **The chart is written after the Protocol and is its own success.** The
-    /// edits made to it since the last Save go into `panels/<name>.yaml` under
-    /// the same directory, through [`ChartDoc::save_chart_beside`], and the
+    /// edits made to it since the last Save go into its chart file under the
+    /// same directory ([`OneStepProtocol::chart_file`](crate::one_step::OneStepProtocol::chart_file)),
+    /// through [`ChartDoc::save_chart_at`], and the
     /// unsaved mark clears when they are in. A chart that could not be written
     /// leaves the mark and raises a banner of its own saying why, over a
     /// Protocol that was written: the two files are not one transaction, and
