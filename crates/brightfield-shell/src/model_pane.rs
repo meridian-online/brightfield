@@ -922,7 +922,8 @@ impl ModelPane {
     /// does; what the analyst decided stays as it is.
     ///
     /// `now_ms` is the frame clock. While the edit is one whose file could not be written, its
-    /// write is tried again at most every [`WRITE_RETRY_MS`], rather than on every poll.
+    /// write is tried again at most every [`WRITE_RETRY_MS`], rather than on every poll
+    /// (`a_held_full_pass_retries_an_unwritten_edit_only_every_so_often`).
     pub fn poll_discovery(&mut self, now_ms: u64) -> Option<Dispatched> {
         // The pane's tick reads an edit once its pause is out; the fold waits for that read.
         if self.file_edit_armed() {
@@ -1069,7 +1070,8 @@ impl ModelPane {
     /// evidence is what the file says about the data, not a step of the Protocol.
     ///
     /// The file view's edit is settled first ([`Self::settle_file_edit`]), so a save never puts
-    /// the file's text over an edit that is still to be read, refused or unwritten.
+    /// the file's text over an edit that is still to be read, refused or unwritten
+    /// (`save_model_settles_the_file_view_first`).
     ///
     /// # Errors
     ///
