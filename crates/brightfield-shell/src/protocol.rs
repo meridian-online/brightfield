@@ -405,11 +405,11 @@ pub fn offline_optin() -> bool {
 /// launch after that click.
 ///
 /// What makes the remembered form honest is where the memory can come from.
-/// `SavedLayout::opened` is set to an id only by `SavedLayout::reopen_start`,
-/// which product code calls from exactly one place — the landing of a start
-/// the user picked in `MeridianApp::open_start`, checkable with
-/// `git grep -n 'reopen_start' -- crates/brightfield-shell/src` — so it can
-/// only name an id the user picked off a button that disclosed it. A Protocol
+/// Product code sets `SavedLayout::opened` to an id through
+/// `SavedLayout::reopen_start`, which it calls from one place — the landing of
+/// a start the user picked in `MeridianApp::open_start`, checkable with
+/// `git grep -n 'reopen_start' -- crates/brightfield-shell/src` — so the id is
+/// one the user picked off a button that disclosed it. A Protocol
 /// folder to reopen is a field of its own, `SavedLayout::reopen_protocol`, and
 /// is not a start. What invalidates the id: opening another start, which
 /// overwrites it, opening a Protocol or going to the door, which clear it, and

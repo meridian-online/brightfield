@@ -419,7 +419,7 @@ fn a_layout_naming_a_protocol_still_reads_in_the_old_shape() {
         written["reopen_protocol"]
     );
     // An older build reads `opened` as an `Option<String>`, and ignores a field it does not know,
-    // since nothing in the layout denies unknown fields.
+    // since no struct in the layout denies unknown fields.
     let old: Option<String> = serde_json::from_value(written["opened"].clone())
         .expect("an older build reads `opened` as it always did");
     assert_eq!(old, None, "and finds no start to reopen in it");
