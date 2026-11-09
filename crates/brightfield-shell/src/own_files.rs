@@ -789,6 +789,23 @@ pub fn one_source_steps(dir: &Path) -> Option<(String, HashSet<String>)> {
     Some((name.clone(), steps.into_iter().collect()))
 }
 
+/// The load steps of the own-files Protocol in `dir`, one per table it records, by exact name as
+/// `load_steps` knows them. Empty when `dir` records no tables.
+#[must_use]
+pub fn load_step_names(dir: &Path) -> HashSet<String> {
+    read_sources(dir)
+        .map(|sources| sources.tables.iter().map(|t| load_step(&t.name)).collect())
+        .unwrap_or_default()
+}
+
+/// Whether the step `name` is one of the model's: a silver or failed step [`write_silver`] writes.
+/// Known by its prefix, as `write_silver` itself knows which steps to drop and write again, so a
+/// step taken out by hand would come back the next time the model is written.
+#[must_use]
+pub fn is_model_step(name: &str) -> bool {
+    name.starts_with(SILVER_STEP) || name.starts_with(FAILED_STEP)
+}
+
 /// The names of the steps the own-files Protocol of several tables in `dir` was made with, each
 /// table's load and its silver and failed steps, when `dir` holds one and `table` is one of its
 /// tables: what a step recorded from that table's grid comes after.

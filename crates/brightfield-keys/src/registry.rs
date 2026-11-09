@@ -797,6 +797,20 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Yank the focused asset's dotted address to the clipboard",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "y = yank (vim); a Data verb — logged by longname + dotted address" }),
         },
+        // Remove the step that makes the selected asset, or put back one removed. A removal is a
+        // draft until Save, as every step edit is, and Save writes it into `arcform.yaml`, so Data.
+        // The window decides whether it may go: a load or a step later steps read is refused.
+        VerbEntry {
+            longname: "remove-step",
+            tier: CommandTier::Data,
+            binding_specs: vec![proto("d d")],
+            scope_applicability: vec![Protocol],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Remove the step that makes the selected asset, or put back one removed; kept as a draft until Save",
+            scores: Some(Scores { frequency: 2, mnemonic: 5, convention: 5, motor_note: "d d = delete the line (vim); doubled so a stray d removes nothing; d d again puts the step back" }),
+        },
         // ---- the Outline's column rows: put the column under the cursor on a
         //      channel. `z` opens a chord beside `z a`, and the rows answer in the
         //      Protocol context. Each acts on a column's row and does nothing on a
@@ -1757,6 +1771,7 @@ mod tests {
             "protocol-drill-out",
             "open-steps-sheet",
             "yank-address",
+            "remove-step",
             "put-column-on-x",
             "put-column-on-y",
             "put-column-on-colour",
@@ -1825,8 +1840,8 @@ mod tests {
             .collect();
         // The Data-tier set is exactly the addressed spec-edit verbs plus undo,
         // the Outline's put-a-column-on-a-channel verbs, the shelf's keep, the
-        // Versions panel's step back, which Save writes, and the model pane's
-        // reshape verbs, which write the Ossie file.
+        // Versions panel's step back and the spine's step removal, which Save
+        // writes, and the model pane's reshape verbs, which write the Ossie file.
         let mut got = durable.clone();
         got.sort_unstable();
         let mut expected = vec![
@@ -1846,6 +1861,7 @@ mod tests {
             "keep-shelf-choice",
             "set-shelf-setting-to-auto",
             "step-back-to-version",
+            "remove-step",
             "keep-join",
             "drop-join",
             "add-join",

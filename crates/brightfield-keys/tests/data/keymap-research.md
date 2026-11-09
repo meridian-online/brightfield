@@ -96,6 +96,7 @@ because they walk the graph's edges, not pixel geometry.
 | `protocol-drill-out` | `escape` | 4 / 4 / 5 | esc = pop one level (Esc ladder); breadcrumb tracks the pop |
 | `open-steps-sheet` | `shift-s` | 3 / 5 / 4 | `S` = steps sheet (VisiData sheet family); answers "where is my step list" |
 | `yank-address` | `y` | 3 / 5 / 4 | `y` = yank (vim); a Data verb — logged by longname + dotted address |
+| `remove-step` | `d d` | 2 / 5 / 5 | `d d` = delete the line (vim); doubled so a stray `d` removes nothing; `d d` again puts the step back; the Protocol context keeps it apart from the chart's `remove-mark` on `d` |
 
 > **Rename note.** The `z a` row was scored and recorded as `toggle-fold-family`, when the only thing
 > that folded was a parameterised family. The verb was later broadened to also open a `sql:` step's

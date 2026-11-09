@@ -790,6 +790,14 @@ pub enum PendingWork {
     View,
     /// The kept statement of this name.
     Typed(String),
+    /// The removal of the recorded step of this name.
+    Remove(String),
+}
+
+/// How a step removed and not yet saved is named to a reader: in the close
+/// question, and on the version a close without saving keeps.
+fn removal_words(step: &str) -> String {
+    format!("Removed step \u{b7} {step}")
 }
 
 /// The chart view's **document**: the composited dashboard, the canvas it
@@ -942,6 +950,12 @@ pub struct ChartDoc {
     typed: Vec<crate::typed_sql::TypedStep>,
     /// The order stamp each of [`Self::typed`] was kept with, index for index.
     typed_stamps: Vec<u64>,
+    /// **The recorded steps removed from the spine and not yet saved**, each
+    /// with the order stamp it was removed with. A removal is a draft like a
+    /// kept statement: the step stays in `arcform.yaml`, struck through on the
+    /// spine, until a Save takes it out, so any marks the document unsaved;
+    /// cleared when the document is replaced.
+    removing: Vec<(String, u64)>,
     /// The order stamp the grid view was last applied with.
     grid_view_stamp: u64,
     /// **The YAML editor's buffer, while it holds edits its file does not**:
@@ -1492,6 +1506,7 @@ impl ChartDoc {
             pending_settled: false,
             typed: Vec::new(),
             typed_stamps: Vec::new(),
+            removing: Vec::new(),
             grid_view_stamp: 0,
             editor_buffer: None,
             editor_save_ask: false,
@@ -1571,6 +1586,7 @@ impl ChartDoc {
             pending_settled: false,
             typed: Vec::new(),
             typed_stamps: Vec::new(),
+            removing: Vec::new(),
             grid_view_stamp: 0,
             editor_buffer: None,
             editor_save_ask: false,
@@ -1712,6 +1728,7 @@ impl ChartDoc {
         self.pending_settled = false;
         self.typed.clear();
         self.typed_stamps.clear();
+        self.removing.clear();
         self.grid_foot = crate::grid_foot::FootState::default();
         self.grid_preview = None;
         self.grid_layout_switch = None;
@@ -1792,12 +1809,16 @@ impl ChartDoc {
 
     /// Whether the document holds work no file does: an edit made since the
     /// last Save ([`Self::has_unsaved_edit`]), an applied grid view not yet
-    /// recorded ([`Self::grid_view_unrecorded`]), or a statement kept from the
-    /// palette ([`Self::typed_steps`]). The one definition every reader of
+    /// recorded ([`Self::grid_view_unrecorded`]), a statement kept from the
+    /// palette ([`Self::typed_steps`]), or a step removed from the spine
+    /// ([`Self::removing_steps`]). The one definition every reader of
     /// *unsaved* shares.
     #[must_use]
     pub fn has_unsaved_work(&self) -> bool {
-        self.has_unsaved_edit() || self.grid_view_unrecorded() || !self.typed.is_empty()
+        self.has_unsaved_edit()
+            || self.grid_view_unrecorded()
+            || !self.typed.is_empty()
+            || !self.removing.is_empty()
     }
 
     /// Record the YAML editor's unsaved buffer, or that it has none: the
@@ -1865,8 +1886,8 @@ impl ChartDoc {
     }
 
     /// **The work a Save records, in the order it was made**: the applied grid
-    /// view, while some part of it is unrecorded, and each kept statement, by
-    /// the order stamps they were made with.
+    /// view, while some part of it is unrecorded, each kept statement and each
+    /// step removed, by the order stamps they were made with.
     #[must_use]
     pub fn pending_in_order(&self) -> Vec<PendingWork> {
         let mut stamped: Vec<(u64, PendingWork)> = self
@@ -1874,6 +1895,11 @@ impl ChartDoc {
             .iter()
             .zip(&self.typed_stamps)
             .map(|(step, stamp)| (*stamp, PendingWork::Typed(step.name.clone())))
+            .chain(
+                self.removing
+                    .iter()
+                    .map(|(step, stamp)| (*stamp, PendingWork::Remove(step.clone()))),
+            )
             .collect();
         if self.grid_view_unrecorded() {
             stamped.push((self.grid_view_stamp, PendingWork::View));
@@ -1892,6 +1918,55 @@ impl ChartDoc {
         self.typed.remove(at);
         self.typed_stamps.remove(at);
         self.pending_settled = true;
+    }
+
+    /// **The recorded steps removed from the spine and not yet saved**, in the
+    /// order they were removed.
+    #[must_use]
+    pub fn removing_steps(&self) -> Vec<String> {
+        self.removing.iter().map(|(step, _)| step.clone()).collect()
+    }
+
+    /// Whether the recorded step `name` is removed from the spine and not yet
+    /// saved.
+    #[must_use]
+    pub fn is_removing(&self, name: &str) -> bool {
+        self.removing.iter().any(|(step, _)| step == name)
+    }
+
+    /// **Remove the recorded step `name`, or take its removal back**: a step
+    /// not yet removed is removed, as a draft a Save applies, and one already
+    /// removed is put back. Answers whether the step is removed now.
+    pub(crate) fn toggle_removal(&mut self, name: &str) -> bool {
+        if let Some(at) = self.removing.iter().position(|(step, _)| step == name) {
+            self.removing.remove(at);
+            return false;
+        }
+        let stamp = self.take_stamp();
+        self.removing.push((name.to_string(), stamp));
+        true
+    }
+
+    /// The removal of the step `name` has been applied to the folder, or the
+    /// step was gone from it already: it leaves the drafts, and the window
+    /// takes on the Protocol the folder holds now
+    /// ([`Self::take_pending_settled`]).
+    pub(crate) fn mark_removal_recorded(&mut self, name: &str) {
+        let Some(at) = self.removing.iter().position(|(step, _)| step == name) else {
+            return;
+        };
+        self.removing.remove(at);
+        self.pending_settled = true;
+    }
+
+    /// The steps removed and not yet saved, in words for the close question:
+    /// `Removed step · name`.
+    #[must_use]
+    pub fn removal_lines(&self) -> Vec<String> {
+        self.removing
+            .iter()
+            .map(|(step, _)| removal_words(step))
+            .collect()
     }
 
     /// Keep `step` after the statements already kept.
@@ -2384,6 +2459,12 @@ impl ChartDoc {
                         sql: step.statement.clone(),
                     })
                 }
+                // A removal carries no SQL of its own: the step is still in
+                // the folder's `arcform.yaml`, which a close does not write.
+                PendingWork::Remove(name) => Some(brightfield_protocol::PendingStep {
+                    words: removal_words(&name),
+                    sql: String::new(),
+                }),
             })
             .collect()
     }

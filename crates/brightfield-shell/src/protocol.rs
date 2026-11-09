@@ -835,6 +835,9 @@ pub struct SpineRow {
     pub id: Option<AssetId>,
     /// The view a click puts on the canvas, on a view row.
     pub view: Option<NodeView>,
+    /// Whether the row is drawn struck through: the step is removed and the
+    /// removal not yet saved, on the step's row and the rows of what it makes.
+    pub struck: bool,
 }
 
 /// The separator a caption row puts between its clauses.
@@ -933,6 +936,37 @@ fn protocol_key_table() -> BTreeMap<String, &'static str> {
         }
     }
     table
+}
+
+/// The `remove-step` verb's longname: the registry's, spelled once here.
+pub const REMOVE_STEP: &str = "remove-step";
+
+/// The keystrokes the registry binds `remove-step` to in the Protocol context,
+/// which [`ProtocolModel::feed_events`] reads as a chord of two `d`s.
+const REMOVE_STEP_KEYS: &str = "d d";
+
+/// **The steps no removal is offered on**: a one-step Protocol's `load`, an
+/// own-files Protocol's load of each table it records, and the steps its model
+/// writes. A load is what every later step reads from, and the model's steps
+/// are written again whenever the model is, so neither is the analyst's to take
+/// out of the spine.
+fn fixed_steps(source: Option<&OneStepProtocol>, graph: &AssetGraph) -> BTreeSet<StepId> {
+    let mut fixed = BTreeSet::from([crate::one_step::STEP_NAME.to_string()]);
+    let Some(source) = source else {
+        return fixed;
+    };
+    let loads = crate::own_files::load_step_names(&source.dir);
+    if !loads.is_empty() {
+        fixed.extend(loads);
+        fixed.extend(
+            graph
+                .seams
+                .keys()
+                .filter(|step| crate::own_files::is_model_step(step))
+                .cloned(),
+        );
+    }
+    fixed
 }
 
 /// The verbs that put the Outline's column on a channel of the hero's shelf,
@@ -1047,6 +1081,20 @@ pub struct ProtocolModel {
     /// A pending `z` awaiting the second key of its chord: `a`, or a channel's
     /// letter.
     pending_z: bool,
+    /// A pending `d` awaiting the second `d` of `d d`, which removes a step.
+    pending_d: bool,
+    /// The steps no removal is offered on: the loads, and the steps the model
+    /// writes ([`ProtocolModel::removable_step`]).
+    fixed_steps: BTreeSet<StepId>,
+    /// The recorded steps removed and not yet saved, mirrored in from the chart
+    /// document each frame ([`ProtocolModel::set_removing`]), which is where the
+    /// draft lives so that a Protocol read again keeps it.
+    removing: BTreeSet<StepId>,
+    /// A step `remove-step` was asked for this frame, drained by the window,
+    /// which decides whether it may go and keeps the draft on the chart
+    /// document. Recorded here for the reason [`Self::column_pick`] is: the
+    /// model cannot write the chart document.
+    remove_ask: Option<StepId>,
     /// The last yanked address, shown as a transient confirmation.
     yank_flash: Option<AssetId>,
     /// Drained by the shell to perform the actual clipboard copy.
@@ -1141,6 +1189,7 @@ impl ProtocolModel {
         };
         let layout = Self::boot_layout(&inputs, flow);
         let sheet = StepsSheet::from_rows(inputs.sheet_rows);
+        let fixed_steps = fixed_steps(inputs.source.as_ref(), &inputs.graph_full);
         let family_ids: Vec<AssetId> = inputs
             .graph_collapsed
             .nodes
@@ -1183,6 +1232,10 @@ impl ProtocolModel {
             chain_contracted: false,
             scope_graph: None,
             pending_z: false,
+            pending_d: false,
+            fixed_steps,
+            removing: BTreeSet::new(),
+            remove_ask: None,
             yank_flash: None,
             yank_request: None,
             layout,
@@ -1746,6 +1799,7 @@ impl ProtocolModel {
                 .and_then(|n| n.step.as_ref())
                 .filter(|_| row.kind != AssetKind::Source);
             let typed = step.and_then(|step| self.typed.get(step));
+            let struck = step.is_some_and(|step| self.removing.contains(step));
             if let Some(step) = step {
                 let (state, marker) = match typed {
                     Some(_) => (NOT_RECORDED, SpineMarker::Unrecorded),
@@ -1763,6 +1817,7 @@ impl ProtocolModel {
                     selected: false,
                     id: None,
                     view: None,
+                    struck,
                 });
             }
             let exists = match row.kind {
@@ -1807,6 +1862,7 @@ impl ProtocolModel {
                 selected: row.selected,
                 id: Some(row.id.clone()),
                 view: None,
+                struck,
             });
             if has_views {
                 rows.extend(NodeView::ALL.map(|view| SpineRow {
@@ -1818,6 +1874,7 @@ impl ProtocolModel {
                     selected: false,
                     id: Some(row.id.clone()),
                     view: Some(view),
+                    struck: false,
                 }));
             }
         }
@@ -2034,6 +2091,97 @@ impl ProtocolModel {
         }
     }
 
+    /// **The step that makes the selected asset**: the step whose row stands
+    /// above the selected row on the spine, and the one `remove-step` acts on.
+    /// `None` with nothing selected, and on an asset nothing in this Protocol
+    /// makes. A source host names the step that fetches from it rather than one
+    /// that makes it, so it answers `None` too.
+    #[must_use]
+    pub fn selected_step(&self) -> Option<&StepId> {
+        let node = self.graph_collapsed.nodes.get(self.selected.as_ref()?)?;
+        if node.kind == AssetKind::Source {
+            return None;
+        }
+        node.step.as_ref()
+    }
+
+    /// **The step `remove-step` would remove**: the selected asset's step
+    /// ([`Self::selected_step`]), when this Protocol is one Brightfield saves
+    /// ([`Self::source`]) and the step is recorded in its folder and is neither
+    /// a load nor one of the model's (`fixed_steps`). A statement kept and not
+    /// yet saved is not one: it is in no file to remove it from.
+    ///
+    /// Whether later steps read it is not asked here: that refusal is said in
+    /// a sentence naming them, so the verb is offered and refuses
+    /// ([`Self::readers_of`]).
+    #[must_use]
+    pub fn removable_step(&self) -> Option<&StepId> {
+        self.source.as_ref()?;
+        self.selected_step().filter(|step| {
+            !self.fixed_steps.contains(*step)
+                && !self.typed.contains_key(*step)
+                && self.graph_full.seams.contains_key(*step)
+        })
+    }
+
+    /// **The later steps that read what the step `step` makes**, in the order
+    /// the Protocol runs them: each step through which an asset `step` makes
+    /// flows on, by the lineage the graph draws from each step's SQL, its
+    /// `depends_on` and its operator's input. Read off the unfolded graph, so a
+    /// reader a family tile or a fold hides is still named.
+    #[must_use]
+    pub fn readers_of(&self, step: &str) -> Vec<String> {
+        let graph = &self.graph_full;
+        let made: BTreeSet<&AssetId> = graph
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.step.as_deref() == Some(step))
+            .map(|(id, _)| id)
+            .collect();
+        let mut readers: BTreeSet<&StepId> = BTreeSet::new();
+        for edge in graph.edges.iter().filter(|e| made.contains(&e.from)) {
+            let reader = edge
+                .via
+                .as_ref()
+                .or_else(|| graph.nodes.get(&edge.to).and_then(|n| n.step.as_ref()));
+            if let Some(reader) = reader.filter(|r| r.as_str() != step) {
+                readers.insert(reader);
+            }
+        }
+        let mut readers: Vec<&StepId> = readers.into_iter().collect();
+        readers.sort_by_key(|r| graph.seams.get(*r).map_or(usize::MAX, |s| s.index));
+        readers.into_iter().cloned().collect()
+    }
+
+    /// Mirror in the steps the chart document holds removed and not yet saved,
+    /// so the spine strikes their rows through.
+    pub fn set_removing(&mut self, steps: impl IntoIterator<Item = String>) {
+        self.removing = steps.into_iter().collect();
+    }
+
+    /// Whether the step `step` is drawn removed, as [`Self::set_removing`]
+    /// last mirrored it in.
+    #[must_use]
+    pub fn is_removing(&self, step: &str) -> bool {
+        self.removing.contains(step)
+    }
+
+    /// Take the step `remove-step` was asked for this frame, if it was.
+    pub fn take_remove_ask(&mut self) -> Option<StepId> {
+        self.remove_ask.take()
+    }
+
+    /// `d d`: ask the window to remove the selected asset's step, or to put
+    /// back one already removed. Nothing is asked on a step that cannot be
+    /// removed.
+    fn ask_remove(&mut self) -> bool {
+        let Some(step) = self.removable_step().cloned() else {
+            return false;
+        };
+        self.remove_ask = Some(step);
+        true
+    }
+
     /// Mirror in which column the chart document has selected, so the
     /// outline's highlight follows it — a column with a tile and one without.
     ///
@@ -2119,6 +2267,7 @@ impl ProtocolModel {
     /// Let a pending `z` go: the keys it was waiting for went elsewhere.
     pub fn drop_chord(&mut self) {
         self.pending_z = false;
+        self.pending_d = false;
     }
 
     /// The verb the registry binds to `z` then `key` in the Protocol context.
@@ -2403,8 +2552,22 @@ impl ProtocolModel {
         }
         if key == egui::Key::Z {
             self.pending_z = true;
+            self.pending_d = false;
             return false;
         }
+        // `d d`, as vim deletes a line: the first `d` waits for the second, and
+        // any other key lets it go and is treated as itself.
+        if key == egui::Key::D && mods.is_none() {
+            if std::mem::take(&mut self.pending_d) {
+                if let Some(verb) = self.key_table.get(REMOVE_STEP_KEYS).copied() {
+                    return self.dispatch(verb, canvas_node);
+                }
+                return false;
+            }
+            self.pending_d = true;
+            return false;
+        }
+        self.pending_d = false;
         // `t` transposes the reading axis — the keyboard twin of the "flow: …"
         // click control.
         if key == egui::Key::T {
@@ -2471,6 +2634,7 @@ impl ProtocolModel {
                 true
             }
             "yank-address" => self.yank(canvas_node),
+            REMOVE_STEP => self.ask_remove(),
             other => match put_column_channel(other) {
                 Some(channel) => self.put_outline_column(channel),
                 None => false,
@@ -2918,6 +3082,9 @@ pub struct SpineRowDrawn {
     /// is its name — rather than a readout. Read off the same sense the row
     /// was allocated with, so the record cannot call a readout a control.
     pub control: bool,
+    /// Whether the row was drawn struck through, its name in the secondary
+    /// ink: a step removed and not yet saved, and what it makes.
+    pub struck: bool,
 }
 
 /// One of the **column verbs** on an Outline row as it was drawn: the chip that
@@ -3462,6 +3629,7 @@ fn list_records(shown: &crate::shelf::ListDrawn) -> Vec<SpineRowDrawn> {
         washed: false,
         chip: None,
         control: false,
+        struck: false,
     };
     std::iter::once(heading)
         .chain(shown.rows.iter().map(|row| SpineRowDrawn {
@@ -3478,6 +3646,7 @@ fn list_records(shown: &crate::shelf::ListDrawn) -> Vec<SpineRowDrawn> {
             washed: row.bar.is_some(),
             chip: None,
             control: true,
+            struck: false,
         }))
         .collect()
 }
@@ -3528,6 +3697,7 @@ fn caption_row(ui: &mut egui::Ui, text: &str, mode: Mode) -> SpineRowDrawn {
         washed: false,
         chip: None,
         control: false,
+        struck: false,
     }
 }
 
@@ -3646,6 +3816,7 @@ fn spine_head_row(
                 hint: GRAPH_CHIP_HINT,
             }),
             control: false,
+            struck: false,
         },
         response.clicked(),
     )
@@ -3772,7 +3943,15 @@ fn spine_row(
     // Clipped, not truncated: the room left of the kind is a fact about the
     // rail's width, and a character budget is a guess at it that goes wrong the
     // moment somebody drags the rail narrower.
-    let ink = chrome::colour(sem.text.primary);
+    //
+    // A step removed and not yet saved stays on the spine until the Save that
+    // takes it out of the folder, so it is drawn as going rather than gone: its
+    // name in the secondary ink with a rule through it, in the same ink.
+    let ink = if row.struck {
+        chrome::colour(sem.text.secondary)
+    } else {
+        chrome::colour(sem.text.primary)
+    };
     let name = painter.layout_no_wrap(row.label.clone(), ui_font(), ink);
     let name_rect = egui::Rect::from_min_size(
         egui::pos2(name_left, rect.center().y - name.size().y / 2.0),
@@ -3782,9 +3961,18 @@ fn spine_row(
         egui::pos2(name_left, rect.top()),
         egui::pos2(kind_rect.left() - spacing::SPACE_3, rect.bottom()),
     );
-    painter
-        .with_clip_rect(room)
-        .galley(name_rect.min, name, ink);
+    let clipped = painter.with_clip_rect(room);
+    clipped.galley(name_rect.min, name, ink);
+    if row.struck {
+        let y = name_rect.center().y;
+        clipped.line_segment(
+            [
+                egui::pos2(name_rect.left(), y),
+                egui::pos2(name_rect.right(), y),
+            ],
+            egui::Stroke::new(1.0, ink),
+        );
+    }
 
     (
         SpineRowDrawn {
@@ -3801,6 +3989,7 @@ fn spine_row(
             washed: row.selected,
             chip: None,
             control: sense.senses_click(),
+            struck: row.struck,
         },
         response,
     )
@@ -3936,6 +4125,7 @@ fn outline_row(
             washed: row.selected,
             chip: None,
             control: sense.senses_click(),
+            struck: false,
         },
         response,
         chips,
@@ -6632,6 +6822,7 @@ steps:
                 selected: true,
                 id: None,
                 view: None,
+                struck: false,
             };
             let (both, rects) = painted_spine_row(&row, true, mode);
             let bar = row_bar(both.rect);

@@ -313,6 +313,64 @@ pub fn record_sql(runner: &Runner, dir: &Path, sql: &str, name: &str) -> Result<
     }
 }
 
+/// **Remove the step `name` from the Protocol in `dir`, through arc**: `arc edit-protocol delete
+/// steps[<i>]`, which takes the step's entry out of `arcform.yaml` with the comment flush above it,
+/// leaves every other byte as it was, checks the result still loads before it writes, and keeps the
+/// state it replaces in the Protocol's history. arc refuses a result a later step's `depends_on`
+/// breaks, and the folder is then left as it was.
+///
+/// The step's SQL file is deleted after arc has written, unless another step names it too, so a
+/// refusal leaves the file where the step still reads it. A file outside the Protocol's folder is
+/// never deleted: only a path inside it, written relative to it, is the step's own.
+///
+/// Read off `arcform.yaml` as it is now, which an agent may have written since the step was
+/// removed from the spine. Answers `false`, writing nothing, when the step is not there.
+///
+/// # Errors
+///
+/// Why the manifest could not be read, arc's refusal without its `error: ` prefix, or why the
+/// step's file could not be deleted.
+pub fn remove_step(runner: &Runner, dir: &Path, name: &str) -> Result<bool, String> {
+    let manifest_path = dir.join("arcform.yaml");
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    let manifest = brightfield_protocol::parse_manifest_str(&text)
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    let Some(at) = manifest.steps.iter().position(|s| s.name == name) else {
+        return Ok(false);
+    };
+    let path = format!("steps[{at}]");
+    let out = arc_with_args(runner, dir, &["edit-protocol", "delete", &path]);
+    if !out.succeeded {
+        return Err(refusal(&out.stderr));
+    }
+    let model = manifest.steps[at].sql.as_deref().filter(|model| {
+        !manifest
+            .steps
+            .iter()
+            .enumerate()
+            .any(|(i, s)| i != at && s.sql.as_deref() == Some(*model))
+    });
+    if let Some(file) = model.and_then(|model| own_file(dir, model)) {
+        match std::fs::remove_file(&file) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", file.display())),
+        }
+    }
+    Ok(true)
+}
+
+/// The file `relative` names inside `dir`, when it is a path inside it written relative to it:
+/// no root, no drive, and no `..`.
+fn own_file(dir: &Path, relative: &str) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+    let path = Path::new(relative);
+    path.components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+        .then(|| dir.join(path))
+}
+
 /// Where one description stands, as [`Descriptions::get`] reports it.
 #[derive(Debug, PartialEq, Eq)]
 pub enum DescriptionState<'a> {

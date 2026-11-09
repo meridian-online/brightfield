@@ -167,14 +167,16 @@ pub fn chart_palette_verbs(saveable: bool) -> Vec<&'static str> {
 /// it on. A row that confirms and does nothing is the row this keeps out, as
 /// [`chart_palette_verbs`] keeps one out of the chart palette;
 /// `every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen`
-/// chooses each row it leaves in.
+/// chooses each row it leaves in. `remove-step` is offered where `removes_step`
+/// says the selected asset's step can be removed, so a load is not offered it.
 #[must_use]
-pub fn protocol_palette_verbs(puts_column: bool) -> Vec<&'static str> {
+pub fn protocol_palette_verbs(puts_column: bool, removes_step: bool) -> Vec<&'static str> {
     registry()
         .iter()
         .filter(|v| v.applies_at(Altitude::Protocol))
         .map(|v| v.longname)
         .filter(|v| puts_column || crate::protocol::put_column_channel(v).is_none())
+        .filter(|v| removes_step || *v != crate::protocol::REMOVE_STEP)
         .collect()
 }
 

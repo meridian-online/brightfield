@@ -536,6 +536,44 @@ pub const RUN_PROTOCOL: &str = "run-protocol";
 /// dispatch, its key, and the editor, which raises it after saving its buffer.
 pub const SAVE_PROTOCOL: &str = "save-protocol";
 
+/// The banner's title when a step later steps read is asked to be removed.
+pub const REMOVE_STEP_REFUSED: &str = "This step cannot be removed";
+
+/// The banner's title when a removed step that reads one removed after it is asked to be put back.
+pub const PUT_BACK_REFUSED: &str = "This step cannot be put back";
+
+/// `a`, `a and b`, `a, b and c`.
+fn named_list(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
+/// The sentence a refused removal says: the steps that read what `step` makes, each named.
+fn readers_sentence(step: &str, readers: &[String]) -> String {
+    let verb = if readers.len() == 1 { "reads" } else { "read" };
+    let them = if readers.len() == 1 { "it" } else { "them" };
+    format!(
+        "{} {verb} what {step} makes. Remove {them} first, then {step}.",
+        named_list(readers)
+    )
+}
+
+/// The sentence a refused put-back says: `step` reads what the removed steps `read` make.
+fn put_back_sentence(step: &str, read: &[String]) -> String {
+    let (makes, is, them) = if read.len() == 1 {
+        ("makes", "is", "it")
+    } else {
+        ("make", "are", "them")
+    };
+    format!(
+        "{step} reads what {} {makes}, which {is} removed too. Put {them} back first.",
+        named_list(read)
+    )
+}
+
 /// The `rename-protocol` verb's longname: the registry's, spelled once here for the window's key.
 pub const RENAME_PROTOCOL: &str = "rename-protocol";
 
@@ -7959,7 +7997,8 @@ impl MeridianApp {
         let puts_column = !self.graph_on_canvas()
             && self.protocol.doc.model.outline_column().is_some()
             && self.charts.shelf.band.is_some();
-        let allow = crate::overlays::protocol_palette_verbs(puts_column);
+        let removes_step = self.protocol.doc.model.removable_step().is_some();
+        let allow = crate::overlays::protocol_palette_verbs(puts_column, removes_step);
         self.overlay = Some(Overlay::Palette(Picker::new(
             CommandPalette::new_restricted(Altitude::Protocol, self.recency.clone(), &allow),
         )));
@@ -8898,6 +8937,7 @@ impl MeridianApp {
         let mut edits = crate::versions::change_lines(&changes, &tile_of);
         edits.extend(self.charts.doc.grid_view_line());
         edits.extend(self.charts.doc.typed_lines());
+        edits.extend(self.charts.doc.removal_lines());
         edits.extend(
             self.editor_unsaved_name()
                 .map(|name| format!("YAML editor \u{b7} {name} edited")),
@@ -9808,6 +9848,65 @@ impl MeridianApp {
             .doc
             .model
             .set_selected_column(shown.as_deref());
+        // …and a step `d d` or the palette asked to remove: the model reports which, and the
+        // window decides whether it may go and keeps the draft on the chart document, which a
+        // Protocol read again (after an agent's write, say) does not replace. The spine is told
+        // what is removed each frame, so it strikes the rows through.
+        if let Some(step) = self.protocol.doc.model.take_remove_ask() {
+            self.ask_remove_step(&step);
+            ctx.request_repaint();
+        }
+        self.protocol
+            .doc
+            .model
+            .set_removing(self.charts.doc.removing_steps());
+    }
+
+    /// **Remove the recorded step `step` from the spine as a draft, or put it back**: what `d d`
+    /// and the palette's `remove-step` come to once the model has said which step.
+    ///
+    /// A step later steps read is refused, with a banner naming each of them, since taking it out
+    /// would leave them reading a table nothing makes. A reader already removed does not count, so
+    /// the analyst removes the readers first and then the step, and a Save applies the removals in
+    /// the order they were made. For the same reason a removed step that reads one removed after it
+    /// is not put back until that one is. The step stays in `arcform.yaml` until a Save takes it
+    /// out ([`Self::record_pending`]).
+    fn ask_remove_step(&mut self, step: &str) {
+        let banner = NotificationId::new("remove-step");
+        let model = &self.protocol.doc.model;
+        if self.charts.doc.is_removing(step) {
+            let read: Vec<String> = self
+                .charts
+                .doc
+                .removing_steps()
+                .into_iter()
+                .filter(|other| model.readers_of(other).iter().any(|r| r == step))
+                .collect();
+            if read.is_empty() {
+                self.notifications.dismiss(banner);
+                self.charts.doc.toggle_removal(step);
+            } else {
+                self.notifications.raise(
+                    Notification::new(banner, Severity::Warning, PUT_BACK_REFUSED)
+                        .body(put_back_sentence(step, &read)),
+                );
+            }
+            return;
+        }
+        let readers: Vec<String> = model
+            .readers_of(step)
+            .into_iter()
+            .filter(|r| !self.charts.doc.is_removing(r))
+            .collect();
+        if readers.is_empty() {
+            self.notifications.dismiss(banner);
+            self.charts.doc.toggle_removal(step);
+        } else {
+            self.notifications.raise(
+                Notification::new(banner, Severity::Warning, REMOVE_STEP_REFUSED)
+                    .body(readers_sentence(step, &readers)),
+            );
+        }
     }
 
     /// Return to the front door, **keeping the session** so the door's
@@ -11632,8 +11731,7 @@ impl MeridianApp {
             });
         // What a refusal left unrecorded leads the pending work, since what
         // was made before it was recorded and left it.
-        let refused_view =
-            self.charts.doc.pending_in_order().first() == Some(&crate::app::PendingWork::View);
+        let refused_first = self.charts.doc.pending_in_order().first().cloned();
         // A part recorded before a refusal is in the folder all the same.
         if self.charts.doc.take_pending_settled() {
             self.adopt_saved_protocol();
@@ -11649,10 +11747,15 @@ impl MeridianApp {
             Err(refused) => {
                 let (title, why) = match refused {
                     Refused::Writing(why) => ("Could not save this Protocol", why),
-                    Refused::Recording(why) if refused_view => {
-                        ("Could not record the grid view", why)
-                    }
-                    Refused::Recording(why) => ("Could not record the SQL step", why),
+                    Refused::Recording(why) => match refused_first {
+                        Some(crate::app::PendingWork::View) => {
+                            ("Could not record the grid view", why)
+                        }
+                        Some(crate::app::PendingWork::Remove(_)) => {
+                            ("Could not remove the step", why)
+                        }
+                        _ => ("Could not record the SQL step", why),
+                    },
                 };
                 eprintln!("could not save the Protocol: {why}");
                 self.notifications
@@ -11719,6 +11822,16 @@ impl MeridianApp {
                     )?;
                     self.charts.doc.mark_typed_recorded(&name);
                     recorded.push(name);
+                }
+                // Applied to `arcform.yaml` as it stands at this Save, which an agent may have
+                // written meanwhile: a step already gone from it is a draft with nothing left to
+                // do, and goes quietly.
+                PendingWork::Remove(name) => {
+                    let removed = crate::operation::remove_step(&runner, &source.dir, &name)?;
+                    self.charts.doc.mark_removal_recorded(&name);
+                    if removed {
+                        recorded.push(name);
+                    }
                 }
             }
         }
