@@ -426,6 +426,13 @@ impl Window {
 
     /// Open the palette with `space`, type `longname` and confirm it.
     fn confirm(&mut self, longname: &str) {
+        let left = self.confirm_leaving(longname);
+        assert_eq!(left, None, "confirming {longname} left the palette open");
+    }
+
+    /// Open the palette with `space`, type `longname`, confirm it, and say which overlay is open
+    /// after: a verb that opens a sheet of its own leaves that sheet, not nothing.
+    fn confirm_leaving(&mut self, longname: &str) -> Option<&'static str> {
         self.press(egui::Key::Space);
         assert_eq!(
             self.app.open_overlay(),
@@ -436,11 +443,7 @@ impl Window {
         self.run(vec![egui::Event::Text(longname.to_owned())]);
         self.run(Vec::new());
         self.press(egui::Key::Enter);
-        assert_eq!(
-            self.app.open_overlay(),
-            None,
-            "confirming {longname} left the palette open"
-        );
+        self.app.open_overlay()
     }
 
     /// The rows the palette lists when `space` opens it, closed again after.
@@ -1086,6 +1089,22 @@ fn every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen()
                 let before = at.app.picker_asks();
                 at.confirm(verb);
                 assert!(at.app.picker_asks() > before, "{verb} raised no picker");
+            }
+            "new-protocol" => {
+                let mut at = Window::crosswalk();
+                assert_eq!(
+                    at.confirm_leaving(verb),
+                    Some("new-protocol"),
+                    "{verb} opened no location chooser"
+                );
+            }
+            "open-preferences" => {
+                let mut at = Window::crosswalk();
+                assert_eq!(
+                    at.confirm_leaving(verb),
+                    Some("preferences"),
+                    "{verb} opened no Preferences sheet"
+                );
             }
             other => panic!(
                 "{other} is offered enabled on the Protocol palette with no proof here that \

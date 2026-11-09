@@ -348,7 +348,17 @@ fn a_layout_that_moved_is_written_and_reads_back() {
     let target = app
         .front_door_card_rect(brightfield_shell::starts::CROSSWALK_RUN)
         .expect("the front door drew a card for the run of the crosswalk");
-    run(&mut app, &ctx, vec![click_at(target.center())]);
+    //
+    // The door now stacks its Protocols above the starts, so on the harness's
+    // small window the card runs past the bottom edge and its centre sits on
+    // it. The press goes where the card is still on screen.
+    let visible = target.intersect(SCREEN);
+    assert!(
+        visible.height() > 20.0,
+        "the run's card is {target:?} on a {SCREEN:?} window, with too little \
+         of it on screen to press"
+    );
+    run(&mut app, &ctx, vec![click_at(visible.center())]);
     settle(&mut app, &ctx, 2);
     assert!(app.graph_on_canvas());
     assert!(app.protocol_model().has_assets());

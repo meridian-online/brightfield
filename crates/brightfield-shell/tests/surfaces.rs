@@ -803,12 +803,19 @@ fn the_crosshair_is_bounded_by_the_plot_under_the_pointer() {
 /// trusting it.
 ///
 /// `key` is the keystroke the shell reads off `brightfield_keys::registry()`
-/// for that overlay — `space`, `?` and `/` — so these are spellings of a
-/// binding the registry owns, not a second source for it.
+/// for that overlay — `space`, `?`, `/`, `cmd-n` and `cmd-,` — so these are
+/// spellings of a binding the registry owns, not a second source for it.
 struct OverlayCase {
     what: &'static str,
     area: &'static str,
     key: egui::Key,
+    /// Whether the keystroke is held with the command key, as `cmd-n` and
+    /// `cmd-,` are.
+    command: bool,
+    /// Whether the card sits on the narrow width rung rather than the default
+    /// one. The New Protocol chooser is a short list, so it asks for the
+    /// narrow card.
+    narrow: bool,
     /// Whether the overlay opens over the protocol graph rather than the
     /// chart. Jump-to-asset is drawn under `graph_on_canvas`.
     protocol: bool,
@@ -822,35 +829,105 @@ const OVERLAY_CASES: &[OverlayCase] = &[
         what: "the command palette over the chart",
         area: "bf-overlay-palette",
         key: egui::Key::Space,
+        command: false,
+        narrow: false,
         protocol: false,
     },
     OverlayCase {
         what: "the keyboard help sheet over the chart",
         area: "bf-overlay-help",
         key: egui::Key::Questionmark,
+        command: false,
+        narrow: false,
         protocol: false,
     },
     OverlayCase {
         what: "the command palette over the protocol graph",
         area: "bf-overlay-palette",
         key: egui::Key::Space,
+        command: false,
+        narrow: false,
         protocol: true,
     },
     OverlayCase {
         what: "the keyboard help sheet over the protocol graph",
         area: "bf-overlay-help",
         key: egui::Key::Questionmark,
+        command: false,
+        narrow: false,
         protocol: true,
     },
     OverlayCase {
         what: "jump-to-asset over the protocol graph",
         area: "bf-overlay-jump",
         key: egui::Key::Slash,
+        command: false,
+        narrow: false,
+        protocol: true,
+    },
+    OverlayCase {
+        what: "the New Protocol location chooser over the chart",
+        area: "bf-overlay-new-protocol",
+        key: egui::Key::N,
+        command: true,
+        narrow: true,
+        protocol: false,
+    },
+    OverlayCase {
+        what: "the New Protocol location chooser over the protocol graph",
+        area: "bf-overlay-new-protocol",
+        key: egui::Key::N,
+        command: true,
+        narrow: true,
+        protocol: true,
+    },
+    OverlayCase {
+        what: "the Preferences sheet over the chart",
+        area: "bf-overlay-preferences",
+        key: egui::Key::Comma,
+        command: true,
+        narrow: false,
+        protocol: false,
+    },
+    OverlayCase {
+        what: "the Preferences sheet over the protocol graph",
+        area: "bf-overlay-preferences",
+        key: egui::Key::Comma,
+        command: true,
+        narrow: false,
         protocol: true,
     },
 ];
 
 impl OverlayCase {
+    /// The press that opens this overlay: the key alone, or the key with the
+    /// command key held for the chords that carry it.
+    fn opening_keystroke(&self) -> Vec<egui::Event> {
+        if !self.command {
+            return press(self.key, false);
+        }
+        [true, false]
+            .into_iter()
+            .map(|pressed| egui::Event::Key {
+                key: self.key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            })
+            .collect()
+    }
+
+    /// The width the card is meant to have, off the rung it sits on.
+    fn card_width(&self) -> f32 {
+        let t = &meridian_egui::TOKENS;
+        if self.narrow {
+            t.modal_width_narrow
+        } else {
+            t.modal_width_default
+        }
+    }
+
     /// A per-case, per-mode capture name. Two tests open the same case under
     /// the same name, so it is [`scratch`] that keeps their PNGs apart.
     fn tag(&self, mode: Mode, state: &str) -> String {
@@ -866,6 +943,7 @@ impl OverlayCase {
     /// photographed — the same pairing `shell_capture` and `protocol_capture`
     /// use, so the rects read off it are the rects in the picture.
     fn boot(&self, mode: Mode) -> Boot {
+        hermetic_protocols_folder();
         if self.protocol {
             protocol_boot()
         } else {
@@ -879,7 +957,7 @@ impl OverlayCase {
     /// The window with this overlay open, the same window with it closed, and
     /// the rect the card was given.
     fn open(&self, mode: Mode) -> OpenOverlay {
-        let script = vec![press(self.key, false)];
+        let script = vec![self.opening_keystroke()];
         let (open, closed) = if self.protocol {
             (
                 protocol_capture(mode, &self.tag(mode, "open"), script),
@@ -937,7 +1015,7 @@ impl OverlayCase {
             input
         };
         let _ = ctx.run_ui(raw(Vec::new()), |ui| app.draw(ui));
-        let _ = ctx.run_ui(raw(press(self.key, false)), |ui| app.draw(ui));
+        let _ = ctx.run_ui(raw(self.opening_keystroke()), |ui| app.draw(ui));
         for _ in 0..SETTLE_CAP {
             let out = ctx.run_ui(raw(Vec::new()), |ui| app.draw(ui));
             if !out
@@ -957,6 +1035,23 @@ impl OverlayCase {
                 )
             })
     }
+}
+
+/// Point the Protocols folder at an empty scratch folder for this process, so
+/// the New Protocol chooser and the Preferences sheet list and name the same
+/// folder on every machine rather than reading the home directory. Nothing is
+/// written under it.
+fn hermetic_protocols_folder() {
+    static FOLDER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let folder = FOLDER.get_or_init(|| {
+        // A short path on purpose: Preferences shows the folder on one unwrapped line, so a long
+        // per-user temp path would widen the card past its width rung and make the width
+        // assertion about this machine's temp directory rather than about the sheet.
+        let dir = PathBuf::from("/tmp").join(format!("bf-surf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch Protocols folder");
+        dir
+    });
+    std::env::set_var(brightfield_shell::protocols_dir::PROTOCOLS_DIR_VAR, folder);
 }
 
 /// The settle budget the layout passes here use. It mirrors
@@ -1207,7 +1302,6 @@ fn every_modal_backdrop_is_exactly_the_scrim_token_over_the_page() {
 /// obscurely.
 #[test]
 fn the_modal_card_rect_is_the_card() {
-    let t = &meridian_egui::TOKENS;
     for case in OVERLAY_CASES {
         let card = case.card_rect(Mode::Light);
         let (w, h) = case.boot(Mode::Light).window_size();
@@ -1218,12 +1312,12 @@ fn the_modal_card_rect_is_the_card() {
             case.what
         );
         assert!(
-            (card.width() - t.modal_width_default).abs() <= 2.0,
-            "{}: the card is {} wide against the default modal width rung of \
-             {}, so the rect is not the card frame",
+            (card.width() - case.card_width()).abs() <= 2.0,
+            "{}: the card is {} wide against its modal width rung of {}, so \
+             the rect is not the card frame",
             case.what,
             card.width(),
-            t.modal_width_default
+            case.card_width()
         );
     }
 }
