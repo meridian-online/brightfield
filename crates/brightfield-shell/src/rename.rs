@@ -440,7 +440,16 @@ fn read_scalar(text: &str, in_flow: bool) -> Option<(String, usize, Style)> {
             // of the value.
             let flow_end = if in_flow { text.find([',', '}']) } else { None };
             let end = flow_end.or_else(|| text.find(" #")).unwrap_or(text.len());
-            let value = text[..end].trim_end();
+            let mut value = text[..end].trim_end();
+            // A flow mapping opened on a line above leaves its `,` or `}` after the value: they
+            // are the mapping's, not the path's.
+            if !in_flow {
+                while let Some(shorter) =
+                    value.strip_suffix(',').or_else(|| value.strip_suffix('}'))
+                {
+                    value = shorter.trim_end();
+                }
+            }
             Some((value.to_string(), value.len(), Style::Plain))
         }
     }
@@ -1034,6 +1043,18 @@ mod tests {
         assert_eq!(fixed, "    file: '/p/new''s/a,b.parquet'");
         let read: serde_yaml::Value = serde_yaml::from_str(fixed.trim()).expect("it parses");
         assert_eq!(read["file"].as_str(), Some("/p/new's/a,b.parquet"));
+        // A flow mapping spread over lines: its `,` and `}` stay the mapping's.
+        let spread = "data: {\n  file: /p/hugh's old/a.parquet,\n  format: parquet }\n";
+        let fixed: Vec<String> = spread
+            .split('\n')
+            .map(|l| moved_file_line(l, Path::new("/q/n"), was).unwrap_or_else(|| l.to_string()))
+            .collect();
+        assert_eq!(fixed[1], "  file: /q/n/a.parquet,");
+        let read: serde_yaml::Value = serde_yaml::from_str(&fixed.join("\n")).expect("it parses");
+        assert_eq!(read["data"]["file"].as_str(), Some("/q/n/a.parquet"));
+        let last =
+            moved_file_line("  file: /p/hugh's old/b.parquet }", dir, was).expect("rewritten");
+        assert_eq!(last, "  file: '/p/new''s/b.parquet' }");
         // Not the key: another key ending in it, and an address inside a value.
         assert_eq!(
             moved_file_line("    profile: '/p/hugh''s old/x'", dir, was),

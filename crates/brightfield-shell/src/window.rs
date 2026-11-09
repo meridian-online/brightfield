@@ -10869,15 +10869,36 @@ impl MeridianApp {
             self.leave(ctx, Leaving::Move(to));
             return;
         }
-        match crate::rename::rename(&dir, name) {
-            Ok(to) => {
-                self.layout.live_mut().repoint(&dir, &to);
+        match crate::rename::rename_with(&dir, name, &crate::rename::FolderOps::system()) {
+            Ok(moved) => {
+                self.layout.live_mut().repoint(&dir, &moved.to);
                 self.notifications
                     .dismiss(NotificationId::new(MOVE_PROTOCOL_BANNER));
+                self.say_not_followed(&to, &moved.warnings);
             }
             Err(why) => self.say_not_moved(&Move::Rename(name.to_string()), why),
         }
         ctx.request_repaint();
+    }
+
+    /// Raise the banner that names what did not follow `to`, done, when anything did not: the
+    /// rename's or move's `warnings`. With none, it raises nothing.
+    fn say_not_followed(&mut self, to: &Move, warnings: &[String]) {
+        if warnings.is_empty() {
+            return;
+        }
+        let title = match to {
+            Move::Rename(_) => "Renamed, but not everything followed it",
+            Move::Relocate(_) => "Moved, but not everything followed it",
+        };
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new(NOT_FOLLOWED_BANNER),
+                Severity::Warning,
+                title,
+            )
+            .body(warnings.join(". ")),
+        );
     }
 
     /// Raise the banner that says `to` was not done, and why.
@@ -10939,20 +10960,7 @@ impl MeridianApp {
                 }
                 self.notifications
                     .dismiss(NotificationId::new(NOT_FOLLOWED_BANNER));
-                if !warnings.is_empty() {
-                    let title = match to {
-                        Move::Rename(_) => "Renamed, but not everything followed it",
-                        Move::Relocate(_) => "Moved, but not everything followed it",
-                    };
-                    self.notifications.raise(
-                        Notification::new(
-                            NotificationId::new(NOT_FOLLOWED_BANNER),
-                            Severity::Warning,
-                            title,
-                        )
-                        .body(warnings.join(". ")),
-                    );
-                }
+                self.say_not_followed(to, &warnings);
                 if new == dir {
                     return;
                 }

@@ -1224,3 +1224,61 @@ fn a_rename_says_what_did_not_follow_it() {
         said.body
     );
 }
+
+#[test]
+fn a_door_row_rename_says_what_did_not_follow_it() {
+    let mut saved = Window::opened("door_not_followed");
+    let old = saved.dir().expect("a Protocol");
+    saved.keep_filter();
+    saved.run(vec![press(egui::Key::S, command())]);
+    saved.settle();
+    let layout = saved.app.layout().clone();
+    drop(saved);
+    std::fs::write(
+        old.join("packages/door_not_followed/datapackage.json"),
+        "{ not json",
+    )
+    .expect("the package is spoiled");
+
+    let mut win = Window {
+        app: MeridianApp::headless_with_layout(Boot::empty(), layout, Mode::Light),
+        ctx: egui::Context::default(),
+        time: 0.0,
+    };
+    win.settle();
+    let row = win
+        .app
+        .front_door_rows()
+        .iter()
+        .find(|r| Path::new(&r.id).starts_with(&old))
+        .cloned()
+        .expect("the door has a row for the Protocol");
+    win.run(vec![egui::Event::PointerMoved(row.rect.center())]);
+    win.run(vec![press(egui::Key::F2, egui::Modifiers::NONE)]);
+    win.settle();
+    assert_eq!(win.app.door_rename_row(), Some(row.id.as_str()));
+    win.type_over("door_not_followed_renamed");
+
+    let new = scratch()
+        .join("protocols")
+        .join("door_not_followed_renamed");
+    assert!(
+        new.join("arcform.yaml").is_file(),
+        "the rename is done: {}",
+        win.said()
+    );
+    let said = win
+        .app
+        .notifications()
+        .iter()
+        .find(|n| n.id == meridian_egui::NotificationId::new(NOT_FOLLOWED_BANNER))
+        .expect("a banner says what did not follow");
+    assert_eq!(said.title, "Renamed, but not everything followed it");
+    assert!(
+        said.body
+            .as_deref()
+            .is_some_and(|b| b.starts_with(rename::SOURCES_NOT_FOLLOWED)),
+        "{:?}",
+        said.body
+    );
+}
