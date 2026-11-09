@@ -320,7 +320,8 @@ pub enum StepRemoval {
     /// was written.
     Gone,
     /// The step is out of `arcform.yaml`. `left_behind` says why its SQL file could not be
-    /// deleted, naming it, when it could not: the removal stands all the same.
+    /// deleted, naming it, when it could not: the removal stands even then
+    /// (`a_sql_file_that_cannot_be_deleted_is_left_with_a_notice`).
     Removed {
         /// The file left behind and why, when its delete failed.
         left_behind: Option<String>,
