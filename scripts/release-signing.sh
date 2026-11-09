@@ -95,7 +95,8 @@ notarytool_at_least_1_1() {
 
 # The developer directory to run notarytool and stapler from: the selected one
 # if its notarytool will do, otherwise the newest /Applications/Xcode*.app whose
-# does.
+# does, leaving out betas and release candidates so a release never notarises
+# with tools Apple has not shipped.
 notary_developer_dir() {
   local selected candidate
   selected=$(xcode-select -p)
@@ -104,6 +105,7 @@ notary_developer_dir() {
   fi
   while IFS= read -r candidate; do
     [ -L "$candidate" ] && continue
+    case "$candidate" in *[Bb]eta* | *_RC* | *Release_Candidate*) continue ;; esac
     if notarytool_at_least_1_1 "$candidate/Contents/Developer"; then
       echo "$candidate/Contents/Developer"; return 0
     fi

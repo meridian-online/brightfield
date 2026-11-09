@@ -168,9 +168,11 @@ jobs:
       # release before it did. With all five, it imports the Developer ID
       # Application certificate into a keychain of this job's own, stores the
       # App Store Connect API key as a notarytool profile in it, and exports
-      # BRIGHTFIELD_SIGN_IDENTITY, BRIGHTFIELD_NOTARY_PROFILE and
-      # BRIGHTFIELD_NOTARY_KEYCHAIN, which package.sh reads to sign with the
-      # hardened runtime, notarise and staple. A partial set fails here, as
+      # BRIGHTFIELD_SIGN_IDENTITY, BRIGHTFIELD_NOTARY_PROFILE,
+      # BRIGHTFIELD_NOTARY_KEYCHAIN and BRIGHTFIELD_NOTARY_DEVELOPER_DIR, which
+      # package.sh reads to sign with the hardened runtime, notarise and
+      # staple. The last names an Xcode whose notarytool is 1.1 or later,
+      # because the runner's default notarytool crashes; the script says why. A partial set fails here, as
       # does an identity that is not Developer ID. The script's header names
       # each secret and what goes in it.
       #
