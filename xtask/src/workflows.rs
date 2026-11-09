@@ -43,7 +43,7 @@ pub const WORKFLOWS_OUTSIDE_THE_COMMAND: &[(&str, &str)] = &[
     ),
     (
         "signing-rehearsal.yml",
-        "it runs only on a pull request that changes release signing, builds the release binary and signs it with a throwaway identity in a keychain it creates and deletes; that changes a machine's keychain search list, which is not a step to run on a person's machine before each commit",
+        "it runs only on a pull request that changes release signing or the code nested in the bundle, builds the release binary and signs it with a throwaway identity in a keychain it creates and deletes; that changes a machine's keychain search list, which is not a step to run on a person's machine before each commit",
     ),
 ];
 
