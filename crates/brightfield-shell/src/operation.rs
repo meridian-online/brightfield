@@ -454,8 +454,8 @@ fn history_ids(runner: &Runner, dir: &Path) -> Option<Vec<String>> {
 /// **Put `arcform.yaml` back as arc found it before the delete**, through `arc history restore`,
 /// which checkpoints what it replaces. Answers whether the manifest was put back.
 ///
-/// Only when the history shows the delete's own two entries and no other new one
-/// ([`delete_entries`]), and the file is still byte-identical to the newer of them, arc's save of
+/// It restores when the history shows the delete's own two entries and no other new one
+/// ([`delete_entries`], `a_wrong_step_removed_is_put_back_when_the_history_is_full`), and the file is still byte-identical to the newer of them, arc's save of
 /// what it wrote: any other history or file means someone else wrote too, and nothing is restored.
 /// The restore is from the older, arc's checkpoint of what it read.
 fn restore_before_delete(runner: &Runner, dir: &Path, before: Option<&[String]>) -> bool {
@@ -485,7 +485,8 @@ fn restore_before_delete(runner: &Runner, dir: &Path, before: Option<&[String]>)
 /// before it was `before` and is `ids` now: exactly two ids are new, they are the last two, and the
 /// ids before them are a suffix of `before`. arc keeps a bounded history and prunes it from the
 /// oldest end, so the entries an edit pushed out are missing from the front, never from the middle.
-/// `None` when the history shows anything else, such as another edit's entries as well.
+/// `None` when the history shows another edit's entries as well, or one new entry, or an entry gone
+/// from the middle (`any_other_history_shows_no_single_edit`).
 fn delete_entries<'a>(before: &[String], ids: &'a [String]) -> Option<(&'a str, &'a str)> {
     let [kept @ .., older, newer] = ids else {
         return None;
