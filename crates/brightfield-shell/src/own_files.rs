@@ -508,7 +508,7 @@ impl FilesBefore {
             .collect();
         made.sort_by_key(|f| std::cmp::Reverse(f.components().count()));
         for folder in made {
-            // `remove_dir` refuses a folder that holds anything, so a folder kept is not lost.
+            // `remove_dir` takes away an empty folder and refuses one with files in it.
             let _ = std::fs::remove_dir(&folder);
         }
         let profile = self.dir.join(PROFILE_DIR);
