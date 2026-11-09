@@ -135,6 +135,7 @@ jobs:
           test -n "$BRIGHTFIELD_SIGN_IDENTITY"
           test "$BRIGHTFIELD_NOTARY_PROFILE" = brightfield-notary
           test -f "$BRIGHTFIELD_NOTARY_KEYCHAIN"
+          test -d "$BRIGHTFIELD_NOTARY_DEVELOPER_DIR"
           security find-identity -p codesigning "$BRIGHTFIELD_NOTARY_KEYCHAIN" \
             | grep -F "$BRIGHTFIELD_SIGN_IDENTITY" | grep -F 'Brightfield signing rehearsal'
 
@@ -143,23 +144,11 @@ jobs:
       # way package.sh asks, notarytool must reach Apple and be refused the
       # throwaway key with a 401. A crash, or any other failure, means the
       # profile is not usable as stored, which a real key would hit too.
-      - name: DIAGNOSTIC notarytool per Xcode
-        run: |
-          key="${RUNNER_TEMP}/diag.p8"
-          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 --decode > "$key"
-          xcode-select -p
-          for x in /Applications/Xcode*.app; do
-            [ -L "$x" ] && continue
-            v=$(DEVELOPER_DIR="$x/Contents/Developer" xcrun notarytool --version 2>&1 | head -1)
-            st=0; DEVELOPER_DIR="$x/Contents/Developer" xcrun notarytool history --key "$key" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" > "${RUNNER_TEMP}/d.log" 2>&1 || st=$?
-            echo "XCODE $x notarytool=$v exit=$st :: $(tr '\n' ' ' < "${RUNNER_TEMP}/d.log" | cut -c1-200)"
-          done
-          rm -f "$key"
-
       - name: notarytool reads the stored profile and Apple refuses the throwaway key
         run: |
           status=0
-          xcrun notarytool history --keychain-profile "$BRIGHTFIELD_NOTARY_PROFILE" \
+          DEVELOPER_DIR="$BRIGHTFIELD_NOTARY_DEVELOPER_DIR" xcrun notarytool history \
+            --keychain-profile "$BRIGHTFIELD_NOTARY_PROFILE" \
             --keychain "$BRIGHTFIELD_NOTARY_KEYCHAIN" > "${RUNNER_TEMP}/history.log" 2>&1 || status=$?
           cat "${RUNNER_TEMP}/history.log"
           echo "notarytool exited ${status}"

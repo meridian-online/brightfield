@@ -36,8 +36,9 @@
 #                 imports the .p12 into it, lets codesign use the key without a
 #                 prompt, puts the keychain on the user search list, stores the
 #                 API key as a notarytool profile in it, and appends
-#                 BRIGHTFIELD_SIGN_IDENTITY, BRIGHTFIELD_NOTARY_PROFILE and
-#                 BRIGHTFIELD_NOTARY_KEYCHAIN to $GITHUB_ENV for the steps after.
+#                 BRIGHTFIELD_SIGN_IDENTITY, BRIGHTFIELD_NOTARY_PROFILE,
+#                 BRIGHTFIELD_NOTARY_KEYCHAIN and BRIGHTFIELD_NOTARY_DEVELOPER_DIR
+#                 to $GITHUB_ENV for the steps after.
 #
 # The identity must be named "Developer ID Application: …". Only --rehearsal
 # lifts that, and --rehearsal refuses to run on a tag, so a self-signed
@@ -75,6 +76,40 @@ SECRETS=(
   APPLE_NOTARY_KEY_ID
   APPLE_NOTARY_ISSUER_ID
 )
+
+# notarytool 1.0.0, which every Xcode 16 ships and which is the default on the
+# macos-15 runner image, dies with SIGTRAP (exit 133) on the notary service's
+# reply; 1.1.0, from Xcode 26, answers. Measured on that image in November 2026,
+# with an API key Apple refused: 1.0.0 trapped through a stored profile and with
+# the key passed as flags alike, and 1.1.0 printed the 401. So notarisation uses
+# the newest Xcode whose notarytool is 1.1 or later, and only notarisation: the
+# build keeps the Xcode the runner selects, so the compiler and SDK are the
+# ones every release before this used.
+notarytool_at_least_1_1() {
+  local v major rest minor
+  v=$(DEVELOPER_DIR="$1" xcrun notarytool --version 2>/dev/null | awk 'NR==1{print $1}')
+  [ -n "$v" ] || return 1
+  major=${v%%.*}; rest=${v#*.}; minor=${rest%%.*}
+  [ "$major" -gt 1 ] || { [ "$major" -eq 1 ] && [ "$minor" -ge 1 ]; }
+}
+
+# The developer directory to run notarytool and stapler from: the selected one
+# if its notarytool will do, otherwise the newest /Applications/Xcode*.app whose
+# does.
+notary_developer_dir() {
+  local selected candidate
+  selected=$(xcode-select -p)
+  if notarytool_at_least_1_1 "$selected"; then
+    echo "$selected"; return 0
+  fi
+  while IFS= read -r candidate; do
+    [ -L "$candidate" ] && continue
+    if notarytool_at_least_1_1 "$candidate/Contents/Developer"; then
+      echo "$candidate/Contents/Developer"; return 0
+    fi
+  done < <(printf "%s\n" /Applications/Xcode*.app | sort -t_ -k2 -V -r)
+  return 1
+}
 
 summary() {
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
@@ -185,12 +220,20 @@ setup() {
   esac
   echo "== signing: identity ${hash} \"${identity_name}\""
 
+  local notary_dir
+  if ! notary_dir=$(notary_developer_dir); then
+    echo "release-signing.sh: no Xcode on this machine has notarytool 1.1 or later." >&2
+    echo "  notarytool 1.0.0 crashes on the notary service's reply; install Xcode 26." >&2
+    exit 1
+  fi
+  echo "== signing: notarytool $(DEVELOPER_DIR="$notary_dir" xcrun notarytool --version | head -1) from ${notary_dir}"
+
   printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 --decode > "$KEY_FILE"
   chmod 600 "$KEY_FILE"
   local validate=--validate
   [ -n "$rehearsal" ] && validate=--no-validate
   echo "== signing: notarytool profile ${PROFILE} (${validate#--})"
-  xcrun notarytool store-credentials "$PROFILE" \
+  DEVELOPER_DIR="$notary_dir" xcrun notarytool store-credentials "$PROFILE" \
     --key "$KEY_FILE" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" \
     --keychain "$KEYCHAIN" "$validate"
   rm -f "$KEY_FILE"
@@ -199,6 +242,7 @@ setup() {
     echo "BRIGHTFIELD_SIGN_IDENTITY=${hash}"
     echo "BRIGHTFIELD_NOTARY_PROFILE=${PROFILE}"
     echo "BRIGHTFIELD_NOTARY_KEYCHAIN=${KEYCHAIN}"
+    echo "BRIGHTFIELD_NOTARY_DEVELOPER_DIR=${notary_dir}"
   } >> "$GITHUB_ENV"
   summary "Signing: **${identity_name}**, hardened runtime; notarised through profile \`${PROFILE}\`."
 }
