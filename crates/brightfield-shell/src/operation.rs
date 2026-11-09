@@ -319,24 +319,21 @@ pub enum StepRemoval {
     /// The step was not in `arcform.yaml`, such as one an agent took out meanwhile, and nothing
     /// was written.
     Gone,
-    /// `arcform.yaml` changed while the step was being removed, so arc's delete took out another
-    /// step, the step asked for is still there by the manifest read after (or by what arc wrote,
-    /// when that read does not load), and the manifest could not be put back as arc found it. No
-    /// file was deleted. `removed` names the step arc took out when [`removed_step`] can tell.
-    OtherRemoved {
-        /// The step arc took out instead.
-        removed: Option<String>,
+    /// `arcform.yaml` changed while the step was being removed, so the steps read after arc's
+    /// delete are not the steps read before it less the step, and the manifest could not be put
+    /// back as arc found it. No file was deleted. `missing` names the steps of the read before that
+    /// the read after does not hold, in their earlier order, or is `None` when the read after does
+    /// not load.
+    NotPutBack {
+        /// The steps missing now compared with the read before, when the read after loads.
+        missing: Option<Vec<String>>,
     },
-    /// The step is out of `arcform.yaml`. `left_behind` says why its SQL file could not be
-    /// deleted, naming it, when it could not: the removal stands even then
-    /// (`a_sql_file_that_cannot_be_deleted_is_left_with_a_notice`). `changed_meanwhile` says the
-    /// manifest was also written by someone else while the step was being removed, which the
-    /// removal leaves as they wrote it.
+    /// The step is out of `arcform.yaml`, and no other step was added or taken out. `left_behind`
+    /// says why its SQL file could not be deleted, naming it, when it could not: the removal stands
+    /// even then (`a_sql_file_that_cannot_be_deleted_is_left_with_a_notice`).
     Removed {
         /// The file left behind and why, when its delete failed.
         left_behind: Option<String>,
-        /// Whether `arcform.yaml` changed in other ways while the step was being removed.
-        changed_meanwhile: bool,
     },
 }
 
@@ -352,26 +349,26 @@ pub const CHANGED_MEANWHILE: &str = "The Protocol changed while the step was bei
 ///
 /// arc deletes by position, and an agent may write `arcform.yaml` between the read that finds the
 /// step's position and arc's own read, or after arc's write. So the manifest is read immediately
-/// before arc is asked, and read again after:
+/// before arc is asked, and read again after, and there are three outcomes:
 ///
-/// - the read after holds the steps read before, in order, less the step `name`: the delete
-///   stands, [`StepRemoval::Removed`] (`removing_a_typed_sql_step_is_a_draft_until_save`);
-/// - the step `name` gone, with other changes beside it: arc took out the step asked for and
-///   someone else wrote too, and their changes are kept, [`StepRemoval::Removed`] with
-///   `changed_meanwhile`. When the read after does not load, the history of arc's edit says
-///   whether the step it took out was `name` ([`removed_step`]);
-/// - the step `name` still there: arc took out another step. The manifest is put back as arc found
-///   it ([`restore_before_delete`]) and the refusal is [`CHANGED_MEANWHILE`]; when it cannot be
-///   put back, the answer is [`StepRemoval::OtherRemoved`]. No file is deleted either way.
-///
-/// When the step is out, the SQL file the step `name` named in the manifest read before is
-/// deleted, unless a step still in the manifest names it too. A file outside the Protocol's folder
-/// is never deleted: only a path inside it, written relative to it, is the step's own.
+/// - **Removed.** The steps read after are exactly the steps read before, in order, less `name`:
+///   [`StepRemoval::Removed`] (`removing_a_typed_sql_step_is_a_draft_until_save`). The SQL file
+///   `name` named in the read before is deleted, unless a step still in the manifest names it too.
+///   A file outside the Protocol's folder is never deleted: only a path inside it, written relative
+///   to it, is the step's own.
+/// - **Refused and put back.** Any other read after, when arc's history holds exactly two entries
+///   new since before the delete and the file is byte-identical to the newer of them, which is
+///   arc's save of what it wrote. The manifest is restored from the older, arc's checkpoint of what
+///   it read, which holds any write that landed before arc read
+///   (`a_removal_is_not_applied_when_the_manifest_changes_under_it`). No file is deleted.
+/// - **Refused and not put back.** Any other read after, when the history does not show that or
+///   the file has been written since arc's save: [`StepRemoval::NotPutBack`], with the steps
+///   missing now (`an_agent_write_after_the_delete_is_not_put_back`). No file is deleted.
 ///
 /// # Errors
 ///
-/// Why the manifest could not be read, arc's refusal without its `error: ` prefix, or
-/// [`CHANGED_MEANWHILE`] when another step was taken out and the manifest was put back.
+/// Why the manifest could not be read before the delete, arc's refusal without its `error: `
+/// prefix, or [`CHANGED_MEANWHILE`] when the delete was refused and the manifest was put back.
 pub fn remove_step(runner: &Runner, dir: &Path, name: &str) -> Result<StepRemoval, String> {
     let manifest_path = dir.join("arcform.yaml");
     let read = || -> Result<brightfield_protocol::Manifest, String> {
@@ -392,55 +389,38 @@ pub fn remove_step(runner: &Runner, dir: &Path, name: &str) -> Result<StepRemova
         return Err(refusal(&out.stderr));
     }
     let after = read().ok();
-    let before_names: Vec<String> = before.steps.iter().map(|s| s.name.clone()).collect();
-    let left: Option<Vec<String>> = after
-        .as_ref()
-        .map(|m| m.steps.iter().map(|s| s.name.clone()).collect());
-    let expected: Vec<&String> = before_names.iter().filter(|n| *n != name).collect();
-    let exact = left
-        .as_ref()
-        .is_some_and(|l| l.iter().collect::<Vec<_>>() == expected);
-    let model = before.steps[at].sql.as_deref();
-    if exact {
-        let still_named = after
-            .as_ref()
-            .is_some_and(|m| m.steps.iter().any(|s| s.sql.as_deref() == model));
-        return Ok(StepRemoval::Removed {
-            left_behind: delete_model(dir, model.filter(|_| !still_named)),
-            changed_meanwhile: false,
-        });
+    let expected: Vec<&str> = before
+        .steps
+        .iter()
+        .map(|s| s.name.as_str())
+        .filter(|n| *n != name)
+        .collect();
+    if let Some(after) = &after {
+        let left: Vec<&str> = after.steps.iter().map(|s| s.name.as_str()).collect();
+        if left == expected {
+            let model = before.steps[at].sql.as_deref();
+            let still_named = after.steps.iter().any(|s| s.sql.as_deref() == model);
+            return Ok(StepRemoval::Removed {
+                left_behind: delete_model(dir, model.filter(|_| !still_named)),
+            });
+        }
     }
-    let edit = this_edit(runner, dir, history_before.as_deref());
-    let removed = removed_step(edit.as_ref(), &before_names, left.as_deref(), name);
-    let name_gone = match &left {
-        Some(left) => !left.iter().any(|n| n == name),
-        None => removed.as_deref() == Some(name),
-    };
-    if name_gone {
-        // Whether a step still names the file: by the read after, or by what arc wrote when that
-        // read does not load. A file still named by either is kept.
-        let still_named = after
-            .as_ref()
-            .or(edit.as_ref().and_then(|e| e.wrote.as_ref()))
-            .is_none_or(|m| m.steps.iter().any(|s| s.sql.as_deref() == model));
-        return Ok(StepRemoval::Removed {
-            left_behind: delete_model(dir, model.filter(|_| !still_named)),
-            changed_meanwhile: true,
-        });
-    }
-    if edit
-        .as_ref()
-        .is_some_and(|edit| restore_before_delete(runner, dir, edit))
-    {
+    if restore_before_delete(runner, dir, history_before.as_deref()) {
         return Err(CHANGED_MEANWHILE.to_string());
     }
-    let removed = removed.filter(|r| r != name);
+    let missing = after.map(|after| {
+        before
+            .steps
+            .iter()
+            .filter(|s| !after.steps.iter().any(|a| a.name == s.name))
+            .map(|s| s.name.clone())
+            .collect::<Vec<_>>()
+    });
     eprintln!(
-        "{}: arc's delete took out {} rather than {name}, and the manifest could not be put back",
-        manifest_path.display(),
-        removed.as_deref().unwrap_or("another step")
+        "{}: the Protocol changed while {name} was being removed, and it could not be put back",
+        manifest_path.display()
     );
-    Ok(StepRemoval::OtherRemoved { removed })
+    Ok(StepRemoval::NotPutBack { missing })
 }
 
 /// Delete the SQL file `model` names inside `dir`, when it names one: why it could not be, naming
@@ -452,19 +432,6 @@ fn delete_model(dir: &Path, model: Option<&str>) -> Option<String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => Some(format!("{}: {e}", file.display())),
     }
-}
-
-/// One edit arc recorded in the Protocol's history: the entry of what it read, and what it read
-/// and wrote, as manifests where they load.
-struct Edit {
-    /// The id of the checkpoint of what arc read.
-    earlier: String,
-    /// What arc wrote, as the newest entry recorded it.
-    wrote_text: String,
-    /// The steps of what arc read, by name.
-    read: Option<Vec<String>>,
-    /// What arc wrote.
-    wrote: Option<brightfield_protocol::Manifest>,
 }
 
 /// The ids of the Protocol's history entries, oldest first, or `None` when the history cannot be
@@ -484,82 +451,34 @@ fn history_ids(runner: &Runner, dir: &Path) -> Option<Vec<String>> {
     )
 }
 
-/// **The edit the delete just made, from the Protocol's history**: its two newest entries, the
-/// checkpoint of what arc read and the save of what it wrote, taken for the delete's own only when
-/// the newest was not there before it (`before`). `None` when the history cannot say.
-fn this_edit(runner: &Runner, dir: &Path, before: Option<&[String]>) -> Option<Edit> {
-    let before = before?;
-    let ids = history_ids(runner, dir)?;
-    let [.., earlier, newest] = &ids[..] else {
-        return None;
-    };
-    if before.contains(newest) {
-        return None;
-    }
-    let show = |id: &str| {
-        let out = arc_with_args(runner, dir, &["history", "show", id]);
-        out.succeeded.then_some(out.stdout)
-    };
-    let read_text = show(earlier)?;
-    let wrote_text = show(newest)?;
-    Some(Edit {
-        earlier: earlier.clone(),
-        read: brightfield_protocol::parse_manifest_str(&read_text)
-            .ok()
-            .map(|m| m.steps.into_iter().map(|s| s.name).collect()),
-        wrote: brightfield_protocol::parse_manifest_str(&wrote_text).ok(),
-        wrote_text,
-    })
-}
-
-/// **Which step arc's delete took out**, when that can be told: the one step in what arc read and
-/// not in what it wrote, by the history of its edit (`edit`); or failing that, the one step of the
-/// manifest read before (`before`), other than `name`, missing from the one read after (`left`),
-/// when that read loads. `None` when neither names exactly one step.
-#[must_use]
-fn removed_step(
-    edit: Option<&Edit>,
-    before: &[String],
-    left: Option<&[String]>,
-    name: &str,
-) -> Option<String> {
-    let by_history = edit.and_then(|edit| {
-        let read = edit.read.as_ref()?;
-        let wrote: Vec<&str> = edit
-            .wrote
-            .as_ref()?
-            .steps
-            .iter()
-            .map(|s| s.name.as_str())
-            .collect();
-        only_one(read.iter().filter(|n| !wrote.contains(&n.as_str())))
-    });
-    by_history.or_else(|| removed_between(before, left?, name))
-}
-
-/// The one step of `before`, other than `name`, that `left` does not hold; `None` when there is
-/// not exactly one.
-fn removed_between(before: &[String], left: &[String], name: &str) -> Option<String> {
-    only_one(before.iter().filter(|n| *n != name && !left.contains(n)))
-}
-
-/// The one item of `items`, when it holds exactly one.
-fn only_one<'a>(mut items: impl Iterator<Item = &'a String>) -> Option<String> {
-    let one = items.next()?;
-    items.next().is_none().then(|| one.clone())
-}
-
-/// **Put `arcform.yaml` back as arc found it before the delete's edit `edit`**, from the
-/// checkpoint it recorded, through `arc history restore`, which checkpoints what it replaces.
+/// **Put `arcform.yaml` back as arc found it before the delete**, through `arc history restore`,
+/// which checkpoints what it replaces. Answers whether the manifest was put back.
 ///
-/// Only while the file is still what arc wrote: a file written again since is someone's newer
-/// work, and is left as it is. Answers whether the manifest was put back.
-fn restore_before_delete(runner: &Runner, dir: &Path, edit: &Edit) -> bool {
-    let now = std::fs::read_to_string(dir.join("arcform.yaml")).unwrap_or_default();
-    if now != edit.wrote_text {
+/// Only when the history holds the ids it held before the delete (`before`) and exactly two more,
+/// arc's checkpoint of what it read and then its save of what it wrote, and the file is still
+/// byte-identical to that save: any other history or file means someone else wrote too, and
+/// nothing is restored. The restore is from the checkpoint.
+fn restore_before_delete(runner: &Runner, dir: &Path, before: Option<&[String]>) -> bool {
+    let Some(before) = before else {
+        return false;
+    };
+    let Some(ids) = history_ids(runner, dir) else {
+        return false;
+    };
+    let Some([checkpoint, save]) = ids.strip_prefix(before) else {
+        return false;
+    };
+    let saved = arc_with_args(runner, dir, &["history", "show", save]);
+    if !saved.succeeded {
         return false;
     }
-    arc_with_args(runner, dir, &["history", "restore", &edit.earlier]).succeeded
+    let Ok(now) = std::fs::read(dir.join("arcform.yaml")) else {
+        return false;
+    };
+    if now != saved.stdout.as_bytes() {
+        return false;
+    }
+    arc_with_args(runner, dir, &["history", "restore", checkpoint]).succeeded
 }
 
 /// The file `relative` names inside `dir`, when it is a path inside it written relative to it:
@@ -657,36 +576,5 @@ impl Descriptions {
             Entry::Answered(Err(e)) => DescriptionState::Failed(e),
             Entry::Asked(_) => DescriptionState::Pending,
         }
-    }
-}
-
-#[cfg(test)]
-mod removal_tests {
-    use super::*;
-
-    fn names(list: &[&str]) -> Vec<String> {
-        list.iter().map(|n| (*n).to_string()).collect()
-    }
-
-    #[test]
-    fn the_step_removed_is_named_only_when_it_is_the_one_missing() {
-        let before = names(&["load", "a", "b", "c"]);
-        assert_eq!(
-            removed_between(&before, &names(&["load", "b", "c"]), "c"),
-            Some("a".to_string())
-        );
-        // Two missing besides the step asked for: no guess.
-        assert_eq!(removed_between(&before, &names(&["load", "c"]), "c"), None);
-        // None missing besides it.
-        assert_eq!(
-            removed_between(&before, &names(&["load", "a", "b"]), "c"),
-            None
-        );
-    }
-
-    #[test]
-    fn a_read_after_that_does_not_load_names_no_step_without_the_history() {
-        let before = names(&["load", "a", "b"]);
-        assert_eq!(removed_step(None, &before, None, "b"), None);
     }
 }

@@ -543,22 +543,23 @@ pub const REMOVE_STEP_REFUSED: &str = "This step cannot be removed";
 /// out of `arcform.yaml`.
 pub const SQL_FILE_LEFT_BEHIND: &str = "The removed step's SQL file was left behind";
 
-/// The banner's title when the Protocol changed while a step was being removed, so another step
-/// was removed, and it could not be put back.
-pub const OTHER_STEP_REMOVED: &str = "Another step was removed";
+/// The banner's title when the Protocol changed while a step was being removed, and the manifest
+/// could not be put back as it was before arc's delete.
+pub const REMOVAL_NOT_PUT_BACK: &str = "The Protocol changed during the removal";
 
-/// What that banner says: `step` is still there, `removed` (when it is known) went instead, and
-/// where the version before is kept.
-fn other_removed_sentence(step: &str, removed: Option<&str>) -> String {
-    const HISTORY: &str = "It could not be put back automatically. The version from before is in the Protocol's history, where `arc history list` and `arc history restore` put it back.";
-    match removed {
-        Some(other) => format!(
-            "The Protocol changed while {step} was being removed, and the step {other} was removed instead. {HISTORY} {step} is still in the Protocol."
-        ),
-        None => format!(
-            "The Protocol changed while {step} was being removed, and another step may have been removed instead; which one cannot be told. {HISTORY}"
-        ),
-    }
+/// What that banner says, and only what is known: the Protocol changed while `step` was being
+/// removed and could not be put back, the steps `missing` now compared with the read before the
+/// delete (left out when the manifest read after it does not load), and where the copy from
+/// before is kept.
+fn not_put_back_sentence(step: &str, missing: Option<&[String]>) -> String {
+    let missing = match missing {
+        None => String::new(),
+        Some([]) => " No step that was in it before is missing now.".to_string(),
+        Some(names) => format!(" Missing now: {}.", named_list(names)),
+    };
+    format!(
+        "The Protocol changed while {step} was being removed, and it could not be put back automatically.{missing} The copy from before is in Versions."
+    )
 }
 
 /// The banner's title when a statement that reads a step removed and not yet saved is kept.
@@ -11918,17 +11919,15 @@ impl MeridianApp {
                         return Err(readers_sentence(&name, &readers));
                     }
                     use crate::operation::StepRemoval;
-                    let removal = crate::operation::remove_step(&runner, &source.dir, &name)?;
-                    match &removal {
-                        // The step asked for is still there, so the draft stays; the banner says
-                        // which step went instead, under a title of its own.
-                        StepRemoval::OtherRemoved { removed } => {
-                            self.refusal_title = Some(OTHER_STEP_REMOVED);
-                            return Err(other_removed_sentence(&name, removed.as_deref()));
+                    match crate::operation::remove_step(&runner, &source.dir, &name)? {
+                        // The manifest changed meanwhile and could not be put back, so the draft
+                        // stays and nothing is marked recorded; the banner says only what is known.
+                        StepRemoval::NotPutBack { missing } => {
+                            self.refusal_title = Some(REMOVAL_NOT_PUT_BACK);
+                            return Err(not_put_back_sentence(&name, missing.as_deref()));
                         }
                         StepRemoval::Removed {
                             left_behind: Some(why),
-                            ..
                         } => {
                             eprintln!("the removed step's SQL file was left behind: {why}");
                             self.notifications.raise(
@@ -11942,24 +11941,7 @@ impl MeridianApp {
                                 )),
                             );
                         }
-                        StepRemoval::Removed {
-                            left_behind: None, ..
-                        }
-                        | StepRemoval::Gone => {}
-                    }
-                    // The step went, and someone else wrote the manifest too: what they wrote is
-                    // kept, and said quietly.
-                    if matches!(
-                        removal,
-                        StepRemoval::Removed {
-                            changed_meanwhile: true,
-                            ..
-                        }
-                    ) {
-                        self.toasts.push(Toast::new(
-                            Severity::Info,
-                            format!("Removed {name}. The Protocol also changed while it was being removed, and those changes are kept."),
-                        ));
+                        StepRemoval::Removed { left_behind: None } | StepRemoval::Gone => {}
                     }
                     self.charts.doc.mark_removal_recorded(&name);
                 }

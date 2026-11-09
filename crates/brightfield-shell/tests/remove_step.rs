@@ -677,6 +677,32 @@ fn with_step_before(manifest: &str, before: &str, entry: &[&str]) -> String {
     out
 }
 
+/// The manifest text with the step `name`'s entry taken out: its `- name:` line and the lines
+/// indented under it, as an agent removing that step would write it.
+fn without_step(manifest: &str, name: &str) -> String {
+    let mut out = String::new();
+    let mut skipping: Option<usize> = None;
+    let mut done = false;
+    for line in manifest.lines() {
+        let indent = line.len() - line.trim_start().len();
+        if let Some(at) = skipping {
+            if line.trim().is_empty() || indent > at {
+                continue;
+            }
+            skipping = None;
+        }
+        if !done && line.trim_start() == format!("- name: {name}") {
+            skipping = Some(indent);
+            done = true;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    assert!(done, "the manifest has no step {name}: {manifest}");
+    out
+}
+
 /// A runner that, the first time it is asked to edit the Protocol, puts `inject` in place of
 /// `arcform.yaml` first, as an agent writing between Brightfield's read and arc's would, and hands
 /// everything to the real runner. `after` is shell run after that edit, as the agent writing once
@@ -870,7 +896,107 @@ fn d_d_on_the_spine_removes_with_the_dashboard_on_the_canvas() {
 
 #[cfg(unix)]
 #[test]
-fn a_wrong_step_removed_that_cannot_be_put_back_is_named() {
+fn a_removal_with_no_change_meanwhile_deletes_the_sql_file() {
+    let shims = scratch().join("shims").join("unchanged");
+    std::fs::create_dir_all(&shims).expect("a shim folder");
+    let inject = shims.join("agent.yaml");
+    let mut win = Window::opened_with("remove_unchanged", injecting(&shims, &inject, ""));
+    let step = win.saved_grouping();
+    let model = win.model_file(&step);
+    // The copy is the manifest as it is, so nothing changes before or after arc's delete.
+    std::fs::write(&inject, win.manifest()).expect("the copy writes");
+    win.select_made_by(&step);
+    win.d_d();
+
+    win.cmd_s();
+
+    assert!(!inject.exists(), "the shim ran");
+    assert!(
+        !win.manifest_steps().contains(&step),
+        "the step is out: {:?}; {}",
+        win.manifest_steps(),
+        win.said()
+    );
+    assert!(!model.exists(), "the step's SQL file is deleted");
+    assert!(!win.marked(), "the removal is saved: {}", win.app.title());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_agent_removing_the_same_step_first_is_put_back() {
+    let shims = scratch().join("shims").join("same");
+    std::fs::create_dir_all(&shims).expect("a shim folder");
+    let inject = shims.join("agent.yaml");
+    let mut win = Window::opened_with("remove_same", injecting(&shims, &inject, ""));
+    let step = win.saved_grouping();
+    let model = win.model_file(&step);
+    // A step after the one removed, so arc's delete by position has a next step to take.
+    let with_tail = format!(
+        "{}- name: tail_note\n  command: echo tail\n",
+        win.manifest()
+    );
+    std::fs::write(win.dir().join("arcform.yaml"), &with_tail).expect("the manifest writes");
+    win.settle();
+    // What an agent writes between the read that finds the step and arc's delete: the same step
+    // taken out, so the position read names the next step.
+    let agents = without_step(&with_tail, &step);
+    std::fs::write(&inject, &agents).expect("the agent's manifest writes");
+    win.select_made_by(&step);
+    win.d_d();
+
+    win.cmd_s();
+
+    assert!(!inject.exists(), "the agent's write happened");
+    let said = win
+        .banner("Could not remove the step")
+        .unwrap_or_else(|| panic!("no banner said why: {}", win.said()));
+    assert_eq!(said, brightfield_shell::operation::CHANGED_MEANWHILE);
+    assert_eq!(
+        win.manifest(),
+        agents,
+        "the manifest is the agent's again, with the next step back in it"
+    );
+    assert!(model.is_file(), "no SQL file is deleted");
+    assert!(win.marked(), "the removal is still a draft");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_agent_write_after_the_delete_is_not_put_back() {
+    let shims = scratch().join("shims").join("late");
+    std::fs::create_dir_all(&shims).expect("a shim folder");
+    let inject = shims.join("agent.yaml");
+    let late = "  printf -- '- name: agent_late\\n  command: echo late\\n' >> arcform.yaml\n";
+    let mut win = Window::opened_with("remove_late", injecting(&shims, &inject, late));
+    let step = win.saved_grouping();
+    let model = win.model_file(&step);
+    // Nothing changes before arc's delete: the copy is the manifest as it is.
+    std::fs::write(&inject, win.manifest()).expect("the copy writes");
+    win.select_made_by(&step);
+    win.d_d();
+
+    win.cmd_s();
+
+    assert!(!inject.exists(), "the shim ran");
+    let said = win
+        .banner(brightfield_shell::window::REMOVAL_NOT_PUT_BACK)
+        .unwrap_or_else(|| panic!("no banner said it was not put back: {}", win.said()));
+    assert_eq!(
+        said,
+        format!("The Protocol changed while {step} was being removed, and it could not be put back automatically. Missing now: {step}. The copy from before is in Versions.")
+    );
+    assert!(
+        win.manifest_steps().contains(&"agent_late".to_string()),
+        "the agent's write is left as it is: {:?}",
+        win.manifest_steps()
+    );
+    assert!(model.is_file(), "no SQL file is deleted");
+    assert!(win.marked(), "the removal is still a draft");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_wrong_step_removed_that_cannot_be_put_back_claims_nothing_missing() {
     let shims = scratch().join("shims").join("again");
     std::fs::create_dir_all(&shims).expect("a shim folder");
     let inject = shims.join("agent.yaml");
@@ -890,65 +1016,22 @@ fn a_wrong_step_removed_that_cannot_be_put_back_is_named() {
 
     assert!(!inject.exists(), "the agent's write happened");
     let said = win
-        .banner(brightfield_shell::window::OTHER_STEP_REMOVED)
-        .unwrap_or_else(|| panic!("no banner said another step went: {}", win.said()));
+        .banner(brightfield_shell::window::REMOVAL_NOT_PUT_BACK)
+        .unwrap_or_else(|| panic!("no banner said it was not put back: {}", win.said()));
+    // arc took out the agent's step, which the read before the delete never held, so no step of
+    // that read is missing, and the banner says so rather than naming anyone's step.
     assert!(
-        said.contains("agent_note"),
-        "it names the step removed instead: {said}"
+        said.contains("No step that was in it before is missing now."),
+        "{said}"
     );
-    assert!(said.contains(&step), "and the step still there: {said}");
-    assert!(
-        win.banner("Could not remove the step").is_none(),
-        "and does not say nothing was removed: {}",
-        win.said()
-    );
-    assert!(
-        win.manifest_steps().contains(&step)
-            && !win.manifest_steps().contains(&"agent_note".to_string()),
-        "arc took out the agent's step and left {step}: {:?}",
-        win.manifest_steps()
-    );
+    assert!(!said.contains("agent_note"), "{said}");
     assert!(model.is_file(), "the step's SQL file is kept");
     assert!(win.marked(), "the removal is still a draft");
 }
 
 #[cfg(unix)]
 #[test]
-fn an_agent_write_after_the_right_step_is_removed_keeps_both() {
-    let shims = scratch().join("shims").join("late");
-    std::fs::create_dir_all(&shims).expect("a shim folder");
-    let inject = shims.join("agent.yaml");
-    let late = "  printf -- '- name: agent_late\\n  command: echo late\\n' >> arcform.yaml\n";
-    let mut win = Window::opened_with("remove_late", injecting(&shims, &inject, late));
-    let step = win.saved_grouping();
-    let model = win.model_file(&step);
-    // Nothing changes before arc's delete: the copy is the manifest as it is.
-    std::fs::write(&inject, win.manifest()).expect("the copy writes");
-    win.select_made_by(&step);
-    win.d_d();
-
-    win.cmd_s();
-
-    assert!(!inject.exists(), "the shim ran");
-    let steps = win.manifest_steps();
-    assert!(
-        !steps.contains(&step) && steps.contains(&"agent_late".to_string()),
-        "the step is out and the agent's is kept: {steps:?}; {}",
-        win.said()
-    );
-    assert!(!model.exists(), "the step's SQL file is deleted");
-    for title in [
-        brightfield_shell::window::OTHER_STEP_REMOVED,
-        "Could not remove the step",
-    ] {
-        assert!(win.banner(title).is_none(), "{title}: {}", win.said());
-    }
-    assert!(!win.marked(), "the removal is saved: {}", win.app.title());
-}
-
-#[cfg(unix)]
-#[test]
-fn a_manifest_that_no_longer_loads_after_the_delete_is_named_from_the_history() {
+fn a_manifest_that_no_longer_loads_after_the_delete_lists_no_steps() {
     let shims = scratch().join("shims").join("broken");
     std::fs::create_dir_all(&shims).expect("a shim folder");
     let inject = shims.join("agent.yaml");
@@ -956,12 +1039,7 @@ fn a_manifest_that_no_longer_loads_after_the_delete_is_named_from_the_history() 
     let mut win = Window::opened_with("remove_broken", injecting(&shims, &inject, broken));
     let step = win.saved_grouping();
     let model = win.model_file(&step);
-    let changed = with_step_before(
-        &win.manifest(),
-        &step,
-        &["name: agent_note", "command: echo agent"],
-    );
-    std::fs::write(&inject, &changed).expect("the agent's manifest writes");
+    std::fs::write(&inject, win.manifest()).expect("the copy writes");
     win.select_made_by(&step);
     win.d_d();
 
@@ -969,11 +1047,12 @@ fn a_manifest_that_no_longer_loads_after_the_delete_is_named_from_the_history() 
 
     assert!(!inject.exists(), "the shim ran");
     let said = win
-        .banner(brightfield_shell::window::OTHER_STEP_REMOVED)
-        .unwrap_or_else(|| panic!("no banner said another step went: {}", win.said()));
-    assert!(
-        said.contains("the step agent_note"),
-        "it names arc's step: {said}"
+        .banner(brightfield_shell::window::REMOVAL_NOT_PUT_BACK)
+        .unwrap_or_else(|| panic!("no banner said it was not put back: {}", win.said()));
+    assert_eq!(
+        said,
+        format!("The Protocol changed while {step} was being removed, and it could not be put back automatically. The copy from before is in Versions.")
     );
-    assert!(model.is_file(), "the step's SQL file is kept");
+    assert!(model.is_file(), "no SQL file is deleted");
+    assert!(win.marked(), "the removal is still a draft");
 }
