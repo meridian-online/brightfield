@@ -9618,6 +9618,12 @@ impl MeridianApp {
                 Request::Verb(verb) if verb.as_str() == SAVE_PROTOCOL => {
                     self.save_everything(ctx);
                 }
+                // rename-protocol is the window's as F2 is: chosen from a palette, it opens the
+                // locator band's name field over the Protocol the window holds.
+                Request::Verb(verb) if verb.as_str() == RENAME_PROTOCOL => {
+                    self.open_place_field(PlaceField::Name);
+                    ctx.request_repaint();
+                }
                 // The picture verbs are the window's: what they draw is the
                 // chart document's, and where a file goes is the window's to
                 // say. Over the graph there is no chart, and they say so.
