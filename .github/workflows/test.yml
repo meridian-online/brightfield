@@ -173,7 +173,11 @@ jobs:
     # 39890740575, which packed them by the figures before those below. Run
     # 40456819438 paid about 12 minutes before its first test and carried 67
     # minutes of default-thread tests, which three shards held to within two
-    # minutes of the ceiling, so there are four.
+    # minutes of the ceiling, so there were four. Run 42681435913, the
+    # first packed by the figures refreshed from run 42670024449, carried
+    # about 38 minutes of default-thread tests on default-1 against the
+    # figures' 28, and that shard finished its last step exactly at the
+    # ceiling and was cancelled, so there are five.
     # Four measures set the figure:
     #
     #   - The slowest warm shard measured was cancelled at its old 27-minute
@@ -219,6 +223,8 @@ jobs:
           - name: default-3
             timeout: 45
           - name: default-4
+            timeout: 45
+          - name: default-5
             timeout: 45
 
     # The shard names itself to the command in these four variables; with
@@ -551,7 +557,7 @@ jobs:
         run: cargo xtask ci --step test-default
 
       # THE PIN-STALENESS CHECK AND THE CONFORMANCE SCOREBOARD run after the
-      # suite on the last of the default-threads shards, `default-4` today, and
+      # suite on the last of the default-threads shards, `default-5` today, and
       # on no other: the command picks that shard from its place in the matrix,
       # so adding or removing a shard moves them to the new last one and
       # neither is ever left without a shard. On the other shards each step
