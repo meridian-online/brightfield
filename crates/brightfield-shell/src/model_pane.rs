@@ -445,6 +445,21 @@ impl ModelPane {
         }
     }
 
+    /// Settle what the pane holds and no run has followed, as Save does before the window leaves
+    /// it: an edit in the file view still waiting out its pause is read, and a run it owes, or an
+    /// earlier read owed, is made, as Run settles them ([`Self::run_whole`]).
+    ///
+    /// # Errors
+    ///
+    /// An edit that does not read, or the run's failure.
+    pub fn save_draft(&mut self) -> Result<(), String> {
+        self.settle_file_edit()?;
+        if self.run_owed {
+            self.run_silver(true)?;
+        }
+        Ok(())
+    }
+
     /// Whether a text the editor read is the model without the Protocol having run for it yet.
     #[must_use]
     pub fn run_waiting(&self) -> bool {

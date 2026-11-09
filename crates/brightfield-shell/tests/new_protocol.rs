@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 
 use brightfield_shell::design::Mode;
 use brightfield_shell::open_queue::OpenRequest;
-use brightfield_shell::overlays::{CloseAnswer, ADD_SOURCE_QUESTION_TITLE};
+use brightfield_shell::overlays::{CloseAnswer, ADD_SOURCE_QUESTION_TITLE, MAKE_QUESTION_TITLE};
 use brightfield_shell::own_files::{self, AcceptedJoin};
 use brightfield_shell::run::Runner;
 use brightfield_shell::window::{
@@ -104,6 +104,22 @@ fn failing_runner(name: &str, passing: u32) -> Runner {
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
         .expect("the runner script made runnable");
     Runner::at(script)
+}
+
+/// The folders under `dir`, relative to it, at any depth: a failed add leaves none it made.
+fn folders_of(dir: &Path) -> std::collections::BTreeSet<PathBuf> {
+    let mut found = std::collections::BTreeSet::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        for entry in std::fs::read_dir(&at).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                found.insert(path.strip_prefix(dir).unwrap().to_path_buf());
+                stack.push(path);
+            }
+        }
+    }
+    found
 }
 
 /// The files under `dir`, relative to it, with their bytes: what a failed add must leave as it was.
@@ -577,6 +593,7 @@ fn a_failed_add_puts_an_empty_protocol_back() {
     let parent = place("failed-empty");
     let mut p = own_files::create_empty(&parent).expect("an empty Protocol");
     let before = files_of(&p.dir);
+    let folders_before = folders_of(&p.dir);
     let paths = [
         csv("failed-empty", "customers.csv", CUSTOMERS),
         csv("failed-empty", "orders.csv", ORDERS),
@@ -606,6 +623,14 @@ fn a_failed_add_puts_an_empty_protocol_back() {
         before.keys().collect::<Vec<_>>()
     );
     assert_eq!(after, before, "every file is as it was");
+    let folders_after: std::collections::BTreeSet<_> = folders_of(&p.dir)
+        .into_iter()
+        .filter(|path| !path.starts_with("build"))
+        .collect();
+    assert_eq!(
+        folders_after, folders_before,
+        "no folder the add made is left"
+    );
 }
 
 #[test]
@@ -632,6 +657,13 @@ fn a_failed_add_puts_a_one_source_protocol_back() {
             .collect::<std::collections::BTreeMap<_, _>>()
     };
     let before = watched(&p.dir);
+    let folders = |dir: &Path| {
+        folders_of(dir)
+            .into_iter()
+            .filter(|path| path.starts_with("models") || path.starts_with("packages"))
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let folders_before = folders(&p.dir);
     let failed = own_files::add_source_with(
         &mut p,
         &csv("failed-one", "orders.csv", ORDERS),
@@ -650,6 +682,11 @@ fn a_failed_add_puts_a_one_source_protocol_back() {
     );
     assert!(!p.dir.join("model.ossie.yaml").exists(), "no model is left");
     assert_eq!(watched(&p.dir), before, "its files are as they were");
+    assert_eq!(
+        folders(&p.dir),
+        folders_before,
+        "no folder the add made is left, such as the new source's package"
+    );
     assert!(p.dir.join(".profile").is_dir(), "its profile is back");
 }
 
@@ -884,4 +921,236 @@ fn cmd_n_asks_where_and_the_arrows_move_the_choice() {
     );
     win.key(egui::Key::Escape);
     assert_eq!(win.app.open_overlay(), None);
+}
+
+#[test]
+fn a_profile_left_aside_by_an_add_that_stopped_is_put_back() {
+    let parent = place("aside");
+    let mut p = own_files::create_empty(&parent).expect("an empty Protocol");
+    own_files::add_source_with(
+        &mut p,
+        &csv("aside", "customers.csv", CUSTOMERS),
+        &[],
+        &runner(),
+        &brightfield_shell::discovery::StandIn,
+    )
+    .expect("the first source adds");
+    let profile = p.dir.join(".profile");
+    let aside = p.dir.join(".profile.before-add");
+    let held = files_of(&profile);
+    assert!(!held.is_empty(), "the first add profiled its table");
+    // As an add the process ended under leaves it.
+    std::fs::rename(&profile, &aside).expect("the profile set aside");
+
+    let failed = own_files::add_source_with(
+        &mut p,
+        &csv("aside", "orders.csv", ORDERS),
+        &[],
+        &failing_runner("aside", 0),
+        &brightfield_shell::discovery::StandIn,
+    );
+    assert!(failed.is_err(), "every run was made to fail");
+    assert_eq!(files_of(&profile), held, "the profile is back as it was");
+    assert!(!aside.exists(), "and not left aside");
+}
+
+#[test]
+fn first_sources_that_cannot_rename_the_protocol_are_added_and_say_so() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let parent = place("not-named");
+    let mut p = own_files::create_empty(&parent).expect("an empty Protocol");
+    // The folder it is in takes no new name, so the Protocol cannot be renamed in it.
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555))
+        .expect("the folder made read-only");
+    let added = own_files::add_source_with(
+        &mut p,
+        &csv("not-named", "customers.csv", CUSTOMERS),
+        &[],
+        &runner(),
+        &brightfield_shell::discovery::StandIn,
+    );
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755))
+        .expect("the folder made writable");
+    let added = added.expect("the source is added all the same");
+    assert!(added.not_named.is_some(), "why it was not named is said");
+    assert!(added.warnings.is_empty(), "{:?}", added.warnings);
+    assert_eq!(p.dir, parent.join("Untitled"));
+    assert_eq!(p.sources.tables.len(), 1);
+}
+
+#[test]
+fn new_protocol_over_a_draft_asks_worded_for_making() {
+    let (mut win, _dir) = housing_with_a_draft("draft-make");
+    win.run(vec![press_with(
+        egui::Key::N,
+        egui::Modifiers {
+            command: true,
+            ..Default::default()
+        },
+    )]);
+    win.settle();
+    assert_eq!(win.app.open_overlay(), Some("new-protocol"));
+    win.key(egui::Key::Enter);
+    let question = win.app.close_question().expect("the question is up");
+    assert_eq!(question.title(), MAKE_QUESTION_TITLE);
+    assert_eq!(
+        question.answer_label(CloseAnswer::SaveAndClose),
+        "Save and make"
+    );
+    assert_eq!(
+        question.answer_label(CloseAnswer::CloseWithoutSaving),
+        "Keep as a version and make"
+    );
+}
+
+/// The window with the model of two sources, made by New Protocol, and an edit typed into its
+/// file view that has not been read yet: a join added by hand.
+fn model_with_an_unread_edit(test: &str) -> (Window, PathBuf) {
+    let parent = place(test);
+    let mut win = Window::made_in(&parent);
+    win.add(&csv(test, "customers.csv", CUSTOMERS));
+    win.add(&csv(test, "orders.csv", ORDERS));
+    let dir = win.dir().expect("a Protocol");
+    let pane = win
+        .app
+        .model_pane_mut()
+        .unwrap_or_else(|| panic!("two sources show the model"));
+    let text = pane.file_text().to_string();
+    let join = "- name: hand_join\n  from: orders\n  to: customers\n  from_columns:\n  - customer_id\n  to_columns:\n  - id\n";
+    let edited = if text.contains("relationships: []\n") {
+        text.replace("relationships: []\n", &format!("relationships:\n{join}"))
+    } else {
+        text.replace("relationships:\n", &format!("relationships:\n{join}"))
+    };
+    assert_ne!(edited, text, "the join went into the text: {text}");
+    pane.set_file_draft(edited);
+    assert!(win.app.carries_unsaved_mark(), "an unread edit is unsaved");
+    (win, dir)
+}
+
+/// Ask the window's queue to add `path`, and run the one frame that takes it, so the file view's
+/// pause has not passed.
+fn add_in_one_frame(win: &mut Window, path: &Path) {
+    win.app
+        .open_queue()
+        .push(OpenRequest::AddSource(path.to_path_buf()));
+    win.run(Vec::new());
+}
+
+#[test]
+fn adding_over_an_unread_model_edit_asks_and_save_keeps_it() {
+    let (mut win, dir) = model_with_an_unread_edit("model-save");
+    add_in_one_frame(
+        &mut win,
+        &csv("model-save", "regions.csv", "region,name\nnorth,North\n"),
+    );
+    let question = win.app.close_question().expect("the question is up");
+    assert_eq!(question.title(), ADD_SOURCE_QUESTION_TITLE);
+    assert!(
+        question.edits.iter().any(|e| e.starts_with("Model")),
+        "{:?}",
+        question.edits
+    );
+    win.app
+        .answer_close_question(&win.ctx.clone(), CloseAnswer::SaveAndClose);
+    win.settle();
+    let pane = win
+        .app
+        .model_pane()
+        .unwrap_or_else(|| panic!("the source was added: {}", win.said()));
+    assert_eq!(pane.protocol.sources.tables.len(), 3);
+    let model = std::fs::read_to_string(dir.join("model.ossie.yaml")).expect("the model file");
+    assert!(
+        model.contains("hand_join"),
+        "the edit is in the model: {model}"
+    );
+}
+
+#[test]
+fn adding_over_an_unread_model_edit_can_keep_it_as_a_version() {
+    let (mut win, dir) = model_with_an_unread_edit("model-version");
+    add_in_one_frame(
+        &mut win,
+        &csv("model-version", "regions.csv", "region,name\nnorth,North\n"),
+    );
+    assert!(win.app.close_question().is_some(), "the question is up");
+    win.app
+        .answer_close_question(&win.ctx.clone(), CloseAnswer::CloseWithoutSaving);
+    win.settle();
+    assert!(win.app.close_question().is_none(), "{}", win.said());
+    let file = dir.join("model.ossie.yaml");
+    let store = brightfield_protocol::HistoryStore::At(scratch().join("history"));
+    let versions = store
+        .versions(&file)
+        .expect("the model file's versions list");
+    let kept = versions
+        .versions
+        .iter()
+        .find(|v| v.kind == brightfield_protocol::chart_history::HistoryKind::Unsaved)
+        .expect("the edit is kept as an unsaved version");
+    let text = store.read_version(&file, &kept.id).expect("reads back");
+    assert!(text.contains("hand_join"), "{text}");
+    assert!(
+        !std::fs::read_to_string(&file)
+            .expect("the model file")
+            .contains("hand_join"),
+        "and not written into the model"
+    );
+}
+
+#[test]
+fn adding_over_an_unsaved_yaml_buffer_asks() {
+    let parent = place("yaml-buffer");
+    let mut win = Window::made_in(&parent);
+    let input = scratch().join("input").join("yaml-buffer");
+    std::fs::create_dir_all(&input).expect("an input folder");
+    let houses = input.join("houses.csv");
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/california_housing_sample.csv"),
+        &houses,
+    )
+    .expect("the housing sample copies");
+    win.add(&houses);
+    assert!(win.app.own_protocol().is_some(), "{}", win.said());
+
+    let tab = win
+        .app
+        .rail_name_rect(brightfield_workbench::arrangement::LEDGER_RAIL, 3)
+        .expect("the ledger rail drew its editor tab")
+        .center();
+    win.click(tab);
+    assert!(win.app.focus_pane(brightfield_workbench::PaneKey::new(
+        brightfield_shell::editor::EDITOR
+    )));
+    win.settle();
+    let rail = win
+        .app
+        .region_rect(brightfield_workbench::arrangement::LEDGER_RAIL)
+        .expect("the ledger rail drew open");
+    let body_top = rail.top() + brightfield_workbench::chrome::rail_selector_height();
+    win.click(egui::pos2(rail.left() + 150.0, body_top + 32.0));
+    win.run(vec![egui::Event::Text(
+        "# typed in the editor\n".to_owned(),
+    )]);
+    win.ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    win.settle();
+    assert!(win.app.carries_unsaved_mark(), "the buffer is unsaved");
+
+    win.add(&csv(
+        "yaml-buffer",
+        "regions.csv",
+        "region,name\nnorth,North\n",
+    ));
+    let question = win.app.close_question().expect("the question is up");
+    assert_eq!(question.title(), ADD_SOURCE_QUESTION_TITLE);
+    assert!(
+        question.edits.iter().any(|e| e.starts_with("YAML editor")),
+        "{:?}",
+        question.edits
+    );
+    assert!(win.app.model_pane().is_none(), "nothing is added yet");
 }

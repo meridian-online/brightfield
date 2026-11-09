@@ -250,13 +250,13 @@ pub fn add_source_with(
     joins: &[AcceptedJoin],
     runner: &Runner,
     discovery: &dyn crate::discovery::Discovery,
-) -> Result<Vec<String>, String> {
+) -> Result<Added, String> {
     add_sources_with(p, &[path.to_path_buf()], joins, runner, discovery)
 }
 
 /// Add what `paths` hold to the Protocol `p` as more sources, together, kept at once: nothing
-/// waits for a save. Answers what did not follow a rename, each in a sentence, as a rename's
-/// warnings say it.
+/// waits for a save. Answers what is left to say of a rename the add made, or could not make
+/// ([`Added`]).
 ///
 /// `p`'s sources are read again from its folder first, so a `p` held since an earlier add is not
 /// added to as it was. The tables `paths` hold are appended to its tables with a load step each,
@@ -273,7 +273,7 @@ pub fn add_source_with(
 /// folder ([`crate::rename::rename_claiming`]) and taking `-2` and so on when the name is taken,
 /// as a Protocol made from that source would
 /// (`a_failed_first_add_leaves_it_untitled_and_a_later_add_names_it` in `tests/new_protocol.rs`).
-/// A rename that fails leaves the sources added and says why among the warnings.
+/// A rename that fails leaves the sources added and says why in [`Added::not_named`].
 ///
 /// # Errors
 ///
@@ -287,7 +287,7 @@ pub fn add_sources_with(
     joins: &[AcceptedJoin],
     runner: &Runner,
     discovery: &dyn crate::discovery::Discovery,
-) -> Result<Vec<String>, String> {
+) -> Result<Added, String> {
     let first = paths.first().ok_or("nothing was given to add")?;
     p.sources = read_sources(&p.dir)?;
     let mut found = sources::discover_all(paths)?;
@@ -390,26 +390,31 @@ pub fn add_sources_with(
     }
     before.discard();
 
-    let mut warnings = Vec::new();
+    let mut added = Added::default();
     if untitled {
         match crate::rename::rename_claiming(&next.dir, &slug_of(first)) {
             Ok(moved) => {
                 next.dir = moved.to;
-                warnings = moved.warnings;
+                added.warnings = moved.warnings;
             }
-            Err(e) => warnings.push(format!(
-                "It keeps the name {}, as it could not be renamed after its source: {e}",
-                next.dir
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            )),
+            Err(e) => added.not_named = Some(e),
         }
     }
     // The Protocol has a source, so it is no longer waiting for one to name it.
     let _ = std::fs::remove_file(next.dir.join(UNTITLED_FILE));
     *p = next;
-    Ok(warnings)
+    Ok(added)
+}
+
+/// What an add that went through left to say.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Added {
+    /// What did not follow the folder when the first sources renamed it, each in a sentence, as
+    /// a rename's warnings say it.
+    pub warnings: Vec<String>,
+    /// Why the folder kept the name New Protocol gave it, when the first sources could not rename
+    /// it after themselves. The sources are added all the same.
+    pub not_named: Option<String>,
 }
 
 /// The files an add may write in a Protocol folder, as they were before it, so a failed add puts
@@ -420,6 +425,9 @@ pub fn add_sources_with(
 struct FilesBefore {
     dir: PathBuf,
     files: Vec<(PathBuf, Vec<u8>)>,
+    /// The folders under `models/` and `packages/`, and those two, that were there: any other
+    /// left empty by the putting back was made by the add, and goes.
+    folders: HashSet<PathBuf>,
     profile_aside: Option<PathBuf>,
 }
 
@@ -431,6 +439,13 @@ const ADD_WRITES_FOLDERS: [&str; 2] = ["models", "packages"];
 
 impl FilesBefore {
     fn take(dir: &Path) -> Result<Self, String> {
+        let profile = dir.join(PROFILE_DIR);
+        let aside = dir.join(format!("{PROFILE_DIR}.before-add"));
+        // An add that stopped part way, the process ending under it, left the profile set aside
+        // and none in its place: it is put back before anything else.
+        if !profile.exists() && aside.is_dir() {
+            std::fs::rename(&aside, &profile).map_err(|e| format!("{}: {e}", aside.display()))?;
+        }
         let mut files = Vec::new();
         let mut paths: Vec<PathBuf> = ADD_WRITES_FILES.iter().map(|f| dir.join(f)).collect();
         for folder in ADD_WRITES_FOLDERS {
@@ -443,9 +458,11 @@ impl FilesBefore {
                 Err(e) => return Err(format!("{}: {e}", path.display())),
             }
         }
-        let profile = dir.join(PROFILE_DIR);
+        let folders = ADD_WRITES_FOLDERS
+            .iter()
+            .flat_map(|f| folders_under(&dir.join(f)))
+            .collect();
         let profile_aside = if profile.exists() {
-            let aside = dir.join(format!("{PROFILE_DIR}.before-add"));
             let _ = std::fs::remove_dir_all(&aside);
             std::fs::rename(&profile, &aside).map_err(|e| format!("{}: {e}", profile.display()))?;
             Some(aside)
@@ -455,6 +472,7 @@ impl FilesBefore {
         Ok(Self {
             dir: dir.to_path_buf(),
             files,
+            folders,
             profile_aside,
         })
     }
@@ -482,6 +500,17 @@ impl FilesBefore {
                 );
             }
         }
+        // The deepest first, so a folder emptied by taking away the one inside it goes too.
+        let mut made: Vec<PathBuf> = ADD_WRITES_FOLDERS
+            .iter()
+            .flat_map(|f| folders_under(&self.dir.join(f)))
+            .filter(|f| !self.folders.contains(f))
+            .collect();
+        made.sort_by_key(|f| std::cmp::Reverse(f.components().count()));
+        for folder in made {
+            // Only an empty folder: `remove_dir` refuses one that holds anything.
+            let _ = std::fs::remove_dir(&folder);
+        }
         let profile = self.dir.join(PROFILE_DIR);
         let _ = std::fs::remove_dir_all(&profile);
         if let Some(aside) = &self.profile_aside {
@@ -500,6 +529,20 @@ impl FilesBefore {
             let _ = std::fs::remove_dir_all(aside);
         }
     }
+}
+
+/// `dir` and every folder under it, at any depth; none when it is missing.
+fn folders_under(dir: &Path) -> Vec<PathBuf> {
+    if !dir.is_dir() {
+        return Vec::new();
+    }
+    let mut found = vec![dir.to_path_buf()];
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            found.extend(folders_under(&entry.path()));
+        }
+    }
+    found
 }
 
 /// Every file under `dir`, at any depth; none when it is missing.

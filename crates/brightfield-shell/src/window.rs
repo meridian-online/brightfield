@@ -2445,6 +2445,10 @@ pub const ADD_SOURCE_REFUSED_BANNER: &str = "add-source-refused";
 pub const ADD_SOURCE_REFUSED: &str = "Sources are added to Protocols Brightfield made, and this \
      one was not. Open the file on its own to make a Protocol of it.";
 
+/// The banner that says a Protocol New Protocol made kept its Untitled name, as its first
+/// sources could not rename it after themselves.
+pub const NOT_NAMED_BANNER: &str = "add-source-not-named";
+
 /// The banner that says New Protocol could not make the Protocol, and why.
 pub const NEW_PROTOCOL_BANNER: &str = "new-protocol";
 
@@ -4251,7 +4255,62 @@ impl MeridianApp {
     /// asks about.
     #[must_use]
     pub fn has_unsaved_work(&self) -> bool {
-        self.charts.doc.has_unsaved_work() || self.editor_unsaved()
+        self.charts.doc.has_unsaved_work() || self.editor_unsaved() || self.model_draft_unsaved()
+    }
+
+    /// Whether the model pane holds what its file and the Protocol's tables do not yet: an edit
+    /// in its file view not yet read, or a model read from one that no run has followed.
+    fn model_draft_unsaved(&self) -> bool {
+        self.model
+            .as_ref()
+            .is_some_and(|m| m.doc.file_edit_armed() || m.doc.run_waiting())
+    }
+
+    /// Settle the model pane's draft, as Save does ([`crate::model_pane::ModelPane::save_draft`]),
+    /// answering whether nothing of it is left unsaved. A draft that does not read, or a run that
+    /// fails, is said in a banner.
+    fn save_model_draft(&mut self, ctx: &egui::Context) -> bool {
+        if !self.model_draft_unsaved() {
+            return true;
+        }
+        let Some(model) = self.model.as_mut() else {
+            return true;
+        };
+        match model.doc.save_draft() {
+            Ok(()) => true,
+            Err(why) => {
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new("save-model"),
+                        Severity::Error,
+                        "Could not save the model",
+                    )
+                    .body(why),
+                );
+                ctx.request_repaint();
+                false
+            }
+        }
+    }
+
+    /// Keep the model pane's file-view edit not yet read as a version of the model file, in
+    /// arcform's unsaved kind, writing no file: the model pane's half of a close without saving.
+    /// A model already read, whose run is all that is owed, is in its file, and keeps itself.
+    ///
+    /// # Errors
+    ///
+    /// A window given no store, and a store that does not take the version.
+    fn keep_model_draft(&self) -> Result<(), String> {
+        let Some(model) = self.model.as_ref().filter(|m| m.doc.file_edit_armed()) else {
+            return Ok(());
+        };
+        let store = self
+            .history
+            .as_ref()
+            .ok_or_else(|| crate::app::NO_STORE.to_string())?;
+        let file = model.doc.protocol.dir.join(crate::discovery::MODEL_FILE);
+        brightfield_protocol::record_unsaved(store, &file, model.doc.file_draft(), &[])
+            .map_err(|e| e.reason().to_string())
     }
 
     /// Whether the YAML editor's buffer holds edits its file does not, as the
@@ -7203,7 +7262,7 @@ impl MeridianApp {
         if !self.anything_to_save() {
             return;
         }
-        if !self.save_editor_buffer() {
+        if !self.save_editor_buffer() || !self.save_model_draft(ctx) {
             return;
         }
         if self.anything_to_save() {
@@ -9092,6 +9151,7 @@ impl MeridianApp {
                     crate::open_queue::OpenRequest::AddSource(_)
                     | crate::open_queue::OpenRequest::AddSources(_),
                 ) => crate::overlays::AskedBefore::AddingSource,
+                Leaving::Make(_) => crate::overlays::AskedBefore::Making,
                 _ => crate::overlays::AskedBefore::Leaving,
             };
         }
@@ -9248,6 +9308,20 @@ impl MeridianApp {
             self.editor_unsaved_name()
                 .map(|name| format!("YAML editor \u{b7} {name} edited")),
         );
+        let mut file = file;
+        if let Some(model) = self.model.as_ref() {
+            if model.doc.file_edit_armed() {
+                edits.push(format!(
+                    "Model \u{b7} {} edited in the file view",
+                    crate::discovery::MODEL_FILE
+                ));
+            } else if model.doc.run_waiting() {
+                edits.push("Model \u{b7} not yet run since its last edit".to_string());
+            }
+            if target.is_none() && self.model_draft_unsaved() {
+                file = crate::discovery::MODEL_FILE.to_string();
+            }
+        }
         CloseQuestion {
             file,
             edits,
@@ -9360,6 +9434,7 @@ impl MeridianApp {
     /// chart's versions beside, and [`ChartDoc::keep_unsaved_at`]'s.
     fn keep_unsaved(&mut self) -> Result<(), String> {
         self.keep_editor_buffer()?;
+        self.keep_model_draft()?;
         if !self.charts.doc.has_unsaved_work() {
             return Ok(());
         }
@@ -9425,8 +9500,9 @@ impl MeridianApp {
     /// edit it did not keep.
     fn save_for_close(&mut self, ctx: &egui::Context) -> bool {
         // The YAML editor's buffer first, as Cmd+S saves it; a window whose
-        // only unsaved work was the buffer has nothing left to write.
-        if !self.save_editor_buffer() {
+        // only unsaved work was the buffer has nothing left to write. The model pane's draft is
+        // settled with it.
+        if !self.save_editor_buffer() || !self.save_model_draft(ctx) {
             return false;
         }
         if !self.has_unsaved_work() {
@@ -11500,8 +11576,8 @@ impl MeridianApp {
         let discoverer = crate::discovery::Dovetail::new(&runner);
         let added =
             crate::own_files::add_sources_with(&mut protocol, paths, &[], &runner, &discoverer);
-        let warnings = match added {
-            Ok(warnings) => warnings,
+        let added = match added {
+            Ok(added) => added,
             Err(e) => {
                 self.say_open_failed(ctx, &chosen, e);
                 return;
@@ -11527,8 +11603,21 @@ impl MeridianApp {
         }
         self.notifications
             .dismiss(NotificationId::new(NOT_FOLLOWED_BANNER));
-        self.say_not_followed(&Move::Rename(display_name(&protocol.dir)), &warnings);
+        self.say_not_followed(&Move::Rename(display_name(&protocol.dir)), &added.warnings);
         let name = display_name(&protocol.dir);
+        if let Some(why) = &added.not_named {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(NOT_NAMED_BANNER),
+                    Severity::Warning,
+                    format!("{name} kept its name"),
+                )
+                .body(format!(
+                    "The sources were added, but {name} could not be renamed after them: {why}. \
+                     Rename it when you like."
+                )),
+            );
+        }
         if protocol.sources.tables.len() > 1 {
             self.open_model_pane(ctx, protocol, runner, true);
         } else {

@@ -787,6 +787,9 @@ pub const MOVE_QUESTION_TITLE: &str = "Save before moving?";
 /// what its canvas shows.
 pub const ADD_SOURCE_QUESTION_TITLE: &str = "Save before adding a source?";
 
+/// The headline of the question asked before New Protocol makes a Protocol in the window's place.
+pub const MAKE_QUESTION_TITLE: &str = "Save before making a new Protocol?";
+
 /// What the close question is asked before: the window closing or the Protocol left, or its
 /// folder renamed or moved, after which the window opens it again where it now is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -800,6 +803,8 @@ pub enum AskedBefore {
     Moving,
     /// Adding a source to the Protocol.
     AddingSource,
+    /// Making a new Protocol, which takes the window's place.
+    Making,
 }
 
 /// How many rows the list of unsaved edits takes at most: the two the accepted
@@ -842,6 +847,7 @@ impl CloseQuestion {
             AskedBefore::Renaming => RENAME_QUESTION_TITLE,
             AskedBefore::Moving => MOVE_QUESTION_TITLE,
             AskedBefore::AddingSource => ADD_SOURCE_QUESTION_TITLE,
+            AskedBefore::Making => MAKE_QUESTION_TITLE,
         }
     }
 
@@ -861,6 +867,8 @@ impl CloseQuestion {
             (AskedBefore::AddingSource, CloseAnswer::CloseWithoutSaving) => {
                 "Keep as a version and add"
             }
+            (AskedBefore::Making, CloseAnswer::SaveAndClose) => "Save and make",
+            (AskedBefore::Making, CloseAnswer::CloseWithoutSaving) => "Keep as a version and make",
             _ => CLOSE_ANSWERS
                 .iter()
                 .find(|(answer, _, _)| *answer == which)
