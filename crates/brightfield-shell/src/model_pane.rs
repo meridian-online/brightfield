@@ -259,6 +259,10 @@ pub struct ModelPane {
     /// Whether the last text read was refused, so it stays in the editor until put right or
     /// discarded.
     draft_refused: bool,
+    /// Whether the last text read was a model whose file could not be written, so it stays in
+    /// the editor, and is read again by the next Save, rather than the file's text taking its
+    /// place.
+    draft_unwritten: bool,
     /// Whether a text the editor read was written as the model without the Protocol run for it,
     /// which happens once the editor lets go of the keyboard or the file view is left.
     run_owed: bool,
@@ -328,6 +332,7 @@ impl ModelPane {
             file_scrolled_for: None,
             file_focused: false,
             draft_refused: false,
+            draft_unwritten: false,
             run_owed: false,
             joins_unmeasured: false,
             generation: 0,
@@ -419,6 +424,7 @@ impl ModelPane {
         let ran = self.run_if_owed();
         if !self.file_focused
             && !self.draft_refused
+            && !self.draft_unwritten
             && self.file_draft == self.file_read
             && self.file_draft != self.file_text
         {
@@ -453,11 +459,29 @@ impl ModelPane {
     ///
     /// An edit that does not read, or the run's failure.
     pub fn save_draft(&mut self) -> Result<(), String> {
-        self.settle_file_edit()?;
+        // Read here rather than through `settle_file_edit`, so a text that reads but whose file
+        // cannot be written stops the save rather than being let go.
+        if self.file_draft != self.file_read || self.draft_unwritten {
+            self.read_file_draft()?;
+        }
+        if self.draft_refused {
+            return Err(
+                "The file has an edit that doesn't read — fix or discard it first".to_string(),
+            );
+        }
         if self.run_owed {
             self.run_silver(true)?;
         }
         Ok(())
+    }
+
+    /// Whether the file view holds text its file does not: an edit waiting out its pause, or one
+    /// that was read and refused, or whose file could not be written, which stays in the editor as
+    /// typed until it is fixed or discarded.
+    #[must_use]
+    pub fn file_edit_unsaved(&self) -> bool {
+        self.file_draft != self.file_read
+            || ((self.draft_refused || self.draft_unwritten) && self.file_draft != self.file_text)
     }
 
     /// Whether a text the editor read is the model without the Protocol having run for it yet.
@@ -512,6 +536,7 @@ impl ModelPane {
             brightfield_ossie::read(&self.file_text).unwrap_or_else(|_| self.model.clone());
         self.file_pause = None;
         self.draft_refused = false;
+        self.draft_unwritten = false;
         self.kept.roles.clear();
     }
 
@@ -520,6 +545,7 @@ impl ModelPane {
     /// editor keeps the text as typed.
     fn read_file_draft(&mut self) -> Result<(), String> {
         self.file_read = self.file_draft.clone();
+        self.draft_unwritten = false;
         self.file_pause = None;
         // The tables a discovery pass could propose, which is what a hand deletion holds.
         let names: Vec<String> = self
@@ -549,12 +575,15 @@ impl ModelPane {
                 Ok(())
             }
             Ok(edit) => {
-                // The next edit of this text starts from it, as typed.
-                self.file_base = edit.typed;
+                // The next edit of this text starts from it, as typed, once it is written.
+                let base = std::mem::replace(&mut self.file_base, edit.typed);
                 // The run waits until the typing is done ([`Self::run_if_owed`]).
                 let saved = self.write_model(edit.model, edit.kept, true);
                 if saved.is_ok() {
                     self.run_owed = true;
+                } else {
+                    self.file_base = base;
+                    self.draft_unwritten = true;
                 }
                 self.let_go_of_what_is_gone();
                 saved

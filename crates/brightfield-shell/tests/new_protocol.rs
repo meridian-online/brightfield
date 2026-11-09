@@ -1154,3 +1154,111 @@ fn adding_over_an_unsaved_yaml_buffer_asks() {
     );
     assert!(win.app.model_pane().is_none(), "nothing is added yet");
 }
+
+/// Whether the window raised the banner that says the model could not be saved.
+fn model_not_saved(win: &Window) -> bool {
+    win.raised("save-model")
+}
+
+#[test]
+fn a_refused_model_edit_is_asked_about_and_kept_as_a_version() {
+    let parent = place("model-refused");
+    let mut win = Window::made_in(&parent);
+    win.add(&csv("model-refused", "customers.csv", CUSTOMERS));
+    win.add(&csv("model-refused", "orders.csv", ORDERS));
+    let dir = win.dir().expect("a Protocol");
+    let pane = win
+        .app
+        .model_pane_mut()
+        .unwrap_or_else(|| panic!("two sources show the model"));
+    let broken = pane.file_text().replace("\ndatasets:\n", "\ndatasets: :\n");
+    assert_ne!(broken, pane.file_text(), "the text was broken");
+    pane.set_file_draft(broken);
+    // The pause passes and the text is read, and refused.
+    win.settle();
+    let pane = win.app.model_pane().expect("the model");
+    assert!(pane.file_error().is_some(), "the edit does not read");
+    assert!(!pane.file_edit_armed(), "it was read");
+    assert!(win.app.carries_unsaved_mark(), "a refused edit is unsaved");
+
+    win.app
+        .leave(&win.ctx.clone(), brightfield_shell::window::Leaving::Home);
+    assert!(win.app.close_question().is_some(), "Home asks about it");
+    win.app
+        .answer_close_question(&win.ctx.clone(), CloseAnswer::SaveAndClose);
+    win.settle();
+    assert!(model_not_saved(&win), "Save refuses it: {}", win.said());
+    assert!(!win.app.front_door_is_live(), "and the window stays");
+
+    win.app
+        .leave(&win.ctx.clone(), brightfield_shell::window::Leaving::Home);
+    assert!(win.app.close_question().is_some(), "Home asks again");
+    win.app
+        .answer_close_question(&win.ctx.clone(), CloseAnswer::CloseWithoutSaving);
+    win.settle();
+    assert!(win.app.front_door_is_live(), "{}", win.said());
+    let file = dir.join("model.ossie.yaml");
+    let store = brightfield_protocol::HistoryStore::At(scratch().join("history"));
+    let versions = store
+        .versions(&file)
+        .expect("the model file's versions list");
+    let kept = versions
+        .versions
+        .iter()
+        .find(|v| v.kind == brightfield_protocol::chart_history::HistoryKind::Unsaved)
+        .expect("the refused edit is kept as an unsaved version");
+    let text = store.read_version(&file, &kept.id).expect("reads back");
+    assert!(text.contains("datasets: :"), "{text}");
+}
+
+#[test]
+fn a_model_edit_whose_file_cannot_be_written_stops_the_save() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (mut win, dir) = model_with_an_unread_edit("model-unwritable");
+    let file = dir.join("model.ossie.yaml");
+    let before = std::fs::read_to_string(&file).expect("the model file");
+    // The model file is written beside itself and renamed over, so a folder that takes no new
+    // file is one the model cannot be written in.
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555))
+        .expect("the folder made read-only");
+    win.app
+        .leave(&win.ctx.clone(), brightfield_shell::window::Leaving::Home);
+    let asked = win.app.close_question().is_some();
+    if asked {
+        win.app
+            .answer_close_question(&win.ctx.clone(), CloseAnswer::SaveAndClose);
+    }
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+        .expect("the folder made writable");
+    win.settle();
+    assert!(asked, "Home asks about the edit");
+    assert!(
+        model_not_saved(&win),
+        "the failed write is said: {}",
+        win.said()
+    );
+    assert!(!win.app.front_door_is_live(), "and the window stays");
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("the model file"),
+        before
+    );
+    assert!(
+        win.app.carries_unsaved_mark(),
+        "the edit is still the window's to save"
+    );
+
+    // With the folder writable again, the next Save writes it.
+    win.app
+        .leave(&win.ctx.clone(), brightfield_shell::window::Leaving::Home);
+    assert!(win.app.close_question().is_some(), "Home asks again");
+    win.app
+        .answer_close_question(&win.ctx.clone(), CloseAnswer::SaveAndClose);
+    win.settle();
+    assert!(win.app.front_door_is_live(), "{}", win.said());
+    assert!(
+        std::fs::read_to_string(&file)
+            .expect("the model file")
+            .contains("hand_join"),
+        "the edit is in the model"
+    );
+}

@@ -4259,11 +4259,12 @@ impl MeridianApp {
     }
 
     /// Whether the model pane holds what its file and the Protocol's tables do not yet: an edit
-    /// in its file view not yet read, or a model read from one that no run has followed.
+    /// in its file view not yet read or refused when it was, or a model read from one that no run
+    /// has followed.
     fn model_draft_unsaved(&self) -> bool {
         self.model
             .as_ref()
-            .is_some_and(|m| m.doc.file_edit_armed() || m.doc.run_waiting())
+            .is_some_and(|m| m.doc.file_edit_unsaved() || m.doc.run_waiting())
     }
 
     /// Settle the model pane's draft, as Save does ([`crate::model_pane::ModelPane::save_draft`]),
@@ -4293,15 +4294,16 @@ impl MeridianApp {
         }
     }
 
-    /// Keep the model pane's file-view edit not yet read as a version of the model file, in
-    /// arcform's unsaved kind, writing no file: the model pane's half of a close without saving.
+    /// Keep the model pane's file-view edit, not yet read or refused, as a version of the model
+    /// file, in arcform's unsaved kind, writing no file: the model pane's half of a close without
+    /// saving.
     /// A model already read, whose run is all that is owed, is in its file, and keeps itself.
     ///
     /// # Errors
     ///
     /// A window given no store, and a store that does not take the version.
     fn keep_model_draft(&self) -> Result<(), String> {
-        let Some(model) = self.model.as_ref().filter(|m| m.doc.file_edit_armed()) else {
+        let Some(model) = self.model.as_ref().filter(|m| m.doc.file_edit_unsaved()) else {
             return Ok(());
         };
         let store = self
@@ -9310,7 +9312,7 @@ impl MeridianApp {
         );
         let mut file = file;
         if let Some(model) = self.model.as_ref() {
-            if model.doc.file_edit_armed() {
+            if model.doc.file_edit_unsaved() {
                 edits.push(format!(
                     "Model \u{b7} {} edited in the file view",
                     crate::discovery::MODEL_FILE
