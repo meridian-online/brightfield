@@ -250,29 +250,16 @@ pub fn opening_boot(
 }
 
 /// **The Protocol folder the launch reopens**, when the command line named nothing and the layout
-/// remembers one that is still a Protocol: a folder holding its `arcform.yaml`. `main` pushes it
-/// onto the window's open queue, so it opens on the window's first frame by the route every other
-/// open takes, with its run on the window's worker and a readout to show it in.
-///
-/// A remembered folder that is gone, or no longer holds its manifest, opens the door and says why
-/// only in the log: the analyst deleted it, and a banner about it at every launch would be the
-/// window arguing with them. It is cleared from `layout`, so the window on the door does not
-/// go on naming it, and nothing is made in its place. `a_restored_protocol_that_was_deleted_opens_the_door` in
-/// `tests/relaunch_restores.rs` holds that.
-pub fn restored_protocol(spec: Option<&str>, layout: &mut SavedLayout) -> Option<PathBuf> {
+/// remembers one ([`SavedLayout::reopen_protocol`]). `main` hands it to the window
+/// ([`MeridianApp::restoring`](crate::window::MeridianApp::restoring)), which holds it aside and
+/// opens it on its first frame only when no file arrived with the launch: a file the system
+/// opened the app with is what the analyst asked for, and reopening the last Protocol first would
+/// run it for nothing. The window, not this function, checks that the folder is still a
+/// Protocol, so that a folder found gone is forgotten in the layout it writes back.
+#[must_use]
+pub fn restored_protocol(spec: Option<&str>, layout: &SavedLayout) -> Option<PathBuf> {
     if spec.is_some() {
         return None;
     }
-    let Some(persist::Opened::Protocol(dir)) = &layout.opened else {
-        return None;
-    };
-    if dir.join(arc::spec::MANIFEST_FILENAME).is_file() {
-        return Some(dir.clone());
-    }
-    eprintln!(
-        "{} is no longer a Protocol folder; the window opens on the door",
-        dir.display()
-    );
-    layout.opened = None;
-    None
+    layout.reopen_protocol.clone()
 }

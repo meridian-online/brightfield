@@ -1086,7 +1086,7 @@ fn the_card_records_what_the_next_launch_restores() {
     );
     let recorded = first.app.layout().clone();
     assert_eq!(
-        recorded.opened_start(),
+        recorded.opened.as_deref(),
         Some(start.id),
         "clicking {} recorded no start for the next launch to restore",
         start.id
@@ -1100,7 +1100,7 @@ fn the_card_records_what_the_next_launch_restores() {
     let crumbs = first.app.locator_crumbs();
 
     // The second launch, off the first one's record.
-    let boot = opening_boot(None, recorded.opened_start(), Flow::Vertical, None)
+    let boot = opening_boot(None, recorded.opened.as_deref(), Flow::Vertical, None)
         .expect("a launch restoring what the click recorded");
     let mut second = Window {
         app: MeridianApp::headless_with_layout(boot, recorded.clone(), Mode::Light),
@@ -1748,7 +1748,7 @@ fn the_crosswalk_card_lands_on_a_rendered_graph() {
         "a way in is still recorded over the canvas the graph is on"
     );
     assert_eq!(
-        win.app.layout().opened_start(),
+        win.app.layout().opened.as_deref(),
         Some(starts::CROSSWALK_RUN),
         "nothing recorded what was opened, so the next launch cannot restore it"
     );
@@ -1797,13 +1797,11 @@ fn the_start_zone_opens_the_help_sheet() {
 #[test]
 fn a_launch_with_something_to_restore_shows_no_front_door() {
     let mut layout = default_layout();
-    layout.opened = Some(brightfield_workbench::Opened::Start(
-        starts::CROSSWALK.to_string(),
-    ));
+    layout.opened = Some(starts::CROSSWALK.to_string());
 
     // Through the same function `main` calls, with the same two arguments it
     // has: no spec on the command line, and whatever the layout remembered.
-    let boot = opening_boot(None, layout.opened_start(), Flow::Vertical, None)
+    let boot = opening_boot(None, layout.opened.as_deref(), Flow::Vertical, None)
         .expect("an unnamed launch cannot fail");
     let mut win = Window {
         app: MeridianApp::headless_with_layout(boot, layout, Mode::Light),
@@ -2265,8 +2263,8 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
             start.id
         );
         assert_eq!(
-            by_row.app.layout().opened_start(),
-            by_card.app.layout().opened_start(),
+            by_row.app.layout().opened.as_deref(),
+            by_card.app.layout().opened.as_deref(),
             "{}: the two routes recorded different work to restore",
             start.id
         );
@@ -2275,7 +2273,7 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
         // restores the door. Watched redden: `return;` after `adopt_boot` in
         // `land_start`'s data-file arm fails here.
         assert_eq!(
-            by_card.app.layout().opened_start(),
+            by_card.app.layout().opened.as_deref(),
             Some(start.id),
             "{}: the card recorded no work to restore, so the comparison above \
              is two absent records agreeing",
@@ -2793,11 +2791,9 @@ fn a_failed_step_anywhere_beats_a_success_anywhere() {
 #[test]
 fn going_home_returns_to_the_door_but_keeps_the_session() {
     let mut layout = default_layout();
-    layout.opened = Some(brightfield_workbench::Opened::Start(
-        starts::CROSSWALK.to_string(),
-    ));
+    layout.opened = Some(starts::CROSSWALK.to_string());
 
-    let boot = opening_boot(None, layout.opened_start(), Flow::Vertical, None)
+    let boot = opening_boot(None, layout.opened.as_deref(), Flow::Vertical, None)
         .expect("an unnamed launch cannot fail");
     let mut win = Window {
         app: MeridianApp::headless_with_layout(boot, layout, Mode::Light),

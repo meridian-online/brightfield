@@ -1210,12 +1210,12 @@ fn main() -> Result<(), String> {
     let (mut layout, outcome) = startup::boot_layout(path.as_deref());
     eprintln!("layout: {}", outcome.reason());
 
-    // A remembered Protocol opens on the window's first frame, through its open queue, rather than
-    // here before the window exists: see `startup::restored_protocol`.
-    let restore = startup::restored_protocol(args.spec.as_deref(), &mut layout);
+    // A remembered Protocol opens on the window's first frame rather than here before the window
+    // exists: see `startup::restored_protocol`.
+    let restore = startup::restored_protocol(args.spec.as_deref(), &layout);
     let boot = startup::opening_boot(
         args.spec.as_deref(),
-        layout.opened_start(),
+        layout.opened.as_deref(),
         args.flow,
         args.force_sample,
     )?;
@@ -1315,9 +1315,6 @@ fn main() -> Result<(), String> {
     if let Some(main_thread) = objc2::MainThreadMarker::new() {
         brightfield_shell::mac_open::install(main_thread, open_queue.clone(), || {});
     }
-    if let Some(dir) = restore {
-        open_queue.push(brightfield_shell::open_queue::OpenRequest::Path(dir));
-    }
     let menu_quit = Some((open_queue.clone(), 0));
     eframe::run_native(
         &title,
@@ -1333,6 +1330,7 @@ fn main() -> Result<(), String> {
                 app: MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode)
                     .allowing_dialogs()
                     .opening_from(open_queue)
+                    .restoring(restore)
                     .running_with(brightfield_shell::run::Runner::this_binary())
                     .keeping_history(Some(brightfield_protocol::HistoryStore::Arcform)),
                 shot: ShotLatch::new(shot_out, shot_after, saved),

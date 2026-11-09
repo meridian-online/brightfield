@@ -94,7 +94,7 @@ pub use arrangement::{Arrangement, Edge, Extent, Occupant, Projection, Region, R
 pub use behavior::PaneChrome;
 pub use item::{Handled, Item, ItemCtx, ItemId, ItemMap, PaneKey, Request};
 pub use persist::{
-    DirtyTracker, GridLayout, GridSpot, LoadOutcome, Opened, Recent, SavedLayout, WindowGeometry,
+    DirtyTracker, GridLayout, GridSpot, LoadOutcome, Recent, SavedLayout, WindowGeometry,
     RECENTS_KEPT,
 };
 pub use registry::{audit, window_tree, DockSide, ItemRegistry, ItemSpec, Slot};

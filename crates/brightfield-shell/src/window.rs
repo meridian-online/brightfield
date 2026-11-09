@@ -72,9 +72,9 @@ use brightfield_workbench::arrangement::{self, Occupant, Projection, Region, Reg
 use brightfield_workbench::channel::{ShelfChannel, BAND_HEIGHT};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
-    chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemId, ItemMap, Opened,
-    PaneChrome, PaneKey, Recent, Request, RunState, SavedLayout, StatusEntry, StatusSide, Subject,
-    Tone, ToolbarEntry, Verb, WindowGeometry, Workspace,
+    chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemId, ItemMap, PaneChrome,
+    PaneKey, Recent, Request, RunState, SavedLayout, StatusEntry, StatusSide, Subject, Tone,
+    ToolbarEntry, Verb, WindowGeometry, Workspace,
 };
 use meridian_egui::{
     ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker, PickerEvent,
@@ -3019,6 +3019,9 @@ pub struct MeridianApp {
     /// fetched is drawn before the open blocks the thread: one path, or the several one gesture
     /// handed over.
     pending_open: Option<Vec<std::path::PathBuf>>,
+    /// The Protocol folder the last launch ended on, held aside for the first frame
+    /// ([`Self::restoring`]), and `None` once that frame has looked at it.
+    restore: Option<std::path::PathBuf>,
     /// Where the window goes once the close question is answered, while it is up: the way out
     /// that asked it, or the latest one asked since, which takes its place.
     leaving: Option<Leaving>,
@@ -3540,6 +3543,7 @@ impl MeridianApp {
             picker_asked: false,
             picker_asks: 0,
             pending_open: None,
+            restore: None,
             leaving: None,
             close_after_runs: None,
             open_queue: crate::open_queue::OpenQueue::default(),
@@ -5318,6 +5322,11 @@ impl MeridianApp {
         // frame has been presented, so the open runs now.
         if let Some(paths) = self.pending_open.take() {
             self.open_paths_now(&ctx, &paths);
+        }
+        // The Protocol the last launch ended on, held aside until the first frame, when the files
+        // the system launched the app with are on the queue.
+        if let Some(dir) = self.restore.take() {
+            self.reopen_at_launch(&ctx, &dir);
         }
         // Whatever was asked to open since the last frame, from whichever way in, before anything
         // is laid out, so the frame draws what the open left. A request that has to wait a frame
@@ -8620,13 +8629,16 @@ impl MeridianApp {
     /// [`Leaving::Close`]: over a draft the question opens in the window's one
     /// modal slot, and its answer goes to the door; with nothing pending the
     /// door shows at once. A request while the question is up is cancelled
-    /// and leaves the question as it is, with what it says and where it goes. The window stays, as a Mac app's does when its
-    /// last document closes, and only a quit ends the app.
+    /// and leaves the question as it is, with what it says and where it goes.
+    /// The window stays, as a Mac app's does when its last document closes,
+    /// and only a quit ends the app.
     ///
     /// A close on the door has nowhere else to go, and one whose close was
     /// already decided ([`Self::allow_close`]: a quit, the screenshot
     /// countdown) is the app ending: both go through uncancelled, which is how
-    /// eframe closes the window.
+    /// eframe closes the window. A close on the door while a run the window
+    /// started is outstanding is a quit instead, and waits for the run as one
+    /// does (`a_close_on_the_door_waits_for_a_run_as_a_quit_does`).
     fn observe_close_request(&mut self, ctx: &egui::Context) {
         if !ctx.input(|i| i.viewport().close_requested()) {
             return;
@@ -8638,7 +8650,17 @@ impl MeridianApp {
             self.allow_close();
             return;
         }
-        if self.closing || self.front_door_is_live() {
+        if self.closing {
+            return;
+        }
+        // On the door the close is the app ending, which waits for a run the window started, as a
+        // quit does, so the run keeps its record.
+        if self.front_door_is_live() {
+            if self.run_outstanding() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.leave(ctx, Leaving::Quit);
+                ctx.request_repaint();
+            }
             return;
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -8685,9 +8707,10 @@ impl MeridianApp {
     /// any run the window started so no run's record is lost
     /// (`Self::close_when_runs_land`).
     pub fn leave(&mut self, ctx: &egui::Context, to: Leaving) {
-        // A close or quit already answered and waiting for a run: a second one closes now, so
-        // a run that never finishes cannot keep the app open, and any other way out is refused
-        // with the banner that says what the window is waiting for.
+        // A quit already answered and waiting for a run (by Cmd+Q, or a close on the door while a
+        // run is out): a close or quit closes now, so a run that never finishes cannot keep the
+        // app open, and any other way out is refused with the banner that says what the window is
+        // waiting for.
         if self.close_after_runs.is_some() {
             match to {
                 Leaving::Close | Leaving::Quit => {
@@ -9827,7 +9850,7 @@ impl MeridianApp {
         self.remote_files = None;
         self.documents_changed();
         // On the door, the next launch starts on the door too.
-        self.layout.live_mut().opened = None;
+        self.layout.live_mut().reopen_nothing();
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         ctx.request_repaint();
     }
@@ -10271,7 +10294,7 @@ impl MeridianApp {
     /// whose run landed later.
     fn record_landed(&mut self, ctx: &egui::Context, id: &'static str) {
         self.dismiss_start_banner(id);
-        self.layout.live_mut().opened = Some(Opened::Start(id.to_string()));
+        self.layout.live_mut().reopen_start(id);
         // …and remembered as a Protocol, which is the other half: `opened` is
         // what the next launch restores, and this is what the door lists. The
         // name and the run state are read off **this window** rather than off
@@ -10785,6 +10808,41 @@ impl MeridianApp {
         self.open_queue.clone()
     }
 
+    /// This window reopening the Protocol in `dir` on its first frame, the one the last launch
+    /// ended on ([`crate::startup::restored_protocol`]), unless a file arrives with the launch
+    /// first: see `Self::reopen_at_launch`.
+    #[must_use]
+    pub fn restoring(mut self, dir: Option<std::path::PathBuf>) -> Self {
+        self.restore = dir;
+        self
+    }
+
+    /// **Reopen `dir`, the Protocol the last launch ended on**, unless something else is asked to
+    /// open: a file the system launched the app with is on the queue by the first frame, and is
+    /// what the analyst asked for, so the restore is dropped and that file records itself.
+    ///
+    /// A folder that is gone or no longer holds its manifest opens nothing and raises nothing, and
+    /// is forgotten in the layout this window writes back, so the next launch does not look for it
+    /// again; nothing is made in its place. An open that fails raises its banner this once and is
+    /// forgotten the same way. The open runs on this thread, as an open from the door does.
+    fn reopen_at_launch(&mut self, ctx: &egui::Context, dir: &std::path::Path) {
+        if !self.open_queue.is_empty() {
+            return;
+        }
+        if !dir.join(arc::spec::MANIFEST_FILENAME).is_file() {
+            eprintln!(
+                "{} is no longer a Protocol folder; the window opens on the door",
+                dir.display()
+            );
+            self.layout.live_mut().reopen_nothing();
+            return;
+        }
+        self.open_path_now(ctx, &dir.to_string_lossy());
+        if self.front_door_is_live() {
+            self.layout.live_mut().reopen_nothing();
+        }
+    }
+
     /// This window taking its opens from `queue`, which something made before the window was:
     /// the Mac's open events are listened for before the event loop starts, so a file a launch by
     /// double-click delivers has a queue to land in. What the boot already asked to open moves
@@ -11038,7 +11096,7 @@ impl MeridianApp {
         }
         let run = crate::door_tree::run_state(dir);
         // And what the next launch reopens, as it was last saved.
-        self.layout.live_mut().opened = Some(Opened::Protocol(dir.to_path_buf()));
+        self.layout.live_mut().reopen_protocol_at(dir);
         self.layout.live_mut().remember(
             &id,
             &display_name(dir),
@@ -12756,12 +12814,15 @@ impl MeridianApp {
         };
         self.adopt_boot(boot);
         self.notifications.dismiss(banner);
-        // A Protocol's folder is what the next launch reopens; a chart spec or data file opened
-        // by this route has no folder to reopen and leaves what was recorded as it was.
+        // A Protocol's folder is what the next launch reopens. A chart spec or data file opened
+        // by this route has no folder to reopen, and what was open before it is not open now, so
+        // the next launch starts on the door.
         if let crate::open_queue::Route::Existing(dir) =
             crate::open_queue::route(std::path::Path::new(path))
         {
-            self.layout.live_mut().opened = Some(Opened::Protocol(dir));
+            self.layout.live_mut().reopen_protocol_at(&dir);
+        } else {
+            self.layout.live_mut().reopen_nothing();
         }
         // Saved already, by construction: it was opened off its own file.
         let name = self.protocol.doc.model.protocol.clone();

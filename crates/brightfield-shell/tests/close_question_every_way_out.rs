@@ -725,6 +725,85 @@ fn a_close_while_a_quit_waits_for_a_run_closes_now() {
 }
 
 #[test]
+fn a_close_on_the_door_waits_for_a_run_as_a_quit_does() {
+    let (mut win, held) = waiting_on_a_held_run("door_close_run");
+    win.frame(Vec::new(), true);
+    win.settle();
+    assert!(win.asking());
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    assert!(win.app.front_door_is_live(), "{}", win.said());
+    assert!(
+        win.app.run_outstanding(),
+        "the held run goes on behind the door"
+    );
+    win.forget_sent();
+
+    // A close on the door with the run out is a quit, which waits for the run.
+    win.frame(Vec::new(), true);
+    win.settle();
+    assert!(
+        win.cancelled_close,
+        "the close is cancelled while the run is out"
+    );
+    assert!(!win.closed && !win.app.is_closing());
+    assert!(
+        win.says_waiting(),
+        "a banner says what it waits for: {}",
+        win.said()
+    );
+
+    // Another close while it waits ends the app now.
+    win.forget_sent();
+    win.frame(Vec::new(), true);
+    assert!(!win.cancelled_close, "the next close is let through");
+    assert!(win.app.is_closing());
+    held.release();
+    win.until("the held run never finished", |w| !w.app.run_outstanding());
+}
+
+#[test]
+fn closing_the_window_without_saving_records_the_kept_filter_and_typed_sql() {
+    let mut win = Window::opened("close_discard_keeps");
+    win.keep_filter();
+    let step = win.keep_statement(
+        "select house_age, count(*) as n from close_discard_keeps group by house_age",
+    );
+
+    win.frame(Vec::new(), true);
+    win.settle();
+    assert!(win.asking());
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    assert!(
+        win.app.front_door_is_live() && !win.closed,
+        "D goes to the door: {}",
+        win.said()
+    );
+
+    // Opened again from where it is, the Versions panel lists what the close kept.
+    win.app.open_queue().push(OpenRequest::Path(win.dir()));
+    win.settle();
+    win.assert_holds("close_discard_keeps");
+    let Listing::Listed { rows, .. } = win.versions_listed() else {
+        panic!("the Versions panel lists nothing: {}", win.said());
+    };
+    let row = rows
+        .iter()
+        .find(|r| r.kind == CLOSED_UNSAVED)
+        .unwrap_or_else(|| panic!("no closed unsaved version: {rows:?}"));
+    assert!(
+        row.changed
+            .contains(&format!("Grid view \u{b7} where {CONDITION}")),
+        "the version names the filter: {:?}",
+        row.changed
+    );
+    assert!(
+        row.changed.contains(&format!("SQL step \u{b7} {step}")),
+        "and the typed SQL: {:?}",
+        row.changed
+    );
+}
+
+#[test]
 fn discard_records_the_kept_filter_and_typed_sql() {
     let mut win = Window::opened("discard_keeps");
     win.keep_filter();

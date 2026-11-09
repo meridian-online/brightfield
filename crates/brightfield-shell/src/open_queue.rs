@@ -148,6 +148,15 @@ impl OpenQueue {
             .pop_front()
     }
 
+    /// Whether no request is waiting.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.requests
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+    }
+
     /// Take every request waiting, oldest first, leaving the queue empty.
     #[must_use]
     pub fn drain(&self) -> Vec<OpenRequest> {

@@ -3,7 +3,7 @@
 //!
 //! A relaunch here is what `main` does: the layout file read through `startup::boot_layout`, the
 //! boot chosen by `startup::opening_boot`, and a Protocol to restore found by
-//! `startup::restored_protocol` and pushed onto the new window's open queue.
+//! `startup::restored_protocol` and handed to the new window, which reopens it on its first frame.
 //!
 //! Every window is headless, with the `brightfield-shell` binary cargo built as its runner, and the
 //! config directory, the Protocols folder and arc's directories point at a scratch folder of this
@@ -19,7 +19,6 @@ use brightfield_shell::run::Runner;
 use brightfield_shell::starts;
 use brightfield_shell::startup;
 use brightfield_shell::window::{Boot, MeridianApp, UNSAVED_MARK};
-use brightfield_workbench::persist::Opened;
 
 /// The condition kept on the grid, unsaved.
 const CONDITION: &str = "house_age > 28";
@@ -114,12 +113,20 @@ impl Window {
 
     /// The app launched again over the layout file `file`, as `main` launches it.
     fn relaunched(file: &Path) -> Self {
-        let (mut layout, _) = startup::boot_layout(Some(file));
-        let restore = startup::restored_protocol(None, &mut layout);
+        Self::relaunched_with(file, None)
+    }
+
+    /// [`Self::relaunched`], with `delivered` on the open queue before the first frame, as a
+    /// launch by double-clicking a file delivers it.
+    fn relaunched_with(file: &Path, delivered: Option<OpenRequest>) -> Self {
+        let (layout, _) = startup::boot_layout(Some(file));
+        let restore = startup::restored_protocol(None, &layout);
         let boot = opening(&layout);
-        let mut win = Self::over(MeridianApp::headless_with_layout(boot, layout, Mode::Light));
-        if let Some(dir) = restore {
-            win.app.open_queue().push(OpenRequest::Path(dir));
+        let mut win = Self::over(
+            MeridianApp::headless_with_layout(boot, layout, Mode::Light).restoring(restore),
+        );
+        if let Some(request) = delivered {
+            win.app.open_queue().push(request);
         }
         win.settle();
         win
@@ -233,7 +240,7 @@ impl Window {
 
 /// The boot `main` opens with for `layout` when the command line names nothing.
 fn opening(layout: &brightfield_workbench::SavedLayout) -> Boot {
-    startup::opening_boot(None, layout.opened_start(), Flow::Vertical, None)
+    startup::opening_boot(None, layout.opened.as_deref(), Flow::Vertical, None)
         .expect("a launch with nothing named boots")
 }
 
@@ -242,8 +249,8 @@ fn relaunch_reopens_the_protocol_as_saved() {
     let file = layout_file("as_saved");
     let mut win = Window::opened("relaunch_as_saved");
     assert_eq!(
-        win.app.layout().opened,
-        Some(Opened::Protocol(protocol_dir("relaunch_as_saved"))),
+        win.app.layout().reopen_protocol,
+        Some(protocol_dir("relaunch_as_saved")),
         "opening the Protocol records it to restore"
     );
     win.keep_filter();
@@ -276,7 +283,7 @@ fn closing_the_window_shows_the_front_door() {
     assert!(!win.closed, "and the window does not close itself");
     assert!(win.app.front_door_is_live(), "the door shows");
     assert_eq!(
-        win.app.layout().opened,
+        win.app.layout().reopen_protocol,
         None,
         "and nothing is left to restore"
     );
@@ -353,10 +360,15 @@ fn going_home_relaunches_on_the_door() {
         },
     );
     assert!(win.app.front_door_is_live());
-    assert_eq!(win.app.layout().opened, None);
+    assert_eq!(win.app.layout().reopen_protocol, None);
     win.end(&file);
 
     assert!(Window::relaunched(&file).app.front_door_is_live());
+}
+
+/// What the layout file at `file` remembers to reopen, read back as the next launch reads it.
+fn remembered(file: &Path) -> Option<PathBuf> {
+    startup::boot_layout(Some(file)).0.reopen_protocol
 }
 
 #[test]
@@ -367,30 +379,81 @@ fn an_old_layout_file_with_a_start_id_still_restores_it() {
     let mut old: serde_json::Value =
         serde_json::from_str(&startup::default_layout().to_json().expect("serialises"))
             .expect("json");
+    old.as_object_mut()
+        .expect("an object")
+        .remove("reopen_protocol");
     old["opened"] = serde_json::Value::String(starts::DASHBOARD.to_string());
     std::fs::write(&file, old.to_string()).expect("the old file writes");
 
-    let (mut layout, outcome) = startup::boot_layout(Some(&file));
+    let (layout, outcome) = startup::boot_layout(Some(&file));
 
     assert!(
         outcome.restored(),
         "the old file loads: {}",
         outcome.reason()
     );
-    assert_eq!(
-        layout.opened,
-        Some(Opened::Start(starts::DASHBOARD.to_string()))
-    );
-    assert_eq!(startup::restored_protocol(None, &mut layout), None);
+    assert_eq!(layout.opened.as_deref(), Some(starts::DASHBOARD));
+    assert_eq!(startup::restored_protocol(None, &layout), None);
     assert!(
         !opening(&layout).is_empty(),
         "the start is reopened from the old file"
     );
+}
 
-    // And this build writes the start the same way, so an older build reads it back too.
-    let written: serde_json::Value =
-        serde_json::from_str(&layout.to_json().expect("serialises")).expect("json");
-    assert_eq!(written["opened"], serde_json::json!(starts::DASHBOARD));
+#[test]
+fn a_layout_naming_a_protocol_still_reads_in_the_old_shape() {
+    let file = layout_file("old_shape");
+    let win = Window::opened("relaunch_old_shape");
+    win.end(&file);
+    let text = std::fs::read_to_string(&file).expect("the layout reads");
+
+    let written: serde_json::Value = serde_json::from_str(&text).expect("json");
+    assert!(
+        written["opened"].is_null() || written["opened"].is_string(),
+        "`opened` is a start id or nothing: {}",
+        written["opened"]
+    );
+    assert!(
+        written["reopen_protocol"].is_string(),
+        "the Protocol is in a field of its own: {}",
+        written["reopen_protocol"]
+    );
+    // An older build reads `opened` as an `Option<String>`, and ignores a field it does not know,
+    // since nothing in the layout denies unknown fields.
+    let old: Option<String> = serde_json::from_value(written["opened"].clone())
+        .expect("an older build reads `opened` as it always did");
+    assert_eq!(old, None, "and finds no start to reopen in it");
+}
+
+#[test]
+fn a_file_the_launch_delivers_opens_instead_of_the_remembered_protocol() {
+    let file = layout_file("delivered");
+    let win = Window::opened("relaunch_remembered");
+    win.end(&file);
+    let runs_before =
+        brightfield_shell::run::record_paths_newest_first(&protocol_dir("relaunch_remembered"))
+            .len();
+    let delivered = housing_copy("relaunch_delivered");
+
+    let again = Window::relaunched_with(&file, Some(OpenRequest::Path(delivered)));
+
+    assert_eq!(
+        again.holds(),
+        Some(protocol_dir("relaunch_delivered")),
+        "the delivered file opened: {}",
+        again.said()
+    );
+    assert_eq!(
+        brightfield_shell::run::record_paths_newest_first(&protocol_dir("relaunch_remembered"))
+            .len(),
+        runs_before,
+        "the remembered Protocol was not run on the way"
+    );
+    assert_eq!(
+        again.app.layout().reopen_protocol,
+        Some(protocol_dir("relaunch_delivered")),
+        "and the delivered file is what the next launch reopens"
+    );
 }
 
 #[test]
@@ -417,6 +480,12 @@ fn a_restored_protocol_that_was_deleted_opens_the_door() {
         !protocol_dir("relaunch_deleted").exists(),
         "and the folder is not made again"
     );
+    again.end(&file);
+    assert_eq!(
+        remembered(&file),
+        None,
+        "and the next launch does not look for it again"
+    );
 
     // The folder there, its manifest gone.
     let file = layout_file("unmade");
@@ -440,4 +509,32 @@ fn a_restored_protocol_that_was_deleted_opens_the_door() {
     assert!(!protocol_dir("relaunch_unmade")
         .join("arcform.yaml")
         .exists());
+    again.end(&file);
+    assert_eq!(remembered(&file), None);
+}
+
+#[test]
+fn a_restored_protocol_that_will_not_open_is_forgotten() {
+    let file = layout_file("unopenable");
+    let win = Window::opened("relaunch_unopenable");
+    win.end(&file);
+    std::fs::write(
+        protocol_dir("relaunch_unopenable").join("arcform.yaml"),
+        "this is: [not a manifest\n",
+    )
+    .expect("the manifest is spoiled");
+
+    let again = Window::relaunched(&file);
+
+    assert!(
+        again.app.front_door_is_live(),
+        "the relaunch is on the door: {}",
+        again.said()
+    );
+    again.end(&file);
+    assert_eq!(
+        remembered(&file),
+        None,
+        "a restore that failed is not tried again at the next launch"
+    );
 }
