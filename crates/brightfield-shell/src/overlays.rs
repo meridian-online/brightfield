@@ -860,8 +860,8 @@ impl CloseQuestion {
         }
     }
 
-    /// The key chip beside the answer `which`, whose key is `key` in [`CLOSE_ANSWERS`]: none beside
-    /// Keep editing before the move into a new Protocols folder, where Esc cancels the whole move
+    /// The key chip beside the answer `which`, whose key is `key` in [`CLOSE_ANSWERS`]. Keep editing
+    /// has no chip before the move into a new Protocols folder, where Esc cancels the whole move
     /// rather than keeping editing.
     #[must_use]
     pub fn answer_key(&self, which: CloseAnswer, key: &'static str) -> Option<&'static str> {

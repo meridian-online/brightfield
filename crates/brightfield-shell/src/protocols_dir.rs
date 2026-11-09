@@ -82,7 +82,7 @@ fn preferences_path() -> Option<PathBuf> {
     .map(|dir| dir.join(PREFERENCES_FILE))
 }
 
-/// The moment the file at `path` was last changed and its size, `None` when there is none.
+/// The moment the file at `path` was last changed and its size; `None` for a missing file.
 fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.modified().ok()?, meta.len()))
@@ -136,7 +136,7 @@ fn setting() -> Option<PathBuf> {
 
 /// What to say when the Preferences file is there but could not be read: new Protocols then go to
 /// the default folder for now, which is not what the analyst chose. `None` when it reads, when
-/// there is none, and while `BRIGHTFIELD_PROTOCOLS_DIR` decides the folder anyway.
+/// the file is missing, and while `BRIGHTFIELD_PROTOCOLS_DIR` decides the folder anyway.
 #[must_use]
 pub fn setting_problem() -> Option<String> {
     if std::env::var_os(PROTOCOLS_DIR_VAR).is_some_and(|v| !v.is_empty()) {
