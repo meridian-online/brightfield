@@ -8507,7 +8507,8 @@ impl MeridianApp {
     /// ([`Self::close_when_runs_land`]). The work it was answered over is
     /// noted, so work made while it waits is not closed over unasked. A
     /// second close or quit while it waits closes at once ([`Self::leave`]),
-    /// so a run that never finishes cannot hold the app open.
+    /// so a run that does not finish cannot hold the app open
+    /// (`a_second_quit_while_waiting_for_a_run_closes_now`).
     fn close_once_runs_land(&mut self, ctx: &egui::Context) {
         if !self.run_outstanding() {
             self.close_window(ctx);
