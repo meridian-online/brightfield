@@ -688,10 +688,14 @@ fn read_steps<'a>(
 
 /// The steps recorded into the own-files Protocol of one source in `dir` after the steps it was
 /// made with (`made_with`, by name), for `source`, the grid copy of its one table that the window
-/// opened. `Ok(None)` when no step was recorded after them, or the folder's table is not
-/// `source`'s; a step recorded is read
+/// opened. `Ok(None)` when the folder's table is not `source`'s; a step recorded is read
 /// (`cmd_s_on_a_one_source_protocol_shows_the_step_on_the_spine` in
 /// `tests/cmd_s_saves_the_protocol.rs`).
+///
+/// A folder with no step recorded yet answers its made-with steps and no recorded one, rather
+/// than `Ok(None)`: the window then reads the folder's manifest whole from the first open, so a
+/// run of it, which runs those steps, is taken onto the strip
+/// (`run_on_a_just_opened_csv_shows_its_run_on_the_strip`).
 ///
 /// Their root is the table the Protocol's silver step makes, which is `source`'s table and the
 /// rows its grid copy holds, so a grid over a recorded step previews it through its chain from
@@ -717,9 +721,6 @@ pub fn generated_protocol_of_one_source(
         .steps
         .iter()
         .partition(|step| made_with.contains(&step.name));
-    if recorded.is_empty() {
-        return Ok(None);
-    }
     let made: BTreeSet<String> = own
         .iter()
         .flat_map(|step| &step.produces)

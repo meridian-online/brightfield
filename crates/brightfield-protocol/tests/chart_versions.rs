@@ -588,6 +588,50 @@ fn an_unsaved_chart_carries_the_steps_the_window_held() {
     );
 }
 
+/// A text that already carries a block of pending steps, as a stepped-back
+/// version saved again may, is recorded with one block, of the new steps, and
+/// reads back as the chart without it.
+#[test]
+fn an_unsaved_chart_recorded_again_carries_one_block_of_its_own_steps() {
+    use brightfield_protocol::PendingStep;
+    let scratch = Scratch::new("unsaved_steps_again");
+    scratch.save("a: 1\n");
+    let old = [PendingStep {
+        words: "Grid view \u{b7} where old".to_string(),
+        sql: "WHERE old".to_string(),
+    }];
+    let new = [PendingStep {
+        words: "SQL step \u{b7} fresh".to_string(),
+        sql: "select 1".to_string(),
+    }];
+    brightfield_protocol::record_unsaved(&scratch.store(), &scratch.file(), "a: 2\n", &old)
+        .expect("recorded");
+    let carried = scratch
+        .store()
+        .read_version(&scratch.file(), &scratch.list().versions[0].id)
+        .expect("reads back");
+    assert_eq!(
+        brightfield_protocol::without_pending_steps(&carried),
+        "a: 2\n"
+    );
+
+    brightfield_protocol::record_unsaved(&scratch.store(), &scratch.file(), &carried, &new)
+        .expect("recorded again");
+
+    let list = scratch.list();
+    assert_eq!(list.versions[0].kept, new);
+    let text = scratch
+        .store()
+        .read_version(&scratch.file(), &list.versions[0].id)
+        .expect("reads back");
+    assert_eq!(
+        text.matches(brightfield_protocol::PENDING_STEPS_HEADING)
+            .count(),
+        1,
+        "{text}"
+    );
+}
+
 /// Before a chart file's folder is there, the folder is made empty to key the
 /// version by, and the chart file is not made.
 #[test]

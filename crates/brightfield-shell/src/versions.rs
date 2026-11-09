@@ -731,7 +731,9 @@ impl Versions {
     }
 
     /// The text the store recorded for the version `id` of the panel's chart
-    /// file, or why it cannot be read.
+    /// file, without the steps a close without saving carried after it
+    /// ([`brightfield_protocol::without_pending_steps`]), or why it cannot be
+    /// read.
     ///
     /// # Errors
     ///
@@ -748,9 +750,13 @@ impl Versions {
             .source
             .as_ref()
             .ok_or_else(|| "no store holds this chart's versions".to_string())?;
+        // The chart's own text: the steps a close without saving carried after it are the
+        // version's to list, not the chart's, and a step back that kept them would write them
+        // into the chart file on the next Save.
         source
             .store
             .read_version(&source.file, id)
+            .map(|text| brightfield_protocol::without_pending_steps(&text))
             .map_err(|e| e.reason().to_string())
     }
 

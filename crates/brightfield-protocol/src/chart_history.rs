@@ -324,11 +324,14 @@ pub const PENDING_STEPS_HEADING: &str =
 
 /// `text` with `pending` written after it as comments, or `text` itself when
 /// there are none.
+///
+/// A block already in `text`, as a version stepped back to and saved again may
+/// carry, is taken out first, so a version carries one block, of its own steps.
 fn with_pending_steps(text: &str, pending: &[PendingStep]) -> String {
+    let mut out = without_pending_steps(text);
     if pending.is_empty() {
-        return text.to_string();
+        return out;
     }
-    let mut out = text.to_string();
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
@@ -343,6 +346,32 @@ fn with_pending_steps(text: &str, pending: &[PendingStep]) -> String {
             out.push_str(line);
             out.push('\n');
         }
+    }
+    out
+}
+
+/// **`text` without the pending steps a close without saving wrote after the
+/// chart**: the chart's own text, which is what stepping back to an unsaved
+/// version draws and what a Save of it writes. A text without them is
+/// returned as it is.
+#[must_use]
+pub fn without_pending_steps(text: &str) -> String {
+    if !text.lines().any(|line| line == PENDING_STEPS_HEADING) {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut in_block = false;
+    for line in text.split_inclusive('\n') {
+        let bare = line.trim_end_matches(['\n', '\r']);
+        if bare == PENDING_STEPS_HEADING {
+            in_block = true;
+            continue;
+        }
+        if in_block && (bare.starts_with("# - ") || bare.starts_with("#   ")) {
+            continue;
+        }
+        in_block = false;
+        out.push_str(line);
     }
     out
 }

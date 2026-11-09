@@ -551,6 +551,15 @@ fn cmd_s_on_a_protocol_opened_as_a_folder_of_two_tables() {
         win.said()
     );
     assert!(!win.app.title().contains(UNSAVED_MARK));
+    // Discovery's full pass rewrites the folder's steps when it lands; it is let land first, so
+    // what is measured is Cmd+S alone.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while win.app.model_pane().is_some_and(|pane| pane.discovering()) {
+        assert!(Instant::now() < deadline, "discovery's pass did not land");
+        win.run(Vec::new());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    win.settle();
 
     // On the model, nothing is a draft: making the Protocol and its joins are kept at once.
     let before = modification_times(&win.dir());
@@ -594,4 +603,98 @@ fn cmd_s_on_a_protocol_opened_as_a_folder_of_two_tables() {
         win.said()
     );
     assert!(win.said().is_empty(), "with no refusal: {}", win.said());
+    let manifest = win.manifest();
+    assert!(
+        manifest.contains("cmd_s_houses_filtered_by_house_age"),
+        "the step is recorded into the Protocol's own manifest: {manifest}"
+    );
+    assert!(
+        !win.dir().join(".grid").join("arcform.yaml").exists(),
+        "and nothing manifest-like is left beside the grid's rows"
+    );
+}
+
+#[test]
+fn run_on_a_just_opened_csv_shows_its_run_on_the_strip() {
+    let mut win = Window::opened("run_fresh");
+    // The open's own run is on the strip from the start.
+    let opened_with = win
+        .app
+        .protocol_model()
+        .run()
+        .map(|r| r.run_id.clone())
+        .unwrap_or_else(|| panic!("the open's run is on the strip: {}", win.said()));
+
+    win.run(vec![press(egui::Key::Enter, command())]);
+    assert!(
+        win.app.run_in_progress(),
+        "cmd-enter started a run: {}",
+        win.said()
+    );
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while win.app.run_outstanding() {
+        assert!(Instant::now() < deadline, "the run did not land");
+        win.run(Vec::new());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    win.settle();
+
+    let ran = win.app.protocol_model().run().map(|r| r.run_id.clone());
+    assert!(
+        ran.is_some() && ran.as_deref() != Some(opened_with.as_str()),
+        "the strip took on the new run of a Protocol with nothing recorded yet: {ran:?}; {}",
+        win.said()
+    );
+}
+
+#[test]
+fn cmd_s_away_from_the_editor_never_writes_over_a_change_on_disk() {
+    let mut win = Window::opened("cmd_s_buffer_conflict");
+    win.click_into_the_editor();
+    let spec = win
+        .app
+        .chart_doc()
+        .spec_path
+        .clone()
+        .expect("the editor's buffer has a file");
+    win.type_text("# typed in the editor\n");
+    win.ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    assert!(win
+        .app
+        .focus_pane(PaneKey::new(brightfield_shell::data_grid::DATA)));
+    win.settle();
+    // Someone else changes the file while the buffer is unsaved.
+    let external = format!(
+        "{}# changed outside\n",
+        std::fs::read_to_string(&spec).expect("the spec reads")
+    );
+    std::fs::write(&spec, &external).expect("the outside change writes");
+
+    win.cmd_s();
+    win.cmd_s();
+
+    assert_eq!(
+        std::fs::read_to_string(&spec).expect("the spec reads"),
+        external,
+        "two presses away from the editor did not write over the change"
+    );
+    assert!(
+        win.app
+            .notifications()
+            .iter()
+            .any(|n| n.title == "The YAML editor's buffer was not saved"
+                && n.body
+                    .as_deref()
+                    .is_some_and(|b| b.contains("changed on disk"))),
+        "a banner says why: {}",
+        win.said()
+    );
+    assert!(
+        win.app.title().contains(UNSAVED_MARK),
+        "the buffer is still unsaved"
+    );
 }

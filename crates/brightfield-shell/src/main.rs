@@ -403,12 +403,16 @@ struct BrightfieldApp {
     /// opened on nothing and took `WindowGeometry`'s default. See the call in
     /// `main` that sets it.
     fit: Option<(f32, f32)>,
-    /// The window's open queue, held until the first frame routes the app menu's Quit onto it
-    /// (`mac_open::route_menu_quit`): the menu is the event loop's, made after this host is, and
-    /// the first frame is the first moment it exists. `None` once routed, and on a host with no
-    /// menu to route.
-    menu_quit: Option<brightfield_shell::open_queue::OpenQueue>,
+    /// The window's open queue, held until a frame routes the app menu's Quit onto it
+    /// (`mac_open::route_menu_quit`), with the frames tried so far: the menu is the event loop's,
+    /// made after this host is, so each frame tries until it is there, up to
+    /// [`MENU_QUIT_TRIES`]. `None` once routed, once given up on, and on a host with no menu to
+    /// route.
+    menu_quit: Option<(brightfield_shell::open_queue::OpenQueue, u32)>,
 }
+
+/// How many frames try to route the app menu's Quit before giving up and saying so.
+const MENU_QUIT_TRIES: u32 = 120;
 
 /// Whether a frame reporting `outcome` is the last one that needs to ask.
 ///
@@ -449,13 +453,26 @@ impl BrightfieldApp {
 
         // Cmd+Q and the app menu's Quit, onto the window's queue, so a quit asks the close
         // question over a draft rather than ending the process unasked.
-        if let Some(queue) = self.menu_quit.take() {
+        if let Some((queue, tried)) = self.menu_quit.take() {
             #[cfg(target_os = "macos")]
-            if let Some(main_thread) = objc2::MainThreadMarker::new() {
-                brightfield_shell::mac_open::route_menu_quit(main_thread, queue, || {});
+            {
+                let routed = objc2::MainThreadMarker::new().is_some_and(|main_thread| {
+                    brightfield_shell::mac_open::route_menu_quit(main_thread, queue.clone(), || {})
+                });
+                if !routed {
+                    if tried + 1 < MENU_QUIT_TRIES {
+                        self.menu_quit = Some((queue, tried + 1));
+                        ctx.request_repaint();
+                    } else {
+                        eprintln!(
+                            "the app menu's Quit could not be routed to the window: Cmd+Q from \
+                             the menu will quit without asking about unsaved work"
+                        );
+                    }
+                }
             }
             #[cfg(not(target_os = "macos"))]
-            drop(queue);
+            drop((queue, tried));
         }
 
         // The size this window was created at was read outwards from the graph
@@ -1295,7 +1312,7 @@ fn main() -> Result<(), String> {
     if let Some(main_thread) = objc2::MainThreadMarker::new() {
         brightfield_shell::mac_open::install(main_thread, open_queue.clone(), || {});
     }
-    let menu_quit = Some(open_queue.clone());
+    let menu_quit = Some((open_queue.clone(), 0));
     eframe::run_native(
         &title,
         options,

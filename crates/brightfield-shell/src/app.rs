@@ -951,6 +951,11 @@ pub struct ChartDoc {
     /// whenever it changes, and a close without saving keeps it as a version
     /// ([`Self::editor_buffer`]).
     editor_buffer: Option<(std::path::PathBuf, String)>,
+    /// Whether the next `save-spec` the editor performs is the window's, made
+    /// away from the editor, and what that save did once it has run: the
+    /// window cannot reach the editor's report any other way.
+    editor_save_ask: bool,
+    editor_save_report: Option<crate::editor::SaveReport>,
     /// The next order stamp: one counter for kept statements and applied grid
     /// views, so what was made first can be recorded first.
     next_stamp: u64,
@@ -1478,6 +1483,8 @@ impl ChartDoc {
             typed_stamps: Vec::new(),
             grid_view_stamp: 0,
             editor_buffer: None,
+            editor_save_ask: false,
+            editor_save_report: None,
             next_stamp: 0,
             grid_foot: crate::grid_foot::FootState::default(),
             grid_preview: None,
@@ -1553,6 +1560,8 @@ impl ChartDoc {
             typed_stamps: Vec::new(),
             grid_view_stamp: 0,
             editor_buffer: None,
+            editor_save_ask: false,
+            editor_save_report: None,
             next_stamp: 0,
             grid_foot: crate::grid_foot::FootState::default(),
             grid_preview: None,
@@ -1778,6 +1787,30 @@ impl ChartDoc {
     /// editor's to say, whenever its buffer changes.
     pub(crate) fn set_editor_buffer(&mut self, buffer: Option<(std::path::PathBuf, String)>) {
         self.editor_buffer = buffer;
+    }
+
+    /// Mark the next save the editor performs as the window's, made away from
+    /// the editor ([`crate::editor`]'s `save-spec`), and clear any report left.
+    pub(crate) fn ask_editor_save(&mut self) {
+        self.editor_save_ask = true;
+        self.editor_save_report = None;
+    }
+
+    /// Whether the save the editor is performing was asked for by the window,
+    /// clearing the ask.
+    pub(crate) fn take_editor_save_ask(&mut self) -> bool {
+        std::mem::take(&mut self.editor_save_ask)
+    }
+
+    /// Leave what a save the window asked for did, for the window to read.
+    pub(crate) fn set_editor_save_report(&mut self, report: crate::editor::SaveReport) {
+        self.editor_save_report = Some(report);
+    }
+
+    /// Take what the save the window asked the editor for did, if it ran.
+    pub(crate) fn take_editor_save_report(&mut self) -> Option<crate::editor::SaveReport> {
+        self.editor_save_ask = false;
+        self.editor_save_report.take()
     }
 
     /// The YAML editor's buffer while it holds edits its file does not: the

@@ -2220,8 +2220,17 @@ pub enum Leaving {
     Quit,
 }
 
+/// The banner that says the YAML editor's buffer was not saved, and why.
+const EDITOR_NOT_SAVED_BANNER: &str = "editor-not-saved";
+
 /// The banner that says the window closes once the runs it started land.
 const CLOSING_AFTER_RUN_BANNER: &str = "closing-after-run";
+
+/// What that banner says: what the window waits for, and how to close it now.
+pub const WAITING_FOR_RUN_TITLE: &str = "Waiting for the run to finish before closing";
+/// The banner's body.
+pub const WAITING_FOR_RUN_BODY: &str =
+    "Quit or close again to close now; the run's record may be lost.";
 
 /// The `quit` verb's longname: the registry's, spelled once here for the
 /// window's key and dispatch.
@@ -3947,12 +3956,54 @@ impl MeridianApp {
         let _ = editor.perform(&mut self.charts.doc, Verb::new(verb), &mut cx);
     }
 
-    /// Save the YAML editor's buffer when it holds edits its file does not,
-    /// whether or not the editor has the keyboard: the first half of Cmd+S.
-    fn save_editor_buffer(&mut self) {
-        if self.editor_unsaved() {
-            self.perform_on_editor("save-spec");
+    /// **Save the YAML editor's buffer when it holds edits its file does not,
+    /// whether or not the editor has the keyboard**: the first half of Cmd+S,
+    /// answering whether the save may go on to the Protocol.
+    ///
+    /// The save is the window's, made away from the editor, so it never
+    /// confirms an overwrite of a change made to the file on disk: only the
+    /// editor's own Cmd+S, with its warning in view, does that. A buffer that
+    /// was not written, over such a change, a file the editor never read, or a
+    /// write that failed, is said in a banner, and the save stops there.
+    fn save_editor_buffer(&mut self) -> bool {
+        use crate::editor::SaveReport;
+        let banner = NotificationId::new(EDITOR_NOT_SAVED_BANNER);
+        if !self.editor_unsaved() {
+            return true;
         }
+        let name = self.editor_unsaved_name().unwrap_or_default();
+        self.charts.doc.ask_editor_save();
+        self.perform_on_editor("save-spec");
+        let why = match self.charts.doc.take_editor_save_report() {
+            None
+            | Some(
+                SaveReport::Written
+                | SaveReport::ForcedWrite
+                | SaveReport::Unchanged
+                | SaveReport::NoFile,
+            ) => {
+                self.notifications.dismiss(banner);
+                return true;
+            }
+            Some(SaveReport::ConflictArmed) => format!(
+                "{name} changed on disk since the editor read it. Save it from the editor to \
+                 overwrite that change."
+            ),
+            Some(SaveReport::RefusedUnseeded) => format!(
+                "{name} could not be read when the editor opened it, so the editor will not \
+                 write over it."
+            ),
+            Some(SaveReport::Failed(e)) => format!("{name} could not be written: {e}."),
+        };
+        self.notifications.raise(
+            Notification::new(
+                banner,
+                Severity::Error,
+                "The YAML editor's buffer was not saved",
+            )
+            .body(why),
+        );
+        false
     }
 
     /// Put a fresh YAML editor in the old one's place, which drops its
@@ -6673,7 +6724,9 @@ impl MeridianApp {
         if !self.anything_to_save() {
             return;
         }
-        self.save_editor_buffer();
+        if !self.save_editor_buffer() {
+            return;
+        }
         if self.anything_to_save() {
             self.save_protocol(ctx);
         }
@@ -8354,10 +8407,11 @@ impl MeridianApp {
         if !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
-        // A close already answered, waiting for a run to land: it closes then, and a second
-        // request does not ask again what was answered.
+        // A close already answered, waiting for a run to land: a second close is the analyst
+        // closing now, whatever the run, so it goes through uncancelled.
         if self.close_after_runs.is_some() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.stop_waiting_for_runs();
+            self.allow_close();
             return;
         }
         if self.ask_before_closing() {
@@ -8400,6 +8454,19 @@ impl MeridianApp {
     /// the window started so no run's record is lost
     /// ([`Self::close_when_runs_land`]).
     pub fn leave(&mut self, ctx: &egui::Context, to: Leaving) {
+        // A close or quit already answered and waiting for a run: a second one closes now, so
+        // a run that never finishes cannot keep the app open, and any other way out is refused
+        // with the banner that says what the window is waiting for.
+        if self.close_after_runs.is_some() {
+            match to {
+                Leaving::Close | Leaving::Quit => {
+                    self.stop_waiting_for_runs();
+                    self.close_window(ctx);
+                }
+                Leaving::Home | Leaving::Open(_) => self.say_waiting_for_runs(ctx),
+            }
+            return;
+        }
         if matches!(to, Leaving::Home) && self.front_door_is_live() {
             return;
         }
@@ -8438,22 +8505,37 @@ impl MeridianApp {
     /// and could cost the run its record. So a close with a run outstanding
     /// waits, with a banner saying so, and closes when the run lands
     /// ([`Self::close_when_runs_land`]). The work it was answered over is
-    /// noted, so work made while it waits is not closed over unasked.
+    /// noted, so work made while it waits is not closed over unasked. A
+    /// second close or quit while it waits closes at once ([`Self::leave`]),
+    /// so a run that never finishes cannot hold the app open.
     fn close_once_runs_land(&mut self, ctx: &egui::Context) {
         if !self.run_outstanding() {
             self.close_window(ctx);
             return;
         }
         self.close_after_runs = Some(self.unsaved_now());
+        self.say_waiting_for_runs(ctx);
+    }
+
+    /// Raise the banner that says the window waits for a run before it closes, and how to
+    /// close now.
+    fn say_waiting_for_runs(&mut self, ctx: &egui::Context) {
         self.notifications.raise(
             Notification::new(
                 NotificationId::new(CLOSING_AFTER_RUN_BANNER),
                 Severity::Info,
-                "Closing once the run finishes",
+                WAITING_FOR_RUN_TITLE,
             )
-            .body("The run's record is kept in the Protocol's folder; the window closes when it lands."),
+            .body(WAITING_FOR_RUN_BODY),
         );
         ctx.request_repaint();
+    }
+
+    /// Stop waiting for runs to land before closing, and take the banner that said so down.
+    fn stop_waiting_for_runs(&mut self) {
+        self.close_after_runs = None;
+        self.notifications
+            .dismiss(NotificationId::new(CLOSING_AFTER_RUN_BANNER));
     }
 
     /// The close that waited for this window's runs, once none is
@@ -8463,9 +8545,8 @@ impl MeridianApp {
         if self.close_after_runs.is_none() || self.run_outstanding() {
             return;
         }
-        let answered_over = self.close_after_runs.take();
-        self.notifications
-            .dismiss(NotificationId::new(CLOSING_AFTER_RUN_BANNER));
+        let answered_over = self.close_after_runs.clone();
+        self.stop_waiting_for_runs();
         if self.has_unsaved_work() && answered_over.as_ref() != Some(&self.unsaved_now()) {
             self.leave(ctx, Leaving::Close);
         } else {
@@ -8697,7 +8778,9 @@ impl MeridianApp {
     fn save_for_close(&mut self, ctx: &egui::Context) -> bool {
         // The YAML editor's buffer first, as Cmd+S saves it; a window whose
         // only unsaved work was the buffer has nothing left to write.
-        self.save_editor_buffer();
+        if !self.save_editor_buffer() {
+            return false;
+        }
         if !self.has_unsaved_work() {
             return true;
         }
@@ -10580,7 +10663,17 @@ impl MeridianApp {
             .grid_snapshot(target)
             .and_then(|path| crate::data_file::open(&path.to_string_lossy()));
         match opened {
-            Ok(opened) => {
+            Ok(mut opened) => {
+                // A table's grid is the Protocol's own, as the grid of a Protocol of one source
+                // is: a view kept on it is a step of the Protocol, recorded into its manifest,
+                // not into the folder its rows were copied to. A join's rows are no table of the
+                // Protocol's, so they stay where they were copied.
+                if matches!(
+                    target,
+                    brightfield_render::model_scene::Selection::Dataset(_)
+                ) {
+                    opened.protocol.dir.clone_from(&model.doc.protocol.dir);
+                }
                 self.adopt_boot(Boot::of_opened_file(opened));
                 let showing = match target {
                     brightfield_render::model_scene::Selection::Dataset(name) => {
@@ -10745,14 +10838,18 @@ impl MeridianApp {
     /// Write `source`'s declaration where Save and Run write it, and answer its manifest's path.
     ///
     /// A one-step Protocol is written to its directory ([`crate::one_step::OneStepProtocol::save_to`]).
-    /// The grid of an own-files Protocol's one table is written nothing: that Protocol's manifest
-    /// was written when it was made and is the file a recorded view extends, so Save and Run
-    /// record into it as it stands.
+    /// The grid of an own-files Protocol's table, its one table or one of a folder's, is written
+    /// nothing: that Protocol's manifest was written when it was made and is the file a recorded
+    /// view extends, so Save and Run record into it as it stands.
     fn write_source(&self, source: &crate::one_step::OneStepProtocol) -> Result<PathBuf, String> {
+        let own_folder = crate::own_files::own_protocol_dir(&source.dir).is_some();
         match &self.own_protocol {
             Some(own) if own.dir == source.dir => {
                 Ok(crate::one_step::OneStepProtocol::manifest_path_in(&own.dir))
             }
+            _ if own_folder => Ok(crate::one_step::OneStepProtocol::manifest_path_in(
+                &source.dir,
+            )),
             _ => source.save_to(&source.dir),
         }
     }

@@ -17,7 +17,9 @@ use brightfield_shell::design::Mode;
 use brightfield_shell::open_queue::OpenRequest;
 use brightfield_shell::run::Runner;
 use brightfield_shell::versions::{Listing, CLOSED_UNSAVED};
-use brightfield_shell::window::{Boot, MeridianApp, UNSAVED_MARK};
+use brightfield_shell::window::{
+    Boot, MeridianApp, UNSAVED_MARK, WAITING_FOR_RUN_BODY, WAITING_FOR_RUN_TITLE,
+};
 use brightfield_workbench::arrangement::LEDGER_RAIL;
 
 /// The overlay's name for the question, as `MeridianApp::open_overlay` says it.
@@ -94,11 +96,16 @@ struct Window {
 impl Window {
     /// The window, with the Protocol named `name` opened on it through the open queue.
     fn opened(name: &str) -> Self {
+        Self::opened_with(name, Runner::at(env!("CARGO_BIN_EXE_brightfield-shell")))
+    }
+
+    /// [`Self::opened`], handing the window `runner` to open and run with.
+    fn opened_with(name: &str, runner: Runner) -> Self {
         scratch();
         let csv = housing_copy(name);
         let mut win = Self {
             app: MeridianApp::headless(Boot::empty(), Mode::Light)
-                .running_with(Some(Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))))
+                .running_with(Some(runner))
                 .keeping_history(Some(brightfield_protocol::HistoryStore::At(
                     scratch().join("versions"),
                 ))),
@@ -537,26 +544,164 @@ fn quit_during_a_run_keeps_the_run() {
     assert!(win.marked(), "and the draft is still there");
 }
 
-#[test]
-fn closing_without_saving_during_a_run_waits_for_it() {
-    let mut win = Window::opened("close_run");
-    win.start_run();
-    win.keep_filter();
+/// A runner that is the real one, except that a run waits while the file `hold` exists, for two
+/// minutes at most, before it runs: a run a test can keep outstanding for as long as it needs, and
+/// then let finish. The test removes `hold` before it ends, so no run is left waiting.
+struct HeldRunner {
+    hold: PathBuf,
+    runner: Runner,
+}
 
-    win.cmd_q();
-    win.forget_sent();
-    win.key(egui::Key::D, egui::Modifiers::NONE);
-    if win.app.run_outstanding() {
-        assert!(!win.closed, "the window waits for the run before it closes");
+impl HeldRunner {
+    fn new(name: &str) -> Self {
+        let dir = scratch().join("input").join(format!("{name}_runner"));
+        std::fs::create_dir_all(&dir).expect("the runner's folder");
+        let hold = dir.join("hold");
+        let script = dir.join("held-runner");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = run ]; then\n  i=0\n  while [ -f '{}' ] && [ $i -lt 1200 ]; do sleep 0.1; i=$((i+1)); done\nfi\nexec '{}' \"$@\"\n",
+                hold.display(),
+                env!("CARGO_BIN_EXE_brightfield-shell"),
+            ),
+        )
+        .expect("the runner writes");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("the runner is executable");
+        }
+        Self {
+            hold,
+            runner: Runner::at(script),
+        }
     }
 
+    fn hold(&self) {
+        std::fs::write(&self.hold, "").expect("the hold writes");
+    }
+
+    fn release(&self) {
+        let _ = std::fs::remove_file(&self.hold);
+    }
+}
+
+impl Drop for HeldRunner {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// A window over a Protocol with a saved step, a run of it held outstanding, and a draft made
+/// since: what a close or quit answered during a run meets.
+fn waiting_on_a_held_run(name: &str) -> (Window, HeldRunner) {
+    let held = HeldRunner::new(name);
+    let mut win = Window::opened_with(name, held.runner.clone());
+    win.keep_filter();
+    win.key(egui::Key::S, egui::Modifiers::COMMAND);
+    assert!(!win.marked(), "the filter is saved: {}", win.said());
+    held.hold();
+    win.start_run();
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some(CONDITION.to_owned()),
+            order: Some("median_income".to_owned()),
+        });
+    win.settle();
+    assert!(win.marked(), "the order is a draft");
+    (win, held)
+}
+
+impl Window {
+    fn says_waiting(&self) -> bool {
+        self.app.notifications().iter().any(|n| {
+            n.title == WAITING_FOR_RUN_TITLE && n.body.as_deref() == Some(WAITING_FOR_RUN_BODY)
+        })
+    }
+}
+
+#[test]
+fn closing_without_saving_during_a_run_waits_for_it() {
+    let (mut win, held) = waiting_on_a_held_run("close_run");
+
+    win.cmd_q();
+    assert!(win.asking());
+    win.forget_sent();
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    for _ in 0..20 {
+        win.run(Vec::new());
+    }
+
+    assert!(win.app.run_outstanding(), "the held run is still going");
+    assert!(!win.closed, "the window waits for the run before it closes");
+    assert!(!win.asking(), "and does not ask again what was answered");
+    assert!(
+        win.says_waiting(),
+        "a banner says what it waits for: {}",
+        win.said()
+    );
+
+    let before = brightfield_shell::run::record_paths_newest_first(&win.dir()).len();
+    held.release();
     win.until("the window never closed", |w| w.closed);
     assert!(
         !win.app.run_outstanding(),
         "it closed once the run had landed"
     );
-    let records = brightfield_shell::run::record_paths_newest_first(&win.dir());
-    assert!(!records.is_empty(), "the run's record is in the folder");
+    assert!(
+        brightfield_shell::run::record_paths_newest_first(&win.dir()).len() > before,
+        "the run's record is in the folder"
+    );
+    assert!(!win.says_waiting(), "the banner went with the wait");
+}
+
+#[test]
+fn a_second_quit_while_waiting_for_a_run_closes_now() {
+    let (mut win, held) = waiting_on_a_held_run("quit_twice");
+    win.cmd_q();
+    win.forget_sent();
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    assert!(!win.closed && win.says_waiting(), "{}", win.said());
+
+    // Home while it waits is refused, with the banner that says why: the analyst has already
+    // chosen to leave.
+    win.home();
+    assert!(
+        !win.app.front_door_is_live(),
+        "Home is refused during the wait"
+    );
+    assert!(!win.asking());
+    assert!(win.says_waiting());
+    assert!(!win.closed);
+
+    win.cmd_q();
+
+    assert!(win.closed, "a second quit closes at once: {}", win.said());
+    assert!(win.app.run_outstanding(), "with the run still held");
+    held.release();
+    win.until("the held run never finished", |w| !w.app.run_outstanding());
+}
+
+#[test]
+fn a_second_close_while_waiting_for_a_run_closes_now() {
+    let (mut win, held) = waiting_on_a_held_run("close_twice");
+    win.frame(Vec::new(), true);
+    win.settle();
+    assert!(win.asking());
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    assert!(win.says_waiting(), "{}", win.said());
+    win.forget_sent();
+
+    // The window's close button again: the request is let through, which is how eframe closes.
+    win.frame(Vec::new(), true);
+
+    assert!(!win.cancelled_close, "the second close is not cancelled");
+    assert!(win.app.is_closing(), "the window lets it through");
+    held.release();
+    win.until("the held run never finished", |w| !w.app.run_outstanding());
 }
 
 #[test]
@@ -714,4 +859,105 @@ impl Window {
             "the click gave the editor's text the keyboard"
         );
     }
+}
+
+#[test]
+fn save_on_the_question_over_a_buffer_changed_on_disk_stays() {
+    let mut win = Window::opened("yaml_conflict_close");
+    let spec = win
+        .app
+        .chart_doc()
+        .spec_path
+        .clone()
+        .expect("the editor's buffer has a file");
+    win.click_into_the_editor();
+    win.type_text("# typed in the editor\n");
+    win.ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    win.settle();
+    let external = format!(
+        "{}# changed outside\n",
+        std::fs::read_to_string(&spec).expect("the spec reads")
+    );
+    std::fs::write(&spec, &external).expect("the outside change writes");
+
+    win.frame(Vec::new(), true);
+    win.settle();
+    assert!(win.asking());
+    win.forget_sent();
+    win.key(egui::Key::Enter, egui::Modifiers::NONE);
+
+    assert!(!win.closed, "the window stays open: {}", win.said());
+    assert!(
+        win.app
+            .notifications()
+            .iter()
+            .any(|n| n.title == "The YAML editor's buffer was not saved"),
+        "with a banner saying why: {}",
+        win.said()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&spec).expect("the spec reads"),
+        external,
+        "and the change on disk stands"
+    );
+}
+
+#[test]
+fn a_stepped_back_unsaved_version_saves_as_the_chart_alone() {
+    let mut win = Window::opened("step_back_kept");
+    let dir = win.dir();
+    let chart = dir.join("panels").join("step_back_kept.yaml");
+    win.keep_filter();
+    win.home();
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    assert!(win.app.front_door_is_live(), "{}", win.said());
+
+    // Opened again, stepped back to the version the close kept, and saved.
+    win.app.open_queue().push(OpenRequest::Path(dir.clone()));
+    win.settle();
+    win.assert_holds("step_back_kept");
+    let Listing::Listed { rows, .. } = win.versions_listed() else {
+        panic!("the Versions panel lists nothing: {}", win.said());
+    };
+    assert_eq!(rows[0].kind, CLOSED_UNSAVED, "{rows:?}");
+    assert!(win.app.chart_doc_mut().move_version_cursor(true));
+    assert!(
+        win.app.chart_doc_mut().step_back_to_cursor(),
+        "{}",
+        win.said()
+    );
+    win.settle();
+    win.key(egui::Key::S, egui::Modifiers::COMMAND);
+    let saved = std::fs::read_to_string(&chart).expect("the chart file reads");
+    assert!(
+        !saved.contains(brightfield_protocol::PENDING_STEPS_HEADING),
+        "the chart file holds the chart alone: {saved}"
+    );
+
+    // A later discard of other steps names those, and only those.
+    let step = win
+        .keep_statement("select house_age, count(*) as n from step_back_kept group by house_age");
+    win.home();
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    win.app.open_queue().push(OpenRequest::Path(dir));
+    win.settle();
+    let Listing::Listed { rows, .. } = win.versions_listed() else {
+        panic!("the Versions panel lists nothing: {}", win.said());
+    };
+    let newest = &rows[0];
+    assert_eq!(newest.kind, CLOSED_UNSAVED, "{rows:?}");
+    assert!(
+        newest.changed.contains(&format!("SQL step \u{b7} {step}")),
+        "the newest version names the new step: {:?}",
+        newest.changed
+    );
+    assert!(
+        !newest.changed.contains("Grid view"),
+        "and not the one already saved: {:?}",
+        newest.changed
+    );
 }
