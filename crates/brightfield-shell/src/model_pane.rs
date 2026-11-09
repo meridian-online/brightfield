@@ -464,7 +464,7 @@ impl ModelPane {
     }
 
     /// Settle what the pane holds and no run has followed, as Save does before the window leaves
-    /// it: the file view's edit is settled ([`Self::settle_file_edit`]), and a run it owes, or an
+    /// it: the file view's edit is settled (`settle_file_edit`), and a run it owes, or an
     /// earlier read owed, is made, as Run settles them ([`Self::run_whole`]).
     ///
     /// # Errors
@@ -916,7 +916,7 @@ impl ModelPane {
 
     /// Fold discovery's full pass into the model once it has landed, and answer what came of it;
     /// `None` while it runs, while a hand edit in the file view waits out its pause, or while
-    /// the edit does not settle ([`Self::settle_file_edit`]): one that does not read, or whose
+    /// the edit does not settle (`settle_file_edit`): one that does not read, or whose
     /// file cannot be written. The fold then sees the model the edit made. A fold that changes the
     /// model saves it, as an action's model is, and says so in the status line, as a failed pass
     /// does; what the analyst decided stays as it is.
@@ -1069,7 +1069,7 @@ impl ModelPane {
     /// ([`measure_joins`]), and when that changes the model it is written again, without a run:
     /// evidence is what the file says about the data, not a step of the Protocol.
     ///
-    /// The file view's edit is settled first ([`Self::settle_file_edit`]), so a save never puts
+    /// The file view's edit is settled first (`settle_file_edit`), so a save never puts
     /// the file's text over an edit that is still to be read, refused or unwritten
     /// (`save_model_settles_the_file_view_first`).
     ///
@@ -1096,7 +1096,7 @@ impl ModelPane {
     /// Protocol's run.
     ///
     /// What the pane owes the folder is paid first, so the run is of the model the pane shows: the
-    /// file view's edit is settled ([`Self::settle_file_edit`]), and the silver steps are
+    /// file view's edit is settled (`settle_file_edit`), and the silver steps are
     /// rewritten for the model, which settles a run an earlier edit left owed. An edit that does
     /// not read, or whose file cannot be written, refuses the run, rather than running the steps
     /// of the model before it.

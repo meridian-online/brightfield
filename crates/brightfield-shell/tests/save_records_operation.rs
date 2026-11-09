@@ -578,8 +578,8 @@ fn closing_after_a_refused_recording_keeps_the_window() {
         .answer_close_question(&win.ctx.clone(), CloseAnswer::SaveAndClose);
     win.settle();
     assert!(
-        win.sent_close,
-        "the window stayed open after the view was recorded"
+        win.app.front_door_is_live() && !win.app.carries_unsaved_mark(),
+        "the window stayed on the Protocol after the view was recorded"
     );
 }
 

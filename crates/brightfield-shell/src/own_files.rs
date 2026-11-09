@@ -189,7 +189,7 @@ pub fn create_empty(parent: &Path) -> Result<OwnProtocol, String> {
 }
 
 /// Whether the Protocol in `dir` still has the name New Protocol gave it, nobody having named it
-/// since: see [`UNTITLED_FILE`].
+/// since: see `UNTITLED_FILE`.
 #[must_use]
 pub fn still_untitled(dir: &Path) -> bool {
     let Ok(given) = std::fs::read_to_string(dir.join(UNTITLED_FILE)) else {
