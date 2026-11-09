@@ -2093,8 +2093,8 @@ impl ProtocolModel {
 
     /// **The step that makes the selected asset**: the step whose row stands
     /// above the selected row on the spine, and the one `remove-step` acts on.
-    /// `None` with nothing selected, and on an asset nothing in this Protocol
-    /// makes. A source host names the step that fetches from it rather than one
+    /// `None` with no asset selected, and on an input the Protocol reads off
+    /// disk. A source host names the step that fetches from it rather than one
     /// that makes it, so it answers `None` too.
     #[must_use]
     pub fn selected_step(&self) -> Option<&StepId> {
