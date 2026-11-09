@@ -414,6 +414,7 @@
 **Interfaces:**
 - Consumes: `remote::Fetch::begin` (exists), `protocols_dir::claim`, and the workspace's `zip` (version 6, as `Cargo.toml` pins it).
 - Produces:
+  - `trust::Store` in `crates/brightfield-shell/src/trust.rs` (new), a file in the config folder: records keyed by a move-surviving folder identity (a macOS bookmark, or the volume and file id), with `trust(dir)`, `trust_folder(dir)`, `revoke(dir)`, `is_trusted(dir) -> bool` (a record on the folder or on a folder above it), and `repoint(old, new)`; `rename`, `relocate` and `protocols_dir::move_all` call `repoint`.
   - `protocol_archive::check_link(link: &str) -> Result<url::Url, String>`. Accepted: scheme `brightfield`, host `open`, one `url` parameter that is `https` with host `meridian.online` or ending `.meridian.online`.
   - `protocol_archive::unpack(zip: &Path, into: &Path) -> Result<PathBuf, String>`. It checks every entry first: one top-level folder holding `arcform.yaml`; no absolute path, `..`, or symlink; at most 10,000 entries and 2 GiB unpacked by the sizes the headers declare. It then claims a name and unpacks, counting the bytes actually written and stopping at the same 2 GiB, removing the partial folder, since headers can understate sizes; and refuses a Protocol whose `.sources.json` or load SQL names an absolute local path.
 
@@ -434,6 +435,11 @@
   - `an_unpacked_archive_in_the_protocols_folder_is_not_trusted_by_location`
   - `a_brightfield_made_protocol_in_recents_from_before_trust_opens_trusted`; a foreign folder in Recents opens restricted.
   - `a_brightfield_made_protocol_moved_in_finder_stays_trusted`
+  - `an_archive_reopened_from_recents_or_the_door_stays_restricted`: unpack, close, reopen; still restricted, no run record.
+  - `an_archive_carrying_a_made_by_brightfield_marker_or_the_one_step_layout_stays_restricted`: trust is never inferred from a folder's contents.
+  - `the_first_trust_aware_launch_records_older_protocols_once`: the Application Support own-files Protocols and the one-step Protocols in Recents at that moment; a Protocol added to Recents later is not swept in.
+  - `a_protocol_new_protocol_made_outside_the_protocols_folder_is_trusted`
+  - `rename_relocate_and_the_preferences_move_repoint_trust_records`
   - `trusting_a_folder_trusts_protocols_beneath_it_including_later_ones`: trust the Protocols folder, then unpack an archive into it; it opens trusted.
   - `removing_a_trusted_folder_restricts_what_it_covered`
   - `restricted_drawing_reads_only_shipped_results`: with DuckDB external access and extension autoload off.
