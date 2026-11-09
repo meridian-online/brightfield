@@ -131,11 +131,12 @@ fn create_of(parent: &Path, named: &Path, sources: SourceSet) -> Result<OwnProto
 pub const UNTITLED: &str = "Untitled";
 
 /// The file in a Protocol folder that records the name New Protocol gave it, while nobody has
-/// named it since. The first source names the Protocol after itself only while this is there and
-/// the folder still has that name, so whether the analyst named it is decided by what happened to
-/// the folder, not by whether its name looks like one Brightfield gives: an analyst who renames a
-/// Protocol to `Untitled` keeps that name. A rename takes it away
-/// ([`crate::rename::rename_with`]).
+/// named it since. The first source names the Protocol after itself while this is there and the
+/// folder still has that name, so whether the analyst named it is decided by what happened to the
+/// folder, not by whether its name looks like one Brightfield gives: an analyst who renames a
+/// Protocol to `Untitled` keeps that name
+/// (`a_renamed_untitled_keeps_its_name_when_a_source_is_added` in `tests/new_protocol.rs`). A
+/// rename takes it away ([`crate::rename::rename_with`]).
 pub(crate) const UNTITLED_FILE: &str = ".untitled";
 
 /// A join the analyst accepted between two sources, each side a table and one of its columns.
