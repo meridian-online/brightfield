@@ -158,7 +158,14 @@ pub struct AcceptedJoin {
 /// The reason the folder could not be claimed, such as the system refusing a write in `parent`,
 /// or a file in it not written; a folder half written is taken away again.
 pub fn create_empty(parent: &Path) -> Result<OwnProtocol, String> {
-    let (dir, name) = protocols_dir::claim(parent, UNTITLED).map_err(|e| e.to_string())?;
+    let (dir, name) = protocols_dir::claim(parent, UNTITLED).map_err(|e| match e {
+        protocols_dir::ClaimError::Refused(parent) => format!(
+            "Brightfield cannot make a Protocol in {}. Allow it under System Settings → Privacy & \
+             Security → Files and Folders, then choose New Protocol again.",
+            parent.display()
+        ),
+        protocols_dir::ClaimError::Io(message) => message,
+    })?;
     let written = (|| -> Result<(), String> {
         let models = dir.join("models");
         std::fs::create_dir(&models).map_err(|e| format!("{}: {e}", models.display()))?;
@@ -215,11 +222,11 @@ pub fn empty_protocol_dir(path: &Path) -> Option<PathBuf> {
 
 /// Add what `path` holds (a data file, a folder, a workbook or a database) to the Protocol `p` as
 /// more sources, with the join the analyst accepted in `joins` written into its model, run by this
-/// binary. See [`add_source_with`].
+/// binary. See [`add_sources_with`].
 ///
 /// # Errors
 ///
-/// As [`add_source_with`], and a binary that cannot say where it is.
+/// As [`add_sources_with`], and a binary that cannot say where it is.
 pub fn add_source(p: &mut OwnProtocol, path: &Path, joins: &[AcceptedJoin]) -> Result<(), String> {
     let runner = Runner::this_binary().ok_or("no runner to run the Protocol with")?;
     add_source_with(
@@ -232,27 +239,11 @@ pub fn add_source(p: &mut OwnProtocol, path: &Path, joins: &[AcceptedJoin]) -> R
     .map(|_| ())
 }
 
-/// Add what `path` holds to the Protocol `p` as more sources, kept at once: nothing waits for a
-/// save. Answers what did not follow a rename, each in a sentence, as a rename's warnings say it.
-///
-/// The tables `path` holds are appended to `p`'s with a load step each, after its other loads, and
-/// the record of its sources is written again. A table whose name one of `p`'s already has, or
-/// would make, takes `_2` and so on. The Protocol is run with `runner` to load and profile them,
-/// and the run is marked a preview, so the door does not say the Protocol has been run. With two
-/// tables or more, `discovery` finds the model again over all of them, keeping what the analyst
-/// decided in the model on disk, `joins` are written into it as the analyst's, and it is written;
-/// one table has nothing to relate and has no model. The silver steps are written for the model
-/// and the Protocol run again.
-///
-/// The first source added to a Protocol New Protocol made, which nobody has named since
-/// ([`still_untitled`]), names it after itself, renaming its folder ([`crate::rename::rename_claiming`])
-/// and taking `-2` and so on when the name is taken, as a Protocol made from that source would.
+/// [`add_sources_with`] for one path.
 ///
 /// # Errors
 ///
-/// The reason `path` holds no table Brightfield reads, or a step of the add failed. When a step
-/// fails, the manifest and the record of sources are put back as they were, so the Protocol is as
-/// it was before the add, except for a rename already done, which is kept and is in `p.dir`.
+/// As [`add_sources_with`].
 pub fn add_source_with(
     p: &mut OwnProtocol,
     path: &Path,
@@ -260,11 +251,48 @@ pub fn add_source_with(
     runner: &Runner,
     discovery: &dyn crate::discovery::Discovery,
 ) -> Result<Vec<String>, String> {
-    let mut found = sources::discover(path)?;
+    add_sources_with(p, &[path.to_path_buf()], joins, runner, discovery)
+}
+
+/// Add what `paths` hold to the Protocol `p` as more sources, together, kept at once: nothing
+/// waits for a save. Answers what did not follow a rename, each in a sentence, as a rename's
+/// warnings say it.
+///
+/// `p`'s sources are read again from its folder first, so a `p` held since an earlier add is not
+/// added to as it was. The tables `paths` hold are appended to its tables with a load step each,
+/// after its other loads, and the record of its sources is written again. A table whose name one
+/// of `p`'s already has, or would make, takes `_2` and so on. The Protocol is run with `runner` to
+/// load and profile them, and the run is marked a preview, so the door does not say the Protocol
+/// has been run. With two tables or more, `discovery` finds the model again over all of them,
+/// keeping what the analyst decided in the model on disk, `joins` are written into it as the
+/// analyst's, and it is written; one table has nothing to relate and has no model. The silver
+/// steps are written for the model and the Protocol run again.
+///
+/// Once all of that has gone through, the first sources added to a Protocol New Protocol made,
+/// which nobody has named since ([`still_untitled`]), name it after the first of `paths`,
+/// renaming its folder ([`crate::rename::rename_claiming`]) and taking `-2` and so on when the name
+/// is taken, as a Protocol made from that source would. A rename that fails leaves the sources
+/// added and says why among the warnings.
+///
+/// # Errors
+///
+/// The reason `paths` hold no table Brightfield reads, or a step of the add failed. When a step
+/// fails, every file the add may write in the folder is put back as it was, and any it made is
+/// taken away (see `FilesBefore`), so the Protocol opens as the kind it was before.
+pub fn add_sources_with(
+    p: &mut OwnProtocol,
+    paths: &[PathBuf],
+    joins: &[AcceptedJoin],
+    runner: &Runner,
+    discovery: &dyn crate::discovery::Discovery,
+) -> Result<Vec<String>, String> {
+    let first = paths.first().ok_or("nothing was given to add")?;
+    p.sources = read_sources(&p.dir)?;
+    let mut found = sources::discover_all(paths)?;
     if found.tables.is_empty() {
         return Err(format!(
             "{}: no tables Brightfield can read{}",
-            path.display(),
+            first.display(),
             skipped_note(&found)
         ));
     }
@@ -277,27 +305,19 @@ pub fn add_source_with(
     for table in &mut found.tables {
         table.name = unclashed(&table.name, &mut taken);
     }
+    let untitled = p.sources.tables.is_empty() && still_untitled(&p.dir);
 
-    let mut warnings = Vec::new();
-    if p.sources.tables.is_empty() && still_untitled(&p.dir) {
-        let moved = crate::rename::rename_claiming(&p.dir, &slug_of(path))?;
-        p.dir = moved.to;
-        warnings = moved.warnings;
-    }
-
-    let manifest_path = p.dir.join("arcform.yaml");
-    let manifest_before = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
-    let sources_path = p.dir.join(SOURCES_FILE);
-    let sources_before = std::fs::read_to_string(&sources_path).ok();
+    let before = FilesBefore::take(&p.dir)?;
     let mut next = p.clone();
     next.profiles.clear();
     next.sources.tables.extend(found.tables.iter().cloned());
     next.sources.skipped.extend(found.skipped);
-    let mut load_files: Vec<PathBuf> = Vec::new();
     let added = (|| -> Result<(), String> {
-        let mut manifest: serde_yaml::Value = serde_yaml::from_str(&manifest_before)
+        let manifest_path = next.dir.join("arcform.yaml");
+        let text = std::fs::read_to_string(&manifest_path)
             .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        let mut manifest: serde_yaml::Value =
+            serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", manifest_path.display()))?;
         let map = manifest
             .as_mapping_mut()
             .ok_or_else(|| format!("{}: not a manifest", manifest_path.display()))?;
@@ -323,7 +343,6 @@ pub fn add_source_with(
                     .map_err(|e| format!("{}: {e}", parent.display()))?;
             }
             std::fs::write(&to, sql).map_err(|e| format!("{file}: {e}"))?;
-            load_files.push(to);
             steps.insert(
                 at,
                 serde_yaml::from_str(&format!(
@@ -364,19 +383,138 @@ pub fn add_source_with(
         run_loads(&next, runner)
     })();
     if let Err(e) = added {
-        let _ = std::fs::write(&manifest_path, &manifest_before);
-        if let Some(before) = &sources_before {
-            let _ = std::fs::write(&sources_path, before);
-        }
-        for file in &load_files {
-            let _ = std::fs::remove_file(file);
-        }
+        before.restore();
         return Err(e);
+    }
+    before.discard();
+
+    let mut warnings = Vec::new();
+    if untitled {
+        match crate::rename::rename_claiming(&next.dir, &slug_of(first)) {
+            Ok(moved) => {
+                next.dir = moved.to;
+                warnings = moved.warnings;
+            }
+            Err(e) => warnings.push(format!(
+                "It keeps the name {}, as it could not be renamed after its source: {e}",
+                next.dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            )),
+        }
     }
     // The Protocol has a source, so it is no longer waiting for one to name it.
     let _ = std::fs::remove_file(next.dir.join(UNTITLED_FILE));
     *p = next;
     Ok(warnings)
+}
+
+/// The files an add may write in a Protocol folder, as they were before it, so a failed add puts
+/// the folder back: the manifest, the record of sources, the model file and the Untitled record
+/// byte for byte, whether or not they read as what they should, and every file under `models/` and
+/// `packages/`, with any file made there since taken away. The profile's snapshots, which may be
+/// large, are not read: their folder is set aside under another name and put back.
+struct FilesBefore {
+    dir: PathBuf,
+    files: Vec<(PathBuf, Vec<u8>)>,
+    profile_aside: Option<PathBuf>,
+}
+
+/// The files at the top of the folder an add may write.
+const ADD_WRITES_FILES: [&str; 4] = ["arcform.yaml", SOURCES_FILE, MODEL_FILE, UNTITLED_FILE];
+
+/// The folders an add may write files in, read whole.
+const ADD_WRITES_FOLDERS: [&str; 2] = ["models", "packages"];
+
+impl FilesBefore {
+    fn take(dir: &Path) -> Result<Self, String> {
+        let mut files = Vec::new();
+        let mut paths: Vec<PathBuf> = ADD_WRITES_FILES.iter().map(|f| dir.join(f)).collect();
+        for folder in ADD_WRITES_FOLDERS {
+            paths.extend(files_under(&dir.join(folder)));
+        }
+        for path in paths {
+            match std::fs::read(&path) {
+                Ok(bytes) => files.push((path, bytes)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("{}: {e}", path.display())),
+            }
+        }
+        let profile = dir.join(PROFILE_DIR);
+        let profile_aside = if profile.exists() {
+            let aside = dir.join(format!("{PROFILE_DIR}.before-add"));
+            let _ = std::fs::remove_dir_all(&aside);
+            std::fs::rename(&profile, &aside).map_err(|e| format!("{}: {e}", profile.display()))?;
+            Some(aside)
+        } else {
+            None
+        };
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            files,
+            profile_aside,
+        })
+    }
+
+    /// Put the folder back as it was.
+    fn restore(self) {
+        let kept: HashSet<&Path> = self.files.iter().map(|(p, _)| p.as_path()).collect();
+        let mut now: Vec<PathBuf> = ADD_WRITES_FILES.iter().map(|f| self.dir.join(f)).collect();
+        for folder in ADD_WRITES_FOLDERS {
+            now.extend(files_under(&self.dir.join(folder)));
+        }
+        for path in now {
+            if !kept.contains(path.as_path()) {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+        for (path, bytes) in &self.files {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(e) = std::fs::write(path, bytes) {
+                eprintln!(
+                    "could not put {} back after a failed add: {e}",
+                    path.display()
+                );
+            }
+        }
+        let profile = self.dir.join(PROFILE_DIR);
+        let _ = std::fs::remove_dir_all(&profile);
+        if let Some(aside) = &self.profile_aside {
+            if let Err(e) = std::fs::rename(aside, &profile) {
+                eprintln!(
+                    "could not put {} back after a failed add: {e}",
+                    profile.display()
+                );
+            }
+        }
+    }
+
+    /// The add went through: what was set aside goes.
+    fn discard(self) {
+        if let Some(aside) = &self.profile_aside {
+            let _ = std::fs::remove_dir_all(aside);
+        }
+    }
+}
+
+/// Every file under `dir`, at any depth; none when it is missing.
+fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(t) if t.is_dir() => found.extend(files_under(&path)),
+            Ok(_) => found.push(path),
+            Err(_) => {}
+        }
+    }
+    found
 }
 
 /// `model` with the join `join` in it as the analyst's: a join it has already, either way round,

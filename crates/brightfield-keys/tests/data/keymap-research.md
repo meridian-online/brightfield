@@ -40,6 +40,7 @@ by the provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic /
 | `reload-data` | `cmd-shift-r` | 1 / 4 / 5 | cmd-shift-r = hard reload (browser convention); distinct chord from cmd-r's spec reload, since this re-reads the DATA file rather than the YAML |
 | `open-home` | `cmd-shift-h` | 3 / 5 / 4 | cmd-shift-h = home; free of the editor chord set; keeps your place under Continue |
 | `open` | `cmd-o` | 3 / 5 / 5 | cmd-o = open (universal Mac convention); global, so it reaches from any pane and a focused text field, where no field reads the chord; raises the door's Open picker |
+| `new-protocol` | `cmd-n` | 2 / 5 / 5 | cmd-n = new (universal Mac convention); global, so it reaches from any pane and a focused text field, where no field reads the chord; asks where to make the Protocol, then makes an empty one there |
 | `quit` | `cmd-q` | 2 / 5 / 5 | cmd-q = quit (universal Mac convention); global, asks the close question over a draft |
 | `toggle-presentation` | `p` | 2 / 3 / 3 | `p` = present (shipped fixed point) |
 | `save-spec` | `cmd-s` | 3 / 5 / 5 | cmd-s = save (universal; shipped, editor-scoped) |

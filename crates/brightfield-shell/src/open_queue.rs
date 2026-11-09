@@ -29,6 +29,9 @@ pub enum OpenRequest {
     Link(String),
     /// A file or folder to add as a source to the Protocol open now.
     AddSource(PathBuf),
+    /// Several files or folders handed over by one gesture, added together as sources to the
+    /// Protocol open now.
+    AddSources(Vec<PathBuf>),
 }
 
 /// Where a path goes when it is opened.

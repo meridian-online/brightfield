@@ -2384,6 +2384,8 @@ pub enum Leaving {
     /// Renaming the Protocol or moving its folder, after which the window opens it again at its
     /// new path: the folder cannot move under edits the window holds and no file does.
     Move(Move),
+    /// Making an empty Protocol in this folder, as New Protocol does, and opening it.
+    Make(PathBuf),
 }
 
 /// **A change to where the open Protocol's folder is**: its name, or the folder it is in. Each is
@@ -2435,6 +2437,14 @@ const LEFT_BEHIND_BANNER: &str = "move-protocol-left-behind";
 /// recorded place, or its working database.
 pub const NOT_FOLLOWED_BANNER: &str = "move-protocol-not-followed";
 
+/// The banner that says sources were not added to the Protocol open, because Brightfield did not
+/// make it.
+pub const ADD_SOURCE_REFUSED_BANNER: &str = "add-source-refused";
+
+/// What that banner says.
+pub const ADD_SOURCE_REFUSED: &str = "Sources are added to Protocols Brightfield made, and this \
+     one was not. Open the file on its own to make a Protocol of it.";
+
 /// The banner that says New Protocol could not make the Protocol, and why.
 pub const NEW_PROTOCOL_BANNER: &str = "new-protocol";
 
@@ -2463,6 +2473,10 @@ const NOT_OPENED_WHILE_CLOSING_BANNER: &str = "not-opened-while-closing";
 /// The `quit` verb's longname: the registry's, spelled once here for the
 /// window's key and dispatch.
 pub const QUIT: &str = "quit";
+
+/// The `new-protocol` verb's longname: the registry's, spelled once here for the window's key and
+/// the palette.
+pub const NEW_PROTOCOL: &str = "new-protocol";
 
 /// The verb that raises the open picker, Cmd+O by the registry.
 const OPEN_VERB: &str = "open";
@@ -2495,6 +2509,7 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         }
         "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
         "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
+        "cmd-n" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)),
         "cmd-s" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)),
         "cmd-q" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Q)),
         "f2" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F2)),
@@ -3298,6 +3313,9 @@ pub struct MeridianApp {
     /// The `quit` keystroke token, read off the registry at boot — same rule as
     /// [`Self::home_binding`].
     quit_binding: Option<&'static str>,
+    /// The `new-protocol` keystroke token, read off the registry at boot — same rule as
+    /// [`Self::home_binding`].
+    new_protocol_binding: Option<&'static str>,
     /// The `toggle-outline-rail` keystroke token, read off the registry at
     /// boot — same rule as [`Self::home_binding`]: the shell wires whichever
     /// binding the registry declares, and does not invent one of its own.
@@ -3760,6 +3778,10 @@ impl MeridianApp {
             rename_binding: brightfield_keys::registry()
                 .iter()
                 .find(|v| v.longname == RENAME_PROTOCOL)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            new_protocol_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == NEW_PROTOCOL)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             quit_binding: brightfield_keys::registry()
                 .iter()
@@ -5497,6 +5519,20 @@ impl MeridianApp {
             if let Some(request) = crate::open_queue::OpenRequest::of_paths(dropped) {
                 self.open_queue.push(request);
             }
+        } else if self.empty_protocol.is_some() {
+            // Files dropped on a Protocol with no sources yet are added to it, the files of one
+            // drop together, as its canvas says.
+            let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
+                i.raw
+                    .dropped_files
+                    .iter()
+                    .filter_map(|f| f.path.clone())
+                    .collect()
+            });
+            if !dropped.is_empty() {
+                self.open_queue
+                    .push(crate::open_queue::OpenRequest::AddSources(dropped));
+            }
         }
         // An open that waited for the frame before this one to draw what it is fetching: that
         // frame has been presented, so the open runs now.
@@ -6954,6 +6990,7 @@ impl MeridianApp {
         // F2, and a place field entered this frame: a rename or move reopens the Protocol, so it
         // waits until every pane has drawn.
         self.rename_key(&ctx);
+        self.new_protocol_key(&ctx);
         if std::mem::take(&mut self.location_pick_requested) && self.dialogs_allowed {
             if let Some(parent) = self
                 .open_protocol_dir()
@@ -6979,7 +7016,7 @@ impl MeridianApp {
                 .set_directory(crate::protocols_dir::root())
                 .pick_folder()
             {
-                self.make_new_protocol_in(&ctx, &chosen);
+                self.leave(&ctx, Leaving::Make(chosen));
             }
         }
         if std::mem::take(&mut self.add_source_pick_requested) && self.dialogs_allowed {
@@ -8437,6 +8474,20 @@ impl MeridianApp {
                 // inside it takes the press as well.
                 let enter =
                     ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                // The arrows move the choice, as they move a picker's.
+                let (down, up) = ctx.input_mut(|i| {
+                    (
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                    )
+                });
+                let last = sheet.places.len().saturating_sub(1);
+                if down {
+                    sheet.selected = (sheet.selected + 1).min(last);
+                }
+                if up {
+                    sheet.selected = sheet.selected.saturating_sub(1);
+                }
                 let chrome = ModalChrome::new()
                     .title("New Protocol")
                     .enter_hint("make")
@@ -8475,7 +8526,7 @@ impl MeridianApp {
             self.answer_close_question(ctx, answer);
         }
         match make_in {
-            Some(NewProtocolPlace::Folder { dir, .. }) => self.make_new_protocol_in(ctx, &dir),
+            Some(NewProtocolPlace::Folder { dir, .. }) => self.leave(ctx, Leaving::Make(dir)),
             Some(NewProtocolPlace::Other) => self.new_protocol_pick_requested = true,
             None => {}
         }
@@ -9004,7 +9055,9 @@ impl MeridianApp {
                     self.stop_waiting_for_runs();
                     self.close_window(ctx);
                 }
-                Leaving::Home | Leaving::Move(_) => self.say_waiting_for_runs(ctx),
+                Leaving::Home | Leaving::Move(_) | Leaving::Make(_) => {
+                    self.say_waiting_for_runs(ctx);
+                }
                 Leaving::Open(request) => {
                     self.say_not_opened_while_closing(&request);
                     self.say_waiting_for_runs(ctx);
@@ -9035,6 +9088,10 @@ impl MeridianApp {
             question.before = match &to {
                 Leaving::Move(Move::Rename(_)) => crate::overlays::AskedBefore::Renaming,
                 Leaving::Move(Move::Relocate(_)) => crate::overlays::AskedBefore::Moving,
+                Leaving::Open(
+                    crate::open_queue::OpenRequest::AddSource(_)
+                    | crate::open_queue::OpenRequest::AddSources(_),
+                ) => crate::overlays::AskedBefore::AddingSource,
                 _ => crate::overlays::AskedBefore::Leaving,
             };
         }
@@ -9050,6 +9107,7 @@ impl MeridianApp {
             Leaving::Quit => self.close_once_runs_land(ctx),
             Leaving::Open(request) => self.take_open_request(ctx, request),
             Leaving::Move(to) => self.move_open_protocol(ctx, &to),
+            Leaving::Make(parent) => self.make_new_protocol_in(ctx, &parent),
         }
     }
 
@@ -9103,6 +9161,13 @@ impl MeridianApp {
             }),
             OpenRequest::Link(link) => link.clone(),
             OpenRequest::AddSource(path) => display_name(path),
+            OpenRequest::AddSources(paths) => paths.first().map_or_else(String::new, |p| {
+                if paths.len() > 1 {
+                    format!("{} and {} more", display_name(p), paths.len() - 1)
+                } else {
+                    display_name(p)
+                }
+            }),
         };
         self.notifications.raise(
             Notification::new(
@@ -9951,6 +10016,10 @@ impl MeridianApp {
                 }
                 // rename-protocol is the window's as F2 is: chosen from a palette, it opens the
                 // locator band's name field over the Protocol the window holds.
+                // new-protocol is the window's as Cmd+N is: chosen from a palette, it asks where.
+                Request::Verb(verb) if verb.as_str() == NEW_PROTOCOL => {
+                    self.ask_new_protocol();
+                }
                 Request::Verb(verb) if verb.as_str() == RENAME_PROTOCOL => {
                     self.open_place_field(PlaceField::Name);
                     ctx.request_repaint();
@@ -11048,16 +11117,21 @@ impl MeridianApp {
         }
     }
 
-    /// Carry out `request`, asking the close question first when it would replace a Protocol
-    /// with a draft pending ([`Self::leave`]). A request that does not replace the document, a
-    /// link or a source to add, is carried out at once.
+    /// Carry out `request`, asking the close question first when it would replace what the
+    /// window shows over a draft ([`Self::leave`]): another Protocol, or the canvas a source is
+    /// added under. A link is carried out at once.
     fn take_or_ask(&mut self, ctx: &egui::Context, request: crate::open_queue::OpenRequest) {
         use crate::open_queue::OpenRequest;
         match request {
-            OpenRequest::Path(_) | OpenRequest::Paths(_) => {
+            // Adding a source keeps the Protocol open, but replaces what the canvas shows, so a
+            // draft is asked about first, as before a rename.
+            OpenRequest::Path(_)
+            | OpenRequest::Paths(_)
+            | OpenRequest::AddSource(_)
+            | OpenRequest::AddSources(_) => {
                 self.leave(ctx, Leaving::Open(request));
             }
-            OpenRequest::Link(_) | OpenRequest::AddSource(_) => {
+            OpenRequest::Link(_) => {
                 self.take_open_request(ctx, request);
             }
         }
@@ -11127,7 +11201,8 @@ impl MeridianApp {
             OpenRequest::Link(link) => {
                 self.say_open_failed(ctx, &link, "This build cannot open a link yet.".to_string())
             }
-            OpenRequest::AddSource(path) => self.add_source(ctx, &path),
+            OpenRequest::AddSource(path) => self.add_sources(ctx, &[path]),
+            OpenRequest::AddSources(paths) => self.add_sources(ctx, &paths),
         }
     }
 
@@ -11359,27 +11434,50 @@ impl MeridianApp {
         ctx.request_repaint();
     }
 
-    /// **Add what `path` holds to the open Protocol as a source**, kept at once: it is not leaving
-    /// the Protocol, so nothing is asked first and nothing is left unsaved. The first source names
-    /// a Protocol New Protocol made, unless the analyst has named it, and its folder is renamed;
-    /// one source shows its grid and dashboard, and a second shows the model. With no Protocol
-    /// open, `path` is opened as a new Protocol, as an open of it would be.
-    fn add_source(&mut self, ctx: &egui::Context, path: &std::path::Path) {
-        // On the door nothing is open to add to, though the Protocol last open may still be held
-        // behind it.
-        let held = (!self.front_door_is_live())
-            .then(|| {
-                self.empty_protocol
-                    .clone()
-                    .or_else(|| self.own_protocol.clone())
-                    .or_else(|| self.model.as_ref().map(|m| m.doc.protocol.clone()))
-            })
-            .flatten();
-        let Some(mut protocol) = held else {
-            self.open_path(ctx, &path.to_string_lossy());
+    /// **Add what `paths` hold to the open Protocol as sources**, together, kept at once. Asked
+    /// for through [`Self::take_or_ask`], which asks the close question first over a draft, since
+    /// the canvas is replaced. The first sources name a Protocol New Protocol made, unless the
+    /// analyst has named it, and its folder is renamed; one source shows its grid and dashboard,
+    /// and a second shows the model.
+    ///
+    /// With the door showing, `paths` open as a new Protocol, as an open of them would. Sources
+    /// are added only to Protocols Brightfield made; over any other, a banner says so and nothing
+    /// is added. A Protocol whose folder has gone says so, as every write into it does.
+    fn add_sources(&mut self, ctx: &egui::Context, paths: &[PathBuf]) {
+        let Some(first) = paths.first() else {
             return;
         };
-        let chosen = path.to_string_lossy().into_owned();
+        // On the door nothing is open to add to, though the Protocol last open may still be held
+        // behind it.
+        if self.front_door_is_live() {
+            let installed = self
+                .installed_extensions
+                .clone()
+                .unwrap_or_else(crate::data_file::installed_extensions);
+            self.open_paths_knowing(ctx, paths.to_vec(), &installed);
+            return;
+        }
+        let held = self
+            .empty_protocol
+            .clone()
+            .or_else(|| self.own_protocol.clone())
+            .or_else(|| self.model.as_ref().map(|m| m.doc.protocol.clone()));
+        let chosen = first.to_string_lossy().into_owned();
+        let Some(mut protocol) = held else {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(ADD_SOURCE_REFUSED_BANNER),
+                    Severity::Warning,
+                    "Sources were not added",
+                )
+                .body(ADD_SOURCE_REFUSED.to_string()),
+            );
+            ctx.request_repaint();
+            return;
+        };
+        if self.refuse_if_the_folder_is_gone(ctx) {
+            return;
+        }
         if self.run_outstanding() {
             self.say_open_failed(
                 ctx,
@@ -11401,20 +11499,7 @@ impl MeridianApp {
         let canonical = was.canonicalize().ok();
         let discoverer = crate::discovery::Dovetail::new(&runner);
         let added =
-            crate::own_files::add_source_with(&mut protocol, path, &[], &runner, &discoverer);
-        // The first source renamed the folder: what remembers the Protocol follows it, whether or
-        // not the rest of the add went through, since the rename is kept either way.
-        if protocol.dir != was {
-            let layout = self.layout.live_mut();
-            layout.repoint(&was, &protocol.dir);
-            if let Some(canonical) = canonical.filter(|c| *c != was) {
-                layout.repoint(&canonical, &protocol.dir);
-            }
-            self.forget_door_listing();
-            if let Some(empty) = self.empty_protocol.as_mut() {
-                empty.dir.clone_from(&protocol.dir);
-            }
-        }
+            crate::own_files::add_sources_with(&mut protocol, paths, &[], &runner, &discoverer);
         let warnings = match added {
             Ok(warnings) => warnings,
             Err(e) => {
@@ -11422,6 +11507,24 @@ impl MeridianApp {
                 return;
             }
         };
+        self.notifications
+            .dismiss(NotificationId::new(ADD_SOURCE_REFUSED_BANNER));
+        // The first sources renamed the folder: what remembers the Protocol follows it.
+        if protocol.dir != was {
+            let layout = self.layout.live_mut();
+            layout.repoint(&was, &protocol.dir);
+            if let Some(canonical) = canonical.filter(|c| *c != was) {
+                layout.repoint(&canonical, &protocol.dir);
+            }
+            self.forget_door_listing();
+        }
+        // The window holds the Protocol as it now is before opening its canvas, so an open that
+        // fails leaves it holding the Protocol on disk, not the one from before the add.
+        if self.empty_protocol.is_some() {
+            self.empty_protocol = Some(protocol.clone());
+        } else if self.own_protocol.is_some() {
+            self.own_protocol = Some(protocol.clone());
+        }
         self.notifications
             .dismiss(NotificationId::new(NOT_FOLLOWED_BANNER));
         self.say_not_followed(&Move::Rename(display_name(&protocol.dir)), &warnings);
@@ -11437,9 +11540,14 @@ impl MeridianApp {
                 }
             }
         }
+        let what = if paths.len() > 1 {
+            format!("{} and {} more", display_name(first), paths.len() - 1)
+        } else {
+            display_name(first)
+        };
         self.toasts.push(Toast::new(
             Severity::Success,
-            format!("Added {} to {name}", display_name(path)),
+            format!("Added {what} to {name}"),
         ));
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         ctx.request_repaint();
@@ -11520,6 +11628,21 @@ impl MeridianApp {
             text,
             focus: true,
         });
+    }
+
+    /// Cmd+N: New Protocol's question, where to make it, from anywhere in the window. No overlay
+    /// may own the keyboard.
+    fn new_protocol_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if self
+            .new_protocol_binding
+            .is_some_and(|t| consume_token(ctx, t))
+        {
+            self.ask_new_protocol();
+            ctx.request_repaint();
+        }
     }
 
     /// F2: with the front door showing, rename the row under the pointer; with a Protocol open,
