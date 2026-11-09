@@ -709,12 +709,19 @@ fn without_step(manifest: &str, name: &str) -> String {
 /// more before Brightfield reads the manifest again.
 #[cfg(unix)]
 fn injecting(dir: &Path, inject: &Path, after: &str) -> Runner {
+    injecting_with(dir, inject, "", after)
+}
+
+/// [`injecting`], with `first` run as shell before `inject` is put in place, such as an agent's
+/// own arc edit.
+#[cfg(unix)]
+fn injecting_with(dir: &Path, inject: &Path, first: &str, after: &str) -> Runner {
     use std::os::unix::fs::PermissionsExt;
     let script = dir.join("injecting.sh");
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\nedit=\ncase \"$*\" in\n  *edit-protocol*) if [ -f '{inject}' ]; then cp '{inject}' arcform.yaml; rm '{inject}'; edit=1; fi;;\nesac\n'{runner}' \"$@\"\nstatus=$?\nif [ -n \"$edit\" ]; then\n{after}  :\nfi\nexit $status\n",
+            "#!/bin/sh\nedit=\ncase \"$*\" in\n  *edit-protocol*) if [ -f '{inject}' ]; then\n{first}    cp '{inject}' arcform.yaml; rm '{inject}'; edit=1; fi;;\nesac\n'{runner}' \"$@\"\nstatus=$?\nif [ -n \"$edit\" ]; then\n{after}  :\nfi\nexit $status\n",
             runner = env!("CARGO_BIN_EXE_brightfield-shell"),
             inject = inject.display()
         ),
@@ -1052,6 +1059,126 @@ fn a_manifest_that_no_longer_loads_after_the_delete_lists_no_steps() {
     assert_eq!(
         said,
         format!("The Protocol changed while {step} was being removed, and it could not be put back automatically. The copy from before is in Versions.")
+    );
+    assert!(model.is_file(), "no SQL file is deleted");
+    assert!(win.marked(), "the removal is still a draft");
+}
+
+/// The most entries arc's history keeps for one Protocol before it prunes the oldest.
+const HISTORY_BOUND: usize = 50;
+
+/// The ids in the Protocol's history in `dir`, oldest first, through the real runner.
+fn history_ids(dir: &Path) -> Vec<String> {
+    let runner = Runner::at(PathBuf::from(env!("CARGO_BIN_EXE_brightfield-shell")));
+    let out = brightfield_shell::run::arc_with_args(&runner, dir, &["history", "list", "--json"]);
+    assert!(out.succeeded, "the history lists: {}", out.stderr);
+    serde_json::from_str::<Vec<serde_json::Value>>(&out.stdout)
+        .expect("the history list is JSON")
+        .iter()
+        .filter_map(|e| {
+            e.get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// Fill the history of the window's Protocol to arc's bound, so the delete's own entries prune
+/// the oldest: a step `tail_note` at the end, then edits to its command through arc until the
+/// history is full. Answers the `steps[...]` path of that command.
+fn fill_history(win: &mut Window) -> String {
+    let at = win.manifest_steps().len();
+    let with_tail = format!("{}- name: tail_note\n  command: echo 0\n", win.manifest());
+    std::fs::write(win.dir().join("arcform.yaml"), &with_tail).expect("the manifest writes");
+    let command = format!("steps[{at}].command");
+    let runner = Runner::at(PathBuf::from(env!("CARGO_BIN_EXE_brightfield-shell")));
+    for i in 1..=HISTORY_BOUND {
+        let out = brightfield_shell::run::arc_with_args(
+            &runner,
+            &win.dir(),
+            &["edit-protocol", "replace", &command, &format!("echo {i}")],
+        );
+        assert!(out.succeeded, "edit {i}: {}", out.stderr);
+    }
+    assert_eq!(
+        history_ids(&win.dir()).len(),
+        HISTORY_BOUND,
+        "the history is full"
+    );
+    win.settle();
+    command
+}
+
+#[cfg(unix)]
+#[test]
+fn a_wrong_step_removed_is_put_back_when_the_history_is_full() {
+    let shims = scratch().join("shims").join("full");
+    std::fs::create_dir_all(&shims).expect("a shim folder");
+    let inject = shims.join("agent.yaml");
+    let mut win = Window::opened_with("remove_full", injecting(&shims, &inject, ""));
+    let step = win.saved_grouping();
+    let model = win.model_file(&step);
+    fill_history(&mut win);
+    let changed = with_step_before(
+        &win.manifest(),
+        &step,
+        &["name: agent_note", "command: echo agent"],
+    );
+    std::fs::write(&inject, &changed).expect("the agent's manifest writes");
+    win.select_made_by(&step);
+    win.d_d();
+
+    win.cmd_s();
+
+    assert!(!inject.exists(), "the agent's write happened");
+    let said = win
+        .banner("Could not remove the step")
+        .unwrap_or_else(|| panic!("no banner said why: {}", win.said()));
+    assert_eq!(said, brightfield_shell::operation::CHANGED_MEANWHILE);
+    assert_eq!(win.manifest(), changed, "the manifest is the agent's again");
+    assert!(model.is_file(), "no SQL file is deleted");
+    assert!(win.marked(), "the removal is still a draft");
+}
+
+#[cfg(unix)]
+#[test]
+fn another_arc_edit_meanwhile_is_not_put_back_when_the_history_is_full() {
+    let shims = scratch().join("shims").join("full_other");
+    std::fs::create_dir_all(&shims).expect("a shim folder");
+    let inject = shims.join("agent.yaml");
+    let mut win = Window::opened_with("remove_full_other", injecting(&shims, &inject, ""));
+    let step = win.saved_grouping();
+    let model = win.model_file(&step);
+    let command = fill_history(&mut win);
+    // Before arc's delete, an agent writes the file and then makes an edit of its own through
+    // arc, which records two entries; its manifest then goes in place, and arc's delete records
+    // two more.
+    let first = format!(
+        "    echo '# the agent' >> arcform.yaml\n    '{runner}' edit-protocol replace '{command}' 'echo agent' >/dev/null\n",
+        runner = env!("CARGO_BIN_EXE_brightfield-shell"),
+    );
+    // The same script, written again with the agent's edit in it, now that its path is known.
+    injecting_with(&shims, &inject, &first, "");
+    let changed = with_step_before(
+        &win.manifest(),
+        &step,
+        &["name: agent_note", "command: echo agent"],
+    );
+    std::fs::write(&inject, &changed).expect("the agent's manifest writes");
+    win.select_made_by(&step);
+    win.d_d();
+
+    win.cmd_s();
+
+    assert!(!inject.exists(), "the agent's write happened");
+    let said = win
+        .banner(brightfield_shell::window::REMOVAL_NOT_PUT_BACK)
+        .unwrap_or_else(|| panic!("no banner said it was not put back: {}", win.said()));
+    assert!(said.contains("could not be put back"), "{said}");
+    assert!(
+        !win.manifest_steps().contains(&"agent_note".to_string()),
+        "the manifest is left as arc's delete wrote it: {:?}",
+        win.manifest_steps()
     );
     assert!(model.is_file(), "no SQL file is deleted");
     assert!(win.marked(), "the removal is still a draft");

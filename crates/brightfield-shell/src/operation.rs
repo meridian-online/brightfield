@@ -454,10 +454,10 @@ fn history_ids(runner: &Runner, dir: &Path) -> Option<Vec<String>> {
 /// **Put `arcform.yaml` back as arc found it before the delete**, through `arc history restore`,
 /// which checkpoints what it replaces. Answers whether the manifest was put back.
 ///
-/// Only when the history holds the ids it held before the delete (`before`) and exactly two more,
-/// arc's checkpoint of what it read and then its save of what it wrote, and the file is still
-/// byte-identical to that save: any other history or file means someone else wrote too, and
-/// nothing is restored. The restore is from the checkpoint.
+/// Only when the history shows the delete's own two entries and no other new one
+/// ([`delete_entries`]), and the file is still byte-identical to the newer of them, arc's save of
+/// what it wrote: any other history or file means someone else wrote too, and nothing is restored.
+/// The restore is from the older, arc's checkpoint of what it read.
 fn restore_before_delete(runner: &Runner, dir: &Path, before: Option<&[String]>) -> bool {
     let Some(before) = before else {
         return false;
@@ -465,7 +465,7 @@ fn restore_before_delete(runner: &Runner, dir: &Path, before: Option<&[String]>)
     let Some(ids) = history_ids(runner, dir) else {
         return false;
     };
-    let Some([checkpoint, save]) = ids.strip_prefix(before) else {
+    let Some((checkpoint, save)) = delete_entries(before, &ids) else {
         return false;
     };
     let saved = arc_with_args(runner, dir, &["history", "show", save]);
@@ -479,6 +479,19 @@ fn restore_before_delete(runner: &Runner, dir: &Path, before: Option<&[String]>)
         return false;
     }
     arc_with_args(runner, dir, &["history", "restore", checkpoint]).succeeded
+}
+
+/// **The two history entries a single edit added**, older then newer, when the history read
+/// before it was `before` and is `ids` now: exactly two ids are new, they are the last two, and the
+/// ids before them are a suffix of `before`. arc keeps a bounded history and prunes it from the
+/// oldest end, so the entries an edit pushed out are missing from the front, never from the middle.
+/// `None` when the history shows anything else, such as another edit's entries as well.
+fn delete_entries<'a>(before: &[String], ids: &'a [String]) -> Option<(&'a str, &'a str)> {
+    let [kept @ .., older, newer] = ids else {
+        return None;
+    };
+    let new = |id: &String| !before.contains(id);
+    (new(older) && new(newer) && before.ends_with(kept)).then_some((older, newer))
 }
 
 /// The file `relative` names inside `dir`, when it is a path inside it written relative to it:
@@ -576,5 +589,53 @@ impl Descriptions {
             Entry::Answered(Err(e)) => DescriptionState::Failed(e),
             Entry::Asked(_) => DescriptionState::Pending,
         }
+    }
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use super::*;
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|n| (*n).to_string()).collect()
+    }
+
+    #[test]
+    fn a_single_edits_two_entries_are_found_after_the_history_is_pruned() {
+        let before = ids(&["a", "b", "c", "d"]);
+        // Nothing pruned.
+        assert_eq!(
+            delete_entries(&before, &ids(&["a", "b", "c", "d", "x", "y"])),
+            Some(("x", "y"))
+        );
+        // The bound reached: the oldest two pruned to make room.
+        assert_eq!(
+            delete_entries(&before, &ids(&["c", "d", "x", "y"])),
+            Some(("x", "y"))
+        );
+        // A history that started empty.
+        assert_eq!(delete_entries(&[], &ids(&["x", "y"])), Some(("x", "y")));
+    }
+
+    #[test]
+    fn any_other_history_shows_no_single_edit() {
+        let before = ids(&["a", "b", "c", "d"]);
+        // Another edit's entries too, with and without pruning.
+        assert_eq!(
+            delete_entries(&before, &ids(&["a", "b", "c", "d", "p", "q", "x", "y"])),
+            None
+        );
+        assert_eq!(
+            delete_entries(&before, &ids(&["c", "d", "p", "q", "x", "y"])),
+            None
+        );
+        // One entry new, or none.
+        assert_eq!(delete_entries(&before, &ids(&["b", "c", "d", "y"])), None);
+        assert_eq!(delete_entries(&before, &before), None);
+        // An entry gone from the middle is not pruning.
+        assert_eq!(
+            delete_entries(&before, &ids(&["a", "c", "d", "x", "y"])),
+            None
+        );
     }
 }
