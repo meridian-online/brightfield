@@ -177,12 +177,13 @@ jobs:
     # first packed by the figures refreshed from run 42670024449, carried
     # about 38 minutes of default-thread tests on default-1 against the
     # figures' 28, and that shard finished its last step exactly at the
-    # ceiling and was cancelled, so there are five. Run 42712499711, the first
-    # whose default-thread shards all ran their tests to the end, measured
-    # every target again; by those figures five shards carry about 25
-    # minutes of tests each, where four would carry 32. A shard also pays 10
-    # to 17 minutes before its first test on that run, most of it compiling
-    # the test targets, so a shard of that size finishes at 36 to 43 minutes.
+    # ceiling and was cancelled, so there were five. Run 42712499711, the
+    # first whose default-thread shards all ran their tests to the end,
+    # measured every target again; by those figures five shards carry about
+    # 25 minutes of tests each and six about 21. A shard also pays 10 to 17
+    # minutes before its first test on that run, most of it compiling the
+    # test targets, so a five-shard split finishes at 36 to 43 minutes, too
+    # close to the ceiling, and there are six, finishing at about 31 to 38.
     # Four measures set the figure:
     #
     #   - The slowest warm shard measured was cancelled at its old 27-minute
@@ -230,6 +231,8 @@ jobs:
           - name: default-4
             timeout: 45
           - name: default-5
+            timeout: 45
+          - name: default-6
             timeout: 45
 
     # The shard names itself to the command in these four variables; with
@@ -558,7 +561,7 @@ jobs:
         run: cargo xtask ci --step test-default
 
       # THE PIN-STALENESS CHECK AND THE CONFORMANCE SCOREBOARD run after the
-      # suite on the last of the default-threads shards, `default-5` today, and
+      # suite on the last of the default-threads shards, `default-6` today, and
       # on no other: the command picks that shard from its place in the matrix,
       # so adding or removing a shard moves them to the new last one and
       # neither is ever left without a shard. On the other shards each step
