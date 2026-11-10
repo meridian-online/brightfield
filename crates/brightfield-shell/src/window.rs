@@ -9531,14 +9531,16 @@ impl MeridianApp {
     }
 
     /// **Stop waiting for runs, for a close or quit made during the wait**, keeping as a version
-    /// any edit made since the quit was answered: the analyst asked to leave now, so the work is
+    /// whatever unsaved work the window holds: the analyst asked to leave now, so the work is
     /// kept rather than asked about, and a banner says so
-    /// (`a_second_quit_keeps_the_edits_made_while_waiting`). Edits the quit was answered over were
-    /// already saved or kept by that answer.
+    /// (`a_second_quit_keeps_the_edits_made_while_waiting`). It is kept whether or not it changed
+    /// since the quit was answered, since the question's lines for the YAML editor and the model
+    /// file name the edit and not its text, so typing more in either would read as no change
+    /// (`a_second_quit_keeps_yaml_typed_while_waiting`). Work the answer already kept is kept
+    /// again, as a second version.
     fn keep_what_changed_while_waiting(&mut self) {
-        let answered_over = self.close_after_runs.clone();
         self.stop_waiting_for_runs();
-        if !self.has_unsaved_work() || answered_over.as_ref() == Some(&self.unsaved_now()) {
+        if !self.has_unsaved_work() {
             return;
         }
         let said = match self.keep_unsaved() {

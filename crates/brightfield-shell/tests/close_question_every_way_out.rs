@@ -746,6 +746,46 @@ fn a_second_quit_keeps_the_edits_made_while_waiting() {
 }
 
 #[test]
+fn a_second_quit_keeps_yaml_typed_while_waiting() {
+    let (mut win, held) = waiting_on_a_held_run("quit_twice_yaml");
+    let spec = win
+        .app
+        .chart_doc()
+        .spec_path
+        .clone()
+        .expect("the editor's buffer has a file");
+    win.click_into_the_editor();
+    win.type_text("# typed before the quit\n");
+    win.let_go_of_the_keyboard();
+    win.cmd_q();
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    assert!(!win.closed && win.says_waiting(), "{}", win.said());
+
+    // More typing in the same buffer while the quit waits: the question's line for it is the
+    // same, though its text is not.
+    win.click_into_the_editor();
+    win.type_text("# typed while waiting\n");
+    win.let_go_of_the_keyboard();
+    win.forget_sent();
+    win.cmd_q();
+
+    assert!(win.closed, "a second quit closes at once: {}", win.said());
+    held.release();
+    win.until("the held run never finished", |w| !w.app.run_outstanding());
+    let store = brightfield_protocol::HistoryStore::At(scratch().join("versions"));
+    let versions = store.versions(&spec).expect("the spec's versions list");
+    assert!(
+        versions.versions.iter().any(|v| {
+            v.kind == brightfield_protocol::chart_history::HistoryKind::Unsaved
+                && store
+                    .read_version(&spec, &v.id)
+                    .is_ok_and(|text| text.contains("# typed while waiting"))
+        }),
+        "the typing done while waiting is kept as a version"
+    );
+}
+
+#[test]
 fn a_close_while_a_quit_waits_for_a_run_closes_now() {
     let (mut win, held) = waiting_on_a_held_run("close_twice");
     win.cmd_q();
@@ -1004,6 +1044,16 @@ fn an_edited_yaml_buffer_is_unsaved_work_and_a_discard_keeps_it() {
 }
 
 impl Window {
+    /// Take the keyboard away from whatever has it, as a click elsewhere does.
+    fn let_go_of_the_keyboard(&mut self) {
+        self.ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+        self.settle();
+    }
+
     /// Open the YAML editor on the ledger rail, focus it, and click into its text.
     fn click_into_the_editor(&mut self) {
         let tab = self
