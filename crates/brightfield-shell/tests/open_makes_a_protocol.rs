@@ -477,6 +477,107 @@ fn a_failed_rows_step_that_fails_is_listed_with_its_failure() {
     assert!(step.kind.contains("failed"), "{}", step.kind);
 }
 
+/// Leave an edit the Protocol does not hold yet: a grid filter, which marks the title unsaved.
+fn leave_a_draft(win: &mut Window) {
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("house_age = 28".to_string()),
+            order: None,
+        });
+    win.frame();
+    assert!(win.app.carries_unsaved_mark(), "the filter is a draft");
+}
+
+/// Opening the file of the Protocol already open leaves it in front with its draft and asks
+/// nothing, and opening a file whose one Protocol is another asks the close question about the
+/// draft before it reopens that one.
+#[test]
+fn reopening_over_a_draft_asks_first_unless_it_is_the_open_protocol() {
+    let folder = input("over-draft");
+    let first = folder.join("over_draft_first.csv");
+    let second = folder.join("over_draft_second.csv");
+    std::fs::copy(housing(), &first).expect("the housing sample copies");
+    std::fs::copy(housing(), &second).expect("the housing sample copies");
+    let mut other = Window::new();
+    other.open(&second);
+    let second_dir = open_dir(&other).unwrap_or_else(|| panic!("{}", other.said()));
+
+    let mut win = Window::new();
+    win.open(&first);
+    let first_dir = open_dir(&win).unwrap_or_else(|| panic!("{}", win.said()));
+    leave_a_draft(&mut win);
+
+    win.open(&first);
+    assert_eq!(win.app.open_overlay(), None, "nothing is asked");
+    assert_eq!(open_dir(&win), Some(first_dir.clone()));
+    assert!(win.app.carries_unsaved_mark(), "the draft is kept");
+
+    win.open(&second);
+    assert_eq!(
+        win.app.open_overlay(),
+        Some("close-question"),
+        "{}",
+        win.said()
+    );
+    assert_eq!(
+        open_dir(&win),
+        Some(first_dir),
+        "nothing opened before the answer"
+    );
+    win.key(egui::Key::Enter);
+    assert_eq!(
+        open_dir(&win),
+        Some(second_dir),
+        "{:?} {}",
+        win.app.open_overlay(),
+        win.said()
+    );
+}
+
+/// A request pushed while the Which Protocol sheet is up waits for the sheet's answer rather than
+/// opening under it, and is taken once the sheet is gone.
+#[test]
+fn an_open_waits_while_the_which_protocol_sheet_is_up() {
+    let pair = input("held_pair");
+    let left = pair.join("held_left.csv");
+    std::fs::write(&left, "id,name\n1,Ada\n2,Bo\n").unwrap();
+    std::fs::write(pair.join("held_right.csv"), "id,left_id\n10,1\n11,2\n").unwrap();
+    Window::new().open(&pair);
+    let later = input("held_later").join("held_later.csv");
+    std::fs::copy(housing(), &later).expect("the housing sample copies");
+
+    let mut win = Window::new();
+    win.open(&left);
+    assert_eq!(
+        win.app.open_overlay(),
+        Some("which-protocol"),
+        "{}",
+        win.said()
+    );
+    win.app.open_queue().push(OpenRequest::Path(later.clone()));
+    win.frame();
+    win.frame();
+    assert_eq!(
+        win.app.open_overlay(),
+        Some("which-protocol"),
+        "the sheet stays"
+    );
+    assert!(
+        protocols_named("held_later").is_empty(),
+        "the later open waits"
+    );
+
+    win.key(egui::Key::Escape);
+    win.frame();
+    assert_eq!(
+        open_dir(&win),
+        Some(protocols().join("held_later")),
+        "{}",
+        win.said()
+    );
+}
+
 #[test]
 fn a_file_reopens_the_protocol_it_has_or_asks_which() {
     let folder = input("again");

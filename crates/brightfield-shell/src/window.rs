@@ -5739,7 +5739,11 @@ impl MeridianApp {
         // stops the taking, and the rest wait in the queue behind it. Over a draft each one asks
         // the close question, and one asked for while the question is up takes the place of the
         // one it was asked for: the latest choice is the one that opens once it is answered.
-        while self.pending_open.is_none() {
+        // The Which Protocol sheet holds the queue as a pending open does: a request pushed
+        // while it is up waits for its answer, rather than opening under it.
+        while self.pending_open.is_none()
+            && !matches!(self.overlay, Some(Overlay::WhichProtocol(_)))
+        {
             let Some(request) = self.open_queue.pop() else {
                 break;
             };
@@ -8784,10 +8788,14 @@ impl MeridianApp {
         // the file itself, which makes a Protocol of it, since only a request taken off the queue
         // looks for the Protocols a file already has.
         if let Some(path) = which_open {
-            self.leave(
-                ctx,
-                Leaving::Open(crate::open_queue::OpenRequest::Path(path)),
-            );
+            if path.is_dir() {
+                self.open_known(ctx, path);
+            } else {
+                self.leave(
+                    ctx,
+                    Leaving::Open(crate::open_queue::OpenRequest::Path(path)),
+                );
+            }
         }
         match make_in {
             Some(NewProtocolPlace::Folder { dir, .. }) => self.leave(ctx, Leaving::Make(dir)),
@@ -11489,6 +11497,30 @@ impl MeridianApp {
         }
     }
 
+    /// Open the known Protocol in `dir`, asking first over a draft as any open does, unless it is
+    /// the Protocol this window holds: that one is already in front, and reopening it would ask
+    /// about its own draft for nothing.
+    fn open_known(&mut self, ctx: &egui::Context, dir: PathBuf) {
+        let same = |a: &std::path::Path, b: &std::path::Path| match (
+            std::fs::canonicalize(a),
+            std::fs::canonicalize(b),
+        ) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => a == b,
+        };
+        if self
+            .open_protocol_dir()
+            .is_some_and(|open| !self.front_door_is_live() && same(&open, &dir))
+        {
+            ctx.request_repaint();
+            return;
+        }
+        self.leave(
+            ctx,
+            Leaving::Open(crate::open_queue::OpenRequest::Path(dir)),
+        );
+    }
+
     /// Whether `path` is a lone data file a new Protocol would be made of: a file, not a folder,
     /// in no Protocol directory and not an archive of one.
     fn lone_data_file(&self, path: &std::path::Path) -> bool {
@@ -11536,15 +11568,25 @@ impl MeridianApp {
             // A lone data file reopens the Protocol it already has, or asks which of several,
             // before anything is left: a Protocol is made of it only when none reads it.
             OpenRequest::Path(path) if self.lone_data_file(&path) => {
+                // While a quit waits for runs, an open is refused as `leave` refuses it, sheet or
+                // no sheet.
+                if self.close_after_runs.is_some() {
+                    self.leave(ctx, Leaving::Open(OpenRequest::Path(path)));
+                    return;
+                }
                 let recents = self.recent_protocol_dirs();
                 match crate::file_protocols::decide(&path, &recents) {
                     crate::file_protocols::FileOpen::New => {
                         self.leave(ctx, Leaving::Open(OpenRequest::Path(path)));
                     }
-                    crate::file_protocols::FileOpen::Reopen(dir) => {
-                        self.leave(ctx, Leaving::Open(OpenRequest::Path(dir)));
-                    }
+                    crate::file_protocols::FileOpen::Reopen(dir) => self.open_known(ctx, dir),
                     crate::file_protocols::FileOpen::Ask(choices) => {
+                        // The sheet takes the place of what is up. A close question it replaces
+                        // is answered Keep editing: the draft stays, and the Protocol chosen on
+                        // the sheet asks about it again as it opens.
+                        if matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
+                            self.leaving = None;
+                        }
                         self.overlay = Some(Overlay::WhichProtocol(WhichProtocolSheet {
                             file: path,
                             choices,
