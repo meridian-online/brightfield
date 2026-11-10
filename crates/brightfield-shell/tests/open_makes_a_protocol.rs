@@ -442,6 +442,41 @@ fn open_dir(win: &Window) -> Option<PathBuf> {
 /// is one source of a Protocol of several, or a source of more than one Protocol, asks which in a
 /// sheet listing each by name, with New Protocol last: Esc opens nothing, New Protocol makes one as
 /// an open with no Protocol of it does, and a Protocol chosen opens.
+/// A failed-rows step whose statement fails is listed on the spine with its failure, not left
+/// off as an empty table would be.
+#[test]
+fn a_failed_rows_step_that_fails_is_listed_with_its_failure() {
+    let csv = input("failing-step").join("failing_step.csv");
+    std::fs::write(&csv, "day,reading\n2026-02-01,1\n2026-02-02,2\n").unwrap();
+    let mut win = Window::new();
+    win.open(&csv);
+    let dir = open_dir(&win).unwrap_or_else(|| panic!("the CSV made a Protocol: {}", win.said()));
+    assert!(!spine_labels(&win)
+        .iter()
+        .any(|l| l == "failed_failing_step"));
+    std::fs::write(
+        dir.join("models").join("02_failed_failing_step.sql"),
+        "CREATE OR REPLACE TABLE \"failing_step__failed\" AS SELECT * FROM no_such_table;\n",
+    )
+    .unwrap();
+    assert!(win.app.run_protocol(&win.ctx.clone()), "{}", win.said());
+    let started = std::time::Instant::now();
+    while win.app.run_in_progress() && started.elapsed() < std::time::Duration::from_secs(120) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        win.frame();
+    }
+    win.frame();
+    win.frame();
+    let step = win
+        .app
+        .protocol_model()
+        .spine()
+        .into_iter()
+        .find(|row| row.label == "failed_failing_step")
+        .unwrap_or_else(|| panic!("the failing step is listed: {:?}", spine_labels(&win)));
+    assert!(step.kind.contains("failed"), "{}", step.kind);
+}
+
 #[test]
 fn a_file_reopens_the_protocol_it_has_or_asks_which() {
     let folder = input("again");

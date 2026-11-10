@@ -1872,13 +1872,19 @@ impl ProtocolModel {
             // listed only once that table holds rows: until a value fails they are a pair of rows
             // on every Protocol made from a file that say nothing. The Protocol and its run are
             // unchanged; this is only what the spine lists.
-            if step.is_some_and(|step| {
-                crate::own_files::is_failed_rows(step, &row.label)
-                    && !self
-                        .assets
-                        .get(&row.id)
-                        .is_some_and(|meta| meta.materialized && meta.row_count.unwrap_or(0) > 0)
-            }) {
+            //
+            // Left off only while the table is known to hold no rows: the step has not run, or
+            // its run recorded the table empty. A step that failed is listed with its failure,
+            // and one skipped as current is judged by the row count its record carries, which
+            // arc measures for a skipped step's table too.
+            let known_empty = match self.assets.get(&row.id) {
+                None => true,
+                Some(meta) => meta.row_count == Some(0),
+            };
+            if step.is_some_and(|step| crate::own_files::is_failed_rows(step, &row.label))
+                && !matches!(row.status, SeamStatus::Failed | SeamStatus::Running)
+                && known_empty
+            {
                 continue;
             }
             let typed = step.and_then(|step| self.typed.get(step));
