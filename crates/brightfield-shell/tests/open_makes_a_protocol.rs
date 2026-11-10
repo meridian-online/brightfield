@@ -847,6 +847,64 @@ fn a_one_source_protocol_opens_again_from_its_folder_and_its_manifest() {
     );
 }
 
+/// Open `file` in a fresh window twice, and assert the second open reopened the Protocol the first
+/// made, named `stem`, rather than make another: one file is one source, whatever tables it holds.
+fn assert_reopened_twice(file: &Path, stem: &str) {
+    let mut first = Window::new();
+    first.open(file);
+    let made = protocols().join(stem);
+    assert_eq!(
+        first.app.held_protocol_dir(),
+        Some(made.clone()),
+        "the first open makes its Protocol: {}",
+        first.said()
+    );
+    drop(first);
+
+    let mut again = Window::new();
+    again.open(file);
+    assert_eq!(
+        again.app.held_protocol_dir(),
+        Some(made),
+        "the second open reopens it: {}",
+        again.said()
+    );
+    assert_eq!(protocols_named(stem), [stem], "and makes no other");
+}
+
+#[test]
+fn a_database_of_two_tables_opened_twice_reopens_its_protocol() {
+    let db = input("reopened-db").join("reopened_db.duckdb");
+    let conn = duckdb::Connection::open(&db).expect("a database");
+    conn.execute_batch(
+        "CREATE TABLE customers AS SELECT * FROM (VALUES (1, 'a'), (2, 'b')) t(id, name); \
+         CREATE TABLE orders AS SELECT * FROM (VALUES (1, 1, 9.5), (2, 2, 3.0)) t(id, customer_id, total);",
+    )
+    .expect("the tables are written");
+    drop(conn);
+    assert_reopened_twice(&db, "reopened_db");
+}
+
+#[test]
+fn a_workbook_opened_twice_reopens_its_protocol() {
+    let book = input("reopened-book").join("reopened_book.xlsx");
+    let conn = duckdb::Connection::open_in_memory().expect("a connection");
+    let made = conn
+        .execute_batch("INSTALL excel; LOAD excel;")
+        .and_then(|()| {
+            conn.execute_batch(&format!(
+                "COPY (SELECT * FROM (VALUES (1, 'a'), (2, 'b')) t(id, name)) TO '{}' \
+             (FORMAT xlsx, HEADER true, SHEET 'People')",
+                book.display()
+            ))
+        });
+    if let Err(e) = made {
+        eprintln!("skipped: the excel extension is not available here: {e}");
+        return;
+    }
+    assert_reopened_twice(&book, "reopened_book");
+}
+
 #[test]
 fn a_failed_open_leaves_no_protocol_behind() {
     let folder = input("failed-open");
