@@ -830,6 +830,46 @@ fn a_close_while_a_quit_waits_for_a_run_closes_now() {
 }
 
 #[test]
+fn a_close_while_a_quit_waits_keeps_the_edits_made_while_waiting() {
+    let (mut win, held) = waiting_on_a_held_run("close_twice_edits");
+    win.cmd_q();
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    assert!(win.says_waiting(), "{}", win.said());
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("house_age > 41".to_owned()),
+            order: None,
+        });
+    win.settle();
+    win.forget_sent();
+
+    // The window's close button while the quit waits.
+    win.frame(Vec::new(), true);
+
+    assert!(!win.cancelled_close, "the close is let through");
+    assert!(win.app.is_closing());
+    assert!(
+        win.app
+            .notifications()
+            .iter()
+            .any(|n| n.title == KEPT_WHILE_CLOSING_TITLE),
+        "a banner says the work was kept: {}",
+        win.said()
+    );
+    held.release();
+    win.until("the held run never finished", |w| !w.app.run_outstanding());
+    let Listing::Listed { rows, .. } = win.versions_listed() else {
+        panic!("the Versions panel lists nothing: {}", win.said());
+    };
+    assert!(
+        rows.iter()
+            .any(|r| r.kind == CLOSED_UNSAVED && r.changed.contains("house_age > 41")),
+        "the edit made during the wait is kept as a version: {rows:?}"
+    );
+}
+
+#[test]
 fn a_close_on_the_door_waits_for_a_run_as_a_quit_does() {
     let (mut win, held) = waiting_on_a_held_run("door_close_run");
     win.frame(Vec::new(), true);
