@@ -3282,6 +3282,10 @@ pub struct MeridianApp {
     /// Where the window goes once the close question is answered, while it is up: the way out
     /// that asked it, or the latest one asked since, which takes its place.
     leaving: Option<Leaving>,
+    /// A lone data file opened while the close question was up, which would have asked which of
+    /// its Protocols to open: held until the question is answered, so the sheet does not replace
+    /// the question and the way out it was asked for.
+    held_for_question: Option<PathBuf>,
     /// A close or quit already answered that waits for the runs this window started, so no
     /// run's record is lost with the process: the unsaved work as it stood when the question
     /// was answered, in the question's words. Work that differs when the runs land is asked
@@ -3831,6 +3835,7 @@ impl MeridianApp {
             pending_open: None,
             restore: None,
             leaving: None,
+            held_for_question: None,
             close_after_runs: None,
             open_queue: crate::open_queue::OpenQueue::default(),
             installed_extensions: None,
@@ -5739,6 +5744,12 @@ impl MeridianApp {
         // stops the taking, and the rest wait in the queue behind it. Over a draft each one asks
         // the close question, and one asked for while the question is up takes the place of the
         // one it was asked for: the latest choice is the one that opens once it is answered.
+        // A file held while the close question was up is taken once the question has gone.
+        if !matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
+            if let Some(path) = self.held_for_question.take() {
+                self.take_or_ask(&ctx, crate::open_queue::OpenRequest::Path(path));
+            }
+        }
         // The Which Protocol sheet holds the queue as a pending open does: a request pushed
         // while it is up waits for its answer, rather than opening under it.
         while self.pending_open.is_none()
@@ -11581,11 +11592,12 @@ impl MeridianApp {
                     }
                     crate::file_protocols::FileOpen::Reopen(dir) => self.open_known(ctx, dir),
                     crate::file_protocols::FileOpen::Ask(choices) => {
-                        // The sheet takes the place of what is up. A close question it replaces
-                        // is answered Keep editing: the draft stays, and the Protocol chosen on
-                        // the sheet asks about it again as it opens.
+                        // A close question that is up is not replaced: the way out it was asked
+                        // for, a quit or a move among them, stands, and the file is held and
+                        // asked about once the question is answered.
                         if matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
-                            self.leaving = None;
+                            self.held_for_question = Some(path);
+                            return;
                         }
                         self.overlay = Some(Overlay::WhichProtocol(WhichProtocolSheet {
                             file: path,

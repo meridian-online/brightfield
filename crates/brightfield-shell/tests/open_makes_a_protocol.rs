@@ -560,6 +560,53 @@ fn reopening_over_a_draft_asks_first_unless_it_is_the_open_protocol() {
     );
 }
 
+/// A file that would ask which Protocol to open, opened while the close question asks about a
+/// quit, does not replace the question: Keep editing then shows the sheet for it, and a quit asked
+/// again and answered still quits.
+#[test]
+fn a_quit_being_asked_about_is_not_dropped_by_a_file_that_asks_which() {
+    let pair = input("quit_pair");
+    let left = pair.join("quit_left.csv");
+    std::fs::write(&left, "id,name\n1,Ada\n2,Bo\n").unwrap();
+    std::fs::write(pair.join("quit_right.csv"), "id,left_id\n10,1\n11,2\n").unwrap();
+    Window::new().open(&pair);
+    let lone = input("quit_draft").join("quit_draft.csv");
+    std::fs::copy(housing(), &lone).expect("the housing sample copies");
+
+    let mut win = Window::new();
+    win.open(&lone);
+    leave_a_draft(&mut win);
+    win.app.open_queue().ask_quit();
+    win.frame();
+    assert_eq!(
+        win.app.open_overlay(),
+        Some("close-question"),
+        "{}",
+        win.said()
+    );
+
+    win.open(&left);
+    assert_eq!(
+        win.app.open_overlay(),
+        Some("close-question"),
+        "the question about the quit stays up"
+    );
+    win.key(egui::Key::Escape);
+    assert_eq!(
+        win.app.open_overlay(),
+        Some("which-protocol"),
+        "the file is asked about once the question is answered"
+    );
+    win.key(egui::Key::Escape);
+
+    win.app.open_queue().ask_quit();
+    win.frame();
+    win.open(&left);
+    assert_eq!(win.app.open_overlay(), Some("close-question"));
+    win.key(egui::Key::Enter);
+    assert!(win.app.is_closing(), "the quit went ahead: {}", win.said());
+}
+
 /// A request pushed while the Which Protocol sheet is up waits for the sheet's answer rather than
 /// opening under it, and is taken once the sheet is gone.
 #[test]
