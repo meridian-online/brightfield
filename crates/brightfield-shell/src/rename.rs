@@ -299,13 +299,16 @@ pub fn moved_since(dir: &Path) -> Option<PathBuf> {
 /// Answers what did not follow the move, in the words an in-app move uses
 /// ([`SOURCES_NOT_FOLLOWED`], [`PLACE_NOT_RECORDED`], [`DATABASE_NOT_FOLLOWED`]), so the window
 /// can say so (`a_finder_move_whose_repair_fails_says_so_on_open`). Sources that could not be
-/// repaired leave the old place recorded, so the next open tries again.
+/// repaired leave the old place recorded, so the next open tries again. A folder that had not
+/// moved answers no warning: a place it could not record is said on stderr.
 #[must_use]
 pub fn follow_a_move(dir: &Path) -> Vec<String> {
     let Some(was) = moved_since(dir) else {
+        // Nothing moved, so a place not recorded is no move left unfollowed: it is said on
+        // stderr, as before, and not under the banner for a move.
         if dir.join(SOURCES_FILE).is_file() {
             if let Err(e) = record_dir(dir) {
-                return vec![format!("{PLACE_NOT_RECORDED}: {e}")];
+                eprintln!("warning: {}: {PLACE_NOT_RECORDED}: {e}", dir.display());
             }
         }
         return Vec::new();

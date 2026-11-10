@@ -452,6 +452,22 @@ fn a_finder_move_whose_repair_fails_says_so_on_open() {
 }
 
 #[test]
+fn a_protocol_that_did_not_move_raises_no_move_warning() {
+    let dir = scratch().join("not_moved_unreadable");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a folder");
+    // A record that will not read: nothing says the folder moved, and its place cannot be
+    // recorded either.
+    std::fs::write(dir.join(".sources.json"), "{ not json").expect("the record");
+    assert_eq!(rename::moved_since(&dir), None);
+    assert_eq!(
+        rename::follow_a_move(&dir),
+        Vec::<String>::new(),
+        "a folder that did not move is not said to have moved"
+    );
+}
+
+#[test]
 fn repair_rewrites_paths_that_the_move_broke_and_nothing_else() {
     let root = scratch().join("repair");
     let _ = std::fs::remove_dir_all(&root);
