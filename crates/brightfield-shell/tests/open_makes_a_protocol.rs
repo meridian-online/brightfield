@@ -326,6 +326,34 @@ fn the_run_an_open_previews_with_is_called_a_preview() {
     assert_eq!(model.last_run_label(), "last preview");
 }
 
+/// A link this build cannot open yet says so in a banner titled for a link, not for a data file.
+#[test]
+fn a_link_is_refused_as_a_link() {
+    let mut win = Window::new();
+    win.app
+        .open_queue()
+        .push(OpenRequest::Link("brightfield://anything".to_string()));
+    win.frame();
+    win.frame();
+    let titles: Vec<&str> = win
+        .app
+        .notifications()
+        .iter()
+        .map(|n| n.title.as_str())
+        .collect();
+    assert_eq!(
+        titles,
+        vec![brightfield_shell::window::LINK_NOTICE_TITLE],
+        "{}",
+        win.said()
+    );
+    assert!(
+        win.said().contains("brightfield://anything"),
+        "{}",
+        win.said()
+    );
+}
+
 #[test]
 fn an_existing_protocol_opens_where_it_is() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/shipped-protocol");

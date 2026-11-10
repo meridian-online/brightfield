@@ -2508,6 +2508,9 @@ fn display_name(path: &std::path::Path) -> String {
     )
 }
 
+/// The title of the banner a `brightfield://` link raises, which this build does not open yet.
+pub const LINK_NOTICE_TITLE: &str = "Links do not open yet";
+
 /// Consume the pressed key a registry keystroke token names, if it is down
 /// this frame. Only the tokens the shell actually wires live — the overlay
 /// openers and open-home — are mapped; an unmapped token is simply never
@@ -11145,6 +11148,21 @@ impl MeridianApp {
         }
     }
 
+    /// Raise the banner a `brightfield://` link leaves: titled for the link it is, since a link is
+    /// not a data file and this build opens none.
+    fn say_link_not_opened(&mut self, ctx: &egui::Context, link: &str) {
+        eprintln!("could not open {link}: this build cannot open a link yet");
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new("open-data-file"),
+                Severity::Error,
+                LINK_NOTICE_TITLE,
+            )
+            .body(format!("This build cannot open {link} yet.")),
+        );
+        ctx.request_repaint();
+    }
+
     /// Raise the one banner a failed open leaves.
     fn say_open_failed(&mut self, ctx: &egui::Context, chosen: &str, reason: String) {
         eprintln!("could not open {chosen}: {reason}");
@@ -11434,9 +11452,7 @@ impl MeridianApp {
                     .unwrap_or_else(crate::data_file::installed_extensions);
                 self.open_paths_knowing(ctx, paths, &installed);
             }
-            OpenRequest::Link(link) => {
-                self.say_open_failed(ctx, &link, "This build cannot open a link yet.".to_string())
-            }
+            OpenRequest::Link(link) => self.say_link_not_opened(ctx, &link),
             OpenRequest::AddSource(path) => self.add_sources(ctx, &[path]),
             OpenRequest::AddSources(paths) => self.add_sources(ctx, &paths),
         }
