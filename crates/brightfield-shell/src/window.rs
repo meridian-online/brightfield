@@ -9607,10 +9607,11 @@ impl MeridianApp {
             .dismiss(NotificationId::new(CLOSING_AFTER_RUN_BANNER));
     }
 
-    /// The close that waited for this window's runs, once none is
-    /// outstanding: the unsaved work the window holds is kept as a version and
-    /// the window closes, or, when it cannot be kept, the close question asks
-    /// again, saying why ([`Self::keep_what_changed_while_waiting`]).
+    /// The close that waited for this window's runs, once they have landed:
+    /// the unsaved work the window holds is kept as a version and the window
+    /// closes, or, when it cannot be kept, the close question asks again,
+    /// saying why ([`Self::keep_what_changed_while_waiting`],
+    /// `a_quit_whose_run_lands_keeps_yaml_typed_while_waiting`).
     fn close_when_runs_land(&mut self, ctx: &egui::Context) {
         if !self.close_after_runs || self.run_outstanding() {
             return;
