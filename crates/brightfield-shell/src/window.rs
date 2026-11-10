@@ -12951,7 +12951,8 @@ impl MeridianApp {
             .and_then(|live| live.data_files(live.base_dir()).into_iter().next())
     }
 
-    /// Reload the data file with nothing left to ask, as [`Self::reload_data_file`] describes.
+    /// Reload the data file once the close question is answered or not needed, as
+    /// [`Self::reload_data_file`] describes.
     fn reload_now(&mut self, ctx: &egui::Context) {
         if self.fetching.is_some() {
             return;
