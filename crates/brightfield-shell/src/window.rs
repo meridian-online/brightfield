@@ -12077,8 +12077,7 @@ impl MeridianApp {
         let Some(first) = paths.first() else {
             return;
         };
-        // On the door nothing is open to add to, though the Protocol last open may still be held
-        // behind it.
+        // On the door nothing is open to add to: going Home lets go of the Protocol that was open.
         if self.front_door_is_live() {
             let installed = self
                 .installed_extensions
