@@ -844,7 +844,12 @@ fn files_held_behind_a_quit_that_waits_for_a_run_are_all_said_not_opened() {
     win.key(egui::Key::D, egui::Modifiers::NONE);
     win.settle();
     assert!(win.says_waiting() && !win.closed, "{}", win.said());
-    assert_eq!(win.app.open_overlay(), None, "no sheet asks: {}", win.said());
+    assert_eq!(
+        win.app.open_overlay(),
+        None,
+        "no sheet asks: {}",
+        win.said()
+    );
     assert!(
         win.app
             .notifications()
