@@ -86,7 +86,6 @@ fn press_with(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
 /// A runner that runs the Protocol as the real one does `passing` times, and fails every run after:
 /// how a test makes the last run of an add fail once the add has written its model.
 fn failing_runner(name: &str, passing: u32) -> Runner {
-    use std::os::unix::fs::PermissionsExt as _;
     let dir = scratch().join("runners");
     std::fs::create_dir_all(&dir).expect("a folder for runners");
     let script = dir.join(name);
@@ -101,8 +100,12 @@ fn failing_runner(name: &str, passing: u32) -> Runner {
         ),
     )
     .expect("the runner script writes");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-        .expect("the runner script made runnable");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("the runner script made runnable");
+    }
     Runner::at(script)
 }
 
@@ -884,6 +887,7 @@ fn adding_to_a_protocol_whose_folder_has_gone_says_so() {
     assert!(!parent.join("Untitled").exists(), "nothing is made again");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_refused_folder_is_worded_for_making_a_protocol() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -961,6 +965,7 @@ fn a_profile_left_aside_by_an_add_that_stopped_is_put_back() {
     assert!(!aside.exists(), "and not left aside");
 }
 
+#[cfg(unix)]
 #[test]
 fn first_sources_that_cannot_rename_the_protocol_are_added_and_say_so() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -1218,6 +1223,7 @@ fn a_refused_model_edit_is_asked_about_and_kept_as_a_version() {
     assert!(text.contains("datasets: :"), "{text}");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_model_edit_whose_file_cannot_be_written_stops_the_save() {
     use std::os::unix::fs::PermissionsExt as _;

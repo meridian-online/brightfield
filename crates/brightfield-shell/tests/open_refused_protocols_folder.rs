@@ -36,6 +36,7 @@ fn scratch() -> &'static Path {
     })
 }
 
+#[cfg(unix)]
 #[test]
 fn a_refused_protocols_folder_says_where_to_allow_it_and_opens_nothing() {
     use std::os::unix::fs::PermissionsExt as _;

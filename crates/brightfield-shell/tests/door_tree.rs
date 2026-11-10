@@ -592,6 +592,7 @@ fn in_tree_row_rect(win: &Window, dir: &Path) -> egui::Rect {
     win.rows_of(dir).1.expect("a tree row").rect
 }
 
+#[cfg(unix)]
 #[test]
 fn a_symlinked_folder_is_not_followed_and_the_walk_is_bounded() {
     let root = tempfile::tempdir().expect("a temp root");

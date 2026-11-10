@@ -221,6 +221,7 @@ fn a_csv_opens_as_a_protocol_in_the_protocols_folder() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_csv_with_spaces_and_accents_in_a_read_only_folder_opens() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -1269,6 +1270,7 @@ fn reloading_a_table_whose_name_starts_like_a_load_keeps_its_view_after_the_silv
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn reloading_never_rewrites_the_protocols_manifest_while_its_loads_run() {
     use std::os::unix::fs::PermissionsExt as _;

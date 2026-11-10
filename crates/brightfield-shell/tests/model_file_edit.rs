@@ -1893,16 +1893,24 @@ struct ReadOnly(PathBuf);
 
 impl ReadOnly {
     fn new(dir: &Path) -> Self {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Elsewhere the folder stays writable, so the write is not refused and the tests that
+        // need it to be pass over it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
         Self(dir.to_path_buf())
     }
 }
 
 impl Drop for ReadOnly {
     fn drop(&mut self) {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
     }
 }
 
