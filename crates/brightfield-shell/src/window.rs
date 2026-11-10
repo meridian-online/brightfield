@@ -7253,8 +7253,8 @@ impl MeridianApp {
         // until answered. A cancelled dialog is not an error and says nothing —
         // the user changed their mind.
         //
-        // `dialogs_allowed` is the gate, not an afterthought: every other tier
-        // that drives this method has no user in front of it, and a modal
+        // `dialogs_allowed` is the gate, not an afterthought: the other tiers
+        // that drive this method have no user in front of them, and a modal
         // raised there hangs until something kills it. Without a dialog the
         // ask is still taken and counted, so a headless test can assert that
         // Cmd+O, the palette or the door's Open asked.
@@ -11274,7 +11274,7 @@ impl MeridianApp {
     /// first attempt's message instead of stacking a history of what did not
     /// open.
     ///
-    /// Nothing is recorded in the layout, deliberately: `SavedLayout::opened`
+    /// The layout records no part of it, deliberately: `SavedLayout::opened`
     /// holds a **start id**, and an id cannot name a file that has since been
     /// deleted or moved. Reopening files across launches is a recent-files
     /// list, which is its own piece of work.
