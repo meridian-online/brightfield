@@ -1440,8 +1440,9 @@ pub fn fetch_message(needed: &[&str], installed: &[String]) -> Option<String> {
 /// takes the request on its next frame as it takes a file dropped on the Dock icon. Asking first
 /// whether to pick a file or a folder, in a system alert of its own, was a question Brightfield
 /// did not need to ask, and the modal loops of that alert and of the picker behind it held the
-/// window's frames until the analyst answered. Elsewhere a file picker is raised, which blocks
-/// until the user chooses.
+/// window's frames until the analyst answered. Elsewhere, where no picker takes both, the analyst
+/// is asked whether to open files or folders and the picker for that is raised; both block until
+/// the user answers.
 ///
 /// No headless test drives the dialog itself: what a test needs to know about opening a path is
 /// decided after it, by `accept`, `open_any` and the dashboard `open` chooses. Files
@@ -1466,14 +1467,51 @@ pub fn pick(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let chosen = rfd::FileDialog::new()
-            .set_title("Open a data file")
-            .add_filter("Data files", OPENABLE_EXTENSIONS)
-            .pick_files()
-            .unwrap_or_default();
-        if let Some(request) = make(chosen) {
+        // No picker here takes files and folders in one, so the analyst is asked which first.
+        let chosen = match ask_pick_kind() {
+            Some(PickKind::File) => rfd::FileDialog::new()
+                .set_title("Open a data file")
+                .add_filter("Data files", OPENABLE_EXTENSIONS)
+                .pick_files(),
+            Some(PickKind::Folder) => rfd::FileDialog::new()
+                .set_title("Open a folder of data files")
+                .pick_folders(),
+            None => None,
+        };
+        if let Some(request) = make(chosen.unwrap_or_default()) {
             queue.push(request);
         }
+    }
+}
+
+/// What the picker off the Mac is asked to pick.
+#[cfg(not(target_os = "macos"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PickKind {
+    File,
+    Folder,
+}
+
+/// Ask whether to pick files or folders, blocking until the user answers; `None` when they
+/// cancel. Off the Mac only, where the picker takes one or the other.
+#[cfg(not(target_os = "macos"))]
+fn ask_pick_kind() -> Option<PickKind> {
+    use rfd::MessageDialogResult as Answer;
+    let answer = rfd::MessageDialog::new()
+        .set_title("Open")
+        .set_description("Open a data file, or a folder of them?")
+        .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
+            "A file".into(),
+            "A folder".into(),
+            "Cancel".into(),
+        ))
+        .show();
+    match answer {
+        Answer::Yes => Some(PickKind::File),
+        Answer::No => Some(PickKind::Folder),
+        Answer::Custom(label) if label == "A file" => Some(PickKind::File),
+        Answer::Custom(label) if label == "A folder" => Some(PickKind::Folder),
+        _ => None,
     }
 }
 
