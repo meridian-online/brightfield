@@ -27,7 +27,7 @@
 //!   materialised — flagged, and not re-kinded to the Dataset sink. Its
 //!   `row_count` is whatever the record carries: arc measures the table a
 //!   step skipped as current left in place, so a skipped step's table has a
-//!   count, while one a failed step did not make has none. The `.json` is the authoritative complete step set; the
+//!   count, while one a failed step did not make is left uncounted. The `.json` is the authoritative complete step set; the
 //!   `.jsonl` stream ([`apply_stream`]) only overlays live per-step state.
 //! - **Order.** Contract assets arrive alphabetical; [`ContractView::order`]
 //!   is a deterministic topological order over the edges.
