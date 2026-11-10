@@ -766,8 +766,16 @@ pub enum CloseAnswer {
     KeepEditing,
 }
 
-/// The headline of the question, the title row of its card.
+/// The headline of the question when only the chart holds unsaved edits, the title row of its
+/// card.
 pub const CLOSE_QUESTION_TITLE: &str = "Save the chart before closing?";
+
+/// The headline of the question when only the Protocol holds unsaved edits: a step written,
+/// corrected or removed, a grid view not yet recorded, or the model.
+pub const CLOSE_PROTOCOL_QUESTION_TITLE: &str = "Save the Protocol before closing?";
+
+/// The headline of the question when the Protocol and its chart both hold unsaved edits.
+pub const CLOSE_BOTH_QUESTION_TITLE: &str = "Save the Protocol and its chart before closing?";
 
 /// Each answer, its label and the key beside it, in the order they are drawn:
 /// Enter, D and Esc. The keys are the accepted design's and provisional.
@@ -833,8 +841,14 @@ pub struct CloseQuestion {
     pub file: String,
     /// Each unsaved edit in the shelf's words, led by its tile, as the
     /// Versions panel words a change: `Map · x axis: longitude →
-    /// median_income`.
+    /// median_income`. The chart's edits come first, then the Protocol's.
     pub edits: Vec<String>,
+    /// How many of [`Self::edits`], from the first, are edits to the chart; the rest change the
+    /// Protocol: a SQL step, a grid view, a removed step or the model.
+    pub chart_edits: usize,
+    /// The Protocol's name, as the locator band names it, which the headline names when the
+    /// Protocol holds an edit.
+    pub protocol: String,
     /// Why a close without saving could not keep the chart, once one has been
     /// tried: the next one closes with nothing kept.
     pub not_kept: Option<String>,
@@ -851,7 +865,11 @@ impl CloseQuestion {
     #[must_use]
     pub fn title(&self) -> &'static str {
         match self.before {
-            AskedBefore::Leaving => CLOSE_QUESTION_TITLE,
+            AskedBefore::Leaving => match (self.chart_edits > 0, self.protocol_edits() > 0) {
+                (false, true) => CLOSE_PROTOCOL_QUESTION_TITLE,
+                (true, true) => CLOSE_BOTH_QUESTION_TITLE,
+                _ => CLOSE_QUESTION_TITLE,
+            },
             AskedBefore::Renaming => RENAME_QUESTION_TITLE,
             AskedBefore::Moving => MOVE_QUESTION_TITLE,
             AskedBefore::AddingSource => ADD_SOURCE_QUESTION_TITLE,
@@ -901,13 +919,45 @@ impl CloseQuestion {
         }
     }
 
-    /// The line under the title: the file and how many edits are not saved.
+    /// How many of [`Self::edits`] change the Protocol rather than its chart.
+    #[must_use]
+    pub fn protocol_edits(&self) -> usize {
+        self.edits.len().saturating_sub(self.chart_edits)
+    }
+
+    /// The line under the title: what holds the edits that are not saved, and how many of each
+    /// kind. A chart's edits are counted against its file and a Protocol's against the Protocol,
+    /// so a SQL step edited is never called a chart edit.
     #[must_use]
     pub fn headline(&self) -> String {
-        match self.edits.len() {
-            0 => format!("{} holds a chart edit that is not saved.", self.file),
-            1 => format!("{} has 1 chart edit that is not saved.", self.file),
-            n => format!("{} has {n} chart edits that are not saved.", self.file),
+        let count = |n: usize, kind: &str| {
+            if n == 1 {
+                format!("1 {kind} edit")
+            } else {
+                format!("{n} {kind} edits")
+            }
+        };
+        match (self.chart_edits, self.protocol_edits()) {
+            (0, 0) => format!("{} holds a chart edit that is not saved.", self.file),
+            (charts, 0) => format!(
+                "{} has {} that {} not saved.",
+                self.file,
+                count(charts, "chart"),
+                if charts == 1 { "is" } else { "are" }
+            ),
+            (0, steps) => format!(
+                "{} has {} that {} not saved.",
+                self.protocol,
+                count(steps, "Protocol"),
+                if steps == 1 { "is" } else { "are" }
+            ),
+            (charts, steps) => format!(
+                "{} has {}, and {} in {}, that are not saved.",
+                self.protocol,
+                count(steps, "Protocol"),
+                count(charts, "chart"),
+                self.file
+            ),
         }
     }
 
@@ -1063,6 +1113,43 @@ pub fn close_question_body(ui: &mut egui::Ui, question: &mut CloseQuestion) -> O
 mod tests {
     use super::*;
     use brightfield_spec::analysis::ComponentPath;
+
+    fn question(edits: &[&str], chart_edits: usize) -> CloseQuestion {
+        CloseQuestion {
+            file: "panels/sales.yaml".to_string(),
+            edits: edits.iter().map(|e| (*e).to_string()).collect(),
+            chart_edits,
+            protocol: "sales".to_string(),
+            not_kept: None,
+            focused: None,
+            before: super::AskedBefore::Leaving,
+        }
+    }
+
+    /// Chart edits are counted against the chart's file, and a draft that holds both kinds counts
+    /// each against what it changes.
+    #[test]
+    fn the_close_question_counts_each_kind_of_edit_against_what_it_changes() {
+        let charts = question(&["Map \u{b7} x axis: a \u{2192} b"], 1);
+        assert_eq!(charts.title(), CLOSE_QUESTION_TITLE);
+        assert_eq!(
+            charts.headline(),
+            "panels/sales.yaml has 1 chart edit that is not saved."
+        );
+        let both = question(
+            &[
+                "Map \u{b7} x axis: a \u{2192} b",
+                "Map \u{b7} y axis: c \u{2192} d",
+                "SQL step \u{b7} sales_sql",
+            ],
+            2,
+        );
+        assert_eq!(both.title(), CLOSE_BOTH_QUESTION_TITLE);
+        assert_eq!(
+            both.headline(),
+            "sales has 1 Protocol edit, and 2 chart edits in panels/sales.yaml, that are not saved."
+        );
+    }
 
     // -- is_statement -------------------------------------------------------
 

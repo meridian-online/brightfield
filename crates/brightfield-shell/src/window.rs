@@ -9399,14 +9399,17 @@ impl MeridianApp {
         let changes = target
             .as_deref()
             .map_or_else(Vec::new, |file| self.charts.doc.unsaved_changes(file));
+        // The chart's edits first, the shelf's and the YAML editor's on the chart's spec, then
+        // the Protocol's, so the question can count each kind and call each by its name.
         let mut edits = crate::versions::change_lines(&changes, &tile_of);
-        edits.extend(self.charts.doc.grid_view_line());
-        edits.extend(self.charts.doc.typed_lines());
-        edits.extend(self.charts.doc.removal_lines());
         edits.extend(
             self.editor_unsaved_name()
                 .map(|name| format!("YAML editor \u{b7} {name} edited")),
         );
+        let chart_edits = edits.len();
+        edits.extend(self.charts.doc.grid_view_line());
+        edits.extend(self.charts.doc.typed_lines());
+        edits.extend(self.charts.doc.removal_lines());
         let mut file = file;
         if let Some(model) = self.model.as_ref() {
             if model.doc.file_edit_unsaved() {
@@ -9421,9 +9424,18 @@ impl MeridianApp {
                 file = crate::discovery::MODEL_FILE.to_string();
             }
         }
+        let protocol = self.open_protocol_dir().map_or_else(
+            || match self.protocol.doc.model.protocol.as_str() {
+                "" => "The Protocol".to_string(),
+                name => name.to_string(),
+            },
+            |dir| display_name(&dir),
+        );
         CloseQuestion {
             file,
             edits,
+            chart_edits,
+            protocol,
             not_kept: None,
             focused: None,
             before: crate::overlays::AskedBefore::Leaving,

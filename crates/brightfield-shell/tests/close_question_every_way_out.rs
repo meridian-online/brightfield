@@ -803,6 +803,38 @@ fn closing_the_window_without_saving_records_the_kept_filter_and_typed_sql() {
     );
 }
 
+/// A SQL step written and not saved is a change to the Protocol, and the question says so: it
+/// asks to save the Protocol, names it, and calls the edit a Protocol edit, never a chart edit.
+#[test]
+fn a_sql_step_draft_is_asked_about_as_a_protocol_edit() {
+    let mut win = Window::opened("step_is_protocol");
+    let step = win
+        .keep_statement("select house_age, count(*) as n from step_is_protocol group by house_age");
+    win.cmd_q();
+    assert!(win.asking());
+    let question = win.app.close_question().expect("the question").clone();
+    let name = win
+        .app
+        .open_protocol_dir()
+        .and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .expect("a Protocol is open");
+    assert_eq!(
+        question.title(),
+        brightfield_shell::overlays::CLOSE_PROTOCOL_QUESTION_TITLE
+    );
+    assert_eq!(
+        question.headline(),
+        format!("{name} has 1 Protocol edit that is not saved."),
+        "{:?}",
+        question.edits
+    );
+    assert!(
+        question.edits.iter().any(|e| e.contains(&step)),
+        "{:?}",
+        question.edits
+    );
+}
+
 #[test]
 fn discard_records_the_kept_filter_and_typed_sql() {
     let mut win = Window::opened("discard_keeps");
