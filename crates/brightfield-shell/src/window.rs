@@ -10661,7 +10661,7 @@ impl MeridianApp {
     ///
     /// The chart side goes through [`open_chart`](Self::open_chart), not
     /// through `ChartDoc::open`: going Home is a document swap like any other,
-    /// and the empty document has nothing to say — so the outgoing spec's
+    /// and the empty document raises no banner of its own — so the outgoing spec's
     /// banners come down with it. Calling `ChartDoc::open` here instead left
     /// a `Cannot render …` banner raised on the front door, about a document
     /// that was no longer open.
@@ -10680,6 +10680,9 @@ impl MeridianApp {
         self.tiles = None;
         self.model = None;
         self.empty_protocol = None;
+        // The door holds no Protocol, so a rename of a door row or a move of the Protocols
+        // folder's Protocols does not open the last one again from the door.
+        self.own_protocol = None;
         self.browser_requested = false;
         self.open_chart(Composed::empty());
         self.protocol.doc.open(ProtocolInputs::empty());
@@ -12451,9 +12454,9 @@ impl MeridianApp {
     /// Rename the Protocol the front-door row `id` names to `name`, and point its row at the new
     /// folder. A refused name says why in a banner.
     ///
-    /// The row's Protocol is not renamed under a run, which writes into its folder. The Protocol
-    /// this window still holds behind the door is renamed as the window renames it
-    /// ([`Self::rename_protocol`]), so its documents follow it.
+    /// The row's Protocol is not renamed under a run, which writes into its folder. The door holds
+    /// no Protocol behind it, so the rename opens nothing
+    /// (`a_door_row_of_the_protocol_left_for_home_renames_it_and_stays_on_the_door`).
     fn rename_door_row(&mut self, ctx: &egui::Context, id: &str, name: &str) {
         let Some(dir) = door_row_dir(id) else {
             return;
@@ -12462,13 +12465,6 @@ impl MeridianApp {
         if self.run_outstanding() {
             self.say_not_moved(&to, DOOR_RENAME_UNDER_A_RUN.to_string());
             ctx.request_repaint();
-            return;
-        }
-        let held = self
-            .open_protocol_dir()
-            .is_some_and(|held| same_place(&held, &dir));
-        if held {
-            self.leave(ctx, Leaving::Move(to));
             return;
         }
         match crate::rename::rename_with(&dir, name, &crate::rename::FolderOps::system()) {
@@ -16075,11 +16071,6 @@ fn first_error_line(log: &str) -> &str {
         .find(|l| l.to_lowercase().contains("error"))
         .or_else(|| lines.next())
         .unwrap_or("it printed nothing")
-}
-
-/// Whether `a` and `b` name one folder, reached by two spellings or one.
-fn same_place(a: &std::path::Path, b: &std::path::Path) -> bool {
-    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
 /// The Protocol folder a front-door row's id names, when it names one the window would rename: an

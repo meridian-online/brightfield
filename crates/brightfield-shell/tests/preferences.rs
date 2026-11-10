@@ -380,6 +380,11 @@ fn accepting_moves_each_protocol_and_they_still_run() {
     assert!(new.join("top_level").join("arcform.yaml").is_file());
     assert!(in_recents(&win.app, &moved), "Recents follow the move");
     assert!(!in_recents(&win.app, &old.join("top_level")));
+    assert!(
+        win.app.front_door_is_live() && win.dir().is_none(),
+        "a move from the door opens nothing: {}",
+        win.said()
+    );
 
     let mut runs = Window::new();
     runs.app

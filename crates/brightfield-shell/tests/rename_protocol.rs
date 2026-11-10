@@ -708,7 +708,7 @@ fn a_front_door_row_renames_its_protocol() {
 }
 
 #[test]
-fn a_door_row_of_the_protocol_held_behind_home_renames_it_as_the_window_does() {
+fn a_door_row_of_the_protocol_left_for_home_renames_it_and_stays_on_the_door() {
     let mut win = Window::opened("door_held");
     let old = win.dir().expect("a Protocol");
     win.keep_filter();
@@ -732,13 +732,14 @@ fn a_door_row_of_the_protocol_held_behind_home_renames_it_as_the_window_does() {
     win.type_over("door_held_renamed");
 
     let new = scratch().join("protocols").join("door_held_renamed");
-    assert_eq!(
-        win.dir(),
-        Some(new),
-        "the window follows it: {}",
+    assert!(new.join("arcform.yaml").is_file(), "{}", win.said());
+    assert!(!old.exists());
+    assert!(
+        win.app.front_door_is_live(),
+        "the door holds nothing behind it, so the rename opens nothing: {}",
         win.said()
     );
-    assert!(!old.exists());
+    assert_eq!(win.dir(), None);
 }
 
 /// Make files and folders under `dir` writable again, so the scratch folder can be cleaned up.
