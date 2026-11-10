@@ -3315,11 +3315,11 @@ pub struct MeridianApp {
     /// so the sheet does not replace the question and the way out it was asked for, and then
     /// asked about one sheet at a time.
     held_for_question: Vec<PathBuf>,
-    /// A close or quit already answered that waits for the runs this window started, so no
-    /// run's record is lost with the process: the unsaved work as it stood when the question
-    /// was answered, in the question's words. Work that differs when the runs land is asked
-    /// about again rather than closed over.
-    close_after_runs: Option<Vec<String>>,
+    /// Whether a close or quit already answered waits for the runs this window started, so no
+    /// run's record is lost with the process. Unsaved work the window holds when it closes,
+    /// once the runs land or at a second close or quit, is kept as a version first
+    /// ([`Self::keep_what_changed_while_waiting`]).
+    close_after_runs: bool,
     /// Whether the close question now up, or last answered, was answered Close without saving
     /// after it said the work could not be kept: the analyst chose to lose it, so a close during
     /// a run wait that cannot keep the work either closes rather than ask again.
@@ -3869,7 +3869,7 @@ impl MeridianApp {
             restore: None,
             leaving: None,
             held_for_question: Vec::new(),
-            close_after_runs: None,
+            close_after_runs: false,
             unkept_accepted: false,
             open_queue: crate::open_queue::OpenQueue::default(),
             installed_extensions: None,
@@ -5792,7 +5792,7 @@ impl MeridianApp {
         // The files held while the close question was up are taken once the question has gone,
         // one Which Protocol sheet at a time. A window whose answer closed it, or that waits for
         // a run before it closes, opens none of them, and one banner names them all.
-        if self.closing || self.close_after_runs.is_some() {
+        if self.closing || self.close_after_runs {
             let held = std::mem::take(&mut self.held_for_question);
             if !held.is_empty() {
                 let why = if self.closing {
@@ -9337,7 +9337,7 @@ impl MeridianApp {
         // A quit already answered, waiting for a run to land: a close is the analyst ending the
         // app now, whatever the run, so it goes through uncancelled once the unsaved work is kept
         // as a version. Work that cannot be kept cancels the close and asks again, saying why.
-        if self.close_after_runs.is_some() {
+        if self.close_after_runs {
             if self.keep_what_changed_while_waiting() {
                 self.allow_close();
             } else {
@@ -9407,7 +9407,7 @@ impl MeridianApp {
         // run is out): a close or quit closes now, so a run that never finishes cannot keep the
         // app open, and any other way out is refused with the banner that says what the window is
         // waiting for.
-        if self.close_after_runs.is_some() {
+        if self.close_after_runs {
             match to {
                 Leaving::Close | Leaving::Quit => {
                     if self.keep_what_changed_while_waiting() {
@@ -9492,8 +9492,9 @@ impl MeridianApp {
     /// window that closed under it would end the process the run reports to,
     /// and could cost the run its record. So a close with a run outstanding
     /// waits, with a banner saying so, and closes when the run lands
-    /// ([`Self::close_when_runs_land`]). The work it was answered over is
-    /// noted, so work made while it waits is not closed over unasked. A
+    /// ([`Self::close_when_runs_land`]), keeping the unsaved work it then
+    /// holds as a version, so work made while it waits is not closed over
+    /// unkept (`a_quit_whose_run_lands_keeps_yaml_typed_while_waiting`). A
     /// second close or quit while it waits closes at once ([`Self::leave`]),
     /// so a run that does not finish cannot hold the app open
     /// (`a_second_quit_while_waiting_for_a_run_closes_now`), and keeps the
@@ -9503,7 +9504,7 @@ impl MeridianApp {
             self.close_window(ctx);
             return;
         }
-        self.close_after_runs = Some(self.unsaved_now());
+        self.close_after_runs = true;
         self.say_waiting_for_runs(ctx);
     }
 
@@ -9601,30 +9602,24 @@ impl MeridianApp {
 
     /// Stop waiting for runs to land before closing, and take the banner that said so down.
     fn stop_waiting_for_runs(&mut self) {
-        self.close_after_runs = None;
+        self.close_after_runs = false;
         self.notifications
             .dismiss(NotificationId::new(CLOSING_AFTER_RUN_BANNER));
     }
 
     /// The close that waited for this window's runs, once none is
-    /// outstanding: the window closes, unless work no file holds has changed
-    /// since the close was answered, which asks again.
+    /// outstanding: the unsaved work the window holds is kept as a version and
+    /// the window closes, or, when it cannot be kept, the close question asks
+    /// again, saying why ([`Self::keep_what_changed_while_waiting`]).
     fn close_when_runs_land(&mut self, ctx: &egui::Context) {
-        if self.close_after_runs.is_none() || self.run_outstanding() {
+        if !self.close_after_runs || self.run_outstanding() {
             return;
         }
-        let answered_over = self.close_after_runs.clone();
-        self.stop_waiting_for_runs();
-        if self.has_unsaved_work() && answered_over.as_ref() != Some(&self.unsaved_now()) {
-            self.leave(ctx, Leaving::Quit);
-        } else {
+        if self.keep_what_changed_while_waiting() {
             self.close_window(ctx);
+        } else {
+            ctx.request_repaint();
         }
-    }
-
-    /// The unsaved work as the close question lists it now.
-    fn unsaved_now(&self) -> Vec<String> {
-        self.close_question_for_now().edits
     }
 
     /// **What the close question says about this window now**: the chart
@@ -11727,7 +11722,7 @@ impl MeridianApp {
             OpenRequest::Path(path) if self.lone_data_file(&path) => {
                 // While a quit waits for runs, an open is refused as `leave` refuses it, sheet or
                 // no sheet.
-                if self.close_after_runs.is_some() {
+                if self.close_after_runs {
                     self.leave(ctx, Leaving::Open(OpenRequest::Path(path)));
                     return;
                 }

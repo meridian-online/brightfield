@@ -786,6 +786,43 @@ fn a_second_quit_keeps_yaml_typed_while_waiting() {
 }
 
 #[test]
+fn a_quit_whose_run_lands_keeps_yaml_typed_while_waiting() {
+    let (mut win, held) = waiting_on_a_held_run("land_yaml");
+    let spec = win
+        .app
+        .chart_doc()
+        .spec_path
+        .clone()
+        .expect("the editor's buffer has a file");
+    win.click_into_the_editor();
+    win.type_text("# typed before the quit\n");
+    win.let_go_of_the_keyboard();
+    win.cmd_q();
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    assert!(!win.closed && win.says_waiting(), "{}", win.said());
+
+    win.click_into_the_editor();
+    win.type_text("# typed while the run went on\n");
+    win.let_go_of_the_keyboard();
+    win.forget_sent();
+
+    // No second quit: the run lands, and the window closes as the quit asked.
+    held.release();
+    win.until("the window never closed", |w| w.closed);
+    let store = brightfield_protocol::HistoryStore::At(scratch().join("versions"));
+    let versions = store.versions(&spec).expect("the spec's versions list");
+    assert!(
+        versions.versions.iter().any(|v| {
+            v.kind == brightfield_protocol::chart_history::HistoryKind::Unsaved
+                && store
+                    .read_version(&spec, &v.id)
+                    .is_ok_and(|text| text.contains("# typed while the run went on"))
+        }),
+        "the typing done while the run went on is kept as a version"
+    );
+}
+
+#[test]
 fn a_second_quit_that_cannot_keep_the_work_asks_again() {
     let (mut win, held) = waiting_on_a_held_run("quit_twice_unkept");
     win.cmd_q();
