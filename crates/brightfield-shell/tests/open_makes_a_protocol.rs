@@ -438,10 +438,6 @@ fn open_dir(win: &Window) -> Option<PathBuf> {
     win.app.open_protocol_dir()
 }
 
-/// A file opened again reopens the one Protocol of it rather than making another. A file that
-/// is one source of a Protocol of several, or a source of more than one Protocol, asks which in a
-/// sheet listing each by name, with New Protocol last: Esc opens nothing, New Protocol makes one as
-/// an open with no Protocol of it does, and a Protocol chosen opens.
 /// A failed-rows step whose statement fails is listed on the spine with its failure, not left
 /// off as an empty table would be.
 #[test]
@@ -578,6 +574,10 @@ fn an_open_waits_while_the_which_protocol_sheet_is_up() {
     );
 }
 
+/// A file opened again reopens the one Protocol of it rather than making another. A file that
+/// is one source of a Protocol of several, or a source of more than one Protocol, asks which in a
+/// sheet listing each by name, with New Protocol last: Esc opens nothing, New Protocol makes one as
+/// an open with no Protocol of it does, and a Protocol chosen opens.
 #[test]
 fn a_file_reopens_the_protocol_it_has_or_asks_which() {
     let folder = input("again");
