@@ -365,9 +365,8 @@ fn spine_labels(win: &Window) -> Vec<String> {
         .collect()
 }
 
-/// The step that keeps values that did not cast, and its `__failed` table, are on the spine only
-/// once the table holds rows: a file whose values all cast lists neither, and the same Protocol
-/// run with a row in that table lists both.
+/// A file whose values all cast lists neither the step that keeps values that did not cast nor its
+/// `__failed` table on the spine, and the same Protocol run with a row in that table lists both.
 #[test]
 fn the_failed_rows_step_shows_only_when_rows_failed() {
     let clean = input("all-cast").join("all_cast.csv");
