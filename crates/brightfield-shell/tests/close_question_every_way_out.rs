@@ -810,6 +810,53 @@ fn a_second_quit_that_cannot_keep_the_work_asks_again() {
     win.until("the held run never finished", |w| !w.app.run_outstanding());
 }
 
+/// A file that asks which Protocol when opened alone, being one of the two sources of a folder's
+/// Protocol: `<name>_left.csv`, beside `<name>_right.csv`.
+fn a_file_that_asks(name: &str) -> PathBuf {
+    let pair = scratch().join("input").join(format!("{name}_pair"));
+    std::fs::create_dir_all(&pair).expect("a folder");
+    let left = pair.join(format!("{name}_left.csv"));
+    std::fs::write(&left, "id,name\n1,Ada\n2,Bo\n").unwrap();
+    std::fs::write(
+        pair.join(format!("{name}_right.csv")),
+        "id,left_id\n10,1\n11,2\n",
+    )
+    .unwrap();
+    let mut maker = Window::opened(&format!("{name}_maker"));
+    maker.app.open_queue().push(OpenRequest::Path(pair));
+    maker.settle();
+    assert!(maker.app.model_pane().is_some(), "{}", maker.said());
+    left
+}
+
+#[test]
+fn files_held_behind_a_quit_that_waits_for_a_run_are_all_said_not_opened() {
+    let first = a_file_that_asks("wait_held_one");
+    let second = a_file_that_asks("wait_held_two");
+    let (mut win, held) = waiting_on_a_held_run("wait_held");
+    win.cmd_q();
+    assert!(win.asking());
+    win.app.open_queue().push(OpenRequest::Path(first));
+    win.app.open_queue().push(OpenRequest::Path(second));
+    win.settle();
+    assert!(win.asking(), "the question stands: {}", win.said());
+
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    win.settle();
+    assert!(win.says_waiting() && !win.closed, "{}", win.said());
+    assert_eq!(win.app.open_overlay(), None, "no sheet asks: {}", win.said());
+    assert!(
+        win.app
+            .notifications()
+            .iter()
+            .any(|n| n.title == "wait_held_one_left.csv and 1 more was not opened"),
+        "one banner names both: {}",
+        win.said()
+    );
+    held.release();
+    win.until("the held run never finished", |w| !w.app.run_outstanding());
+}
+
 #[test]
 fn a_close_while_a_quit_waits_for_a_run_closes_now() {
     let (mut win, held) = waiting_on_a_held_run("close_twice");

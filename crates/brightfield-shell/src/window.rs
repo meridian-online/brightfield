@@ -5782,15 +5782,17 @@ impl MeridianApp {
         // the close question, and one asked for while the question is up takes the place of the
         // one it was asked for: the latest choice is the one that opens once it is answered.
         // The files held while the close question was up are taken once the question has gone,
-        // one Which Protocol sheet at a time. A window whose answer closed it opens none of them,
-        // and says so.
-        if self.closing {
+        // one Which Protocol sheet at a time. A window whose answer closed it, or that waits for
+        // a run before it closes, opens none of them, and one banner names them all.
+        if self.closing || self.close_after_runs.is_some() {
             let held = std::mem::take(&mut self.held_for_question);
             if !held.is_empty() {
-                self.say_not_opened(
-                    &crate::open_queue::OpenRequest::Paths(held),
-                    "The window is closing. Open it again after.",
-                );
+                let why = if self.closing {
+                    "The window is closing. Open it again after."
+                } else {
+                    "The window is closing once the run finishes. Open it again after."
+                };
+                self.say_not_opened(&crate::open_queue::OpenRequest::Paths(held), why);
             }
         } else if !matches!(
             self.overlay,
