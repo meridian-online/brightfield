@@ -803,6 +803,10 @@ pub const MAKE_QUESTION_TITLE: &str = "Save before making a new Protocol?";
 pub const MOVE_TO_FOLDER_QUESTION_TITLE: &str =
     "Save before moving it to the new Protocols folder?";
 
+/// The headline of the question asked before the Protocol's data is read again from its file,
+/// which opens the Protocol afresh and replaces what its canvas shows.
+pub const RELOAD_QUESTION_TITLE: &str = "Save before reloading?";
+
 /// What the close question is asked before: the window closing or the Protocol left, or its
 /// folder renamed or moved, after which the window opens it again where it now is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -821,6 +825,8 @@ pub enum AskedBefore {
     /// Moving the open Protocol into the new Protocols folder with the others. Keeping editing
     /// leaves it where it is, and the others still move.
     MovingToNewFolder,
+    /// Reading the Protocol's data again from its file, which opens it afresh.
+    Reloading,
 }
 
 /// How many rows the list of unsaved edits takes at most: the two the accepted
@@ -875,6 +881,7 @@ impl CloseQuestion {
             AskedBefore::AddingSource => ADD_SOURCE_QUESTION_TITLE,
             AskedBefore::Making => MAKE_QUESTION_TITLE,
             AskedBefore::MovingToNewFolder => MOVE_TO_FOLDER_QUESTION_TITLE,
+            AskedBefore::Reloading => RELOAD_QUESTION_TITLE,
         }
     }
 
@@ -911,6 +918,10 @@ impl CloseQuestion {
             }
             (AskedBefore::MovingToNewFolder, CloseAnswer::KeepEditing) => {
                 "Keep editing, and leave it"
+            }
+            (AskedBefore::Reloading, CloseAnswer::SaveAndClose) => "Save and reload",
+            (AskedBefore::Reloading, CloseAnswer::CloseWithoutSaving) => {
+                "Keep as a version and reload"
             }
             _ => CLOSE_ANSWERS
                 .iter()

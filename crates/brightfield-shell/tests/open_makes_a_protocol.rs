@@ -870,6 +870,51 @@ fn reloading_the_data_rereads_the_analysts_file() {
 }
 
 #[test]
+fn reloading_over_a_draft_asks_the_close_question_first() {
+    use brightfield_shell::overlays::{CloseAnswer, RELOAD_QUESTION_TITLE};
+    let folder = input("reload-draft");
+    let csv = folder.join("reload_draft.csv");
+    std::fs::copy(housing(), &csv).expect("the housing sample copies");
+    let mut win = Window::new();
+    win.open(&csv);
+    assert_eq!(rows_shown(&win), 240, "{}", win.said());
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("house_age > 28".to_string()),
+            order: None,
+        });
+    win.frame();
+    assert!(win.app.carries_unsaved_mark(), "the grid view is a draft");
+
+    std::fs::write(&csv, housing_rows(5)).expect("the CSV rewritten");
+    let ctx = win.ctx.clone();
+    win.app.reload_data_file(&ctx);
+    win.frame();
+
+    let question = win
+        .app
+        .close_question()
+        .expect("a reload over a draft asks first");
+    assert_eq!(question.title(), RELOAD_QUESTION_TITLE);
+    assert!(
+        win.app.carries_unsaved_mark(),
+        "the draft is still held while the question is up"
+    );
+
+    win.app
+        .answer_close_question(&ctx, CloseAnswer::SaveAndClose);
+    win.frame();
+    assert!(win.app.close_question().is_none(), "{}", win.said());
+    assert_eq!(
+        rows_shown(&win),
+        5,
+        "the reload goes once the draft is saved: {}",
+        win.said()
+    );
+}
+
+#[test]
 fn saving_after_a_new_open_writes_into_the_protocol_and_not_its_grid_copy() {
     let folder = input("kept");
     let csv = folder.join("kept.csv");

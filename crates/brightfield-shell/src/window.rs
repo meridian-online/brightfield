@@ -2461,6 +2461,9 @@ pub enum Leaving {
     /// Protocol among them, as Preferences offers once the folder changes. Keeping editing
     /// leaves the open one where it is and moves the rest.
     MoveAll { from: PathBuf, to: PathBuf },
+    /// Reading the open Protocol's data again from its file, which opens it afresh and so
+    /// replaces the chart, the grid view and the statements the window holds.
+    Reload,
 }
 
 /// **A change to where the open Protocol's folder is**: its name, or the folder it is in. Each is
@@ -9348,7 +9351,11 @@ impl MeridianApp {
                     self.stop_waiting_for_runs();
                     self.close_window(ctx);
                 }
-                Leaving::Home | Leaving::Move(_) | Leaving::Make(_) | Leaving::MoveAll { .. } => {
+                Leaving::Home
+                | Leaving::Move(_)
+                | Leaving::Make(_)
+                | Leaving::MoveAll { .. }
+                | Leaving::Reload => {
                     self.say_waiting_for_runs(ctx);
                 }
                 Leaving::Open(request) => {
@@ -9387,6 +9394,7 @@ impl MeridianApp {
                 ) => crate::overlays::AskedBefore::AddingSource,
                 Leaving::Make(_) => crate::overlays::AskedBefore::Making,
                 Leaving::MoveAll { .. } => crate::overlays::AskedBefore::MovingToNewFolder,
+                Leaving::Reload => crate::overlays::AskedBefore::Reloading,
                 _ => crate::overlays::AskedBefore::Leaving,
             };
         }
@@ -9404,6 +9412,7 @@ impl MeridianApp {
             Leaving::Move(to) => self.move_open_protocol(ctx, &to),
             Leaving::Make(parent) => self.make_new_protocol_in(ctx, &parent),
             Leaving::MoveAll { from, to } => self.move_all_protocols(ctx, &from, &to, false),
+            Leaving::Reload => self.reload_now(ctx),
         }
     }
 
@@ -12922,16 +12931,32 @@ impl MeridianApp {
     /// It is also a no-op when the canvas holds no data-file document to
     /// reload: the click that raised this verb named a file the window no
     /// longer has open, and there is nothing left to race.
+    ///
+    /// A reload opens the Protocol afresh, which replaces the chart, the grid
+    /// view, the statements and the removals the window holds, so it goes
+    /// through [`Self::leave`] as `Leaving::Reload`: over a draft the close
+    /// question asks first, and the reload waits for its answer.
     pub fn reload_data_file(&mut self, ctx: &egui::Context) {
-        if self.fetching.is_some() {
+        if self.fetching.is_some() || self.data_file_to_reload().is_none() {
             return;
         }
-        let Some(path) = self
-            .charts
+        self.leave(ctx, Leaving::Reload);
+    }
+
+    /// The data file the open chart document reads, the one a reload reads again.
+    fn data_file_to_reload(&self) -> Option<PathBuf> {
+        self.charts
             .doc
             .live_dashboard()
             .and_then(|live| live.data_files(live.base_dir()).into_iter().next())
-        else {
+    }
+
+    /// Reload the data file with nothing left to ask, as [`Self::reload_data_file`] describes.
+    fn reload_now(&mut self, ctx: &egui::Context) {
+        if self.fetching.is_some() {
+            return;
+        }
+        let Some(path) = self.data_file_to_reload() else {
             return;
         };
         // The grid of a Protocol's one table reads the Protocol's copy of it, which was written
