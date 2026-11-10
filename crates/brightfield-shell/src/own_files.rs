@@ -105,20 +105,27 @@ fn create_of(parent: &Path, named: &Path, sources: SourceSet) -> Result<OwnProto
     }
     let (dir, name) = protocols_dir::claim(parent, &slug_of(named)).map_err(|e| e.to_string())?;
 
-    let models = dir.join("models");
-    std::fs::create_dir(&models).map_err(|e| format!("{}: {e}", models.display()))?;
-    let mut manifest = format!("name: {name}\nengine: duckdb\nsteps:\n");
-    for table in &sources.tables {
-        let step = load_step(&table.name);
-        let file = format!("models/01_{step}.sql");
-        let sql = format!("{}\n", sources::load_sql(table, &dir));
-        std::fs::write(dir.join(&file), sql).map_err(|e| format!("{file}: {e}"))?;
-        let _ = writeln!(manifest, "  - name: {step}\n    sql: {file}");
-        let _ = writeln!(manifest, "    produces:\n      - raw_{}", table.name);
+    // A folder half written is taken away again, as `create_empty` takes its own.
+    let written = (|| -> Result<(), String> {
+        let models = dir.join("models");
+        std::fs::create_dir(&models).map_err(|e| format!("{}: {e}", models.display()))?;
+        let mut manifest = format!("name: {name}\nengine: duckdb\nsteps:\n");
+        for table in &sources.tables {
+            let step = load_step(&table.name);
+            let file = format!("models/01_{step}.sql");
+            let sql = format!("{}\n", sources::load_sql(table, &dir));
+            std::fs::write(dir.join(&file), sql).map_err(|e| format!("{file}: {e}"))?;
+            let _ = writeln!(manifest, "  - name: {step}\n    sql: {file}");
+            let _ = writeln!(manifest, "    produces:\n      - raw_{}", table.name);
+        }
+        let path = dir.join("arcform.yaml");
+        std::fs::write(&path, manifest).map_err(|e| format!("{}: {e}", path.display()))?;
+        write_sources(&dir, &sources)
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(e);
     }
-    let path = dir.join("arcform.yaml");
-    std::fs::write(&path, manifest).map_err(|e| format!("{}: {e}", path.display()))?;
-    write_sources(&dir, &sources)?;
     Ok(OwnProtocol {
         dir,
         sources,

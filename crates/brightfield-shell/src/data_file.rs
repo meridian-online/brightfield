@@ -1283,33 +1283,46 @@ fn open_all_with(
 
     use crate::own_files as own;
     let mut protocol = own::create_all(&accepted, refused)?;
-    own::run_loads(&protocol, runner)?;
-    own::profile(&mut protocol)?;
-    own::write_packages(&protocol)?;
-    // A single table has nothing to relate, so dovetail is not asked about it. When dovetail's
-    // sample pass fails, the open still shows the tables, each unclear with no joins, rather than
-    // leaving the Protocol folder behind with no window; the pane's full pass runs dovetail again
-    // and says why in the status line if it fails too.
-    let stand_in = crate::discovery::StandIn;
-    let model = if one_part.is_none() {
-        crate::discovery::sample_pass(dovetail, &protocol, None).or_else(|e| {
-            eprintln!("dovetail's sample pass failed, so the tables open unclear: {e}");
-            crate::discovery::sample_pass(&stand_in, &protocol, None)
-        })?
-    } else {
-        // The stand-in is the discoverer here, so its failure is the open's, not one to retry.
-        crate::discovery::sample_pass(&stand_in, &protocol, None)?
-    };
-    // A single table has nothing to relate, so no model is written for it, and its folder is not
-    // one the door lists as an own-files Protocol.
-    if one_part.is_none() {
-        crate::discovery::write_model_file(&protocol.dir, &brightfield_ossie::write(&model))?;
-    }
-    own::write_silver(&protocol, &model)?;
-    own::run_loads(&protocol, runner)?;
-    match one_part {
-        Some(_) => open_one_table(&protocol).map(|o| Opened::OneTable(o, protocol)),
-        None => Ok(Opened::Model(protocol)),
+    // The folder is in the Protocols folder from here on, where the door lists it and the reopen
+    // rule reads its sources, so an open that fails after this takes it away again rather than
+    // leave a Protocol half made (`a_failed_open_leaves_no_protocol_behind`).
+    let made = (|| -> Result<Option<OpenedFile>, String> {
+        own::run_loads(&protocol, runner)?;
+        own::profile(&mut protocol)?;
+        own::write_packages(&protocol)?;
+        // A single table has nothing to relate, so dovetail is not asked about it. When
+        // dovetail's sample pass fails, the open still shows the tables, each unclear with no
+        // joins, rather than leaving the Protocol folder behind with no window; the pane's full
+        // pass runs dovetail again and says why in the status line if it fails too.
+        let stand_in = crate::discovery::StandIn;
+        let model = if one_part.is_none() {
+            crate::discovery::sample_pass(dovetail, &protocol, None).or_else(|e| {
+                eprintln!("dovetail's sample pass failed, so the tables open unclear: {e}");
+                crate::discovery::sample_pass(&stand_in, &protocol, None)
+            })?
+        } else {
+            // The stand-in is the discoverer here, so its failure is the open's, not one to retry.
+            crate::discovery::sample_pass(&stand_in, &protocol, None)?
+        };
+        // A single table has nothing to relate, so no model is written for it, and its folder is
+        // not one the door lists as an own-files Protocol.
+        if one_part.is_none() {
+            crate::discovery::write_model_file(&protocol.dir, &brightfield_ossie::write(&model))?;
+        }
+        own::write_silver(&protocol, &model)?;
+        own::run_loads(&protocol, runner)?;
+        one_part
+            .as_ref()
+            .map(|_| open_one_table(&protocol))
+            .transpose()
+    })();
+    match made {
+        Ok(Some(opened)) => Ok(Opened::OneTable(opened, protocol)),
+        Ok(None) => Ok(Opened::Model(protocol)),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&protocol.dir);
+            Err(e)
+        }
     }
 }
 

@@ -848,6 +848,37 @@ fn a_one_source_protocol_opens_again_from_its_folder_and_its_manifest() {
 }
 
 #[test]
+fn a_failed_open_leaves_no_protocol_behind() {
+    let folder = input("failed-open");
+    let csv = folder.join("failed_open.csv");
+    std::fs::copy(housing(), &csv).expect("the housing sample copies");
+    // A runner that is not there, so the open fails at its first run, after the folder is made.
+    let missing = Runner::at(scratch().join("no-such-runner"));
+    let failed = data_file::open_any(&csv, &missing);
+    assert!(failed.is_err(), "the open fails without a runner");
+    assert_eq!(
+        protocols_named("failed_open"),
+        Vec::<String>::new(),
+        "the half-made Protocol is taken away"
+    );
+
+    let mut win = Window::new();
+    win.open(&csv);
+    assert_eq!(
+        protocols_named("failed_open"),
+        ["failed_open"],
+        "a second open makes a fresh Protocol under the bare name: {}",
+        win.said()
+    );
+    assert_eq!(
+        win.app.own_protocol().map(|p| p.dir.clone()),
+        Some(protocols().join("failed_open")),
+        "{}",
+        win.said()
+    );
+}
+
+#[test]
 fn reloading_the_data_rereads_the_analysts_file() {
     let folder = input("reloaded");
     let csv = folder.join("reloaded.csv");
