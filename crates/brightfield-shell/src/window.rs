@@ -13063,6 +13063,25 @@ impl MeridianApp {
         self.open_data_file(ctx, &path.to_string_lossy());
     }
 
+    /// Write `source`'s declaration where Save and Run write it, and answer its manifest's path.
+    ///
+    /// A one-step Protocol is written to its directory ([`crate::one_step::OneStepProtocol::save_to`]).
+    /// The grid of an own-files Protocol's table, its one table or one of a folder's, is written
+    /// nothing: that Protocol's manifest was written when it was made and is the file a recorded
+    /// view extends, so Save and Run record into it as it stands.
+    fn write_source(&self, source: &crate::one_step::OneStepProtocol) -> Result<PathBuf, String> {
+        let own_folder = crate::own_files::own_protocol_dir(&source.dir).is_some();
+        match &self.own_protocol {
+            Some(own) if own.dir == source.dir => {
+                Ok(crate::one_step::OneStepProtocol::manifest_path_in(&own.dir))
+            }
+            _ if own_folder => Ok(crate::one_step::OneStepProtocol::manifest_path_in(
+                &source.dir,
+            )),
+            _ => source.save_to(&source.dir),
+        }
+    }
+
     /// Write this window's Protocol to disk: `arcform.yaml` and its one model,
     /// in the data file's own directory, and the chart beside them.
     ///
@@ -13102,25 +13121,6 @@ impl MeridianApp {
     /// row by whichever of the two its id turns out to be. So a saved Protocol
     /// is listed on the next launch and the Protocols section leads with it —
     /// which is the whole of what saving buys a reader who closes the window.
-    /// Write `source`'s declaration where Save and Run write it, and answer its manifest's path.
-    ///
-    /// A one-step Protocol is written to its directory ([`crate::one_step::OneStepProtocol::save_to`]).
-    /// The grid of an own-files Protocol's table, its one table or one of a folder's, is written
-    /// nothing: that Protocol's manifest was written when it was made and is the file a recorded
-    /// view extends, so Save and Run record into it as it stands.
-    fn write_source(&self, source: &crate::one_step::OneStepProtocol) -> Result<PathBuf, String> {
-        let own_folder = crate::own_files::own_protocol_dir(&source.dir).is_some();
-        match &self.own_protocol {
-            Some(own) if own.dir == source.dir => {
-                Ok(crate::one_step::OneStepProtocol::manifest_path_in(&own.dir))
-            }
-            _ if own_folder => Ok(crate::one_step::OneStepProtocol::manifest_path_in(
-                &source.dir,
-            )),
-            _ => source.save_to(&source.dir),
-        }
-    }
-
     pub fn save_protocol(&mut self, ctx: &egui::Context) -> Option<Result<PathBuf, String>> {
         // A folder deleted or moved in the Finder is not made again by a Save.
         if self.refuse_if_the_folder_is_gone(ctx) {

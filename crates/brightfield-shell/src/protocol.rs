@@ -274,6 +274,18 @@ impl ProtocolInputs {
         self.table = Some(table);
     }
 
+    /// Adopt the newest record in the Protocol folder `dir` of a run of `protocol` that matches
+    /// these steps ([`Self::adopt_run`]), noting whether it was a preview
+    /// ([`crate::run::preview_ids`]).
+    pub fn adopt_newest_run(&mut self, dir: &std::path::Path, protocol: &str) {
+        for view in crate::run::records_newest_first(dir, protocol) {
+            if self.adopt_run(&view) {
+                self.run_is_preview = crate::run::preview_ids(dir).contains(&view.run.run_id);
+                return;
+            }
+        }
+    }
+
     /// Take on the run `view` records, when it is a run of **this** Protocol's
     /// steps, and say whether it was.
     ///
@@ -298,18 +310,6 @@ impl ProtocolInputs {
     /// spec — a step renamed, or a hand-written manifest of more steps that has
     /// since been replaced by the file's own — and drawing its states against
     /// steps it did not run would put a run's outcome on the wrong rows.
-    /// Adopt the newest record in the Protocol folder `dir` of a run of `protocol` that matches
-    /// these steps ([`Self::adopt_run`]), noting whether it was a preview
-    /// ([`crate::run::preview_ids`]).
-    pub fn adopt_newest_run(&mut self, dir: &std::path::Path, protocol: &str) {
-        for view in crate::run::records_newest_first(dir, protocol) {
-            if self.adopt_run(&view) {
-                self.run_is_preview = crate::run::preview_ids(dir).contains(&view.run.run_id);
-                return;
-            }
-        }
-    }
-
     pub fn adopt_run(&mut self, view: &ContractView) -> bool {
         // A step typed and not yet saved is in no manifest a run read, so a
         // record is compared with the steps less those.
