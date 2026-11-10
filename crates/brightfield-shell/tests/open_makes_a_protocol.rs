@@ -365,7 +365,7 @@ fn spine_labels(win: &Window) -> Vec<String> {
         .collect()
 }
 
-/// A file whose values all cast lists neither the step that keeps values that did not cast nor its
+/// A file whose values cast lists neither the step that keeps values that did not cast nor its
 /// `__failed` table on the spine, and the same Protocol run with a row in that table lists both.
 #[test]
 fn the_failed_rows_step_shows_only_when_rows_failed() {
