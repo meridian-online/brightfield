@@ -2586,8 +2586,8 @@ const NOT_OPENED_WHILE_CLOSING_BANNER: &str = "not-opened-while-closing";
 /// The banner that says what a close made while the window waited for a run did with the edits
 /// made during the wait.
 pub const KEPT_WHILE_CLOSING_BANNER: &str = "kept-while-closing";
-/// What it says when those edits were kept as a version.
-pub const KEPT_WHILE_CLOSING_TITLE: &str = "The edits made while waiting were kept as a version";
+/// What it says when the unsaved work was kept as a version.
+pub const KEPT_WHILE_CLOSING_TITLE: &str = "The unsaved work was kept as a version";
 
 /// The `quit` verb's longname: the registry's, spelled once here for the
 /// window's key and dispatch.
@@ -3320,6 +3320,10 @@ pub struct MeridianApp {
     /// was answered, in the question's words. Work that differs when the runs land is asked
     /// about again rather than closed over.
     close_after_runs: Option<Vec<String>>,
+    /// Whether the close question now up, or last answered, was answered Close without saving
+    /// after it said the work could not be kept: the analyst chose to lose it, so a close during
+    /// a run wait that cannot keep the work either closes rather than ask again.
+    unkept_accepted: bool,
     /// Every request to open something, from whichever way in, taken at the start of each frame.
     open_queue: crate::open_queue::OpenQueue,
     /// The DuckDB extensions an open takes as installed, when a test names them; `None` asks
@@ -3866,6 +3870,7 @@ impl MeridianApp {
             leaving: None,
             held_for_question: Vec::new(),
             close_after_runs: None,
+            unkept_accepted: false,
             open_queue: crate::open_queue::OpenQueue::default(),
             installed_extensions: None,
             own_protocol: None,
@@ -9320,10 +9325,15 @@ impl MeridianApp {
             return;
         }
         // A quit already answered, waiting for a run to land: a close is the analyst ending the
-        // app now, whatever the run, so it goes through uncancelled.
+        // app now, whatever the run, so it goes through uncancelled once the unsaved work is kept
+        // as a version. Work that cannot be kept cancels the close and asks again, saying why.
         if self.close_after_runs.is_some() {
-            self.keep_what_changed_while_waiting();
-            self.allow_close();
+            if self.keep_what_changed_while_waiting() {
+                self.allow_close();
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.request_repaint();
+            }
             return;
         }
         if self.closing {
@@ -9390,8 +9400,11 @@ impl MeridianApp {
         if self.close_after_runs.is_some() {
             match to {
                 Leaving::Close | Leaving::Quit => {
-                    self.keep_what_changed_while_waiting();
-                    self.close_window(ctx);
+                    if self.keep_what_changed_while_waiting() {
+                        self.close_window(ctx);
+                    } else {
+                        ctx.request_repaint();
+                    }
                 }
                 Leaving::Home
                 | Leaving::Move(_)
@@ -9427,6 +9440,7 @@ impl MeridianApp {
     fn ask(&mut self, to: Leaving) {
         if !matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
             self.overlay = Some(Overlay::CloseQuestion(self.close_question_for_now()));
+            self.unkept_accepted = false;
         }
         // Worded for what it is asked before now, the latest way out.
         if let Some(Overlay::CloseQuestion(question)) = self.overlay.as_mut() {
@@ -9538,29 +9552,41 @@ impl MeridianApp {
     /// file name the edit and not its text, so typing more in either would read as no change
     /// (`a_second_quit_keeps_yaml_typed_while_waiting`). Work the answer already kept is kept
     /// again, as a second version.
-    fn keep_what_changed_while_waiting(&mut self) {
+    ///
+    /// Answers whether the window may close. Work that cannot be kept is not closed over: the
+    /// close question opens again for the quit, saying why, as Close without saving says it, and
+    /// the window stays (`a_second_quit_that_cannot_keep_the_work_asks_again`). Once the analyst
+    /// has answered that question Close without saving, a later close that cannot keep the work
+    /// either closes, since the loss was chosen.
+    fn keep_what_changed_while_waiting(&mut self) -> bool {
         self.stop_waiting_for_runs();
         if !self.has_unsaved_work() {
-            return;
+            return true;
         }
-        let said = match self.keep_unsaved() {
-            Ok(()) => Notification::new(
-                NotificationId::new(KEPT_WHILE_CLOSING_BANNER),
-                Severity::Info,
-                KEPT_WHILE_CLOSING_TITLE,
-            )
-            .body("The Versions panel lists them as closed unsaved."),
-            Err(why) => {
-                eprintln!("the edits made while waiting for a run could not be kept: {why}");
-                Notification::new(
-                    NotificationId::new(KEPT_WHILE_CLOSING_BANNER),
-                    Severity::Error,
-                    "The edits made while waiting could not be kept",
-                )
-                .body(why)
+        match self.keep_unsaved() {
+            Ok(()) => {
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new(KEPT_WHILE_CLOSING_BANNER),
+                        Severity::Info,
+                        KEPT_WHILE_CLOSING_TITLE,
+                    )
+                    .body("The Versions panel lists them as closed unsaved."),
+                );
+                true
             }
-        };
-        self.notifications.raise(said);
+            Err(why) => {
+                eprintln!("the unsaved work could not be kept before closing: {why}");
+                if self.unkept_accepted {
+                    return true;
+                }
+                self.ask(Leaving::Quit);
+                if let Some(Overlay::CloseQuestion(question)) = self.overlay.as_mut() {
+                    question.not_kept = Some(why);
+                }
+                false
+            }
+        }
     }
 
     /// Stop waiting for runs to land before closing, and take the banner that said so down.
@@ -9728,6 +9754,7 @@ impl MeridianApp {
             }
             CloseAnswer::CloseWithoutSaving => {
                 let told = self.close_question().is_some_and(|q| q.not_kept.is_some());
+                self.unkept_accepted = told;
                 let kept = if told { Ok(()) } else { self.keep_unsaved() };
                 match kept {
                     Ok(()) => {

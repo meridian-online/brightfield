@@ -786,6 +786,31 @@ fn a_second_quit_keeps_yaml_typed_while_waiting() {
 }
 
 #[test]
+fn a_second_quit_that_cannot_keep_the_work_asks_again() {
+    let (mut win, held) = waiting_on_a_held_run("quit_twice_unkept");
+    win.cmd_q();
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    assert!(!win.closed && win.says_waiting(), "{}", win.said());
+
+    // The store taken away during the wait, so the work can no longer be kept.
+    win.app.set_history(None);
+    win.forget_sent();
+    win.cmd_q();
+    assert!(!win.closed, "the window stays over work it could not keep");
+    let question = win.app.close_question().expect("the question asks again");
+    assert!(question.not_kept.is_some(), "saying why: {question:?}");
+
+    // Close without saving again is the analyst choosing to lose it: the quit waits for the run
+    // as before, and the next quit closes.
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    assert!(!win.closed && win.says_waiting(), "{}", win.said());
+    win.cmd_q();
+    assert!(win.closed, "the loss was chosen: {}", win.said());
+    held.release();
+    win.until("the held run never finished", |w| !w.app.run_outstanding());
+}
+
+#[test]
 fn a_close_while_a_quit_waits_for_a_run_closes_now() {
     let (mut win, held) = waiting_on_a_held_run("close_twice");
     win.cmd_q();
