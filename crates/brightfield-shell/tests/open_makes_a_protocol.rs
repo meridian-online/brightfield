@@ -438,6 +438,35 @@ fn open_dir(win: &Window) -> Option<PathBuf> {
     win.app.open_protocol_dir()
 }
 
+/// A Protocol made from a file whose values cast, run a second time so its failed-rows step is
+/// skipped as current, still leaves that step and its empty table off the spine.
+#[test]
+fn a_failed_rows_step_skipped_as_current_stays_off_the_spine() {
+    let csv = input("twice-run").join("twice_run.csv");
+    std::fs::write(&csv, "day,reading\n2026-02-01,1\n2026-02-02,2\n").unwrap();
+    let mut win = Window::new();
+    win.open(&csv);
+    let dir = open_dir(&win).unwrap_or_else(|| panic!("the CSV made a Protocol: {}", win.said()));
+
+    let mut again = Window::new();
+    again.open(&dir);
+    // The second run found the steps current and skipped them, the failed-rows step among them.
+    let silver = again
+        .app
+        .protocol_model()
+        .spine()
+        .into_iter()
+        .find(|row| row.label == "silver_twice_run")
+        .expect("the silver step is listed");
+    assert!(silver.kind.contains("skipped"), "{}", silver.kind);
+    let labels = spine_labels(&again);
+    assert!(
+        labels.iter().any(|l| l == "twice_run") && !labels.iter().any(|l| l.contains("failed")),
+        "{labels:?} {}",
+        again.said()
+    );
+}
+
 /// A failed-rows step whose statement fails is listed on the spine with its failure, not left
 /// off as an empty table would be.
 #[test]
