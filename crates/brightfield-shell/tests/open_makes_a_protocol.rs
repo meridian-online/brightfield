@@ -981,7 +981,7 @@ fn assert_reopened_twice(file: &Path, stem: &str) {
 
 #[test]
 fn a_database_of_two_tables_opened_twice_reopens_its_protocol() {
-    let db = input("reopened-db").join("reopened_db.duckdb");
+    let db = input("twice-db").join("twice_db.duckdb");
     let conn = duckdb::Connection::open(&db).expect("a database");
     conn.execute_batch(
         "CREATE TABLE customers AS SELECT * FROM (VALUES (1, 'a'), (2, 'b')) t(id, name); \
@@ -989,12 +989,12 @@ fn a_database_of_two_tables_opened_twice_reopens_its_protocol() {
     )
     .expect("the tables are written");
     drop(conn);
-    assert_reopened_twice(&db, "reopened_db");
+    assert_reopened_twice(&db, "twice_db");
 }
 
 #[test]
 fn a_workbook_opened_twice_reopens_its_protocol() {
-    let book = input("reopened-book").join("reopened_book.xlsx");
+    let book = input("twice-book").join("twice_book.xlsx");
     let conn = duckdb::Connection::open_in_memory().expect("a connection");
     let made = conn
         .execute_batch("INSTALL excel; LOAD excel;")
@@ -1009,7 +1009,7 @@ fn a_workbook_opened_twice_reopens_its_protocol() {
         eprintln!("skipped: the excel extension is not available here: {e}");
         return;
     }
-    assert_reopened_twice(&book, "reopened_book");
+    assert_reopened_twice(&book, "twice_book");
 }
 
 #[test]
