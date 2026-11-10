@@ -1138,8 +1138,10 @@ impl OverlayCase {
 
 /// Point the Protocols folder at an empty scratch folder for this process, so
 /// the New Protocol chooser and the Preferences sheet list and name the same
-/// folder on every machine rather than reading the home directory. Nothing is
-/// written under it.
+/// folder on every machine rather than reading the home directory. The Which
+/// Protocol cases write two record-only Protocols into it
+/// (`open_a_file_two_protocols_read`); the New Protocol chooser lists the
+/// folder's groups and not its Protocols, so its card is unchanged by them.
 fn hermetic_protocols_folder() {
     static FOLDER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     let folder = FOLDER.get_or_init(|| {
