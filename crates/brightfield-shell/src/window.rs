@@ -12279,7 +12279,7 @@ impl MeridianApp {
         }
         self.overlay = None;
         let holds_one_there = self
-            .open_protocol_dir()
+            .held_protocol_dir()
             .is_some_and(|dir| is_within(&dir, &offer.from));
         let to = Leaving::MoveAll {
             from: offer.from,
@@ -12308,7 +12308,7 @@ impl MeridianApp {
         to: &std::path::Path,
         leave_open: bool,
     ) {
-        let open = self.open_protocol_dir().filter(|dir| is_within(dir, from));
+        let open = self.held_protocol_dir().filter(|dir| is_within(dir, from));
         // A run writing its record into a folder, the open Protocol's or one left running after
         // Home, keeps that folder where it is; the open one is left too for its own draft when
         // the analyst chose to keep editing.
@@ -12467,17 +12467,26 @@ impl MeridianApp {
         })
     }
 
-    /// The folder of the Protocol this window holds, when it holds one and the folder is no
-    /// longer where it was opened from: deleted, or moved or renamed in the Finder.
+    /// The folder of the Protocol this window holds, of whichever kind: one made from the
+    /// analyst's own files or its model pane, an agent's Protocol drawn as panel tiles, and a
+    /// Protocol of one step opened from its manifest, whose folder is the one its source's Save
+    /// writes. `None` on the door and for a document with no Protocol folder behind it.
     ///
-    /// Every kind of Protocol a window holds: one made from the analyst's own files or its model
-    /// pane, an agent's Protocol drawn as panel tiles, and a Protocol of one step opened from its
-    /// manifest, whose folder is the one its source's Save writes.
-    fn gone_protocol_dir(&self) -> Option<PathBuf> {
+    /// The folder a move of the Protocols folder's Protocols asks about and opens again, and the
+    /// one the folder-gone guard watches, so the two agree on what the window holds
+    /// (`accepting_the_move_reopens_an_agent_protocol_at_its_new_place`).
+    #[must_use]
+    pub fn held_protocol_dir(&self) -> Option<PathBuf> {
         self.open_protocol_dir()
             .or_else(|| self.tiles.as_ref().map(|t| t.dir().to_path_buf()))
             .or_else(|| self.protocol.doc.model.source().map(|s| s.dir.clone()))
-            .filter(|dir| !dir.as_os_str().is_empty() && !dir.is_dir())
+            .filter(|dir| !dir.as_os_str().is_empty())
+    }
+
+    /// The folder of the Protocol this window holds ([`Self::held_protocol_dir`]), when the
+    /// folder is no longer where it was opened from: deleted, or moved or renamed in the Finder.
+    fn gone_protocol_dir(&self) -> Option<PathBuf> {
+        self.held_protocol_dir().filter(|dir| !dir.is_dir())
     }
 
     /// Say, while the Protocol this window holds has no folder, that it is gone and that nothing

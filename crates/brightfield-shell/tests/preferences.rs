@@ -468,6 +468,59 @@ fn an_open_protocol_is_moved_after_the_close_question_or_left() {
     assert!(report.said().contains("left_one"), "{}", report.said());
 }
 
+/// Copy the folder `from` to `to`.
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("a folder");
+    for entry in std::fs::read_dir(from).expect("a folder").flatten() {
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("a file copies");
+        }
+    }
+}
+
+#[test]
+fn accepting_the_move_reopens_an_agent_protocol_at_its_new_place() {
+    let _serial = serial();
+    let (old, new) = roots("agent_held");
+    let dir = old.join("co2");
+    copy_dir(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/agent-protocols/co2-per-capita"),
+        &dir,
+    );
+    let mut win = Window::new();
+    win.app.open_queue().push(OpenRequest::Path(dir.clone()));
+    win.settle();
+    assert!(win.app.own_protocol().is_none(), "not one Brightfield made");
+    assert_eq!(
+        win.app.held_protocol_dir(),
+        Some(dir.clone()),
+        "the window holds the agent's Protocol: {}",
+        win.said()
+    );
+
+    win.choose(&new);
+    win.answer_offer(true);
+    win.settle();
+
+    assert!(new.join("co2").join("arcform.yaml").is_file(), "it moved");
+    assert_eq!(
+        win.app.held_protocol_dir(),
+        Some(new.join("co2")),
+        "the window holds it at its new place: {}",
+        win.said()
+    );
+    assert!(
+        win.banner(brightfield_shell::window::FOLDER_GONE_BANNER)
+            .is_none(),
+        "{}",
+        win.said()
+    );
+}
+
 #[test]
 fn the_door_tree_reads_the_new_folder() {
     let _serial = serial();
