@@ -298,8 +298,8 @@ pub fn moved_since(dir: &Path) -> Option<PathBuf> {
 ///
 /// Answers what did not follow the move, in the words an in-app move uses
 /// ([`SOURCES_NOT_FOLLOWED`], [`PLACE_NOT_RECORDED`], [`DATABASE_NOT_FOLLOWED`]), so the window
-/// can say so: empty when everything followed, or the folder had not moved. Sources that could
-/// not be repaired leave the old place recorded, so the next open tries again.
+/// can say so (`a_finder_move_whose_repair_fails_says_so_on_open`). Sources that could not be
+/// repaired leave the old place recorded, so the next open tries again.
 #[must_use]
 pub fn follow_a_move(dir: &Path) -> Vec<String> {
     let Some(was) = moved_since(dir) else {
