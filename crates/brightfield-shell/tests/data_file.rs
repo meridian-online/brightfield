@@ -7,10 +7,11 @@
 //! either holds or does not — the function under it can return a perfectly
 //! worded `Err` while the window swallows it.
 //!
-//! **No dialog is opened anywhere in this file.** `data_file::pick` is one call
-//! into rfd and nothing else; every decision worth gating sits on the other side
-//! of it and takes a string. A test that raised an operating-system modal would
-//! hijack the desktop of whoever ran the suite.
+//! **No dialog is opened anywhere in this file.** `data_file::pick` raises the
+//! operating system's open dialog and hands what is chosen to the window's open
+//! queue. The decisions worth gating sit after it and take a path. A test that
+//! raised an operating-system modal would hijack the desktop of whoever ran the
+//! suite.
 //!
 //! The fixtures are written to a temp directory at test time rather than
 //! committed, because what is being gated is DuckDB reading a real file off a
