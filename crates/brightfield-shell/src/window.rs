@@ -11595,6 +11595,24 @@ impl MeridianApp {
             .map(|p| (p, crate::open_queue::route(p)))
             .find(|(_, route)| !matches!(route, Route::New(_)))
         {
+            let others = paths.len() - 1;
+            let were = if others == 1 { "was" } else { "were" };
+            // An archive cannot open yet, so nothing opened: its refusal says the others were not
+            // opened either, and no banner says the Protocol was
+            // (`an_archive_among_several_files_says_nothing_opened`).
+            if matches!(route, Route::Archive(_)) {
+                self.say_open_failed(
+                    ctx,
+                    &handed.to_string_lossy(),
+                    format!(
+                        "{} is a Protocol archive, which this build cannot open yet. Unzip it \
+                         and open its folder. The other {others} {were} not opened; open them by \
+                         themselves to make a Protocol of them.",
+                        display_name(handed)
+                    ),
+                );
+                return;
+            }
             self.open_path_now(ctx, &handed.to_string_lossy());
             // What opened, named as the route found it: a file inside a Protocol is that
             // Protocol's, not a Protocol itself.
@@ -11610,18 +11628,14 @@ impl MeridianApp {
                     display_name(handed),
                     display_name(dir)
                 ),
-                Route::Archive(_) | Route::New(_) => format!(
-                    "{} is a Protocol archive, so it was taken on its own",
-                    display_name(handed)
-                ),
+                // Answered above, or not found by the search.
+                Route::Archive(_) | Route::New(_) => return,
             };
-            let others = paths.len() - 1;
             self.notifications.raise(
                 Notification::new(banner, Severity::Warning, "Only the Protocol was opened").body(
                     format!(
-                        "{what}; the other {others} {} not opened. Open them by themselves to \
-                         make a Protocol of them.",
-                        if others == 1 { "was" } else { "were" },
+                        "{what}; the other {others} {were} not opened. Open them by themselves to \
+                         make a Protocol of them."
                     ),
                 ),
             );

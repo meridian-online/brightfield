@@ -192,6 +192,55 @@ fn the_menu_quit_banner_says_quit_will_not_ask() {
 }
 
 #[test]
+fn an_archive_among_several_files_says_nothing_opened() {
+    use std::io::Write as _;
+    let dir = scratch().join("input").join("archive_among");
+    std::fs::create_dir_all(&dir).expect("a folder");
+    let archive = dir.join("bundle.zip");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).expect("the zip"));
+    zip.start_file(
+        "bundle/arcform.yaml",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .expect("an entry");
+    zip.write_all(b"name: bundle\nengine: duckdb\nsteps: []\n")
+        .expect("the manifest");
+    zip.finish().expect("the zip is written");
+    let csv = housing_copy("archive_among", "beside_the_archive.csv");
+
+    let mut app = app();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, egui::RawInput::default());
+    app.open_queue()
+        .push(OpenRequest::Paths(vec![csv, archive]));
+    frame(&mut app, &ctx, egui::RawInput::default());
+
+    let titles: Vec<String> = app
+        .notifications()
+        .iter()
+        .map(|n| n.title.clone())
+        .collect();
+    assert!(
+        !titles.iter().any(|t| t == "Only the Protocol was opened"),
+        "nothing is said to have opened: {titles:?}"
+    );
+    let refusal = app
+        .notifications()
+        .iter()
+        .find(|n| n.title == "Could not open that data file")
+        .unwrap_or_else(|| panic!("the archive is refused: {}", said(&app)));
+    assert!(
+        refusal
+            .body
+            .as_deref()
+            .is_some_and(|b| b.contains("The other 1 was not opened")),
+        "and says the other was not opened: {:?}",
+        refusal.body
+    );
+    assert!(app.front_door_is_live(), "nothing opened");
+}
+
+#[test]
 fn requests_queued_before_the_first_frame_are_opened() {
     let csv = housing_copy("early", "early_housing.csv");
     let mut app = app();
