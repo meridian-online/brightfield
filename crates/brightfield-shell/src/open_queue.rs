@@ -114,6 +114,17 @@ impl OpenRequest {
             _ => Some(Self::Paths(paths)),
         }
     }
+
+    /// The request to add the files or folders `paths` to the open Protocol as sources:
+    /// [`Self::AddSource`] for one, [`Self::AddSources`] for several, and `None` for none.
+    #[must_use]
+    pub fn of_sources(mut paths: Vec<PathBuf>) -> Option<Self> {
+        match paths.len() {
+            0 => None,
+            1 => paths.pop().map(Self::AddSource),
+            _ => Some(Self::AddSources(paths)),
+        }
+    }
 }
 
 /// The queue the window's ways in fill, shared by clone.
@@ -245,5 +256,36 @@ impl OpenQueue {
     /// Wake `ctx` on each later push. The first context given is kept.
     pub fn wake_with(&self, ctx: &egui::Context) {
         let _ = self.wake.set(ctx.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What one open panel's choice becomes: one path or several, opened or added as sources, and
+    /// nothing for an empty choice.
+    #[test]
+    fn a_choice_of_paths_becomes_one_request() {
+        let a = PathBuf::from("/data/a.csv");
+        let b = PathBuf::from("/data/folder");
+        assert_eq!(OpenRequest::of_paths(Vec::new()), None);
+        assert_eq!(
+            OpenRequest::of_paths(vec![a.clone()]),
+            Some(OpenRequest::Path(a.clone()))
+        );
+        assert_eq!(
+            OpenRequest::of_paths(vec![a.clone(), b.clone()]),
+            Some(OpenRequest::Paths(vec![a.clone(), b.clone()]))
+        );
+        assert_eq!(OpenRequest::of_sources(Vec::new()), None);
+        assert_eq!(
+            OpenRequest::of_sources(vec![b.clone()]),
+            Some(OpenRequest::AddSource(b.clone()))
+        );
+        assert_eq!(
+            OpenRequest::of_sources(vec![a.clone(), b.clone()]),
+            Some(OpenRequest::AddSources(vec![a, b]))
+        );
     }
 }

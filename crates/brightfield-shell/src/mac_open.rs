@@ -343,6 +343,107 @@ pub fn route_menu_quit(
     true
 }
 
+/// Whether an open panel [`begin_open_panel`] raised is still up, so a second Cmd+O while it is
+/// does not raise another over it.
+static PANEL_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `NSModalResponseOK`, the answer an open panel gives when the analyst chose Open.
+const MODAL_RESPONSE_OK: isize = 1;
+
+/// **Raise the Mac's open panel, choosing files and folders in the one panel, and return at
+/// once.** The panel is attached to the key window as a sheet when there is one, and runs on its
+/// own otherwise; either way AppKit runs it from the event loop the window's frames run in, so
+/// the window goes on drawing behind it and nothing beachballs. When the analyst chooses Open,
+/// `answer` is called on the main thread with the chosen paths; a cancel calls nothing.
+///
+/// Files are offered only with one of `extensions`, and every folder can be chosen. Answers
+/// whether a panel was raised: `false` when one is already up, or off the main thread.
+pub fn begin_open_panel(
+    message: &str,
+    extensions: &[&str],
+    answer: impl Fn(Vec<std::path::PathBuf>) + 'static,
+) -> bool {
+    use std::sync::atomic::Ordering;
+    if MainThreadMarker::new().is_none() || PANEL_UP.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    // SAFETY: each message below is NSOpenPanel's, NSSavePanel's, NSMutableArray's or
+    // NSApplication's, sent on the main thread (checked above) with the argument types AppKit
+    // declares: `BOOL` setters, an `NSString`, an array of strings, an `NSWindow` and a block
+    // taking an `NSModalResponse`.
+    unsafe {
+        let panel: Option<Retained<AnyObject>> = msg_send![class!(NSOpenPanel), openPanel];
+        let Some(panel) = panel else {
+            PANEL_UP.store(false, Ordering::SeqCst);
+            return false;
+        };
+        let () = msg_send![&*panel, setCanChooseFiles: true];
+        let () = msg_send![&*panel, setCanChooseDirectories: true];
+        let () = msg_send![&*panel, setAllowsMultipleSelection: true];
+        let () = msg_send![&*panel, setResolvesAliases: true];
+        let message = NSString::from_str(message);
+        let () = msg_send![&*panel, setMessage: &*message];
+        let types: Retained<AnyObject> = msg_send![class!(NSMutableArray), array];
+        for ext in extensions {
+            let ext = NSString::from_str(ext);
+            let () = msg_send![&*types, addObject: &*ext];
+        }
+        // Deprecated in favour of content types, which need a framework the graph does not
+        // hold; it still filters, and leaves folders choosable.
+        let () = msg_send![&*panel, setAllowedFileTypes: &*types];
+
+        let chosen = panel.clone();
+        let done = block2::RcBlock::new(move |response: isize| {
+            PANEL_UP.store(false, Ordering::SeqCst);
+            if response != MODAL_RESPONSE_OK {
+                return;
+            }
+            let paths = panel_paths(&chosen);
+            if !paths.is_empty() {
+                answer(paths);
+            }
+        });
+        let app: Option<Retained<AnyObject>> = msg_send![class!(NSApplication), sharedApplication];
+        let window: Option<Retained<AnyObject>> = match &app {
+            Some(app) => msg_send![&**app, keyWindow],
+            None => None,
+        };
+        match window {
+            Some(window) => {
+                let () = msg_send![
+                    &*panel,
+                    beginSheetModalForWindow: &*window,
+                    completionHandler: &*done
+                ];
+            }
+            None => {
+                let () = msg_send![&*panel, beginWithCompletionHandler: &*done];
+            }
+        }
+    }
+    true
+}
+
+/// The file paths an open panel's chosen URLs name, in the order it lists them.
+fn panel_paths(panel: &AnyObject) -> Vec<std::path::PathBuf> {
+    // SAFETY: `URLs` is NSOpenPanel's, an array of `NSURL`; `count` and `objectAtIndex:` are
+    // NSArray's, the index below the count.
+    unsafe {
+        let urls: Option<Retained<AnyObject>> = msg_send![panel, URLs];
+        let Some(urls) = urls else {
+            return Vec::new();
+        };
+        let count: usize = msg_send![&*urls, count];
+        (0..count)
+            .filter_map(|i| {
+                let url: Option<Retained<objc2_foundation::NSURL>> =
+                    msg_send![&*urls, objectAtIndex: i];
+                url.and_then(|u| u.to_file_path())
+            })
+            .collect()
+    }
+}
+
 /// The handler `install` would register, kept by the caller, so a test can send it an event.
 #[cfg(test)]
 fn handler_for_test(
@@ -456,6 +557,15 @@ mod tests {
             "the files of one event are one request"
         );
         assert_eq!(woken.load(Ordering::SeqCst), 1);
+    }
+
+    /// AppKit's panels belong to the main thread, and a test's thread is not it: the ask is
+    /// declined there rather than raising a panel AppKit would refuse, and it leaves no panel
+    /// counted as up.
+    #[test]
+    fn the_open_panel_is_not_raised_off_the_main_thread() {
+        assert!(!begin_open_panel("Open", &["csv"], |_| {}));
+        assert!(!PANEL_UP.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

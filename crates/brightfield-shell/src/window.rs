@@ -7152,19 +7152,18 @@ impl MeridianApp {
             }
         }
         if std::mem::take(&mut self.add_source_pick_requested) && self.dialogs_allowed {
-            if let Some(chosen) = crate::data_file::pick() {
-                self.open_queue
-                    .push(crate::open_queue::OpenRequest::AddSource(chosen));
-            }
+            crate::data_file::pick(&self.open_queue, crate::open_queue::OpenRequest::of_sources);
         }
         if let Some((id, name)) = self.door_renamed.take() {
             self.rename_door_row(&ctx, &id, &name);
         }
 
         // The file dialog, after the frame and outside every borrow it took:
-        // it blocks the thread on a window this process did not lay out, so it
-        // may not run inside the layout pass. A cancelled dialog is not an
-        // error and says nothing — the user changed their mind.
+        // it raises a window this process did not lay out, so it may not run
+        // inside the layout pass. On the Mac the open panel returns at once and
+        // its choice comes back on the open queue; elsewhere the picker blocks
+        // until answered. A cancelled dialog is not an error and says nothing —
+        // the user changed their mind.
         //
         // `dialogs_allowed` is the gate, not an afterthought: every other tier
         // that drives this method has no user in front of it, and a modal
@@ -7191,10 +7190,7 @@ impl MeridianApp {
             self.picker_asks += 1;
         }
         if self.picker_asked && self.dialogs_allowed {
-            if let Some(path) = crate::data_file::pick() {
-                self.open_queue
-                    .push(crate::open_queue::OpenRequest::Path(path));
-            }
+            crate::data_file::pick(&self.open_queue, crate::open_queue::OpenRequest::of_paths);
         }
         // A saved Protocol picked off the door. No dialog and no gate: the path
         // came off a row this build already decided it can reopen, so unlike

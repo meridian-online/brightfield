@@ -977,6 +977,7 @@ version = "0.1.8"
 dependencies = [
  "arcform",
  "arrow",
+ "block2 0.6.2",
  "brightfield-conformance",
  "brightfield-engine",
  "brightfield-keys",

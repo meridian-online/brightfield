@@ -164,6 +164,10 @@ brightfield-report = { path = "../brightfield-report" }
 # that take a four-character code are sent by selector rather than through the
 # `objc2-core-services` feature, which would bring a crate the graph does not hold.
 [target.'cfg(target_os = "macos")'.dependencies]
+# The completion handler the open panel calls when the analyst chooses, so the panel runs without
+# blocking the window (`crate::mac_open::begin_open_panel`). Not new to the graph: rfd resolves the
+# same line.
+block2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",

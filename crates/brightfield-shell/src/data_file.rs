@@ -1431,58 +1431,50 @@ pub fn fetch_message(needed: &[&str], installed: &[String]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(". "))
 }
 
-/// What the front door's Open… button is asked to pick.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PickKind {
-    File,
-    Folder,
-}
-
-/// Ask whether to pick a file or a folder, blocking until the user answers; `None` when they
-/// cancel.
-#[must_use]
-pub fn ask_pick_kind() -> Option<PickKind> {
-    use rfd::MessageDialogResult as Answer;
-    let answer = rfd::MessageDialog::new()
-        .set_title("Open")
-        .set_description("Open a data file, or a folder of them?")
-        .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
-            "A file".into(),
-            "A folder".into(),
-            "Cancel".into(),
-        ))
-        .show();
-    match answer {
-        Answer::Yes => Some(PickKind::File),
-        Answer::No => Some(PickKind::Folder),
-        Answer::Custom(label) if label == "A file" => Some(PickKind::File),
-        Answer::Custom(label) if label == "A folder" => Some(PickKind::Folder),
-        _ => None,
+/// **Ask the operating system for data files or folders, and push what is chosen onto `queue`**
+/// as the request `make` builds from the chosen paths; a cancel pushes nothing.
+///
+/// On the Mac this is one open panel that takes files and folders alike
+/// ([`crate::mac_open::begin_open_panel`]), and it returns at once: the panel runs from the event
+/// loop the window draws in, the queue wakes the window when the analyst chooses, and the window
+/// takes the request on its next frame as it takes a file dropped on the Dock icon. Asking first
+/// whether to pick a file or a folder, in a system alert of its own, was a question Brightfield
+/// did not need to ask, and the modal loops of that alert and of the picker behind it held the
+/// window's frames until the analyst answered. Elsewhere a file picker is raised, which blocks
+/// until the user chooses.
+///
+/// The one call in this crate that opens a window nobody laid out, and the one thing here no
+/// headless test drives: everything a test needs to know about opening a path is decided by
+/// `accept`, `open_any` and the dashboard `open` chooses, none of which needs a dialog. Files
+/// are filtered to the extensions `accept` will take, so the common refusal is seldom shown: a
+/// picker that offers a `.txt` and then declines it is a picker arguing with itself.
+pub fn pick(
+    queue: &crate::open_queue::OpenQueue,
+    make: fn(Vec<PathBuf>) -> Option<crate::open_queue::OpenRequest>,
+) {
+    #[cfg(target_os = "macos")]
+    {
+        let queue = queue.clone();
+        crate::mac_open::begin_open_panel(
+            "Open a data file, or a folder of them",
+            OPENABLE_EXTENSIONS,
+            move |paths| {
+                if let Some(request) = make(paths) {
+                    queue.push(request);
+                }
+            },
+        );
     }
-}
-
-/// Ask the operating system for a data file or a folder, blocking until the user chooses or
-/// cancels.
-///
-/// The one call in this crate that opens a window nobody laid out, and the one
-/// thing here no headless test drives — everything a test needs to know about
-/// opening a path is decided by `accept`, `open_any` and the dashboard `open`
-/// chooses, none of which needs a dialog. The dialog's own job is to return a
-/// path.
-///
-/// The file dialog is filtered to the extensions `accept` will take, so the common refusal is
-/// seldom shown: a picker that offers a `.txt` and then declines it is a
-/// picker arguing with itself.
-#[must_use]
-pub fn pick() -> Option<PathBuf> {
-    match ask_pick_kind()? {
-        PickKind::File => rfd::FileDialog::new()
+    #[cfg(not(target_os = "macos"))]
+    {
+        let chosen = rfd::FileDialog::new()
             .set_title("Open a data file")
             .add_filter("Data files", OPENABLE_EXTENSIONS)
-            .pick_file(),
-        PickKind::Folder => rfd::FileDialog::new()
-            .set_title("Open a folder of data files")
-            .pick_folder(),
+            .pick_files()
+            .unwrap_or_default();
+        if let Some(request) = make(chosen) {
+            queue.push(request);
+        }
     }
 }
 
