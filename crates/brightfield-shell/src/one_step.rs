@@ -374,11 +374,7 @@ impl OneStepProtocol {
         // By the name the folder's manifest declares, which a run records: this file's own name,
         // unless it is the grid copy in an own-files Protocol named otherwise.
         let protocol = inputs.protocol.clone();
-        for view in crate::run::records_newest_first(&self.dir, &protocol) {
-            if inputs.adopt_run(&view) {
-                break;
-            }
-        }
+        inputs.adopt_newest_run(&self.dir, &protocol);
         Ok(inputs)
     }
 

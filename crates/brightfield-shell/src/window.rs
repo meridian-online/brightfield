@@ -839,11 +839,7 @@ fn agent_protocol_inputs(dir: &std::path::Path) -> ProtocolInputs {
         ProtocolInputs::empty()
     });
     if let Ok(manifest) = arc::spec::Manifest::load(dir) {
-        for view in crate::run::records_newest_first(dir, &manifest.name) {
-            if inputs.adopt_run(&view) {
-                break;
-            }
-        }
+        inputs.adopt_newest_run(dir, &manifest.name);
     }
     inputs
 }
@@ -4601,7 +4597,8 @@ impl MeridianApp {
     }
 
     /// **What the ledger rail's strip says at its trailing end**: *last run*,
-    /// and the state of the run this Protocol came off.
+    /// or *last preview* for a run Brightfield started itself to preview the
+    /// sources, and the state of the run this Protocol came off.
     ///
     /// **The run's state, not a step's**, and the two are different facts on
     /// one screen. The rail is the run record — Log, Quality, Rows — so its
@@ -4627,7 +4624,8 @@ impl MeridianApp {
             return None;
         }
         Some(format!(
-            "last run \u{b7} {}",
+            "{} \u{b7} {}",
+            self.protocol.doc.model.last_run_label(),
             self.protocol.doc.model.last_run_word()
         ))
     }

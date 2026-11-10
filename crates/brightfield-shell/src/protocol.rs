@@ -130,6 +130,10 @@ pub struct ProtocolInputs {
     /// `Some` for an emitted Protocol+Run contract, and then it is the run
     /// header the contract carried: the outcome, the id, and the timestamps.
     pub run: Option<RunView>,
+    /// Whether [`Self::run`] is a preview: a run Brightfield started itself to make the tables an
+    /// open, a reload or a model save shows, which [`crate::run::mark_preview`] marked, rather
+    /// than a run the analyst asked for.
+    pub run_is_preview: bool,
     /// The S-sheet rows in run order.
     pub sheet_rows: Vec<StepRow>,
     /// The columns of the one table this Protocol produces, in the table's own
@@ -194,6 +198,7 @@ impl ProtocolInputs {
             assets: BTreeMap::new(),
             steps: BTreeMap::new(),
             run: None,
+            run_is_preview: false,
             sheet_rows: Vec::new(),
             columns: Vec::new(),
             tiles: Vec::new(),
@@ -293,6 +298,18 @@ impl ProtocolInputs {
     /// spec — a step renamed, or a hand-written manifest of more steps that has
     /// since been replaced by the file's own — and drawing its states against
     /// steps it did not run would put a run's outcome on the wrong rows.
+    /// Adopt the newest record in the Protocol folder `dir` of a run of `protocol` that matches
+    /// these steps ([`Self::adopt_run`]), noting whether it was a preview
+    /// ([`crate::run::preview_ids`]).
+    pub fn adopt_newest_run(&mut self, dir: &std::path::Path, protocol: &str) {
+        for view in crate::run::records_newest_first(dir, protocol) {
+            if self.adopt_run(&view) {
+                self.run_is_preview = crate::run::preview_ids(dir).contains(&view.run.run_id);
+                return;
+            }
+        }
+    }
+
     pub fn adopt_run(&mut self, view: &ContractView) -> bool {
         // A step typed and not yet saved is in no manifest a run read, so a
         // record is compared with the steps less those.
@@ -310,6 +327,7 @@ impl ProtocolInputs {
         self.assets.clone_from(&view.assets);
         self.steps.clone_from(&view.steps);
         self.run = Some(view.run.clone());
+        self.run_is_preview = false;
         // The record's sheet lists the steps it ran; a typed step keeps the
         // declaration's row after them, as the spine keeps it at the foot.
         let waiting: Vec<_> = self
@@ -588,6 +606,7 @@ pub fn load_contract_str(bytes: &[u8]) -> Result<ProtocolInputs, String> {
         assets: view.assets.clone(),
         steps: view.steps.clone(),
         run: Some(view.run.clone()),
+        run_is_preview: false,
         // From the view, not synthesised from the seams: `StepsSheet::from_view`
         // carries the status and live columns a run recorded, where the manifest
         // path's `synth_sheet_rows` leaves both at their unrun default.
@@ -685,6 +704,7 @@ fn inputs_from(
         // the `(no run)` disclosure on the shipped start's own button says out
         // loud before the click.
         run: None,
+        run_is_preview: false,
         sheet_rows,
         // A manifest declares relations, not columns: nothing here profiled a
         // table, so the outline lists assets alone. The data-file path fills
@@ -1065,6 +1085,8 @@ pub struct ProtocolModel {
     assets: BTreeMap<AssetId, AssetMeta>,
     steps: BTreeMap<StepId, StepView>,
     run: Option<RunView>,
+    /// Whether `run` is a preview — see [`ProtocolInputs::run_is_preview`].
+    run_is_preview: bool,
     /// What the last run started from this window printed — see
     /// [`ProtocolModel::run_log`].
     run_log: Option<String>,
@@ -1234,6 +1256,7 @@ impl ProtocolModel {
             assets: inputs.assets,
             steps: inputs.steps,
             run: inputs.run,
+            run_is_preview: inputs.run_is_preview,
             run_log: None,
             columns: inputs.columns,
             tiles: inputs.tiles,
@@ -1607,6 +1630,26 @@ impl ProtocolModel {
     #[must_use]
     pub fn run(&self) -> Option<&RunView> {
         self.run.as_ref()
+    }
+
+    /// Whether the run behind this Protocol is a preview Brightfield started itself, not a run the
+    /// analyst asked for — see [`ProtocolInputs::run_is_preview`].
+    #[must_use]
+    pub fn run_is_preview(&self) -> bool {
+        self.run.is_some() && self.run_is_preview
+    }
+
+    /// What the run behind this Protocol is called where its state is shown: `last preview` when
+    /// Brightfield ran it to preview the Protocol's sources, and `last run` otherwise. The front
+    /// door reads the same preview mark and calls such a Protocol previewed, not run, so the two
+    /// agree.
+    #[must_use]
+    pub fn last_run_label(&self) -> &'static str {
+        if self.run_is_preview() {
+            "last preview"
+        } else {
+            "last run"
+        }
     }
 
     /// What the last run started from this window printed, when this window
@@ -4862,7 +4905,20 @@ fn run_header(ui: &mut egui::Ui, model: &ProtocolModel, mode: Mode) {
     let sem = semantic(mode.is_dark());
     let line = model.run().map_or_else(
         || model.last_run_word().to_string(),
-        |run| format!("{} \u{b7} {}", run.run_id, model.last_run_word()),
+        |run| {
+            // A preview says so ahead of its id, as the strip does, so the run panes never
+            // present a preview as the Protocol's run.
+            if model.run_is_preview() {
+                format!(
+                    "{} \u{b7} {} \u{b7} {}",
+                    model.last_run_label(),
+                    run.run_id,
+                    model.last_run_word()
+                )
+            } else {
+                format!("{} \u{b7} {}", run.run_id, model.last_run_word())
+            }
+        },
     );
     ui.label(
         egui::RichText::new(line)

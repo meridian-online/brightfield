@@ -299,6 +299,33 @@ fn the_window_title_names_the_open_protocol() {
     );
 }
 
+/// The run behind a Protocol a CSV just made is the preview its open started, the one the door
+/// reads as previewed and not run, and the run log and its strip call it a preview too.
+#[test]
+fn the_run_an_open_previews_with_is_called_a_preview() {
+    let folder = input("previewed");
+    let csv = folder.join("previewed_readings.csv");
+    std::fs::copy(housing(), &csv).expect("the housing sample copies");
+
+    let mut win = Window::new();
+    win.open(&csv);
+    let dir = win
+        .app
+        .own_protocol()
+        .map(|p| p.dir.clone())
+        .unwrap_or_else(|| panic!("the CSV made a Protocol: {}", win.said()));
+    let model = win.app.protocol_model();
+    let run = model
+        .run()
+        .unwrap_or_else(|| panic!("the open's run is behind the Protocol: {}", win.said()));
+    assert!(
+        brightfield_shell::run::preview_ids(&dir).contains(&run.run_id),
+        "the run behind it is the one the open marked as a preview"
+    );
+    assert!(model.run_is_preview());
+    assert_eq!(model.last_run_label(), "last preview");
+}
+
 #[test]
 fn an_existing_protocol_opens_where_it_is() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/shipped-protocol");
