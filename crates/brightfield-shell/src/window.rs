@@ -2566,6 +2566,15 @@ pub const NOT_KEPT_ON_A_JOIN_BODY: &str =
     "A view or statement on a join is not kept as a step yet. \
      Keep it on one of the join's tables.";
 
+/// The banner that says a file dropped onto an open Protocol was not taken.
+pub const DROP_NOT_TAKEN_BANNER: &str = "drop-not-taken";
+/// What it says.
+pub const DROP_NOT_TAKEN_TITLE: &str = "Drop files on the front door to open them";
+/// Its body.
+pub const DROP_NOT_TAKEN_BODY: &str =
+    "A file dropped here is not added to this Protocol yet. Go Home and drop it there, \
+     or open it with Open.";
+
 /// The banner that says an open asked for while the window waits to close was not done.
 const NOT_OPENED_WHILE_CLOSING_BANNER: &str = "not-opened-while-closing";
 
@@ -5708,33 +5717,36 @@ impl MeridianApp {
         let ctx = ui.ctx().clone();
         self.open_queue.wake_with(&ctx);
         // Files dropped on the front door open as the picker's choice does, the files of one drop
-        // together as one Protocol. A drop onto an open Protocol is left alone here: adding it as
-        // a source is that window's.
+        // together as one Protocol. A drop onto an open Protocol with sources is not taken yet,
+        // and a banner says where a drop opens.
+        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
         if self.front_door_is_live() {
-            let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
-                i.raw
-                    .dropped_files
-                    .iter()
-                    .filter_map(|f| f.path.clone())
-                    .collect()
-            });
             if let Some(request) = crate::open_queue::OpenRequest::of_paths(dropped) {
                 self.open_queue.push(request);
             }
         } else if self.empty_protocol.is_some() {
             // Files dropped on a Protocol with no sources yet are added to it, the files of one
             // drop together, as its canvas says.
-            let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
-                i.raw
-                    .dropped_files
-                    .iter()
-                    .filter_map(|f| f.path.clone())
-                    .collect()
-            });
             if !dropped.is_empty() {
                 self.open_queue
                     .push(crate::open_queue::OpenRequest::AddSources(dropped));
             }
+        } else if !dropped.is_empty() {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(DROP_NOT_TAKEN_BANNER),
+                    Severity::Info,
+                    DROP_NOT_TAKEN_TITLE,
+                )
+                .body(DROP_NOT_TAKEN_BODY),
+            );
+            ctx.request_repaint();
         }
         // An open that waited for the frame before this one to draw what it is fetching: that
         // frame has been presented, so the open runs now.

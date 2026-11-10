@@ -15,7 +15,9 @@ use brightfield_shell::design::Mode;
 use brightfield_shell::open_queue::OpenRequest;
 use brightfield_shell::overlays::CloseAnswer;
 use brightfield_shell::run::Runner;
-use brightfield_shell::window::{Boot, Leaving, MeridianApp};
+use brightfield_shell::window::{
+    Boot, Leaving, MeridianApp, DROP_NOT_TAKEN_BANNER, DROP_NOT_TAKEN_TITLE,
+};
 
 fn scratch() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -118,6 +120,40 @@ fn a_file_dropped_on_the_door_opens_as_a_protocol() {
     frame(&mut app, &ctx, egui::RawInput::default());
 
     assert_opened(&app, "dropped_housing");
+}
+
+#[test]
+fn a_file_dropped_on_an_open_protocol_says_a_drop_opens_from_the_door() {
+    let csv = housing_copy("dropped_on_open", "dropped_on_open.csv");
+    let other = housing_copy("dropped_on_open", "dropped_after.csv");
+    let mut app = app();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, egui::RawInput::default());
+    app.open_queue().push(OpenRequest::Path(csv));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert_opened(&app, "dropped_on_open");
+
+    let dropped = egui::RawInput {
+        dropped_files: vec![egui::DroppedFile {
+            path: Some(other),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    frame(&mut app, &ctx, dropped);
+    frame(&mut app, &ctx, egui::RawInput::default());
+
+    assert_opened(&app, "dropped_on_open");
+    assert!(
+        !scratch().join("protocols").join("dropped_after").exists(),
+        "nothing is made of the drop"
+    );
+    let banner = app
+        .notifications()
+        .iter()
+        .find(|n| n.id == meridian_egui::NotificationId::new(DROP_NOT_TAKEN_BANNER))
+        .unwrap_or_else(|| panic!("a banner says where a drop opens: {}", said(&app)));
+    assert_eq!(banner.title, DROP_NOT_TAKEN_TITLE);
 }
 
 #[test]
