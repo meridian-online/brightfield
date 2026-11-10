@@ -527,6 +527,50 @@ fn accepting_the_move_reopens_an_agent_protocol_at_its_new_place() {
 }
 
 #[test]
+fn an_open_during_the_move_question_waits_for_the_move() {
+    let _serial = serial();
+    let (_old, new) = roots("open_held_behind_move");
+    let mut win = Window::opened("moving_one");
+    win.keep_filter();
+    win.choose(&new);
+    win.answer_offer(true);
+    assert_eq!(
+        win.app.close_question().map(|q| q.title()),
+        Some(MOVE_TO_FOLDER_QUESTION_TITLE)
+    );
+
+    // A folder opened from the Finder while the question is up.
+    let folder = scratch().join("input").join("held_behind_move");
+    std::fs::create_dir_all(&folder).expect("a folder");
+    std::fs::write(folder.join("held_people.csv"), "id,name\n1,Ada\n2,Bo\n").unwrap();
+    std::fs::write(folder.join("held_visits.csv"), "id,person_id\n10,1\n11,2\n").unwrap();
+    win.app.open_queue().push(OpenRequest::Path(folder));
+    win.settle();
+    assert_eq!(
+        win.app.close_question().map(|q| q.title()),
+        Some(MOVE_TO_FOLDER_QUESTION_TITLE),
+        "the question still asks before the move: {}",
+        win.said()
+    );
+
+    win.app
+        .answer_close_question(&win.ctx.clone(), CloseAnswer::SaveAndClose);
+    win.settle();
+    win.settle();
+    assert!(
+        new.join("moving_one").join("arcform.yaml").is_file(),
+        "the move went ahead: {}",
+        win.said()
+    );
+    let opened = win
+        .app
+        .model_pane()
+        .map(|pane| pane.protocol.dir.clone())
+        .unwrap_or_else(|| panic!("then the folder opened: {}", win.said()));
+    assert!(opened.starts_with(&new), "{}", opened.display());
+}
+
+#[test]
 fn the_door_tree_reads_the_new_folder() {
     let _serial = serial();
     let (old, new) = roots("tree");

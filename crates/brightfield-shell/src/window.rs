@@ -3310,11 +3310,10 @@ pub struct MeridianApp {
     /// Where the window goes once the close question is answered, while it is up: the way out
     /// that asked it, or the latest one asked since, which takes its place.
     leaving: Option<Leaving>,
-    /// The lone data files opened while the close question was up, each of which would have
-    /// asked which of its Protocols to open, oldest first: held until the question is answered,
-    /// so the sheet does not replace the question and the way out it was asked for, and then
-    /// asked about one sheet at a time.
-    held_for_question: Vec<PathBuf>,
+    /// The opens asked for while the close question was up, oldest first: held until the
+    /// question is answered, so the way out it was asked for (a quit, a move, a rename, a new
+    /// Protocol, Home) stands, and then taken one at a time, a Which Protocol sheet at a time.
+    held_for_question: Vec<crate::open_queue::OpenRequest>,
     /// Whether a close or quit already answered waits for the runs this window started, so no
     /// run's record is lost with the process. Unsaved work the window holds when it closes,
     /// once the runs land or at a second close or quit, is kept as a version first
@@ -5788,13 +5787,16 @@ impl MeridianApp {
         // Whatever was asked to open since the last frame, from whichever way in, before anything
         // is laid out, so the frame draws what the open left. A request that has to wait a frame
         // stops the taking, and the rest wait in the queue behind it. Over a draft each one asks
-        // the close question, and one asked for while the question is up takes the place of the
-        // one it was asked for: the latest choice is the one that opens once it is answered.
-        // The files held while the close question was up are taken once the question has gone,
+        // the close question; one asked for while the question is up is held behind it, so the
+        // way out the question was asked for stands.
+        // The opens held while the close question was up are taken once the question has gone,
         // one Which Protocol sheet at a time. A window whose answer closed it, or that waits for
         // a run before it closes, opens none of them, and one banner names them all.
         if self.closing || self.close_after_runs {
-            let held = std::mem::take(&mut self.held_for_question);
+            let held: Vec<PathBuf> = std::mem::take(&mut self.held_for_question)
+                .into_iter()
+                .flat_map(|request| request_paths(&request))
+                .collect();
             if !held.is_empty() {
                 let why = if self.closing {
                     "The window is closing. Open it again after."
@@ -5808,8 +5810,8 @@ impl MeridianApp {
             Some(Overlay::CloseQuestion(_) | Overlay::WhichProtocol(_))
         ) && !self.held_for_question.is_empty()
         {
-            let path = self.held_for_question.remove(0);
-            self.take_or_ask(&ctx, crate::open_queue::OpenRequest::Path(path));
+            let request = self.held_for_question.remove(0);
+            self.take_or_ask(&ctx, request);
         }
         // The Which Protocol sheet holds the queue as a pending open does: a request pushed
         // while it is up waits for its answer, rather than opening under it.
@@ -11723,6 +11725,16 @@ impl MeridianApp {
     /// added under. A link is carried out at once.
     fn take_or_ask(&mut self, ctx: &egui::Context, request: crate::open_queue::OpenRequest) {
         use crate::open_queue::OpenRequest;
+        // A close question that is up is not replaced: the way out it was asked for stands, and
+        // the open is held and taken once the question is answered
+        // (`an_open_during_the_move_question_waits_for_the_move`). A link only says it cannot
+        // open yet, so it is carried out at once.
+        if matches!(self.overlay, Some(Overlay::CloseQuestion(_)))
+            && !matches!(request, OpenRequest::Link(_))
+        {
+            self.held_for_question.push(request);
+            return;
+        }
         match request {
             // A lone data file reopens the Protocol it already has, or asks which of several,
             // before anything is left: a Protocol is made of it only when none reads it.
@@ -11740,13 +11752,6 @@ impl MeridianApp {
                     }
                     crate::file_protocols::FileOpen::Reopen(dir) => self.open_known(ctx, dir),
                     crate::file_protocols::FileOpen::Ask(choices) => {
-                        // A close question that is up is not replaced: the way out it was asked
-                        // for, a quit or a move among them, stands, and the file is held and
-                        // asked about once the question is answered.
-                        if matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
-                            self.held_for_question.push(path);
-                            return;
-                        }
                         self.overlay = Some(Overlay::WhichProtocol(WhichProtocolSheet {
                             file: path,
                             choices,
@@ -16082,6 +16087,16 @@ fn count_protocols(nodes: &[crate::door_tree::Node]) -> usize {
             crate::door_tree::Node::Protocol { .. } => 1,
         })
         .sum()
+}
+
+/// The files and folders `request` names, none for a link.
+fn request_paths(request: &crate::open_queue::OpenRequest) -> Vec<PathBuf> {
+    use crate::open_queue::OpenRequest;
+    match request {
+        OpenRequest::Path(path) | OpenRequest::AddSource(path) => vec![path.clone()],
+        OpenRequest::Paths(paths) | OpenRequest::AddSources(paths) => paths.clone(),
+        OpenRequest::Link(_) => Vec::new(),
+    }
 }
 
 /// Whether `dir` is inside `folder`, as written or once both are resolved.
