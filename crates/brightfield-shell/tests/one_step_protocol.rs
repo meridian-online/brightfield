@@ -1109,7 +1109,9 @@ fn the_inspector_rail_draws_no_save_while_the_palette_offers_one() {
         win.drawn_text_in(rect)
     }
 
-    // A window over a chart spec: a buffer to save, and no Protocol.
+    // A window over a chart spec: a buffer to save, and no Protocol. The boot is made before the
+    // window, so the scratch folders are set first.
+    hermetic();
     let spec = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/dashboard.yaml");
     let mut chart = Window::over(
         Boot::open(spec.to_str().expect("utf-8"), Flow::Vertical, None).expect("the spec opens"),
