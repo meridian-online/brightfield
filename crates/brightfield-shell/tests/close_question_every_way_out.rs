@@ -18,7 +18,8 @@ use brightfield_shell::open_queue::OpenRequest;
 use brightfield_shell::run::Runner;
 use brightfield_shell::versions::{Listing, CLOSED_UNSAVED};
 use brightfield_shell::window::{
-    Boot, MeridianApp, UNSAVED_MARK, WAITING_FOR_RUN_BODY, WAITING_FOR_RUN_TITLE,
+    Boot, MeridianApp, KEPT_WHILE_CLOSING_TITLE, UNSAVED_MARK, WAITING_FOR_RUN_BODY,
+    WAITING_FOR_RUN_TITLE,
 };
 use brightfield_workbench::arrangement::LEDGER_RAIL;
 
@@ -703,6 +704,45 @@ fn a_second_quit_while_waiting_for_a_run_closes_now() {
     assert!(win.app.run_outstanding(), "with the run still held");
     held.release();
     win.until("the held run never finished", |w| !w.app.run_outstanding());
+}
+
+#[test]
+fn a_second_quit_keeps_the_edits_made_while_waiting() {
+    let (mut win, held) = waiting_on_a_held_run("quit_twice_edits");
+    win.cmd_q();
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    assert!(!win.closed && win.says_waiting(), "{}", win.said());
+
+    // An edit made while the quit waits, which the quit was not answered over.
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("house_age > 40".to_owned()),
+            order: None,
+        });
+    win.settle();
+    win.forget_sent();
+    win.cmd_q();
+
+    assert!(win.closed, "a second quit closes at once: {}", win.said());
+    assert!(
+        win.app
+            .notifications()
+            .iter()
+            .any(|n| n.title == KEPT_WHILE_CLOSING_TITLE),
+        "a banner says the edits were kept: {}",
+        win.said()
+    );
+    held.release();
+    win.until("the held run never finished", |w| !w.app.run_outstanding());
+    let Listing::Listed { rows, .. } = win.versions_listed() else {
+        panic!("the Versions panel lists nothing: {}", win.said());
+    };
+    assert!(
+        rows.iter()
+            .any(|r| r.kind == CLOSED_UNSAVED && r.changed.contains("house_age > 40")),
+        "the edit made during the wait is kept as a version: {rows:?}"
+    );
 }
 
 #[test]

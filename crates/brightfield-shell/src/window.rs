@@ -2564,6 +2564,12 @@ pub const NOT_KEPT_ON_A_JOIN_BODY: &str =
 /// The banner that says an open asked for while the window waits to close was not done.
 const NOT_OPENED_WHILE_CLOSING_BANNER: &str = "not-opened-while-closing";
 
+/// The banner that says what a close made while the window waited for a run did with the edits
+/// made during the wait.
+pub const KEPT_WHILE_CLOSING_BANNER: &str = "kept-while-closing";
+/// What it says when those edits were kept as a version.
+pub const KEPT_WHILE_CLOSING_TITLE: &str = "The edits made while waiting were kept as a version";
+
 /// The `quit` verb's longname: the registry's, spelled once here for the
 /// window's key and dispatch.
 pub const QUIT: &str = "quit";
@@ -9280,7 +9286,7 @@ impl MeridianApp {
         // A quit already answered, waiting for a run to land: a close is the analyst ending the
         // app now, whatever the run, so it goes through uncancelled.
         if self.close_after_runs.is_some() {
-            self.stop_waiting_for_runs();
+            self.keep_what_changed_while_waiting();
             self.allow_close();
             return;
         }
@@ -9348,7 +9354,7 @@ impl MeridianApp {
         if self.close_after_runs.is_some() {
             match to {
                 Leaving::Close | Leaving::Quit => {
-                    self.stop_waiting_for_runs();
+                    self.keep_what_changed_while_waiting();
                     self.close_window(ctx);
                 }
                 Leaving::Home
@@ -9427,7 +9433,8 @@ impl MeridianApp {
     /// noted, so work made while it waits is not closed over unasked. A
     /// second close or quit while it waits closes at once ([`Self::leave`]),
     /// so a run that does not finish cannot hold the app open
-    /// (`a_second_quit_while_waiting_for_a_run_closes_now`).
+    /// (`a_second_quit_while_waiting_for_a_run_closes_now`), and keeps the
+    /// work made during the wait as a version first.
     fn close_once_runs_land(&mut self, ctx: &egui::Context) {
         if !self.run_outstanding() {
             self.close_window(ctx);
@@ -9482,6 +9489,37 @@ impl MeridianApp {
             )
             .body("The window is closing once the run finishes. Open it again after."),
         );
+    }
+
+    /// **Stop waiting for runs, for a close or quit made during the wait**, keeping as a version
+    /// any edit made since the quit was answered: the analyst asked to leave now, so the work is
+    /// kept rather than asked about, and a banner says so
+    /// (`a_second_quit_keeps_the_edits_made_while_waiting`). Edits the quit was answered over were
+    /// already saved or kept by that answer.
+    fn keep_what_changed_while_waiting(&mut self) {
+        let answered_over = self.close_after_runs.clone();
+        self.stop_waiting_for_runs();
+        if !self.has_unsaved_work() || answered_over.as_ref() == Some(&self.unsaved_now()) {
+            return;
+        }
+        let said = match self.keep_unsaved() {
+            Ok(()) => Notification::new(
+                NotificationId::new(KEPT_WHILE_CLOSING_BANNER),
+                Severity::Info,
+                KEPT_WHILE_CLOSING_TITLE,
+            )
+            .body("The Versions panel lists them as closed unsaved."),
+            Err(why) => {
+                eprintln!("the edits made while waiting for a run could not be kept: {why}");
+                Notification::new(
+                    NotificationId::new(KEPT_WHILE_CLOSING_BANNER),
+                    Severity::Error,
+                    "The edits made while waiting could not be kept",
+                )
+                .body(why)
+            }
+        };
+        self.notifications.raise(said);
     }
 
     /// Stop waiting for runs to land before closing, and take the banner that said so down.
