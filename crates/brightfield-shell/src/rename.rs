@@ -6,8 +6,12 @@
 //!
 //! - **Source paths written relative to the folder that point outside it.** A data package names
 //!   its file from its own folder (`../../../data/sales.csv`), so a folder that moves to another
-//!   parent no longer finds it. [`repair`] writes each such path again from the new place. A path
-//!   inside the folder moves with it and is left alone, and so is an absolute path.
+//!   parent no longer finds it. [`repair`] writes each such path again from the new place. A
+//!   relative path inside the folder moves with it and is left alone, and so is an absolute path
+//!   outside it.
+//! - **Absolute paths inside the folder**: a source file kept in the Protocol's own folder, which
+//!   its load step and `.sources.json` name by its absolute path. [`repair`] points each at the
+//!   same place in the new folder.
 //! - **arc's working database.** arc keeps it outside the folder, in its data folder, under a key
 //!   made from the folder's path, so a moved folder would find none and run every step again. The
 //!   database is moved to the new path's key; when it cannot be moved it is deleted, and the next
@@ -336,8 +340,10 @@ pub fn follow_a_move(dir: &Path) -> Vec<String> {
 /// Rewrite each source path in the Protocol in `dir` that is written relative to its folder and
 /// points outside it, so it points from `dir` at the file it pointed at from `was`: the paths in
 /// `packages/*/datapackage.json`, in `.sources.json`, and in the model. The data each saved chart
-/// under `panels/` reads, an absolute path inside the folder, is pointed inside `dir`. Answers
-/// how many were rewritten. A file that is not there is passed over.
+/// under `panels/` reads, an absolute path inside the folder, is pointed inside `dir`, and so is a
+/// source file inside the folder that a load step's SQL or `.sources.json` names by its absolute
+/// path (`a_source_inside_the_protocol_follows_a_rename`). Answers how many were rewritten. A
+/// file that is not there is passed over.
 ///
 /// `was` and `dir` are both read as written, so give them in one spelling (both canonical).
 ///
@@ -350,7 +356,85 @@ pub fn repair(dir: &Path, was: &Path) -> Result<usize, String> {
     count += repair_sources(dir, was)?;
     count += repair_model(dir, was)?;
     count += repair_panels(&dir.join("panels"), dir, was)?;
+    count += repair_step_sql(&dir.join("models"), dir, was)?;
     Ok(count)
+}
+
+/// The string literals in each step's SQL under `models/` that name a file inside `was` by its
+/// absolute path, as a load step names a source kept in the Protocol's folder: each is written
+/// again inside `dir`.
+fn repair_step_sql(models: &Path, dir: &Path, was: &Path) -> Result<usize, String> {
+    let Ok(entries) = std::fs::read_dir(models) else {
+        return Ok(0);
+    };
+    let mut count = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "sql") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let (fixed, changed) = moved_sql_literals(&text, dir, was);
+        if changed > 0 {
+            std::fs::write(&path, fixed).map_err(|e| format!("{}: {e}", path.display()))?;
+            count += changed;
+        }
+    }
+    Ok(count)
+}
+
+/// `sql` with each single-quoted literal naming a path inside `was` written again inside `dir`,
+/// and how many were. A doubled quote inside a literal is a quote, as SQL writes it.
+fn moved_sql_literals(sql: &str, dir: &Path, was: &Path) -> (String, usize) {
+    let mut out = String::with_capacity(sql.len());
+    let mut changed = 0;
+    let mut rest = sql;
+    while let Some(open) = rest.find('\'') {
+        out.push_str(&rest[..open]);
+        let body = &rest[open + 1..];
+        // The closing quote: the first not doubled.
+        let mut end = None;
+        let mut i = 0;
+        let bytes = body.as_bytes();
+        while i < bytes.len() {
+            if bytes[i] == b'\'' {
+                if bytes.get(i + 1) == Some(&b'\'') {
+                    i += 2;
+                    continue;
+                }
+                end = Some(i);
+                break;
+            }
+            i += 1;
+        }
+        let Some(end) = end else {
+            out.push_str(&rest[open..]);
+            return (out, changed);
+        };
+        let written = &body[..end];
+        let value = written.replace("''", "'");
+        match inside_of(Path::new(&value), was) {
+            Some(inside) => {
+                let fixed = dir.join(inside).to_string_lossy().replace('\'', "''");
+                if fixed != written {
+                    changed += 1;
+                }
+                out.push('\'');
+                out.push_str(&fixed);
+                out.push('\'');
+            }
+            None => {
+                out.push('\'');
+                out.push_str(written);
+                out.push('\'');
+            }
+        }
+        rest = &body[end + 1..];
+    }
+    out.push_str(rest);
+    (out, changed)
 }
 
 /// The data a saved chart reads, which Save writes as an absolute path to the grid copy inside the
@@ -568,7 +652,8 @@ fn repair_packages(dir: &Path, was: &Path) -> Result<usize, String> {
     Ok(count)
 }
 
-/// The tables and skipped files `.sources.json` records, relative to the Protocol folder.
+/// The tables and skipped files `.sources.json` records, relative to the Protocol folder, and those
+/// it records by an absolute path inside the old folder.
 fn repair_sources(dir: &Path, was: &Path) -> Result<usize, String> {
     let path = dir.join(SOURCES_FILE);
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -585,6 +670,17 @@ fn repair_sources(dir: &Path, was: &Path) -> Result<usize, String> {
             .flatten()
         {
             count += repair_value(item.get_mut(key), was, dir, was);
+            // A source kept in the folder, named by its absolute path, is pointed inside `dir`.
+            if let Some(named) = item.get_mut(key) {
+                let fixed = named
+                    .as_str()
+                    .and_then(|p| inside_of(Path::new(p), was))
+                    .map(|inside| dir.join(inside).to_string_lossy().into_owned());
+                if let Some(fixed) = fixed.filter(|f| named.as_str() != Some(f.as_str())) {
+                    *named = Value::String(fixed);
+                    count += 1;
+                }
+            }
         }
     }
     if count > 0 {

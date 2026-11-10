@@ -468,6 +468,57 @@ fn a_protocol_that_did_not_move_raises_no_move_warning() {
 }
 
 #[test]
+fn a_source_inside_the_protocol_follows_a_rename() {
+    use brightfield_shell::own_files;
+    let parent = scratch().join("inside_source");
+    let _ = std::fs::remove_dir_all(&parent);
+    std::fs::create_dir_all(&parent).expect("a parent");
+    let mut p = own_files::create_empty(&parent).expect("an empty Protocol");
+    // The source is kept in the Protocol's own folder.
+    let csv = p.dir.join("kept_inside.csv");
+    std::fs::write(&csv, "id,name\n1,Ada\n2,Bo\n").expect("the source");
+    own_files::add_source_with(
+        &mut p,
+        &csv,
+        &[],
+        &Runner::at(env!("CARGO_BIN_EXE_brightfield-shell")),
+        &brightfield_shell::discovery::StandIn,
+    )
+    .expect("the source adds");
+    let old = p.dir.canonicalize().expect("the folder");
+
+    let moved = rename::rename_with(&p.dir, "inside_renamed", &rename::FolderOps::system())
+        .expect("the rename");
+    let new = moved.to.canonicalize().expect("the new folder");
+    assert!(moved.warnings.is_empty(), "{:?}", moved.warnings);
+
+    let loads: Vec<String> = std::fs::read_dir(new.join("models"))
+        .expect("the models folder")
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains("_load_"))
+        .map(|e| std::fs::read_to_string(e.path()).expect("the load step"))
+        .collect();
+    assert!(!loads.is_empty());
+    for sql in &loads {
+        assert!(
+            sql.contains(&*new.join("kept_inside.csv").to_string_lossy()),
+            "the load step reads the source in the new folder: {sql}"
+        );
+        assert!(!sql.contains(&*old.to_string_lossy()), "{sql}");
+    }
+    let sources = std::fs::read_to_string(new.join(".sources.json")).expect("the record");
+    let value: serde_json::Value = serde_json::from_str(&sources).expect("it parses");
+    let file = value["tables"][0]["file"]
+        .as_str()
+        .expect("a file")
+        .to_owned();
+    assert!(
+        Path::new(&file).starts_with(&new) || Path::new(&file).starts_with(&moved.to),
+        "the record names the new folder: {file}"
+    );
+}
+
+#[test]
 fn repair_rewrites_paths_that_the_move_broke_and_nothing_else() {
     let root = scratch().join("repair");
     let _ = std::fs::remove_dir_all(&root);
