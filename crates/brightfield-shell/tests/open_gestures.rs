@@ -17,6 +17,7 @@ use brightfield_shell::overlays::CloseAnswer;
 use brightfield_shell::run::Runner;
 use brightfield_shell::window::{
     Boot, Leaving, MeridianApp, DROP_NOT_TAKEN_BANNER, DROP_NOT_TAKEN_TITLE,
+    MENU_QUIT_UNROUTED_BANNER, MENU_QUIT_UNROUTED_TITLE,
 };
 
 fn scratch() -> &'static Path {
@@ -154,6 +155,28 @@ fn a_file_dropped_on_an_open_protocol_says_a_drop_opens_from_the_door() {
         .find(|n| n.id == meridian_egui::NotificationId::new(DROP_NOT_TAKEN_BANNER))
         .unwrap_or_else(|| panic!("a banner says where a drop opens: {}", said(&app)));
     assert_eq!(banner.title, DROP_NOT_TAKEN_TITLE);
+}
+
+#[test]
+fn the_menu_quit_banner_says_quit_will_not_ask() {
+    let mut app = app();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, egui::RawInput::default());
+    let shown = |app: &MeridianApp| {
+        app.notifications()
+            .iter()
+            .any(|n| n.id == meridian_egui::NotificationId::new(MENU_QUIT_UNROUTED_BANNER))
+    };
+    app.say_menu_quit_unrouted(true);
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert!(shown(&app), "the banner is up: {}", said(&app));
+    assert!(app
+        .notifications()
+        .iter()
+        .any(|n| n.title == MENU_QUIT_UNROUTED_TITLE));
+    app.say_menu_quit_unrouted(false);
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert!(!shown(&app), "routed late, it comes down");
 }
 
 #[test]

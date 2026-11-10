@@ -405,13 +405,15 @@ struct BrightfieldApp {
     fit: Option<(f32, f32)>,
     /// The window's open queue, held until a frame routes the app menu's Quit onto it
     /// (`mac_open::route_menu_quit`), with the frames tried so far: the menu is the event loop's,
-    /// made after this host is, so each frame tries until it is there, up to
-    /// [`MENU_QUIT_TRIES`]. `None` once routed, once given up on, and on a host with no menu to
-    /// route.
+    /// made after this host is, so each frame tries until it is there. Past [`MENU_QUIT_TRIES`]
+    /// a banner says Quit will not ask, and each later frame still tries, without asking for
+    /// one, so a menu that arrives late is routed and the banner taken down. `None` once routed,
+    /// and on a host with no menu to route.
     menu_quit: Option<(brightfield_shell::open_queue::OpenQueue, u32)>,
 }
 
-/// How many frames try to route the app menu's Quit before giving up and saying so.
+/// How many frames try to route the app menu's Quit, each asking for the next, before a banner
+/// says it is not routed.
 const MENU_QUIT_TRIES: u32 = 120;
 
 /// Whether a frame reporting `outcome` is the last one that needs to ask.
@@ -459,16 +461,22 @@ impl BrightfieldApp {
                 let routed = objc2::MainThreadMarker::new().is_some_and(|main_thread| {
                     brightfield_shell::mac_open::route_menu_quit(main_thread, queue.clone(), || {})
                 });
-                if !routed {
-                    if tried + 1 < MENU_QUIT_TRIES {
-                        self.menu_quit = Some((queue, tried + 1));
-                        ctx.request_repaint();
-                    } else {
-                        eprintln!(
-                            "the app menu's Quit could not be routed to the window: Cmd+Q from \
-                             the menu will quit without asking about unsaved work"
-                        );
+                if routed {
+                    if tried >= MENU_QUIT_TRIES {
+                        self.app.say_menu_quit_unrouted(false);
                     }
+                } else {
+                    let tried = tried.saturating_add(1);
+                    if tried < MENU_QUIT_TRIES {
+                        ctx.request_repaint();
+                    } else if tried == MENU_QUIT_TRIES {
+                        eprintln!(
+                            "the app menu's Quit could not be routed to the window yet: Cmd+Q \
+                             from the menu will quit without asking about unsaved work"
+                        );
+                        self.app.say_menu_quit_unrouted(true);
+                    }
+                    self.menu_quit = Some((queue, tried));
                 }
             }
             #[cfg(not(target_os = "macos"))]

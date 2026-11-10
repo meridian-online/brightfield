@@ -2566,6 +2566,11 @@ pub const NOT_KEPT_ON_A_JOIN_BODY: &str =
     "A view or statement on a join is not kept as a step yet. \
      Keep it on one of the join's tables.";
 
+/// The banner that says the app menu's Quit could not be routed to the window.
+pub const MENU_QUIT_UNROUTED_BANNER: &str = "menu-quit-unrouted";
+/// What it says.
+pub const MENU_QUIT_UNROUTED_TITLE: &str = "Quitting will not ask about unsaved work";
+
 /// The banner that says a file dropped onto an open Protocol was not taken.
 pub const DROP_NOT_TAKEN_BANNER: &str = "drop-not-taken";
 /// What it says.
@@ -10004,6 +10009,24 @@ impl MeridianApp {
     #[must_use]
     pub fn notifications(&self) -> &NotificationLayer {
         &self.notifications
+    }
+
+    /// Say, while `unrouted`, that the app menu's Quit could not be routed to this window, so
+    /// Cmd+Q from the menu ends the app without the close question; take the banner down once
+    /// it is routed. The host calls it, since the menu is the host's
+    /// (`the_menu_quit_banner_says_quit_will_not_ask`).
+    pub fn say_menu_quit_unrouted(&mut self, unrouted: bool) {
+        let id = NotificationId::new(MENU_QUIT_UNROUTED_BANNER);
+        if unrouted {
+            self.notifications.raise(
+                Notification::new(id, Severity::Warning, MENU_QUIT_UNROUTED_TITLE).body(
+                    "Quit from the menu, or Cmd+Q, may close Brightfield without asking about \
+                     unsaved work. Save with Cmd+S before you quit.",
+                ),
+            );
+        } else {
+            self.notifications.dismiss(id);
+        }
     }
 
     /// Dismiss the chart-fault banner, as clicking its × does.
