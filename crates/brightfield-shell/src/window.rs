@@ -3310,10 +3310,11 @@ pub struct MeridianApp {
     /// Where the window goes once the close question is answered, while it is up: the way out
     /// that asked it, or the latest one asked since, which takes its place.
     leaving: Option<Leaving>,
-    /// A lone data file opened while the close question was up, which would have asked which of
-    /// its Protocols to open: held until the question is answered, so the sheet does not replace
-    /// the question and the way out it was asked for.
-    held_for_question: Option<PathBuf>,
+    /// The lone data files opened while the close question was up, each of which would have
+    /// asked which of its Protocols to open, oldest first: held until the question is answered,
+    /// so the sheet does not replace the question and the way out it was asked for, and then
+    /// asked about one sheet at a time.
+    held_for_question: Vec<PathBuf>,
     /// A close or quit already answered that waits for the runs this window started, so no
     /// run's record is lost with the process: the unsaved work as it stood when the question
     /// was answered, in the question's words. Work that differs when the runs land is asked
@@ -3863,7 +3864,7 @@ impl MeridianApp {
             pending_open: None,
             restore: None,
             leaving: None,
-            held_for_question: None,
+            held_for_question: Vec::new(),
             close_after_runs: None,
             open_queue: crate::open_queue::OpenQueue::default(),
             installed_extensions: None,
@@ -5775,11 +5776,24 @@ impl MeridianApp {
         // stops the taking, and the rest wait in the queue behind it. Over a draft each one asks
         // the close question, and one asked for while the question is up takes the place of the
         // one it was asked for: the latest choice is the one that opens once it is answered.
-        // A file held while the close question was up is taken once the question has gone.
-        if !matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
-            if let Some(path) = self.held_for_question.take() {
-                self.take_or_ask(&ctx, crate::open_queue::OpenRequest::Path(path));
+        // The files held while the close question was up are taken once the question has gone,
+        // one Which Protocol sheet at a time. A window whose answer closed it opens none of them,
+        // and says so.
+        if self.closing {
+            let held = std::mem::take(&mut self.held_for_question);
+            if !held.is_empty() {
+                self.say_not_opened(
+                    &crate::open_queue::OpenRequest::Paths(held),
+                    "The window is closing. Open it again after.",
+                );
             }
+        } else if !matches!(
+            self.overlay,
+            Some(Overlay::CloseQuestion(_) | Overlay::WhichProtocol(_))
+        ) && !self.held_for_question.is_empty()
+        {
+            let path = self.held_for_question.remove(0);
+            self.take_or_ask(&ctx, crate::open_queue::OpenRequest::Path(path));
         }
         // The Which Protocol sheet holds the queue as a pending open does: a request pushed
         // while it is up waits for its answer, rather than opening under it.
@@ -9387,7 +9401,10 @@ impl MeridianApp {
                     self.say_waiting_for_runs(ctx);
                 }
                 Leaving::Open(request) => {
-                    self.say_not_opened_while_closing(&request);
+                    self.say_not_opened(
+                        &request,
+                        "The window is closing once the run finishes. Open it again after.",
+                    );
                     self.say_waiting_for_runs(ctx);
                 }
             }
@@ -9480,9 +9497,9 @@ impl MeridianApp {
         ctx.request_repaint();
     }
 
-    /// Say that `request` was not opened, because the window is closing once a run lands: an open
-    /// refused during the wait is not kept, and is not dropped unsaid.
-    fn say_not_opened_while_closing(&mut self, request: &crate::open_queue::OpenRequest) {
+    /// Say that `request` was not opened, because the window is closing, and `why` in the
+    /// banner's body: an open refused while it closes is not kept, and is not dropped unsaid.
+    fn say_not_opened(&mut self, request: &crate::open_queue::OpenRequest, why: &str) {
         use crate::open_queue::OpenRequest;
         let what = match request {
             OpenRequest::Path(path) => display_name(path),
@@ -9509,7 +9526,7 @@ impl MeridianApp {
                 Severity::Warning,
                 format!("{what} was not opened"),
             )
-            .body("The window is closing once the run finishes. Open it again after."),
+            .body(why),
         );
     }
 
@@ -11686,7 +11703,7 @@ impl MeridianApp {
                         // for, a quit or a move among them, stands, and the file is held and
                         // asked about once the question is answered.
                         if matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
-                            self.held_for_question = Some(path);
+                            self.held_for_question.push(path);
                             return;
                         }
                         self.overlay = Some(Overlay::WhichProtocol(WhichProtocolSheet {

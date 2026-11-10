@@ -14,8 +14,9 @@ use std::sync::OnceLock;
 use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
 use brightfield_shell::open_queue::{route, OpenRequest, Route};
+use brightfield_shell::overlays::CloseAnswer;
 use brightfield_shell::run::Runner;
-use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_shell::window::{Boot, Leaving, MeridianApp};
 
 fn scratch() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -727,6 +728,112 @@ fn a_file_reopens_the_protocol_it_has_or_asks_which() {
     assert_eq!(open_dir(&win), Some(both.clone()), "{}", win.said());
 }
 
+/// A file that asks which Protocol when opened alone: one of the two sources of a folder's
+/// Protocol, made here as `<name>_left.csv` beside `<name>_right.csv`. Answers the file and the
+/// Protocol's name.
+fn a_file_that_asks(name: &str) -> (PathBuf, String) {
+    let pair = input(&format!("{name}_pair"));
+    let left = pair.join(format!("{name}_left.csv"));
+    std::fs::write(&left, "id,name\n1,Ada\n2,Bo\n").unwrap();
+    std::fs::write(
+        pair.join(format!("{name}_right.csv")),
+        "id,left_id\n10,1\n11,2\n",
+    )
+    .unwrap();
+    let mut win = Window::new();
+    win.open(&pair);
+    let both = win
+        .app
+        .model_pane()
+        .map(|pane| pane.protocol.dir.clone())
+        .unwrap_or_else(|| panic!("two tables open the model: {}", win.said()));
+    (
+        left,
+        both.file_name().unwrap().to_string_lossy().into_owned(),
+    )
+}
+
+/// A window holding a one-source Protocol named `name`, with a grid view not yet saved.
+fn a_window_with_a_draft(name: &str) -> Window {
+    let csv = input(name).join(format!("{name}.csv"));
+    std::fs::copy(housing(), &csv).expect("the housing sample copies");
+    let mut win = Window::new();
+    win.open(&csv);
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("house_age > 28".to_string()),
+            order: None,
+        });
+    win.frame();
+    assert!(win.app.carries_unsaved_mark(), "{}", win.said());
+    win
+}
+
+#[test]
+fn two_files_that_ask_during_the_close_question_are_each_asked_about() {
+    let (first, first_protocol) = a_file_that_asks("held_one");
+    let (second, second_protocol) = a_file_that_asks("held_two");
+    let mut win = a_window_with_a_draft("held_both");
+    let ctx = win.ctx.clone();
+    win.app.leave(&ctx, Leaving::Home);
+    win.frame();
+    assert_eq!(win.app.open_overlay(), Some("close-question"));
+    win.open(&first);
+    win.open(&second);
+    assert_eq!(
+        win.app.open_overlay(),
+        Some("close-question"),
+        "the question stands"
+    );
+
+    win.app
+        .answer_close_question(&ctx, CloseAnswer::KeepEditing);
+    win.frame();
+    assert_eq!(
+        win.app.which_protocol_choices(),
+        Some(vec![first_protocol, "New Protocol".to_string()]),
+        "the first file is asked about: {}",
+        win.said()
+    );
+    win.key(egui::Key::Escape);
+    assert_eq!(
+        win.app.which_protocol_choices(),
+        Some(vec![second_protocol, "New Protocol".to_string()]),
+        "and then the second, not dropped: {}",
+        win.said()
+    );
+}
+
+#[test]
+fn a_file_held_behind_a_quit_that_closes_is_said_not_opened() {
+    let (file, _) = a_file_that_asks("held_quit");
+    let mut win = a_window_with_a_draft("held_quitting");
+    let ctx = win.ctx.clone();
+    win.app.leave(&ctx, Leaving::Quit);
+    win.frame();
+    win.open(&file);
+    assert_eq!(win.app.open_overlay(), Some("close-question"));
+
+    win.app
+        .answer_close_question(&ctx, CloseAnswer::SaveAndClose);
+    win.frame();
+    assert!(win.app.is_closing(), "the quit closes: {}", win.said());
+    assert_eq!(
+        win.app.open_overlay(),
+        None,
+        "no sheet asks on a closing window"
+    );
+    assert!(
+        win.app
+            .notifications()
+            .iter()
+            .any(|n| n.title == "held_quit_left.csv was not opened"),
+        "a banner says the file was not opened: {}",
+        win.said()
+    );
+}
+
 #[test]
 fn an_existing_protocol_opens_where_it_is() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/shipped-protocol");
@@ -961,7 +1068,7 @@ fn reloading_the_data_rereads_the_analysts_file() {
 
 #[test]
 fn reloading_over_a_draft_asks_the_close_question_first() {
-    use brightfield_shell::overlays::{CloseAnswer, RELOAD_QUESTION_TITLE};
+    use brightfield_shell::overlays::RELOAD_QUESTION_TITLE;
     let folder = input("reload-draft");
     let csv = folder.join("reload_draft.csv");
     std::fs::copy(housing(), &csv).expect("the housing sample copies");
