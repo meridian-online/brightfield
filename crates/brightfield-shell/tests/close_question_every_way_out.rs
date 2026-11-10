@@ -900,6 +900,46 @@ fn files_held_behind_a_quit_that_waits_for_a_run_are_all_said_not_opened() {
 }
 
 #[test]
+fn a_run_landing_over_work_that_cannot_be_kept_asks_again() {
+    let (mut win, held) = waiting_on_a_held_run("land_unkept");
+    // No store, so no work can be kept as a version.
+    win.app.set_history(None);
+    win.cmd_q();
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    assert!(
+        win.app
+            .close_question()
+            .is_some_and(|q| q.not_kept.is_some()),
+        "{}",
+        win.said()
+    );
+    // Close without saving again: the loss is chosen, and the quit waits for the run.
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    assert!(!win.closed && win.says_waiting(), "{}", win.said());
+
+    // An edit the analyst never saw listed, then the run lands with no second quit.
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("house_age > 43".to_owned()),
+            order: None,
+        });
+    win.settle();
+    win.forget_sent();
+    held.release();
+    win.until("the run never landed", |w| !w.app.run_outstanding());
+    win.settle();
+    assert!(!win.closed, "the window did not close over the edit");
+    assert!(
+        win.app
+            .close_question()
+            .is_some_and(|q| q.not_kept.is_some()),
+        "the question is back, saying why: {}",
+        win.said()
+    );
+}
+
+#[test]
 fn a_loss_chosen_going_home_is_not_carried_into_a_later_quit() {
     let held = HeldRunner::new("stale_loss");
     let mut win = Window::opened_with("stale_loss", held.runner.clone());

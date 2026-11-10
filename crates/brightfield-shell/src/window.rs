@@ -9341,7 +9341,7 @@ impl MeridianApp {
         // app now, whatever the run, so it goes through uncancelled once the unsaved work is kept
         // as a version. Work that cannot be kept cancels the close and asks again, saying why.
         if self.close_after_runs {
-            if self.keep_what_changed_while_waiting() {
+            if self.keep_what_changed_while_waiting(true) {
                 self.allow_close();
             } else {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -9413,7 +9413,7 @@ impl MeridianApp {
         if self.close_after_runs {
             match to {
                 Leaving::Close | Leaving::Quit => {
-                    if self.keep_what_changed_while_waiting() {
+                    if self.keep_what_changed_while_waiting(true) {
                         self.close_window(ctx);
                     } else {
                         ctx.request_repaint();
@@ -9574,9 +9574,10 @@ impl MeridianApp {
     /// Answers whether the window may close. Work that cannot be kept is not closed over: the
     /// close question opens again for the quit, saying why, as Close without saving says it, and
     /// the window stays (`a_second_quit_that_cannot_keep_the_work_asks_again`). Once the analyst
-    /// has answered that question Close without saving, a later close that cannot keep the work
-    /// either closes, since the loss was chosen.
-    fn keep_what_changed_while_waiting(&mut self) -> bool {
+    /// has answered that question Close without saving, a later close or quit the analyst makes
+    /// (`asked`) that cannot keep the work either closes, since the loss was chosen; a run
+    /// landing asks again (`a_run_landing_over_work_that_cannot_be_kept_asks_again`).
+    fn keep_what_changed_while_waiting(&mut self, asked: bool) -> bool {
         self.stop_waiting_for_runs();
         if !self.has_unsaved_work() {
             return true;
@@ -9595,7 +9596,7 @@ impl MeridianApp {
             }
             Err(why) => {
                 eprintln!("the unsaved work could not be kept before closing: {why}");
-                if self.unkept_accepted {
+                if asked && self.unkept_accepted {
                     return true;
                 }
                 self.ask(Leaving::Quit);
@@ -9623,7 +9624,9 @@ impl MeridianApp {
         if !self.close_after_runs || self.run_outstanding() {
             return;
         }
-        if self.keep_what_changed_while_waiting() {
+        // The run landing is not the analyst asking to close over work that cannot be kept, so
+        // a loss chosen before the wait does not cover it.
+        if self.keep_what_changed_while_waiting(false) {
             self.close_window(ctx);
         } else {
             ctx.request_repaint();
