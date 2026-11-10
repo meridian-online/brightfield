@@ -104,6 +104,8 @@ fn load_steps(dir: &Path) -> Vec<String> {
 struct Window {
     app: MeridianApp,
     ctx: egui::Context,
+    /// Every title the window sent the OS, oldest first.
+    titles: Vec<String>,
 }
 
 impl Window {
@@ -112,6 +114,7 @@ impl Window {
         let mut win = Self {
             app: MeridianApp::headless(Boot::empty(), Mode::Light).running_with(Some(runner())),
             ctx: egui::Context::default(),
+            titles: Vec::new(),
         };
         win.frame();
         win
@@ -125,7 +128,14 @@ impl Window {
             )),
             ..Default::default()
         };
-        let _ = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+        let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+        for viewport in out.viewport_output.values() {
+            for command in &viewport.commands {
+                if let egui::ViewportCommand::Title(title) = command {
+                    self.titles.push(title.clone());
+                }
+            }
+        }
     }
 
     /// Ask the window's queue to open `path`, and run the frames that take it.
@@ -243,6 +253,50 @@ fn a_folder_of_two_tables_opens_the_model() {
         "the Protocol is made in the Protocols folder"
     );
     assert!(win.app.own_protocol().is_none(), "the model pane holds it");
+}
+
+/// The window and its header name the open Protocol as the locator band's Name field does, not the
+/// data file the grid reads, and a folder opened after a file re-titles the OS window rather than
+/// leaving the file's Protocol named there.
+#[test]
+fn the_window_title_names_the_open_protocol() {
+    let folder = input("titled");
+    let csv = folder.join("titled_readings.csv");
+    std::fs::copy(housing(), &csv).expect("the housing sample copies");
+
+    let mut win = Window::new();
+    win.open(&csv);
+    win.frame();
+    let name = win
+        .app
+        .own_protocol()
+        .and_then(|p| p.dir.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| panic!("the CSV made a Protocol: {}", win.said()));
+    assert_eq!(win.app.title(), name, "the header names the Protocol");
+    assert_eq!(
+        win.titles.last(),
+        Some(&name),
+        "the OS title names the Protocol"
+    );
+
+    let two = input("titled-two");
+    std::fs::write(two.join("left.csv"), "id,name\n1,Ada\n2,Bo\n").unwrap();
+    std::fs::write(two.join("right.csv"), "id,left_id\n10,1\n11,2\n").unwrap();
+    win.open(&two);
+    win.frame();
+    let folder_name = win
+        .app
+        .model_pane()
+        .and_then(|pane| pane.protocol.dir.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| panic!("two tables open the model: {}", win.said()));
+    assert_eq!(win.app.title(), folder_name);
+    assert_eq!(
+        win.titles.last(),
+        Some(&folder_name),
+        "the OS title still names the Protocol opened before the folder"
+    );
 }
 
 #[test]
@@ -455,6 +509,7 @@ fn a_queued_open_that_fetches_an_extension_draws_the_notice_first_and_loses_no_r
             .running_with(Some(runner()))
             .knowing_extensions(Vec::new()),
         ctx: egui::Context::default(),
+        titles: Vec::new(),
     };
     win.frame();
     let first = "/tmp/bf-no-such-first-book.xlsx";
@@ -768,6 +823,7 @@ fn reloading_never_rewrites_the_protocols_manifest_while_its_loads_run() {
         app: MeridianApp::headless(Boot::empty(), Mode::Light)
             .running_with(Some(Runner::at(&script))),
         ctx: egui::Context::default(),
+        titles: Vec::new(),
     };
     win.frame();
     win.open(&csv);

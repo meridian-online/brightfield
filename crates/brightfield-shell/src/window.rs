@@ -2948,10 +2948,9 @@ pub struct MeridianApp {
     model: Option<ModelDoc>,
     mode: Mode,
     fonts_installed: bool,
-    /// Whether the last `ViewportCommand::Title` this window sent carried
-    /// [`UNSAVED_MARK`] — so `draw` re-titles the OS window when a switch
-    /// flips the mark. The opens send their own titles.
-    title_marked: bool,
+    /// The last title this window sent the OS in a `ViewportCommand::Title`, so `draw` re-titles
+    /// the OS window whenever [`Self::title`] moves away from it. `None` before the first send.
+    sent_title: Option<String>,
     /// Whether the next close request is to pass without a question: the
     /// window has already decided to close (a save that wrote, or a discard)
     /// or its host is closing it on its own account (the screenshot
@@ -3441,9 +3440,6 @@ pub struct MeridianApp {
     /// Whether a widget held the keyboard at the end of the last frame drawn:
     /// what tells an Esc that leaves a field from one that leaves a panel.
     keyboard_held: bool,
-    /// The panel tile open when the OS window was last titled, so a tile
-    /// opened or closed re-titles it.
-    titled_tile: Option<usize>,
 }
 
 impl MeridianApp {
@@ -3717,7 +3713,7 @@ impl MeridianApp {
             model: None,
             mode,
             fonts_installed: false,
-            title_marked: false,
+            sent_title: None,
             closing: false,
             regions: Vec::new(),
             collapsed: BTreeSet::new(),
@@ -3870,7 +3866,6 @@ impl MeridianApp {
             rails_shut_for_tiles: false,
             crumb_link_rect: None,
             keyboard_held: false,
-            titled_tile: None,
         };
         // What the canvas holds, before the first frame and from the same two
         // documents the arrangement above was derived from.
@@ -4275,6 +4270,20 @@ impl MeridianApp {
         }
     }
 
+    /// Send the OS window [`Self::title`], and remember it as the one sent.
+    fn retitle(&mut self, ctx: &egui::Context) {
+        let title = self.title();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+        self.sent_title = Some(title);
+    }
+
+    /// Re-title the OS window when [`Self::title`] is no longer the title it was last sent.
+    fn retitle_if_changed(&mut self, ctx: &egui::Context) {
+        if self.sent_title.as_deref() != Some(self.title().as_str()) {
+            self.retitle(ctx);
+        }
+    }
+
     /// Whether this window's title carries [`UNSAVED_MARK`]: the chart document
     /// holds an edit its file does not, and the window is not on the front
     /// door, which has no document to hold one. The one definition of *unsaved*
@@ -4467,13 +4476,17 @@ impl MeridianApp {
         if self.front_door_is_live() {
             return "Brightfield".to_string();
         }
-        if let Some(empty) = &self.empty_protocol {
-            return format!("Protocol \u{b7} {}", display_name(&empty.dir));
-        }
         if self.tiles.is_some() {
             // The Protocol, and the panel open from its tile when one is: the
             // crumbs the locator band draws, joined.
             return self.crumb_line().join(" \u{203a} ");
+        }
+        // A Protocol of the analyst's own files, a folder's model or a Protocol New Protocol made
+        // is named as the locator band's Name field names it: its folder. The chart document's
+        // title would name the data file the grid reads, which for a one-source Protocol is a copy
+        // in its `.grid` folder, and that is not what the analyst opened or named.
+        if let Some(dir) = self.open_protocol_dir() {
+            return display_name(&dir);
         }
         if self.graph_on_canvas() {
             format!("Protocol · {}", self.protocol.doc.model.protocol)
@@ -5720,22 +5733,15 @@ impl MeridianApp {
         }
         let mode = self.mode;
 
-        // The OS window's title, when the unsaved mark flipped since the last
-        // one sent. The top bar reads `title` each frame; the OS title is
-        // pushed, and a tile's switch is thrown mid-frame, after the openers
-        // that push one have run.
-        let marked = self.has_unsaved_work();
-        if marked != self.title_marked {
-            self.title_marked = marked;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
-        }
-        // …and when a Protocol's panel opened from its tile, or the tiles came
-        // back, since the last frame: the title is the crumbs, which moved.
-        let open_tile = self.tiles.as_ref().and_then(PanelTiles::selected);
-        if open_tile != self.titled_tile {
-            self.titled_tile = open_tile;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
-        }
+        // The OS window's title, whenever it differs from the last one sent.
+        // The top bar reads `title` each frame, but the OS title is pushed, and
+        // what it names moves mid-frame: a tile's switch thrown after the
+        // openers have run, a panel opened from its tile, or a folder opened as
+        // a model, which no opener re-titles. Comparing the whole title rather
+        // than each cause keeps the OS title from going stale on one nobody
+        // listed, as it did when a folder's model left the previous
+        // Protocol's table named in the title bar.
+        self.retitle_if_changed(&ctx);
 
         // **The grid's density is a fact about this frame's layout, so it is
         // cleared at the head of each frame.** The canvas branches below each
@@ -10492,7 +10498,7 @@ impl MeridianApp {
         self.documents_changed();
         // On the door, the next launch starts on the door too.
         self.layout.live_mut().reopen_nothing();
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        self.retitle(ctx);
         ctx.request_repaint();
     }
 
@@ -10956,7 +10962,7 @@ impl MeridianApp {
             Severity::Success,
             format!("Opened {}", self.title()),
         ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        self.retitle(ctx);
         ctx.request_repaint();
     }
 
@@ -11199,7 +11205,7 @@ impl MeridianApp {
             Severity::Success,
             format!("Opened {}", self.title()),
         ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        self.retitle(ctx);
         ctx.request_repaint();
     }
 
@@ -11654,7 +11660,7 @@ impl MeridianApp {
         // The door lists the Protocol from the moment it is made.
         self.forget_door_listing();
         self.toasts.push(Toast::new(Severity::Success, said));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        self.retitle(ctx);
         ctx.request_repaint();
     }
 
@@ -11786,7 +11792,7 @@ impl MeridianApp {
             Severity::Success,
             format!("Added {what} to {name}"),
         ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        self.retitle(ctx);
         ctx.request_repaint();
     }
 
@@ -14089,7 +14095,7 @@ impl MeridianApp {
             Severity::Success,
             format!("Opened {}", self.title()),
         ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        self.retitle(ctx);
         ctx.request_repaint();
     }
 
