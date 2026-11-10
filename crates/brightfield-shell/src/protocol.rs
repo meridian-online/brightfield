@@ -1868,6 +1868,19 @@ impl ProtocolModel {
             let step = node
                 .and_then(|n| n.step.as_ref())
                 .filter(|_| row.kind != AssetKind::Source);
+            // The step that keeps the values that did not cast, and the table it makes, are
+            // listed only once that table holds rows: until a value fails they are a pair of rows
+            // on every Protocol made from a file that say nothing. The Protocol and its run are
+            // unchanged; this is only what the spine lists.
+            if step.is_some_and(|step| {
+                crate::own_files::is_failed_rows(step, &row.label)
+                    && !self
+                        .assets
+                        .get(&row.id)
+                        .is_some_and(|meta| meta.materialized && meta.row_count.unwrap_or(0) > 0)
+            }) {
+                continue;
+            }
             let typed = step.and_then(|step| self.typed.get(step));
             let struck = step.is_some_and(|step| self.removing.contains(step));
             if let Some(step) = step {

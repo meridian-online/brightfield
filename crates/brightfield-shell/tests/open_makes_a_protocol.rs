@@ -354,6 +354,67 @@ fn a_link_is_refused_as_a_link() {
     );
 }
 
+/// The spine's step and table labels, in the order it lists them.
+fn spine_labels(win: &Window) -> Vec<String> {
+    win.app
+        .protocol_model()
+        .spine()
+        .into_iter()
+        .filter(|row| row.depth == 0)
+        .map(|row| row.label)
+        .collect()
+}
+
+/// The step that keeps values that did not cast, and its `__failed` table, are on the spine only
+/// once the table holds rows: a file whose values all cast lists neither, and the same Protocol
+/// run with a row in that table lists both.
+#[test]
+fn the_failed_rows_step_shows_only_when_rows_failed() {
+    let clean = input("all-cast").join("all_cast.csv");
+    let mut text = String::from("day,reading\n");
+    for d in 1..=28u32 {
+        text.push_str(&format!("2026-02-{d:02},{d}\n"));
+    }
+    std::fs::write(&clean, &text).unwrap();
+    let mut win = Window::new();
+    win.open(&clean);
+    let labels = spine_labels(&win);
+    assert!(
+        labels.iter().any(|l| l == "all_cast") && !labels.iter().any(|l| l.contains("failed")),
+        "{labels:?} {}",
+        win.said()
+    );
+
+    // A value that did not cast, as the failed-rows step keeps one: its statement is made to
+    // keep a row, and the Protocol opened again from its folder runs it.
+    let dir = win
+        .app
+        .own_protocol()
+        .map(|p| p.dir.clone())
+        .expect("the CSV made a Protocol");
+    let failed = dir.join("models").join("02_failed_all_cast.sql");
+    assert!(
+        failed.is_file(),
+        "the failed-rows step's statement is where it was written"
+    );
+    std::fs::write(
+        &failed,
+        "CREATE OR REPLACE TABLE \"all_cast__failed\" AS SELECT 'all_cast.csv' AS \"__source_file\", \
+         NULL::VARCHAR AS \"__source_part\", 29::BIGINT AS \"__source_row\", 'day' AS \"column\", \
+         '2026-02-30' AS \"value\";\n",
+    )
+    .unwrap();
+    let mut win = Window::new();
+    win.open(&dir);
+    let labels = spine_labels(&win);
+    assert!(
+        labels.iter().any(|l| l == "failed_all_cast")
+            && labels.iter().any(|l| l == "all_cast__failed"),
+        "{labels:?} {}",
+        win.said()
+    );
+}
+
 #[test]
 fn an_existing_protocol_opens_where_it_is() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/shipped-protocol");

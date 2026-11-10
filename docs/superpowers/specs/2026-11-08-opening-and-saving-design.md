@@ -74,6 +74,7 @@ The person is an early adopter with middling technical depth: someone who uses a
 
    The bare-letter keys apply only while no text field (typed SQL, the YAML editor, a chart edit) has keyboard focus, so typing them into a query never triggers them.
 6. **The spine leads with the model.** Once sources are added, the navigator's spine lists the model's tables first, each beside the tables it joins, with the model step under them and a curve per join in the spine's gutter. The sources with no join follow under a heading.
+   - **The failed-rows step shows only when rows failed** (Hugh, 2026-11-10). Each source's step that keeps the values that did not cast, and the `<name>__failed` table it makes, are left off the spine while that table is empty or not yet made, and listed once it holds rows. The Protocol file and its run are unchanged; this is only what the spine lists.
 7. **The save model is a split** (Hugh, 2026-11-03):
    - **Kept at once.** Making the Protocol, adding a source, and accepting or dropping a join, with the model step the joins make, are written to disk when they happen, with no Save.
    - **A draft until Cmd+S.** Every other edit is a draft until Cmd+S: a step kept from the grid or typed SQL, a step removed, a chart edit. The title shows the unsaved mark while one is pending.
@@ -148,6 +149,7 @@ Hugh did not pick between these explicitly. He asked whether a tree of Protocols
 - **The Mac's own gestures are in** (2026-11-08): "This is important and valuable."
 - **Open in Brightfield must be visible** (2026-11-08); whether the website's half was separate work was left to this design, which made it so.
 - **Rename renames the folder** (2026-11-08).
+- **The failed-rows step shows only when rows failed** (2026-11-10). Hugh was surprised to see a `__failed` table on the spine of every Protocol he opened from a file.
 - **New Protocol asks where; the Protocols folder is a setting** (2026-11-09). Hugh: "choose a location when making a Protocol" and "have a 'Protocols folder' setting in preferences". He chose that only New Protocol asks, opens do not, with a Location field to move one later, and that changing the setting offers to move the old folder's Protocols.
 - **The door shows Recents and a tree of Protocols, nested in directories; organising is Finder's for now** (2026-11-08). A new Protocol was then written in the Protocols folder with no option at creation; the 2026-11-09 ruling below changes this, so New Protocol asks where.
 

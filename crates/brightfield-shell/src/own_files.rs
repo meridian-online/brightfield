@@ -595,6 +595,19 @@ fn accept_join(model: &Model, join: &AcceptedJoin) -> Result<Model, String> {
     .map_err(|e| e.to_string())
 }
 
+/// Whether `step` is the step that keeps the values of a table that did not cast, and `table` the
+/// `<name>__failed` table it makes: the pair the spine leaves out while the table holds no rows.
+#[must_use]
+pub(crate) fn is_failed_rows(step: &str, table: &str) -> bool {
+    match (
+        step.strip_prefix(FAILED_STEP),
+        table.strip_suffix("__failed"),
+    ) {
+        (Some(of_step), Some(of_table)) => !of_step.is_empty() && of_step == of_table,
+        _ => false,
+    }
+}
+
 /// The names a source table called `name` gives to what is made of it: the table, its raw and
 /// failed-value tables, and its load, silver and failed steps. Two tables clash when any of these
 /// are shared.
