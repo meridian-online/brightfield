@@ -6,6 +6,31 @@ A release's section here is its release notes. The release workflow refuses a ta
 
 Releases before 0.1.6 predate this file; their tags and the commit history are the record of what they carried.
 
+## [Unreleased]
+
+### Added
+
+- Every open makes a Protocol. A data file, folder, workbook or database becomes a Protocol in the Protocols folder, `~/Documents/Protocols` by default, named after its first source (`earthquakes_2024`, then `earthquakes_2024-2`). The folder is a setting in Preferences (`⌘,`), which offers to move the old folder's Protocols when it changes.
+- Open files the Mac's ways: double-click or Open With in Finder, drop onto the Dock icon or the window, or `⌘O`, one panel for a file, a folder or a Protocol. A `brightfield://` link says it does not open yet.
+- Opening a file that already has a Protocol reopens it when that Protocol reads only that file and no other Protocol reads it; otherwise a sheet asks which.
+- `⌘S` saves the Protocol from anywhere in the window. Making a Protocol, adding a source, accepting or dropping a join, and rename are kept at once; every other edit is a draft until `⌘S`. Closing the window, going Home, opening another Protocol, adding a source or quitting over a draft asks to save, close without saving or keep editing, and closing without saving keeps the edits as a version.
+- Rename a Protocol from the window (`F2`) or its row on the front door, which renames its folder; move it with the Location field in the locator band. A Protocol moved in Finder is repaired when opened.
+- `⌘N` makes a new, empty Protocol, asking where.
+- `d d` removes a step from a Protocol's spine, and puts it back.
+- The front door lists Recents and a tree of the Protocols folder, with each Protocol's run state. Brightfield's own previews are not runs: a Protocol only previewed reads "previewed, not run".
+- Relaunching restores the Protocol that was open.
+
+### Changed
+
+- A single CSV no longer opens as a bare file with its Protocol written beside it on Save. It opens as a Protocol made in the Protocols folder, and Save and Run write there.
+- The front door lists a Protocol from the moment it is made, saved or not.
+- The failed-values step and its table show on the spine only when they hold rows.
+
+### Fixed
+
+- Opening the same CSV again no longer makes another Protocol of it each time.
+- A Protocol whose folder was deleted or moved in Finder says so instead of writing the folder again on Save.
+
 ## [0.1.8] - 2026-11-02
 
 ### Added
