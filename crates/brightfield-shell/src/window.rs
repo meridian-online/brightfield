@@ -3308,7 +3308,8 @@ pub struct MeridianApp {
     /// launching ([`Self::restoring_at_launch`]), and `None` once a frame has decided on it.
     restore: Option<std::path::PathBuf>,
     /// Where the window goes once the close question is answered, while it is up: the way out
-    /// that asked it, or the latest one asked since, which takes its place.
+    /// that asked it, or the latest close, Home or quit asked since, which takes its place. An
+    /// open asked for meanwhile is held behind it instead (`held_for_question`).
     leaving: Option<Leaving>,
     /// The opens asked for while the close question was up, oldest first: held until the
     /// question is answered, so the way out it was asked for (a quit, a move, a rename, a new
@@ -9398,8 +9399,9 @@ impl MeridianApp {
     /// saves and then goes, *Close without saving* keeps the drafts as a
     /// version and then goes, and *Keep editing* stays and drops `to`. A way
     /// out asked for while the question is up takes the place of the one it
-    /// was asked for, so the latest choice is the one that goes. Without the
-    /// mark, `to` goes at once.
+    /// was asked for, so the latest choice is the one that goes; an open from
+    /// the queue is held behind the question instead, and taken after it. Without
+    /// the mark, `to` goes at once.
     ///
     /// Going is `Self::open_home` for Home and for the window's close, the
     /// open itself for an open, and the app's end for a quit, which waits for

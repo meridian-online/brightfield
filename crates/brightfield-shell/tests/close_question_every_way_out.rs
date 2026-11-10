@@ -404,7 +404,7 @@ fn opening_another_protocol_with_a_draft_asks() {
 }
 
 #[test]
-fn a_newer_open_takes_the_place_of_the_one_asked_about() {
+fn a_newer_open_waits_behind_the_one_asked_about() {
     let mut win = Window::opened("open_newer");
     win.keep_filter();
     let older = housing_copy("open_newer_older");
@@ -420,11 +420,15 @@ fn a_newer_open_takes_the_place_of_the_one_asked_about() {
     win.key(egui::Key::D, egui::Modifiers::NONE);
     win.settle();
 
-    win.assert_holds("open_newer_newer");
+    // The open the question was asked for goes, then the one held behind it.
     assert!(
-        !Window::dir_of("open_newer_older").exists(),
-        "nothing is made of the open the newer one replaced"
+        Window::dir_of("open_newer_older")
+            .join("arcform.yaml")
+            .is_file(),
+        "the open asked about went ahead: {}",
+        win.said()
     );
+    win.assert_holds("open_newer_newer");
 }
 
 #[test]

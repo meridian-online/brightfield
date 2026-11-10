@@ -653,18 +653,19 @@ fn window_with_unsaved_edits(name: &str) -> (MeridianApp, egui::Context) {
 }
 
 #[test]
-fn a_newer_open_takes_the_place_of_the_one_asked_about() {
+fn a_newer_open_waits_behind_the_one_asked_about() {
     let (mut app, ctx) = window_with_unsaved_edits("held_over");
     let older = housing_copy("held_over_a", "held_older.csv");
     let newer = housing_copy("held_over_b", "held_newer.csv");
 
-    app.open_queue().push(OpenRequest::Path(older));
+    app.open_queue().push(OpenRequest::Path(older.clone()));
     frame(&mut app, &ctx, egui::RawInput::default());
-    app.open_queue().push(OpenRequest::Path(newer.clone()));
+    app.open_queue().push(OpenRequest::Path(newer));
     frame(&mut app, &ctx, egui::RawInput::default());
     assert_eq!(
         app.leaving(),
-        Some(&Leaving::Open(OpenRequest::Path(newer)))
+        Some(&Leaving::Open(OpenRequest::Path(older))),
+        "the open asked about stands"
     );
 
     let newer_dir = scratch().join("protocols").join("held_newer");
@@ -672,7 +673,7 @@ fn a_newer_open_takes_the_place_of_the_one_asked_about() {
         &mut app,
         &ctx,
         CloseAnswer::SaveAndClose,
-        "the newer open never went ahead",
+        "the held open never went ahead",
         |app| app.own_protocol().map(|p| p.dir.clone()) == Some(newer_dir.clone()),
     );
     for _ in 0..5 {
@@ -680,8 +681,12 @@ fn a_newer_open_takes_the_place_of_the_one_asked_about() {
     }
     assert_opened(&app, "held_newer");
     assert!(
-        !scratch().join("protocols").join("held_older").exists(),
-        "nothing is made of the open the newer one replaced"
+        scratch()
+            .join("protocols")
+            .join("held_older")
+            .join("arcform.yaml")
+            .is_file(),
+        "the open asked about went first"
     );
 }
 
