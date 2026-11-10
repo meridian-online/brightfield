@@ -110,6 +110,7 @@ pub mod discovery;
 pub mod door_tree;
 pub mod editor;
 pub mod export;
+pub mod file_protocols;
 pub(crate) mod flat_cast;
 pub mod gallery;
 pub mod generated;

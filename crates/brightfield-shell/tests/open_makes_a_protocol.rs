@@ -121,11 +121,30 @@ impl Window {
     }
 
     fn frame(&mut self) {
+        self.frame_with(Vec::new());
+    }
+
+    /// Press and release `key`, then let the window settle.
+    fn key(&mut self, key: egui::Key) {
+        let press = |pressed| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        self.frame_with(vec![press(true), press(false)]);
+        self.frame();
+        self.frame();
+    }
+
+    fn frame_with(&mut self, events: Vec<egui::Event>) {
         let raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::vec2(1440.0, 900.0),
             )),
+            events,
             ..Default::default()
         };
         let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
@@ -412,6 +431,87 @@ fn the_failed_rows_step_shows_only_when_rows_failed() {
         "{labels:?} {}",
         win.said()
     );
+}
+
+/// The open Protocol's folder, when it holds one.
+fn open_dir(win: &Window) -> Option<PathBuf> {
+    win.app.open_protocol_dir()
+}
+
+/// A file opened again reopens the one Protocol of it rather than making another. A file that
+/// is one source of a Protocol of several, or a source of more than one Protocol, asks which in a
+/// sheet listing each by name, with New Protocol last: Esc opens nothing, New Protocol makes one as
+/// an open with no Protocol of it does, and a Protocol chosen opens.
+#[test]
+fn a_file_reopens_the_protocol_it_has_or_asks_which() {
+    let folder = input("again");
+    let csv = folder.join("opened_again.csv");
+    std::fs::copy(housing(), &csv).expect("the housing sample copies");
+    let mut win = Window::new();
+    win.open(&csv);
+    let made = protocols().join("opened_again");
+    assert_eq!(open_dir(&win), Some(made.clone()), "{}", win.said());
+
+    let mut win = Window::new();
+    win.open(&csv);
+    assert_eq!(open_dir(&win), Some(made.clone()), "{}", win.said());
+    assert_eq!(
+        protocols_named("opened_again"),
+        vec!["opened_again".to_string()]
+    );
+
+    // A Protocol of a folder that holds the file as one of two sources.
+    let pair = input("pair_of_two");
+    let left = pair.join("left_of_two.csv");
+    std::fs::write(&left, "id,name\n1,Ada\n2,Bo\n").unwrap();
+    std::fs::write(pair.join("right_of_two.csv"), "id,left_id\n10,1\n11,2\n").unwrap();
+    let mut win = Window::new();
+    win.open(&pair);
+    let both = win
+        .app
+        .model_pane()
+        .map(|pane| pane.protocol.dir.clone())
+        .unwrap_or_else(|| panic!("two tables open the model: {}", win.said()));
+    let both_name = both.file_name().unwrap().to_string_lossy().into_owned();
+
+    let mut win = Window::new();
+    win.open(&left);
+    assert_eq!(
+        win.app.open_overlay(),
+        Some("which-protocol"),
+        "{}",
+        win.said()
+    );
+    assert_eq!(
+        win.app.which_protocol_choices(),
+        Some(vec![both_name.clone(), "New Protocol".to_string()])
+    );
+    win.key(egui::Key::Escape);
+    assert_eq!(win.app.open_overlay(), None);
+    assert!(win.app.front_door_is_live(), "Esc opened nothing");
+    assert!(
+        protocols_named("left_of_two").is_empty(),
+        "and made nothing"
+    );
+
+    // New Protocol makes one of the file.
+    win.open(&left);
+    win.key(egui::Key::ArrowDown);
+    win.key(egui::Key::Enter);
+    let lone = protocols().join("left_of_two");
+    assert_eq!(open_dir(&win), Some(lone.clone()), "{}", win.said());
+
+    // Now two Protocols read it, and the one chosen opens.
+    let mut win = Window::new();
+    win.open(&left);
+    let choices = win.app.which_protocol_choices().expect("the sheet asks");
+    assert_eq!(choices.len(), 3, "{choices:?}");
+    let at = choices.iter().position(|c| *c == both_name).unwrap();
+    for _ in 0..at {
+        win.key(egui::Key::ArrowDown);
+    }
+    win.key(egui::Key::Enter);
+    assert_eq!(open_dir(&win), Some(both.clone()), "{}", win.said());
 }
 
 #[test]

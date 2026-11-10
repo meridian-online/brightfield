@@ -2265,6 +2265,78 @@ enum Overlay {
     /// Preferences: the Protocols folder, and the offer to move the old one's Protocols once it
     /// changes.
     Preferences(crate::preferences::PreferencesSheet),
+    /// The question opening a data file asks when known Protocols already read it and none of
+    /// them is plainly the one: which to open, or a new Protocol.
+    WhichProtocol(WhichProtocolSheet),
+}
+
+/// The sheet that asks which Protocol a data file opens: each known Protocol that reads it, by
+/// name and location, then New Protocol last.
+#[derive(Debug)]
+struct WhichProtocolSheet {
+    /// The data file being opened.
+    file: PathBuf,
+    /// The Protocols that read it.
+    choices: Vec<crate::file_protocols::FileProtocol>,
+    /// The row chosen: one of `choices`, or New Protocol at `choices.len()`.
+    selected: usize,
+    /// Where each row was drawn on the last frame.
+    rows: Vec<egui::Rect>,
+}
+
+/// The Which Protocol sheet's last row, which makes a new Protocol of the file as an open with no
+/// Protocol of it does.
+pub const WHICH_PROTOCOL_NEW: &str = "New Protocol";
+
+/// Draw the Which Protocol sheet's body: what the file is a source of, each Protocol by name and
+/// location, New Protocol, and Open. A click on a row chooses it; answers whether Open was clicked.
+fn which_protocol_body(ui: &mut egui::Ui, sheet: &mut WhichProtocolSheet) -> bool {
+    use meridian_egui::MeridianUi as _;
+    let gap = ui.tokens().section_gap;
+    let sem = meridian_design::semantic(ui.visuals().dark_mode);
+    ui.label(
+        egui::RichText::new(format!(
+            "{} is already a source of {}. Open one, or make a new Protocol of it.",
+            display_name(&sheet.file),
+            if sheet.choices.len() == 1 {
+                "a Protocol"
+            } else {
+                "these Protocols"
+            }
+        ))
+        .color(chrome::colour(sem.text.secondary)),
+    );
+    ui.add_space(gap);
+    sheet.rows.clear();
+    for at in 0..=sheet.choices.len() {
+        let row = match sheet.choices.get(at) {
+            Some(choice) => {
+                let place = choice.dir.parent().unwrap_or(&choice.dir);
+                ui.horizontal(|ui| {
+                    let row = ui.selectable_label(sheet.selected == at, &choice.name);
+                    // A long location gives up its middle rather than widening the card past
+                    // its rung, as the Preferences sheet's folder does.
+                    let font = egui::TextStyle::Small.resolve(ui.style());
+                    let room = ui.available_width();
+                    ui.label(
+                        egui::RichText::new(crate::preferences::elide_path(ui, place, &font, room))
+                            .small()
+                            .color(chrome::colour(sem.text.muted)),
+                    )
+                    .on_hover_text(place.display().to_string());
+                    row
+                })
+                .inner
+            }
+            None => ui.selectable_label(sheet.selected == at, WHICH_PROTOCOL_NEW),
+        };
+        sheet.rows.push(row.rect);
+        if row.clicked() {
+            sheet.selected = at;
+        }
+    }
+    ui.add_space(gap);
+    ui.button("Open").clicked()
 }
 
 /// One place the New Protocol sheet offers to make the Protocol in.
@@ -8462,6 +8534,7 @@ impl MeridianApp {
         let mut kept: Option<(TypedAnswer, Option<String>)> = None;
         let mut where_kept: Option<String> = None;
         let mut make_in: Option<NewProtocolPlace> = None;
+        let mut which_open: Option<PathBuf> = None;
         let mut preferences_action = None;
         let mut question_dismissed = false;
         match &mut overlay {
@@ -8635,6 +8708,41 @@ impl MeridianApp {
                     close = shown.dismissed;
                 }
             }
+            Overlay::WhichProtocol(sheet) => {
+                // As the New Protocol sheet reads them: Enter opens the row chosen, as Open does,
+                // the arrows move the choice, and Esc and a click on the backdrop open nothing.
+                let enter =
+                    ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                let (down, up) = ctx.input_mut(|i| {
+                    (
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                    )
+                });
+                let last = sheet.choices.len();
+                if down {
+                    sheet.selected = (sheet.selected + 1).min(last);
+                }
+                if up {
+                    sheet.selected = sheet.selected.saturating_sub(1);
+                }
+                let chrome = ModalChrome::new()
+                    .title("Which Protocol?")
+                    .enter_hint("open")
+                    .esc_hint("cancel");
+                let shown = ModalLayer::show(ctx, "bf-overlay-which-protocol", &chrome, |ui| {
+                    which_protocol_body(ui, sheet)
+                });
+                if enter || shown.inner {
+                    which_open = Some(match sheet.choices.get(sheet.selected) {
+                        Some(choice) => choice.dir.clone(),
+                        None => sheet.file.clone(),
+                    });
+                    close = true;
+                } else {
+                    close = shown.dismissed;
+                }
+            }
             Overlay::Preferences(sheet) => {
                 let folder = crate::protocols_dir::root();
                 let overridden = protocols_dir_override();
@@ -8671,6 +8779,15 @@ impl MeridianApp {
         }
         if question_dismissed {
             self.dismiss_close_question(ctx);
+        }
+        // A Protocol chosen opens as any open does, asking first over a draft; New Protocol opens
+        // the file itself, which makes a Protocol of it, since only a request taken off the queue
+        // looks for the Protocols a file already has.
+        if let Some(path) = which_open {
+            self.leave(
+                ctx,
+                Leaving::Open(crate::open_queue::OpenRequest::Path(path)),
+            );
         }
         match make_in {
             Some(NewProtocolPlace::Folder { dir, .. }) => self.leave(ctx, Leaving::Make(dir)),
@@ -9773,6 +9890,7 @@ impl MeridianApp {
             Overlay::Statement(_) => "palette",
             Overlay::NewProtocol(_) => "new-protocol",
             Overlay::Preferences(_) => "preferences",
+            Overlay::WhichProtocol(_) => "which-protocol",
         })
     }
 
@@ -11371,12 +11489,72 @@ impl MeridianApp {
         }
     }
 
+    /// Whether `path` is a lone data file a new Protocol would be made of: a file, not a folder,
+    /// in no Protocol directory and not an archive of one.
+    fn lone_data_file(&self, path: &std::path::Path) -> bool {
+        path.is_file()
+            && matches!(
+                crate::open_queue::route(path),
+                crate::open_queue::Route::New(_)
+            )
+    }
+
+    /// The Protocol folders the window's Recents name, for the look for the Protocols a file
+    /// already has.
+    fn recent_protocol_dirs(&self) -> Vec<PathBuf> {
+        self.layout
+            .live()
+            .recents
+            .iter()
+            .filter_map(|r| door_row_dir(&r.id))
+            .collect()
+    }
+
+    /// The Protocols the Which Protocol sheet offers, by name, while it is open, New Protocol
+    /// last: a test hook.
+    #[must_use]
+    pub fn which_protocol_choices(&self) -> Option<Vec<String>> {
+        match &self.overlay {
+            Some(Overlay::WhichProtocol(sheet)) => Some(
+                sheet
+                    .choices
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .chain(std::iter::once(WHICH_PROTOCOL_NEW.to_string()))
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
     /// Carry out `request`, asking the close question first when it would replace what the
     /// window shows over a draft ([`Self::leave`]): another Protocol, or the canvas a source is
     /// added under. A link is carried out at once.
     fn take_or_ask(&mut self, ctx: &egui::Context, request: crate::open_queue::OpenRequest) {
         use crate::open_queue::OpenRequest;
         match request {
+            // A lone data file reopens the Protocol it already has, or asks which of several,
+            // before anything is left: a Protocol is made of it only when none reads it.
+            OpenRequest::Path(path) if self.lone_data_file(&path) => {
+                let recents = self.recent_protocol_dirs();
+                match crate::file_protocols::decide(&path, &recents) {
+                    crate::file_protocols::FileOpen::New => {
+                        self.leave(ctx, Leaving::Open(OpenRequest::Path(path)));
+                    }
+                    crate::file_protocols::FileOpen::Reopen(dir) => {
+                        self.leave(ctx, Leaving::Open(OpenRequest::Path(dir)));
+                    }
+                    crate::file_protocols::FileOpen::Ask(choices) => {
+                        self.overlay = Some(Overlay::WhichProtocol(WhichProtocolSheet {
+                            file: path,
+                            choices,
+                            selected: 0,
+                            rows: Vec::new(),
+                        }));
+                        ctx.request_repaint();
+                    }
+                }
+            }
             // Adding a source keeps the Protocol open, but replaces what the canvas shows, so a
             // draft is asked about first, as before a rename.
             OpenRequest::Path(_)

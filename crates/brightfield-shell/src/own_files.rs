@@ -1568,6 +1568,21 @@ fn write_sources(dir: &Path, set: &SourceSet) -> Result<(), String> {
     std::fs::write(&path, text + "\n").map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// The source files the own-files Protocol in `dir` reads, each once, in the order its record lists
+/// them: `None` when `dir` holds no record of its sources. A workbook or database of several tables
+/// is one file.
+#[must_use]
+pub fn source_files(dir: &Path) -> Option<Vec<PathBuf>> {
+    let set = read_sources(dir).ok()?;
+    let mut files: Vec<PathBuf> = Vec::new();
+    for table in set.tables {
+        if !files.contains(&table.file) {
+            files.push(table.file);
+        }
+    }
+    Some(files)
+}
+
 /// The tables and skipped files [`write_sources`] recorded in `dir`.
 fn read_sources(dir: &Path) -> Result<SourceSet, String> {
     let path = dir.join(SOURCES_FILE);

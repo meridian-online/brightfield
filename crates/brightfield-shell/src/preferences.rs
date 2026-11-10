@@ -45,7 +45,7 @@ const CHOOSE_ROOM: f32 = 110.0;
 /// `path` shortened in the middle to fit `room` points in `font`: the start and as many of the
 /// last folders as fit, joined by an ellipsis, such as `/Users/…/Documents/Protocols`. The final
 /// folder is always kept, even where it alone is wider than `room`.
-fn elide_path(ui: &egui::Ui, path: &Path, font: &egui::FontId, room: f32) -> String {
+pub(crate) fn elide_path(ui: &egui::Ui, path: &Path, font: &egui::FontId, room: f32) -> String {
     let full = path.display().to_string();
     let width = |text: &str| {
         ui.painter()
