@@ -900,6 +900,48 @@ fn files_held_behind_a_quit_that_waits_for_a_run_are_all_said_not_opened() {
 }
 
 #[test]
+fn a_loss_chosen_going_home_is_not_carried_into_a_later_quit() {
+    let held = HeldRunner::new("stale_loss");
+    let mut win = Window::opened_with("stale_loss", held.runner.clone());
+    // No store, so no work can be kept as a version.
+    win.app.set_history(None);
+    win.keep_filter();
+    win.home();
+    assert!(win.asking());
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    let question = win.app.close_question().expect("the question says why");
+    assert!(question.not_kept.is_some(), "{question:?}");
+    // Close without saving again: the analyst chooses to lose the filter, going Home.
+    win.key(egui::Key::D, egui::Modifiers::NONE);
+    assert!(win.app.front_door_is_live(), "{}", win.said());
+
+    // Later, the Protocol again, clean, quit with a run outstanding.
+    win.app.open_queue().push(OpenRequest::Path(win.dir()));
+    win.settle();
+    win.assert_holds("stale_loss");
+    assert!(!win.marked(), "{}", win.said());
+    held.hold();
+    win.start_run();
+    win.cmd_q();
+    assert!(!win.asking() && win.says_waiting(), "{}", win.said());
+
+    // An edit during the wait, which cannot be kept: the second quit asks rather than close.
+    win.keep_filter();
+    win.forget_sent();
+    win.cmd_q();
+    assert!(!win.closed, "the window stays over work it could not keep");
+    assert!(
+        win.app
+            .close_question()
+            .is_some_and(|q| q.not_kept.is_some()),
+        "and asks again, saying why: {}",
+        win.said()
+    );
+    held.release();
+    win.until("the held run never finished", |w| !w.app.run_outstanding());
+}
+
+#[test]
 fn a_close_while_a_quit_waits_for_a_run_closes_now() {
     let (mut win, held) = waiting_on_a_held_run("close_twice");
     win.cmd_q();

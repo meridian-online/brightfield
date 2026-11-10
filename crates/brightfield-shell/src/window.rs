@@ -3320,9 +3320,10 @@ pub struct MeridianApp {
     /// once the runs land or at a second close or quit, is kept as a version first
     /// ([`Self::keep_what_changed_while_waiting`]).
     close_after_runs: bool,
-    /// Whether the close question now up, or last answered, was answered Close without saving
-    /// after it said the work could not be kept: the analyst chose to lose it, so a close during
-    /// a run wait that cannot keep the work either closes rather than ask again.
+    /// Whether the close question for a quit was answered Close without saving after it said the
+    /// work could not be kept: the analyst chose to lose it, so a close during that quit's run
+    /// wait that cannot keep the work either closes rather than ask again. Any other way out
+    /// clears it (`a_loss_chosen_going_home_is_not_carried_into_a_later_quit`).
     unkept_accepted: bool,
     /// Every request to open something, from whichever way in, taken at the start of each frame.
     open_queue: crate::open_queue::OpenQueue,
@@ -9472,6 +9473,10 @@ impl MeridianApp {
 
     /// Go where `to` says, with nothing left to ask.
     fn go(&mut self, ctx: &egui::Context, to: Leaving) {
+        // A loss chosen for a quit is not carried into any other way out.
+        if !matches!(to, Leaving::Quit) {
+            self.unkept_accepted = false;
+        }
         match to {
             // The window's close shows the door and leaves the app running, so a run the window
             // started goes on and lands as it does after Home.
@@ -9760,7 +9765,8 @@ impl MeridianApp {
             }
             CloseAnswer::CloseWithoutSaving => {
                 let told = self.close_question().is_some_and(|q| q.not_kept.is_some());
-                self.unkept_accepted = told;
+                // The loss is chosen for the quit it answers, and for nothing else.
+                self.unkept_accepted = told && matches!(self.leaving, Some(Leaving::Quit));
                 let kept = if told { Ok(()) } else { self.keep_unsaved() };
                 match kept {
                     Ok(()) => {
