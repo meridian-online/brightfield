@@ -155,6 +155,18 @@ fn a_file_dropped_on_an_open_protocol_says_a_drop_opens_from_the_door() {
         .find(|n| n.id == meridian_egui::NotificationId::new(DROP_NOT_TAKEN_BANNER))
         .unwrap_or_else(|| panic!("a banner says where a drop opens: {}", said(&app)));
     assert_eq!(banner.title, DROP_NOT_TAKEN_TITLE);
+
+    // Home, as the banner says: the door is not told to go Home.
+    app.leave(&ctx, Leaving::Home);
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert!(app.front_door_is_live());
+    assert!(
+        !app.notifications()
+            .iter()
+            .any(|n| n.id == meridian_egui::NotificationId::new(DROP_NOT_TAKEN_BANNER)),
+        "the banner went with the Protocol it was about: {}",
+        said(&app)
+    );
 }
 
 #[test]

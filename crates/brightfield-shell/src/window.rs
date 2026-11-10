@@ -4303,6 +4303,10 @@ impl MeridianApp {
         self.typed_in_grid = None;
         self.typed_where_in_grid = None;
         self.typed_counts.clear();
+        // The banner that said a drop onto the Protocol was not taken is about the document that
+        // was open.
+        self.notifications
+            .dismiss(NotificationId::new(DROP_NOT_TAKEN_BANNER));
         self.reconcile_canvas_holds();
         // The ledger and inspector rails' collapsed default, and which
         // inspector pane the caret opens on — re-derived here so a document
@@ -5739,12 +5743,16 @@ impl MeridianApp {
         });
         if self.front_door_is_live() {
             if let Some(request) = crate::open_queue::OpenRequest::of_paths(dropped) {
+                self.notifications
+                    .dismiss(NotificationId::new(DROP_NOT_TAKEN_BANNER));
                 self.open_queue.push(request);
             }
         } else if self.empty_protocol.is_some() {
             // Files dropped on a Protocol with no sources yet are added to it, the files of one
             // drop together, as its canvas says.
             if !dropped.is_empty() {
+                self.notifications
+                    .dismiss(NotificationId::new(DROP_NOT_TAKEN_BANNER));
                 self.open_queue
                     .push(crate::open_queue::OpenRequest::AddSources(dropped));
             }
