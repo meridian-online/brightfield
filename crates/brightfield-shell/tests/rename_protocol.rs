@@ -20,8 +20,8 @@ use brightfield_shell::overlays::{CloseAnswer, MOVE_QUESTION_TITLE, RENAME_QUEST
 use brightfield_shell::rename;
 use brightfield_shell::run::Runner;
 use brightfield_shell::window::{
-    Boot, Leaving, MeridianApp, PlaceField, DOOR_RENAME_UNDER_A_RUN, MOVE_PROTOCOL_BANNER,
-    NOT_FOLLOWED_BANNER, UNSAVED_MARK,
+    Boot, Leaving, MeridianApp, PlaceField, DOOR_RENAME_UNDER_A_RUN,
+    FINDER_MOVE_NOT_FOLLOWED_TITLE, MOVE_PROTOCOL_BANNER, NOT_FOLLOWED_BANNER, UNSAVED_MARK,
 };
 
 fn scratch() -> &'static Path {
@@ -415,6 +415,40 @@ fn a_protocol_moved_in_finder_finds_its_sources() {
         "the new place is recorded"
     );
     win.run_and_succeed();
+}
+
+#[test]
+fn a_finder_move_whose_repair_fails_says_so_on_open() {
+    let win = Window::opened("finder_spoiled");
+    let dir = win.dir().expect("a Protocol");
+    drop(win);
+    let group = scratch().join("protocols").join("a_spoiled_group");
+    std::fs::create_dir_all(&group).expect("a group");
+    let moved = group.join("finder_spoiled");
+    std::fs::rename(&dir, &moved).expect("the folder moves");
+    // A package that cannot be read, so the repair on open fails.
+    std::fs::write(
+        moved.join("packages/finder_spoiled/datapackage.json"),
+        "{ not json",
+    )
+    .expect("the package is spoiled");
+
+    let mut win = Window::new();
+    win.open(OpenRequest::Path(moved.clone()));
+    let said = win
+        .app
+        .notifications()
+        .iter()
+        .find(|n| n.id == meridian_egui::NotificationId::new(NOT_FOLLOWED_BANNER))
+        .unwrap_or_else(|| panic!("a banner says what did not follow: {}", win.said()));
+    assert_eq!(said.title, FINDER_MOVE_NOT_FOLLOWED_TITLE);
+    assert!(
+        said.body
+            .as_deref()
+            .is_some_and(|b| b.starts_with(rename::SOURCES_NOT_FOLLOWED)),
+        "{:?}",
+        said.body
+    );
 }
 
 #[test]

@@ -294,30 +294,40 @@ pub fn moved_since(dir: &Path) -> Option<PathBuf> {
 /// ([`moved_since`]), repair its sources from where it was and move arc's database to its new
 /// path, then record where it is now. A folder copied rather than moved, whose original is still
 /// there, keeps the original's database where it is, so the copy builds its own. A folder that
-/// records no place has its place recorded. Answers how many source paths were repaired, `None`
-/// when it had not moved.
+/// records no place has its place recorded.
 ///
-/// # Errors
-///
-/// A package, record or model that cannot be read or written.
-pub fn follow_a_move(dir: &Path) -> Result<Option<usize>, String> {
+/// Answers what did not follow the move, in the words an in-app move uses
+/// ([`SOURCES_NOT_FOLLOWED`], [`PLACE_NOT_RECORDED`], [`DATABASE_NOT_FOLLOWED`]), so the window
+/// can say so: empty when everything followed, or the folder had not moved. Sources that could
+/// not be repaired leave the old place recorded, so the next open tries again.
+#[must_use]
+pub fn follow_a_move(dir: &Path) -> Vec<String> {
     let Some(was) = moved_since(dir) else {
         if dir.join(SOURCES_FILE).is_file() {
-            record_dir(dir)?;
+            if let Err(e) = record_dir(dir) {
+                return vec![format!("{PLACE_NOT_RECORDED}: {e}")];
+            }
         }
-        return Ok(None);
+        return Vec::new();
     };
-    let now = dir
+    let repaired = dir
         .canonicalize()
-        .map_err(|e| format!("{}: {e}", dir.display()))?;
-    let repaired = repair(&now, &was)?;
+        .map_err(|e| format!("{}: {e}", dir.display()))
+        .and_then(|now| repair(&now, &was).map(|_| now));
+    let now = match repaired {
+        Ok(now) => now,
+        Err(e) => return vec![format!("{SOURCES_NOT_FOLLOWED}: {e}")],
+    };
+    let mut warnings = Vec::new();
     if !was.join(MANIFEST).is_file() {
         if let Err(e) = move_database(database_keyed_to(&was, &now), &now) {
-            eprintln!("warning: {}: {e}", now.display());
+            warnings.push(format!("{DATABASE_NOT_FOLLOWED}: {e}"));
         }
     }
-    record_dir(&now)?;
-    Ok(Some(repaired))
+    if let Err(e) = record_dir(&now) {
+        warnings.push(format!("{PLACE_NOT_RECORDED}: {e}"));
+    }
+    warnings
 }
 
 /// Rewrite each source path in the Protocol in `dir` that is written relative to its folder and

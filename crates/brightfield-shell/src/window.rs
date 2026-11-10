@@ -2515,6 +2515,11 @@ const LEFT_BEHIND_BANNER: &str = "move-protocol-left-behind";
 /// recorded place, or its working database.
 pub const NOT_FOLLOWED_BANNER: &str = "move-protocol-not-followed";
 
+/// What that banner says when a Protocol moved in the Finder is opened and not everything
+/// followed it.
+pub const FINDER_MOVE_NOT_FOLLOWED_TITLE: &str =
+    "Moved outside Brightfield, but not everything followed it";
+
 /// The banner that says sources were not added to the Protocol open, because Brightfield did not
 /// make it.
 pub const ADD_SOURCE_REFUSED_BANNER: &str = "add-source-refused";
@@ -14328,8 +14333,21 @@ impl MeridianApp {
             .or_else(|| crate::own_files::one_source_protocol_dir(named))
             .or_else(|| crate::own_files::empty_protocol_dir(named))
         {
-            if let Err(e) = crate::rename::follow_a_move(&dir) {
-                eprintln!("warning: {}: its move was not followed: {e}", dir.display());
+            let warnings = crate::rename::follow_a_move(&dir);
+            if !warnings.is_empty() {
+                eprintln!(
+                    "warning: {}: its move was not followed: {}",
+                    dir.display(),
+                    warnings.join(". ")
+                );
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new(NOT_FOLLOWED_BANNER),
+                        Severity::Warning,
+                        FINDER_MOVE_NOT_FOLLOWED_TITLE,
+                    )
+                    .body(warnings.join(". ")),
+                );
             }
         }
         // A Protocol with no sources yet opens on its empty canvas.
