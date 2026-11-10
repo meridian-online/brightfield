@@ -116,7 +116,7 @@ impl OpenRequest {
     }
 
     /// The request to add the files or folders `paths` to the open Protocol as sources:
-    /// [`Self::AddSource`] for one, [`Self::AddSources`] for several, and `None` for none.
+    /// [`Self::AddSource`] for one, [`Self::AddSources`] for several, and `None` for an empty list.
     #[must_use]
     pub fn of_sources(mut paths: Vec<PathBuf>) -> Option<Self> {
         match paths.len() {

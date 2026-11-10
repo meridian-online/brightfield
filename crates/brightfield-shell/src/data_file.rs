@@ -1443,9 +1443,8 @@ pub fn fetch_message(needed: &[&str], installed: &[String]) -> Option<String> {
 /// window's frames until the analyst answered. Elsewhere a file picker is raised, which blocks
 /// until the user chooses.
 ///
-/// The one call in this crate that opens a window nobody laid out, and the one thing here no
-/// headless test drives: everything a test needs to know about opening a path is decided by
-/// `accept`, `open_any` and the dashboard `open` chooses, none of which needs a dialog. Files
+/// No headless test drives the dialog itself: what a test needs to know about opening a path is
+/// decided after it, by `accept`, `open_any` and the dashboard `open` chooses. Files
 /// are filtered to the extensions `accept` will take, so the common refusal is seldom shown: a
 /// picker that offers a `.txt` and then declines it is a picker arguing with itself.
 pub fn pick(
