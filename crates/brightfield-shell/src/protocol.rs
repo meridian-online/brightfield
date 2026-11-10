@@ -130,6 +130,10 @@ pub struct ProtocolInputs {
     /// `Some` for an emitted Protocol+Run contract, and then it is the run
     /// header the contract carried: the outcome, the id, and the timestamps.
     pub run: Option<RunView>,
+    /// Whether [`Self::run`] is a preview: a run Brightfield started itself to make the tables an
+    /// open, a reload or a model save shows, which [`crate::run::mark_preview`] marked, rather
+    /// than a run the analyst asked for.
+    pub run_is_preview: bool,
     /// The S-sheet rows in run order.
     pub sheet_rows: Vec<StepRow>,
     /// The columns of the one table this Protocol produces, in the table's own
@@ -194,6 +198,7 @@ impl ProtocolInputs {
             assets: BTreeMap::new(),
             steps: BTreeMap::new(),
             run: None,
+            run_is_preview: false,
             sheet_rows: Vec::new(),
             columns: Vec::new(),
             tiles: Vec::new(),
@@ -269,6 +274,18 @@ impl ProtocolInputs {
         self.table = Some(table);
     }
 
+    /// Adopt the newest record in the Protocol folder `dir` of a run of `protocol` that matches
+    /// these steps ([`Self::adopt_run`]), noting whether it was a preview
+    /// ([`crate::run::preview_ids`]).
+    pub fn adopt_newest_run(&mut self, dir: &std::path::Path, protocol: &str) {
+        for view in crate::run::records_newest_first(dir, protocol) {
+            if self.adopt_run(&view) {
+                self.run_is_preview = crate::run::preview_ids(dir).contains(&view.run.run_id);
+                return;
+            }
+        }
+    }
+
     /// Take on the run `view` records, when it is a run of **this** Protocol's
     /// steps, and say whether it was.
     ///
@@ -310,6 +327,7 @@ impl ProtocolInputs {
         self.assets.clone_from(&view.assets);
         self.steps.clone_from(&view.steps);
         self.run = Some(view.run.clone());
+        self.run_is_preview = false;
         // The record's sheet lists the steps it ran; a typed step keeps the
         // declaration's row after them, as the spine keeps it at the foot.
         let waiting: Vec<_> = self
@@ -405,13 +423,16 @@ pub fn offline_optin() -> bool {
 /// launch after that click.
 ///
 /// What makes the remembered form honest is where the memory can come from.
-/// `SavedLayout::opened` is written from exactly one place in product code —
-/// `MeridianApp::open_start`, checkable with
-/// `git grep -n 'live_mut().opened' -- crates/brightfield-shell/src` — so it
-/// can only name an id the user picked off a button that disclosed it. What
-/// invalidates it: opening anything else, which overwrites it, and a build
-/// that no longer ships that start, which `opening_boot` drops rather than
-/// propagates.
+/// Product code sets `SavedLayout::opened` to an id through
+/// `SavedLayout::reopen_start`, which it calls from one place — the landing of
+/// a start the user picked in `MeridianApp::open_start`, checkable with
+/// `git grep -n 'reopen_start' -- crates/brightfield-shell/src` — so the id is
+/// one the user picked off a button that disclosed it. A Protocol
+/// folder to reopen is a field of its own, `SavedLayout::reopen_protocol`, and
+/// is not a start. What invalidates the id: opening another start, which
+/// overwrites it, opening a Protocol or going to the door, which clear it, and
+/// a build that no longer ships that start, which `opening_boot` drops rather
+/// than propagates.
 ///
 /// `starts.rs` states the same thing at the declaration, and
 /// `a_start_that_opens_a_run_less_manifest_says_so_on_its_own_button` holds
@@ -585,6 +606,7 @@ pub fn load_contract_str(bytes: &[u8]) -> Result<ProtocolInputs, String> {
         assets: view.assets.clone(),
         steps: view.steps.clone(),
         run: Some(view.run.clone()),
+        run_is_preview: false,
         // From the view, not synthesised from the seams: `StepsSheet::from_view`
         // carries the status and live columns a run recorded, where the manifest
         // path's `synth_sheet_rows` leaves both at their unrun default.
@@ -682,6 +704,7 @@ fn inputs_from(
         // the `(no run)` disclosure on the shipped start's own button says out
         // loud before the click.
         run: None,
+        run_is_preview: false,
         sheet_rows,
         // A manifest declares relations, not columns: nothing here profiled a
         // table, so the outline lists assets alone. The data-file path fills
@@ -832,6 +855,9 @@ pub struct SpineRow {
     pub id: Option<AssetId>,
     /// The view a click puts on the canvas, on a view row.
     pub view: Option<NodeView>,
+    /// Whether the row is drawn struck through: the step is removed and the
+    /// removal not yet saved, on the step's row and the rows of what it makes.
+    pub struck: bool,
 }
 
 /// The separator a caption row puts between its clauses.
@@ -932,6 +958,64 @@ fn protocol_key_table() -> BTreeMap<String, &'static str> {
     table
 }
 
+/// The `remove-step` verb's longname: the registry's, spelled once here.
+pub const REMOVE_STEP: &str = "remove-step";
+
+/// The keystrokes the registry binds `remove-step` to in the Protocol context,
+/// which [`ProtocolModel::feed_events`] reads as a chord of two `d`s.
+const REMOVE_STEP_KEYS: &str = "d d";
+
+/// **The steps no removal is offered on**: a one-step Protocol's `load`, an
+/// own-files Protocol's load of each table it records, and the steps its model
+/// writes. A load is what every later step reads from, and the model's steps
+/// are written again whenever the model is, so neither is the analyst's to take
+/// out of the spine.
+fn fixed_steps(source: Option<&OneStepProtocol>, graph: &AssetGraph) -> BTreeSet<StepId> {
+    let mut fixed = BTreeSet::from([crate::one_step::STEP_NAME.to_string()]);
+    let Some(source) = source else {
+        return fixed;
+    };
+    let loads = crate::own_files::load_step_names(&source.dir);
+    if !loads.is_empty() {
+        fixed.extend(loads);
+        fixed.extend(
+            graph
+                .seams
+                .keys()
+                .filter(|step| crate::own_files::is_model_step(step))
+                .cloned(),
+        );
+    }
+    fixed
+}
+
+/// **The later steps that read what the step `step` makes in `graph`**, in the
+/// order the Protocol runs them: each step through which an asset `step` makes
+/// flows on. What [`ProtocolModel::readers_of`] answers over the graph it
+/// draws, and what a Save asks again over the Protocol as it stands then.
+#[must_use]
+pub fn readers_in(graph: &AssetGraph, step: &str) -> Vec<String> {
+    let made: BTreeSet<&AssetId> = graph
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.step.as_deref() == Some(step))
+        .map(|(id, _)| id)
+        .collect();
+    let mut readers: BTreeSet<&StepId> = BTreeSet::new();
+    for edge in graph.edges.iter().filter(|e| made.contains(&e.from)) {
+        let reader = edge
+            .via
+            .as_ref()
+            .or_else(|| graph.nodes.get(&edge.to).and_then(|n| n.step.as_ref()));
+        if let Some(reader) = reader.filter(|r| r.as_str() != step) {
+            readers.insert(reader);
+        }
+    }
+    let mut readers: Vec<&StepId> = readers.into_iter().collect();
+    readers.sort_by_key(|r| graph.seams.get(*r).map_or(usize::MAX, |s| s.index));
+    readers.into_iter().cloned().collect()
+}
+
 /// The verbs that put the Outline's column on a channel of the hero's shelf,
 /// each with its channel. Their keys are the registry's (`z x`, `z y`, `z c`),
 /// read through `protocol_key_table` as the other Protocol bindings are; what
@@ -1001,6 +1085,8 @@ pub struct ProtocolModel {
     assets: BTreeMap<AssetId, AssetMeta>,
     steps: BTreeMap<StepId, StepView>,
     run: Option<RunView>,
+    /// Whether `run` is a preview — see [`ProtocolInputs::run_is_preview`].
+    run_is_preview: bool,
     /// What the last run started from this window printed — see
     /// [`ProtocolModel::run_log`].
     run_log: Option<String>,
@@ -1044,6 +1130,20 @@ pub struct ProtocolModel {
     /// A pending `z` awaiting the second key of its chord: `a`, or a channel's
     /// letter.
     pending_z: bool,
+    /// A pending `d` awaiting the second `d` of `d d`, which removes a step.
+    pending_d: bool,
+    /// The steps no removal is offered on: the loads, and the steps the model
+    /// writes ([`ProtocolModel::removable_step`]).
+    fixed_steps: BTreeSet<StepId>,
+    /// The recorded steps removed and not yet saved, mirrored in from the chart
+    /// document each frame ([`ProtocolModel::set_removing`]), which is where the
+    /// draft lives so that a Protocol read again keeps it.
+    removing: BTreeSet<StepId>,
+    /// A step `remove-step` was asked for this frame, drained by the window,
+    /// which decides whether it may go and keeps the draft on the chart
+    /// document. Recorded here for the reason [`Self::column_pick`] is: the
+    /// model cannot write the chart document.
+    remove_ask: Option<StepId>,
     /// The last yanked address, shown as a transient confirmation.
     yank_flash: Option<AssetId>,
     /// Drained by the shell to perform the actual clipboard copy.
@@ -1138,6 +1238,7 @@ impl ProtocolModel {
         };
         let layout = Self::boot_layout(&inputs, flow);
         let sheet = StepsSheet::from_rows(inputs.sheet_rows);
+        let fixed_steps = fixed_steps(inputs.source.as_ref(), &inputs.graph_full);
         let family_ids: Vec<AssetId> = inputs
             .graph_collapsed
             .nodes
@@ -1155,6 +1256,7 @@ impl ProtocolModel {
             assets: inputs.assets,
             steps: inputs.steps,
             run: inputs.run,
+            run_is_preview: inputs.run_is_preview,
             run_log: None,
             columns: inputs.columns,
             tiles: inputs.tiles,
@@ -1180,6 +1282,10 @@ impl ProtocolModel {
             chain_contracted: false,
             scope_graph: None,
             pending_z: false,
+            pending_d: false,
+            fixed_steps,
+            removing: BTreeSet::new(),
+            remove_ask: None,
             yank_flash: None,
             yank_request: None,
             layout,
@@ -1526,6 +1632,26 @@ impl ProtocolModel {
         self.run.as_ref()
     }
 
+    /// Whether the run behind this Protocol is a preview Brightfield started itself, not a run the
+    /// analyst asked for — see [`ProtocolInputs::run_is_preview`].
+    #[must_use]
+    pub fn run_is_preview(&self) -> bool {
+        self.run.is_some() && self.run_is_preview
+    }
+
+    /// What the run behind this Protocol is called where its state is shown: `last preview` when
+    /// Brightfield ran it to preview the Protocol's sources, and `last run` otherwise. The front
+    /// door reads the same preview mark and calls such a Protocol previewed, not run, so the two
+    /// agree.
+    #[must_use]
+    pub fn last_run_label(&self) -> &'static str {
+        if self.run_is_preview() {
+            "last preview"
+        } else {
+            "last run"
+        }
+    }
+
     /// What the last run started from this window printed, when this window
     /// started one.
     ///
@@ -1742,7 +1868,27 @@ impl ProtocolModel {
             let step = node
                 .and_then(|n| n.step.as_ref())
                 .filter(|_| row.kind != AssetKind::Source);
+            // The step that keeps the values that did not cast, and the table it makes, are
+            // listed only once that table holds rows: until a value fails they are a pair of rows
+            // on every Protocol made from a file that say nothing. The Protocol and its run are
+            // unchanged; this is only what the spine lists.
+            //
+            // Left off only while the table is known to hold no rows: the step has not run, or
+            // its run recorded the table empty. A step that failed is listed with its failure,
+            // and one skipped as current is judged by the row count its record carries, which
+            // arc measures for a skipped step's table too.
+            let known_empty = match self.assets.get(&row.id) {
+                None => true,
+                Some(meta) => meta.row_count == Some(0),
+            };
+            if step.is_some_and(|step| crate::own_files::is_failed_rows(step, &row.label))
+                && !matches!(row.status, SeamStatus::Failed | SeamStatus::Running)
+                && known_empty
+            {
+                continue;
+            }
             let typed = step.and_then(|step| self.typed.get(step));
+            let struck = step.is_some_and(|step| self.removing.contains(step));
             if let Some(step) = step {
                 let (state, marker) = match typed {
                     Some(_) => (NOT_RECORDED, SpineMarker::Unrecorded),
@@ -1760,6 +1906,7 @@ impl ProtocolModel {
                     selected: false,
                     id: None,
                     view: None,
+                    struck,
                 });
             }
             let exists = match row.kind {
@@ -1804,6 +1951,7 @@ impl ProtocolModel {
                 selected: row.selected,
                 id: Some(row.id.clone()),
                 view: None,
+                struck,
             });
             if has_views {
                 rows.extend(NodeView::ALL.map(|view| SpineRow {
@@ -1815,6 +1963,7 @@ impl ProtocolModel {
                     selected: false,
                     id: Some(row.id.clone()),
                     view: Some(view),
+                    struck: false,
                 }));
             }
         }
@@ -2031,6 +2180,90 @@ impl ProtocolModel {
         }
     }
 
+    /// **The step that makes the selected asset**: the step whose row stands
+    /// above the selected row on the spine, and the one `remove-step` acts on.
+    /// `None` with no asset selected, and on an input the Protocol reads off
+    /// disk. A source host names the step that fetches from it rather than one
+    /// that makes it, so it answers `None` too.
+    #[must_use]
+    pub fn selected_step(&self) -> Option<&StepId> {
+        let node = self.graph_collapsed.nodes.get(self.selected.as_ref()?)?;
+        if node.kind == AssetKind::Source {
+            return None;
+        }
+        node.step.as_ref()
+    }
+
+    /// **The step `remove-step` would remove**: the selected asset's step
+    /// ([`Self::selected_step`]), when this Protocol is one Brightfield saves
+    /// ([`Self::source`]) and the step is recorded in its folder and is neither
+    /// a load nor one of the model's (`fixed_steps`). A statement kept and not
+    /// yet saved is not one: it is in no file to remove it from.
+    ///
+    /// Whether later steps read it is not asked here: that refusal is said in
+    /// a sentence naming them, so the verb is offered and refuses
+    /// ([`Self::readers_of`]).
+    #[must_use]
+    pub fn removable_step(&self) -> Option<&StepId> {
+        self.source.as_ref()?;
+        self.selected_step().filter(|step| {
+            !self.fixed_steps.contains(*step)
+                && !self.typed.contains_key(*step)
+                && self.graph_full.seams.contains_key(*step)
+        })
+    }
+
+    /// **The later steps that read what the step `step` makes**, in the order
+    /// the Protocol runs them: each step through which an asset `step` makes
+    /// flows on, by the lineage the graph draws from each step's SQL, its
+    /// `depends_on` and its operator's input. Read off the unfolded graph, so a
+    /// reader a family tile or a fold hides is still named.
+    #[must_use]
+    pub fn readers_of(&self, step: &str) -> Vec<String> {
+        readers_in(&self.graph_full, step)
+    }
+
+    /// The tables the step `step` makes, by the labels the unfolded graph gives
+    /// them, case folded as DuckDB resolves a name.
+    #[must_use]
+    pub fn tables_of_step(&self, step: &str) -> Vec<String> {
+        self.graph_full
+            .nodes
+            .values()
+            .filter(|node| node.kind.is_tabular() && node.step.as_deref() == Some(step))
+            .map(|node| node.label.to_lowercase())
+            .collect()
+    }
+
+    /// Mirror in the steps the chart document holds removed and not yet saved,
+    /// so the spine strikes their rows through.
+    pub fn set_removing(&mut self, steps: impl IntoIterator<Item = String>) {
+        self.removing = steps.into_iter().collect();
+    }
+
+    /// Whether the step `step` is drawn removed, as [`Self::set_removing`]
+    /// last mirrored it in.
+    #[must_use]
+    pub fn is_removing(&self, step: &str) -> bool {
+        self.removing.contains(step)
+    }
+
+    /// Take the step `remove-step` was asked for this frame, if it was.
+    pub fn take_remove_ask(&mut self) -> Option<StepId> {
+        self.remove_ask.take()
+    }
+
+    /// `d d`: ask the window to remove the selected asset's step, or to put
+    /// back one already removed. Nothing is asked on a step that cannot be
+    /// removed.
+    fn ask_remove(&mut self) -> bool {
+        let Some(step) = self.removable_step().cloned() else {
+            return false;
+        };
+        self.remove_ask = Some(step);
+        true
+    }
+
     /// Mirror in which column the chart document has selected, so the
     /// outline's highlight follows it — a column with a tile and one without.
     ///
@@ -2085,14 +2318,30 @@ impl ProtocolModel {
         true
     }
 
-    /// **The Outline's `z` and a channel**: what the window feeds the model
-    /// while a dashboard holds the canvas and the Outline holds the keys. The
-    /// rest of the Protocol grammar drives the graph, and is fed while the
-    /// graph is on the canvas ([`Self::feed_events`]).
+    /// **The Outline's `z` and a channel, and its `d d`**: what the window
+    /// feeds the model while a dashboard holds the canvas and the Outline holds
+    /// the keys. The rest of the Protocol grammar drives the graph, and is fed
+    /// while the graph is on the canvas ([`Self::feed_events`]).
     ///
-    /// Returns whether the key was the chord's: a `z`, or the channel's letter
-    /// after one. Any other key after a `z` lets the chord go and is not taken.
+    /// Returns whether the key was a chord's: a `z`, or the channel's letter
+    /// after one, or a `d` while the selected asset's step can be removed. Any
+    /// other key after a `z` or a `d` lets the chord go and is not taken.
     pub fn feed_column_chord(&mut self, key: egui::Key, mods: egui::Modifiers) -> bool {
+        // `d d` on a spine row whose step can be removed, as with the graph on
+        // the canvas: the Outline holds the keys, so the chart's own `d` is not
+        // pressed by it.
+        if key == egui::Key::D && mods.is_none() && self.removable_step().is_some() {
+            self.pending_z = false;
+            if std::mem::take(&mut self.pending_d) {
+                if let Some(verb) = self.key_table.get(REMOVE_STEP_KEYS).copied() {
+                    self.dispatch(verb, None);
+                }
+            } else {
+                self.pending_d = true;
+            }
+            return true;
+        }
+        self.pending_d = false;
         if self.pending_z {
             self.pending_z = false;
             let verb = self
@@ -2116,6 +2365,7 @@ impl ProtocolModel {
     /// Let a pending `z` go: the keys it was waiting for went elsewhere.
     pub fn drop_chord(&mut self) {
         self.pending_z = false;
+        self.pending_d = false;
     }
 
     /// The verb the registry binds to `z` then `key` in the Protocol context.
@@ -2400,8 +2650,22 @@ impl ProtocolModel {
         }
         if key == egui::Key::Z {
             self.pending_z = true;
+            self.pending_d = false;
             return false;
         }
+        // `d d`, as vim deletes a line: the first `d` waits for the second, and
+        // any other key lets it go and is treated as itself.
+        if key == egui::Key::D && mods.is_none() {
+            if std::mem::take(&mut self.pending_d) {
+                if let Some(verb) = self.key_table.get(REMOVE_STEP_KEYS).copied() {
+                    return self.dispatch(verb, canvas_node);
+                }
+                return false;
+            }
+            self.pending_d = true;
+            return false;
+        }
+        self.pending_d = false;
         // `t` transposes the reading axis — the keyboard twin of the "flow: …"
         // click control.
         if key == egui::Key::T {
@@ -2468,6 +2732,7 @@ impl ProtocolModel {
                 true
             }
             "yank-address" => self.yank(canvas_node),
+            REMOVE_STEP => self.ask_remove(),
             other => match put_column_channel(other) {
                 Some(channel) => self.put_outline_column(channel),
                 None => false,
@@ -2915,6 +3180,9 @@ pub struct SpineRowDrawn {
     /// is its name — rather than a readout. Read off the same sense the row
     /// was allocated with, so the record cannot call a readout a control.
     pub control: bool,
+    /// Whether the row was drawn struck through, its name in the secondary
+    /// ink: a step removed and not yet saved, and what it makes.
+    pub struck: bool,
 }
 
 /// One of the **column verbs** on an Outline row as it was drawn: the chip that
@@ -3459,6 +3727,7 @@ fn list_records(shown: &crate::shelf::ListDrawn) -> Vec<SpineRowDrawn> {
         washed: false,
         chip: None,
         control: false,
+        struck: false,
     };
     std::iter::once(heading)
         .chain(shown.rows.iter().map(|row| SpineRowDrawn {
@@ -3475,6 +3744,7 @@ fn list_records(shown: &crate::shelf::ListDrawn) -> Vec<SpineRowDrawn> {
             washed: row.bar.is_some(),
             chip: None,
             control: true,
+            struck: false,
         }))
         .collect()
 }
@@ -3525,6 +3795,7 @@ fn caption_row(ui: &mut egui::Ui, text: &str, mode: Mode) -> SpineRowDrawn {
         washed: false,
         chip: None,
         control: false,
+        struck: false,
     }
 }
 
@@ -3643,6 +3914,7 @@ fn spine_head_row(
                 hint: GRAPH_CHIP_HINT,
             }),
             control: false,
+            struck: false,
         },
         response.clicked(),
     )
@@ -3769,7 +4041,15 @@ fn spine_row(
     // Clipped, not truncated: the room left of the kind is a fact about the
     // rail's width, and a character budget is a guess at it that goes wrong the
     // moment somebody drags the rail narrower.
-    let ink = chrome::colour(sem.text.primary);
+    //
+    // A step removed and not yet saved stays on the spine until the Save that
+    // takes it out of the folder, so it is drawn as going rather than gone: its
+    // name in the secondary ink with a rule through it, in the same ink.
+    let ink = if row.struck {
+        chrome::colour(sem.text.secondary)
+    } else {
+        chrome::colour(sem.text.primary)
+    };
     let name = painter.layout_no_wrap(row.label.clone(), ui_font(), ink);
     let name_rect = egui::Rect::from_min_size(
         egui::pos2(name_left, rect.center().y - name.size().y / 2.0),
@@ -3779,9 +4059,18 @@ fn spine_row(
         egui::pos2(name_left, rect.top()),
         egui::pos2(kind_rect.left() - spacing::SPACE_3, rect.bottom()),
     );
-    painter
-        .with_clip_rect(room)
-        .galley(name_rect.min, name, ink);
+    let clipped = painter.with_clip_rect(room);
+    clipped.galley(name_rect.min, name, ink);
+    if row.struck {
+        let y = name_rect.center().y;
+        clipped.line_segment(
+            [
+                egui::pos2(name_rect.left(), y),
+                egui::pos2(name_rect.right(), y),
+            ],
+            egui::Stroke::new(1.0, ink),
+        );
+    }
 
     (
         SpineRowDrawn {
@@ -3798,6 +4087,7 @@ fn spine_row(
             washed: row.selected,
             chip: None,
             control: sense.senses_click(),
+            struck: row.struck,
         },
         response,
     )
@@ -3933,6 +4223,7 @@ fn outline_row(
             washed: row.selected,
             chip: None,
             control: sense.senses_click(),
+            struck: false,
         },
         response,
         chips,
@@ -4633,7 +4924,20 @@ fn run_header(ui: &mut egui::Ui, model: &ProtocolModel, mode: Mode) {
     let sem = semantic(mode.is_dark());
     let line = model.run().map_or_else(
         || model.last_run_word().to_string(),
-        |run| format!("{} \u{b7} {}", run.run_id, model.last_run_word()),
+        |run| {
+            // A preview says so ahead of its id, as the strip does, so the run panes never
+            // present a preview as the Protocol's run.
+            if model.run_is_preview() {
+                format!(
+                    "{} \u{b7} {} \u{b7} {}",
+                    model.last_run_label(),
+                    run.run_id,
+                    model.last_run_word()
+                )
+            } else {
+                format!("{} \u{b7} {}", run.run_id, model.last_run_word())
+            }
+        },
     );
     ui.label(
         egui::RichText::new(line)
@@ -6629,6 +6933,7 @@ steps:
                 selected: true,
                 id: None,
                 view: None,
+                struck: false,
             };
             let (both, rects) = painted_spine_row(&row, true, mode);
             let bar = row_bar(both.rect);

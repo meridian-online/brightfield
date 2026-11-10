@@ -779,6 +779,18 @@ pub enum SaveReport {
     Failed(String),
 }
 
+impl SaveReport {
+    /// Whether the file holds the buffer after this save: it was written,
+    /// already agreed, or there was no file to save.
+    #[must_use]
+    pub const fn wrote(&self) -> bool {
+        matches!(
+            self,
+            Self::Written | Self::ForcedWrite | Self::Unchanged | Self::NoFile
+        )
+    }
+}
+
 /// One open spec file: the path, the live buffer, and the last text the
 /// buffer was synced with (seed or successful save) — the three texts
 /// `spec_save::decide_save` arbitrates.
@@ -939,6 +951,16 @@ impl EditorPane {
     /// spec value exists in this function, so nothing can re-serialise or
     /// canonicalise on the way to disk.
     pub fn save_now(&mut self) -> SaveReport {
+        self.save_with(true)
+    }
+
+    /// [`Self::save_now`], with `may_force` saying whether this save may
+    /// confirm an overwrite of a change made on disk. Only a save the editor
+    /// itself started may, its warning in view: the first such save over a
+    /// conflict arms the force and the next writes. A save the window started
+    /// from elsewhere neither arms nor fires it, so an external change is
+    /// never overwritten by a press made away from the warning.
+    fn save_with(&mut self, may_force: bool) -> SaveReport {
         let Some(file) = &mut self.file else {
             return SaveReport::NoFile;
         };
@@ -955,7 +977,7 @@ impl EditorPane {
             },
             SaveDecision::Unchanged => SaveReport::Unchanged,
             SaveDecision::ExternalConflict => {
-                if self.force_armed {
+                if may_force && self.force_armed {
                     match spec_save::save_spec_atomic(&file.buffer, &file.path) {
                         Ok(_) => SaveReport::ForcedWrite,
                         Err(e) => SaveReport::Failed(e.to_string()),
@@ -983,10 +1005,14 @@ impl EditorPane {
                 self.warning = None;
                 self.force_armed = false;
             }
-            SaveReport::ConflictArmed => {
+            SaveReport::ConflictArmed if may_force => {
                 self.force_armed = true;
                 self.warning =
                     Some("file changed on disk — save again to overwrite it".to_string());
+            }
+            SaveReport::ConflictArmed => {
+                self.warning =
+                    Some("file changed on disk — save from the editor to overwrite it".to_string());
             }
             SaveReport::RefusedUnseeded => {
                 self.warning = Some(
@@ -1062,18 +1088,39 @@ impl EditorPane {
             .is_some_and(|since| reload_spinner_due(since.elapsed().as_millis()))
     }
 
+    /// Leave the buffer on the document while it holds edits its file does
+    /// not, and clear it there once it does not ([`ChartDoc::editor_buffer`]):
+    /// the window keeps an unsaved buffer as a version when it closes without
+    /// saving, and the buffer is pane state it cannot otherwise reach. The
+    /// buffer changes only while the pane draws or performs a verb, so it is
+    /// published from both.
+    fn publish_buffer(&self, doc: &mut ChartDoc) {
+        let now = match (self.dirty(), &self.file) {
+            (Dirty::Edited, Some(file)) => Some((file.path.as_path(), file.buffer.as_str())),
+            _ => None,
+        };
+        let held = doc
+            .editor_buffer()
+            .map(|(path, text)| (path.as_path(), text.as_str()));
+        if held != now {
+            doc.set_editor_buffer(now.map(|(path, text)| (path.to_path_buf(), text.to_string())));
+        }
+    }
+
     /// The save route, with the document's file watcher told about a write
     /// that landed — the app's own save moves the same mtime an external
     /// edit does, and a watcher that reported it would cry wolf on every
     /// ⌘S. Both save entry points (the keystroke and the verb) come through
-    /// here so neither can forget the note.
-    fn save_and_note(&mut self, doc: &mut ChartDoc) {
-        let report = self.save_now();
+    /// here so neither can forget the note. `may_force` is
+    /// [`Self::save_with`]'s.
+    fn save_and_note(&mut self, doc: &mut ChartDoc, may_force: bool) -> SaveReport {
+        let report = self.save_with(may_force);
         if matches!(report, SaveReport::Written | SaveReport::ForcedWrite) {
             if let Some(path) = self.path().map(std::path::Path::to_path_buf) {
                 doc.watch.note_own_write(&path);
             }
         }
+        report
     }
 }
 
@@ -1211,12 +1258,21 @@ impl Item<ChartDoc> for EditorPane {
         }
 
         // The save keystroke, editor-scoped exactly as the keyboard registry
-        // binds it. Consumed here because the focused text edit owns the
-        // keyboard while the author types — the workspace dispatch defers to
-        // it — and `perform` stays the verb's route in from everything else.
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
-            self.save_and_note(doc);
+        // binds it: taken only while this text edit holds the keyboard, so a
+        // Cmd+S anywhere else is left to the window's own Save. The buffer is
+        // saved and then the window's Save is raised, so one press in the
+        // editor saves both (`cmd_s_in_the_editor_saves_the_buffer_then_the_protocol`
+        // in `tests/cmd_s_saves_the_protocol.rs`); `perform` stays the verb's
+        // route in from a toolbar or a test. A buffer this save did not write
+        // stops there, with the editor's own warning saying why and what the
+        // next press does: the window's Save would only say it again.
+        if out.focused
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
+            && self.save_and_note(doc, true).wrote()
+        {
+            cx.request(Verb::new(crate::window::SAVE_PROTOCOL));
         }
+        self.publish_buffer(doc);
 
         if self.ack_live() || self.reload_pending_since.is_some() {
             // The ack must expire and the pending reload must re-poll
@@ -1227,7 +1283,20 @@ impl Item<ChartDoc> for EditorPane {
 
     fn perform(&mut self, doc: &mut ChartDoc, verb: Verb, cx: &mut ItemCtx<'_>) -> Handled {
         if verb.as_str() == "save-spec" {
-            self.save_and_note(doc);
+            // A save the window asked for, from away from the editor, may not confirm an
+            // overwrite, and the window reads what it did; any other is the editor's own.
+            let from_window = doc.take_editor_save_ask();
+            let report = self.save_and_note(doc, !from_window);
+            let wrote = report.wrote();
+            if from_window {
+                doc.set_editor_save_report(report);
+            }
+            self.publish_buffer(doc);
+            // The buffer first, then the Protocol, as the editor's Cmd+S does, and only when the
+            // buffer is in its file.
+            if wrote {
+                cx.request(Verb::new(crate::window::SAVE_PROTOCOL));
+            }
             cx.request_repaint();
             return Handled::Yes;
         }

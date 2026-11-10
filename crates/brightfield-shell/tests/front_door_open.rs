@@ -1,5 +1,5 @@
-//! The front door opens folders, workbooks and database files as well as single files: a single
-//! flat file keeps its route, and everything else becomes an own-files Protocol.
+//! The front door opens folders, workbooks and database files as well as single files, and each
+//! becomes an own-files Protocol: one table opens on its grid, and several as a model.
 //!
 //! Every test points the config directory and arc's directories at a scratch folder of its own
 //! before anything reads them, so no Protocol lands under the developer's real data directory.
@@ -19,13 +19,17 @@ fn scratch() -> &'static Path {
     ROOT.get_or_init(|| {
         let root = std::env::temp_dir().join(format!("bf-front-door-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for sub in ["config", "history", "db", "input"] {
+        for sub in ["config", "history", "db", "protocols", "input"] {
             std::fs::create_dir_all(root.join(sub)).expect("a scratch folder");
         }
         // Set once, before any test in this file reads them, and never changed.
         std::env::set_var(
             brightfield_shell::startup::CONFIG_DIR_VAR,
             root.join("config"),
+        );
+        std::env::set_var(
+            brightfield_shell::protocols_dir::PROTOCOLS_DIR_VAR,
+            root.join("protocols"),
         );
         std::env::set_var("ARCFORM_HISTORY_DIR", root.join("history"));
         std::env::set_var("ARCFORM_DB_DIR", root.join("db"));
@@ -61,12 +65,22 @@ fn database(name: &str, file: &str, ext_sql: &str) -> PathBuf {
 }
 
 #[test]
-fn single_csv_keeps_todays_route() {
+fn single_csv_opens_as_a_protocol_of_one_source() {
     let dir = input("single");
     let csv = dir.join("readings.csv");
     std::fs::write(&csv, READINGS).unwrap();
     match data_file::open_any(&csv, &runner()).expect("a csv opens") {
-        Opened::OneTable(opened) => assert!(!opened.dashboard.tiles().is_empty()),
+        Opened::OneTable(opened, protocol) => {
+            assert!(!opened.dashboard.tiles().is_empty());
+            assert_eq!(protocol.sources.tables.len(), 1);
+            assert_eq!(
+                protocol.dir.parent(),
+                Some(scratch().join("protocols").as_path())
+            );
+            // The grid reads the Protocol's copy of the table, not the CSV beside the analyst's
+            // own files.
+            assert!(opened.protocol.data.starts_with(&protocol.dir));
+        }
         Opened::Model(_) => panic!("a single flat file must not become a model"),
     }
 }
@@ -152,7 +166,7 @@ fn single_sheet_workbook_opens_one_table() {
         return;
     }
     match data_file::open_any(&book, &runner()).expect("a workbook opens") {
-        Opened::OneTable(opened) => {
+        Opened::OneTable(opened, _) => {
             assert!(!opened.dashboard.tiles().is_empty());
             // The sheet's rows, without the lineage the load gave them.
             let columns: Vec<String> = opened
@@ -178,7 +192,7 @@ fn single_table_database_opens_one_table() {
         "CREATE TABLE readings AS SELECT * FROM (VALUES (1, 2.5), (2, 3.5), (3, 4.5)) t(id, reading);",
     );
     match data_file::open_any(&path, &runner()).expect("a duckdb file opens") {
-        Opened::OneTable(opened) => assert!(!opened.dashboard.tiles().is_empty()),
+        Opened::OneTable(opened, _) => assert!(!opened.dashboard.tiles().is_empty()),
         Opened::Model(_) => panic!("a database of one table opens on the grid, not as a model"),
     }
 }
@@ -410,7 +424,8 @@ fn single_sheet_cast_copy_keeps_its_currency_label() {
     ) else {
         return;
     };
-    let Opened::OneTable(opened) = data_file::open_any(&book, &runner()).expect("it opens") else {
+    let Opened::OneTable(opened, _) = data_file::open_any(&book, &runner()).expect("it opens")
+    else {
         panic!("a workbook of one sheet opens on the grid");
     };
     // The label comes from FineType when the Protocol is profiled; without a bundle beside the
@@ -438,7 +453,8 @@ fn cast_copy_is_not_cast_again() {
     ) else {
         return;
     };
-    let Opened::OneTable(opened) = data_file::open_any(&book, &runner()).expect("it opens") else {
+    let Opened::OneTable(opened, _) = data_file::open_any(&book, &runner()).expect("it opens")
+    else {
         panic!("a workbook of one sheet opens on the grid");
     };
     let copy = opened.protocol.data.clone();
@@ -470,7 +486,8 @@ fn copy_inside_a_protocol_folder_is_recognised() {
         "CREATE TABLE sales AS SELECT * FROM (VALUES (1, 12.50, 'North'), (2, 980.00, 'South'), \
          (3, 45.10, 'East')) t(id, amount, region);",
     );
-    let Opened::OneTable(opened) = data_file::open_any(&path, &runner()).expect("it opens") else {
+    let Opened::OneTable(opened, _) = data_file::open_any(&path, &runner()).expect("it opens")
+    else {
         panic!("a database of one table opens on the grid");
     };
     let copy = opened.protocol.data.clone();

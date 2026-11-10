@@ -77,6 +77,7 @@ const CANVAS_PANE: PaneKey = PaneKey::new(CANVAS);
 #[must_use = "the directory is only this test's while the guard is held"]
 fn datasets_into_scratch(test: &str) -> MutexGuard<'static, ()> {
     let held = CONFIG.lock().unwrap_or_else(PoisonError::into_inner);
+    no_protocols_folder();
     // Arc's database and history stores go to a temp root rather than the
     // developer's own, its fetch cache is off, and its engine is the pinned
     // CLI when the environment names none and one has been fetched.
@@ -107,6 +108,22 @@ fn scratch_config(test: &str, route: &str) {
 /// Held by [`datasets_into_scratch`] for the whole of any test that points the
 /// config directory at its own.
 static CONFIG: Mutex<()> = Mutex::new(());
+
+/// Point the Protocols folder at an empty folder of this file's, once, so the
+/// door these tests draw lists no tree: what the developer keeps in
+/// `~/Documents/Protocols` is not in any baseline or row count here.
+/// `tests/door_tree.rs` is where the tree is drawn.
+fn no_protocols_folder() {
+    static EMPTY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(|| {
+        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join("front_door")
+            .join("no-protocols");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var(brightfield_shell::protocols_dir::PROTOCOLS_DIR_VAR, &dir);
+        dir
+    });
+}
 
 /// The one shipped start that opens a data file, which several tests below
 /// are about — resolved off the declaration rather than written as an id, so
@@ -162,6 +179,7 @@ struct Window {
 
 impl Window {
     fn open(boot: Boot) -> Self {
+        no_protocols_folder();
         Self {
             app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light),
             ctx: egui::Context::default(),
@@ -240,6 +258,7 @@ impl Window {
     /// with that start taken through its Protocols row. For a start the door
     /// draws no card for: the row calls the same `open_start` a card does.
     fn opened_by_row(id: &'static str) -> Self {
+        no_protocols_folder();
         let mut win = Self {
             app: MeridianApp::headless_with_layout(
                 Boot::empty(),
@@ -318,6 +337,7 @@ fn section_names(win: &Window) -> Vec<&'static str> {
 /// after it is written, and one pinned to a bucket boundary tips whenever the
 /// capture takes a second longer than usual. See `relative_time`.
 fn layout_remembering(recents: &[(&str, &str, RunState, u64)]) -> SavedLayout {
+    no_protocols_folder();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("a clock after 1970")
@@ -1998,24 +2018,26 @@ fn every_run_state_is_measured_by_the_row_fit() {
             | RunState::Fresh
             | RunState::StaleOwnEdit
             | RunState::StaleUpstream
-            | RunState::Failed => {}
+            | RunState::Failed
+            | RunState::Previewed => {}
         }
     }
     assert_eq!(
         ROW_FIT_STATES.len(),
-        5,
+        6,
         "a variant reached the match above without reaching the measured set"
     );
 }
 
 /// Every `RunState` the row-fit test measures — see
 /// `every_run_state_is_measured_by_the_row_fit` for what holds it complete.
-const ROW_FIT_STATES: [RunState; 5] = [
+const ROW_FIT_STATES: [RunState; 6] = [
     RunState::NeverRun,
     RunState::Fresh,
     RunState::StaleOwnEdit,
     RunState::StaleUpstream,
     RunState::Failed,
+    RunState::Previewed,
 ];
 
 #[test]
@@ -2755,10 +2777,9 @@ fn a_failed_step_anywhere_beats_a_success_anywhere() {
 }
 
 /// Going home returns to the front door **without forgetting the session** —
-/// the `open-home` keystroke clears both documents but leaves `layout.opened`
-/// standing and the recents list intact, so the door it lands on lists the
-/// work that was left and a row reopens it. That is the deliberate asymmetry
-/// with `open_start` (which records both): Home keeps your place, by design.
+/// the `open-home` keystroke clears both documents and `layout.opened`, so the
+/// next launch starts on the door it lands on, but leaves the recents list
+/// intact, so that door lists the work that was left and a row reopens it.
 ///
 /// The trip is driven by the live cmd-shift-h keystroke rather than by calling
 /// `open_home` directly, so the registry binding and its wiring are on the hook
@@ -2798,9 +2819,9 @@ fn going_home_returns_to_the_door_but_keeps_the_session() {
         "cmd-shift-h left the window on the dock — the binding is declared but not wired"
     );
     assert_eq!(
-        win.app.layout().opened.as_deref(),
-        Some(starts::CROSSWALK),
-        "going home forgot what to restore next launch"
+        win.app.layout().opened,
+        None,
+        "going home left something to restore next launch, which is not the door"
     );
 
     // Take the crosswalk from the door, come Home again, and the row for it is
@@ -2869,6 +2890,7 @@ fn door_surface(mode: Mode, name: &str) {
     // bake the top-bar renderer string into this golden. Same class of process
     // env the offline gate owns.
     std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
+    no_protocols_folder();
     let out = scratch(name);
     let (w, h) = capture_png_at(Boot::empty(), mode, 1.0, DOOR_SIZE, &out, Vec::new())
         .unwrap_or_else(|e| panic!("capture {name}: {e}"));

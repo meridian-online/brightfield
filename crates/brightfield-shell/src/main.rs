@@ -403,7 +403,18 @@ struct BrightfieldApp {
     /// opened on nothing and took `WindowGeometry`'s default. See the call in
     /// `main` that sets it.
     fit: Option<(f32, f32)>,
+    /// The window's open queue, held until a frame routes the app menu's Quit onto it
+    /// (`mac_open::route_menu_quit`), with the frames tried so far: the menu is the event loop's,
+    /// made after this host is, so each frame tries until it is there. Past [`MENU_QUIT_TRIES`]
+    /// a banner says Quit will not ask, and each later frame still tries, without asking for
+    /// one, so a menu that arrives late is routed and the banner taken down. `None` once routed,
+    /// and on a host with no menu to route.
+    menu_quit: Option<(brightfield_shell::open_queue::OpenQueue, u32)>,
 }
+
+/// How many frames try to route the app menu's Quit, each asking for the next, before a banner
+/// says it is not routed.
+const MENU_QUIT_TRIES: u32 = 120;
 
 /// Whether a frame reporting `outcome` is the last one that needs to ask.
 ///
@@ -441,6 +452,36 @@ impl BrightfieldApp {
     /// operating-system window and this host does not read it.
     fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+
+        // Cmd+Q and the app menu's Quit, onto the window's queue, so a quit asks the close
+        // question over a draft rather than ending the process unasked.
+        if let Some((queue, tried)) = self.menu_quit.take() {
+            #[cfg(target_os = "macos")]
+            {
+                let routed = objc2::MainThreadMarker::new().is_some_and(|main_thread| {
+                    brightfield_shell::mac_open::route_menu_quit(main_thread, queue.clone(), || {})
+                });
+                if routed {
+                    if tried >= MENU_QUIT_TRIES {
+                        self.app.say_menu_quit_unrouted(false);
+                    }
+                } else {
+                    let tried = tried.saturating_add(1);
+                    if tried < MENU_QUIT_TRIES {
+                        ctx.request_repaint();
+                    } else if tried == MENU_QUIT_TRIES {
+                        eprintln!(
+                            "the app menu's Quit could not be routed to the window yet: Cmd+Q \
+                             from the menu will quit without asking about unsaved work"
+                        );
+                        self.app.say_menu_quit_unrouted(true);
+                    }
+                    self.menu_quit = Some((queue, tried));
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            drop((queue, tried));
+        }
 
         // The size this window was created at was read outwards from the graph
         // and knows nothing about the screen it landed on. This is the first
@@ -1266,10 +1307,27 @@ fn main() -> Result<(), String> {
         ..Default::default()
     };
     let mode = args.mode;
+    let spec = args.spec.clone();
     let shot_out = args.shot_out.clone();
     let shot_after = args.shot_after;
     let shot_saved = Arc::new(AtomicBool::new(false));
     let saved = shot_saved.clone();
+    // The Mac's open events go onto the window's queue, listened for before the event loop starts
+    // so the file a launch by double-click delivers lands there; the window takes it on its first
+    // frame. The wake does nothing because the queue wakes the window itself once it has drawn,
+    // and until then the first frame is still to come.
+    //
+    // Where they are listened for, the queue waits for the app to finish launching, by which
+    // AppKit has delivered the launch's files, before the window decides whether to reopen the
+    // Protocol the last launch ended on: see `MeridianApp::restoring_at_launch`.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut open_queue = brightfield_shell::open_queue::OpenQueue::default();
+    #[cfg(target_os = "macos")]
+    if let Some(main_thread) = objc2::MainThreadMarker::new() {
+        open_queue = brightfield_shell::open_queue::OpenQueue::awaiting_launch();
+        brightfield_shell::mac_open::install(main_thread, open_queue.clone(), || {});
+    }
+    let menu_quit = Some((open_queue.clone(), 0));
     eframe::run_native(
         &title,
         options,
@@ -1283,11 +1341,14 @@ fn main() -> Result<(), String> {
                 // dialog. The capture tiers build the same app without it.
                 app: MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode)
                     .allowing_dialogs()
+                    .opening_from(open_queue)
+                    .restoring_at_launch(spec.as_deref())
                     .running_with(brightfield_shell::run::Runner::this_binary())
                     .keeping_history(Some(brightfield_protocol::HistoryStore::Arcform)),
                 shot: ShotLatch::new(shot_out, shot_after, saved),
                 layout_path: path,
                 fit,
+                menu_quit,
             }) as Box<dyn eframe::App>)
         }),
     )
@@ -1604,6 +1665,7 @@ mod tests {
             ),
             layout_path: None,
             fit: None,
+            menu_quit: None,
         };
         let ctx = egui::Context::default();
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0));

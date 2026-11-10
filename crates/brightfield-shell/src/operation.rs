@@ -313,6 +313,198 @@ pub fn record_sql(runner: &Runner, dir: &Path, sql: &str, name: &str) -> Result<
     }
 }
 
+/// What [`remove_step`] did to the Protocol.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StepRemoval {
+    /// The step was not in `arcform.yaml`, such as one an agent took out meanwhile, and nothing
+    /// was written.
+    Gone,
+    /// `arcform.yaml` changed while the step was being removed, so the steps read after arc's
+    /// delete are not the steps read before it less the step, and the manifest could not be put
+    /// back as arc found it. No file was deleted. `missing` names the steps of the read before that
+    /// the read after does not hold, in their earlier order, or is `None` when the read after does
+    /// not load.
+    NotPutBack {
+        /// The steps missing now compared with the read before, when the read after loads.
+        missing: Option<Vec<String>>,
+    },
+    /// The step is out of `arcform.yaml`, and no other step was added or taken out. `left_behind`
+    /// says why its SQL file could not be deleted, naming it, when it could not: the removal stands
+    /// even then (`a_sql_file_that_cannot_be_deleted_is_left_with_a_notice`).
+    Removed {
+        /// The file left behind and why, when its delete failed.
+        left_behind: Option<String>,
+    },
+}
+
+/// The sentence a removal says when `arcform.yaml` changed under it, so that arc's delete did not
+/// take out exactly the step it was asked for, and the manifest was put back as arc found it.
+pub const CHANGED_MEANWHILE: &str = "The Protocol changed while the step was being removed, so it was not removed. Save again to remove it from the Protocol as it is now.";
+
+/// **Remove the step `name` from the Protocol in `dir`, through arc**: `arc edit-protocol delete
+/// steps[<i>]`, which takes the step's entry out of `arcform.yaml` with the comment flush above it,
+/// leaves every other byte as it was, checks the result still loads before it writes, and keeps the
+/// state it replaces in the Protocol's history. arc refuses a result a later step's `depends_on`
+/// breaks, and the folder is then left as it was.
+///
+/// arc deletes by position, and an agent may write `arcform.yaml` between the read that finds the
+/// step's position and arc's own read, or after arc's write. So the manifest is read immediately
+/// before arc is asked, and read again after, and there are three outcomes:
+///
+/// - **Removed.** The steps read after are exactly the steps read before, in order, less `name`:
+///   [`StepRemoval::Removed`] (`removing_a_typed_sql_step_is_a_draft_until_save`). The SQL file
+///   `name` named in the read before is deleted, unless a step still in the manifest names it too.
+///   A file outside the Protocol's folder is never deleted: only a path inside it, written relative
+///   to it, is the step's own.
+/// - **Refused and put back.** Any other read after, when arc's history holds exactly two entries
+///   new since before the delete and the file is byte-identical to the newer of them, which is
+///   arc's save of what it wrote. The manifest is restored from the older, arc's checkpoint of what
+///   it read, which holds any write that landed before arc read
+///   (`a_removal_is_not_applied_when_the_manifest_changes_under_it`). No file is deleted.
+/// - **Refused and not put back.** Any other read after, when the history does not show that or
+///   the file has been written since arc's save: [`StepRemoval::NotPutBack`], with the steps
+///   missing now (`an_agent_write_after_the_delete_is_not_put_back`). No file is deleted.
+///
+/// # Errors
+///
+/// Why the manifest could not be read before the delete, arc's refusal without its `error: `
+/// prefix, or [`CHANGED_MEANWHILE`] when the delete was refused and the manifest was put back.
+pub fn remove_step(runner: &Runner, dir: &Path, name: &str) -> Result<StepRemoval, String> {
+    let manifest_path = dir.join("arcform.yaml");
+    let read = || -> Result<brightfield_protocol::Manifest, String> {
+        let text = std::fs::read_to_string(&manifest_path)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        brightfield_protocol::parse_manifest_str(&text)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))
+    };
+    let before = read()?;
+    let Some(at) = before.steps.iter().position(|s| s.name == name) else {
+        return Ok(StepRemoval::Gone);
+    };
+    // The history as it stands, so the entries arc's delete adds are known for its own.
+    let history_before = history_ids(runner, dir);
+    let path = format!("steps[{at}]");
+    let out = arc_with_args(runner, dir, &["edit-protocol", "delete", &path]);
+    if !out.succeeded {
+        return Err(refusal(&out.stderr));
+    }
+    let after = read().ok();
+    let expected: Vec<&str> = before
+        .steps
+        .iter()
+        .map(|s| s.name.as_str())
+        .filter(|n| *n != name)
+        .collect();
+    if let Some(after) = &after {
+        let left: Vec<&str> = after.steps.iter().map(|s| s.name.as_str()).collect();
+        if left == expected {
+            let model = before.steps[at].sql.as_deref();
+            let still_named = after.steps.iter().any(|s| s.sql.as_deref() == model);
+            return Ok(StepRemoval::Removed {
+                left_behind: delete_model(dir, model.filter(|_| !still_named)),
+            });
+        }
+    }
+    if restore_before_delete(runner, dir, history_before.as_deref()) {
+        return Err(CHANGED_MEANWHILE.to_string());
+    }
+    let missing = after.map(|after| {
+        before
+            .steps
+            .iter()
+            .filter(|s| !after.steps.iter().any(|a| a.name == s.name))
+            .map(|s| s.name.clone())
+            .collect::<Vec<_>>()
+    });
+    eprintln!(
+        "{}: the Protocol changed while {name} was being removed, and it could not be put back",
+        manifest_path.display()
+    );
+    Ok(StepRemoval::NotPutBack { missing })
+}
+
+/// Delete the SQL file `model` names inside `dir`, when it names one: why it could not be, naming
+/// it, when the delete failed. A file already gone is no failure.
+fn delete_model(dir: &Path, model: Option<&str>) -> Option<String> {
+    let file = own_file(dir, model?)?;
+    match std::fs::remove_file(&file) {
+        Ok(()) => None,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => Some(format!("{}: {e}", file.display())),
+    }
+}
+
+/// The ids of the Protocol's history entries, oldest first, or `None` when the history cannot be
+/// read.
+fn history_ids(runner: &Runner, dir: &Path) -> Option<Vec<String>> {
+    let out = arc_with_args(runner, dir, &["history", "list", "--json"]);
+    if !out.succeeded {
+        return None;
+    }
+    let entries = serde_json::from_str::<Vec<serde_json::Value>>(&out.stdout).ok()?;
+    Some(
+        entries
+            .iter()
+            .filter_map(|entry| entry.get("id").and_then(serde_json::Value::as_str))
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+/// **Put `arcform.yaml` back as arc found it before the delete**, through `arc history restore`,
+/// which checkpoints what it replaces. Answers whether the manifest was put back.
+///
+/// It restores when the history shows the delete's own two entries and no other new one
+/// ([`delete_entries`], `a_wrong_step_removed_is_put_back_when_the_history_is_full`), and the file is still byte-identical to the newer of them, arc's save of
+/// what it wrote: any other history or file means someone else wrote too, and nothing is restored.
+/// The restore is from the older, arc's checkpoint of what it read.
+fn restore_before_delete(runner: &Runner, dir: &Path, before: Option<&[String]>) -> bool {
+    let Some(before) = before else {
+        return false;
+    };
+    let Some(ids) = history_ids(runner, dir) else {
+        return false;
+    };
+    let Some((checkpoint, save)) = delete_entries(before, &ids) else {
+        return false;
+    };
+    let saved = arc_with_args(runner, dir, &["history", "show", save]);
+    if !saved.succeeded {
+        return false;
+    }
+    let Ok(now) = std::fs::read(dir.join("arcform.yaml")) else {
+        return false;
+    };
+    if now != saved.stdout.as_bytes() {
+        return false;
+    }
+    arc_with_args(runner, dir, &["history", "restore", checkpoint]).succeeded
+}
+
+/// **The two history entries a single edit added**, older then newer, when the history read
+/// before it was `before` and is `ids` now: exactly two ids are new, they are the last two, and the
+/// ids before them are a suffix of `before`. arc keeps a bounded history and prunes it from the
+/// oldest end, so the entries an edit pushed out are missing from the front, never from the middle.
+/// `None` when the history shows another edit's entries as well, or one new entry, or an entry gone
+/// from the middle (`any_other_history_shows_no_single_edit`).
+fn delete_entries<'a>(before: &[String], ids: &'a [String]) -> Option<(&'a str, &'a str)> {
+    let [kept @ .., older, newer] = ids else {
+        return None;
+    };
+    let new = |id: &String| !before.contains(id);
+    (new(older) && new(newer) && before.ends_with(kept)).then_some((older, newer))
+}
+
+/// The file `relative` names inside `dir`, when it is a path inside it written relative to it:
+/// no root, no drive, and no `..`.
+fn own_file(dir: &Path, relative: &str) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+    let path = Path::new(relative);
+    path.components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+        .then(|| dir.join(path))
+}
+
 /// Where one description stands, as [`Descriptions::get`] reports it.
 #[derive(Debug, PartialEq, Eq)]
 pub enum DescriptionState<'a> {
@@ -398,5 +590,53 @@ impl Descriptions {
             Entry::Answered(Err(e)) => DescriptionState::Failed(e),
             Entry::Asked(_) => DescriptionState::Pending,
         }
+    }
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use super::*;
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|n| (*n).to_string()).collect()
+    }
+
+    #[test]
+    fn a_single_edits_two_entries_are_found_after_the_history_is_pruned() {
+        let before = ids(&["a", "b", "c", "d"]);
+        // Nothing pruned.
+        assert_eq!(
+            delete_entries(&before, &ids(&["a", "b", "c", "d", "x", "y"])),
+            Some(("x", "y"))
+        );
+        // The bound reached: the oldest two pruned to make room.
+        assert_eq!(
+            delete_entries(&before, &ids(&["c", "d", "x", "y"])),
+            Some(("x", "y"))
+        );
+        // A history that started empty.
+        assert_eq!(delete_entries(&[], &ids(&["x", "y"])), Some(("x", "y")));
+    }
+
+    #[test]
+    fn any_other_history_shows_no_single_edit() {
+        let before = ids(&["a", "b", "c", "d"]);
+        // Another edit's entries too, with and without pruning.
+        assert_eq!(
+            delete_entries(&before, &ids(&["a", "b", "c", "d", "p", "q", "x", "y"])),
+            None
+        );
+        assert_eq!(
+            delete_entries(&before, &ids(&["c", "d", "p", "q", "x", "y"])),
+            None
+        );
+        // One entry new, or none.
+        assert_eq!(delete_entries(&before, &ids(&["b", "c", "d", "y"])), None);
+        assert_eq!(delete_entries(&before, &before), None);
+        // An entry gone from the middle is not pruning.
+        assert_eq!(
+            delete_entries(&before, &ids(&["a", "c", "d", "x", "y"])),
+            None
+        );
     }
 }

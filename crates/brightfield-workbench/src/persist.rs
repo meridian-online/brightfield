@@ -214,6 +214,26 @@ pub struct SavedLayout {
     /// test green.
     #[serde(default)]
     pub opened: Option<String>,
+    /// **The Protocol folder the window was on when the app last ended**, to reopen at the next
+    /// launch as it was last saved, or `None`. At most one of this and [`Self::opened`] is set:
+    /// [`Self::reopen_start`], [`Self::reopen_protocol_at`] and [`Self::reopen_nothing`] are the
+    /// setters, and each clears the other.
+    ///
+    /// Drafts are not carried across a launch, because the quit's close question settled each
+    /// one. Going to the door, by Home or by closing the window, clears both, so the next launch
+    /// starts on the door.
+    ///
+    /// # Why a field of its own and not a second shape of `opened`
+    ///
+    /// A build from before this field reads `opened` as a string. A Protocol written into it in
+    /// any other shape would fail that build's parse and discard the whole layout file on a
+    /// downgrade; a field it does not know is ignored instead, since no persisted struct here
+    /// denies unknown fields. `a_layout_naming_a_protocol_still_reads_in_the_old_shape` in
+    /// `tests/relaunch_restores.rs` holds that. Unlike `opened`, this is a path: a folder can go
+    /// missing, and the boot's policy for that is the door with no banner
+    /// (`a_restored_protocol_that_was_deleted_opens_the_door`).
+    #[serde(default)]
+    pub reopen_protocol: Option<PathBuf>,
     /// The Protocols this window has opened, most recent first — what the
     /// front door's Protocols section draws a row from.
     ///
@@ -223,9 +243,9 @@ pub struct SavedLayout {
     /// next launch*, so it is one id and the boot path reads it before a
     /// window exists. This is *what the analyst has been working on*, so it is
     /// a list, it outlives the restore, and nothing boots from it. A window
-    /// that restores its work and is then sent Home has both: `opened` still
-    /// naming the restored start, and this naming it plus everything before
-    /// it.
+    /// that restores its work and is then sent Home has `opened` cleared, so
+    /// the next launch is on the door, and this still naming what it restored
+    /// plus everything before it.
     ///
     /// `#[serde(default)]` is load-bearing here in the way the comment on
     /// `opened` says it is **not** load-bearing there: this is a `Vec`, not an
@@ -449,9 +469,28 @@ impl SavedLayout {
             window: WindowGeometry::default(),
             workspace,
             opened: None,
+            reopen_protocol: None,
             recents: Vec::new(),
             canvas_split: EVEN_CANVAS_SPLIT,
         }
+    }
+
+    /// Reopen the start `id` at the next launch, and no Protocol.
+    pub fn reopen_start(&mut self, id: &str) {
+        self.opened = Some(id.to_string());
+        self.reopen_protocol = None;
+    }
+
+    /// Reopen the Protocol in `dir` at the next launch, and no start.
+    pub fn reopen_protocol_at(&mut self, dir: &Path) {
+        self.reopen_protocol = Some(dir.to_path_buf());
+        self.opened = None;
+    }
+
+    /// Reopen nothing at the next launch: the front door.
+    pub fn reopen_nothing(&mut self) {
+        self.opened = None;
+        self.reopen_protocol = None;
     }
 
     /// Record that `id` was opened at `opened_at`, at the head of
@@ -495,6 +534,39 @@ impl SavedLayout {
             },
         );
         self.recents.truncate(RECENTS_KEPT);
+    }
+
+    /// **Point the rows and the restored documents that name a path inside
+    /// the folder `from` at the same path inside `to`**: a Protocol renamed
+    /// or moved keeps its row, its place in the list and its grid's state,
+    /// rather than leaving a row whose file is gone beside a new one. Answers
+    /// how many were repointed. An id that is not a path inside `from` is
+    /// left as it is.
+    pub fn repoint(&mut self, from: &Path, to: &Path) -> usize {
+        let moved = |id: &str| {
+            Path::new(id)
+                .strip_prefix(from)
+                .ok()
+                .map(|rest| to.join(rest).to_string_lossy().into_owned())
+        };
+        let mut count = 0;
+        for recent in &mut self.recents {
+            if let Some(id) = moved(&recent.id) {
+                recent.id = id;
+                count += 1;
+            }
+        }
+        if let Some(id) = self.opened.as_deref().and_then(moved) {
+            self.opened = Some(id);
+            count += 1;
+        }
+        if let Some(dir) = &mut self.reopen_protocol {
+            if let Ok(rest) = dir.strip_prefix(from) {
+                *dir = to.join(rest);
+                count += 1;
+            }
+        }
+        count
     }
 
     /// **Which way the grid pane was reading the document `id` names**, or

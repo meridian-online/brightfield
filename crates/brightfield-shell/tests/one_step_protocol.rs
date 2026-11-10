@@ -58,11 +58,35 @@ use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_shell::{data_file, protocol};
 use brightfield_workbench::RunState;
 
+/// Point the Protocols folder and the config directory at scratch folders of this process's,
+/// before anything reads them, so the front door these tests draw lists what the tests made and
+/// not what is in the home directory, and nothing is written there.
+fn hermetic() {
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = std::env::temp_dir().join(format!("bf-one-step-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for sub in ["config", "protocols"] {
+            std::fs::create_dir_all(root.join(sub)).expect("a scratch folder");
+        }
+        std::env::set_var(
+            brightfield_shell::startup::CONFIG_DIR_VAR,
+            root.join("config"),
+        );
+        std::env::set_var(
+            brightfield_shell::protocols_dir::PROTOCOLS_DIR_VAR,
+            root.join("protocols"),
+        );
+        root
+    });
+}
+
 /// A directory of this test's own, removed when the test ends.
 struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(name: &str) -> Self {
+        hermetic();
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.subsec_nanos());
@@ -147,6 +171,7 @@ impl Window {
     }
 
     fn with_layout(boot: Boot, layout: brightfield_workbench::SavedLayout) -> Self {
+        hermetic();
         let mut win = Self {
             app: MeridianApp::headless_with_layout(boot, layout, Mode::Light),
             ctx: egui::Context::default(),
@@ -1084,7 +1109,9 @@ fn the_inspector_rail_draws_no_save_while_the_palette_offers_one() {
         win.drawn_text_in(rect)
     }
 
-    // A window over a chart spec: a buffer to save, and no Protocol.
+    // A window over a chart spec: a buffer to save, and no Protocol. The boot is made before the
+    // window, so the scratch folders are set first.
+    hermetic();
     let spec = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/dashboard.yaml");
     let mut chart = Window::over(
         Boot::open(spec.to_str().expect("utf-8"), Flow::Vertical, None).expect("the spec opens"),

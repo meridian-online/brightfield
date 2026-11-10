@@ -157,6 +157,28 @@ sha2 = "0.10"
 # this crate draws handed to it as pictures.
 brightfield-report = { path = "../brightfield-report" }
 
+# The Mac's open events, `crate::mac_open`: winit does not forward the application delegate's
+# open-files or open-URLs callbacks, so the shell listens for the Apple Events that carry them.
+# Neither crate is new to the graph: rfd already resolves both on the same lines, and these
+# declarations add only the Foundation classes the listener names. The Apple Event methods
+# that take a four-character code are sent by selector rather than through the
+# `objc2-core-services` feature, which would bring a crate the graph does not hold.
+[target.'cfg(target_os = "macos")'.dependencies]
+# The completion handler the open panel calls when the analyst chooses, so the panel runs without
+# blocking the window (`crate::mac_open::begin_open_panel`). Not new to the graph: rfd resolves the
+# same line.
+block2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSAppleEventDescriptor",
+    "NSAppleEventManager",
+    "NSNotification",
+    "NSObject",
+    "NSString",
+    "NSURL",
+] }
+
 [dev-dependencies]
 # Reads the PDF `export-pdf` writes back as text, as `brightfield-report`'s own
 # tests do; the same pinned release.
@@ -172,6 +194,10 @@ egui_kittest = { version = "0.35", features = ["wgpu", "snapshot"] }
 # build) — `parquet` stated here too so this test-side writer is not relying on
 # the engine's declaration to have its reader.
 duckdb = { workspace = true, features = ["parquet"] }
+# Reads `packaging/Info.plist` back, so `tests/open_gestures.rs` checks the documents and the link
+# scheme the bundle declares as Launch Services reads them, not as text. MIT, and not new to the
+# graph: 1.x is already in Cargo.lock.
+plist = "1"
 
 [[bin]]
 name = "brightfield-shell"
@@ -185,5 +211,12 @@ path = "src/bin/brightfield-shot.rs"
 name = "bf-imgdiff"
 path = "src/bin/bf-imgdiff.rs"
 
-[lints]
-workspace = true
+# The workspace's lints, restated so `unsafe_code` is `deny` rather than `forbid`: the one module
+# that sends Objective-C messages, `mac_open`, allows it, and nothing else in the crate may.
+[lints.rust]
+unused_must_use = "warn"
+missing_docs = "allow"
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "allow", priority = -1 }

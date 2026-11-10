@@ -381,6 +381,10 @@ pub enum RunState {
     StaleUpstream,
     /// The last attempt to materialise this data failed.
     Failed,
+    /// No run of the whole Protocol has been recorded, but its loads have computed while its
+    /// sources were added: the data is a preview, which is neither current nor missing. Worded so
+    /// it reads as not yet run rather than as failed or empty.
+    Previewed,
 }
 
 impl RunState {
@@ -402,12 +406,13 @@ impl RunState {
     pub const RAIL_ID: &'static str = "run-state";
 
     /// Every state, for a test that walks the vocabulary.
-    pub const ALL: [RunState; 5] = [
+    pub const ALL: [RunState; 6] = [
         RunState::NeverRun,
         RunState::Fresh,
         RunState::StaleOwnEdit,
         RunState::StaleUpstream,
         RunState::Failed,
+        RunState::Previewed,
     ];
 
     /// The short label a surface renders beside previewed data. Always shown
@@ -420,6 +425,7 @@ impl RunState {
             RunState::StaleOwnEdit => "stale · edited",
             RunState::StaleUpstream => "stale · upstream edited",
             RunState::Failed => "failed",
+            RunState::Previewed => "previewed, not run",
         }
     }
 
@@ -440,6 +446,9 @@ impl RunState {
                 "A step upstream was edited — this data has not seen that change."
             }
             RunState::Failed => "The last run of this step failed — this data was not produced.",
+            RunState::Previewed => {
+                "Its sources were previewed as they were added; the Protocol has not been run."
+            }
         }
     }
 
@@ -450,7 +459,7 @@ impl RunState {
     #[must_use]
     pub const fn tone(self) -> Tone {
         match self {
-            RunState::NeverRun => Tone::Neutral,
+            RunState::NeverRun | RunState::Previewed => Tone::Neutral,
             RunState::Fresh => Tone::Good,
             RunState::StaleOwnEdit | RunState::StaleUpstream => Tone::Warning,
             RunState::Failed => Tone::Critical,
@@ -801,8 +810,8 @@ mod tests {
         }
     }
 
-    /// Every state says something different — five states, five labels, five
-    /// glosses. A shared label would make two states indistinguishable in the
+    /// Every state says something different — one label and one gloss per
+    /// state. A shared label would make two states indistinguishable in the
     /// one channel a user actually reads.
     #[test]
     fn every_run_state_labels_itself_distinctly() {
@@ -830,6 +839,7 @@ mod tests {
         assert_eq!(RunState::StaleUpstream.tone(), Tone::Warning);
         assert_eq!(RunState::Failed.tone(), Tone::Critical);
         assert_eq!(RunState::NeverRun.tone(), Tone::Neutral);
+        assert_eq!(RunState::Previewed.tone(), Tone::Neutral);
         // Staleness is never dressed as success or as the interaction accent.
         for state in RunState::ALL {
             if state.is_stale() {
@@ -837,6 +847,19 @@ mod tests {
                 assert_ne!(state.tone(), Tone::Accent);
             }
         }
+    }
+
+    /// A Protocol only previewed reads as not yet run, and its words say nothing of failure or of
+    /// missing data: its loads did compute.
+    #[test]
+    fn previewed_reads_as_not_yet_run_and_not_as_failed_or_empty() {
+        let label = RunState::Previewed.label();
+        assert_eq!(label, "previewed, not run");
+        for word in ["fail", "empty", "never", "no data", "missing"] {
+            assert!(!label.contains(word), "{label:?} suggests {word:?}");
+        }
+        assert!(!RunState::Previewed.is_current());
+        assert!(!RunState::Previewed.is_stale());
     }
 
     /// The default is the safe direction: nothing reads as current until a

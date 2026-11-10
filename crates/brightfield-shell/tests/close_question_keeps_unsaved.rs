@@ -34,7 +34,7 @@ use brightfield_shell::protocol::SpineRole;
 use brightfield_shell::shelf::ShelfChannels;
 use brightfield_shell::text_ink;
 use brightfield_shell::versions::{Clock, Listing, CLOSED_UNSAVED};
-use brightfield_shell::window::{Boot, MeridianApp, UNSAVED_MARK};
+use brightfield_shell::window::{Boot, Leaving, MeridianApp, UNSAVED_MARK};
 use brightfield_spec::layout::ScaleType;
 use brightfield_workbench::arrangement::LEDGER_RAIL;
 use brightfield_workbench::channel::ShelfChannel;
@@ -639,7 +639,10 @@ fn enter_saves_and_closes_with_nothing_focused_and_with_save_focused() {
             s.frame(vec![Session::press(egui::Key::Enter)], true);
             s.settle();
         }
-        assert!(s.closed, "later {later}: Enter did not close the window");
+        assert!(
+            s.app.front_door_is_live(),
+            "later {later}: Enter did not go to the door"
+        );
         assert!(
             s.chart_file().exists() && !s.marked(),
             "later {later}: Enter closed without saving the chart"
@@ -656,7 +659,7 @@ fn d_closes_without_saving_and_esc_keeps_editing() {
     d.request_close();
     d.forget_sent();
     d.key(egui::Key::D);
-    assert!(d.closed, "D did not close the window");
+    assert!(d.app.front_door_is_live(), "D did not go to the door");
     assert!(!d.chart_file().exists(), "D saved the chart");
     assert_eq!(
         d.entries().last().map(|e| e.kind),
@@ -694,7 +697,11 @@ fn close_without_saving_leaves_the_files_and_records_what_save_would_write() {
     assert!(on_disk.contains_key("arcform.yaml"));
     let before = s.entries();
     let logged = arc::spec::read_log(&s.folder).expect("the log reads");
-    s.request_close();
+    // Asked by a quit rather than the close button, which would take the window to the door and
+    // the edit with it: the comparison below saves the same edit from the same window.
+    let ctx = s.ctx.clone();
+    s.app.leave(&ctx, Leaving::Quit);
+    s.settle();
     s.forget_sent();
 
     s.answer("Close without saving");
@@ -742,7 +749,7 @@ fn close_without_saving_before_any_save_writes_no_file_and_records_a_version() {
     s.request_close();
     s.answer("Close without saving");
 
-    assert!(s.closed);
+    assert!(s.app.front_door_is_live());
     assert_eq!(files(&s.folder), on_disk, "a file was written");
     assert!(!s.chart_file().exists() && !s.arcform_file().exists());
     let entries = s.entries();
@@ -771,7 +778,7 @@ fn reopening_draws_the_file_and_the_panel_steps_to_the_closed_unsaved_version() 
     assert_ne!(saved, unsaved);
     s.request_close();
     s.answer("Close without saving");
-    assert!(s.closed);
+    assert!(s.app.front_door_is_live());
     let kept = s.entries().last().expect("a version").id.clone();
 
     let mut again = s.reopen();
@@ -871,7 +878,10 @@ fn a_chart_that_cannot_be_kept_keeps_the_window_open_and_the_answer_again_closes
 
         s.answer("Close without saving");
 
-        assert!(s.closed, "{tag}: the answer given again did not close");
+        assert!(
+            s.app.front_door_is_live(),
+            "{tag}: the answer given again did not go to the door"
+        );
         assert_eq!(files(&s.folder), on_disk, "{tag}: a file was written");
         assert!(
             !s.folder.join("panels").exists(),

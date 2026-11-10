@@ -97,6 +97,27 @@ fn panel_rel(name: &str) -> PathBuf {
     PathBuf::from(PANELS_DIR).join(format!("{}.yaml", filename_slug(name)))
 }
 
+/// Where the chart of a model's join `name` is kept, under the protocol
+/// directory `dir`: `panels/joins/<slug of name>.yaml`, apart from the tables'
+/// charts, because a join's name can be a table's.
+#[must_use]
+pub fn join_panel_file(dir: &Path, name: &str) -> PathBuf {
+    dir.join(PANELS_DIR)
+        .join("joins")
+        .join(format!("{}.yaml", filename_slug(name)))
+}
+
+/// Where the chart of a model's table `name`, opened in the grid from the model, is kept under
+/// the protocol directory `dir`: `panels/tables/<slug of name>.yaml`. It is kept apart from
+/// [`panel_file`], the Protocol's own panel, because a table can be named as its Protocol is,
+/// and a table's chart saved there would be drawn as the Protocol's panel.
+#[must_use]
+pub fn table_panel_file(dir: &Path, name: &str) -> PathBuf {
+    dir.join(PANELS_DIR)
+        .join("tables")
+        .join(format!("{}.yaml", filename_slug(name)))
+}
+
 /// Where the panel file for `name` is, under the protocol directory `dir` —
 /// the path [`capture_panel`] writes, joined onto `dir`.
 #[must_use]

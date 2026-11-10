@@ -66,6 +66,10 @@
 //! - [`run`] — the ledger strip's Run control underneath: `arc` running that
 //!   Protocol in a child process of this binary, on a worker, and the run
 //!   records it leaves beside the spec, read back newest first.
+//! - [`open_queue`] — the window's ways in as one queue of requests, and where each path goes:
+//!   a Protocol opened where it is, or a new one made of the data.
+//! - `mac_open` (built on macOS) — the Mac's open events, a file from Finder or the Dock and a
+//!   `brightfield://` link, pushed onto that queue.
 //! - [`own_files`] — the Protocol folder an analyst's own files are written as: a load step
 //!   per table, the raw tables' FineType profile, and a Frictionless data package per source.
 //! - [`shelf_edit`] — a column put on a chart's x or y, as the list of chart
@@ -103,8 +107,10 @@ pub mod data_file;
 pub mod data_grid;
 pub mod devtools;
 pub mod discovery;
+pub mod door_tree;
 pub mod editor;
 pub mod export;
+pub mod file_protocols;
 pub(crate) mod flat_cast;
 pub mod gallery;
 pub mod generated;
@@ -113,21 +119,30 @@ pub mod housing;
 pub mod inspector;
 pub mod interval_drag;
 pub mod legend;
+// The crate's one module that writes `unsafe`: Objective-C messages to the Apple Event manager,
+// the app menu and the open panel.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub mod mac_open;
 pub mod model_file;
 pub mod model_inspector;
 pub mod model_pane;
 pub mod navigation;
 pub mod one_step;
+pub mod open_queue;
 pub mod operation;
 pub mod operation_panel;
 pub mod overlays;
 pub mod own_files;
 pub mod panel_tiles;
 pub mod pipeline;
+pub mod preferences;
 pub mod protocol;
 pub mod protocol_panels;
+pub mod protocols_dir;
 pub mod ranked_bars;
 pub mod remote;
+pub mod rename;
 pub mod representation;
 pub mod resample;
 pub mod run;

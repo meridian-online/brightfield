@@ -1194,20 +1194,22 @@ fn protocol_fields(
 // A flat file's open is the larger value, and one `Opened` lives at a time.
 #[allow(clippy::large_enum_variant)]
 pub enum Opened {
-    /// A single flat file, opened exactly as [`open`] opens it.
-    OneTable(OpenedFile),
+    /// A single table, opened on its grid and dashboard as [`open`] opens a flat file, and the
+    /// Protocol of one source it was read through.
+    OneTable(OpenedFile, crate::own_files::OwnProtocol),
     /// A folder, workbook or database: a Protocol folder holding a load step per table, the raw
     /// tables, the silver tables and the model that relates them.
     Model(crate::own_files::OwnProtocol),
 }
 
-/// Open `path` (a file, a folder, a workbook or a database file) as whatever it holds.
+/// Open `path` (a file, a folder, a workbook or a database file) as a new Protocol in the
+/// Protocols folder, with what it holds as the Protocol's sources.
 ///
-/// A path whose tables come to exactly one flat file takes today's route, [`open`], unchanged.
-/// One sheet of a workbook or one table of a database lands where a flat file does too, on its
-/// grid and dashboard: its Protocol is made and run as below, with no model written, and the
-/// silver table is opened on the flat route from a Parquet copy in the Protocol folder, as already
-/// cast and with the labels its data package records (see [`settled`]). Anything
+/// A path that holds one table, whether a lone CSV or Parquet, one sheet of a workbook or one
+/// table of a database, lands on its grid and dashboard: its Protocol is made and run as below,
+/// with no model written, and the silver table is opened on the flat route from a Parquet copy in
+/// the Protocol folder, as already cast and with the labels its data package records (see
+/// [`settled`]). The file itself is read where it is, and nothing is written beside it. Anything
 /// else takes the own-files flow: the Protocol is made and run, the raw tables are
 /// profiled, a model is discovered from the sample pass and written beside the Protocol, and the
 /// silver steps for it are run. The full pass is the model pane's to run once it opens
@@ -1232,53 +1234,148 @@ pub fn open_any_with(
     runner: &crate::run::Runner,
     dovetail: &dyn crate::discovery::Discovery,
 ) -> Result<Opened, String> {
-    let path = accept(&path.to_string_lossy())?;
-    let found = brightfield_engine::sources::discover(&path)?;
-    let one_part = match found.tables.as_slice() {
-        [table] if is_flat_name(&table.file) => {
-            return open(&table.file.to_string_lossy()).map(Opened::OneTable);
+    open_all_with(std::slice::from_ref(&path.to_path_buf()), runner, dovetail)
+}
+
+/// Open everything in `paths` together as one new Protocol, named after the first, with every
+/// table in them as its sources: what one gesture handed over at once. The rest is [`open_any`]'s:
+/// one table lands on its grid and dashboard, and several open the model.
+///
+/// # Errors
+///
+/// As [`open_any`], for the first path refused or the first step that failed.
+pub fn open_all(paths: &[PathBuf], runner: &crate::run::Runner) -> Result<Opened, String> {
+    open_all_with(paths, runner, &crate::discovery::Dovetail::new(runner))
+}
+
+/// [`open_all`] with the discoverer for several tables named.
+fn open_all_with(
+    paths: &[PathBuf],
+    runner: &crate::run::Runner,
+    dovetail: &dyn crate::discovery::Discovery,
+) -> Result<Opened, String> {
+    // A path refused among several is passed over with its reason, as a folder passes over a file
+    // it cannot read, and the rest open; only a gesture none of whose paths is accepted fails.
+    let mut accepted = Vec::new();
+    let mut refused = Vec::new();
+    for path in paths {
+        match accept(&path.to_string_lossy()) {
+            Ok(path) => accepted.push(path),
+            Err(why) if paths.len() > 1 => {
+                // Recorded as discovery records a file it passes over: the reason alone, since the
+                // list it goes in names the file.
+                let named = format!("{}: ", path.to_string_lossy());
+                let why = why.strip_prefix(&named).map_or(why.clone(), str::to_string);
+                refused.push((path.clone(), why));
+            }
+            Err(why) => return Err(why),
         }
+    }
+    if accepted.is_empty() {
+        let line = crate::model_pane::skipped_line_of(&refused).unwrap_or_default();
+        return Err(format!("Brightfield opens none of these files. {line}."));
+    }
+    let found = brightfield_engine::sources::discover_all(&accepted)?;
+    let one_part = match found.tables.as_slice() {
         [table] => Some(table.name.clone()),
         _ => None,
     };
 
     use crate::own_files as own;
-    let mut protocol = own::create(&path)?;
-    own::run_loads(&protocol, runner)?;
-    own::profile(&mut protocol)?;
-    own::write_packages(&protocol)?;
-    // A single table has nothing to relate, so dovetail is not asked about it. When dovetail's
-    // sample pass fails, the open still shows the tables, each unclear with no joins, rather than
-    // leaving the Protocol folder behind with no window; the pane's full pass runs dovetail again
-    // and says why in the status line if it fails too.
-    let stand_in = crate::discovery::StandIn;
-    let model = if one_part.is_none() {
-        crate::discovery::sample_pass(dovetail, &protocol, None).or_else(|e| {
-            eprintln!("dovetail's sample pass failed, so the tables open unclear: {e}");
-            crate::discovery::sample_pass(&stand_in, &protocol, None)
-        })?
-    } else {
-        // The stand-in is the discoverer here, so its failure is the open's, not one to retry.
-        crate::discovery::sample_pass(&stand_in, &protocol, None)?
-    };
-    // A single table has nothing to relate, so no model is written for it, and its folder is not
-    // one the door lists as an own-files Protocol.
-    if one_part.is_none() {
-        crate::discovery::write_model_file(&protocol.dir, &brightfield_ossie::write(&model))?;
-    }
-    own::write_silver(&protocol, &model)?;
-    own::run_loads(&protocol, runner)?;
-    match one_part {
-        Some(name) => {
-            let rows = own::grid_copy(&protocol, &name)?;
-            // The copy is under the Protocol's `.grid/` folder, so `settled` finds the labels the
-            // Protocol's package records for it and opens it as already cast, reading the
-            // packages once.
-            open_traced(&rows.to_string_lossy(), &OpenOptions::default())
-                .map(|(o, _)| Opened::OneTable(o))
+    let mut protocol = own::create_all(&accepted, refused)?;
+    // The folder is in the Protocols folder from here on, where the door lists it and the reopen
+    // rule reads its sources, so an open that fails after this takes it away again rather than
+    // leave a Protocol half made (`a_failed_open_leaves_no_protocol_behind`).
+    let made = (|| -> Result<Option<OpenedFile>, String> {
+        own::run_loads(&protocol, runner)?;
+        own::profile(&mut protocol)?;
+        own::write_packages(&protocol)?;
+        // A single table has nothing to relate, so dovetail is not asked about it. When
+        // dovetail's sample pass fails, the open still shows the tables, each unclear with no
+        // joins, rather than leaving the Protocol folder behind with no window; the pane's full
+        // pass runs dovetail again and says why in the status line if it fails too.
+        let stand_in = crate::discovery::StandIn;
+        let model = if one_part.is_none() {
+            crate::discovery::sample_pass(dovetail, &protocol, None).or_else(|e| {
+                eprintln!("dovetail's sample pass failed, so the tables open unclear: {e}");
+                crate::discovery::sample_pass(&stand_in, &protocol, None)
+            })?
+        } else {
+            // The stand-in is the discoverer here, so its failure is the open's, not one to retry.
+            crate::discovery::sample_pass(&stand_in, &protocol, None)?
+        };
+        // A single table has nothing to relate, so no model is written for it, and its folder is
+        // not one the door lists as an own-files Protocol.
+        if one_part.is_none() {
+            crate::discovery::write_model_file(&protocol.dir, &brightfield_ossie::write(&model))?;
         }
-        None => Ok(Opened::Model(protocol)),
+        own::write_silver(&protocol, &model)?;
+        own::run_loads(&protocol, runner)?;
+        one_part
+            .as_ref()
+            .map(|_| open_one_table(&protocol))
+            .transpose()
+    })();
+    match made {
+        Ok(Some(opened)) => Ok(Opened::OneTable(opened, protocol)),
+        Ok(None) => Ok(Opened::Model(protocol)),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&protocol.dir);
+            Err(e)
+        }
     }
+}
+
+/// Read the own-files Protocol of one source in `dir` again from its source file, and open its
+/// table: what Reload does for a table opened from such a Protocol.
+///
+/// The raw table is loaded and profiled afresh ([`crate::own_files::reload_one_source`]), and the
+/// rest is what a new open does with a profile: the data packages and the silver steps are written
+/// again from it, so a column the file gained is cast and shown and one it renamed or dropped is
+/// no longer asked for. The steps recorded after the silver steps are kept. Then the Protocol is
+/// run and its table opened ([`open_one_table`]).
+///
+/// # Errors
+///
+/// The reason when a step of that fails, naming the folder or file it concerns.
+pub fn reload_one_table(
+    dir: &Path,
+    runner: &crate::run::Runner,
+) -> Result<(OpenedFile, crate::own_files::OwnProtocol), String> {
+    use crate::own_files as own;
+    let protocol = own::reload_one_source(dir, runner)?;
+    own::write_packages(&protocol)?;
+    let model = crate::discovery::sample_pass(&crate::discovery::StandIn, &protocol, None)?;
+    own::write_silver(&protocol, &model)?;
+    own::drop_unmade_silver(&protocol, &model)?;
+    own::run_loads(&protocol, runner)?;
+    open_one_table(&protocol).map(|opened| (opened, protocol))
+}
+
+/// The grid and dashboard of the one table of `protocol`, an own-files Protocol that has been
+/// run: the table is copied to a Parquet file in the Protocol's `.grid/` folder and opened from
+/// there on the flat route.
+///
+/// The copy is under `.grid/`, so [`settled`] finds the labels the Protocol's package records for
+/// it and opens it as already cast, reading the packages once. The opened Protocol's directory is
+/// the Protocol folder, not the copy's, so a Save writes the Protocol's own files and nothing
+/// lands beside the copy.
+///
+/// # Errors
+///
+/// The reason when `protocol` does not hold exactly one table, or the copy or the open fails.
+pub fn open_one_table(protocol: &crate::own_files::OwnProtocol) -> Result<OpenedFile, String> {
+    let [table] = protocol.sources.tables.as_slice() else {
+        return Err(format!(
+            "{}: holds {} tables, not one",
+            protocol.dir.display(),
+            protocol.sources.tables.len()
+        ));
+    };
+    let rows = crate::own_files::grid_copy(protocol, &table.name)?;
+    let (mut opened, _) = open_traced(&rows.to_string_lossy(), &OpenOptions::default())?;
+    opened.protocol.dir.clone_from(&protocol.dir);
+    Ok(opened)
 }
 
 /// The DuckDB extensions opening `path` is likely to need, judged from its name or, for a folder,
@@ -1347,17 +1444,71 @@ pub fn fetch_message(needed: &[&str], installed: &[String]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(". "))
 }
 
-/// What the front door's Open… button is asked to pick.
+/// **Ask the operating system for data files or folders, and push what is chosen onto `queue`**
+/// as the request `make` builds from the chosen paths; a cancel pushes nothing.
+///
+/// On the Mac this is one open panel that takes files and folders alike
+/// ([`crate::mac_open::begin_open_panel`]), and it returns at once: the panel runs from the event
+/// loop the window draws in, the queue wakes the window when the analyst chooses, and the window
+/// takes the request on its next frame as it takes a file dropped on the Dock icon. Asking first
+/// whether to pick a file or a folder, in a system alert of its own, was a question Brightfield
+/// did not need to ask, and the modal loops of that alert and of the picker behind it held the
+/// window's frames until the analyst answered. Elsewhere, where no picker takes both, the analyst
+/// is asked whether to open files or folders and the picker for that is raised; both block until
+/// the user answers.
+///
+/// No headless test drives the dialog itself: what a test needs to know about opening a path is
+/// decided after it, by `accept`, `open_any` and the dashboard `open` chooses. Files
+/// are filtered to the extensions `accept` will take, so the common refusal is seldom shown: a
+/// picker that offers a `.txt` and then declines it is a picker arguing with itself.
+pub fn pick(
+    queue: &crate::open_queue::OpenQueue,
+    make: fn(Vec<PathBuf>) -> Option<crate::open_queue::OpenRequest>,
+) {
+    #[cfg(target_os = "macos")]
+    {
+        let queue = queue.clone();
+        crate::mac_open::begin_open_panel(
+            "Open a data file, or a folder of them",
+            OPENABLE_EXTENSIONS,
+            move |paths| {
+                if let Some(request) = make(paths) {
+                    queue.push(request);
+                }
+            },
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // No picker here takes files and folders in one, so the analyst is asked which first.
+        let chosen = match ask_pick_kind() {
+            Some(PickKind::File) => rfd::FileDialog::new()
+                .set_title("Open a data file")
+                .add_filter("Data files", OPENABLE_EXTENSIONS)
+                .pick_files(),
+            Some(PickKind::Folder) => rfd::FileDialog::new()
+                .set_title("Open a folder of data files")
+                .pick_folders(),
+            None => None,
+        };
+        if let Some(request) = make(chosen.unwrap_or_default()) {
+            queue.push(request);
+        }
+    }
+}
+
+/// What the picker off the Mac is asked to pick.
+#[cfg(not(target_os = "macos"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PickKind {
+enum PickKind {
     File,
     Folder,
 }
 
-/// Ask whether to pick a file or a folder, blocking until the user answers; `None` when they
-/// cancel.
-#[must_use]
-pub fn ask_pick_kind() -> Option<PickKind> {
+/// Ask whether to pick files or folders, blocking until the user answers; `None` when they
+/// cancel. Off the Mac only, where the picker takes one or the other.
+#[cfg(not(target_os = "macos"))]
+fn ask_pick_kind() -> Option<PickKind> {
     use rfd::MessageDialogResult as Answer;
     let answer = rfd::MessageDialog::new()
         .set_title("Open")
@@ -1374,31 +1525,6 @@ pub fn ask_pick_kind() -> Option<PickKind> {
         Answer::Custom(label) if label == "A file" => Some(PickKind::File),
         Answer::Custom(label) if label == "A folder" => Some(PickKind::Folder),
         _ => None,
-    }
-}
-
-/// Ask the operating system for a data file or a folder, blocking until the user chooses or
-/// cancels.
-///
-/// The one call in this crate that opens a window nobody laid out, and the one
-/// thing here no headless test drives — everything a test needs to know about
-/// opening a path is decided by `accept`, `open_any` and the dashboard `open`
-/// chooses, none of which needs a dialog. The dialog's own job is to return a
-/// path.
-///
-/// The file dialog is filtered to the extensions `accept` will take, so the common refusal is
-/// seldom shown: a picker that offers a `.txt` and then declines it is a
-/// picker arguing with itself.
-#[must_use]
-pub fn pick() -> Option<PathBuf> {
-    match ask_pick_kind()? {
-        PickKind::File => rfd::FileDialog::new()
-            .set_title("Open a data file")
-            .add_filter("Data files", OPENABLE_EXTENSIONS)
-            .pick_file(),
-        PickKind::Folder => rfd::FileDialog::new()
-            .set_title("Open a folder of data files")
-            .pick_folder(),
     }
 }
 

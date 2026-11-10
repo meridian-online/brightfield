@@ -31,13 +31,17 @@ fn scratch() -> &'static Path {
     ROOT.get_or_init(|| {
         let root = std::env::temp_dir().join(format!("bf-model-file-edit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for sub in ["config", "history", "db"] {
+        for sub in ["config", "history", "db", "protocols"] {
             std::fs::create_dir_all(root.join(sub)).expect("a scratch folder");
         }
         // Set once, before any test in this file reads them, and never changed.
         std::env::set_var(
             brightfield_shell::startup::CONFIG_DIR_VAR,
             root.join("config"),
+        );
+        std::env::set_var(
+            brightfield_shell::protocols_dir::PROTOCOLS_DIR_VAR,
+            root.join("protocols"),
         );
         std::env::set_var("ARCFORM_HISTORY_DIR", root.join("history"));
         std::env::set_var("ARCFORM_DB_DIR", root.join("db"));
@@ -902,11 +906,10 @@ fn a_refused_edit_blocks_a_reshape_until_discarded() {
     pane.focus.selected = Some(Selection::Relationship("transactions_stores".into()));
 
     let refused = pane.perform_reshape("drop-join").expect("a reshape verb");
-    assert_eq!(
-        refused,
-        Dispatched::Failed(
-            "The file has an edit that doesn't read — fix or discard it first".to_string()
-        )
+    assert!(
+        matches!(&refused, Dispatched::Failed(e)
+            if e.starts_with("The file has an edit that doesn't read — fix or discard it first. Line 3:")),
+        "{refused:?}"
     );
     assert_eq!(on_disk(&pane), disk, "nothing is written");
     assert_eq!(pane.file_draft(), broken, "the edit stays to be put right");
@@ -1689,4 +1692,424 @@ fn an_edit_of_text_from_the_sample_keeps_what_the_full_pass_wrote_of_the_model()
     let edited = hand_edited(&current, &older, &brightfield_ossie::write(&typed));
     assert_eq!(edited.meta.pass.as_deref(), Some("by hand"));
     assert_eq!(edited.meta.sample_rows, None);
+}
+
+#[test]
+fn run_before_the_pause_ends_runs_the_edit_and_owes_nothing_after() {
+    let (mut pane, _held) = opened();
+    assert!(promo_silver_step(&pane) && promo_silver_table(&pane));
+    let dir = pane.protocol.dir.clone();
+    let previews = brightfield_shell::run::preview_ids(&dir);
+    let typed = replaced(
+        pane.file_draft(),
+        PROMO_KEPT,
+        &PROMO_KEPT.replace("false", "true"),
+    );
+    pane.set_file_draft(typed);
+    assert_eq!(pane.tick_file_edit(0), None, "the edit waits out its pause");
+
+    let finished = pane.run_whole().expect("the run starts");
+    assert!(finished.succeeded, "{}", finished.log);
+    assert!(
+        !promo_silver_step(&pane),
+        "the run's silver steps are the edit's"
+    );
+    assert!(
+        !promo_silver_table(&pane),
+        "the run dropped the table the edit left out"
+    );
+    assert!(!pane.run_waiting(), "the run was the one the edit owed");
+    assert_eq!(
+        pane.tick_file_edit(FILE_PAUSE_MS * 4),
+        None,
+        "no run follows it"
+    );
+    assert_eq!(
+        brightfield_shell::run::preview_ids(&dir),
+        previews,
+        "no preview run follows it, and the run is not marked as one"
+    );
+}
+
+#[test]
+fn run_refuses_an_edit_that_does_not_read() {
+    let (mut pane, _held) = opened();
+    let records = brightfield_shell::run::record_paths_newest_first(&pane.protocol.dir).len();
+    let broken = replaced(pane.file_text(), "\ndatasets:\n", "\ndatasets: :\n");
+    pane.set_file_draft(broken);
+    assert!(
+        pane.run_whole().is_err(),
+        "a draft that does not read stops the run"
+    );
+    assert_eq!(
+        brightfield_shell::run::record_paths_newest_first(&pane.protocol.dir).len(),
+        records,
+        "nothing ran"
+    );
+}
+
+/// The evidence of join `name` in `pane`'s model.
+fn join_evidence(pane: &ModelPane, name: &str) -> brightfield_ossie::Evidence {
+    pane.model
+        .relationships
+        .iter()
+        .find(|r| r.name == name)
+        .expect("the join is in the model")
+        .meta
+        .evidence
+        .clone()
+}
+
+#[test]
+fn run_before_the_pause_ends_measures_the_edited_joins_again() {
+    let (mut pane, _held) = opened();
+    assert_eq!(join_evidence(&pane, "transactions_stores").orphans, 0);
+    // Joined from customer_id, stores' three ids miss the transactions of customers 4 and 5. A
+    // hand edit does not claim evidence, so the join keeps the old numbers until it is measured.
+    let typed = replaced(
+        pane.file_draft(),
+        "- name: transactions_stores\n  from: transactions\n  to: stores\n  from_columns:\n  - store_id\n",
+        "- name: transactions_stores\n  from: transactions\n  to: stores\n  from_columns:\n  - customer_id\n",
+    );
+    pane.set_file_draft(typed);
+    assert_eq!(pane.tick_file_edit(0), None, "the edit waits out its pause");
+
+    let finished = pane.run_whole().expect("the run starts");
+    assert!(finished.succeeded, "{}", finished.log);
+    assert_eq!(
+        pane.model
+            .relationships
+            .iter()
+            .find(|r| r.name == "transactions_stores")
+            .unwrap()
+            .from_columns,
+        ["customer_id"],
+        "the run is of the edit"
+    );
+    let measured = brightfield_shell::model_pane::measure_joins(&pane.protocol.dir, &pane.model)
+        .expect("the run's database reads");
+    assert_eq!(
+        pane.model, measured,
+        "the joins are measured over the new tables"
+    );
+    let evidence = join_evidence(&pane, "transactions_stores");
+    assert_eq!((evidence.orphans, evidence.child_rows), (2, 8));
+    assert_eq!(
+        brightfield_ossie::read(&on_disk(&pane)).unwrap(),
+        pane.model,
+        "the measured model is written"
+    );
+    assert_eq!(pane.file_error(), None);
+}
+
+#[test]
+fn a_run_with_nothing_owed_leaves_the_model_unwritten() {
+    let (mut pane, _held) = opened();
+    assert!(!pane.run_waiting());
+    let written = on_disk(&pane);
+    // Evidence that differs from what the tables measure, put on the pane without an edit, so a
+    // measurement after the run would have something to write.
+    let r = pane
+        .model
+        .relationships
+        .iter_mut()
+        .find(|r| r.name == "transactions_customers")
+        .expect("the join is in the model");
+    r.meta.evidence.child_rows = 99;
+
+    let finished = pane.run_whole().expect("the run starts");
+    assert!(finished.succeeded, "{}", finished.log);
+    assert_eq!(on_disk(&pane), written, "the model file is not written");
+    assert_eq!(
+        join_evidence(&pane, "transactions_customers").child_rows,
+        99,
+        "the joins are not measured again"
+    );
+}
+
+/// The retail extract copied to a scratch folder of `name` and opened as `opened` opens it, so a
+/// test can take a source away without touching the fixture.
+fn opened_copy(name: &str) -> (ModelPane, PathBuf, MutexGuard<'static, ()>) {
+    let held = folder_lock();
+    let copy = scratch().join(name);
+    let _ = std::fs::remove_dir_all(&copy);
+    std::fs::create_dir_all(&copy).unwrap();
+    for entry in std::fs::read_dir(retail()).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "csv") {
+            std::fs::copy(&path, copy.join(path.file_name().unwrap())).unwrap();
+        }
+    }
+    let Opened::Model(protocol) = data_file::open_any(&copy, &runner()).expect("it opens") else {
+        panic!("several tables are a model");
+    };
+    let mut pane = ModelPane::open(protocol, runner()).expect("the model reads");
+    pane.save_model(retail_model())
+        .expect("the written model runs");
+    (pane, copy, held)
+}
+
+#[test]
+fn run_after_an_owed_run_failed_measures_the_edited_joins() {
+    let (mut pane, copy, _held) = opened_copy("owed-run-failed");
+    assert_eq!(join_evidence(&pane, "transactions_stores").orphans, 0);
+    // A source taken away, so the run the edit owes fails before it measures anything.
+    let away = copy.join("transactions.csv.away");
+    std::fs::rename(copy.join("transactions.csv"), &away).unwrap();
+    let typed = replaced(
+        pane.file_draft(),
+        "- name: transactions_stores\n  from: transactions\n  to: stores\n  from_columns:\n  - store_id\n",
+        "- name: transactions_stores\n  from: transactions\n  to: stores\n  from_columns:\n  - customer_id\n",
+    );
+    pane.set_file_draft(typed);
+    assert_eq!(pane.tick_file_edit(0), None, "the edit arms the pause");
+    assert!(
+        matches!(pane.tick_file_edit(FILE_PAUSE_MS), Some(Err(_))),
+        "the owed run fails"
+    );
+    assert!(!pane.run_waiting(), "the failed run paid what was owed");
+    assert_eq!(
+        join_evidence(&pane, "transactions_stores").orphans,
+        0,
+        "nothing was measured"
+    );
+
+    // The cause put right, Run measures what the failed run did not.
+    std::fs::rename(&away, copy.join("transactions.csv")).unwrap();
+    let finished = pane.run_whole().expect("the run starts");
+    assert!(finished.succeeded, "{}", finished.log);
+    let measured = brightfield_shell::model_pane::measure_joins(&pane.protocol.dir, &pane.model)
+        .expect("the run's database reads");
+    assert_eq!(
+        pane.model, measured,
+        "the joins are measured over the new tables"
+    );
+    assert_eq!(join_evidence(&pane, "transactions_stores").orphans, 2);
+}
+
+/// A folder made read-only, made writable again when dropped, so a test that fails midway leaves
+/// nothing it cannot clear away.
+struct ReadOnly(PathBuf);
+
+impl ReadOnly {
+    fn new(dir: &Path) -> Self {
+        // Elsewhere the folder stays writable, so the write is not refused and the tests that
+        // need it to be pass over it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        Self(dir.to_path_buf())
+    }
+}
+
+impl Drop for ReadOnly {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+}
+
+/// Type an edit that makes customers an event table while the Protocol folder is read-only, so it
+/// reads but its file cannot be written, and answer the folder, still read-only, with the text as
+/// typed. `None` when this process ignores directory permissions, so the write cannot be refused.
+fn unwritten_edit(pane: &mut ModelPane) -> Option<(ReadOnly, String)> {
+    let edited = replaced(
+        pane.file_text(),
+        CUSTOMERS_ROLE,
+        &CUSTOMERS_ROLE.replace("entity", "event"),
+    );
+    let read_only = ReadOnly::new(&pane.protocol.dir);
+    pane.set_file_draft(edited.clone());
+    assert_eq!(pane.tick_file_edit(0), None, "an edit arms the pause");
+    let read = pane.tick_file_edit(FILE_PAUSE_MS);
+    if read == Some(Ok(())) {
+        eprintln!("this process ignores directory permissions; the write cannot be refused");
+        return None;
+    }
+    assert!(matches!(read, Some(Err(_))), "{read:?}");
+    assert!(
+        pane.file_edit_unsaved(),
+        "the edit is kept for the next Save"
+    );
+    assert_eq!(pane.file_draft(), edited);
+    Some((read_only, edited))
+}
+
+/// Whether the model on disk makes customers an event table, as the unwritten edit does.
+fn edit_on_disk(pane: &ModelPane) -> bool {
+    let disk = brightfield_ossie::read(&on_disk(pane)).unwrap();
+    disk.datasets
+        .iter()
+        .any(|d| d.name == "customers" && d.meta.role == Role::Event)
+}
+
+#[test]
+fn an_inspector_action_writes_an_unwritten_edit_first() {
+    let (mut pane, _held) = opened();
+    let Some((read_only, edited)) = unwritten_edit(&mut pane) else {
+        return;
+    };
+    pane.focus.selected = Some(Selection::Relationship("transactions_stores".into()));
+
+    // While the folder still refuses the write, the action is refused and the edit stays.
+    let refused = pane.perform_reshape("drop-join").expect("a reshape verb");
+    assert!(matches!(refused, Dispatched::Failed(_)), "{refused:?}");
+    assert_eq!(pane.file_draft(), edited, "the edit is not replaced");
+    assert!(pane.file_edit_unsaved());
+
+    drop(read_only);
+    let done = pane.perform_reshape("drop-join").expect("a reshape verb");
+    assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
+    assert!(edit_on_disk(&pane), "the edit was written with the action");
+    let disk = brightfield_ossie::read(&on_disk(&pane)).unwrap();
+    assert!(!disk
+        .relationships
+        .iter()
+        .any(|r| r.name == "transactions_stores"));
+    assert!(!pane.file_edit_unsaved());
+}
+
+#[test]
+fn rediscover_writes_an_unwritten_edit_first() {
+    let (mut pane, _held) = opened();
+    let Some((read_only, _)) = unwritten_edit(&mut pane) else {
+        return;
+    };
+    drop(read_only);
+    let done = pane.rediscover(Proposes(retail_model()));
+    assert!(matches!(done, Dispatched::Done(_)), "{done:?}");
+    assert!(edit_on_disk(&pane), "the edit was written before the pass");
+    assert!(pane.finish_discovery().is_some(), "the pass lands");
+    assert!(edit_on_disk(&pane), "the full pass kept the edit");
+    assert!(!pane.file_edit_unsaved());
+}
+
+#[test]
+fn run_in_the_model_pane_runs_an_unwritten_edit() {
+    let (mut pane, _held) = opened();
+    let Some((read_only, _)) = unwritten_edit(&mut pane) else {
+        return;
+    };
+    drop(read_only);
+    let finished = pane.run_whole().expect("the run starts");
+    assert!(finished.succeeded, "the run succeeds");
+    assert!(edit_on_disk(&pane), "the edit was written before the run");
+    assert!(pane
+        .model
+        .datasets
+        .iter()
+        .any(|d| d.name == "customers" && d.meta.role == Role::Event));
+    assert!(!pane.file_edit_unsaved());
+}
+
+#[test]
+fn a_full_pass_waits_for_an_unwritten_edit_and_then_writes_it() {
+    let (mut pane, _held) = opened();
+    let Some((read_only, edited)) = unwritten_edit(&mut pane) else {
+        return;
+    };
+    pane.start_full_pass(Proposes(retail_model()));
+
+    // While the folder still refuses the write, the pass waits and the edit stays.
+    assert_eq!(pane.finish_discovery(), None, "the pass waits for the edit");
+    assert!(pane.discovering());
+    assert_eq!(pane.file_draft(), edited, "the edit is not replaced");
+
+    drop(read_only);
+    assert!(pane.finish_discovery().is_some(), "the pass lands");
+    assert!(edit_on_disk(&pane), "the edit was written before the fold");
+    assert!(!pane.file_edit_unsaved());
+}
+
+/// The retail model's text with the datasets key broken, so it does not read at line 3.
+fn broken(pane: &ModelPane) -> String {
+    replaced(pane.file_text(), "\ndatasets:\n", "\ndatasets: :\n")
+}
+
+#[test]
+fn a_corrected_edit_whose_file_cannot_be_written_says_why_on_save() {
+    let (mut pane, _held) = opened();
+    let text = broken(&pane);
+    type_and_pause(&mut pane, text);
+    assert!(pane.file_error().is_some_and(|e| e.starts_with("Line 3:")));
+
+    // Put right, but typed while the folder refuses the write.
+    let Some((read_only, _)) = unwritten_edit(&mut pane) else {
+        return;
+    };
+    let said = pane.save_draft().expect_err("the write still fails");
+    assert!(
+        !said.contains("doesn't read"),
+        "the save says the write failed, not that the edit does not read: {said}"
+    );
+    let ctx = egui::Context::default();
+    pane.view = ModelView::File;
+    draw(&ctx, &mut pane, Vec::new());
+    assert_eq!(
+        pane.drawn().file_discard,
+        None,
+        "an edit that reads is not offered as one to discard"
+    );
+    drop(read_only);
+    pane.save_draft().expect("the save writes the edit");
+    assert!(edit_on_disk(&pane));
+}
+
+#[test]
+fn saving_a_refused_edit_says_the_line_that_does_not_read() {
+    let (mut pane, _held) = opened();
+    let text = broken(&pane);
+    type_and_pause(&mut pane, text);
+    let said = pane.save_draft().expect_err("the edit does not read");
+    assert!(said.contains("doesn't read"), "{said}");
+    assert!(said.contains("Line 3:"), "the line is named: {said}");
+}
+
+#[test]
+fn save_model_settles_the_file_view_first() {
+    let (mut pane, _held) = opened();
+    let disk = on_disk(&pane);
+    let text = broken(&pane);
+    type_and_pause(&mut pane, text.clone());
+    assert!(
+        pane.save_model(retail_model()).is_err(),
+        "a refused edit refuses the save"
+    );
+    assert_eq!(on_disk(&pane), disk, "nothing is written");
+    assert_eq!(pane.file_draft(), text, "the edit stays to be put right");
+}
+
+#[test]
+fn a_held_full_pass_retries_an_unwritten_edit_only_every_so_often() {
+    use brightfield_shell::model_pane::WRITE_RETRY_MS;
+    let (mut pane, _held) = opened();
+    let Some((read_only, _)) = unwritten_edit(&mut pane) else {
+        return;
+    };
+    pane.start_full_pass(Proposes(retail_model()));
+    // The pass answers at once; give its worker time to send.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(
+        pane.poll_discovery(0),
+        None,
+        "the write is tried, and fails"
+    );
+    drop(read_only);
+    assert_eq!(
+        pane.poll_discovery(WRITE_RETRY_MS - 1),
+        None,
+        "no write is tried again before the retry is due"
+    );
+    assert!(!edit_on_disk(&pane), "nothing was written yet");
+    assert!(pane.discovering(), "the pass still waits");
+    assert!(
+        pane.poll_discovery(WRITE_RETRY_MS).is_some(),
+        "once the retry is due, the edit is written and the pass folds in"
+    );
+    assert!(edit_on_disk(&pane));
 }

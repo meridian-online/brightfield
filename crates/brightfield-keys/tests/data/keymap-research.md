@@ -39,8 +39,14 @@ by the provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic /
 | `reload-spec` | `cmd-r` | 2 / 4 / 4 | cmd-r = reload (browser); bare `r` NOT bound (dirty-guard) |
 | `reload-data` | `cmd-shift-r` | 1 / 4 / 5 | cmd-shift-r = hard reload (browser convention); distinct chord from cmd-r's spec reload, since this re-reads the DATA file rather than the YAML |
 | `open-home` | `cmd-shift-h` | 3 / 5 / 4 | cmd-shift-h = home; free of the editor chord set; keeps your place under Continue |
+| `open` | `cmd-o` | 3 / 5 / 5 | cmd-o = open (universal Mac convention); global, so it reaches from any pane and a focused text field, where no field reads the chord; raises the door's Open picker |
+| `new-protocol` | `cmd-n` | 2 / 5 / 5 | cmd-n = new (universal Mac convention); global, so it reaches from any pane and a focused text field, where no field reads the chord; asks where to make the Protocol, then makes an empty one there |
+| `open-preferences` | `cmd-,` | 1 / 3 / 5 | cmd-, = preferences (universal Mac convention); global, so it reaches from any pane and a focused text field, where no field reads the chord; opens the sheet where the Protocols folder is chosen |
+| `quit` | `cmd-q` | 2 / 5 / 5 | cmd-q = quit (universal Mac convention); global, asks the close question over a draft |
 | `toggle-presentation` | `p` | 2 / 3 / 3 | `p` = present (shipped fixed point) |
 | `save-spec` | `cmd-s` | 3 / 5 / 5 | cmd-s = save (universal; shipped, editor-scoped) |
+| `save-protocol` | `cmd-s` | 4 / 5 / 5 | cmd-s = save (universal Mac convention); global, so it saves the Protocol from any pane and from a text field that does not read the chord; the editor's `save-spec` layers over it while the editor holds the keys, saving the buffer and then raising this |
+| `rename-protocol` | `f2` | 1 / 2 / 4 | f2 = rename (Windows Explorer, VS Code, most file managers); global, since no text field reads a function key; opens the locator band's name field, or a hovered front-door row's; cmd-r, the other candidate, is `reload-spec`'s |
 | `run-protocol` | `cmd-enter` | 3 / 3 / 5 | cmd-enter = run (notebook cells, SQL consoles); `cmd-r` is `reload-spec`'s, so the run takes the other run convention; global, so it reaches from the canvas as well as the ledger strip's Run control |
 | `copy-chart-picture` | `cmd-shift-c` | 2 / 4 / 4 | cmd-shift-c = copy as PNG (Figma); `cmd-c` stays the text fields' copy; global, as `export-chart-picture` is |
 | `export-chart-picture` | `cmd-shift-e` | 2 / 5 / 4 | cmd-shift-e = export (Figma's export chord); `cmd-e` is `toggle-focus`'s; global, so it reaches the chart under the pointer from any pane |
@@ -92,6 +98,7 @@ because they walk the graph's edges, not pixel geometry.
 | `protocol-drill-out` | `escape` | 4 / 4 / 5 | esc = pop one level (Esc ladder); breadcrumb tracks the pop |
 | `open-steps-sheet` | `shift-s` | 3 / 5 / 4 | `S` = steps sheet (VisiData sheet family); answers "where is my step list" |
 | `yank-address` | `y` | 3 / 5 / 4 | `y` = yank (vim); a Data verb — logged by longname + dotted address |
+| `remove-step` | `d d` | 2 / 5 / 5 | `d d` = delete the line (vim); doubled so a stray `d` removes nothing; `d d` again puts the step back; the Protocol context keeps it apart from the chart's `remove-mark` on `d` |
 
 > **Rename note.** The `z a` row was scored and recorded as `toggle-fold-family`, when the only thing
 > that folded was a parameterised family. The verb was later broadened to also open a `sql:` step's

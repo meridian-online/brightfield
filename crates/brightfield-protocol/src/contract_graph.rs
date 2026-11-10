@@ -24,8 +24,10 @@
 //!   dest that reaches no other export becomes the terminal **Dataset**;
 //!   `finetype_validate` is a shield on its guarded edge, never a node.
 //! - **Status.** An asset whose `produced_by` step was skipped/failed is not
-//!   materialised (its `row_count` is null) — flagged, and never re-kinded to
-//!   the Dataset sink. The `.json` is the authoritative complete step set; the
+//!   materialised — flagged, and not re-kinded to the Dataset sink. Its
+//!   `row_count` is whatever the record carries: arc measures the table a
+//!   step skipped as current left in place, so a skipped step's table has a
+//!   count, while one a failed step did not make is left uncounted. The `.json` is the authoritative complete step set; the
 //!   `.jsonl` stream ([`apply_stream`]) only overlays live per-step state.
 //! - **Order.** Contract assets arrive alphabetical; [`ContractView::order`]
 //!   is a deterministic topological order over the edges.
@@ -104,8 +106,10 @@ pub struct StepView {
 /// measurement-free.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssetMeta {
-    /// Row count when measured (`None` for a file, or a not-materialised
-    /// relation — disambiguate with `materialized`).
+    /// Row count when measured: `None` for a file, or a relation the record
+    /// carries no count for, such as one a failed step did not make. A table a
+    /// step skipped as current left in place is measured, so it has a count
+    /// though `materialized` is `false`.
     pub row_count: Option<u64>,
     /// `true` when the asset was actually produced: its producing step
     /// succeeded (or it is an external input). A skipped/failed producer leaves

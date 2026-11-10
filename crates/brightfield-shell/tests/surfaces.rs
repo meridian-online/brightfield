@@ -76,7 +76,7 @@
 use std::path::PathBuf;
 
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::capture::capture_png;
+use brightfield_shell::capture::{capture_png, capture_png_prepared};
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::compose_spec_in_mode;
 use brightfield_shell::protocol::load_protocol_offline;
@@ -803,15 +803,27 @@ fn the_crosshair_is_bounded_by_the_plot_under_the_pointer() {
 /// trusting it.
 ///
 /// `key` is the keystroke the shell reads off `brightfield_keys::registry()`
-/// for that overlay — `space`, `?` and `/` — so these are spellings of a
-/// binding the registry owns, not a second source for it.
+/// for that overlay — `space`, `?`, `/`, `cmd-n` and `cmd-,` — so these are
+/// spellings of a binding the registry owns, not a second source for it.
 struct OverlayCase {
     what: &'static str,
     area: &'static str,
     key: egui::Key,
+    /// Whether the keystroke is held with the command key, as `cmd-n` and
+    /// `cmd-,` are.
+    command: bool,
+    /// Whether the card sits on the narrow width rung rather than the default
+    /// one. The New Protocol chooser is a short list, so it asks for the
+    /// narrow card.
+    narrow: bool,
     /// Whether the overlay opens over the protocol graph rather than the
     /// chart. Jump-to-asset is drawn under `graph_on_canvas`.
     protocol: bool,
+    /// What opens the overlay instead of `key`, for one no keystroke opens:
+    /// the Which Protocol sheet opens when a data file that known Protocols
+    /// already read is pushed on the window's open queue, as a double-click in
+    /// Finder pushes one. `None` for the keystroke cases.
+    prepare: Option<fn(&mut MeridianApp)>,
 }
 
 /// Every overlay `MeridianApp::overlay_ui` can draw, on every surface it can
@@ -822,35 +834,177 @@ const OVERLAY_CASES: &[OverlayCase] = &[
         what: "the command palette over the chart",
         area: "bf-overlay-palette",
         key: egui::Key::Space,
+        command: false,
+        narrow: false,
         protocol: false,
+        prepare: None,
     },
     OverlayCase {
         what: "the keyboard help sheet over the chart",
         area: "bf-overlay-help",
         key: egui::Key::Questionmark,
+        command: false,
+        narrow: false,
         protocol: false,
+        prepare: None,
     },
     OverlayCase {
         what: "the command palette over the protocol graph",
         area: "bf-overlay-palette",
         key: egui::Key::Space,
+        command: false,
+        narrow: false,
         protocol: true,
+        prepare: None,
     },
     OverlayCase {
         what: "the keyboard help sheet over the protocol graph",
         area: "bf-overlay-help",
         key: egui::Key::Questionmark,
+        command: false,
+        narrow: false,
         protocol: true,
+        prepare: None,
     },
     OverlayCase {
         what: "jump-to-asset over the protocol graph",
         area: "bf-overlay-jump",
         key: egui::Key::Slash,
+        command: false,
+        narrow: false,
         protocol: true,
+        prepare: None,
+    },
+    OverlayCase {
+        what: "the New Protocol location chooser over the chart",
+        area: "bf-overlay-new-protocol",
+        key: egui::Key::N,
+        command: true,
+        narrow: true,
+        protocol: false,
+        prepare: None,
+    },
+    OverlayCase {
+        what: "the New Protocol location chooser over the protocol graph",
+        area: "bf-overlay-new-protocol",
+        key: egui::Key::N,
+        command: true,
+        narrow: true,
+        protocol: true,
+        prepare: None,
+    },
+    OverlayCase {
+        what: "the Preferences sheet over the chart",
+        area: "bf-overlay-preferences",
+        key: egui::Key::Comma,
+        command: true,
+        narrow: false,
+        protocol: false,
+        prepare: None,
+    },
+    OverlayCase {
+        what: "the Preferences sheet over the protocol graph",
+        area: "bf-overlay-preferences",
+        key: egui::Key::Comma,
+        command: true,
+        narrow: false,
+        protocol: true,
+        prepare: None,
+    },
+    OverlayCase {
+        what: "the Which Protocol sheet over the chart",
+        area: "bf-overlay-which-protocol",
+        key: egui::Key::Enter,
+        command: false,
+        narrow: false,
+        protocol: false,
+        prepare: Some(open_a_file_two_protocols_read),
+    },
+    OverlayCase {
+        what: "the Which Protocol sheet over the protocol graph",
+        area: "bf-overlay-which-protocol",
+        key: egui::Key::Enter,
+        command: false,
+        narrow: false,
+        protocol: true,
+        prepare: Some(open_a_file_two_protocols_read),
     },
 ];
 
+/// Push onto `app`'s open queue a data file two Protocols in the scratch
+/// Protocols folder read, which opens the Which Protocol sheet on the next
+/// frame. The two are records only, a manifest and the record of their source
+/// each, which is all the look for a file's Protocols reads; the file is never
+/// opened.
+fn open_a_file_two_protocols_read(app: &mut MeridianApp) {
+    static FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let file = FILE.get_or_init(|| {
+        let data = std::env::temp_dir().join(format!("bf-surf-data-{}", std::process::id()));
+        std::fs::create_dir_all(&data).expect("a scratch data folder");
+        let file = data.join("readings.csv");
+        std::fs::write(&file, "day,reading\n2026-01-05,5\n").expect("the data file");
+        let root = brightfield_shell::protocols_dir::root();
+        for name in ["readings", "readings-2"] {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).expect("a scratch Protocol");
+            std::fs::write(
+                dir.join("arcform.yaml"),
+                format!("name: {name}\nsteps: []\n"),
+            )
+            .expect("its manifest");
+            let record = serde_json::json!({
+                "dir": dir.to_string_lossy(),
+                "tables": [{
+                    "name": "readings",
+                    "file": file.to_string_lossy(),
+                    "part": null,
+                    "schema": null,
+                    "reader": "csv",
+                }],
+                "skipped": [],
+            });
+            std::fs::write(dir.join(".sources.json"), record.to_string()).expect("its sources");
+        }
+        file
+    });
+    app.open_queue()
+        .push(brightfield_shell::open_queue::OpenRequest::Path(
+            file.clone(),
+        ));
+}
+
 impl OverlayCase {
+    /// The press that opens this overlay: the key alone, or the key with the
+    /// command key held for the chords that carry it.
+    fn opening_keystroke(&self) -> Vec<egui::Event> {
+        if self.prepare.is_some() {
+            return Vec::new();
+        }
+        if !self.command {
+            return press(self.key, false);
+        }
+        [true, false]
+            .into_iter()
+            .map(|pressed| egui::Event::Key {
+                key: self.key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            })
+            .collect()
+    }
+
+    /// The width the card is meant to have, off the rung it sits on.
+    fn card_width(&self) -> f32 {
+        let t = &meridian_egui::TOKENS;
+        if self.narrow {
+            t.modal_width_narrow
+        } else {
+            t.modal_width_default
+        }
+    }
+
     /// A per-case, per-mode capture name. Two tests open the same case under
     /// the same name, so it is [`scratch`] that keeps their PNGs apart.
     fn tag(&self, mode: Mode, state: &str) -> String {
@@ -866,6 +1020,7 @@ impl OverlayCase {
     /// photographed — the same pairing `shell_capture` and `protocol_capture`
     /// use, so the rects read off it are the rects in the picture.
     fn boot(&self, mode: Mode) -> Boot {
+        hermetic_protocols_folder();
         if self.protocol {
             protocol_boot()
         } else {
@@ -879,8 +1034,27 @@ impl OverlayCase {
     /// The window with this overlay open, the same window with it closed, and
     /// the rect the card was given.
     fn open(&self, mode: Mode) -> OpenOverlay {
-        let script = vec![press(self.key, false)];
-        let (open, closed) = if self.protocol {
+        let script = vec![self.opening_keystroke()];
+        let (open, closed) = if let Some(prepare) = self.prepare {
+            let capture = |state: &str, prepare: fn(&mut MeridianApp)| {
+                let boot = self.boot(mode);
+                let size = boot.window_size();
+                let out = scratch(&self.tag(mode, state));
+                capture_png_prepared(
+                    boot,
+                    brightfield_shell::startup::default_layout(),
+                    mode,
+                    SCALE,
+                    size,
+                    &out,
+                    Vec::new(),
+                    prepare,
+                )
+                .unwrap_or_else(|e| panic!("capture {}: {e}", self.what));
+                read_rgba(&out)
+            };
+            (capture("open", prepare), capture("closed", |_| {}))
+        } else if self.protocol {
             (
                 protocol_capture(mode, &self.tag(mode, "open"), script),
                 protocol_capture(mode, &self.tag(mode, "closed"), Vec::new()),
@@ -920,6 +1094,9 @@ impl OverlayCase {
         let boot = self.boot(mode);
         let (w, h) = boot.window_size();
         let mut app = MeridianApp::headless(boot, mode);
+        if let Some(prepare) = self.prepare {
+            prepare(&mut app);
+        }
         let ctx = egui::Context::default();
         let screen = egui::vec2(w, h);
         let raw = |events: Vec<egui::Event>| {
@@ -937,7 +1114,7 @@ impl OverlayCase {
             input
         };
         let _ = ctx.run_ui(raw(Vec::new()), |ui| app.draw(ui));
-        let _ = ctx.run_ui(raw(press(self.key, false)), |ui| app.draw(ui));
+        let _ = ctx.run_ui(raw(self.opening_keystroke()), |ui| app.draw(ui));
         for _ in 0..SETTLE_CAP {
             let out = ctx.run_ui(raw(Vec::new()), |ui| app.draw(ui));
             if !out
@@ -957,6 +1134,26 @@ impl OverlayCase {
                 )
             })
     }
+}
+
+/// Point the Protocols folder at an empty scratch folder for this process, so
+/// the New Protocol chooser and the Preferences sheet list and name the same
+/// folder on every machine rather than reading the home directory. The Which
+/// Protocol cases write two record-only Protocols into it
+/// (`open_a_file_two_protocols_read`); the New Protocol chooser lists the
+/// folder's groups and not its Protocols, so its card is unchanged by them.
+fn hermetic_protocols_folder() {
+    static FOLDER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let folder = FOLDER.get_or_init(|| {
+        // Deep and long on purpose, as a macOS per-user temp path is: the Preferences sheet must
+        // keep its width rung whatever the folder's path, so it elides the path's middle.
+        let dir = std::env::temp_dir()
+            .join("a-long-folder-name-for-the-surfaces-test")
+            .join(format!("bf-surf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch Protocols folder");
+        dir
+    });
+    std::env::set_var(brightfield_shell::protocols_dir::PROTOCOLS_DIR_VAR, folder);
 }
 
 /// The settle budget the layout passes here use. It mirrors
@@ -1207,7 +1404,6 @@ fn every_modal_backdrop_is_exactly_the_scrim_token_over_the_page() {
 /// obscurely.
 #[test]
 fn the_modal_card_rect_is_the_card() {
-    let t = &meridian_egui::TOKENS;
     for case in OVERLAY_CASES {
         let card = case.card_rect(Mode::Light);
         let (w, h) = case.boot(Mode::Light).window_size();
@@ -1218,12 +1414,12 @@ fn the_modal_card_rect_is_the_card() {
             case.what
         );
         assert!(
-            (card.width() - t.modal_width_default).abs() <= 2.0,
-            "{}: the card is {} wide against the default modal width rung of \
-             {}, so the rect is not the card frame",
+            (card.width() - case.card_width()).abs() <= 2.0,
+            "{}: the card is {} wide against its modal width rung of {}, so \
+             the rect is not the card frame",
             case.what,
             card.width(),
-            t.modal_width_default
+            case.card_width()
         );
     }
 }

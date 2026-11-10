@@ -502,6 +502,29 @@ pub fn version_words(change: &VersionChange, tile_of: &dyn Fn(&str) -> String) -
     }
 }
 
+/// A version's *what changed* with the steps it kept after the chart, for a
+/// close without saving that dropped a grid view or a typed statement: each in
+/// the close question's words, after the chart's change, or in its place when
+/// the chart itself did not change.
+fn with_kept_steps(
+    words: String,
+    change: &VersionChange,
+    kept: &[brightfield_protocol::PendingStep],
+) -> String {
+    if kept.is_empty() {
+        return words;
+    }
+    let steps = kept
+        .iter()
+        .map(|step| step.words.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    match change {
+        VersionChange::Changes(changes) if changes.is_empty() => steps,
+        _ => format!("{words}; {steps}"),
+    }
+}
+
 /// A version's *kind*: `saved` for a save, `before a write` for the text the
 /// store recorded before a write replaced it, and [`CLOSED_UNSAVED`] for the
 /// chart a window closed without saving.
@@ -588,6 +611,11 @@ pub enum Listing {
     },
 }
 
+/// What the row for the change not yet saved was read from, and what it reads:
+/// the version stepped back to, the edits held, the removals in words, and the
+/// row's words.
+type UnsavedRead = (Option<String>, Vec<ChartEdit>, Vec<String>, String);
+
 /// The ledger's Versions panel's state: what it lists and when it last listed.
 #[derive(Debug)]
 pub struct Versions {
@@ -598,8 +626,12 @@ pub struct Versions {
     stale: bool,
     listing: Listing,
     /// What the change not yet saved reads, and what it was read from: the
-    /// version the chart was stepped back to, by its id, and the edits held.
-    unsaved: Option<(Option<String>, Vec<ChartEdit>, String)>,
+    /// version the chart was stepped back to, by its id, the edits held, and
+    /// the steps removed and not yet saved, in words.
+    unsaved: Option<UnsavedRead>,
+    /// The steps removed from the spine and not yet saved, in words, as the
+    /// window last handed them over ([`Self::set_removed`]).
+    removed: Vec<String>,
     /// Where each row drew in the last frame, the unsaved row first when it
     /// drew.
     drawn: Vec<egui::Rect>,
@@ -628,6 +660,7 @@ impl Default for Versions {
             stale: false,
             listing: Listing::NoSource,
             unsaved: None,
+            removed: Vec::new(),
             drawn: Vec::new(),
             cursor: None,
             step_back_drawn: None,
@@ -654,6 +687,13 @@ impl Versions {
         self.unsaved = None;
     }
 
+    /// Hand over the steps removed from the spine and not yet saved, in words,
+    /// for the row of the change not yet saved to name at the next
+    /// [`Self::sync`].
+    pub fn set_removed(&mut self, removed: Vec<String>) {
+        self.removed = removed;
+    }
+
     /// What the panel has to say as of the last [`Self::sync`].
     #[must_use]
     pub fn listing(&self) -> &Listing {
@@ -664,7 +704,7 @@ impl Versions {
     /// the chart is saved.
     #[must_use]
     pub fn unsaved_words(&self) -> Option<&str> {
-        self.unsaved.as_ref().map(|(_, _, words)| words.as_str())
+        self.unsaved.as_ref().map(|(_, _, _, words)| words.as_str())
     }
 
     /// The version the cursor is on, by its id: `None` with the chart drawn as
@@ -708,7 +748,9 @@ impl Versions {
     }
 
     /// The text the store recorded for the version `id` of the panel's chart
-    /// file, or why it cannot be read.
+    /// file, without the steps a close without saving carried after it
+    /// ([`brightfield_protocol::without_pending_steps`]), or why it cannot be
+    /// read.
     ///
     /// # Errors
     ///
@@ -725,9 +767,13 @@ impl Versions {
             .source
             .as_ref()
             .ok_or_else(|| "no store holds this chart's versions".to_string())?;
+        // The chart's own text: the steps a close without saving carried after it are the
+        // version's to list, not the chart's, and a step back that kept them would write them
+        // into the chart file on the next Save.
         source
             .store
             .read_version(&source.file, id)
+            .map(|text| brightfield_protocol::without_pending_steps(&text))
             .map_err(|e| e.reason().to_string())
     }
 
@@ -806,14 +852,29 @@ impl Versions {
         let read = self
             .unsaved
             .as_ref()
-            .map(|(was, edits, _)| (was.as_deref(), edits.as_slice()));
-        if held.is_empty() && stepped.is_none() {
+            .map(|(was, edits, removed, _)| (was.as_deref(), edits.as_slice(), removed.as_slice()));
+        let removed = self.removed.as_slice();
+        if held.is_empty() && stepped.is_none() && removed.is_empty() {
             self.unsaved = None;
-        } else if read != Some((stepped, held)) {
+        } else if read != Some((stepped, held, removed)) {
+            // A removal is a change to the Protocol rather than to the chart,
+            // so it is named after the chart's changes, as a close keeps it.
+            let words = if held.is_empty() && stepped.is_none() {
+                removed.join("; ")
+            } else if removed.is_empty() {
+                change_words(&unsaved(), tile_of)
+            } else {
+                format!(
+                    "{}; {}",
+                    change_words(&unsaved(), tile_of),
+                    removed.join("; ")
+                )
+            };
             self.unsaved = Some((
                 stepped.map(str::to_string),
                 held.to_vec(),
-                change_words(&unsaved(), tile_of),
+                removed.to_vec(),
+                words,
             ));
         }
     }
@@ -854,7 +915,7 @@ impl Versions {
                 kind: kind_words(v.kind).to_string(),
                 who: who_words(&v.who),
                 changed: if v.on_this_machine {
-                    version_words(&v.change, tile_of)
+                    with_kept_steps(version_words(&v.change, tile_of), &v.change, &v.kept)
                 } else {
                     NOT_ON_THIS_MACHINE.to_string()
                 },

@@ -167,14 +167,16 @@ pub fn chart_palette_verbs(saveable: bool) -> Vec<&'static str> {
 /// it on. A row that confirms and does nothing is the row this keeps out, as
 /// [`chart_palette_verbs`] keeps one out of the chart palette;
 /// `every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen`
-/// chooses each row it leaves in.
+/// chooses each row it leaves in. `remove-step` is offered where `removes_step`
+/// says the selected asset's step can be removed, so a load is not offered it.
 #[must_use]
-pub fn protocol_palette_verbs(puts_column: bool) -> Vec<&'static str> {
+pub fn protocol_palette_verbs(puts_column: bool, removes_step: bool) -> Vec<&'static str> {
     registry()
         .iter()
         .filter(|v| v.applies_at(Altitude::Protocol))
         .map(|v| v.longname)
         .filter(|v| puts_column || crate::protocol::put_column_channel(v).is_none())
+        .filter(|v| removes_step || *v != crate::protocol::REMOVE_STEP)
         .collect()
 }
 
@@ -764,8 +766,16 @@ pub enum CloseAnswer {
     KeepEditing,
 }
 
-/// The headline of the question, the title row of its card.
+/// The headline of the question when only the chart holds unsaved edits, the title row of its
+/// card.
 pub const CLOSE_QUESTION_TITLE: &str = "Save the chart before closing?";
+
+/// The headline of the question when only the Protocol holds unsaved edits: a step written,
+/// corrected or removed, a grid view not yet recorded, or the model.
+pub const CLOSE_PROTOCOL_QUESTION_TITLE: &str = "Save the Protocol before closing?";
+
+/// The headline of the question when the Protocol and its chart both hold unsaved edits.
+pub const CLOSE_BOTH_QUESTION_TITLE: &str = "Save the Protocol and its chart before closing?";
 
 /// Each answer, its label and the key beside it, in the order they are drawn:
 /// Enter, D and Esc. The keys are the accepted design's and provisional.
@@ -774,6 +784,50 @@ pub const CLOSE_ANSWERS: [(CloseAnswer, &str, &str); 3] = [
     (CloseAnswer::CloseWithoutSaving, "Close without saving", "D"),
     (CloseAnswer::KeepEditing, "Keep editing", "Esc"),
 ];
+
+/// The headline of the question asked before a rename of the Protocol.
+pub const RENAME_QUESTION_TITLE: &str = "Save before renaming?";
+
+/// The headline of the question asked before the Protocol's folder is moved.
+pub const MOVE_QUESTION_TITLE: &str = "Save before moving?";
+
+/// The headline of the question asked before a source is added to the Protocol, which replaces
+/// what its canvas shows.
+pub const ADD_SOURCE_QUESTION_TITLE: &str = "Save before adding a source?";
+
+/// The headline of the question asked before New Protocol makes a Protocol in the window's place.
+pub const MAKE_QUESTION_TITLE: &str = "Save before making a new Protocol?";
+
+/// The headline of the question asked before the open Protocol is moved into a new Protocols
+/// folder chosen in Preferences, with the others in the old one.
+pub const MOVE_TO_FOLDER_QUESTION_TITLE: &str =
+    "Save before moving it to the new Protocols folder?";
+
+/// The headline of the question asked before the Protocol's data is read again from its file,
+/// which opens the Protocol afresh and replaces what its canvas shows.
+pub const RELOAD_QUESTION_TITLE: &str = "Save before reloading?";
+
+/// What the close question is asked before: the window closing or the Protocol left, or its
+/// folder renamed or moved, after which the window opens it again where it now is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AskedBefore {
+    /// Closing the window, going Home, opening another Protocol or quitting.
+    #[default]
+    Leaving,
+    /// Renaming the Protocol.
+    Renaming,
+    /// Moving the Protocol's folder.
+    Moving,
+    /// Adding a source to the Protocol.
+    AddingSource,
+    /// Making a new Protocol, which takes the window's place.
+    Making,
+    /// Moving the open Protocol into the new Protocols folder with the others. Keeping editing
+    /// leaves it where it is, and the others still move.
+    MovingToNewFolder,
+    /// Reading the Protocol's data again from its file, which opens it afresh.
+    Reloading,
+}
 
 /// How many rows the list of unsaved edits takes at most: the two the accepted
 /// frame draws, so the card is no taller with more edits than it is there.
@@ -793,24 +847,128 @@ pub struct CloseQuestion {
     pub file: String,
     /// Each unsaved edit in the shelf's words, led by its tile, as the
     /// Versions panel words a change: `Map · x axis: longitude →
-    /// median_income`.
+    /// median_income`. The chart's edits come first, then the Protocol's.
     pub edits: Vec<String>,
+    /// How many of [`Self::edits`], from the first, are edits to the chart; the rest change the
+    /// Protocol: a SQL step, a grid view, a removed step or the model.
+    pub chart_edits: usize,
+    /// The Protocol's name, as the locator band names it, which the headline names when the
+    /// Protocol holds an edit.
+    pub protocol: String,
     /// Why a close without saving could not keep the chart, once one has been
     /// tried: the next one closes with nothing kept.
     pub not_kept: Option<String>,
     /// The answer that held the keyboard focus when the card last drew, which
     /// Enter gives: `None` before the card has drawn.
     pub focused: Option<CloseAnswer>,
+    /// What the question is asked before, which words its title and answers.
+    pub before: AskedBefore,
 }
 
 impl CloseQuestion {
-    /// The line under the title: the file and how many edits are not saved.
+    /// The title row of the card: [`CLOSE_QUESTION_TITLE`] before leaving, and the rename's or
+    /// the move's own before those.
+    #[must_use]
+    pub fn title(&self) -> &'static str {
+        match self.before {
+            AskedBefore::Leaving => match (self.chart_edits > 0, self.protocol_edits() > 0) {
+                (false, true) => CLOSE_PROTOCOL_QUESTION_TITLE,
+                (true, true) => CLOSE_BOTH_QUESTION_TITLE,
+                _ => CLOSE_QUESTION_TITLE,
+            },
+            AskedBefore::Renaming => RENAME_QUESTION_TITLE,
+            AskedBefore::Moving => MOVE_QUESTION_TITLE,
+            AskedBefore::AddingSource => ADD_SOURCE_QUESTION_TITLE,
+            AskedBefore::Making => MAKE_QUESTION_TITLE,
+            AskedBefore::MovingToNewFolder => MOVE_TO_FOLDER_QUESTION_TITLE,
+            AskedBefore::Reloading => RELOAD_QUESTION_TITLE,
+        }
+    }
+
+    /// The key chip beside the answer `which`, whose key is `key` in [`CLOSE_ANSWERS`]. Keep editing
+    /// has no chip before the move into a new Protocols folder, where Esc cancels the whole move
+    /// rather than keeping editing.
+    #[must_use]
+    pub fn answer_key(&self, which: CloseAnswer, key: &'static str) -> Option<&'static str> {
+        (!(self.before == AskedBefore::MovingToNewFolder && which == CloseAnswer::KeepEditing))
+            .then_some(key)
+    }
+
+    /// The label of the answer `which`: [`CLOSE_ANSWERS`]' before leaving, and before a rename or
+    /// a move the words of what it does there. Not saving still keeps the edits as a version, and
+    /// then renames or moves.
+    #[must_use]
+    pub fn answer_label(&self, which: CloseAnswer) -> &'static str {
+        match (self.before, which) {
+            (AskedBefore::Renaming, CloseAnswer::SaveAndClose) => "Save and rename",
+            (AskedBefore::Renaming, CloseAnswer::CloseWithoutSaving) => {
+                "Keep as a version and rename"
+            }
+            (AskedBefore::Moving, CloseAnswer::SaveAndClose) => "Save and move",
+            (AskedBefore::Moving, CloseAnswer::CloseWithoutSaving) => "Keep as a version and move",
+            (AskedBefore::AddingSource, CloseAnswer::SaveAndClose) => "Save and add",
+            (AskedBefore::AddingSource, CloseAnswer::CloseWithoutSaving) => {
+                "Keep as a version and add"
+            }
+            (AskedBefore::Making, CloseAnswer::SaveAndClose) => "Save and make",
+            (AskedBefore::Making, CloseAnswer::CloseWithoutSaving) => "Keep as a version and make",
+            (AskedBefore::MovingToNewFolder, CloseAnswer::SaveAndClose) => "Save and move",
+            (AskedBefore::MovingToNewFolder, CloseAnswer::CloseWithoutSaving) => {
+                "Keep as a version and move"
+            }
+            (AskedBefore::MovingToNewFolder, CloseAnswer::KeepEditing) => {
+                "Keep editing, and leave it"
+            }
+            (AskedBefore::Reloading, CloseAnswer::SaveAndClose) => "Save and reload",
+            (AskedBefore::Reloading, CloseAnswer::CloseWithoutSaving) => {
+                "Keep as a version and reload"
+            }
+            _ => CLOSE_ANSWERS
+                .iter()
+                .find(|(answer, _, _)| *answer == which)
+                .map_or("", |(_, label, _)| label),
+        }
+    }
+
+    /// How many of [`Self::edits`] change the Protocol rather than its chart.
+    #[must_use]
+    pub fn protocol_edits(&self) -> usize {
+        self.edits.len().saturating_sub(self.chart_edits)
+    }
+
+    /// The line under the title: what holds the edits that are not saved, and how many of each
+    /// kind. A chart's edits are counted against its file and a Protocol's against the Protocol,
+    /// so a SQL step edited is never called a chart edit.
     #[must_use]
     pub fn headline(&self) -> String {
-        match self.edits.len() {
-            0 => format!("{} holds a chart edit that is not saved.", self.file),
-            1 => format!("{} has 1 chart edit that is not saved.", self.file),
-            n => format!("{} has {n} chart edits that are not saved.", self.file),
+        let count = |n: usize, kind: &str| {
+            if n == 1 {
+                format!("1 {kind} edit")
+            } else {
+                format!("{n} {kind} edits")
+            }
+        };
+        match (self.chart_edits, self.protocol_edits()) {
+            (0, 0) => format!("{} holds a chart edit that is not saved.", self.file),
+            (charts, 0) => format!(
+                "{} has {} that {} not saved.",
+                self.file,
+                count(charts, "chart"),
+                if charts == 1 { "is" } else { "are" }
+            ),
+            (0, steps) => format!(
+                "{} has {} that {} not saved.",
+                self.protocol,
+                count(steps, "Protocol"),
+                if steps == 1 { "is" } else { "are" }
+            ),
+            (charts, steps) => format!(
+                "{} has {}, and {} in {}, that are not saved.",
+                self.protocol,
+                count(steps, "Protocol"),
+                count(charts, "chart"),
+                self.file
+            ),
         }
     }
 
@@ -917,7 +1075,8 @@ pub fn close_question_body(ui: &mut egui::Ui, question: &mut CloseQuestion) -> O
     let mut focused = None;
     let mut save = None;
     ui.horizontal(|ui| {
-        for (i, (which, label, key)) in CLOSE_ANSWERS.into_iter().enumerate() {
+        for (i, (which, _, key)) in CLOSE_ANSWERS.into_iter().enumerate() {
+            let label = question.answer_label(which);
             if i > 0 {
                 ui.add_space(control_gap);
             }
@@ -938,8 +1097,10 @@ pub fn close_question_body(ui: &mut egui::Ui, question: &mut CloseQuestion) -> O
             if which == CloseAnswer::SaveAndClose {
                 save = Some(button.clone());
             }
-            ui.add_space(chip_gap);
-            meridian_egui::key_chip(ui, key);
+            if let Some(key) = question.answer_key(which, key) {
+                ui.add_space(chip_gap);
+                meridian_egui::key_chip(ui, key);
+            }
             if button.clicked() {
                 answer = Some(which);
             }
@@ -963,6 +1124,43 @@ pub fn close_question_body(ui: &mut egui::Ui, question: &mut CloseQuestion) -> O
 mod tests {
     use super::*;
     use brightfield_spec::analysis::ComponentPath;
+
+    fn question(edits: &[&str], chart_edits: usize) -> CloseQuestion {
+        CloseQuestion {
+            file: "panels/sales.yaml".to_string(),
+            edits: edits.iter().map(|e| (*e).to_string()).collect(),
+            chart_edits,
+            protocol: "sales".to_string(),
+            not_kept: None,
+            focused: None,
+            before: super::AskedBefore::Leaving,
+        }
+    }
+
+    /// Chart edits are counted against the chart's file, and a draft that holds both kinds counts
+    /// each against what it changes.
+    #[test]
+    fn the_close_question_counts_each_kind_of_edit_against_what_it_changes() {
+        let charts = question(&["Map \u{b7} x axis: a \u{2192} b"], 1);
+        assert_eq!(charts.title(), CLOSE_QUESTION_TITLE);
+        assert_eq!(
+            charts.headline(),
+            "panels/sales.yaml has 1 chart edit that is not saved."
+        );
+        let both = question(
+            &[
+                "Map \u{b7} x axis: a \u{2192} b",
+                "Map \u{b7} y axis: c \u{2192} d",
+                "SQL step \u{b7} sales_sql",
+            ],
+            2,
+        );
+        assert_eq!(both.title(), CLOSE_BOTH_QUESTION_TITLE);
+        assert_eq!(
+            both.headline(),
+            "sales has 1 Protocol edit, and 2 chart edits in panels/sales.yaml, that are not saved."
+        );
+    }
 
     // -- is_statement -------------------------------------------------------
 

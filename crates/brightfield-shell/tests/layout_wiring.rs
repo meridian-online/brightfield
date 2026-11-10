@@ -348,7 +348,17 @@ fn a_layout_that_moved_is_written_and_reads_back() {
     let target = app
         .front_door_card_rect(brightfield_shell::starts::CROSSWALK_RUN)
         .expect("the front door drew a card for the run of the crosswalk");
-    run(&mut app, &ctx, vec![click_at(target.center())]);
+    //
+    // The door now stacks its Protocols above the starts, so on the harness's
+    // small window the card runs past the bottom edge and its centre sits on
+    // it. The press goes where the card is still on screen.
+    let visible = target.intersect(SCREEN);
+    assert!(
+        visible.height() > 20.0,
+        "the run's card is {target:?} on a {SCREEN:?} window, with too little \
+         of it on screen to press"
+    );
+    run(&mut app, &ctx, vec![click_at(visible.center())]);
     settle(&mut app, &ctx, 2);
     assert!(app.graph_on_canvas());
     assert!(app.protocol_model().has_assets());
@@ -1010,4 +1020,69 @@ fn a_restored_session_is_titled_for_the_surface_it_draws() {
         described.starts_with("protocol "),
         "the boot summary describes something that was not loaded: {described}"
     );
+}
+
+/// A Protocol renamed or moved keeps its row: every recent and the restored document naming a
+/// path inside the old folder name the same path inside the new one, at the same place in the list
+/// and with the grid's state it had, and a row for anything else is left as it was.
+#[test]
+fn a_renamed_protocols_row_and_restore_follow_it() {
+    let mut layout = default_layout();
+    layout.remember(
+        "/p/other/arcform.yaml",
+        "other",
+        RunState::NeverRun,
+        GridLayout::Rows,
+        brightfield_workbench::GridSpot::Canvas,
+        1_000,
+    );
+    layout.remember(
+        "/p/sales/arcform.yaml",
+        "sales",
+        RunState::Fresh,
+        GridLayout::Columns,
+        brightfield_workbench::GridSpot::Ledger,
+        2_000,
+    );
+    layout.opened = Some("/p/sales/arcform.yaml".to_string());
+
+    let count = layout.repoint(
+        std::path::Path::new("/p/sales"),
+        std::path::Path::new("/q/revenue"),
+    );
+
+    assert_eq!(count, 2, "the row and the restored document");
+    assert_eq!(layout.recents[0].id, "/q/revenue/arcform.yaml");
+    assert_eq!(layout.recents[0].grid_layout, GridLayout::Columns);
+    assert_eq!(layout.recents[0].run, RunState::Fresh);
+    assert_eq!(layout.recents[1].id, "/p/other/arcform.yaml");
+    assert_eq!(layout.opened.as_deref(), Some("/q/revenue/arcform.yaml"));
+    assert_eq!(
+        layout.repoint(
+            std::path::Path::new("/p/sales-2"),
+            std::path::Path::new("/x")
+        ),
+        0,
+        "a folder whose name only starts the same is another folder"
+    );
+}
+
+/// A Protocol renamed or moved while it is the one the next launch reopens is reopened at its new
+/// folder.
+#[test]
+fn a_renamed_protocol_to_reopen_follows_it() {
+    let mut layout = default_layout();
+    layout.reopen_protocol_at(std::path::Path::new("/p/sales"));
+
+    let count = layout.repoint(
+        std::path::Path::new("/p/sales"),
+        std::path::Path::new("/q/revenue"),
+    );
+
+    assert_eq!(count, 1);
+    assert_eq!(
+        layout.reopen_protocol.as_deref(),
+        Some(std::path::Path::new("/q/revenue"))
+    );
+    assert_eq!(layout.opened, None, "and no start is named beside it");
 }

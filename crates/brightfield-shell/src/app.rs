@@ -60,7 +60,6 @@ use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::nearest::{NearestProbe, NearestRead};
 use brightfield_engine::{AxisExtent, ColumnProfile, NavigationExtent};
 use brightfield_keys::BindingContext;
-use brightfield_model::panel_capture::panel_file;
 use brightfield_protocol::{write_chart_edit, ChartVersions, HistoryStore, NotRecorded};
 use brightfield_render::canvas_host::{ChartSurface, Color, PixelSize};
 use brightfield_spec::analysis::ComponentPath;
@@ -791,6 +790,14 @@ pub enum PendingWork {
     View,
     /// The kept statement of this name.
     Typed(String),
+    /// The removal of the recorded step of this name.
+    Remove(String),
+}
+
+/// How a step removed and not yet saved is named to a reader: in the close
+/// question, and on the version a close without saving keeps.
+fn removal_words(step: &str) -> String {
+    format!("Removed step \u{b7} {step}")
 }
 
 /// The chart view's **document**: the composited dashboard, the canvas it
@@ -943,8 +950,37 @@ pub struct ChartDoc {
     typed: Vec<crate::typed_sql::TypedStep>,
     /// The order stamp each of [`Self::typed`] was kept with, index for index.
     typed_stamps: Vec<u64>,
+    /// **The recorded steps removed from the spine and not yet saved**, each
+    /// with the order stamp it was removed with. A removal is a draft like a
+    /// kept statement: the step stays in `arcform.yaml`, struck through on the
+    /// spine, until a Save takes it out, so any marks the document unsaved;
+    /// cleared when the document is replaced.
+    removing: Vec<(String, u64)>,
     /// The order stamp the grid view was last applied with.
     grid_view_stamp: u64,
+    /// **The YAML editor's buffer, while it holds edits its file does not**:
+    /// the file it edits and its text. The editor holds its buffer as pane
+    /// state, which the window cannot reach, so the editor leaves it here
+    /// whenever it changes, and a close without saving keeps it as a version
+    /// ([`Self::editor_buffer`]).
+    editor_buffer: Option<(std::path::PathBuf, String)>,
+    /// Whether the next `save-spec` the editor performs is the window's, made
+    /// away from the editor, and what that save did once it has run: the
+    /// window cannot reach the editor's report any other way.
+    editor_save_ask: bool,
+    editor_save_report: Option<crate::editor::SaveReport>,
+    /// **Whether a view applied to the grid is a step of the Protocol**, a
+    /// draft a Save records: true for a table's rows, false for rows no
+    /// manifest step makes, such as a model's join, where a view only shows
+    /// the rows and there is no table to record it on. Set again whenever the
+    /// document is replaced.
+    views_are_steps: bool,
+    /// **The chart file this document was opened past without adopting it**, because it would
+    /// not parse or load ([`Self::set_unread_chart`]): the document shows the generated dashboard
+    /// instead. A Save to that file writes the generated text with the edits placed into it, and
+    /// keeps the unread text as the version it replaces; nothing is placed into the unread text.
+    /// Cleared by the Save that replaces it, and whenever the document is replaced.
+    unread_chart: Option<std::path::PathBuf>,
     /// The next order stamp: one counter for kept statements and applied grid
     /// views, so what was made first can be recorded first.
     next_stamp: u64,
@@ -1144,7 +1180,7 @@ pub struct ChartDoc {
     shelf_refusal: Option<String>,
     /// The edits made to the live spec since the last Save, in the order they
     /// were made — what [`Self::has_unsaved_edit`] reads, and what
-    /// [`Self::save_chart_beside`] places into the text on disk.
+    /// [`Self::save_chart_at`] places into the text on disk.
     ///
     /// **The edits, and not the spec.** The live spec is what the picture was
     /// composed from and holds none of the comments in the file it came from;
@@ -1253,7 +1289,7 @@ struct CanvasKey {
     dark: bool,
 }
 
-/// Why [`ChartDoc::save_chart_beside`] did not write the chart. Each variant's
+/// Why [`ChartDoc::save_chart_at`] did not write the chart. Each variant's
 /// [`fmt::Display`](std::fmt::Display) is the reason the window says.
 #[derive(Debug)]
 pub enum ChartSaveError {
@@ -1470,7 +1506,13 @@ impl ChartDoc {
             pending_settled: false,
             typed: Vec::new(),
             typed_stamps: Vec::new(),
+            removing: Vec::new(),
             grid_view_stamp: 0,
+            editor_buffer: None,
+            editor_save_ask: false,
+            editor_save_report: None,
+            views_are_steps: true,
+            unread_chart: None,
             next_stamp: 0,
             grid_foot: crate::grid_foot::FootState::default(),
             grid_preview: None,
@@ -1544,7 +1586,13 @@ impl ChartDoc {
             pending_settled: false,
             typed: Vec::new(),
             typed_stamps: Vec::new(),
+            removing: Vec::new(),
             grid_view_stamp: 0,
+            editor_buffer: None,
+            editor_save_ask: false,
+            editor_save_report: None,
+            views_are_steps: true,
+            unread_chart: None,
             next_stamp: 0,
             grid_foot: crate::grid_foot::FootState::default(),
             grid_preview: None,
@@ -1675,9 +1723,12 @@ impl ChartDoc {
         self.grid_cursor_reveal = false;
         self.grid_view = brightfield_engine::RowsView::default();
         self.grid_condition_held = None;
+        self.views_are_steps = true;
+        self.unread_chart = None;
         self.pending_settled = false;
         self.typed.clear();
         self.typed_stamps.clear();
+        self.removing.clear();
         self.grid_foot = crate::grid_foot::FootState::default();
         self.grid_preview = None;
         self.grid_layout_switch = None;
@@ -1744,7 +1795,7 @@ impl ChartDoc {
     /// previewing and has not kept ([`Self::preview_shelf_column`]), nor a
     /// version the Versions panel's cursor is drawing
     /// ([`Self::move_version_cursor`]). A Save that wrote the edits clears it
-    /// ([`Self::save_chart_beside`]); one that could not leaves it.
+    /// ([`Self::save_chart_at`]); one that could not leaves it.
     #[must_use]
     pub const fn has_unsaved_edit(&self) -> bool {
         !self.pending_edits.is_empty() || self.stepped_back.is_some()
@@ -1758,12 +1809,53 @@ impl ChartDoc {
 
     /// Whether the document holds work no file does: an edit made since the
     /// last Save ([`Self::has_unsaved_edit`]), an applied grid view not yet
-    /// recorded ([`Self::grid_view_unrecorded`]), or a statement kept from the
-    /// palette ([`Self::typed_steps`]). The one definition every reader of
+    /// recorded ([`Self::grid_view_unrecorded`]), a statement kept from the
+    /// palette ([`Self::typed_steps`]), or a step removed from the spine
+    /// ([`Self::removing_steps`]). The one definition every reader of
     /// *unsaved* shares.
     #[must_use]
     pub fn has_unsaved_work(&self) -> bool {
-        self.has_unsaved_edit() || self.grid_view_unrecorded() || !self.typed.is_empty()
+        self.has_unsaved_edit()
+            || self.grid_view_unrecorded()
+            || !self.typed.is_empty()
+            || !self.removing.is_empty()
+    }
+
+    /// Record the YAML editor's unsaved buffer, or that it has none: the
+    /// editor's to say, whenever its buffer changes.
+    pub(crate) fn set_editor_buffer(&mut self, buffer: Option<(std::path::PathBuf, String)>) {
+        self.editor_buffer = buffer;
+    }
+
+    /// Mark the next save the editor performs as the window's, made away from
+    /// the editor ([`crate::editor`]'s `save-spec`), and clear any report left.
+    pub(crate) fn ask_editor_save(&mut self) {
+        self.editor_save_ask = true;
+        self.editor_save_report = None;
+    }
+
+    /// Whether the save the editor is performing was asked for by the window,
+    /// clearing the ask.
+    pub(crate) fn take_editor_save_ask(&mut self) -> bool {
+        std::mem::take(&mut self.editor_save_ask)
+    }
+
+    /// Leave what a save the window asked for did, for the window to read.
+    pub(crate) fn set_editor_save_report(&mut self, report: crate::editor::SaveReport) {
+        self.editor_save_report = Some(report);
+    }
+
+    /// Take what the save the window asked the editor for did, if it ran.
+    pub(crate) fn take_editor_save_report(&mut self) -> Option<crate::editor::SaveReport> {
+        self.editor_save_ask = false;
+        self.editor_save_report.take()
+    }
+
+    /// The YAML editor's buffer while it holds edits its file does not: the
+    /// file it edits and its text.
+    #[must_use]
+    pub fn editor_buffer(&self) -> Option<&(std::path::PathBuf, String)> {
+        self.editor_buffer.as_ref()
     }
 
     /// The statements kept from the palette and not yet saved, in the order
@@ -1794,8 +1886,8 @@ impl ChartDoc {
     }
 
     /// **The work a Save records, in the order it was made**: the applied grid
-    /// view, while some part of it is unrecorded, and each kept statement, by
-    /// the order stamps they were made with.
+    /// view, while some part of it is unrecorded, each kept statement and each
+    /// step removed, by the order stamps they were made with.
     #[must_use]
     pub fn pending_in_order(&self) -> Vec<PendingWork> {
         let mut stamped: Vec<(u64, PendingWork)> = self
@@ -1803,6 +1895,11 @@ impl ChartDoc {
             .iter()
             .zip(&self.typed_stamps)
             .map(|(step, stamp)| (*stamp, PendingWork::Typed(step.name.clone())))
+            .chain(
+                self.removing
+                    .iter()
+                    .map(|(step, stamp)| (*stamp, PendingWork::Remove(step.clone()))),
+            )
             .collect();
         if self.grid_view_unrecorded() {
             stamped.push((self.grid_view_stamp, PendingWork::View));
@@ -1821,6 +1918,55 @@ impl ChartDoc {
         self.typed.remove(at);
         self.typed_stamps.remove(at);
         self.pending_settled = true;
+    }
+
+    /// **The recorded steps removed from the spine and not yet saved**, in the
+    /// order they were removed.
+    #[must_use]
+    pub fn removing_steps(&self) -> Vec<String> {
+        self.removing.iter().map(|(step, _)| step.clone()).collect()
+    }
+
+    /// Whether the recorded step `name` is removed from the spine and not yet
+    /// saved.
+    #[must_use]
+    pub fn is_removing(&self, name: &str) -> bool {
+        self.removing.iter().any(|(step, _)| step == name)
+    }
+
+    /// **Remove the recorded step `name`, or take its removal back**: a step
+    /// not yet removed is removed, as a draft a Save applies, and one already
+    /// removed is put back. Answers whether the step is removed now.
+    pub(crate) fn toggle_removal(&mut self, name: &str) -> bool {
+        if let Some(at) = self.removing.iter().position(|(step, _)| step == name) {
+            self.removing.remove(at);
+            return false;
+        }
+        let stamp = self.take_stamp();
+        self.removing.push((name.to_string(), stamp));
+        true
+    }
+
+    /// The removal of the step `name` has been applied to the folder, or the
+    /// step was gone from it already: it leaves the drafts, and the window
+    /// takes on the Protocol the folder holds now
+    /// ([`Self::take_pending_settled`]).
+    pub(crate) fn mark_removal_recorded(&mut self, name: &str) {
+        let Some(at) = self.removing.iter().position(|(step, _)| step == name) else {
+            return;
+        };
+        self.removing.remove(at);
+        self.pending_settled = true;
+    }
+
+    /// The steps removed and not yet saved, in words for the close question:
+    /// `Removed step · name`.
+    #[must_use]
+    pub fn removal_lines(&self) -> Vec<String> {
+        self.removing
+            .iter()
+            .map(|(step, _)| removal_words(step))
+            .collect()
     }
 
     /// Keep `step` after the statements already kept.
@@ -1956,12 +2102,46 @@ impl ChartDoc {
     /// shows rows no file says it should.
     #[must_use]
     pub fn grid_view_unrecorded(&self) -> bool {
-        self.grid_condition_unrecorded().is_some() || self.grid_view.order.is_some()
+        self.views_are_steps
+            && (self.grid_condition_unrecorded().is_some() || self.grid_view.order.is_some())
+    }
+
+    /// Say that a view applied to this document's grid is not a step: the
+    /// rows are no table a manifest step makes, so a view only shows them,
+    /// marks nothing unsaved and is recorded by no Save.
+    pub fn set_views_are_steps(&mut self, are: bool) {
+        self.views_are_steps = are;
+    }
+
+    /// Say that this document was opened past the chart file `chart`, which would not parse or
+    /// load, and shows the generated dashboard in its place: a Save to `chart` replaces it with
+    /// the generated text and its edits, keeping its own text as a version, and a close without
+    /// saving keeps the edits made from the generated text.
+    pub fn set_unread_chart(&mut self, chart: std::path::PathBuf) {
+        self.unread_chart = Some(std::path::absolute(&chart).unwrap_or(chart));
+    }
+
+    /// Whether `target` is the chart file this document was opened past without adopting it.
+    fn unread(&self, target: &std::path::Path) -> bool {
+        self.unread_chart.as_deref().is_some_and(|unread| {
+            std::path::absolute(target).is_ok_and(|target| target.as_path() == unread)
+        })
+    }
+
+    /// Whether a view or a kept statement on this document's grid is a step
+    /// of the Protocol: false over rows no manifest step makes, such as a
+    /// model's join ([`Self::set_views_are_steps`]).
+    #[must_use]
+    pub const fn views_are_steps(&self) -> bool {
+        self.views_are_steps
     }
 
     /// The applied condition, when no file holds it.
     #[must_use]
     pub fn grid_condition_unrecorded(&self) -> Option<&str> {
+        if !self.views_are_steps {
+            return None;
+        }
         self.grid_condition_held
             .is_none()
             .then_some(self.grid_view.condition.as_deref())
@@ -2010,10 +2190,12 @@ impl ChartDoc {
         std::mem::take(&mut self.pending_settled)
     }
 
-    /// **Save the chart beside the Protocol: write the edits made since the
-    /// last Save into the chart file's text.**
+    /// **Save the chart: write the edits made since the last Save into the
+    /// text of the chart file `panel`.**
     ///
-    /// The chart file is [`panel_file`]`(dir, name)`. The text the edits are
+    /// The window passes the file its Protocol keeps the chart in
+    /// ([`OneStepProtocol::chart_file`](crate::one_step::OneStepProtocol::chart_file)),
+    /// or an arc Protocol's own panel opened from its tile. The text the edits are
     /// placed into is the text on disk at this Save — the chart file when one
     /// is there, and otherwise the file [`Self::spec_path`] names, which for a
     /// data file's first Save is the scratch spec the generator wrote at open.
@@ -2053,32 +2235,15 @@ impl ChartDoc {
     /// does not hold the Save back: a store that cannot be opened leaves the chart
     /// written and comes back as the `Ok` value, for the window to say.
     ///
-    /// # Errors
-    ///
-    /// [`ChartSaveError`] for an edit that cannot be placed, a file that cannot
-    /// be read, and a write that fails. The document is as it was.
-    pub fn save_chart_beside(
-        &mut self,
-        dir: &std::path::Path,
-        name: &str,
-        history: Option<&HistoryStore>,
-    ) -> Result<Option<NotRecorded>, ChartSaveError> {
-        self.save_chart_at(&panel_file(dir, name), history)
-    }
-
-    /// [`Self::save_chart_beside`] to the panel file `panel`, wherever it is:
-    /// the Save of an arc Protocol's own panel opened from its tile, which
-    /// writes that panel's file rather than Brightfield's one chart file.
-    ///
-    /// What is written is read and placed as [`Self::save_chart_beside`] says,
-    /// and then has the table entries [`Self::protocol_tables`] names taken out
+    /// What is written has the table entries [`Self::protocol_tables`] names taken out
     /// ([`strip_protocol_tables`](crate::protocol_panels::strip_protocol_tables)),
     /// so the snapshot a tile was drawn from stays out of the panel's file
     /// (`saving_a_tile_writes_the_panel_without_injected_tables`).
     ///
     /// # Errors
     ///
-    /// As [`Self::save_chart_beside`].
+    /// [`ChartSaveError`] for an edit that cannot be placed, a file that cannot
+    /// be read, and a write that fails. The document is as it was.
     pub fn save_chart_at(
         &mut self,
         panel: &std::path::Path,
@@ -2106,6 +2271,9 @@ impl ChartDoc {
         let path = std::path::absolute(&written).unwrap_or(written);
         self.pending_edits.clear();
         self.stepped_back = None;
+        // The file now holds what the document shows: it is adopted, and the next Save places
+        // into it as into any chart file.
+        self.unread_chart = None;
         // What the Save wrote is in the file: `u` takes back no edit before it.
         self.shelf_undo.seal();
         if self.spec_path.as_deref() == Some(path.as_path()) {
@@ -2120,12 +2288,15 @@ impl ChartDoc {
 
     /// **What a Save of this document to the panel file `target` would
     /// write**, and the text on disk it would replace, read and placed as
-    /// [`Self::save_chart_beside`] reads and places them, with
+    /// [`Self::save_chart_at`] reads and places them, with
     /// [`Self::protocol_tables`] taken out; this writes no file.
     /// `None` when a Save would write no file: no chart file, no text to place
     /// into, and no edit.
     fn save_text(&self, target: &std::path::Path) -> Result<Option<SaveText>, ChartSaveError> {
         let target = target.to_path_buf();
+        if self.unread(&target) && self.stepped_back.is_none() {
+            return self.save_text_over_unread(target);
+        }
         let (text, on_disk) = match std::fs::read_to_string(&target) {
             Ok(text) => (text, true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -2175,49 +2346,127 @@ impl ChartDoc {
         }))
     }
 
+    /// [`Self::save_text`] for the chart file this document was opened past without adopting it
+    /// ([`Self::set_unread_chart`]): the edits are placed into the text the document shows, the
+    /// generated dashboard [`Self::spec_path`] names, and the unread file's text, when it is there,
+    /// is what the Save replaces, so it is recorded as a version rather than written into.
+    fn save_text_over_unread(
+        &self,
+        target: std::path::PathBuf,
+    ) -> Result<Option<SaveText>, ChartSaveError> {
+        let replaced = match std::fs::read_to_string(&target) {
+            Ok(text) => Some(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(ChartSaveError::Read {
+                    path: target,
+                    error,
+                })
+            }
+        };
+        // With no edit there is nothing to save: the unread file stays as it is until an edit is.
+        if self.pending_edits.is_empty() {
+            return Ok(None);
+        }
+        let Some(from) = self.spec_path.clone() else {
+            return Err(ChartSaveError::NoText);
+        };
+        let mut placed = std::fs::read_to_string(&from)
+            .map_err(|error| ChartSaveError::Read { path: from, error })?;
+        for edit in &self.pending_edits {
+            placed =
+                write_chart_edit(&placed, edit).map_err(|refusal| ChartSaveError::Unplaced {
+                    edit: self.describe_edit(edit),
+                    refusal,
+                })?;
+        }
+        if !self.protocol_tables.is_empty() {
+            placed = crate::protocol_panels::strip_protocol_tables(&placed, &self.protocol_tables);
+        }
+        Ok(Some(SaveText {
+            target,
+            replaced,
+            text: placed,
+        }))
+    }
+
     /// **Keep the chart as a Save would write it, as a version of the chart
-    /// file beside the Protocol in `dir`, and write no chart file**: what a
-    /// close without saving records.
+    /// file `panel`, and write no chart file**: what a close without saving
+    /// records. `panel` is the file [`Self::save_chart_at`] would write and
+    /// records its versions against.
     ///
-    /// The text is [`Self::save_chart_beside`]'s, read and placed as a Save
+    /// The text is [`Self::save_chart_at`]'s, read and placed as a Save
     /// reads and places it, and it is recorded as arcform's unsaved kind
-    /// ([`record_unsaved`](brightfield_protocol::record_unsaved)). The chart
-    /// file and `arcform.yaml` are left as they were, and the document too:
-    /// the edits stay held, for the window that closes over them.
+    /// ([`record_unsaved`](brightfield_protocol::record_unsaved)), with the
+    /// grid view and the typed statements no file holds written after it
+    /// ([`Self::pending_steps`]), so a close keeps them with the chart
+    /// (`discard_records_the_kept_filter_and_typed_sql`).
+    /// The chart file and `arcform.yaml` are left as they were, and the
+    /// document too: the edits stay held, for the window that closes over
+    /// them.
     ///
     /// # Errors
     ///
     /// Why the chart could not be kept, in the words the close question says
     /// it in: a window given no store, an edit the text cannot take, a file
     /// that cannot be read, and a store that does not take the version.
-    pub fn keep_unsaved_beside(
-        &self,
-        dir: &std::path::Path,
-        name: &str,
-        history: Option<&HistoryStore>,
-    ) -> Result<(), String> {
-        self.keep_unsaved_at(&panel_file(dir, name), history)
-    }
-
-    /// [`Self::keep_unsaved_beside`] for the panel file `panel`, wherever it
-    /// is: the close without saving of a Protocol's own panel opened from its
-    /// tile, kept as a version of that panel's file, which is the file
-    /// [`Self::save_chart_at`] records its versions against.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::keep_unsaved_beside`].
     pub fn keep_unsaved_at(
         &self,
         panel: &std::path::Path,
         history: Option<&HistoryStore>,
     ) -> Result<(), String> {
         let store = history.ok_or_else(|| NO_STORE.to_string())?;
-        let Some(save) = self.save_text(panel).map_err(|e| e.to_string())? else {
-            return Ok(());
+        let pending = self.pending_steps();
+        let text = match self.save_text(panel).map_err(|e| e.to_string())? {
+            Some(save) => save.text,
+            // No chart text to keep, but steps that would be lost: they are
+            // kept on their own, against the chart file they belong beside.
+            None if !pending.is_empty() => String::new(),
+            None => return Ok(()),
         };
-        brightfield_protocol::record_unsaved(store, &save.target, &save.text)
+        brightfield_protocol::record_unsaved(store, panel, &text, &pending)
             .map_err(|e| e.reason().to_string())
+    }
+
+    /// **The steps this document holds and no file does**, in the order they
+    /// were made, as a close without saving keeps them: the grid view's
+    /// unrecorded part in the close question's words with its condition and
+    /// order as SQL, and each typed statement under its step name with the
+    /// statement as typed.
+    #[must_use]
+    pub fn pending_steps(&self) -> Vec<brightfield_protocol::PendingStep> {
+        self.pending_in_order()
+            .into_iter()
+            .filter_map(|work| match work {
+                PendingWork::View => {
+                    let words = self.grid_view_line()?;
+                    let mut sql = Vec::new();
+                    if let Some(c) = self.grid_condition_unrecorded() {
+                        sql.push(format!("WHERE {c}"));
+                    }
+                    if let Some(o) = &self.grid_view.order {
+                        sql.push(format!("ORDER BY {o}"));
+                    }
+                    Some(brightfield_protocol::PendingStep {
+                        words,
+                        sql: sql.join("\n"),
+                    })
+                }
+                PendingWork::Typed(name) => {
+                    let step = self.typed.iter().find(|s| s.name == name)?;
+                    Some(brightfield_protocol::PendingStep {
+                        words: format!("SQL step \u{b7} {}", step.name),
+                        sql: step.statement.clone(),
+                    })
+                }
+                // A removal carries no SQL of its own: the step is still in
+                // the folder's `arcform.yaml`, which a close does not write.
+                PendingWork::Remove(name) => Some(brightfield_protocol::PendingStep {
+                    words: removal_words(&name),
+                    sql: String::new(),
+                }),
+            })
+            .collect()
     }
 
     /// The ledger's Versions panel's state.
@@ -3473,7 +3722,7 @@ impl ChartDoc {
     ///
     /// The version is left drawn, the window is marked unsaved, and the chart
     /// file is as it was until Save, which writes the version's text
-    /// ([`Self::save_chart_beside`];
+    /// ([`Self::save_chart_at`];
     /// `enter_steps_back_as_an_unsaved_edit_and_save_writes_the_versions_bytes`). The change it steps over —
     /// the edits held and any step back before it — is put on the undo stack
     /// as one edit, so `u` draws the chart with it again and holds it as it

@@ -65,7 +65,6 @@ use egui::containers::{CentralPanel, Panel};
 use egui_tiles::{Behavior, Container, Tile};
 
 use brightfield_keys::{Altitude, RecencyCounter};
-use brightfield_model::panel_capture::panel_file;
 use brightfield_protocol::graph::AssetId;
 use brightfield_protocol::layout::{Flow, Layout};
 use brightfield_sql::ir::SampleRate;
@@ -94,7 +93,7 @@ use crate::editor::EDITOR;
 use crate::inspector::{ColumnTable, InspectorPane, Selection, TableHandle};
 use crate::overlays::{
     close_question_body, close_question_keys, CloseAnswer, CloseQuestion, CommandPalette,
-    HelpSheet, JumpTarget, JumpToNode, CLOSE_QUESTION_TITLE,
+    HelpSheet, JumpTarget, JumpToNode,
 };
 use crate::panel_tiles::{PanelTiles, TilesAction};
 use crate::pipeline::Composed;
@@ -408,6 +407,8 @@ pub struct DoorRow {
     /// Where the row was laid out, in window-space logical points — where a
     /// test aims the click.
     pub rect: egui::Rect,
+    /// Whether the row is in the tree of the Protocols folder rather than in Recents.
+    pub in_tree: bool,
 }
 
 /// A remote start whose sources are being moved to local files while the
@@ -530,6 +531,90 @@ pub const RUNNING_LABEL: &str = "Running\u{2026}";
 /// The `run-protocol` verb's longname — the registry's, spelled once here for
 /// the window's dispatch, its key and the palette.
 pub const RUN_PROTOCOL: &str = "run-protocol";
+
+/// The `save-protocol` verb's longname — the registry's, spelled once here for the window's
+/// dispatch, its key, and the editor, which raises it after saving its buffer.
+pub const SAVE_PROTOCOL: &str = "save-protocol";
+
+/// The banner's title when a step later steps read is asked to be removed.
+pub const REMOVE_STEP_REFUSED: &str = "This step cannot be removed";
+
+/// The notice's title when a removed step's SQL file could not be deleted after arc took the step
+/// out of `arcform.yaml`.
+pub const SQL_FILE_LEFT_BEHIND: &str = "The removed step's SQL file was left behind";
+
+/// The banner's title when the Protocol changed while a step was being removed, and the manifest
+/// could not be put back as it was before arc's delete.
+pub const REMOVAL_NOT_PUT_BACK: &str = "The Protocol changed during the removal";
+
+/// What that banner says, and only what is known: the Protocol changed while `step` was being
+/// removed and could not be put back, the steps `missing` now compared with the read before the
+/// delete (left out when the manifest read after it does not load), and where the copy from
+/// before is kept.
+fn not_put_back_sentence(step: &str, missing: Option<&[String]>) -> String {
+    let missing = match missing {
+        None => String::new(),
+        Some([]) => " No step that was in it before is missing now.".to_string(),
+        Some(names) => format!(" Missing now: {}.", named_list(names)),
+    };
+    format!(
+        "The Protocol changed while {step} was being removed, and it could not be put back automatically.{missing} The copy from before is in Versions."
+    )
+}
+
+/// The banner's title when a statement that reads a step removed and not yet saved is kept.
+pub const NOT_KEPT_READS_REMOVED: &str = "This statement was not kept";
+
+/// The banner's title when a removed step that reads one removed after it is asked to be put back.
+pub const PUT_BACK_REFUSED: &str = "This step cannot be put back";
+
+/// `a`, `a and b`, `a, b and c`.
+fn named_list(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
+/// The sentence a refused removal says: the steps that read what `step` makes, each named.
+fn readers_sentence(step: &str, readers: &[String]) -> String {
+    let verb = if readers.len() == 1 { "reads" } else { "read" };
+    let them = if readers.len() == 1 { "it" } else { "them" };
+    format!(
+        "{} {verb} what {step} makes. Remove {them} first, then {step}.",
+        named_list(readers)
+    )
+}
+
+/// The sentence a statement not kept says when it reads what the removed steps `removed` make.
+fn reads_removed_sentence(removed: &[String]) -> String {
+    let (makes, is, them) = if removed.len() == 1 {
+        ("makes", "is", "it")
+    } else {
+        ("make", "are", "them")
+    };
+    format!(
+        "It reads what {} {makes}, which {is} removed. Put {them} back first.",
+        named_list(removed)
+    )
+}
+
+/// The sentence a refused put-back says: `step` reads what the removed steps `read` make.
+fn put_back_sentence(step: &str, read: &[String]) -> String {
+    let (makes, is, them) = if read.len() == 1 {
+        ("makes", "is", "it")
+    } else {
+        ("make", "are", "them")
+    };
+    format!(
+        "{step} reads what {} {makes}, which {is} removed too. Put {them} back first.",
+        named_list(read)
+    )
+}
+
+/// The `rename-protocol` verb's longname: the registry's, spelled once here for the window's key.
+pub const RENAME_PROTOCOL: &str = "rename-protocol";
 
 /// The `copy-chart-picture` verb's longname — the registry's, spelled once here
 /// for the window's dispatch, its key and the palette.
@@ -754,11 +839,7 @@ fn agent_protocol_inputs(dir: &std::path::Path) -> ProtocolInputs {
         ProtocolInputs::empty()
     });
     if let Ok(manifest) = arc::spec::Manifest::load(dir) {
-        for view in crate::run::records_newest_first(dir, &manifest.name) {
-            if inputs.adopt_run(&view) {
-                break;
-            }
-        }
+        inputs.adopt_newest_run(dir, &manifest.name);
     }
     inputs
 }
@@ -1619,8 +1700,8 @@ impl Boot {
     /// The file is opened as a data file first, because that is what gives the
     /// window its rails, its Protocol source (Save needs it to write again) and
     /// the facts of each tile. The chart file is then looked for where Save
-    /// writes it — [`panel_file`] over the Protocol's own directory and name,
-    /// the call [`ChartDoc::save_chart_beside`] makes — and, when it is there,
+    /// writes it — [`OneStepProtocol::chart_file`](crate::one_step::OneStepProtocol::chart_file),
+    /// the file [`ChartDoc::save_chart_at`] is given — and, when it is there,
     /// it replaces the generated dashboard: the live session, the composition
     /// and the spec path the editor pane opens and the watch follows. A folder
     /// with no chart file opens as a data file does, with a generated
@@ -1637,8 +1718,29 @@ impl Boot {
     ///
     /// As [`Boot::data_file`], plus a chart file that will not parse or load.
     fn saved_protocol(chosen: &str) -> Result<Self, String> {
-        let mut opened = crate::data_file::open(chosen)?;
-        let chart = panel_file(&opened.protocol.dir, &opened.protocol.name);
+        Self::with_saved_chart(crate::data_file::open(chosen)?)
+    }
+
+    /// `opened`, with the chart Save wrote under its Protocol's `panels/` drawn in place of the
+    /// generated dashboard when that file is there.
+    ///
+    /// # Errors
+    ///
+    /// A chart file that will not parse or load.
+    fn with_saved_chart(mut opened: crate::data_file::OpenedFile) -> Result<Self, String> {
+        Self::read_saved_chart(&mut opened)?;
+        Ok(Self::of_opened_file(opened))
+    }
+
+    /// Put the chart Save wrote under `opened`'s Protocol's `panels/` in place of its generated
+    /// dashboard, when that file is there. `opened` is left as it was when the file is not there,
+    /// and when it will not parse or load.
+    ///
+    /// # Errors
+    ///
+    /// A chart file that will not parse or load.
+    fn read_saved_chart(opened: &mut crate::data_file::OpenedFile) -> Result<(), String> {
+        let chart = opened.protocol.chart_file();
         if chart.is_file() {
             // Absolute, as Save names the file it wrote: the chart document's
             // spec path then equals what a later Save compares it to, and the
@@ -1649,7 +1751,7 @@ impl Boot {
             opened.composed = composed;
             opened.spec_file = Some(chart);
         }
-        Ok(Self::of_opened_file(opened))
+        Ok(())
     }
 
     /// What an opened data file becomes, for **both** routes that open one.
@@ -2157,6 +2259,149 @@ enum Overlay {
     /// statement. [`MeridianApp::open_overlay`] names it the palette, which is
     /// what it is to the person typing.
     Statement(StatementCard),
+    /// The question New Protocol asks: where to make the Protocol, the Protocols folder
+    /// preselected, its groups and any other folder on offer.
+    NewProtocol(NewProtocolSheet),
+    /// Preferences: the Protocols folder, and the offer to move the old one's Protocols once it
+    /// changes.
+    Preferences(crate::preferences::PreferencesSheet),
+    /// The question opening a data file asks when known Protocols already read it and none of
+    /// them is plainly the one: which to open, or a new Protocol.
+    WhichProtocol(WhichProtocolSheet),
+}
+
+/// The sheet that asks which Protocol a data file opens: each known Protocol that reads it, by
+/// name and location, then New Protocol last.
+#[derive(Debug)]
+struct WhichProtocolSheet {
+    /// The data file being opened.
+    file: PathBuf,
+    /// The Protocols that read it.
+    choices: Vec<crate::file_protocols::FileProtocol>,
+    /// The row chosen: one of `choices`, or New Protocol at `choices.len()`.
+    selected: usize,
+    /// Where each row was drawn on the last frame.
+    rows: Vec<egui::Rect>,
+}
+
+/// The Which Protocol sheet's last row, which makes a new Protocol of the file as an open with no
+/// Protocol of it does.
+pub const WHICH_PROTOCOL_NEW: &str = "New Protocol";
+
+/// Draw the Which Protocol sheet's body: what the file is a source of, each Protocol by name and
+/// location, New Protocol, and Open. A click on a row chooses it; answers whether Open was clicked.
+fn which_protocol_body(ui: &mut egui::Ui, sheet: &mut WhichProtocolSheet) -> bool {
+    use meridian_egui::MeridianUi as _;
+    let gap = ui.tokens().section_gap;
+    let sem = meridian_design::semantic(ui.visuals().dark_mode);
+    ui.label(
+        egui::RichText::new(format!(
+            "{} is already a source of {}. Open one, or make a new Protocol of it.",
+            display_name(&sheet.file),
+            if sheet.choices.len() == 1 {
+                "a Protocol"
+            } else {
+                "these Protocols"
+            }
+        ))
+        .color(chrome::colour(sem.text.secondary)),
+    );
+    ui.add_space(gap);
+    sheet.rows.clear();
+    for at in 0..=sheet.choices.len() {
+        let row = match sheet.choices.get(at) {
+            Some(choice) => {
+                let place = choice.dir.parent().unwrap_or(&choice.dir);
+                ui.horizontal(|ui| {
+                    let row = ui.selectable_label(sheet.selected == at, &choice.name);
+                    // A long location gives up its middle rather than widening the card past
+                    // its rung, as the Preferences sheet's folder does.
+                    let font = egui::TextStyle::Small.resolve(ui.style());
+                    let room = ui.available_width();
+                    ui.label(
+                        egui::RichText::new(crate::preferences::elide_path(ui, place, &font, room))
+                            .small()
+                            .color(chrome::colour(sem.text.muted)),
+                    )
+                    .on_hover_text(place.display().to_string());
+                    row
+                })
+                .inner
+            }
+            None => ui.selectable_label(sheet.selected == at, WHICH_PROTOCOL_NEW),
+        };
+        sheet.rows.push(row.rect);
+        if row.clicked() {
+            sheet.selected = at;
+        }
+    }
+    ui.add_space(gap);
+    ui.button("Open").clicked()
+}
+
+/// One place the New Protocol sheet offers to make the Protocol in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum NewProtocolPlace {
+    /// A folder named as the sheet lists it.
+    Folder { name: String, dir: PathBuf },
+    /// Any other folder, chosen with the system's folder picker.
+    Other,
+}
+
+impl NewProtocolPlace {
+    fn label(&self) -> &str {
+        match self {
+            Self::Folder { name, .. } => name,
+            Self::Other => NEW_PROTOCOL_OTHER,
+        }
+    }
+}
+
+/// The New Protocol sheet: the places on offer, the one chosen, and where each row was drawn on
+/// the last frame.
+#[derive(Debug)]
+struct NewProtocolSheet {
+    places: Vec<NewProtocolPlace>,
+    selected: usize,
+    rows: Vec<egui::Rect>,
+}
+
+/// The New Protocol sheet's last row, which raises the folder picker.
+const NEW_PROTOCOL_OTHER: &str = "Other\u{2026}";
+
+/// The name the New Protocol sheet gives the Protocols folder, whatever the folder is called on
+/// disk: it is the folder every new Protocol goes to unless another is chosen.
+const NEW_PROTOCOL_ROOT: &str = "Protocols";
+
+/// What the canvas of a Protocol with no sources says, `name` being the Protocol's.
+fn empty_canvas_words(name: &str) -> String {
+    format!(
+        "{name} has no sources yet. Drop a data file or a folder of them onto this window, or \
+         choose one with Add source\u{2026}"
+    )
+}
+
+/// Draw the New Protocol sheet's body: the places, the chosen one marked, and Make. A click on a
+/// row chooses it; answers whether Make was clicked.
+fn new_protocol_body(ui: &mut egui::Ui, sheet: &mut NewProtocolSheet) -> bool {
+    use meridian_egui::MeridianUi as _;
+    let gap = ui.tokens().section_gap;
+    let sem = meridian_design::semantic(ui.visuals().dark_mode);
+    ui.label(
+        egui::RichText::new("Where should the new Protocol go?")
+            .color(chrome::colour(sem.text.secondary)),
+    );
+    ui.add_space(gap);
+    sheet.rows.clear();
+    for (at, place) in sheet.places.iter().enumerate() {
+        let row = ui.selectable_label(sheet.selected == at, place.label());
+        sheet.rows.push(row.rect);
+        if row.clicked() {
+            sheet.selected = at;
+        }
+    }
+    ui.add_space(gap);
+    ui.button("Make").clicked()
 }
 
 /// The registry-bound keystrokes that open overlays, resolved once at boot.
@@ -2188,6 +2433,184 @@ impl OverlayKeys {
     }
 }
 
+/// **Where the window is going when it leaves the Protocol it holds**: what the
+/// close question's answer leads to, once it is answered.
+///
+/// Each way out of a Protocol with a draft pending comes through
+/// [`MeridianApp::leave`], which asks first: the window's close, going Home,
+/// opening another Protocol and quitting. A way out with nothing pending goes
+/// at once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Leaving {
+    /// The window's close button, or a close request the system raised: the
+    /// front door, as Home is. Only a quit ends the app, and a close on the
+    /// door, which has nowhere else to go.
+    Close,
+    /// Home, by its button, its key or the palette: the front door.
+    Home,
+    /// Something asked to open in this window's place.
+    Open(crate::open_queue::OpenRequest),
+    /// Quitting the app: Cmd+Q, its menu item, or the Dock's Quit.
+    Quit,
+    /// Renaming the Protocol or moving its folder, after which the window opens it again at its
+    /// new path: the folder cannot move under edits the window holds and no file does.
+    Move(Move),
+    /// Making an empty Protocol in this folder, as New Protocol does, and opening it.
+    Make(PathBuf),
+    /// Moving the Protocols in the old Protocols folder `from` into the new one, `to`, the open
+    /// Protocol among them, as Preferences offers once the folder changes. Keeping editing
+    /// leaves the open one where it is and moves the rest.
+    MoveAll { from: PathBuf, to: PathBuf },
+    /// Reading the open Protocol's data again from its file, which opens it afresh and so
+    /// replaces the chart, the grid view and the statements the window holds.
+    Reload,
+}
+
+/// **A change to where the open Protocol's folder is**: its name, or the folder it is in. Each is
+/// kept at once, as adding a source is, and is not a draft.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Move {
+    /// Rename the Protocol and its folder to this name ([`crate::rename::rename`]).
+    Rename(String),
+    /// Move the folder into this one ([`crate::rename::relocate`]).
+    Relocate(PathBuf),
+}
+
+/// Which of the locator band's two place fields is open for typing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceField {
+    /// The Protocol's name, which is its folder's name.
+    Name,
+    /// The folder the Protocol's folder is in.
+    Location,
+}
+
+/// A place field open for typing: which one, what it holds, and whether it is still to take the
+/// keyboard, which it does on the frame after it opens.
+#[derive(Debug, Clone)]
+struct PlaceEdit {
+    field: PlaceField,
+    text: String,
+    focus: bool,
+}
+
+/// The banner that says a rename or a move of the Protocol was refused, and why.
+pub const MOVE_PROTOCOL_BANNER: &str = "move-protocol";
+
+/// What that banner says of a front-door row renamed while a run is writing.
+pub const DOOR_RENAME_UNDER_A_RUN: &str =
+    "A run is writing into a Protocol's folder. Try again once it finishes.";
+
+/// The banner a window raises when the folder of the Protocol it holds is no longer there.
+pub const FOLDER_GONE_BANNER: &str = "protocol-folder-gone";
+
+/// The title of that banner.
+pub const FOLDER_GONE_TITLE: &str = "This Protocol's folder is no longer there";
+
+/// The banner that names what is left of a Protocol's old folder after a move to another volume
+/// could not remove all of it.
+const LEFT_BEHIND_BANNER: &str = "move-protocol-left-behind";
+
+/// The banner that says what did not follow a renamed or moved Protocol: its sources, its
+/// recorded place, or its working database.
+pub const NOT_FOLLOWED_BANNER: &str = "move-protocol-not-followed";
+
+/// What that banner says when a Protocol moved in the Finder is opened and not everything
+/// followed it.
+pub const FINDER_MOVE_NOT_FOLLOWED_TITLE: &str =
+    "Moved outside Brightfield, but not everything followed it";
+
+/// The banner that says sources were not added to the Protocol open, because Brightfield did not
+/// make it.
+pub const ADD_SOURCE_REFUSED_BANNER: &str = "add-source-refused";
+
+/// What that banner says.
+pub const ADD_SOURCE_REFUSED: &str = "Sources are added to Protocols Brightfield made, and this \
+     one was not. Open the file on its own to make a Protocol of it.";
+
+/// The banner that says a Protocol New Protocol made kept its Untitled name, as its first
+/// sources could not rename it after themselves.
+pub const NOT_NAMED_BANNER: &str = "add-source-not-named";
+
+/// The banner that says New Protocol could not make the Protocol, and why.
+pub const NEW_PROTOCOL_BANNER: &str = "new-protocol";
+
+/// The banner that says a folder chosen in Preferences was not taken as the Protocols folder,
+/// and why.
+pub const PREFERENCES_BANNER: &str = "preferences";
+
+/// The banner that says what moving the old Protocols folder's Protocols did, when not all of
+/// them moved or something did not follow one.
+pub const MOVE_ALL_BANNER: &str = "move-all-protocols";
+
+/// The `open-preferences` verb's longname: the registry's, spelled once here for the window's key
+/// and the palette.
+pub const OPEN_PREFERENCES: &str = "open-preferences";
+
+/// The banner that says the YAML editor's buffer was not saved, and why.
+const EDITOR_NOT_SAVED_BANNER: &str = "editor-not-saved";
+
+/// The banner that says the window closes once the runs it started land.
+const CLOSING_AFTER_RUN_BANNER: &str = "closing-after-run";
+
+/// What that banner says: what the window waits for, and how to close it now.
+pub const WAITING_FOR_RUN_TITLE: &str = "Waiting for the run to finish before closing";
+/// The banner's body.
+pub const WAITING_FOR_RUN_BODY: &str =
+    "Quit or close again to close now; the run's record may be lost.";
+
+/// The banner that says a statement typed over a join's rows was not kept, and why.
+const NOT_KEPT_ON_A_JOIN_BANNER: &str = "not-kept-on-a-join";
+/// What it says.
+pub const NOT_KEPT_ON_A_JOIN_BODY: &str =
+    "A view or statement on a join is not kept as a step yet. \
+     Keep it on one of the join's tables.";
+
+/// The banner that says the app menu's Quit could not be routed to the window.
+pub const MENU_QUIT_UNROUTED_BANNER: &str = "menu-quit-unrouted";
+/// What it says.
+pub const MENU_QUIT_UNROUTED_TITLE: &str = "Quitting will not ask about unsaved work";
+
+/// The banner that says a file dropped onto an open Protocol was not taken.
+pub const DROP_NOT_TAKEN_BANNER: &str = "drop-not-taken";
+/// What it says.
+pub const DROP_NOT_TAKEN_TITLE: &str = "Drop files on the front door to open them";
+/// Its body.
+pub const DROP_NOT_TAKEN_BODY: &str =
+    "A file dropped here is not added to this Protocol yet. Go Home and drop it there, \
+     or open it with Open.";
+
+/// The banner that says an open asked for while the window waits to close was not done.
+const NOT_OPENED_WHILE_CLOSING_BANNER: &str = "not-opened-while-closing";
+
+/// The banner that says what a close made while the window waited for a run did with the edits
+/// made during the wait.
+pub const KEPT_WHILE_CLOSING_BANNER: &str = "kept-while-closing";
+/// What it says when the unsaved work was kept as a version.
+pub const KEPT_WHILE_CLOSING_TITLE: &str = "The unsaved work was kept as a version";
+
+/// The `quit` verb's longname: the registry's, spelled once here for the
+/// window's key and dispatch.
+pub const QUIT: &str = "quit";
+
+/// The `new-protocol` verb's longname: the registry's, spelled once here for the window's key and
+/// the palette.
+pub const NEW_PROTOCOL: &str = "new-protocol";
+
+/// The verb that raises the open picker, Cmd+O by the registry.
+const OPEN_VERB: &str = "open";
+
+/// The name a banner calls `path` by: its last part, or the whole path when it has none.
+fn display_name(path: &std::path::Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
+}
+
+/// The title of the banner a `brightfield://` link raises, which this build does not open yet.
+pub const LINK_NOTICE_TITLE: &str = "Links do not open yet";
+
 /// Consume the pressed key a registry keystroke token names, if it is down
 /// this frame. Only the tokens the shell actually wires live — the overlay
 /// openers and open-home — are mapped; an unmapped token is simply never
@@ -2207,6 +2630,12 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
             ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::H))
         }
         "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
+        "cmd-o" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)),
+        "cmd-n" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)),
+        "cmd-," => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Comma)),
+        "cmd-s" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)),
+        "cmd-q" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Q)),
+        "f2" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F2)),
         "cmd-j" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::J)),
         "cmd-enter" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)),
         // egui-winit 0.35 turns a press of C with the command key held, Shift
@@ -2585,6 +3014,10 @@ struct ModelDoc {
     items: ItemMap<crate::model_pane::ModelPane>,
     /// What the grid holds while the pane waits behind it: `None` while the pane is on the canvas.
     in_grid: Option<String>,
+    /// The record of the last whole run Run started from the pane, read by the manifest's name.
+    last_run: Option<brightfield_protocol::RunView>,
+    /// What the toast said when that run landed, since the pane draws no strip to say it.
+    last_run_said: Option<String>,
 }
 
 impl ModelDoc {
@@ -2614,10 +3047,9 @@ pub struct MeridianApp {
     model: Option<ModelDoc>,
     mode: Mode,
     fonts_installed: bool,
-    /// Whether the last `ViewportCommand::Title` this window sent carried
-    /// [`UNSAVED_MARK`] — so `draw` re-titles the OS window when a switch
-    /// flips the mark. The opens send their own titles.
-    title_marked: bool,
+    /// The last title this window sent the OS in a `ViewportCommand::Title`, so `draw` re-titles
+    /// the OS window whenever [`Self::title`] moves away from it. `None` before the first send.
+    sent_title: Option<String>,
     /// Whether the next close request is to pass without a question: the
     /// window has already decided to close (a save that wrote, or a discard)
     /// or its host is closing it on its own account (the screenshot
@@ -2863,14 +3295,107 @@ pub struct MeridianApp {
     /// the `Ui` borrow across a window this process does not own. It is read
     /// after the frame's requests are applied — see [`MeridianApp::draw`].
     pick_requested: bool,
-    /// A path chosen at the door whose open waits one frame, so a notice that a DuckDB extension
-    /// is being fetched is drawn before the open blocks the thread.
-    pending_open: Option<String>,
+    /// Whether the dialog block of the latest frame took an ask for the picker, raised or not.
+    picker_asked: bool,
+    /// How many asks for the picker the dialog block has taken since the window was made, so a
+    /// test can read an ask after the frame it was made in has passed.
+    picker_asks: usize,
+    /// What was chosen to open and waits one frame, so a notice that a DuckDB extension is being
+    /// fetched is drawn before the open blocks the thread: one path, or the several one gesture
+    /// handed over.
+    pending_open: Option<Vec<std::path::PathBuf>>,
+    /// The Protocol folder the last launch ended on, held aside until the app has finished
+    /// launching ([`Self::restoring_at_launch`]), and `None` once a frame has decided on it.
+    restore: Option<std::path::PathBuf>,
+    /// Where the window goes once the close question is answered, while it is up: the way out
+    /// that asked it, or the latest close, Home or quit asked since, which takes its place. An
+    /// open asked for meanwhile is held behind it instead (`held_for_question`).
+    leaving: Option<Leaving>,
+    /// The opens asked for while the close question was up, oldest first: held until the
+    /// question is answered, so the way out it was asked for (a quit, a move, a rename, a new
+    /// Protocol, Home) stands, and then taken one at a time, a Which Protocol sheet at a time.
+    held_for_question: Vec<crate::open_queue::OpenRequest>,
+    /// Whether a close or quit already answered waits for the runs this window started, so no
+    /// run's record is lost with the process. Unsaved work the window holds when it closes,
+    /// once the runs land or at a second close or quit, is kept as a version first
+    /// ([`Self::keep_what_changed_while_waiting`]).
+    close_after_runs: bool,
+    /// Whether the close question for a quit was answered Close without saving after it said the
+    /// work could not be kept: the analyst chose to lose it, so a close during that quit's run
+    /// wait that cannot keep the work either closes rather than ask again. Any other way out
+    /// clears it (`a_loss_chosen_going_home_is_not_carried_into_a_later_quit`).
+    unkept_accepted: bool,
+    /// Every request to open something, from whichever way in, taken at the start of each frame.
+    open_queue: crate::open_queue::OpenQueue,
+    /// The DuckDB extensions an open takes as installed, when a test names them; `None` asks
+    /// DuckDB.
+    installed_extensions: Option<Vec<String>>,
+    /// The Protocol a lone table's grid and dashboard were opened from: the one-source Protocol
+    /// an open made in the Protocols folder. `None` for any other document.
+    own_protocol: Option<crate::own_files::OwnProtocol>,
+    /// The Protocol New Protocol made, while it has no source: its canvas says how to add one.
+    /// `None` for any other document.
+    empty_protocol: Option<crate::own_files::OwnProtocol>,
+    /// Whether the open Protocol asks for the sources browser: New Protocol made it with nothing
+    /// in it. The browser itself is not built yet; until it is, the empty canvas says how to add
+    /// a source, and this is what the browser will answer to.
+    browser_requested: bool,
+    /// What the empty canvas said on the last frame, when it was drawn.
+    empty_canvas_said: Option<String>,
+    /// The empty canvas's Add source… was clicked: the file picker is raised after the frame, as
+    /// the door's Open is, and what it chooses is added to the open Protocol.
+    add_source_pick_requested: bool,
+    /// Where the front door drew New Protocol on the last frame.
+    door_new_protocol: Option<egui::Rect>,
+    /// The New Protocol sheet's Other… was chosen: the folder picker is raised after the frame,
+    /// and the Protocol is made in the folder it chooses.
+    new_protocol_pick_requested: bool,
+    /// Preferences' Choose… was pressed, and the folder picker is raised after the frame.
+    preferences_pick_requested: bool,
+    /// Whether the Preferences file has been checked for a setting it could not read.
+    preferences_checked: bool,
+    /// What the last move of the old Protocols folder's Protocols did.
+    move_report: Option<crate::protocols_dir::MoveReport>,
     /// A saved Protocol whose front-door row was clicked, latched for after the
     /// frame. Latched rather than acted on for the reason `pick_requested` is:
     /// the `Ui` borrow the door drew through is still live at the click, and
     /// reopening replaces both documents.
     door_open_protocol: Option<String>,
+    /// The front-door row the pointer was over on the last frame, by its id and whether it is a
+    /// row of the tree: what F2 renames while the door shows.
+    door_hovered: Option<(String, bool)>,
+    /// The tree of the Protocols folder the door draws, read on the first door frame after the
+    /// door was hidden and kept while it stays shown. `None` until then.
+    door_tree: Option<Vec<crate::door_tree::Node>>,
+    /// The run state of each Protocol folder the door has drawn a row for, read from its newest
+    /// whole run's record, with when that run was recorded: read the first time the row is drawn
+    /// after the door is shown or after a run of this window's lands, so a frame reads no database
+    /// or record it read on the frame before.
+    door_runs: std::collections::HashMap<PathBuf, (RunState, Option<u64>)>,
+    /// Whether the last frame drew the door, so the first frame that draws it again rereads what
+    /// it lists.
+    door_was_live: bool,
+    /// A front-door row whose name is open for typing, by its id, with what the field holds.
+    door_rename: Option<PlaceEdit>,
+    /// The id of the front-door row whose rename field was opened for, kept beside it.
+    door_rename_id: Option<String>,
+    /// Whether that row is the tree's rather than Recents', since one Protocol can have a row in
+    /// each and only the one renamed draws the field.
+    door_rename_in_tree: bool,
+    /// A front-door row's new name, typed and entered, latched for after the frame with the row's
+    /// id, for the reason `door_open_protocol` is.
+    door_renamed: Option<(String, String)>,
+    /// The locator band's place field open for typing, when one is.
+    place_edit: Option<PlaceEdit>,
+    /// Where the locator band drew the Protocol's name and Location fields on the last frame.
+    place_rects: Option<(egui::Rect, egui::Rect)>,
+    /// A rename or move typed into a place field and entered, latched for after the frame.
+    place_move: Option<Move>,
+    /// Where the Location field's Choose… button was drawn on the last frame.
+    choose_rect: Option<egui::Rect>,
+    /// Choose… was clicked: the folder picker is raised after the frame, outside every borrow,
+    /// as the open picker is, and only where dialogs are allowed.
+    location_pick_requested: bool,
     /// Whether this app may raise an operating-system dialog at all.
     ///
     /// **Off unless the live window turns it on**, which is the safe default
@@ -2914,6 +3439,24 @@ pub struct MeridianApp {
     /// dispatch, not an overlay opener, and that struct's contents are pinned
     /// by `the_overlay_keys_come_from_the_registry`.
     home_binding: Option<&'static str>,
+    /// The `open` keystroke token, read off the registry at boot — same rule as
+    /// [`Self::home_binding`].
+    open_binding: Option<&'static str>,
+    /// The `save-protocol` keystroke token, read off the registry at boot — same rule as
+    /// [`Self::home_binding`].
+    save_binding: Option<&'static str>,
+    /// The `rename-protocol` keystroke token, read off the registry at boot — same rule as
+    /// [`Self::home_binding`].
+    rename_binding: Option<&'static str>,
+    /// The `quit` keystroke token, read off the registry at boot — same rule as
+    /// [`Self::home_binding`].
+    quit_binding: Option<&'static str>,
+    /// The `new-protocol` keystroke token, read off the registry at boot — same rule as
+    /// [`Self::home_binding`].
+    new_protocol_binding: Option<&'static str>,
+    /// The `open-preferences` keystroke token, read off the registry at boot — same rule as
+    /// [`Self::home_binding`].
+    preferences_binding: Option<&'static str>,
     /// The `toggle-outline-rail` keystroke token, read off the registry at
     /// boot — same rule as [`Self::home_binding`]: the shell wires whichever
     /// binding the registry declares, and does not invent one of its own.
@@ -2983,6 +3526,9 @@ pub struct MeridianApp {
     diagnostic_banners: Vec<NotificationId>,
     /// Transient, self-expiring toasts — confirmations, not conditions.
     toasts: ToastLayer,
+    /// The title the banner of the refusal [`Self::record_pending`] just answered is said under,
+    /// when it is not the one its kind of pending work takes: taken by the Save that says it.
+    refusal_title: Option<&'static str>,
     /// What the status rail drew last frame — the ids in draw order and any
     /// dismissals — recorded for the reason [`Self::regions`] is: a headless
     /// test that asks "did the rail say it?" reads this rather than a second
@@ -3003,9 +3549,6 @@ pub struct MeridianApp {
     /// Whether a widget held the keyboard at the end of the last frame drawn:
     /// what tells an Esc that leaves a field from one that leaves a panel.
     keyboard_held: bool,
-    /// The panel tile open when the OS window was last titled, so a tile
-    /// opened or closed re-titles it.
-    titled_tile: Option<usize>,
 }
 
 impl MeridianApp {
@@ -3077,7 +3620,7 @@ impl MeridianApp {
         if let Some(index) = open_panel {
             app.open_panel_with_grid(index);
         }
-        app.pending_open = open_later;
+        app.queue_open_later(open_later);
         app
     }
 
@@ -3131,7 +3674,7 @@ impl MeridianApp {
         if let Some(index) = open_panel {
             app.open_panel_with_grid(index);
         }
-        app.pending_open = open_later;
+        app.queue_open_later(open_later);
         app
     }
 
@@ -3279,7 +3822,7 @@ impl MeridianApp {
             model: None,
             mode,
             fonts_installed: false,
-            title_marked: false,
+            sent_title: None,
             closing: false,
             regions: Vec::new(),
             collapsed: BTreeSet::new(),
@@ -3321,8 +3864,40 @@ impl MeridianApp {
             remote_files: None,
             door_open_file: None,
             pick_requested: false,
+            picker_asked: false,
+            picker_asks: 0,
             pending_open: None,
+            restore: None,
+            leaving: None,
+            held_for_question: Vec::new(),
+            close_after_runs: false,
+            unkept_accepted: false,
+            open_queue: crate::open_queue::OpenQueue::default(),
+            installed_extensions: None,
+            own_protocol: None,
+            empty_protocol: None,
+            browser_requested: false,
+            empty_canvas_said: None,
+            add_source_pick_requested: false,
+            door_new_protocol: None,
+            new_protocol_pick_requested: false,
+            preferences_pick_requested: false,
+            preferences_checked: false,
+            move_report: None,
             door_open_protocol: None,
+            door_hovered: None,
+            door_tree: None,
+            door_runs: std::collections::HashMap::new(),
+            door_was_live: false,
+            door_rename: None,
+            door_rename_id: None,
+            door_rename_in_tree: false,
+            door_renamed: None,
+            place_edit: None,
+            place_rects: None,
+            place_move: None,
+            choose_rect: None,
+            location_pick_requested: false,
             dialogs_allowed: false,
             overlay: None,
             typed: None,
@@ -3334,6 +3909,30 @@ impl MeridianApp {
             home_binding: brightfield_keys::registry()
                 .iter()
                 .find(|v| v.longname == "open-home")
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            open_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == OPEN_VERB)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            save_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == SAVE_PROTOCOL)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            rename_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == RENAME_PROTOCOL)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            new_protocol_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == NEW_PROTOCOL)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            preferences_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == OPEN_PREFERENCES)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            quit_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == QUIT)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             navigator_binding: brightfield_keys::registry()
                 .iter()
@@ -3369,6 +3968,7 @@ impl MeridianApp {
             last_chart_fault: None,
             diagnostic_banners: Vec::new(),
             toasts: ToastLayer::new(),
+            refusal_title: None,
             rail: chrome::StatusDrawn::default(),
             // In place before the reconcile and the rail defaults below, so
             // the one pass of each sees them and the grid's spot, put through
@@ -3377,7 +3977,6 @@ impl MeridianApp {
             rails_shut_for_tiles: false,
             crumb_link_rect: None,
             keyboard_held: false,
-            titled_tile: None,
         };
         // What the canvas holds, before the first frame and from the same two
         // documents the arrangement above was derived from.
@@ -3705,6 +4304,10 @@ impl MeridianApp {
         self.typed_in_grid = None;
         self.typed_where_in_grid = None;
         self.typed_counts.clear();
+        // The banner that said a drop onto the Protocol was not taken is about the document that
+        // was open.
+        self.notifications
+            .dismiss(NotificationId::new(DROP_NOT_TAKEN_BANNER));
         self.reconcile_canvas_holds();
         // The ledger and inspector rails' collapsed default, and which
         // inspector pane the caret opens on — re-derived here so a document
@@ -3782,6 +4385,20 @@ impl MeridianApp {
         }
     }
 
+    /// Send the OS window [`Self::title`], and remember it as the one sent.
+    fn retitle(&mut self, ctx: &egui::Context) {
+        let title = self.title();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+        self.sent_title = Some(title);
+    }
+
+    /// Re-title the OS window when [`Self::title`] is no longer the title it was last sent.
+    fn retitle_if_changed(&mut self, ctx: &egui::Context) {
+        if self.sent_title.as_deref() != Some(self.title().as_str()) {
+            self.retitle(ctx);
+        }
+    }
+
     /// Whether this window's title carries [`UNSAVED_MARK`]: the chart document
     /// holds an edit its file does not, and the window is not on the front
     /// door, which has no document to hold one. The one definition of *unsaved*
@@ -3789,7 +4406,176 @@ impl MeridianApp {
     /// closes is exactly a window that says it has something to lose.
     #[must_use]
     pub fn carries_unsaved_mark(&self) -> bool {
-        self.charts.doc.has_unsaved_work() && !self.front_door_is_live()
+        self.has_unsaved_work() && !self.front_door_is_live()
+    }
+
+    /// Whether this window holds work no file does: the chart document's
+    /// ([`ChartDoc::has_unsaved_work`]), or a YAML editor buffer that differs
+    /// from its file. What the title marks, Cmd+S saves and the close question
+    /// asks about.
+    #[must_use]
+    pub fn has_unsaved_work(&self) -> bool {
+        self.charts.doc.has_unsaved_work() || self.editor_unsaved() || self.model_draft_unsaved()
+    }
+
+    /// Whether the model pane holds what its file and the Protocol's tables do not yet: an edit
+    /// in its file view not yet read or refused when it was, or a model read from one that no run
+    /// has followed.
+    fn model_draft_unsaved(&self) -> bool {
+        self.model
+            .as_ref()
+            .is_some_and(|m| m.doc.file_edit_unsaved() || m.doc.run_waiting())
+    }
+
+    /// Settle the model pane's draft, as Save does ([`crate::model_pane::ModelPane::save_draft`]),
+    /// answering whether it was settled. A draft that does not read, or a run that fails, is said
+    /// in a banner.
+    fn save_model_draft(&mut self, ctx: &egui::Context) -> bool {
+        if !self.model_draft_unsaved() {
+            return true;
+        }
+        let Some(model) = self.model.as_mut() else {
+            return true;
+        };
+        match model.doc.save_draft() {
+            Ok(()) => true,
+            Err(why) => {
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new("save-model"),
+                        Severity::Error,
+                        "Could not save the model",
+                    )
+                    .body(why),
+                );
+                ctx.request_repaint();
+                false
+            }
+        }
+    }
+
+    /// Keep the model pane's file-view edit, not yet read or refused, as a version of the model
+    /// file, in arcform's unsaved kind, writing no file: the model pane's half of a close without
+    /// saving.
+    /// A model already read, whose run is all that is owed, is in its file, and keeps itself.
+    ///
+    /// # Errors
+    ///
+    /// A window given no store, and a store that does not take the version.
+    fn keep_model_draft(&self) -> Result<(), String> {
+        let Some(model) = self.model.as_ref().filter(|m| m.doc.file_edit_unsaved()) else {
+            return Ok(());
+        };
+        let store = self
+            .history
+            .as_ref()
+            .ok_or_else(|| crate::app::NO_STORE.to_string())?;
+        let file = model.doc.protocol.dir.join(crate::discovery::MODEL_FILE);
+        brightfield_protocol::record_unsaved(store, &file, model.doc.file_draft(), &[])
+            .map_err(|e| e.reason().to_string())
+    }
+
+    /// Whether the YAML editor's buffer holds edits its file does not, as the
+    /// editor itself says it in its pane's subject.
+    fn editor_unsaved(&self) -> bool {
+        self.charts
+            .items
+            .get(&PaneKey::new(EDITOR))
+            .is_some_and(|editor| {
+                editor.describe(&self.charts.doc).dirty == brightfield_workbench::Dirty::Edited
+            })
+    }
+
+    /// The YAML editor's file name, as its pane names it, while its buffer is
+    /// unsaved.
+    fn editor_unsaved_name(&self) -> Option<String> {
+        self.editor_unsaved().then(|| {
+            self.charts
+                .items
+                .get(&PaneKey::new(EDITOR))
+                .map(|editor| editor.describe(&self.charts.doc).title)
+                .unwrap_or_default()
+        })
+    }
+
+    /// Perform `verb` on the YAML editor wherever it is, drawn or not, and
+    /// drop what it asks of the window: the window is the caller, and does
+    /// what follows itself.
+    fn perform_on_editor(&mut self, verb: &'static str) {
+        let key = PaneKey::new(EDITOR);
+        let Some(editor) = self.charts.items.get_mut(&key) else {
+            return;
+        };
+        let mut requests = Vec::new();
+        // Not a tile's draw, so the widget ids hang off a fixed tile, as the model pane's do.
+        let mut cx = brightfield_workbench::ItemCtx::new(
+            self.mode,
+            key,
+            egui_tiles::TileId::from_u64(0),
+            false,
+            &mut requests,
+        );
+        let _ = editor.perform(&mut self.charts.doc, Verb::new(verb), &mut cx);
+    }
+
+    /// **Save the YAML editor's buffer when it holds edits its file does not,
+    /// whether or not the editor has the keyboard**: the first half of Cmd+S,
+    /// answering whether the save may go on to the Protocol.
+    ///
+    /// The save is the window's, made away from the editor, so it never
+    /// confirms an overwrite of a change made to the file on disk: only the
+    /// editor's own Cmd+S, with its warning in view, does that. A buffer that
+    /// was not written, over such a change, a file the editor never read, or a
+    /// write that failed, is said in a banner, and the save stops there.
+    fn save_editor_buffer(&mut self) -> bool {
+        use crate::editor::SaveReport;
+        let banner = NotificationId::new(EDITOR_NOT_SAVED_BANNER);
+        if !self.editor_unsaved() {
+            return true;
+        }
+        let name = self.editor_unsaved_name().unwrap_or_default();
+        self.charts.doc.ask_editor_save();
+        self.perform_on_editor("save-spec");
+        let why = match self.charts.doc.take_editor_save_report() {
+            None
+            | Some(
+                SaveReport::Written
+                | SaveReport::ForcedWrite
+                | SaveReport::Unchanged
+                | SaveReport::NoFile,
+            ) => {
+                self.notifications.dismiss(banner);
+                return true;
+            }
+            Some(SaveReport::ConflictArmed) => format!(
+                "{name} changed on disk since the editor read it. Save it from the editor to \
+                 overwrite that change."
+            ),
+            Some(SaveReport::RefusedUnseeded) => format!(
+                "{name} could not be read when the editor opened it, so the editor will not \
+                 write over it."
+            ),
+            Some(SaveReport::Failed(e)) => format!("{name} could not be written: {e}."),
+        };
+        self.notifications.raise(
+            Notification::new(
+                banner,
+                Severity::Error,
+                "The YAML editor's buffer was not saved",
+            )
+            .body(why),
+        );
+        false
+    }
+
+    /// Put a fresh YAML editor in the old one's place, which drops its
+    /// buffer: what a close without saving does to the buffer once it is kept,
+    /// when the window then holds something else.
+    fn drop_editor_buffer(&mut self) {
+        if let Some(editor) = self.charts.items.get_mut(&PaneKey::new(EDITOR)) {
+            *editor = Box::new(crate::editor::EditorPane::new());
+        }
+        self.charts.doc.set_editor_buffer(None);
     }
 
     /// [`Self::title`] without the unsaved mark: the name of the subject, for
@@ -3809,6 +4595,13 @@ impl MeridianApp {
             // The Protocol, and the panel open from its tile when one is: the
             // crumbs the locator band draws, joined.
             return self.crumb_line().join(" \u{203a} ");
+        }
+        // A Protocol of the analyst's own files, a folder's model or a Protocol New Protocol made
+        // is named as the locator band's Name field names it: its folder. The chart document's
+        // title would name the data file the grid reads, which for a one-source Protocol is a copy
+        // in its `.grid` folder, and that is not what the analyst opened or named.
+        if let Some(dir) = self.open_protocol_dir() {
+            return display_name(&dir);
         }
         if self.graph_on_canvas() {
             format!("Protocol · {}", self.protocol.doc.model.protocol)
@@ -3923,7 +4716,8 @@ impl MeridianApp {
     }
 
     /// **What the ledger rail's strip says at its trailing end**: *last run*,
-    /// and the state of the run this Protocol came off.
+    /// or *last preview* for a run Brightfield started itself to preview the
+    /// sources, and the state of the run this Protocol came off.
     ///
     /// **The run's state, not a step's**, and the two are different facts on
     /// one screen. The rail is the run record — Log, Quality, Rows — so its
@@ -3949,7 +4743,8 @@ impl MeridianApp {
             return None;
         }
         Some(format!(
-            "last run \u{b7} {}",
+            "{} \u{b7} {}",
+            self.protocol.doc.model.last_run_label(),
             self.protocol.doc.model.last_run_word()
         ))
     }
@@ -4549,6 +5344,7 @@ impl MeridianApp {
             && !self.protocol.doc.model.has_assets()
             && self.tiles.is_none()
             && !self.model.as_ref().is_some_and(ModelDoc::shown)
+            && self.empty_protocol.is_none()
     }
 
     /// The rect the front door drew the gallery card for the start `id` at,
@@ -4623,12 +5419,19 @@ impl MeridianApp {
         self.door_open_file
     }
 
-    /// Whether the last frame's door asked for the file dialog — the test hook
-    /// that proves the control is wired without opening a dialog on anyone's
-    /// desktop.
+    /// Whether the last frame asked for the file dialog, by the door's Open, Cmd+O or the
+    /// palette — the test hook that proves the control is wired without opening a dialog on
+    /// anyone's desktop.
     #[must_use]
     pub fn pick_requested(&self) -> bool {
-        self.pick_requested
+        self.pick_requested || self.picker_asked
+    }
+
+    /// How many frames have asked for the file dialog since this window was made, by Cmd+O, the
+    /// palette or the door's Open: [`Self::pick_requested`] for an ask some frames back.
+    #[must_use]
+    pub fn picker_asks(&self) -> usize {
+        self.picker_asks
     }
 
     /// Permit this app to raise operating-system dialogs — the live window's
@@ -4794,7 +5597,7 @@ impl MeridianApp {
             let protocol = self.protocol.doc.model.source()?;
             Some(crate::versions::Source {
                 store: store.clone(),
-                file: brightfield_model::panel_capture::panel_file(&protocol.dir, &protocol.name),
+                file: protocol.chart_file(),
                 dir: protocol.dir.clone(),
             })
         });
@@ -4807,6 +5610,7 @@ impl MeridianApp {
         };
         let target = source.as_ref().map(|s| s.file.clone());
         let mut versions = std::mem::take(self.charts.doc.versions_mut());
+        versions.set_removed(self.charts.doc.removal_lines());
         versions.sync(
             source,
             shown,
@@ -4927,6 +5731,122 @@ impl MeridianApp {
     /// tier-agnostic.
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        self.open_queue.wake_with(&ctx);
+        // Files dropped on the front door open as the picker's choice does, the files of one drop
+        // together as one Protocol. A drop onto an open Protocol with sources is not taken yet,
+        // and a banner says where a drop opens.
+        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
+        if self.front_door_is_live() {
+            if let Some(request) = crate::open_queue::OpenRequest::of_paths(dropped) {
+                self.notifications
+                    .dismiss(NotificationId::new(DROP_NOT_TAKEN_BANNER));
+                self.open_queue.push(request);
+            }
+        } else if self.empty_protocol.is_some() {
+            // Files dropped on a Protocol with no sources yet are added to it, the files of one
+            // drop together, as its canvas says.
+            if !dropped.is_empty() {
+                self.notifications
+                    .dismiss(NotificationId::new(DROP_NOT_TAKEN_BANNER));
+                self.open_queue
+                    .push(crate::open_queue::OpenRequest::AddSources(dropped));
+            }
+        } else if !dropped.is_empty() {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(DROP_NOT_TAKEN_BANNER),
+                    Severity::Info,
+                    DROP_NOT_TAKEN_TITLE,
+                )
+                .body(DROP_NOT_TAKEN_BODY),
+            );
+            ctx.request_repaint();
+        }
+        // An open that waited for the frame before this one to draw what it is fetching: that
+        // frame has been presented, so the open runs now.
+        if let Some(paths) = self.pending_open.take() {
+            self.open_paths_now(&ctx, &paths);
+        }
+        // The Protocol the last launch ended on, held aside until the app has finished launching,
+        // by which the files the system launched it with are on the queue. A request that arrives
+        // before then is the analyst's, and the restore is dropped for it.
+        if self.restore.is_some() {
+            if !self.open_queue.is_empty() {
+                self.restore = None;
+            } else if self.open_queue.has_launched() {
+                if let Some(dir) = self.restore.take() {
+                    self.reopen_at_launch(&ctx, &dir);
+                }
+            }
+        }
+        // Whatever was asked to open since the last frame, from whichever way in, before anything
+        // is laid out, so the frame draws what the open left. A request that has to wait a frame
+        // stops the taking, and the rest wait in the queue behind it. Over a draft each one asks
+        // the close question; one asked for while the question is up is held behind it, so the
+        // way out the question was asked for stands.
+        // The opens held while the close question was up are taken once the question has gone,
+        // one Which Protocol sheet at a time. A window whose answer closed it, or that waits for
+        // a run before it closes, opens none of them, and one banner names them all.
+        if self.closing || self.close_after_runs {
+            let held: Vec<PathBuf> = std::mem::take(&mut self.held_for_question)
+                .into_iter()
+                .flat_map(|request| request_paths(&request))
+                .collect();
+            if !held.is_empty() {
+                let why = if self.closing {
+                    "The window is closing. Open it again after."
+                } else {
+                    "The window is closing once the run finishes. Open it again after."
+                };
+                self.say_not_opened(&crate::open_queue::OpenRequest::Paths(held), why);
+            }
+        } else if !matches!(
+            self.overlay,
+            Some(Overlay::CloseQuestion(_) | Overlay::WhichProtocol(_))
+        ) && !self.held_for_question.is_empty()
+        {
+            let request = self.held_for_question.remove(0);
+            self.take_or_ask(&ctx, request);
+        }
+        // The Which Protocol sheet holds the queue as a pending open does: a request pushed
+        // while it is up waits for its answer, rather than opening under it.
+        while self.pending_open.is_none()
+            && !matches!(self.overlay, Some(Overlay::WhichProtocol(_)))
+        {
+            let Some(request) = self.open_queue.pop() else {
+                break;
+            };
+            self.take_or_ask(&ctx, request);
+        }
+        // The Mac's quit, from the app menu or the Dock, which reaches the window on the same
+        // queue as its opens.
+        if self.open_queue.take_quit() {
+            self.leave(&ctx, Leaving::Quit);
+        }
+        // A Preferences file that is there but will not read sends new Protocols to the default
+        // folder, which is not the one the analyst chose, so the first frame says so.
+        if !std::mem::replace(&mut self.preferences_checked, true) {
+            if let Some(said) = crate::protocols_dir::setting_problem() {
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new(PREFERENCES_BANNER),
+                        Severity::Warning,
+                        "The Protocols folder setting could not be read",
+                    )
+                    .body(said),
+                );
+            }
+        }
+        // The app menu's Preferences…, which takes Cmd+, before the window sees it.
+        if self.open_queue.take_preferences() {
+            self.open_preferences();
+        }
         // Before anything is laid out: a fetch that finished since the last
         // frame replaces the documents, and a frame that drew the door first
         // and adopted the document after would draw one frame of a door for a
@@ -4936,6 +5856,8 @@ impl MeridianApp {
         // reloads the Protocol document, and a frame should draw the state the
         // run left rather than one frame of the state before it.
         self.poll_run(&ctx);
+        // A close that waited for those runs, now they have landed.
+        self.close_when_runs_land(&ctx);
         // A Protocol's panel tiles, when its newest run is not the one they
         // were drawn from: for the reason a finished run lands here.
         self.poll_panel_tiles(&ctx);
@@ -4963,22 +5885,15 @@ impl MeridianApp {
         }
         let mode = self.mode;
 
-        // The OS window's title, when the unsaved mark flipped since the last
-        // one sent. The top bar reads `title` each frame; the OS title is
-        // pushed, and a tile's switch is thrown mid-frame, after the openers
-        // that push one have run.
-        let marked = self.charts.doc.has_unsaved_work();
-        if marked != self.title_marked {
-            self.title_marked = marked;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
-        }
-        // …and when a Protocol's panel opened from its tile, or the tiles came
-        // back, since the last frame: the title is the crumbs, which moved.
-        let open_tile = self.tiles.as_ref().and_then(PanelTiles::selected);
-        if open_tile != self.titled_tile {
-            self.titled_tile = open_tile;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
-        }
+        // The OS window's title, whenever it differs from the last one sent.
+        // The top bar reads `title` each frame, but the OS title is pushed, and
+        // what it names moves mid-frame: a tile's switch thrown after the
+        // openers have run, a panel opened from its tile, or a folder opened as
+        // a model, which no opener re-titles. Comparing the whole title rather
+        // than each cause keeps the OS title from going stale on one nobody
+        // listed, as it did when a folder's model left the previous
+        // Protocol's table named in the title bar.
+        self.retitle_if_changed(&ctx);
 
         // **The grid's density is a fact about this frame's layout, so it is
         // cleared at the head of each frame.** The canvas branches below each
@@ -5085,6 +6000,8 @@ impl MeridianApp {
         // it is deliberately not an overlay-opener (so the registry cross-ref
         // that pins those three stays pinned).
         self.home_key(&ctx);
+        // Cmd+O, from anywhere no overlay owns the keyboard.
+        self.open_key(&ctx);
         // The navigator rail's round-trip focus toggle, on the same gate.
         self.navigator_key(&ctx);
         // The grid's move, on the same gate: a window verb, wherever focus is.
@@ -5121,6 +6038,23 @@ impl MeridianApp {
         // so the door is a state of the window's content plane rather than a
         // mode of the window.
         let door = self.front_door_is_live();
+        // Shown again after being hidden: the tree and the rows' run states are read afresh, so
+        // what was arranged in the Finder and what ran meanwhile is what the door draws.
+        if door && !self.door_was_live {
+            self.forget_door_listing();
+        }
+        self.door_was_live = door;
+        // A Protocol open while its folder is deleted or moved in the Finder says so.
+        if !door {
+            self.say_if_the_folder_is_gone(&ctx);
+        }
+        // A door row's name field belongs to the door: once the door is gone, so is the field, so
+        // a row drawn again later is not drawn mid-rename.
+        if !door {
+            self.door_rename = None;
+            self.door_rename_id = None;
+            self.door_hovered = None;
+        }
 
         // The protocol grammar is bare-key — `h j k l y t Enter Esc ⌫ shift-S`
         // with no modifier to disambiguate it — so it is fed only while the
@@ -5201,6 +6135,7 @@ impl MeridianApp {
         let mut requests: Vec<Request> = Vec::new();
         // What the model inspector's buttons chose, dispatched once the canvas has drawn.
         let mut model_actions = Vec::new();
+        self.empty_canvas_said = None;
         if door {
             // ---- the navigator rail, on the door.
             //
@@ -5310,6 +6245,7 @@ impl MeridianApp {
             self.door_rows.clear();
             self.door_help = None;
             self.door_open_file = None;
+            self.door_new_protocol = None;
             let drawn = CentralPanel::default()
                 .frame(chrome::region_frame(canvas.frame, ui, mode))
                 .show(ui, |ui| {
@@ -5317,6 +6253,29 @@ impl MeridianApp {
                 });
             self.regions.push((canvas.id, drawn.response.rect));
             model_actions = model.doc.take_actions();
+        } else if let Some(name) = self.empty_protocol.as_ref().map(|p| display_name(&p.dir)) {
+            // A Protocol with no sources, across the canvas region in place of the dock, as the
+            // model pane is: both documents are empty, so every rail would draw its empty state.
+            // The canvas says how to add a source and offers the file picker for one.
+            self.door_cards.clear();
+            self.door_card_feet.clear();
+            self.door_sections.clear();
+            self.door_rows.clear();
+            self.door_help = None;
+            self.door_open_file = None;
+            self.door_new_protocol = None;
+            let said = empty_canvas_words(&name);
+            let mut add = false;
+            let drawn = CentralPanel::default()
+                .frame(chrome::region_frame(canvas.frame, ui, mode))
+                .show(ui, |ui| {
+                    add = draw_empty_canvas(ui, &said, mode);
+                });
+            self.regions.push((canvas.id, drawn.response.rect));
+            self.empty_canvas_said = Some(said);
+            if add {
+                self.add_source_pick_requested = true;
+            }
         } else {
             // Content somewhere, so the regions — and no stale door geometry: a
             // test that asks where a card was after the door has gone must
@@ -5327,6 +6286,7 @@ impl MeridianApp {
             self.door_rows.clear();
             self.door_help = None;
             self.door_open_file = None;
+            self.door_new_protocol = None;
 
             // The inspector's own read of "what is selected" — the same value
             // `status_rail_ui` reads for the rail's status lines, computed here
@@ -5361,12 +6321,16 @@ impl MeridianApp {
                 .is_some_and(|tiles| tiles.selected().is_some())
                 || self.model_behind_grid();
             let mut crumb_back = false;
+            // The open Protocol's name and the folder it is in, each a field the band opens for
+            // typing: a rename and a move, both kept at once.
+            let place = self.open_protocol_dir();
+            let mut edit = self.place_edit.take().filter(|_| place.is_some());
             let drawn = Panel::top(panel_id(locator, false))
                 .resizable(false)
                 .exact_size(band_extent(locator))
                 .frame(chrome::region_frame(locator.frame, ui, mode))
                 .show(ui, |ui| {
-                    locator_band_ui(
+                    let link = locator_band_ui(
                         ui,
                         &crumbs,
                         counts.as_deref(),
@@ -5374,12 +6338,31 @@ impl MeridianApp {
                         source_about.as_deref(),
                         crumb_link,
                         mode,
-                    )
+                    );
+                    let placed = place
+                        .as_deref()
+                        .map(|dir| place_band_ui(ui, dir, source.as_deref(), &mut edit, mode));
+                    (link, placed)
                 });
             self.regions.push((locator.id, drawn.response.rect));
-            self.crumb_link_rect = drawn.inner.map(|(rect, _)| rect);
-            if drawn.inner.is_some_and(|(_, clicked)| clicked) {
+            let (link, placed) = drawn.inner;
+            self.crumb_link_rect = link.map(|(rect, _)| rect);
+            if link.is_some_and(|(_, clicked)| clicked) {
                 crumb_back = true;
+            }
+            self.place_edit = edit;
+            self.place_rects = placed.as_ref().map(|p| p.rects);
+            self.choose_rect = placed.as_ref().and_then(|p| p.choose_rect);
+            if let Some(placed) = placed {
+                if placed.choose {
+                    self.location_pick_requested = true;
+                }
+                if let Some(field) = placed.opened {
+                    self.open_place_field(field);
+                }
+                if placed.entered.is_some() {
+                    self.place_move = placed.entered;
+                }
             }
 
             // The key-hint band belongs to a key grammar, so it is drawn where
@@ -6272,23 +7255,73 @@ impl MeridianApp {
         self.controls = self.name_controls(std::mem::take(&mut bar.controls));
 
         self.apply(&ctx, graph_on_canvas, requests);
+        // Cmd+S, after the panes have drawn: the YAML editor takes the chord while its text holds
+        // the keyboard, saves its buffer and raises the window's Save, applied just above, so
+        // what reaches here is a press from anywhere else.
+        self.save_key(&ctx);
+        self.quit_key(&ctx);
+        // F2, and a place field entered this frame: a rename or move reopens the Protocol, so it
+        // waits until every pane has drawn.
+        self.rename_key(&ctx);
+        self.new_protocol_key(&ctx);
+        self.preferences_key(&ctx);
+        if std::mem::take(&mut self.location_pick_requested) && self.dialogs_allowed {
+            if let Some(parent) = self
+                .open_protocol_dir()
+                .and_then(|d| d.parent().map(PathBuf::from))
+            {
+                if let Some(chosen) = rfd::FileDialog::new()
+                    .set_title("Move the Protocol into")
+                    .set_directory(&parent)
+                    .pick_folder()
+                {
+                    self.place_move = Some(Move::Relocate(chosen));
+                }
+            }
+        }
+        if let Some(to) = self.place_move.take() {
+            self.leave(&ctx, Leaving::Move(to));
+        }
+        // New Protocol's Other…, and the empty canvas's Add source…: each raises a system picker,
+        // after the frame and only where dialogs are allowed, as Choose… does.
+        if std::mem::take(&mut self.new_protocol_pick_requested) && self.dialogs_allowed {
+            if let Some(chosen) = rfd::FileDialog::new()
+                .set_title("Make the Protocol in")
+                .set_directory(crate::protocols_dir::root())
+                .pick_folder()
+            {
+                self.leave(&ctx, Leaving::Make(chosen));
+            }
+        }
+        // Preferences' Choose…, on the same terms.
+        if std::mem::take(&mut self.preferences_pick_requested) && self.dialogs_allowed {
+            if let Some(chosen) = rfd::FileDialog::new()
+                .set_title("Use as the Protocols folder")
+                .set_directory(crate::protocols_dir::root())
+                .pick_folder()
+            {
+                self.choose_protocols_folder(&ctx, &chosen);
+            }
+        }
+        if std::mem::take(&mut self.add_source_pick_requested) && self.dialogs_allowed {
+            crate::data_file::pick(&self.open_queue, crate::open_queue::OpenRequest::of_sources);
+        }
+        if let Some((id, name)) = self.door_renamed.take() {
+            self.rename_door_row(&ctx, &id, &name);
+        }
 
         // The file dialog, after the frame and outside every borrow it took:
-        // it blocks the thread on a window this process did not lay out, so it
-        // may not run inside the layout pass. A cancelled dialog is not an
-        // error and says nothing — the user changed their mind.
+        // it raises a window this process did not lay out, so it may not run
+        // inside the layout pass. On the Mac the open panel returns at once and
+        // its choice comes back on the open queue; elsewhere the picker blocks
+        // until answered. A cancelled dialog is not an error and says nothing —
+        // the user changed their mind.
         //
-        // `dialogs_allowed` is the gate, not an afterthought: every other tier
-        // that drives this method has no user in front of it, and a modal
-        // raised there hangs until something kills it. The flag is left set so
-        // a headless test can still assert the control asked; the door rewrites
-        // it on its next frame.
-        // An open that waited a frame so the canvas could say what it is fetching first. Taken
-        // before the picker, so a path latched on this frame waits for the next one, after this
-        // frame has drawn the notice.
-        if let Some(path) = self.pending_open.take() {
-            self.open_path_now(&ctx, &path);
-        }
+        // `dialogs_allowed` is the gate, not an afterthought: the other tiers
+        // that drive this method have no user in front of them, and a modal
+        // raised there hangs until something kills it. Without a dialog the
+        // ask is still taken and counted, so a headless test can assert that
+        // Cmd+O, the palette or the door's Open asked.
         // The export's save dialog, on the same terms as the picker below it.
         if let Some(picture) = self.picture_to_save.take() {
             if self.dialogs_allowed {
@@ -6300,11 +7333,16 @@ impl MeridianApp {
                 }
             }
         }
-        if self.pick_requested && self.dialogs_allowed {
-            self.pick_requested = false;
-            if let Some(path) = crate::data_file::pick() {
-                self.open_path(&ctx, &path.to_string_lossy());
-            }
+        // Taken whether or not a dialog may be raised, so an ask a headless window cannot answer
+        // does not carry over to the next frame. The frame's requests are applied above this, but
+        // a palette choice is applied later, in `overlay_ui` below, so an ask chosen from the
+        // palette is taken by the next frame's block.
+        self.picker_asked = std::mem::take(&mut self.pick_requested);
+        if self.picker_asked {
+            self.picker_asks += 1;
+        }
+        if self.picker_asked && self.dialogs_allowed {
+            crate::data_file::pick(&self.open_queue, crate::open_queue::OpenRequest::of_paths);
         }
         // A saved Protocol picked off the door. No dialog and no gate: the path
         // came off a row this build already decided it can reopen, so unlike
@@ -6322,7 +7360,7 @@ impl MeridianApp {
             }
         }
         if bar.home {
-            self.open_home(&ctx);
+            self.leave(&ctx, Leaving::Home);
         }
         // After the panes have drawn, because the controls rail dispatches a
         // slider's queued value inside its own draw — so this frame's gesture
@@ -6394,8 +7432,73 @@ impl MeridianApp {
             return;
         }
         if self.home_binding.is_some_and(|t| consume_token(ctx, t)) {
-            self.open_home(ctx);
+            self.leave(ctx, Leaving::Home);
         }
+    }
+
+    /// Ask for the picker if the registry's `open` keystroke was pressed this frame and no overlay
+    /// owns the keyboard.
+    ///
+    /// Unlike [`Self::home_key`] it fires while a text field holds the keyboard, as Cmd+O does in
+    /// any Mac app: no text field here reads the chord, so taking it leaves typing as it was. The
+    /// ask is latched, as the door's Open button's is, and taken later in the frame.
+    fn open_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if self.open_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.pick_requested = true;
+        }
+    }
+
+    /// Save the Protocol if the registry's `save-protocol` keystroke is down this frame.
+    ///
+    /// It fires whatever pane holds focus, and while a text field holds the keyboard, as Cmd+S
+    /// does in any Mac app: no text field but the YAML editor reads the chord, and the editor has
+    /// taken it already when its text holds the keys ([`crate::editor`]). The close question is
+    /// the one overlay it stands down under, since that question asks about saving itself.
+    fn save_key(&mut self, ctx: &egui::Context) {
+        if matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
+            return;
+        }
+        if self.save_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.save_everything(ctx);
+        }
+    }
+
+    /// Quit if the registry's `quit` keystroke is down this frame, asking the close question
+    /// first over a draft. On the Mac the app menu's Quit takes Cmd+Q before the window sees it
+    /// and reaches here by the open queue instead; this is the key where no menu takes it.
+    fn quit_key(&mut self, ctx: &egui::Context) {
+        if self.quit_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.leave(ctx, Leaving::Quit);
+        }
+    }
+
+    /// **Save what the window holds that no file does**: the YAML editor's buffer when it is
+    /// edited, whether or not the editor has the keyboard, then the Protocol while work is left
+    /// to write ([`Self::anything_to_save`]). With no work pending it writes no file
+    /// (`cmd_s_with_nothing_pending_writes_nothing`).
+    fn save_everything(&mut self, ctx: &egui::Context) {
+        if !self.anything_to_save() {
+            return;
+        }
+        if !self.save_editor_buffer() || !self.save_model_draft(ctx) {
+            return;
+        }
+        if self.anything_to_save() {
+            self.save_protocol(ctx);
+        }
+    }
+
+    /// Whether `save-protocol` has anything to write: work the chart document holds and no file
+    /// does, or a Protocol whose manifest is not on disk yet. With neither, Cmd+S writes nothing,
+    /// so a habitual press touches no file and wakes no watcher.
+    fn anything_to_save(&self) -> bool {
+        self.has_unsaved_work()
+            || self.protocol.doc.model.source().is_some_and(|source| {
+                !crate::one_step::OneStepProtocol::manifest_path_in(&source.dir).is_file()
+            })
     }
 
     /// Move focus to the navigator rail, or put it back, if the registry's
@@ -7396,7 +8499,8 @@ impl MeridianApp {
         let puts_column = !self.graph_on_canvas()
             && self.protocol.doc.model.outline_column().is_some()
             && self.charts.shelf.band.is_some();
-        let allow = crate::overlays::protocol_palette_verbs(puts_column);
+        let removes_step = self.protocol.doc.model.removable_step().is_some();
+        let allow = crate::overlays::protocol_palette_verbs(puts_column, removes_step);
         self.overlay = Some(Overlay::Palette(Picker::new(
             CommandPalette::new_restricted(Altitude::Protocol, self.recency.clone(), &allow),
         )));
@@ -7508,6 +8612,10 @@ impl MeridianApp {
         let mut becomes = None;
         let mut kept: Option<(TypedAnswer, Option<String>)> = None;
         let mut where_kept: Option<String> = None;
+        let mut make_in: Option<NewProtocolPlace> = None;
+        let mut which_open: Option<PathBuf> = None;
+        let mut preferences_action = None;
+        let mut question_dismissed = false;
         match &mut overlay {
             Overlay::Palette(picker) => {
                 let chrome = ModalChrome::new().title("Commands").enter_hint("run");
@@ -7631,17 +8739,100 @@ impl MeridianApp {
                 // whatever the card holds.
                 let typed = close_question_keys(ctx, question);
                 let chrome = ModalChrome::new()
-                    .title(CLOSE_QUESTION_TITLE)
+                    .title(question.title())
                     .without_esc_hint();
                 let shown = ModalLayer::show(ctx, "bf-overlay-close-question", &chrome, |ui| {
                     close_question_body(ui, question)
                 });
-                answered = typed
-                    .or(shown.inner)
-                    .or(shown.dismissed.then_some(CloseAnswer::KeepEditing));
+                answered = typed.or(shown.inner);
+                // Esc and a click outside are Keep editing, except where the question words them
+                // otherwise ([`Self::dismiss_close_question`]).
+                question_dismissed = answered.is_none() && shown.dismissed;
                 // The answer decides whether the question stays: a close
                 // without saving that could not keep the chart leaves it up.
                 close = false;
+            }
+            Overlay::NewProtocol(sheet) => {
+                // Enter makes the Protocol in the place chosen, as Make does; Esc and a click on
+                // the backdrop make nothing. Enter is read before the card draws, so no control
+                // inside it takes the press as well.
+                let enter =
+                    ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                // The arrows move the choice, as they move a picker's.
+                let (down, up) = ctx.input_mut(|i| {
+                    (
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                    )
+                });
+                let last = sheet.places.len().saturating_sub(1);
+                if down {
+                    sheet.selected = (sheet.selected + 1).min(last);
+                }
+                if up {
+                    sheet.selected = sheet.selected.saturating_sub(1);
+                }
+                let chrome = ModalChrome::new()
+                    .title("New Protocol")
+                    .enter_hint("make")
+                    .esc_hint("cancel")
+                    .narrow();
+                let shown = ModalLayer::show(ctx, "bf-overlay-new-protocol", &chrome, |ui| {
+                    new_protocol_body(ui, sheet)
+                });
+                if enter || shown.inner {
+                    make_in = sheet.places.get(sheet.selected).cloned();
+                    close = true;
+                } else {
+                    close = shown.dismissed;
+                }
+            }
+            Overlay::WhichProtocol(sheet) => {
+                // As the New Protocol sheet reads them: Enter opens the row chosen, as Open does,
+                // the arrows move the choice, and Esc and a click on the backdrop open nothing.
+                let enter =
+                    ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                let (down, up) = ctx.input_mut(|i| {
+                    (
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                    )
+                });
+                let last = sheet.choices.len();
+                if down {
+                    sheet.selected = (sheet.selected + 1).min(last);
+                }
+                if up {
+                    sheet.selected = sheet.selected.saturating_sub(1);
+                }
+                let chrome = ModalChrome::new()
+                    .title("Which Protocol?")
+                    .enter_hint("open")
+                    .esc_hint("cancel");
+                let shown = ModalLayer::show(ctx, "bf-overlay-which-protocol", &chrome, |ui| {
+                    which_protocol_body(ui, sheet)
+                });
+                if enter || shown.inner {
+                    which_open = Some(match sheet.choices.get(sheet.selected) {
+                        Some(choice) => choice.dir.clone(),
+                        None => sheet.file.clone(),
+                    });
+                    close = true;
+                } else {
+                    close = shown.dismissed;
+                }
+            }
+            Overlay::Preferences(sheet) => {
+                let folder = crate::protocols_dir::root();
+                let overridden = protocols_dir_override();
+                let chrome = ModalChrome::new().title("Preferences").esc_hint("close");
+                let shown = ModalLayer::show(ctx, "bf-overlay-preferences", &chrome, |ui| {
+                    crate::preferences::body(ui, sheet, &folder, overridden)
+                });
+                preferences_action = shown.inner;
+                // Closing the sheet with an offer waiting leaves the Protocols where they are:
+                // the offer is made once.
+                close = shown.dismissed;
             }
         }
         if let Some(next) = becomes {
@@ -7664,6 +8855,37 @@ impl MeridianApp {
         }
         if let Some(answer) = answered {
             self.answer_close_question(ctx, answer);
+        }
+        if question_dismissed {
+            self.dismiss_close_question(ctx);
+        }
+        // A Protocol chosen opens as any open does, asking first over a draft; New Protocol opens
+        // the file itself, which makes a Protocol of it, since only a request taken off the queue
+        // looks for the Protocols a file already has.
+        if let Some(path) = which_open {
+            if path.is_dir() {
+                self.open_known(ctx, path);
+            } else {
+                self.leave(
+                    ctx,
+                    Leaving::Open(crate::open_queue::OpenRequest::Path(path)),
+                );
+            }
+        }
+        match make_in {
+            Some(NewProtocolPlace::Folder { dir, .. }) => self.leave(ctx, Leaving::Make(dir)),
+            Some(NewProtocolPlace::Other) => self.new_protocol_pick_requested = true,
+            None => {}
+        }
+        match preferences_action {
+            Some(crate::preferences::PreferencesAction::Choose) => {
+                self.preferences_pick_requested = true;
+            }
+            Some(crate::preferences::PreferencesAction::Move) => self.answer_move_offer(ctx, true),
+            Some(crate::preferences::PreferencesAction::Leave) => {
+                self.answer_move_offer(ctx, false);
+            }
+            None => {}
         }
     }
 
@@ -7896,12 +9118,59 @@ impl MeridianApp {
     /// Protocol is laid out again with it, its table is brought to the front
     /// in the grid with the cursor on its first cell and the keys, and its
     /// rows are counted on a worker.
+    ///
+    /// Over a join's rows nothing is kept: the join is no table of the
+    /// Protocol's a step could stand on, so a banner says so
+    /// (`a_statement_typed_on_a_joins_grid_is_not_kept`).
     fn keep_statement(
         &mut self,
         ctx: &egui::Context,
         answer: &TypedAnswer,
         replacing: Option<&str>,
     ) {
+        // Over a join's rows a statement has no table of the Protocol's to be a step on, so it
+        // is refused rather than held as work no Save could record.
+        if !self.charts.doc.views_are_steps() {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(NOT_KEPT_ON_A_JOIN_BANNER),
+                    Severity::Warning,
+                    "This statement was not kept",
+                )
+                .body(NOT_KEPT_ON_A_JOIN_BODY),
+            );
+            ctx.request_repaint();
+            return;
+        }
+        // A statement that reads what a step removed and not yet saved makes would read a table
+        // the Save takes out, so it is refused, naming the step.
+        let reads_removed: Vec<String> = {
+            let model = &self.protocol.doc.model;
+            let read: Vec<String> = answer
+                .reading
+                .tables
+                .iter()
+                .map(|t| t.to_lowercase())
+                .collect();
+            self.charts
+                .doc
+                .removing_steps()
+                .into_iter()
+                .filter(|step| model.tables_of_step(step).iter().any(|t| read.contains(t)))
+                .collect()
+        };
+        if !reads_removed.is_empty() {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new("remove-step"),
+                    Severity::Warning,
+                    NOT_KEPT_READS_REMOVED,
+                )
+                .body(reads_removed_sentence(&reads_removed)),
+            );
+            ctx.request_repaint();
+            return;
+        }
         let name = self.kept_name(answer, replacing);
         let reads = answer.reading.tables.clone();
         if replacing == Some(name.as_str()) {
@@ -8044,29 +9313,64 @@ impl MeridianApp {
         }
     }
 
-    /// **Read a close request and, over a window that carries the unsaved
-    /// mark, answer it with the question instead of the close.**
+    /// **Read a close request and answer it with the front door**, asking the
+    /// close question first over a window that carries the unsaved mark.
     ///
     /// The request is `ViewportInfo::close_requested` in this frame's input:
     /// the window's close button, and `ViewportCommand::Close` sent by anyone,
-    /// this window included. eframe closes the root viewport unless the frame
-    /// sends `ViewportCommand::CancelClose`, so a window that read no request
-    /// closed and took its edit with it. This sends the cancel and opens
-    /// [`Overlay::CloseQuestion`] in the window's one modal slot, replacing
-    /// whatever overlay was open; a second request while the question is up
-    /// is cancelled again and leaves it as it is, with what it says.
+    /// this window included. eframe closes the root viewport, which ends the
+    /// app, unless the frame sends `ViewportCommand::CancelClose`. So a close
+    /// over a Protocol is cancelled and goes through [`Self::leave`] as
+    /// [`Leaving::Close`]: over a draft the question opens in the window's one
+    /// modal slot, and its answer goes to the door; with nothing pending the
+    /// door shows at once. A request while the question is up is cancelled
+    /// and leaves the question as it is, with what it says and where it goes.
+    /// The window stays, as a Mac app's does when its last document closes,
+    /// and only a quit ends the app.
     ///
-    /// A window without the mark, and one whose close was already decided
-    /// ([`Self::allow_close`]), is not touched: the request goes through
-    /// uncancelled, which is how eframe closes it.
+    /// A close on the door has nowhere else to go, and one whose close was
+    /// already decided ([`Self::allow_close`]: a quit, the screenshot
+    /// countdown) is the app ending: both go through uncancelled, which is how
+    /// eframe closes the window. A close on the door while a run the window
+    /// started is outstanding is a quit instead, and waits for the run as one
+    /// does (`a_close_on_the_door_waits_for_a_run_as_a_quit_does`).
     fn observe_close_request(&mut self, ctx: &egui::Context) {
         if !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
-        if self.ask_before_closing() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.request_repaint();
+        // A quit already answered, waiting for a run to land: a close is the analyst ending the
+        // app now, whatever the run, so it goes through uncancelled once the unsaved work is kept
+        // as a version. Work that cannot be kept cancels the close and asks again, saying why.
+        if self.close_after_runs {
+            if self.keep_what_changed_while_waiting(true) {
+                self.allow_close();
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.request_repaint();
+            }
+            return;
         }
+        if self.closing {
+            return;
+        }
+        // On the door the close is the app ending, which waits for a run the window started, as a
+        // quit does, so the run keeps its record.
+        if self.front_door_is_live() {
+            if self.run_outstanding() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.leave(ctx, Leaving::Quit);
+                ctx.request_repaint();
+            }
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        // A close while the question is up leaves it as it is, asking for what it was asked
+        // for: the system raises a close of its own around a quit, and the quit is the one
+        // the analyst chose.
+        if self.close_question().is_none() {
+            self.leave(ctx, Leaving::Close);
+        }
+        ctx.request_repaint();
     }
 
     /// **Open the close question, as a close request over the unsaved mark
@@ -8083,10 +9387,252 @@ impl MeridianApp {
         if self.closing || !self.carries_unsaved_mark() {
             return false;
         }
+        self.ask(Leaving::Close);
+        true
+    }
+
+    /// **Leave the Protocol this window holds for `to`, asking first when a
+    /// draft is pending**: the one door every way out goes through.
+    ///
+    /// Over a window that carries the unsaved mark the close question opens,
+    /// and `to` waits for its answer ([`Self::answer_close_question`]): *Save*
+    /// saves and then goes, *Close without saving* keeps the drafts as a
+    /// version and then goes, and *Keep editing* stays and drops `to`. A way
+    /// out asked for while the question is up takes the place of the one it
+    /// was asked for, so the latest choice is the one that goes; an open from
+    /// the queue is held behind the question instead, and taken after it. Without
+    /// the mark, `to` goes at once.
+    ///
+    /// Going is `Self::open_home` for Home and for the window's close, the
+    /// open itself for an open, and the app's end for a quit, which waits for
+    /// any run the window started so no run's record is lost
+    /// (`Self::close_when_runs_land`).
+    pub fn leave(&mut self, ctx: &egui::Context, to: Leaving) {
+        // A quit already answered and waiting for a run (by Cmd+Q, or a close on the door while a
+        // run is out): a close or quit closes now, so a run that never finishes cannot keep the
+        // app open, and any other way out is refused with the banner that says what the window is
+        // waiting for.
+        if self.close_after_runs {
+            match to {
+                Leaving::Close | Leaving::Quit => {
+                    if self.keep_what_changed_while_waiting(true) {
+                        self.close_window(ctx);
+                    } else {
+                        ctx.request_repaint();
+                    }
+                }
+                Leaving::Home
+                | Leaving::Move(_)
+                | Leaving::Make(_)
+                | Leaving::MoveAll { .. }
+                | Leaving::Reload => {
+                    self.say_waiting_for_runs(ctx);
+                }
+                Leaving::Open(request) => {
+                    self.say_not_opened(
+                        &request,
+                        "The window is closing once the run finishes. Open it again after.",
+                    );
+                    self.say_waiting_for_runs(ctx);
+                }
+            }
+            return;
+        }
+        if matches!(to, Leaving::Home) && self.front_door_is_live() {
+            return;
+        }
+        if self.carries_unsaved_mark() {
+            self.ask(to);
+            ctx.request_repaint();
+        } else {
+            self.go(ctx, to);
+        }
+    }
+
+    /// Open the close question for `to`, in place of whatever overlay was
+    /// open; one already up is left as it is, with what it says, and asks for
+    /// `to` from now on.
+    fn ask(&mut self, to: Leaving) {
         if !matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
             self.overlay = Some(Overlay::CloseQuestion(self.close_question_for_now()));
+            self.unkept_accepted = false;
         }
-        true
+        // Worded for what it is asked before now, the latest way out.
+        if let Some(Overlay::CloseQuestion(question)) = self.overlay.as_mut() {
+            question.before = match &to {
+                Leaving::Move(Move::Rename(_)) => crate::overlays::AskedBefore::Renaming,
+                Leaving::Move(Move::Relocate(_)) => crate::overlays::AskedBefore::Moving,
+                Leaving::Open(
+                    crate::open_queue::OpenRequest::AddSource(_)
+                    | crate::open_queue::OpenRequest::AddSources(_),
+                ) => crate::overlays::AskedBefore::AddingSource,
+                Leaving::Make(_) => crate::overlays::AskedBefore::Making,
+                Leaving::MoveAll { .. } => crate::overlays::AskedBefore::MovingToNewFolder,
+                Leaving::Reload => crate::overlays::AskedBefore::Reloading,
+                _ => crate::overlays::AskedBefore::Leaving,
+            };
+        }
+        self.leaving = Some(to);
+    }
+
+    /// Go where `to` says, with nothing left to ask.
+    fn go(&mut self, ctx: &egui::Context, to: Leaving) {
+        // A loss chosen for a quit is not carried into any other way out.
+        if !matches!(to, Leaving::Quit) {
+            self.unkept_accepted = false;
+        }
+        match to {
+            // The window's close shows the door and leaves the app running, so a run the window
+            // started goes on and lands as it does after Home.
+            Leaving::Close | Leaving::Home => self.open_home(ctx),
+            Leaving::Quit => self.close_once_runs_land(ctx),
+            Leaving::Open(request) => self.take_open_request(ctx, request),
+            Leaving::Move(to) => self.move_open_protocol(ctx, &to),
+            Leaving::Make(parent) => self.make_new_protocol_in(ctx, &parent),
+            Leaving::MoveAll { from, to } => self.move_all_protocols(ctx, &from, &to, false),
+            Leaving::Reload => self.reload_now(ctx),
+        }
+    }
+
+    /// **Close this window, once every run it started has landed.**
+    ///
+    /// A run is `arc` in a child process writing its record into the
+    /// Protocol's folder, and its output comes back on a pipe to this one: a
+    /// window that closed under it would end the process the run reports to,
+    /// and could cost the run its record. So a close with a run outstanding
+    /// waits, with a banner saying so, and closes when the run lands
+    /// ([`Self::close_when_runs_land`]), keeping the unsaved work it then
+    /// holds as a version, so work made while it waits is not closed over
+    /// unkept (`a_quit_whose_run_lands_keeps_yaml_typed_while_waiting`). A
+    /// second close or quit while it waits closes at once ([`Self::leave`]),
+    /// so a run that does not finish cannot hold the app open
+    /// (`a_second_quit_while_waiting_for_a_run_closes_now`), and keeps the
+    /// work made during the wait as a version first.
+    fn close_once_runs_land(&mut self, ctx: &egui::Context) {
+        if !self.run_outstanding() {
+            self.close_window(ctx);
+            return;
+        }
+        self.close_after_runs = true;
+        self.say_waiting_for_runs(ctx);
+    }
+
+    /// Raise the banner that says the window waits for a run before it closes, and how to
+    /// close now.
+    fn say_waiting_for_runs(&mut self, ctx: &egui::Context) {
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new(CLOSING_AFTER_RUN_BANNER),
+                Severity::Info,
+                WAITING_FOR_RUN_TITLE,
+            )
+            .body(WAITING_FOR_RUN_BODY),
+        );
+        ctx.request_repaint();
+    }
+
+    /// Say that `request` was not opened, because the window is closing, and `why` in the
+    /// banner's body: an open refused while it closes is not kept, and is not dropped unsaid.
+    fn say_not_opened(&mut self, request: &crate::open_queue::OpenRequest, why: &str) {
+        use crate::open_queue::OpenRequest;
+        let what = match request {
+            OpenRequest::Path(path) => display_name(path),
+            OpenRequest::Paths(paths) => paths.first().map_or_else(String::new, |p| {
+                if paths.len() > 1 {
+                    format!("{} and {} more", display_name(p), paths.len() - 1)
+                } else {
+                    display_name(p)
+                }
+            }),
+            OpenRequest::Link(link) => link.clone(),
+            OpenRequest::AddSource(path) => display_name(path),
+            OpenRequest::AddSources(paths) => paths.first().map_or_else(String::new, |p| {
+                if paths.len() > 1 {
+                    format!("{} and {} more", display_name(p), paths.len() - 1)
+                } else {
+                    display_name(p)
+                }
+            }),
+        };
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new(NOT_OPENED_WHILE_CLOSING_BANNER),
+                Severity::Warning,
+                format!("{what} was not opened"),
+            )
+            .body(why),
+        );
+    }
+
+    /// **Stop waiting for runs, for a close or quit made during the wait**, keeping as a version
+    /// whatever unsaved work the window holds: the analyst asked to leave now, so the work is
+    /// kept rather than asked about, and a banner says so
+    /// (`a_second_quit_keeps_the_edits_made_while_waiting`). It is kept whether or not it changed
+    /// since the quit was answered, since the question's lines for the YAML editor and the model
+    /// file name the edit and not its text, so typing more in either would read as no change
+    /// (`a_second_quit_keeps_yaml_typed_while_waiting`). Work the answer already kept is kept
+    /// again, as a second version.
+    ///
+    /// Answers whether the window may close. Work that cannot be kept is not closed over: the
+    /// close question opens again for the quit, saying why, as Close without saving says it, and
+    /// the window stays (`a_second_quit_that_cannot_keep_the_work_asks_again`). Once the analyst
+    /// has answered that question Close without saving, a later close or quit the analyst makes
+    /// (`asked`) that cannot keep the work either closes, since the loss was chosen; a run
+    /// landing asks again (`a_run_landing_over_work_that_cannot_be_kept_asks_again`).
+    fn keep_what_changed_while_waiting(&mut self, asked: bool) -> bool {
+        self.stop_waiting_for_runs();
+        if !self.has_unsaved_work() {
+            return true;
+        }
+        match self.keep_unsaved() {
+            Ok(()) => {
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new(KEPT_WHILE_CLOSING_BANNER),
+                        Severity::Info,
+                        KEPT_WHILE_CLOSING_TITLE,
+                    )
+                    .body("The Versions panel lists them as closed unsaved."),
+                );
+                true
+            }
+            Err(why) => {
+                eprintln!("the unsaved work could not be kept before closing: {why}");
+                if asked && self.unkept_accepted {
+                    return true;
+                }
+                self.ask(Leaving::Quit);
+                if let Some(Overlay::CloseQuestion(question)) = self.overlay.as_mut() {
+                    question.not_kept = Some(why);
+                }
+                false
+            }
+        }
+    }
+
+    /// Stop waiting for runs to land before closing, and take the banner that said so down.
+    fn stop_waiting_for_runs(&mut self) {
+        self.close_after_runs = false;
+        self.notifications
+            .dismiss(NotificationId::new(CLOSING_AFTER_RUN_BANNER));
+    }
+
+    /// The close that waited for this window's runs, once they have landed:
+    /// the unsaved work the window holds is kept as a version and the window
+    /// closes, or, when it cannot be kept, the close question asks again,
+    /// saying why ([`Self::keep_what_changed_while_waiting`],
+    /// `a_quit_whose_run_lands_keeps_yaml_typed_while_waiting`).
+    fn close_when_runs_land(&mut self, ctx: &egui::Context) {
+        if !self.close_after_runs || self.run_outstanding() {
+            return;
+        }
+        // The run landing is not the analyst asking to close over work that cannot be kept, so
+        // a loss chosen before the wait does not cover it.
+        if self.keep_what_changed_while_waiting(false) {
+            self.close_window(ctx);
+        } else {
+            ctx.request_repaint();
+        }
     }
 
     /// **What the close question says about this window now**: the chart
@@ -8097,9 +9643,7 @@ impl MeridianApp {
     fn close_question_for_now(&self) -> CloseQuestion {
         let protocol = self.protocol.doc.model.source();
         let target = match protocol {
-            Some(p) => Some(brightfield_model::panel_capture::panel_file(
-                &p.dir, &p.name,
-            )),
+            Some(p) => Some(p.chart_file()),
             None => self.charts.doc.spec_path.clone(),
         };
         let file = match (&target, protocol) {
@@ -8124,14 +9668,46 @@ impl MeridianApp {
         let changes = target
             .as_deref()
             .map_or_else(Vec::new, |file| self.charts.doc.unsaved_changes(file));
+        // The chart's edits first, the shelf's and the YAML editor's on the chart's spec, then
+        // the Protocol's, so the question can count each kind and call each by its name.
         let mut edits = crate::versions::change_lines(&changes, &tile_of);
+        edits.extend(
+            self.editor_unsaved_name()
+                .map(|name| format!("YAML editor \u{b7} {name} edited")),
+        );
+        let chart_edits = edits.len();
         edits.extend(self.charts.doc.grid_view_line());
         edits.extend(self.charts.doc.typed_lines());
+        edits.extend(self.charts.doc.removal_lines());
+        let mut file = file;
+        if let Some(model) = self.model.as_ref() {
+            if model.doc.file_edit_unsaved() {
+                edits.push(format!(
+                    "Model \u{b7} {} edited in the file view",
+                    crate::discovery::MODEL_FILE
+                ));
+            } else if model.doc.run_waiting() {
+                edits.push("Model \u{b7} not yet run since its last edit".to_string());
+            }
+            if target.is_none() && self.model_draft_unsaved() {
+                file = crate::discovery::MODEL_FILE.to_string();
+            }
+        }
+        let protocol = self.open_protocol_dir().map_or_else(
+            || match self.protocol.doc.model.protocol.as_str() {
+                "" => "The Protocol".to_string(),
+                name => name.to_string(),
+            },
+            |dir| display_name(&dir),
+        );
         CloseQuestion {
             file,
             edits,
+            chart_edits,
+            protocol,
             not_kept: None,
             focused: None,
+            before: crate::overlays::AskedBefore::Leaving,
         }
     }
 
@@ -8152,57 +9728,122 @@ impl MeridianApp {
         self.closing = true;
     }
 
+    /// Whether the window has decided to close and lets the next close request through, as
+    /// [`Self::allow_close`] decides it — a test hook.
+    #[must_use]
+    pub fn is_closing(&self) -> bool {
+        self.closing
+    }
+
     /// **What each answer of the close question does** — the entry point the
     /// question's buttons and keys reach through, and one a test may drive.
+    /// Each answer that goes, goes where the question was asked for
+    /// ([`Self::leave`]): the window's close, Home, an open or a quit.
     ///
-    /// - [`CloseAnswer::SaveAndClose`] writes as the Save verb does
-    ///   ([`Self::save_protocol`]: `arcform.yaml`, its model and the chart
-    ///   beside them) and closes the window when the chart is in, which is
-    ///   when the mark is gone. A write that failed leaves the window open,
-    ///   with the banner the write raised saying why; the question is closed
-    ///   so the banner can be read, and the next close request asks again.
+    /// - [`CloseAnswer::SaveAndClose`] saves the YAML editor's buffer when it
+    ///   is edited, then writes as the Save verb does ([`Self::save_protocol`]:
+    ///   `arcform.yaml`, its model and the chart beside them), and goes once
+    ///   the unsaved mark is gone (`enter_saves_and_leaves`). A write that failed stays, with the banner
+    ///   the write raised saying why; the question is closed so the banner can
+    ///   be read, and the way out is dropped, so the next one asks again.
     /// - [`CloseAnswer::CloseWithoutSaving`] keeps the chart as a Save would
     ///   write it as a version of the chart file, which the Versions panel
-    ///   lists as `closed unsaved` ([`ChartDoc::keep_unsaved_beside`]), and
-    ///   closes. Neither the chart file nor `arcform.yaml` is written. When the
-    ///   chart cannot be kept the window stays open and the question says
-    ///   why, and the same answer given again closes with nothing kept.
-    /// - [`CloseAnswer::KeepEditing`] leaves the window as it was: the edit
-    ///   stays drawn, the mark stays in the title.
+    ///   lists as `closed unsaved` ([`ChartDoc::keep_unsaved_at`]), with the
+    ///   grid view and typed statements no file holds carried on it, and the
+    ///   YAML editor's buffer as a version of its own file; then it goes.
+    ///   Neither the chart file nor `arcform.yaml` is written. When the chart
+    ///   cannot be kept the window stays and the question says why, and the
+    ///   same answer given again goes with nothing kept.
+    /// - [`CloseAnswer::KeepEditing`] leaves the window as it was, and drops
+    ///   the way out: the edit stays drawn, the mark stays in the title. Before
+    ///   the move into a new Protocols folder it is that question's own button,
+    ///   which leaves the open Protocol where it is and moves the rest; Esc and
+    ///   a click outside cancel that move instead ([`Self::dismiss_close_question`]).
+    ///   A Save that fails there moves nothing, and a banner says so.
     pub fn answer_close_question(&mut self, ctx: &egui::Context, answer: CloseAnswer) {
         match answer {
-            CloseAnswer::KeepEditing => self.put_the_question_down(),
+            CloseAnswer::KeepEditing => {
+                self.put_the_question_down();
+                // Keeping editing before the move into a new Protocols folder leaves the open
+                // Protocol where it is, and the rest still move.
+                if let Some(Leaving::MoveAll { from, to }) = self.leaving.take() {
+                    self.move_all_protocols(ctx, &from, &to, true);
+                }
+            }
             CloseAnswer::CloseWithoutSaving => {
                 let told = self.close_question().is_some_and(|q| q.not_kept.is_some());
-                if told {
-                    self.put_the_question_down();
-                    self.close_window(ctx);
-                } else {
-                    match self.keep_unsaved() {
-                        Ok(()) => {
-                            self.put_the_question_down();
-                            self.close_window(ctx);
+                // The loss is chosen for the quit it answers, and for nothing else.
+                self.unkept_accepted = told && matches!(self.leaving, Some(Leaving::Quit));
+                let kept = if told { Ok(()) } else { self.keep_unsaved() };
+                match kept {
+                    Ok(()) => {
+                        self.put_the_question_down();
+                        let to = self.leaving.take().unwrap_or(Leaving::Close);
+                        // Going somewhere else in this window: the buffer kept as a version is
+                        // not carried into what opens next.
+                        if !matches!(to, Leaving::Quit) {
+                            self.drop_editor_buffer();
                         }
-                        Err(why) => {
-                            eprintln!("the unsaved chart could not be kept: {why}");
-                            let mut question = match self.overlay.take() {
-                                Some(Overlay::CloseQuestion(question)) => question,
-                                _ => self.close_question_for_now(),
-                            };
-                            question.not_kept = Some(why);
-                            self.overlay = Some(Overlay::CloseQuestion(question));
-                        }
+                        self.go(ctx, to);
+                    }
+                    Err(why) => {
+                        eprintln!("the unsaved chart could not be kept: {why}");
+                        let mut question = match self.overlay.take() {
+                            Some(Overlay::CloseQuestion(question)) => question,
+                            _ => self.close_question_for_now(),
+                        };
+                        question.not_kept = Some(why);
+                        self.overlay = Some(Overlay::CloseQuestion(question));
                     }
                 }
             }
             CloseAnswer::SaveAndClose => {
                 self.put_the_question_down();
+                let to = self.leaving.take().unwrap_or(Leaving::Close);
                 if self.save_for_close(ctx) {
-                    self.close_window(ctx);
+                    self.go(ctx, to);
+                } else if let Leaving::MoveAll { from, .. } = &to {
+                    self.say_protocols_stayed(
+                        from,
+                        "The Protocol open could not be saved, so no Protocol was moved.",
+                    );
                 }
             }
         }
         ctx.request_repaint();
+    }
+
+    /// Esc, or a click outside the card, on the close question: Keep editing, except before the
+    /// move into a new Protocols folder, where it cancels the whole move. Nothing moves there; the
+    /// Protocols folder stays the new one, and a banner says the old one's Protocols stayed. Only
+    /// that question's own Keep editing button moves the rest and leaves the open one.
+    pub fn dismiss_close_question(&mut self, ctx: &egui::Context) {
+        if let Some(Leaving::MoveAll { from, .. }) = &self.leaving {
+            let from = from.clone();
+            self.put_the_question_down();
+            self.leaving = None;
+            self.say_protocols_stayed(&from, "The move was cancelled.");
+            ctx.request_repaint();
+        } else {
+            self.answer_close_question(ctx, CloseAnswer::KeepEditing);
+        }
+    }
+
+    /// Raise the banner that says the Protocols in the old Protocols folder `from` stayed where
+    /// they are, after `why`.
+    fn say_protocols_stayed(&mut self, from: &std::path::Path, why: &str) {
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new(MOVE_ALL_BANNER),
+                Severity::Warning,
+                "The Protocols were not moved",
+            )
+            .body(format!(
+                "{why} New Protocols now go to {}, and the Protocols in {} are where they were.",
+                crate::protocols_dir::root().display(),
+                from.display()
+            )),
+        );
     }
 
     /// Take the close question down, leaving any other overlay as it is.
@@ -8218,8 +9859,13 @@ impl MeridianApp {
     /// # Errors
     ///
     /// Why it could not be kept: a window with no Protocol to keep the
-    /// chart's versions beside, and [`ChartDoc::keep_unsaved_beside`]'s.
+    /// chart's versions beside, and [`ChartDoc::keep_unsaved_at`]'s.
     fn keep_unsaved(&mut self) -> Result<(), String> {
+        self.keep_editor_buffer()?;
+        self.keep_model_draft()?;
+        if !self.charts.doc.has_unsaved_work() {
+            return Ok(());
+        }
         // A Protocol's panel open from its tile is kept as a version of its
         // own file, the file its Save records versions against.
         if let Some(file) = self.open_tile_path() {
@@ -8233,13 +9879,37 @@ impl MeridianApp {
         let Some(source) = self.protocol.doc.model.source() else {
             return Err(NO_PROTOCOL_TO_KEEP_BESIDE.to_string());
         };
-        let kept =
-            self.charts
-                .doc
-                .keep_unsaved_beside(&source.dir, &source.name, self.history.as_ref());
+        let kept = self
+            .charts
+            .doc
+            .keep_unsaved_at(&source.chart_file(), self.history.as_ref());
         // A version may have been recorded; the panel reads the store again.
         self.charts.doc.versions_mut().invalidate();
         kept
+    }
+
+    /// Keep the YAML editor's unsaved buffer as a version of the file it
+    /// edits, in arcform's unsaved kind, writing no file: the editor's half of
+    /// a close without saving. Nothing to keep when the buffer is its file's.
+    ///
+    /// # Errors
+    ///
+    /// A window given no store, and a store that does not take the version.
+    fn keep_editor_buffer(&mut self) -> Result<(), String> {
+        if !self.editor_unsaved() {
+            return Ok(());
+        }
+        let Some((file, text)) = self.charts.doc.editor_buffer().cloned() else {
+            return Ok(());
+        };
+        let store = self
+            .history
+            .as_ref()
+            .ok_or_else(|| crate::app::NO_STORE.to_string())?;
+        brightfield_protocol::record_unsaved(store, &file, &text, &[])
+            .map_err(|e| e.reason().to_string())?;
+        self.charts.doc.versions_mut().invalidate();
+        Ok(())
     }
 
     /// Close this window: let the request through and raise it.
@@ -8257,8 +9927,17 @@ impl MeridianApp {
     /// that window says so in the chart banner rather than closing over an
     /// edit it did not keep.
     fn save_for_close(&mut self, ctx: &egui::Context) -> bool {
+        // The YAML editor's buffer first, as Cmd+S saves it; a window whose
+        // only unsaved work was the buffer has nothing left to write. The model pane's draft is
+        // settled with it.
+        if !self.save_editor_buffer() || !self.save_model_draft(ctx) {
+            return false;
+        }
+        if !self.has_unsaved_work() {
+            return true;
+        }
         match self.save_protocol(ctx) {
-            Some(Ok(_)) => !self.charts.doc.has_unsaved_work(),
+            Some(Ok(_)) => !self.has_unsaved_work(),
             Some(Err(_)) => false,
             None => {
                 self.notifications.raise(
@@ -8362,6 +10041,9 @@ impl MeridianApp {
             Overlay::Jump(_) => "jump",
             Overlay::CloseQuestion(_) => "close-question",
             Overlay::Statement(_) => "palette",
+            Overlay::NewProtocol(_) => "new-protocol",
+            Overlay::Preferences(_) => "preferences",
+            Overlay::WhichProtocol(_) => "which-protocol",
         })
     }
 
@@ -8392,6 +10074,24 @@ impl MeridianApp {
     #[must_use]
     pub fn notifications(&self) -> &NotificationLayer {
         &self.notifications
+    }
+
+    /// Say, while `unrouted`, that the app menu's Quit could not be routed to this window, so
+    /// Cmd+Q from the menu ends the app without the close question; take the banner down once
+    /// it is routed. The host calls it, since the menu is the host's
+    /// (`the_menu_quit_banner_says_quit_will_not_ask`).
+    pub fn say_menu_quit_unrouted(&mut self, unrouted: bool) {
+        let id = NotificationId::new(MENU_QUIT_UNROUTED_BANNER);
+        if unrouted {
+            self.notifications.raise(
+                Notification::new(id, Severity::Warning, MENU_QUIT_UNROUTED_TITLE).body(
+                    "Quit from the menu, or Cmd+Q, may close Brightfield without asking about \
+                     unsaved work. Save with Cmd+S before you quit.",
+                ),
+            );
+        } else {
+            self.notifications.dismiss(id);
+        }
     }
 
     /// Dismiss the chart-fault banner, as clicking its × does.
@@ -8784,7 +10484,17 @@ impl MeridianApp {
                 // an unknown verb — so without this intercept the verb would
                 // reach neither handler.
                 Request::Verb(verb) if verb.as_str() == "open-home" => {
-                    self.open_home(ctx);
+                    self.leave(ctx, Leaving::Home);
+                }
+                // quit is the window's for the same reason: the close question is the window's
+                // to ask, over whichever document holds the draft.
+                Request::Verb(verb) if verb.as_str() == QUIT => {
+                    self.leave(ctx, Leaving::Quit);
+                }
+                // The open picker is the window's too, for the same reason: chosen from a
+                // palette, it asks for the picker as Cmd+O does, and the dialog runs after this.
+                Request::Verb(verb) if verb.as_str() == OPEN_VERB => {
+                    self.pick_requested = true;
                 }
                 // The model pane's verbs are its own, chosen from the palette it opens.
                 Request::Verb(verb) if crate::model_pane::is_model_verb(verb.as_str()) => {
@@ -8822,6 +10532,25 @@ impl MeridianApp {
                 // which either document's model can do to itself.
                 Request::Verb(verb) if verb.as_str() == RUN_PROTOCOL => {
                     self.run_protocol(ctx);
+                }
+                // save-protocol is the window's for the same reason: the editor raises it after
+                // saving its buffer, and what it writes is the Protocol's, not either document's.
+                Request::Verb(verb) if verb.as_str() == SAVE_PROTOCOL => {
+                    self.save_everything(ctx);
+                }
+                // rename-protocol is the window's as F2 is: chosen from a palette, it opens the
+                // locator band's name field over the Protocol the window holds.
+                // new-protocol is the window's as Cmd+N is: chosen from a palette, it asks where.
+                Request::Verb(verb) if verb.as_str() == NEW_PROTOCOL => {
+                    self.ask_new_protocol();
+                }
+                // open-preferences is the window's as Cmd+, is.
+                Request::Verb(verb) if verb.as_str() == OPEN_PREFERENCES => {
+                    self.open_preferences();
+                }
+                Request::Verb(verb) if verb.as_str() == RENAME_PROTOCOL => {
+                    self.open_place_field(PlaceField::Name);
+                    ctx.request_repaint();
                 }
                 // The picture verbs are the window's: what they draw is the
                 // chart document's, and where a file goes is the window's to
@@ -8958,18 +10687,75 @@ impl MeridianApp {
             .doc
             .model
             .set_selected_column(shown.as_deref());
+        // …and a step `d d` or the palette asked to remove: the model reports which, and the
+        // window decides whether it may go and keeps the draft on the chart document, which a
+        // Protocol read again (after an agent's write, say) does not replace. The spine is told
+        // what is removed each frame, so it strikes the rows through.
+        if let Some(step) = self.protocol.doc.model.take_remove_ask() {
+            self.ask_remove_step(&step);
+            ctx.request_repaint();
+        }
+        self.protocol
+            .doc
+            .model
+            .set_removing(self.charts.doc.removing_steps());
+    }
+
+    /// **Remove the recorded step `step` from the spine as a draft, or put it back**: what `d d`
+    /// and the palette's `remove-step` come to once the model has said which step.
+    ///
+    /// A step later steps read is refused, with a banner naming each of them, since taking it out
+    /// would leave them reading a table nothing makes. A reader already removed does not count, so
+    /// the analyst removes the readers first and then the step, and a Save applies the removals in
+    /// the order they were made. For the same reason a removed step that reads one removed after it
+    /// is not put back until that one is. The step stays in `arcform.yaml` until a Save takes it
+    /// out ([`Self::record_pending`]).
+    fn ask_remove_step(&mut self, step: &str) {
+        let banner = NotificationId::new("remove-step");
+        let model = &self.protocol.doc.model;
+        if self.charts.doc.is_removing(step) {
+            let read: Vec<String> = self
+                .charts
+                .doc
+                .removing_steps()
+                .into_iter()
+                .filter(|other| model.readers_of(other).iter().any(|r| r == step))
+                .collect();
+            if read.is_empty() {
+                self.notifications.dismiss(banner);
+                self.charts.doc.toggle_removal(step);
+            } else {
+                self.notifications.raise(
+                    Notification::new(banner, Severity::Warning, PUT_BACK_REFUSED)
+                        .body(put_back_sentence(step, &read)),
+                );
+            }
+            return;
+        }
+        let readers: Vec<String> = model
+            .readers_of(step)
+            .into_iter()
+            .filter(|r| !self.charts.doc.is_removing(r))
+            .collect();
+        if readers.is_empty() {
+            self.notifications.dismiss(banner);
+            self.charts.doc.toggle_removal(step);
+        } else {
+            self.notifications.raise(
+                Notification::new(banner, Severity::Warning, REMOVE_STEP_REFUSED)
+                    .body(readers_sentence(step, &readers)),
+            );
+        }
     }
 
     /// Return to the front door, **keeping the session** so the door's
-    /// Continue zone still offers the way back in.
+    /// Recents still offer the way back in.
     ///
-    /// [`open_start`](Self::open_start)'s mirror, with one deliberate
-    /// asymmetry: this clears both documents but leaves `layout.opened`
-    /// untouched. `open_start` records the id there so a later launch restores
-    /// rather than greets; going Home wants the greeting *and* the standing
-    /// offer to resume, and the Continue card is drawn from that id — so it has
-    /// to survive the trip home. The product owner locked that: Home keeps your
-    /// place.
+    /// [`open_start`](Self::open_start)'s mirror: this clears both documents
+    /// and what the layout remembers to reopen ([`SavedLayout::reopen_nothing`]),
+    /// so the next launch starts on the door the window is on. The recents list
+    /// is kept, so the door this lands on has a row for what was left, and the
+    /// row reopens it.
     ///
     /// Both documents are emptied **in place** rather than rebuilt, which keeps
     /// the wgpu host this window rasters through. A fresh `ChartDoc::empty()` /
@@ -8980,7 +10766,7 @@ impl MeridianApp {
     ///
     /// The chart side goes through [`open_chart`](Self::open_chart), not
     /// through `ChartDoc::open`: going Home is a document swap like any other,
-    /// and the empty document has nothing to say — so the outgoing spec's
+    /// and the empty document raises no banner of its own — so the outgoing spec's
     /// banners come down with it. Calling `ChartDoc::open` here instead left
     /// a `Cannot render …` banner raised on the front door, about a document
     /// that was no longer open.
@@ -8998,6 +10784,11 @@ impl MeridianApp {
         }
         self.tiles = None;
         self.model = None;
+        self.empty_protocol = None;
+        // The door holds no Protocol, so a rename of a door row or a move of the Protocols
+        // folder's Protocols does not open the last one again from the door.
+        self.own_protocol = None;
+        self.browser_requested = false;
         self.open_chart(Composed::empty());
         self.protocol.doc.open(ProtocolInputs::empty());
         // Going Home is a document swap, so the fetched files go with the
@@ -9006,7 +10797,9 @@ impl MeridianApp {
         // one, rather than here and at each of the other openers.
         self.remote_files = None;
         self.documents_changed();
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        // On the door, the next launch starts on the door too.
+        self.layout.live_mut().reopen_nothing();
+        self.retitle(ctx);
         ctx.request_repaint();
     }
 
@@ -9449,7 +11242,7 @@ impl MeridianApp {
     /// whose run landed later.
     fn record_landed(&mut self, ctx: &egui::Context, id: &'static str) {
         self.dismiss_start_banner(id);
-        self.layout.live_mut().opened = Some(id.to_string());
+        self.layout.live_mut().reopen_start(id);
         // …and remembered as a Protocol, which is the other half: `opened` is
         // what the next launch restores, and this is what the door lists. The
         // name and the run state are read off **this window** rather than off
@@ -9470,7 +11263,7 @@ impl MeridianApp {
             Severity::Success,
             format!("Opened {}", self.title()),
         ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        self.retitle(ctx);
         ctx.request_repaint();
     }
 
@@ -9562,12 +11355,13 @@ impl MeridianApp {
     /// entry: it clears the session, the spec path, the authored record and
     /// everything else that belonged to the outgoing document, so each of them
     /// has to be put back **after** it rather than before.
-    fn adopt_boot(&mut self, boot: Boot) {
+    fn adopt_boot(&mut self, mut boot: Boot) {
         self.landing = None;
         let open_panel = boot.open_panel;
-        if boot.open_later.is_some() {
-            self.pending_open = boot.open_later;
-        }
+        self.queue_open_later(boot.open_later.take());
+        self.own_protocol = None;
+        self.empty_protocol = None;
+        self.browser_requested = false;
         self.tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         // The model pane belongs to the own-files Protocol it was opened for, and a different
         // document is arriving. `open_model_pane` and `open_model_in_grid` put it back after.
@@ -9619,8 +11413,13 @@ impl MeridianApp {
     /// is one line in [`crate::data_file`] and a headless test may not open
     /// one; every decision worth gating — what is refused, what is drawn, what
     /// a failure says — is on this side of that line, so this is the entry
-    /// point a test drives and the entry point the door's button reaches
-    /// through.
+    /// point a test drives.
+    ///
+    /// **Not a way in for new data.** It opens the file as it is, with no
+    /// Protocol made of it: the door's Open… goes through the open queue
+    /// ([`Self::open_queue`]) instead, which makes one. What still comes
+    /// here is a file the window already holds, reread
+    /// ([`Self::reload_data_file`]).
     ///
     /// A failure raises a banner and changes nothing else. That is the whole of
     /// the contract: the window stays up with whatever was on it, and the
@@ -9630,7 +11429,7 @@ impl MeridianApp {
     /// first attempt's message instead of stacking a history of what did not
     /// open.
     ///
-    /// Nothing is recorded in the layout, deliberately: `SavedLayout::opened`
+    /// The layout records no part of it, deliberately: `SavedLayout::opened`
     /// holds a **start id**, and an id cannot name a file that has since been
     /// deleted or moved. Reopening files across launches is a recent-files
     /// list, which is its own piece of work.
@@ -9639,6 +11438,21 @@ impl MeridianApp {
             Ok(opened) => self.adopt_opened_file(ctx, opened),
             Err(e) => self.say_open_failed(ctx, chosen, e),
         }
+    }
+
+    /// Raise the banner a `brightfield://` link leaves: titled for the link it is, since a link is
+    /// not a data file and this build opens none.
+    fn say_link_not_opened(&mut self, ctx: &egui::Context, link: &str) {
+        eprintln!("could not open {link}: this build cannot open a link yet");
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new("open-data-file"),
+                Severity::Error,
+                LINK_NOTICE_TITLE,
+            )
+            .body(format!("This build cannot open {link} yet.")),
+        );
+        ctx.request_repaint();
     }
 
     /// Raise the one banner a failed open leaves.
@@ -9657,14 +11471,57 @@ impl MeridianApp {
 
     /// Take a flat file that opened into the window and say so.
     fn adopt_opened_file(&mut self, ctx: &egui::Context, opened: crate::data_file::OpenedFile) {
-        self.adopt_boot(Boot::of_opened_file(opened));
+        self.adopt_opened_boot(ctx, Boot::of_opened_file(opened));
+    }
+
+    /// Take the one table of the own-files Protocol `protocol` into the window, `opened` being its
+    /// grid copy opened: the chart its `panels/` holds when Save wrote one, else the dashboard
+    /// generated over it, with the Protocol held behind the grid.
+    fn adopt_one_source(
+        &mut self,
+        ctx: &egui::Context,
+        opened: crate::data_file::OpenedFile,
+        protocol: crate::own_files::OwnProtocol,
+    ) {
+        let dir = protocol.dir.to_string_lossy().into_owned();
+        match Boot::with_saved_chart(opened) {
+            Ok(boot) => {
+                self.adopt_opened_boot(ctx, boot);
+                self.remember_own_protocol(&protocol.dir, true);
+                self.own_protocol = Some(protocol);
+            }
+            Err(e) => self.say_open_failed(ctx, &dir, e),
+        }
+    }
+
+    /// Open the own-files Protocol of one source in `dir` again, where it is: its Protocol run,
+    /// which rereads the source file where it changed, and its table's grid copy written afresh
+    /// and opened.
+    fn reopen_one_source(
+        &mut self,
+        ctx: &egui::Context,
+        dir: &std::path::Path,
+        runner: &crate::run::Runner,
+    ) {
+        let opened = crate::own_files::reopen_one_source(dir, runner).and_then(|protocol| {
+            crate::data_file::open_one_table(&protocol).map(|opened| (opened, protocol))
+        });
+        match opened {
+            Ok((opened, protocol)) => self.adopt_one_source(ctx, opened, protocol),
+            Err(e) => self.say_open_failed(ctx, &dir.to_string_lossy(), e),
+        }
+    }
+
+    /// Take `boot`, an opened data file's, into the window and say so.
+    fn adopt_opened_boot(&mut self, ctx: &egui::Context, boot: Boot) {
+        self.adopt_boot(boot);
         self.notifications
             .dismiss(NotificationId::new("open-data-file"));
         self.toasts.push(Toast::new(
             Severity::Success,
             format!("Opened {}", self.title()),
         ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        self.retitle(ctx);
         ctx.request_repaint();
     }
 
@@ -9674,13 +11531,33 @@ impl MeridianApp {
     /// is being fetched and the open itself waits for the next frame, so the notice is on screen
     /// while the thread is held.
     pub fn open_path(&mut self, ctx: &egui::Context, chosen: &str) {
-        let installed = crate::data_file::installed_extensions();
+        let installed = self
+            .installed_extensions
+            .clone()
+            .unwrap_or_else(crate::data_file::installed_extensions);
         self.open_path_knowing(ctx, chosen, &installed);
     }
 
     /// [`Self::open_path`] told which extensions are installed, so a test can name a set.
     pub fn open_path_knowing(&mut self, ctx: &egui::Context, chosen: &str, installed: &[String]) {
-        let needed = crate::data_file::extensions_likely_needed(std::path::Path::new(chosen));
+        self.open_paths_knowing(ctx, vec![chosen.into()], installed);
+    }
+
+    /// [`Self::open_path_knowing`] for what one gesture handed over, one path or several.
+    fn open_paths_knowing(
+        &mut self,
+        ctx: &egui::Context,
+        paths: Vec<std::path::PathBuf>,
+        installed: &[String],
+    ) {
+        let mut needed: Vec<&'static str> = Vec::new();
+        for path in &paths {
+            for ext in crate::data_file::extensions_likely_needed(path) {
+                if !needed.contains(&ext) {
+                    needed.push(ext);
+                }
+            }
+        }
         if let Some(message) = crate::data_file::fetch_message(&needed, installed) {
             self.notifications.raise(
                 Notification::new(
@@ -9690,37 +11567,1249 @@ impl MeridianApp {
                 )
                 .body(message),
             );
-            self.pending_open = Some(chosen.to_string());
+            self.pending_open = Some(paths);
             ctx.request_repaint();
             return;
         }
-        self.open_path_now(ctx, chosen);
+        self.open_paths_now(ctx, &paths);
+    }
+
+    /// What one gesture handed over, opened without the wait for a frame. One path opens as
+    /// [`Self::open_path_now`] says. Several make one Protocol of them all, named after the first,
+    /// unless one is a Protocol already, or an archive of one: then the first such opens, and a
+    /// banner says the rest were not opened, since a Protocol is not a source of another.
+    fn open_paths_now(&mut self, ctx: &egui::Context, paths: &[std::path::PathBuf]) {
+        use crate::open_queue::Route;
+        let [first, rest @ ..] = paths else {
+            return;
+        };
+        if rest.is_empty() {
+            self.open_path_now(ctx, &first.to_string_lossy());
+            return;
+        }
+        let banner = NotificationId::new("open-rest-not-opened");
+        self.notifications
+            .dismiss(NotificationId::new("open-rest-not-opened"));
+        self.notifications
+            .dismiss(NotificationId::new("open-skipped"));
+        if let Some((handed, route)) = paths
+            .iter()
+            .map(|p| (p, crate::open_queue::route(p)))
+            .find(|(_, route)| !matches!(route, Route::New(_)))
+        {
+            let others = paths.len() - 1;
+            let were = if others == 1 { "was" } else { "were" };
+            // An archive cannot open yet, so nothing opened: its refusal says the others were not
+            // opened either, and no banner says the Protocol was
+            // (`an_archive_among_several_files_says_nothing_opened`).
+            if matches!(route, Route::Archive(_)) {
+                self.say_open_failed(
+                    ctx,
+                    &handed.to_string_lossy(),
+                    format!(
+                        "{} is a Protocol archive, which this build cannot open yet. Unzip it \
+                         and open its folder. The other {others} {were} not opened; open them by \
+                         themselves to make a Protocol of them.",
+                        display_name(handed)
+                    ),
+                );
+                return;
+            }
+            self.open_path_now(ctx, &handed.to_string_lossy());
+            // What opened, named as the route found it: a file inside a Protocol is that
+            // Protocol's, not a Protocol itself.
+            let what = match &route {
+                Route::Existing(dir) if dir == handed => {
+                    format!(
+                        "{} is a Protocol, so it opened on its own",
+                        display_name(dir)
+                    )
+                }
+                Route::Existing(dir) => format!(
+                    "{} belongs to the Protocol {}, which opened on its own",
+                    display_name(handed),
+                    display_name(dir)
+                ),
+                // Answered above, or not found by the search.
+                Route::Archive(_) | Route::New(_) => return,
+            };
+            self.notifications.raise(
+                Notification::new(banner, Severity::Warning, "Only the Protocol was opened").body(
+                    format!(
+                        "{what}; the other {others} {were} not opened. Open them by themselves to \
+                         make a Protocol of them."
+                    ),
+                ),
+            );
+            return;
+        }
+        self.notifications
+            .dismiss(NotificationId::new("open-fetching-extension"));
+        let Some(runner) = self.runner.clone().or_else(crate::run::Runner::this_binary) else {
+            self.say_open_failed(
+                ctx,
+                &first.to_string_lossy(),
+                "no runner to run its Protocol with".to_string(),
+            );
+            return;
+        };
+        match crate::data_file::open_all(paths, &runner) {
+            Ok(crate::data_file::Opened::OneTable(opened, protocol)) => {
+                // The model pane names what an open passed over; one table has no pane, so a
+                // banner says it instead, or a file handed over with the table would go unmentioned.
+                let skipped = crate::model_pane::skipped_line_of(&protocol.sources.skipped);
+                self.adopt_one_source(ctx, opened, protocol);
+                if let Some(line) = skipped {
+                    self.notifications.raise(
+                        Notification::new(
+                            NotificationId::new("open-skipped"),
+                            Severity::Warning,
+                            "Some files were not opened",
+                        )
+                        .body(line),
+                    );
+                }
+            }
+            Ok(crate::data_file::Opened::Model(protocol)) => {
+                self.open_model_pane(ctx, protocol, runner, true);
+            }
+            Err(e) => self.say_open_failed(ctx, &first.to_string_lossy(), e),
+        }
+    }
+
+    /// Open the known Protocol in `dir`, asking first over a draft as any open does, unless it is
+    /// the Protocol this window holds: that one is already in front, and reopening it would ask
+    /// about its own draft for nothing.
+    fn open_known(&mut self, ctx: &egui::Context, dir: PathBuf) {
+        let same = |a: &std::path::Path, b: &std::path::Path| match (
+            std::fs::canonicalize(a),
+            std::fs::canonicalize(b),
+        ) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => a == b,
+        };
+        if self
+            .open_protocol_dir()
+            .is_some_and(|open| !self.front_door_is_live() && same(&open, &dir))
+        {
+            ctx.request_repaint();
+            return;
+        }
+        self.leave(
+            ctx,
+            Leaving::Open(crate::open_queue::OpenRequest::Path(dir)),
+        );
+    }
+
+    /// Whether `path` is a lone data file a new Protocol would be made of: a file, not a folder,
+    /// in no Protocol directory and not an archive of one.
+    fn lone_data_file(&self, path: &std::path::Path) -> bool {
+        path.is_file()
+            && matches!(
+                crate::open_queue::route(path),
+                crate::open_queue::Route::New(_)
+            )
+    }
+
+    /// The Protocol folders the window's Recents name, for the look for the Protocols a file
+    /// already has.
+    fn recent_protocol_dirs(&self) -> Vec<PathBuf> {
+        self.layout
+            .live()
+            .recents
+            .iter()
+            .filter_map(|r| door_row_dir(&r.id))
+            .collect()
+    }
+
+    /// The Protocols the Which Protocol sheet offers, by name, while it is open, New Protocol
+    /// last: a test hook.
+    #[must_use]
+    pub fn which_protocol_choices(&self) -> Option<Vec<String>> {
+        match &self.overlay {
+            Some(Overlay::WhichProtocol(sheet)) => Some(
+                sheet
+                    .choices
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .chain(std::iter::once(WHICH_PROTOCOL_NEW.to_string()))
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
+    /// Carry out `request`, asking the close question first when it would replace what the
+    /// window shows over a draft ([`Self::leave`]): another Protocol, or the canvas a source is
+    /// added under. A link is carried out at once.
+    fn take_or_ask(&mut self, ctx: &egui::Context, request: crate::open_queue::OpenRequest) {
+        use crate::open_queue::OpenRequest;
+        // A close question that is up is not replaced: the way out it was asked for stands, and
+        // the open is held and taken once the question is answered
+        // (`an_open_during_the_move_question_waits_for_the_move`). A link only says it cannot
+        // open yet, so it is carried out at once.
+        if matches!(self.overlay, Some(Overlay::CloseQuestion(_)))
+            && !matches!(request, OpenRequest::Link(_))
+        {
+            self.held_for_question.push(request);
+            return;
+        }
+        match request {
+            // A lone data file reopens the Protocol it already has, or asks which of several,
+            // before anything is left: a Protocol is made of it only when none reads it.
+            OpenRequest::Path(path) if self.lone_data_file(&path) => {
+                // While a quit waits for runs, an open is refused as `leave` refuses it, sheet or
+                // no sheet.
+                if self.close_after_runs {
+                    self.leave(ctx, Leaving::Open(OpenRequest::Path(path)));
+                    return;
+                }
+                let recents = self.recent_protocol_dirs();
+                match crate::file_protocols::decide(&path, &recents) {
+                    crate::file_protocols::FileOpen::New => {
+                        self.leave(ctx, Leaving::Open(OpenRequest::Path(path)));
+                    }
+                    crate::file_protocols::FileOpen::Reopen(dir) => self.open_known(ctx, dir),
+                    crate::file_protocols::FileOpen::Ask(choices) => {
+                        self.overlay = Some(Overlay::WhichProtocol(WhichProtocolSheet {
+                            file: path,
+                            choices,
+                            selected: 0,
+                            rows: Vec::new(),
+                        }));
+                        ctx.request_repaint();
+                    }
+                }
+            }
+            // Adding a source keeps the Protocol open, but replaces what the canvas shows, so a
+            // draft is asked about first, as before a rename.
+            OpenRequest::Path(_)
+            | OpenRequest::Paths(_)
+            | OpenRequest::AddSource(_)
+            | OpenRequest::AddSources(_) => {
+                self.leave(ctx, Leaving::Open(request));
+            }
+            OpenRequest::Link(_) => {
+                self.take_open_request(ctx, request);
+            }
+        }
     }
 
     /// [`Self::open_path`] without the wait for a frame. Like a flat file's open it runs on the
     /// calling thread, so a folder or workbook holds the window for as long as its tables take to
     /// load and profile.
+    ///
+    /// A Protocol directory, or a file in one, opens where it is ([`Self::open_protocol_path`]).
+    /// Anything else is data, and a new Protocol is made of it in the Protocols folder: one table
+    /// opens on its grid and dashboard, with the Protocol held behind it, and several open the
+    /// model pane. Nothing is written beside the data, and a Protocols folder the system refuses
+    /// is said in a banner with nothing opened.
     fn open_path_now(&mut self, ctx: &egui::Context, chosen: &str) {
+        use crate::open_queue::Route;
         self.notifications
             .dismiss(NotificationId::new("open-fetching-extension"));
-        // The runner this window was given, else this binary, which is the runner when the window
-        // is the app's own.
-        let Some(runner) = self.runner.clone().or_else(crate::run::Runner::this_binary) else {
-            // Without a runner only the flat-file route can work.
-            self.open_data_file(ctx, chosen);
+        match crate::open_queue::route(std::path::Path::new(chosen)) {
+            Route::Existing(dir) => {
+                let manifest = dir.join(arc::spec::MANIFEST_FILENAME);
+                self.open_protocol_path(ctx, &manifest.to_string_lossy());
+            }
+            Route::Archive(_) => self.say_open_failed(
+                ctx,
+                chosen,
+                "This build cannot open a Protocol archive yet. Unzip it and open its folder."
+                    .to_string(),
+            ),
+            Route::New(path) => {
+                // The runner this window was given, else this binary, which is the runner when
+                // the window is the app's own.
+                let Some(runner) = self.runner.clone().or_else(crate::run::Runner::this_binary)
+                else {
+                    self.say_open_failed(
+                        ctx,
+                        chosen,
+                        "no runner to run its Protocol with".to_string(),
+                    );
+                    return;
+                };
+                match crate::data_file::open_any(&path, &runner) {
+                    Ok(crate::data_file::Opened::OneTable(opened, protocol)) => {
+                        self.adopt_one_source(ctx, opened, protocol);
+                    }
+                    Ok(crate::data_file::Opened::Model(protocol)) => {
+                        self.open_model_pane(ctx, protocol, runner, true);
+                    }
+                    Err(e) => self.say_open_failed(ctx, chosen, e),
+                }
+            }
+        }
+    }
+
+    /// Carry out one request taken off the open queue.
+    fn take_open_request(&mut self, ctx: &egui::Context, request: crate::open_queue::OpenRequest) {
+        use crate::open_queue::OpenRequest;
+        match request {
+            OpenRequest::Path(path) => self.open_path(ctx, &path.to_string_lossy()),
+            OpenRequest::Paths(paths) => {
+                let installed = self
+                    .installed_extensions
+                    .clone()
+                    .unwrap_or_else(crate::data_file::installed_extensions);
+                self.open_paths_knowing(ctx, paths, &installed);
+            }
+            OpenRequest::Link(link) => self.say_link_not_opened(ctx, &link),
+            OpenRequest::AddSource(path) => self.add_sources(ctx, &[path]),
+            OpenRequest::AddSources(paths) => self.add_sources(ctx, &paths),
+        }
+    }
+
+    /// Queue the path a boot asked to open once the window exists, when it asked.
+    fn queue_open_later(&mut self, path: Option<String>) {
+        if let Some(path) = path {
+            self.open_queue
+                .push(crate::open_queue::OpenRequest::Path(path.into()));
+        }
+    }
+
+    /// This window with the DuckDB extensions its opens take as installed named, so a test can
+    /// drive the wait for a fetch through the open queue.
+    #[must_use]
+    pub fn knowing_extensions(mut self, installed: Vec<String>) -> Self {
+        self.installed_extensions = Some(installed);
+        self
+    }
+
+    /// The window's open queue, shared: a request pushed on it opens at the start of the next
+    /// frame, after any pushed before it.
+    #[must_use]
+    pub fn open_queue(&self) -> crate::open_queue::OpenQueue {
+        self.open_queue.clone()
+    }
+
+    /// **This window, at launch, reopening the Protocol the last launch ended on**
+    /// ([`SavedLayout::reopen_protocol`]) once the app has finished launching, unless a file
+    /// arrives with the launch first: see `Self::reopen_at_launch`.
+    ///
+    /// With `spec`, the chart spec the command line named, nothing is reopened, and what the
+    /// layout remembered is forgotten in the layout this window writes back: a spec is not
+    /// something a launch reopens, so the next plain launch starts on the door rather than on a
+    /// Protocol from before it (`a_launch_naming_a_spec_forgets_the_protocol_to_reopen`).
+    #[must_use]
+    pub fn restoring_at_launch(mut self, spec: Option<&str>) -> Self {
+        if spec.is_some() {
+            self.layout.live_mut().reopen_nothing();
+        } else {
+            self.restore = self.layout.live().reopen_protocol.clone();
+        }
+        self
+    }
+
+    /// **Reopen `dir`, the Protocol the last launch ended on**, unless something else is asked to
+    /// open: a file the system launched the app with is what the analyst asked for, so the restore
+    /// is dropped and that file records itself. Called once the app has finished launching.
+    ///
+    /// A folder that is gone or no longer holds its manifest opens nothing and raises nothing, and
+    /// is forgotten in the layout this window writes back, so the next launch does not look for it
+    /// again; nothing is made in its place. An open that fails raises its banner this once and is
+    /// forgotten the same way. The open runs on this thread, as an open from the door does.
+    fn reopen_at_launch(&mut self, ctx: &egui::Context, dir: &std::path::Path) {
+        if !self.open_queue.is_empty() {
+            return;
+        }
+        if !dir.join(arc::spec::MANIFEST_FILENAME).is_file() {
+            eprintln!(
+                "{} is no longer a Protocol folder; the window opens on the door",
+                dir.display()
+            );
+            self.layout.live_mut().reopen_nothing();
+            return;
+        }
+        self.open_path_now(ctx, &dir.to_string_lossy());
+        if self.front_door_is_live() {
+            self.layout.live_mut().reopen_nothing();
+        }
+    }
+
+    /// This window taking its opens from `queue`, which something made before the window was:
+    /// the Mac's open events are listened for before the event loop starts, so a file a launch by
+    /// double-click delivers has a queue to land in. What the boot already asked to open moves
+    /// onto `queue`, behind anything waiting there.
+    #[must_use]
+    pub fn opening_from(mut self, queue: crate::open_queue::OpenQueue) -> Self {
+        for request in self.open_queue.drain() {
+            queue.push(request);
+        }
+        self.open_queue = queue;
+        self
+    }
+
+    /// The one-source Protocol the grid and dashboard on the canvas were opened from, when an open
+    /// made one.
+    #[must_use]
+    pub fn own_protocol(&self) -> Option<&crate::own_files::OwnProtocol> {
+        self.own_protocol.as_ref()
+    }
+
+    /// The folder of the own-files Protocol the window holds: the one-source Protocol under the
+    /// grid and dashboard, or the Protocol under the model pane. `None` for any other document.
+    #[must_use]
+    pub fn open_protocol_dir(&self) -> Option<PathBuf> {
+        self.own_protocol
+            .as_ref()
+            .map(|p| p.dir.clone())
+            .or_else(|| self.model.as_ref().map(|m| m.doc.protocol.dir.clone()))
+            .or_else(|| self.empty_protocol.as_ref().map(|p| p.dir.clone()))
+    }
+
+    /// The Protocol New Protocol made, while it has no source.
+    #[must_use]
+    pub fn empty_protocol(&self) -> Option<&crate::own_files::OwnProtocol> {
+        self.empty_protocol.as_ref()
+    }
+
+    /// Whether the open Protocol asks for the sources browser, as one New Protocol has just made
+    /// does: the hook the browser will answer to. Until the browser is built, such a Protocol's
+    /// canvas says how to add a source ([`Self::empty_canvas_said`]).
+    #[must_use]
+    pub fn browser_requested(&self) -> bool {
+        self.browser_requested
+    }
+
+    /// What the canvas of a Protocol with no sources said on the last frame, when it drew one.
+    #[must_use]
+    pub fn empty_canvas_said(&self) -> Option<&str> {
+        self.empty_canvas_said.as_deref()
+    }
+
+    /// Where the front door drew New Protocol on the last frame, when it drew the door.
+    #[must_use]
+    pub fn front_door_new_protocol_rect(&self) -> Option<egui::Rect> {
+        self.door_new_protocol
+    }
+
+    /// The places the New Protocol sheet offers, in order, while it is open.
+    #[must_use]
+    pub fn new_protocol_places(&self) -> Option<Vec<String>> {
+        match &self.overlay {
+            Some(Overlay::NewProtocol(sheet)) => {
+                Some(sheet.places.iter().map(|p| p.label().to_string()).collect())
+            }
+            _ => None,
+        }
+    }
+
+    /// Which of the New Protocol sheet's places is chosen, while it is open.
+    #[must_use]
+    pub fn new_protocol_selected(&self) -> Option<usize> {
+        match &self.overlay {
+            Some(Overlay::NewProtocol(sheet)) => Some(sheet.selected),
+            _ => None,
+        }
+    }
+
+    /// Where the New Protocol sheet drew its place `at` on the last frame.
+    #[must_use]
+    pub fn new_protocol_place_rect(&self, at: usize) -> Option<egui::Rect> {
+        match &self.overlay {
+            Some(Overlay::NewProtocol(sheet)) => sheet.rows.get(at).copied(),
+            _ => None,
+        }
+    }
+
+    /// **New Protocol**: ask where to make it, in a sheet listing the Protocols folder, chosen to
+    /// begin with, the groups in it, and Other… for any folder.
+    pub fn ask_new_protocol(&mut self) {
+        let root = crate::protocols_dir::root();
+        let mut places = vec![NewProtocolPlace::Folder {
+            name: NEW_PROTOCOL_ROOT.to_string(),
+            dir: root.clone(),
+        }];
+        for node in crate::door_tree::read(&root) {
+            if let crate::door_tree::Node::Group { name, .. } = node {
+                let dir = root.join(&name);
+                places.push(NewProtocolPlace::Folder { name, dir });
+            }
+        }
+        places.push(NewProtocolPlace::Other);
+        self.overlay = Some(Overlay::NewProtocol(NewProtocolSheet {
+            places,
+            selected: 0,
+            rows: Vec::new(),
+        }));
+    }
+
+    /// Make an empty Protocol in `parent` and open it, as New Protocol does once it is told where:
+    /// it is named `Untitled`, or `Untitled-2` and so on, and is kept at once. A folder the system
+    /// refuses, or one that cannot be written, is said in a banner and nothing opens.
+    pub fn make_new_protocol_in(&mut self, ctx: &egui::Context, parent: &std::path::Path) {
+        match crate::own_files::create_empty(parent) {
+            Ok(protocol) => {
+                let said = format!(
+                    "Made {} in {}",
+                    display_name(&protocol.dir),
+                    parent.display()
+                );
+                self.adopt_empty_protocol(ctx, protocol, said);
+            }
+            Err(e) => {
+                eprintln!("could not make a Protocol in {}: {e}", parent.display());
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new(NEW_PROTOCOL_BANNER),
+                        Severity::Error,
+                        "Could not make the Protocol",
+                    )
+                    .body(e),
+                );
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    /// Take the Protocol `protocol`, which has no sources, into the window in place of what it
+    /// held, and say `said` in a toast. Its canvas says how to add a source, and the window asks
+    /// for the sources browser.
+    fn adopt_empty_protocol(
+        &mut self,
+        ctx: &egui::Context,
+        protocol: crate::own_files::OwnProtocol,
+        said: String,
+    ) {
+        self.notifications
+            .dismiss(NotificationId::new("open-data-file"));
+        self.notifications
+            .dismiss(NotificationId::new(NEW_PROTOCOL_BANNER));
+        self.adopt_boot(Boot::empty());
+        let dir = protocol.dir.clone();
+        self.empty_protocol = Some(protocol);
+        self.browser_requested = true;
+        self.remember_own_protocol(&dir, false);
+        // The door lists the Protocol from the moment it is made.
+        self.forget_door_listing();
+        self.toasts.push(Toast::new(Severity::Success, said));
+        self.retitle(ctx);
+        ctx.request_repaint();
+    }
+
+    /// **Add what `paths` hold to the open Protocol as sources**, together, kept at once. Asked
+    /// for through [`Self::take_or_ask`], which asks the close question first over a draft, since
+    /// the canvas is replaced. The first sources name a Protocol New Protocol made, unless the
+    /// analyst has named it, and its folder is renamed; one source shows its grid and dashboard,
+    /// and a second shows the model.
+    ///
+    /// With the door showing, `paths` open as a new Protocol, as an open of them would. Sources
+    /// are added only to Protocols Brightfield made; over any other, a banner says so and nothing
+    /// is added. A Protocol whose folder has gone says so, as every write into it does.
+    fn add_sources(&mut self, ctx: &egui::Context, paths: &[PathBuf]) {
+        let Some(first) = paths.first() else {
             return;
         };
-        if let Some(dir) = crate::own_files::own_protocol_dir(std::path::Path::new(chosen)) {
-            self.reopen_model_pane(ctx, &dir, runner);
+        // On the door nothing is open to add to: going Home lets go of the Protocol that was open.
+        if self.front_door_is_live() {
+            let installed = self
+                .installed_extensions
+                .clone()
+                .unwrap_or_else(crate::data_file::installed_extensions);
+            self.open_paths_knowing(ctx, paths.to_vec(), &installed);
             return;
         }
-        match crate::data_file::open_any(std::path::Path::new(chosen), &runner) {
-            Ok(crate::data_file::Opened::OneTable(opened)) => self.adopt_opened_file(ctx, opened),
-            Ok(crate::data_file::Opened::Model(protocol)) => {
-                self.open_model_pane(ctx, protocol, runner, true);
-            }
-            Err(e) => self.say_open_failed(ctx, chosen, e),
+        let held = self
+            .empty_protocol
+            .clone()
+            .or_else(|| self.own_protocol.clone())
+            .or_else(|| self.model.as_ref().map(|m| m.doc.protocol.clone()));
+        let chosen = first.to_string_lossy().into_owned();
+        let Some(mut protocol) = held else {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(ADD_SOURCE_REFUSED_BANNER),
+                    Severity::Warning,
+                    "Sources were not added",
+                )
+                .body(ADD_SOURCE_REFUSED.to_string()),
+            );
+            ctx.request_repaint();
+            return;
+        };
+        if self.refuse_if_the_folder_is_gone(ctx) {
+            return;
         }
+        if self.run_outstanding() {
+            self.say_open_failed(
+                ctx,
+                &chosen,
+                "A run is writing into the Protocol's folder. Add the source once it finishes."
+                    .to_string(),
+            );
+            return;
+        }
+        let Some(runner) = self.runner.clone().or_else(crate::run::Runner::this_binary) else {
+            self.say_open_failed(
+                ctx,
+                &chosen,
+                "no runner to run its Protocol with".to_string(),
+            );
+            return;
+        };
+        let was = protocol.dir.clone();
+        let canonical = was.canonicalize().ok();
+        let discoverer = crate::discovery::Dovetail::new(&runner);
+        let added =
+            crate::own_files::add_sources_with(&mut protocol, paths, &[], &runner, &discoverer);
+        let added = match added {
+            Ok(added) => added,
+            Err(e) => {
+                self.say_open_failed(ctx, &chosen, e);
+                return;
+            }
+        };
+        self.notifications
+            .dismiss(NotificationId::new(ADD_SOURCE_REFUSED_BANNER));
+        // The first sources renamed the folder: what remembers the Protocol follows it.
+        if protocol.dir != was {
+            let layout = self.layout.live_mut();
+            layout.repoint(&was, &protocol.dir);
+            if let Some(canonical) = canonical.filter(|c| *c != was) {
+                layout.repoint(&canonical, &protocol.dir);
+            }
+            self.forget_door_listing();
+        }
+        // The window holds the Protocol as it now is before opening its canvas, so an open that
+        // fails leaves it holding the Protocol on disk, not the one from before the add.
+        if self.empty_protocol.is_some() {
+            self.empty_protocol = Some(protocol.clone());
+        } else if self.own_protocol.is_some() {
+            self.own_protocol = Some(protocol.clone());
+        }
+        self.notifications
+            .dismiss(NotificationId::new(NOT_FOLLOWED_BANNER));
+        self.say_not_followed(&Move::Rename(display_name(&protocol.dir)), &added.warnings);
+        let name = display_name(&protocol.dir);
+        if let Some(why) = &added.not_named {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(NOT_NAMED_BANNER),
+                    Severity::Warning,
+                    format!("{name} kept its name"),
+                )
+                .body(format!(
+                    "The sources were added, but {name} could not be renamed after them: {why}. \
+                     Rename it when you like."
+                )),
+            );
+        }
+        if protocol.sources.tables.len() > 1 {
+            self.open_model_pane(ctx, protocol, runner, true);
+        } else {
+            match crate::data_file::open_one_table(&protocol) {
+                Ok(opened) => self.adopt_one_source(ctx, opened, protocol),
+                Err(e) => {
+                    self.say_open_failed(ctx, &chosen, e);
+                    return;
+                }
+            }
+        }
+        let what = if paths.len() > 1 {
+            format!("{} and {} more", display_name(first), paths.len() - 1)
+        } else {
+            display_name(first)
+        };
+        self.toasts.push(Toast::new(
+            Severity::Success,
+            format!("Added {what} to {name}"),
+        ));
+        self.retitle(ctx);
+        ctx.request_repaint();
+    }
+
+    /// **Select the source `table` on the spine**: the canvas shows that table's grid and
+    /// dashboard. Over the model, its rows open in the grid with the model kept behind them; a
+    /// Protocol of one source shows its table's already. Answers whether the table is shown.
+    pub fn select_source(&mut self, ctx: &egui::Context, table: &str) -> bool {
+        if self.model.is_some() {
+            return self.open_model_in_grid(
+                ctx,
+                &brightfield_render::model_scene::Selection::Dataset(table.to_string()),
+            );
+        }
+        self.own_protocol
+            .as_ref()
+            .is_some_and(|p| p.sources.tables.iter().any(|t| t.name == table))
+    }
+
+    /// **Rename the open Protocol to `name`**: its folder and its `name:` together, asking the
+    /// close question first over a draft, since the window opens the Protocol again at its new
+    /// path. A refused name says why in a banner, and the Protocol stays as it was.
+    pub fn rename_protocol(&mut self, ctx: &egui::Context, name: &str) {
+        self.leave(ctx, Leaving::Move(Move::Rename(name.to_string())));
+    }
+
+    /// **Move the open Protocol's folder into `parent`**, as [`Self::rename_protocol`] renames it.
+    pub fn relocate_protocol(&mut self, ctx: &egui::Context, parent: &std::path::Path) {
+        self.leave(ctx, Leaving::Move(Move::Relocate(parent.to_path_buf())));
+    }
+
+    /// Which of the locator band's place fields is open for typing — a test hook.
+    #[must_use]
+    pub fn place_field(&self) -> Option<PlaceField> {
+        self.place_edit.as_ref().map(|e| e.field)
+    }
+
+    /// Where the locator band drew the Protocol's name on the last frame, the field F2 and a
+    /// click open.
+    #[must_use]
+    pub fn locator_name_rect(&self) -> Option<egui::Rect> {
+        self.place_rects.map(|(name, _)| name)
+    }
+
+    /// Where the Location field's Choose… button was drawn on the last frame, while the field is
+    /// open — a test hook.
+    #[must_use]
+    pub fn locator_choose_rect(&self) -> Option<egui::Rect> {
+        self.choose_rect
+    }
+
+    /// Where the locator band drew the Protocol's Location on the last frame.
+    #[must_use]
+    pub fn locator_location_rect(&self) -> Option<egui::Rect> {
+        self.place_rects.map(|(_, location)| location)
+    }
+
+    /// The front-door row whose name is open for typing, by its id — a test hook.
+    #[must_use]
+    pub fn door_rename_row(&self) -> Option<&str> {
+        self.door_rename_id.as_deref()
+    }
+
+    /// Open the field `field` for typing, holding what it names now.
+    fn open_place_field(&mut self, field: PlaceField) {
+        let Some(dir) = self.open_protocol_dir() else {
+            return;
+        };
+        let text = match field {
+            PlaceField::Name => display_name(&dir),
+            PlaceField::Location => dir
+                .parent()
+                .map_or_else(String::new, |p| p.to_string_lossy().into_owned()),
+        };
+        self.place_edit = Some(PlaceEdit {
+            field,
+            text,
+            focus: true,
+        });
+    }
+
+    /// Cmd+N: New Protocol's question, where to make it, from anywhere in the window. No overlay
+    /// may own the keyboard.
+    fn new_protocol_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if self
+            .new_protocol_binding
+            .is_some_and(|t| consume_token(ctx, t))
+        {
+            self.ask_new_protocol();
+            ctx.request_repaint();
+        }
+    }
+
+    /// Cmd+,: Preferences, from anywhere in the window. No overlay may own the keyboard.
+    fn preferences_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if self
+            .preferences_binding
+            .is_some_and(|t| consume_token(ctx, t))
+        {
+            self.open_preferences();
+            ctx.request_repaint();
+        }
+    }
+
+    /// **Preferences**: open the sheet that shows the Protocols folder and chooses another.
+    pub fn open_preferences(&mut self) {
+        if !matches!(self.overlay, Some(Overlay::Preferences(_))) {
+            self.overlay = Some(Overlay::Preferences(
+                crate::preferences::PreferencesSheet::default(),
+            ));
+        }
+    }
+
+    /// The Protocols folder the Preferences sheet shows, while it is open.
+    #[must_use]
+    pub fn preferences_folder(&self) -> Option<PathBuf> {
+        matches!(self.overlay, Some(Overlay::Preferences(_))).then(crate::protocols_dir::root)
+    }
+
+    /// Whether the Preferences sheet offers Choose…, while it is open: not while
+    /// `BRIGHTFIELD_PROTOCOLS_DIR` sets the folder for this launch.
+    #[must_use]
+    pub fn preferences_can_choose(&self) -> Option<bool> {
+        matches!(self.overlay, Some(Overlay::Preferences(_)))
+            .then(|| protocols_dir_override().is_none())
+    }
+
+    /// Make `dir` the Protocols folder, as the Preferences sheet's Choose… does once the folder
+    /// picker answers ([`crate::protocols_dir::set_root`]). The door's tree reads the new folder
+    /// on its next frame. When the old folder holds Protocols, the sheet offers once to move them
+    /// across ([`Self::answer_move_offer`]). A folder refused, by the system or for being inside
+    /// the old one or holding it, is said in a banner, and the old setting stays.
+    pub fn choose_protocols_folder(&mut self, ctx: &egui::Context, dir: &std::path::Path) {
+        let old = crate::protocols_dir::root();
+        let set = match protocols_dir_override() {
+            Some(var) => Err(format!(
+                "{var} sets the Protocols folder for this launch, so it is not changed here."
+            )),
+            None => crate::protocols_dir::set_root_saying(dir),
+        };
+        let said = match set {
+            Ok(said) => said,
+            Err(why) => {
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new(PREFERENCES_BANNER),
+                        Severity::Error,
+                        "The Protocols folder was not changed",
+                    )
+                    .body(why),
+                );
+                ctx.request_repaint();
+                return;
+            }
+        };
+        self.notifications
+            .dismiss(NotificationId::new(PREFERENCES_BANNER));
+        if let Some(said) = said {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(PREFERENCES_BANNER),
+                    Severity::Info,
+                    "The Protocols folder is set",
+                )
+                .body(said),
+            );
+        }
+        self.forget_door_listing();
+        let new = crate::protocols_dir::root();
+        let same = old == new
+            || matches!((old.canonicalize(), new.canonicalize()), (Ok(a), Ok(b)) if a == b);
+        let count = if same {
+            0
+        } else {
+            count_protocols(&crate::door_tree::read(&old))
+        };
+        self.open_preferences();
+        if let Some(Overlay::Preferences(sheet)) = self.overlay.as_mut() {
+            sheet.offer = (count > 0).then_some(crate::preferences::MoveOffer {
+                from: old,
+                to: new,
+                count,
+            });
+        }
+        ctx.request_repaint();
+    }
+
+    /// The offer to move the old Protocols folder's Protocols, as the folder it moves them from
+    /// and the folder it moves them to, while the Preferences sheet makes it.
+    #[must_use]
+    pub fn move_offer(&self) -> Option<(&std::path::Path, &std::path::Path)> {
+        match &self.overlay {
+            Some(Overlay::Preferences(sheet)) => sheet
+                .offer
+                .as_ref()
+                .map(|o| (o.from.as_path(), o.to.as_path())),
+            _ => None,
+        }
+    }
+
+    /// Answer the offer to move the old Protocols folder's Protocols. Declining moves nothing:
+    /// they stay where they are, and in Recents. Accepting moves each one
+    /// ([`crate::protocols_dir::move_all_with`]); when the Protocol open in the window is among
+    /// them it is moved through [`Self::leave`], so a draft is asked about first.
+    pub fn answer_move_offer(&mut self, ctx: &egui::Context, accept: bool) {
+        let offer = match self.overlay.as_mut() {
+            Some(Overlay::Preferences(sheet)) => sheet.offer.take(),
+            _ => None,
+        };
+        let Some(offer) = offer else {
+            return;
+        };
+        ctx.request_repaint();
+        if !accept {
+            return;
+        }
+        self.overlay = None;
+        let holds_one_there = self
+            .held_protocol_dir()
+            .is_some_and(|dir| is_within(&dir, &offer.from));
+        let to = Leaving::MoveAll {
+            from: offer.from,
+            to: offer.to,
+        };
+        if holds_one_there {
+            self.leave(ctx, to);
+        } else {
+            self.go(ctx, to);
+        }
+    }
+
+    /// What the last move of the old Protocols folder's Protocols did — a test hook.
+    #[must_use]
+    pub fn move_report(&self) -> Option<&crate::protocols_dir::MoveReport> {
+        self.move_report.as_ref()
+    }
+
+    /// Move each Protocol in `from` into `to`, the open one among them unless `leave_open`, then
+    /// repoint Recents, open the window's Protocol again at its new place when it moved, and say
+    /// what moved. A run writing into the open Protocol's folder leaves it where it is too.
+    fn move_all_protocols(
+        &mut self,
+        ctx: &egui::Context,
+        from: &std::path::Path,
+        to: &std::path::Path,
+        leave_open: bool,
+    ) {
+        let open = self.held_protocol_dir().filter(|dir| is_within(dir, from));
+        // A run writing its record into a folder, the open Protocol's or one left running after
+        // Home, keeps that folder where it is; the open one is left too for its own draft when
+        // the analyst chose to keep editing.
+        let running: Vec<PathBuf> = self
+            .running
+            .iter()
+            .map(|pending| pending.run.dir().to_path_buf())
+            .collect();
+        let leave =
+            crate::protocols_dir::left_behind(&running, open.as_deref().filter(|_| leave_open));
+        let canonical_from = from.canonicalize().ok();
+        let report = crate::protocols_dir::move_all_with(
+            from,
+            to,
+            &leave,
+            &crate::rename::FolderOps::system(),
+        );
+        let layout = self.layout.live_mut();
+        for (was, now) in &report.moved {
+            layout.repoint(was, now);
+            if let Some(rest) = canonical_from
+                .as_ref()
+                .and_then(|c| was.strip_prefix(from).ok().map(|rest| c.join(rest)))
+                .filter(|c| c != was)
+            {
+                layout.repoint(&rest, now);
+            }
+        }
+        if let Some(open) = &open {
+            let moved_to = report
+                .moved
+                .iter()
+                .find(|(was, _)| was == open || open.canonicalize().ok().as_ref() == Some(was))
+                .map(|(_, now)| now.clone());
+            if let Some(now) = moved_to {
+                self.open_protocol_path(ctx, &now.to_string_lossy());
+            }
+        }
+        self.forget_door_listing();
+        self.notifications
+            .dismiss(NotificationId::new(MOVE_ALL_BANNER));
+        let said = report.said();
+        if report.failed.is_some() {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(MOVE_ALL_BANNER),
+                    Severity::Error,
+                    "Not every Protocol moved to the new Protocols folder",
+                )
+                .body(said),
+            );
+        } else if !report.left.is_empty() || !report.warnings.is_empty() {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(MOVE_ALL_BANNER),
+                    Severity::Warning,
+                    "The Protocols moved, with something to see to",
+                )
+                .body(said),
+            );
+        } else {
+            self.toasts.push(Toast::new(Severity::Success, said));
+        }
+        self.move_report = Some(report);
+        ctx.request_repaint();
+    }
+
+    /// F2: with the front door showing, rename the row under the pointer; with a Protocol open,
+    /// open the locator band's name field. No overlay may own the keyboard.
+    fn rename_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if !self.rename_binding.is_some_and(|t| consume_token(ctx, t)) {
+            return;
+        }
+        if self.front_door_is_live() {
+            if let Some((id, in_tree)) = self.door_hovered.clone() {
+                self.open_door_rename(&id, in_tree);
+            }
+        } else {
+            self.open_place_field(PlaceField::Name);
+        }
+        ctx.request_repaint();
+    }
+
+    /// Open the name field on the front-door row `id`, of the tree or of Recents, when it names a
+    /// Protocol on disk.
+    fn open_door_rename(&mut self, id: &str, in_tree: bool) {
+        let Some(dir) = door_row_dir(id) else {
+            return;
+        };
+        self.door_rename = Some(PlaceEdit {
+            field: PlaceField::Name,
+            text: display_name(&dir),
+            focus: true,
+        });
+        self.door_rename_id = Some(id.to_string());
+        self.door_rename_in_tree = in_tree;
+    }
+
+    /// Rename the Protocol the front-door row `id` names to `name`, and point its row at the new
+    /// folder. A refused name says why in a banner.
+    ///
+    /// The row's Protocol is not renamed under a run, which writes into its folder. The door holds
+    /// no Protocol behind it, so the rename opens nothing
+    /// (`a_door_row_of_the_protocol_left_for_home_renames_it_and_stays_on_the_door`).
+    fn rename_door_row(&mut self, ctx: &egui::Context, id: &str, name: &str) {
+        let Some(dir) = door_row_dir(id) else {
+            return;
+        };
+        let to = Move::Rename(name.to_string());
+        if self.run_outstanding() {
+            self.say_not_moved(&to, DOOR_RENAME_UNDER_A_RUN.to_string());
+            ctx.request_repaint();
+            return;
+        }
+        match crate::rename::rename_with(&dir, name, &crate::rename::FolderOps::system()) {
+            Ok(moved) => {
+                self.layout.live_mut().repoint(&dir, &moved.to);
+                // The tree names the folder by its old name until it is read again.
+                self.forget_door_listing();
+                self.notifications
+                    .dismiss(NotificationId::new(MOVE_PROTOCOL_BANNER));
+                self.say_not_followed(&to, &moved.warnings);
+            }
+            Err(why) => self.say_not_moved(&Move::Rename(name.to_string()), why),
+        }
+        ctx.request_repaint();
+    }
+
+    /// Forget the door's tree and the run states its rows read, so the next door frame reads
+    /// them from disk again.
+    fn forget_door_listing(&mut self) {
+        self.door_tree = None;
+        self.door_runs.clear();
+    }
+
+    /// The run state the door draws for the Protocol in `dir`, its newest whole run's, and when
+    /// that run was recorded in seconds since the epoch: read the first time a row asks after the
+    /// door was shown, and kept while it stays shown.
+    fn door_run_state(&mut self, dir: &std::path::Path) -> (RunState, Option<u64>) {
+        *self.door_runs.entry(dir.to_path_buf()).or_insert_with(|| {
+            let (state, ran_at) = crate::door_tree::door_state(dir);
+            let ran_at = ran_at
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs());
+            (state, ran_at)
+        })
+    }
+
+    /// The folder of the Protocol this window holds, of whichever kind: one made from the
+    /// analyst's own files or its model pane, an agent's Protocol drawn as panel tiles, and a
+    /// Protocol of one step opened from its manifest, whose folder is the one its source's Save
+    /// writes. `None` on the door and for a document with no Protocol folder behind it.
+    ///
+    /// The folder a move of the Protocols folder's Protocols asks about and opens again, and the
+    /// one the folder-gone guard watches, so the two agree on what the window holds
+    /// (`accepting_the_move_reopens_an_agent_protocol_at_its_new_place`).
+    #[must_use]
+    pub fn held_protocol_dir(&self) -> Option<PathBuf> {
+        self.open_protocol_dir()
+            .or_else(|| self.tiles.as_ref().map(|t| t.dir().to_path_buf()))
+            .or_else(|| self.protocol.doc.model.source().map(|s| s.dir.clone()))
+            .filter(|dir| !dir.as_os_str().is_empty())
+    }
+
+    /// The folder of the Protocol this window holds ([`Self::held_protocol_dir`]), when the
+    /// folder is no longer where it was opened from: deleted, or moved or renamed in the Finder.
+    fn gone_protocol_dir(&self) -> Option<PathBuf> {
+        self.held_protocol_dir().filter(|dir| !dir.is_dir())
+    }
+
+    /// Say, while the Protocol this window holds has no folder, that it is gone and that nothing
+    /// can be written for it; and stop saying it once the folder is back.
+    ///
+    /// Nothing makes the folder again. Every write into a Protocol's folder makes the folders it
+    /// writes beneath, so a Save, a run or a model edit landing on a missing folder would make an
+    /// empty Protocol where the analyst removed one; [`Self::refuse_if_the_folder_is_gone`]
+    /// refuses them first.
+    fn say_if_the_folder_is_gone(&mut self, ctx: &egui::Context) {
+        let banner = NotificationId::new(FOLDER_GONE_BANNER);
+        match self.gone_protocol_dir() {
+            Some(dir) => {
+                if self.notifications.iter().any(|n| n.id == banner) {
+                    return;
+                }
+                self.notifications.raise(
+                    Notification::new(banner, Severity::Error, FOLDER_GONE_TITLE).body(format!(
+                        "{} was deleted, or moved or renamed in the Finder, while it was open. \
+                         Save cannot write it, and nothing here makes it again. Open the \
+                         Protocol from where it is now to keep working on it.",
+                        dir.display()
+                    )),
+                );
+                ctx.request_repaint();
+            }
+            None => {
+                self.notifications.dismiss(banner);
+            }
+        }
+    }
+
+    /// Whether the Protocol this window holds has lost its folder, saying so when it has: the
+    /// guard ahead of each write into that folder.
+    fn refuse_if_the_folder_is_gone(&mut self, ctx: &egui::Context) -> bool {
+        if self.gone_protocol_dir().is_none() {
+            return false;
+        }
+        self.say_if_the_folder_is_gone(ctx);
+        true
+    }
+
+    /// Put the own-files Protocol in `dir` at the head of Recents, from the moment it is made or
+    /// opened, saved or not, so the door lists it the next time it is shown.
+    ///
+    /// Its entry keeps the way its grid was reading and where it sat, which the window that held
+    /// another document before this one has no say in. With `restore`, for a Protocol that opens
+    /// on its grid, the window takes those settings on as [`Self::open_protocol_path`] does; the
+    /// model pane, which shows no grid, leaves the window's own alone.
+    fn remember_own_protocol(&mut self, dir: &std::path::Path, restore: bool) {
+        let id = remembered_id(&dir.join(arc::spec::MANIFEST_FILENAME).to_string_lossy());
+        let grid_layout = self.layout.live().grid_layout_of(&id).unwrap_or_default();
+        let grid_spot = self.layout.live().grid_spot_of(&id).unwrap_or_default();
+        if restore {
+            self.grid_layout = grid_layout;
+            self.set_grid_spot(grid_spot);
+        }
+        let run = crate::door_tree::run_state(dir);
+        // And what the next launch reopens, as it was last saved.
+        self.layout.live_mut().reopen_protocol_at(dir);
+        self.layout.live_mut().remember(
+            &id,
+            &display_name(dir),
+            run,
+            grid_layout,
+            grid_spot,
+            now_secs(),
+        );
+    }
+
+    /// Raise the banner that names what did not follow `to`, done, when anything did not: the
+    /// rename's or move's `warnings`. With none, it raises nothing.
+    fn say_not_followed(&mut self, to: &Move, warnings: &[String]) {
+        if warnings.is_empty() {
+            return;
+        }
+        let title = match to {
+            Move::Rename(_) => "Renamed, but not everything followed it",
+            Move::Relocate(_) => "Moved, but not everything followed it",
+        };
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new(NOT_FOLLOWED_BANNER),
+                Severity::Warning,
+                title,
+            )
+            .body(warnings.join(". ")),
+        );
+    }
+
+    /// Raise the banner that says `to` was not done, and why.
+    fn say_not_moved(&mut self, to: &Move, why: String) {
+        let title = match to {
+            Move::Rename(_) => "The Protocol was not renamed",
+            Move::Relocate(_) => "The Protocol was not moved",
+        };
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new(MOVE_PROTOCOL_BANNER),
+                Severity::Error,
+                title,
+            )
+            .body(why),
+        );
+    }
+
+    /// **Rename or move the open Protocol, then open it again where it now is**, so the window's
+    /// paths, its run strip, the Versions panel and the watcher all read the new folder; its
+    /// Recents row is pointed at the new folder first. A run in flight writes into the folder, so
+    /// the move waits for it, and says so.
+    fn move_open_protocol(&mut self, ctx: &egui::Context, to: &Move) {
+        let Some(dir) = self.open_protocol_dir() else {
+            return;
+        };
+        if self.run_outstanding() {
+            self.say_not_moved(
+                to,
+                "A run is writing into its folder. Try again once it finishes.".to_string(),
+            );
+            return;
+        }
+        let canonical = dir.canonicalize().ok();
+        let ops = crate::rename::FolderOps::system();
+        let moved = match to {
+            Move::Rename(name) => crate::rename::rename_with(&dir, name, &ops),
+            Move::Relocate(parent) => crate::rename::relocate_with(&dir, parent, &ops),
+        };
+        match moved {
+            Ok(crate::rename::Moved {
+                to: new,
+                left_behind,
+                warnings,
+            }) => {
+                self.notifications
+                    .dismiss(NotificationId::new(MOVE_PROTOCOL_BANNER));
+                // The copy was checked, so the move is done; what is left of the original is the
+                // analyst's to clear away.
+                if let Some(left) = left_behind {
+                    self.notifications.raise(
+                        Notification::new(
+                            NotificationId::new(LEFT_BEHIND_BANNER),
+                            Severity::Warning,
+                            "The Protocol moved, and part of its old folder is left",
+                        )
+                        .body(left),
+                    );
+                }
+                self.notifications
+                    .dismiss(NotificationId::new(NOT_FOLLOWED_BANNER));
+                self.say_not_followed(to, &warnings);
+                if new == dir {
+                    return;
+                }
+                let layout = self.layout.live_mut();
+                layout.repoint(&dir, &new);
+                if let Some(canonical) = canonical.filter(|c| *c != dir) {
+                    layout.repoint(&canonical, &new);
+                }
+                self.open_protocol_path(ctx, &new.to_string_lossy());
+                let said = match to {
+                    Move::Rename(_) => format!("Renamed to {}", display_name(&new)),
+                    Move::Relocate(_) => format!("Moved to {}", new.display()),
+                };
+                self.toasts.push(Toast::new(Severity::Success, said));
+            }
+            Err(why) => self.say_not_moved(to, why),
+        }
+        ctx.request_repaint();
     }
 
     /// Open the own-files Protocol in `dir` again into the model pane, with the model its folder
@@ -9741,7 +12830,17 @@ impl MeridianApp {
     /// The path whose open is waiting for a frame to draw the fetch notice first.
     #[must_use]
     pub fn pending_open(&self) -> Option<&str> {
-        self.pending_open.as_deref()
+        self.pending_open
+            .as_ref()
+            .and_then(|paths| paths.first())
+            .and_then(|path| path.to_str())
+    }
+
+    /// Where the window goes once the close question is answered, while the question is up — a
+    /// test hook.
+    #[must_use]
+    pub fn leaving(&self) -> Option<&Leaving> {
+        self.leaving.as_ref()
     }
 
     /// Open the model pane over an own-files Protocol, in place of whatever the window held: both
@@ -9778,7 +12877,10 @@ impl MeridianApp {
             doc,
             items: crate::model_pane::model_registry().instantiate(),
             in_grid: None,
+            last_run: None,
+            last_run_said: None,
         });
+        self.remember_own_protocol(&dir, false);
         self.toasts.push(Toast::new(
             Severity::Success,
             format!(
@@ -9803,6 +12905,9 @@ impl MeridianApp {
         ctx: &egui::Context,
         action: crate::model_inspector::ModelAction,
     ) {
+        if self.refuse_if_the_folder_is_gone(ctx) {
+            return;
+        }
         let Some(model) = self.model.as_mut() else {
             return;
         };
@@ -9852,8 +12957,54 @@ impl MeridianApp {
             .grid_snapshot(target)
             .and_then(|path| crate::data_file::open(&path.to_string_lossy()));
         match opened {
-            Ok(opened) => {
+            Ok(mut opened) => {
+                // The grid is the Protocol's own, as the grid of a Protocol of one source is:
+                // what a Save writes for it goes into the Protocol's folder, never into the
+                // folder its rows were copied to, which holds data only. A view kept on a
+                // table's rows is a step recorded into the Protocol's manifest. A join's rows are
+                // no table a manifest step makes, so a view on them only shows them, and its
+                // chart is saved beside the Protocol's panels under the join's name.
+                opened.protocol.dir.clone_from(&model.doc.protocol.dir);
+                let join = matches!(
+                    target,
+                    brightfield_render::model_scene::Selection::Relationship(_)
+                );
+                opened.protocol.model_grid = Some(if join {
+                    crate::one_step::ModelGrid::Join
+                } else {
+                    crate::one_step::ModelGrid::Table
+                });
+                // The chart saved for these rows, when one was, from the file a Save writes. One
+                // that will not be read does not keep the rows from opening: they open on their
+                // generated dashboard, and a warning names the file. The document remembers it was
+                // not adopted, so a Save replaces it with what is shown, keeping its text as a
+                // version, and nothing is placed into it.
+                let chart = opened.protocol.chart_file();
+                let unread = Boot::read_saved_chart(&mut opened).err();
                 self.adopt_boot(Boot::of_opened_file(opened));
+                let unread_banner = NotificationId::new("model-grid-chart-unread");
+                match unread {
+                    Some(e) => {
+                        self.charts.doc.set_unread_chart(chart.clone());
+                        self.notifications.raise(
+                            Notification::new(
+                                unread_banner,
+                                Severity::Warning,
+                                "The saved chart for these rows could not be read",
+                            )
+                            .body(format!(
+                                "{} could not be read, so these rows show their generated \
+                                 dashboard. Saving replaces it; the old chart is kept in \
+                                 Versions. {e}",
+                                chart.display()
+                            )),
+                        );
+                    }
+                    None => {
+                        self.notifications.dismiss(unread_banner);
+                    }
+                }
+                self.charts.doc.set_views_are_steps(!join);
                 let showing = match target {
                     brightfield_render::model_scene::Selection::Dataset(name) => {
                         format!("Table {name}")
@@ -9944,19 +13095,72 @@ impl MeridianApp {
     /// It is also a no-op when the canvas holds no data-file document to
     /// reload: the click that raised this verb named a file the window no
     /// longer has open, and there is nothing left to race.
+    ///
+    /// A reload opens the Protocol afresh, which replaces the chart, the grid
+    /// view, the statements and the removals the window holds, so it goes
+    /// through [`Self::leave`] as `Leaving::Reload`: over a draft the close
+    /// question asks first, and the reload waits for its answer.
     pub fn reload_data_file(&mut self, ctx: &egui::Context) {
-        if self.fetching.is_some() {
+        if self.fetching.is_some() || self.data_file_to_reload().is_none() {
             return;
         }
-        let Some(path) = self
-            .charts
+        self.leave(ctx, Leaving::Reload);
+    }
+
+    /// The data file the open chart document reads, the one a reload reads again.
+    fn data_file_to_reload(&self) -> Option<PathBuf> {
+        self.charts
             .doc
             .live_dashboard()
             .and_then(|live| live.data_files(live.base_dir()).into_iter().next())
-        else {
+    }
+
+    /// Reload the data file once the close question is answered or not needed, as
+    /// [`Self::reload_data_file`] describes.
+    fn reload_now(&mut self, ctx: &egui::Context) {
+        if self.fetching.is_some() {
+            return;
+        }
+        let Some(path) = self.data_file_to_reload() else {
             return;
         };
+        // The grid of a Protocol's one table reads the Protocol's copy of it, which was written
+        // once, so the Protocol is read again from the analyst's file, its columns as they are
+        // now, and the copy is written afresh from it.
+        if let Some(dir) = self.own_protocol.as_ref().map(|p| p.dir.clone()) {
+            match self.runner.clone().or_else(crate::run::Runner::this_binary) {
+                Some(runner) => match crate::data_file::reload_one_table(&dir, &runner) {
+                    Ok((opened, protocol)) => self.adopt_one_source(ctx, opened, protocol),
+                    Err(e) => self.say_open_failed(ctx, &dir.to_string_lossy(), e),
+                },
+                None => self.say_open_failed(
+                    ctx,
+                    &dir.to_string_lossy(),
+                    "no runner to run its Protocol with".to_string(),
+                ),
+            }
+            return;
+        }
         self.open_data_file(ctx, &path.to_string_lossy());
+    }
+
+    /// Write `source`'s declaration where Save and Run write it, and answer its manifest's path.
+    ///
+    /// A one-step Protocol is written to its directory ([`crate::one_step::OneStepProtocol::save_to`]).
+    /// The grid of an own-files Protocol's table, its one table or one of a folder's, is written
+    /// nothing: that Protocol's manifest was written when it was made and is the file a recorded
+    /// view extends, so Save and Run record into it as it stands.
+    fn write_source(&self, source: &crate::one_step::OneStepProtocol) -> Result<PathBuf, String> {
+        let own_folder = crate::own_files::own_protocol_dir(&source.dir).is_some();
+        match &self.own_protocol {
+            Some(own) if own.dir == source.dir => {
+                Ok(crate::one_step::OneStepProtocol::manifest_path_in(&own.dir))
+            }
+            _ if own_folder => Ok(crate::one_step::OneStepProtocol::manifest_path_in(
+                &source.dir,
+            )),
+            _ => source.save_to(&source.dir),
+        }
     }
 
     /// Write this window's Protocol to disk: `arcform.yaml` and its one model,
@@ -9974,8 +13178,9 @@ impl MeridianApp {
     /// the statements still kept laid out after it.
     ///
     /// **The chart is written after the Protocol and is its own success.** The
-    /// edits made to it since the last Save go into `panels/<name>.yaml` under
-    /// the same directory, through [`ChartDoc::save_chart_beside`], and the
+    /// edits made to it since the last Save go into its chart file under the
+    /// same directory ([`OneStepProtocol::chart_file`](crate::one_step::OneStepProtocol::chart_file)),
+    /// through [`ChartDoc::save_chart_at`], and the
     /// unsaved mark clears when they are in. A chart that could not be written
     /// leaves the mark and raises a banner of its own saying why, over a
     /// Protocol that was written: the two files are not one transaction, and
@@ -9998,6 +13203,10 @@ impl MeridianApp {
     /// is listed on the next launch and the Protocols section leads with it —
     /// which is the whole of what saving buys a reader who closes the window.
     pub fn save_protocol(&mut self, ctx: &egui::Context) -> Option<Result<PathBuf, String>> {
+        // A folder deleted or moved in the Finder is not made again by a Save.
+        if self.refuse_if_the_folder_is_gone(ctx) {
+            return Some(Err(FOLDER_GONE_TITLE.to_string()));
+        }
         // A Protocol's panel open from its tile is saved to its own file: the
         // Protocol around it is the agent's, and this window writes nothing
         // else of it.
@@ -10006,8 +13215,8 @@ impl MeridianApp {
         }
         let banner = NotificationId::new("save-protocol");
         let source = self.protocol.doc.model.source()?.clone();
-        let written = source
-            .save_to(&source.dir)
+        let written = self
+            .write_source(&source)
             .map_err(Refused::Writing)
             .and_then(|path| {
                 let recorded = self.record_pending();
@@ -10031,8 +13240,7 @@ impl MeridianApp {
             });
         // What a refusal left unrecorded leads the pending work, since what
         // was made before it was recorded and left it.
-        let refused_view =
-            self.charts.doc.pending_in_order().first() == Some(&crate::app::PendingWork::View);
+        let refused_first = self.charts.doc.pending_in_order().first().cloned();
         // A part recorded before a refusal is in the folder all the same.
         if self.charts.doc.take_pending_settled() {
             self.adopt_saved_protocol();
@@ -10048,10 +13256,18 @@ impl MeridianApp {
             Err(refused) => {
                 let (title, why) = match refused {
                     Refused::Writing(why) => ("Could not save this Protocol", why),
-                    Refused::Recording(why) if refused_view => {
-                        ("Could not record the grid view", why)
+                    Refused::Recording(why) if self.refusal_title.is_some() => {
+                        (self.refusal_title.take().unwrap_or_default(), why)
                     }
-                    Refused::Recording(why) => ("Could not record the SQL step", why),
+                    Refused::Recording(why) => match refused_first {
+                        Some(crate::app::PendingWork::View) => {
+                            ("Could not record the grid view", why)
+                        }
+                        Some(crate::app::PendingWork::Remove(_)) => {
+                            ("Could not remove the step", why)
+                        }
+                        _ => ("Could not record the SQL step", why),
+                    },
                 };
                 eprintln!("could not save the Protocol: {why}");
                 self.notifications
@@ -10118,6 +13334,52 @@ impl MeridianApp {
                     )?;
                     self.charts.doc.mark_typed_recorded(&name);
                     recorded.push(name);
+                }
+                // Applied to `arcform.yaml` as it stands at this Save, which an agent may have
+                // written meanwhile: a step already gone from it is a draft with nothing left to
+                // do, and goes quietly.
+                //
+                // Whether later steps read it is asked again here, over the Protocol as it stands
+                // with the statements still kept: a reader an agent added, or a statement kept,
+                // since the removal was drafted refuses it, naming them, and the draft stays. A
+                // reader also being removed does not count. A removal is not one of the steps
+                // this answers, which are the steps a Save added.
+                PendingWork::Remove(name) => {
+                    let inputs = source.inputs_with_typed(self.charts.doc.typed_steps())?;
+                    let readers: Vec<String> =
+                        crate::protocol::readers_in(&inputs.graph_full, &name)
+                            .into_iter()
+                            .filter(|r| !self.charts.doc.is_removing(r))
+                            .collect();
+                    if !readers.is_empty() {
+                        return Err(readers_sentence(&name, &readers));
+                    }
+                    use crate::operation::StepRemoval;
+                    match crate::operation::remove_step(&runner, &source.dir, &name)? {
+                        // The manifest changed meanwhile and could not be put back, so the draft
+                        // stays and nothing is marked recorded; the banner says only what is known.
+                        StepRemoval::NotPutBack { missing } => {
+                            self.refusal_title = Some(REMOVAL_NOT_PUT_BACK);
+                            return Err(not_put_back_sentence(&name, missing.as_deref()));
+                        }
+                        StepRemoval::Removed {
+                            left_behind: Some(why),
+                        } => {
+                            eprintln!("the removed step's SQL file was left behind: {why}");
+                            self.notifications.raise(
+                                Notification::new(
+                                    NotificationId::new("remove-step-file"),
+                                    Severity::Warning,
+                                    SQL_FILE_LEFT_BEHIND,
+                                )
+                                .body(format!(
+                                    "{name} is out of the Protocol, but its SQL file could not be deleted. {why}"
+                                )),
+                            );
+                        }
+                        StepRemoval::Removed { left_behind: None } | StepRemoval::Gone => {}
+                    }
+                    self.charts.doc.mark_removal_recorded(&name);
                 }
             }
         }
@@ -10338,10 +13600,10 @@ impl MeridianApp {
     /// failure's words rather than stacking beside them, and a Save that
     /// writes the chart takes it down.
     fn save_chart_beside_protocol(&mut self, source: &crate::one_step::OneStepProtocol) {
-        let saved =
-            self.charts
-                .doc
-                .save_chart_beside(&source.dir, &source.name, self.history.as_ref());
+        let saved = self
+            .charts
+            .doc
+            .save_chart_at(&source.chart_file(), self.history.as_ref());
         let _ = self.say_chart_saved(saved);
     }
 
@@ -10516,6 +13778,16 @@ impl MeridianApp {
 
     /// Write an exported picture to `path` and say where it went, or why not.
     fn save_picture(&mut self, ctx: &egui::Context, image: &image::RgbaImage, path: &Path) {
+        // A picture bound for a folder inside a Protocol's folder that has gone, the default
+        // `exports` beside the Protocol, would make that folder again; it is refused with the
+        // banner that says the folder is gone.
+        if self
+            .gone_protocol_dir()
+            .is_some_and(|gone| path.starts_with(&gone))
+        {
+            self.say_if_the_folder_is_gone(ctx);
+            return;
+        }
         let written = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -10798,7 +14070,13 @@ impl MeridianApp {
     /// started one, and when one was already running for this document — a
     /// second press while it runs is the same press.
     pub fn run_protocol(&mut self, ctx: &egui::Context) -> bool {
+        if self.refuse_if_the_folder_is_gone(ctx) {
+            return false;
+        }
         let Some(source) = self.protocol.doc.model.source().cloned() else {
+            if self.model.as_ref().is_some_and(ModelDoc::shown) {
+                return self.run_model_protocol(ctx);
+            }
             return self.run_panel_protocol(ctx);
         };
         if self.run_in_progress() || self.runs_folder(&source.dir) {
@@ -10814,10 +14092,12 @@ impl MeridianApp {
             ctx.request_repaint();
             false
         };
-        if let Err(e) = source.save_to(&source.dir) {
+        if let Err(e) = self.write_source(&source) {
             return refused(self, e);
         }
         let recorded = self.record_pending();
+        // A Run says a refusal under its own title.
+        self.refusal_title = None;
         // A part recorded before a refusal is in the folder all the same.
         if self.charts.doc.take_pending_settled() {
             self.adopt_saved_protocol();
@@ -10842,6 +14122,83 @@ impl MeridianApp {
         });
         ctx.request_repaint();
         true
+    }
+
+    /// Run the whole Protocol the model pane is over, from Run in its window: through arc, as a
+    /// run the analyst asked for, and waited on as the pane's own runs are. Its record, found by
+    /// the manifest's name, is kept on the pane ([`Self::model_pane_run`]), and a toast or a
+    /// banner says how it went.
+    fn run_model_protocol(&mut self, ctx: &egui::Context) -> bool {
+        let banner = NotificationId::new("run-protocol");
+        let Some(model) = self.model.as_mut() else {
+            return false;
+        };
+        let dir = model.doc.protocol.dir.clone();
+        let name = arc::spec::Manifest::load(&dir).map_or_else(|_| display_name(&dir), |m| m.name);
+        let finished = match model.doc.run_whole() {
+            Ok(finished) => finished,
+            Err(why) => {
+                self.notifications.raise(
+                    Notification::new(banner, Severity::Error, "Could not run this Protocol")
+                        .body(why),
+                );
+                ctx.request_repaint();
+                return false;
+            }
+        };
+        model.last_run = finished
+            .record
+            .as_deref()
+            .and_then(|record| brightfield_protocol::load_contract(record).ok())
+            .filter(|view| view.run.protocol == name)
+            .map(|view| view.run);
+        let succeeded = finished.succeeded
+            && model
+                .last_run
+                .as_ref()
+                .is_some_and(|run| run.outcome == brightfield_protocol::contract::Outcome::Success);
+        // The pane draws no strip, so the toast is where the run's outcome is said.
+        let (severity, said) = if succeeded {
+            (Severity::Success, format!("Ran {name}"))
+        } else {
+            (
+                Severity::Error,
+                format!(
+                    "The run of {name} failed: {}",
+                    first_error_line(&finished.log)
+                ),
+            )
+        };
+        model.last_run_said = Some(said.clone());
+        let landed = model.last_run.is_some();
+        // The door reads this Protocol's rows afresh.
+        self.door_runs.clear();
+        if succeeded {
+            self.notifications.dismiss(banner);
+        } else {
+            eprintln!("the run of {name} did not finish:\n{}", finished.log);
+            self.notifications.raise(
+                Notification::new(banner, Severity::Error, "The run did not finish")
+                    .body(finished.log.trim().to_string()),
+            );
+        }
+        self.toasts.push(Toast::new(severity, said));
+        ctx.request_repaint();
+        landed
+    }
+
+    /// What the toast said when the last run Run started from the model pane landed — a test
+    /// hook.
+    #[must_use]
+    pub fn model_pane_run_said(&self) -> Option<&str> {
+        self.model.as_ref().and_then(|m| m.last_run_said.as_deref())
+    }
+
+    /// The record of the last whole run Run started from the model pane, while the window holds
+    /// the pane — a test hook, and what a run strip over the pane would read.
+    #[must_use]
+    pub fn model_pane_run(&self) -> Option<&brightfield_protocol::RunView> {
+        self.model.as_ref().and_then(|m| m.last_run.as_ref())
     }
 
     /// Whether a run this window started is under way **for the document it
@@ -10927,6 +14284,8 @@ impl MeridianApp {
         pending: PendingRun,
         finished: crate::run::Finished,
     ) {
+        // A run wrote a record, so the door reads its rows' run states again.
+        self.door_runs.clear();
         let dir = pending.run.dir().to_path_buf();
         let protocol = pending.protocol;
         let shipped = pending.shipped;
@@ -11083,10 +14442,57 @@ impl MeridianApp {
     /// banner and changes nothing, exactly as a data file that will not read
     /// does.
     pub fn open_protocol_path(&mut self, ctx: &egui::Context, path: &str) {
+        // A Protocol moved in the Finder since it was last open: its sources are repaired from
+        // where it was, and arc's database moved to its new path, before anything reads them.
+        let named = std::path::Path::new(path);
+        if let Some(dir) = crate::own_files::own_protocol_dir(named)
+            .or_else(|| crate::own_files::one_source_protocol_dir(named))
+            .or_else(|| crate::own_files::empty_protocol_dir(named))
+        {
+            let warnings = crate::rename::follow_a_move(&dir);
+            if !warnings.is_empty() {
+                eprintln!(
+                    "warning: {}: its move was not followed: {}",
+                    dir.display(),
+                    warnings.join(". ")
+                );
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new(NOT_FOLLOWED_BANNER),
+                        Severity::Warning,
+                        FINDER_MOVE_NOT_FOLLOWED_TITLE,
+                    )
+                    .body(warnings.join(". ")),
+                );
+            }
+        }
+        // A Protocol with no sources yet opens on its empty canvas.
+        if let Some(dir) = crate::own_files::empty_protocol_dir(named) {
+            let protocol = crate::own_files::OwnProtocol {
+                dir,
+                sources: Default::default(),
+                profiles: Vec::new(),
+            };
+            let said = format!("Opened {}", display_name(&protocol.dir));
+            self.adopt_empty_protocol(ctx, protocol, said);
+            return;
+        }
         // An own-files Protocol opens into the model pane over the model its folder holds.
         if let Some(dir) = crate::own_files::own_protocol_dir(std::path::Path::new(path)) {
             match self.runner.clone().or_else(crate::run::Runner::this_binary) {
                 Some(runner) => self.reopen_model_pane(ctx, &dir, runner),
+                None => self.say_open_failed(
+                    ctx,
+                    path,
+                    "no runner to run its Protocol with".to_string(),
+                ),
+            }
+            return;
+        }
+        // An own-files Protocol of one source opens on its table's grid and dashboard.
+        if let Some(dir) = crate::own_files::one_source_protocol_dir(std::path::Path::new(path)) {
+            match self.runner.clone().or_else(crate::run::Runner::this_binary) {
+                Some(runner) => self.reopen_one_source(ctx, &dir, &runner),
                 None => self.say_open_failed(
                     ctx,
                     path,
@@ -11110,6 +14516,16 @@ impl MeridianApp {
         };
         self.adopt_boot(boot);
         self.notifications.dismiss(banner);
+        // A Protocol's folder is what the next launch reopens. A chart spec or data file opened
+        // by this route has no folder to reopen, and what was open before it is not open now, so
+        // the next launch starts on the door.
+        if let crate::open_queue::Route::Existing(dir) =
+            crate::open_queue::route(std::path::Path::new(path))
+        {
+            self.layout.live_mut().reopen_protocol_at(&dir);
+        } else {
+            self.layout.live_mut().reopen_nothing();
+        }
         // Saved already, by construction: it was opened off its own file.
         let name = self.protocol.doc.model.protocol.clone();
         let run = self.recorded_run_state();
@@ -11136,7 +14552,7 @@ impl MeridianApp {
             Severity::Success,
             format!("Opened {}", self.title()),
         ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        self.retitle(ctx);
         ctx.request_repaint();
     }
 
@@ -11179,8 +14595,10 @@ impl MeridianApp {
         self.door_sections.clear();
         self.door_rows.clear();
         self.door_open_protocol = None;
+        self.door_hovered = None;
         self.door_help = None;
         self.door_open_file = None;
+        self.door_new_protocol = None;
         self.affordances.clear();
         self.ensure_door_thumbs(ui.ctx());
 
@@ -11212,9 +14630,47 @@ impl MeridianApp {
             }
             recents.push(own_protocol_recent(&dir, id));
         }
+        // A row naming a Protocol on disk says what its newest run record says now, rather than
+        // what was remembered when it was last opened or saved: a run that landed since, with no
+        // save after it, is what the row is for.
+        //
+        // Staleness the window recorded is kept while no whole run has been recorded since it was
+        // remembered: an edit saved after the run is still not run, though the run's record says
+        // fresh.
+        for recent in &mut recents {
+            if let Some(dir) = protocol_dir_of(&recent.id) {
+                let (read, ran_at) = self.door_run_state(&dir);
+                let still_stale =
+                    recent.run.is_stale() && ran_at.is_none_or(|ran| recent.opened_at >= ran);
+                if !still_stale {
+                    recent.run = read;
+                }
+            }
+        }
+        // The tree of the Protocols folder, read on the first door frame after the door was
+        // hidden. A Protocol whose folder has gone since, deleted or moved in the Finder, loses
+        // its row on this frame without the whole tree being read again.
+        let root = crate::protocols_dir::root();
+        let tree = self
+            .door_tree
+            .get_or_insert_with(|| crate::door_tree::read(&root))
+            .clone();
+        let mut lines = Vec::new();
+        tree_lines(&tree, &root, 0, &mut lines);
+        let tree: Vec<TreeLine> = lines
+            .into_iter()
+            .map(|line| match line {
+                TreeLine::Protocol { depth, dir, .. } => {
+                    let (run, _) = self.door_run_state(&dir);
+                    TreeLine::Protocol { depth, dir, run }
+                }
+                group => group,
+            })
+            .collect();
         let now = now_secs();
         let mut open_help = false;
         let mut open_file = false;
+        let mut new_protocol = false;
 
         egui::ScrollArea::vertical()
             .id_salt("bf-front-door")
@@ -11294,6 +14750,16 @@ impl MeridianApp {
                                 .color(chrome::colour(sem.text.secondary)),
                         );
                         ui.add_space(spacing::CONTROL_GAP);
+                        // New Protocol asks where, then makes an empty Protocol there: a
+                        // deliberate make, unlike an open, which makes its Protocol in the
+                        // Protocols folder and asks nothing.
+                        let new =
+                            ui.button(egui::RichText::new("New Protocol\u{2026}").font(ui_font()));
+                        self.door_new_protocol = Some(new.rect);
+                        if new.clicked() {
+                            new_protocol = true;
+                        }
+                        ui.add_space(spacing::CONTROL_GAP);
                         let help_label = match help_key {
                             Some(k) => format!("Keyboard help  {k}"),
                             None => "Keyboard help".to_string(),
@@ -11313,11 +14779,11 @@ impl MeridianApp {
                         // flip to "Welcome back", which is a deliberate
                         // departure from the Zed precedent the rest of this
                         // door follows.
-                        if recents.is_empty() {
+                        if recents.is_empty() && tree.is_empty() {
                             self.datasets_section(ui, width, sem, requests);
-                            self.protocols_section(ui, width, sem, &recents, now, requests);
+                            self.protocols_section(ui, width, sem, &recents, &tree, now, requests);
                         } else {
-                            self.protocols_section(ui, width, sem, &recents, now, requests);
+                            self.protocols_section(ui, width, sem, &recents, &tree, now, requests);
                             self.datasets_section(ui, width, sem, requests);
                         }
                         ui.add_space(spacing::SECTION_GAP);
@@ -11328,9 +14794,15 @@ impl MeridianApp {
         if open_help {
             self.overlay = Some(Overlay::Help(Picker::new(HelpSheet::new())));
         }
+        if new_protocol {
+            self.ask_new_protocol();
+        }
         // Latched, not acted on: the dialog blocks on the operating system and
-        // the `Ui` borrow is still live here. `draw` takes it after the frame.
-        self.pick_requested = open_file;
+        // the `Ui` borrow is still live here. `draw` takes it after the frame. Set, never
+        // cleared, here: Cmd+O may have asked earlier in the same frame.
+        if open_file {
+            self.pick_requested = true;
+        }
     }
 
     /// The Datasets section: the curated starts, as a wrapping row of cards.
@@ -11362,27 +14834,59 @@ impl MeridianApp {
     /// the populated one, and the section's heading is present in both — a
     /// Protocols heading that is absent until there is something under it is
     /// the failure this arm exists to make impossible.
+    ///
+    /// Recents first, and then the tree of the Protocols folder, its groups nested and its
+    /// Protocols as leaves. Each half is headed only when both are drawn, so a door with only
+    /// recents reads as it did before the tree was there.
+    #[allow(clippy::too_many_arguments)]
     fn protocols_section(
         &mut self,
         ui: &mut egui::Ui,
         width: f32,
         sem: &semantic::Semantic,
         recents: &[Recent],
+        tree: &[TreeLine],
         now: u64,
         requests: &mut Vec<Request>,
     ) {
-        let note = if recents.is_empty() {
+        let note = if recents.is_empty() && tree.is_empty() {
             PROTOCOLS_NOTE_EMPTY
         } else {
             PROTOCOLS_NOTE
         };
         self.door_section_heading(ui, PROTOCOLS_SECTION, note, width, sem);
-        if recents.is_empty() {
+        if recents.is_empty() && tree.is_empty() {
             door_empty_protocols(ui, width, sem);
             return;
         }
+        let headed = !recents.is_empty() && !tree.is_empty();
+        if headed {
+            door_part_heading(ui, RECENTS_HEADING, sem);
+        }
         for recent in recents {
-            self.door_row(ui, width, recent, now, sem, requests);
+            self.door_row(ui, width, recent, now, None, sem, requests);
+        }
+        if headed {
+            ui.add_space(spacing::SPACE_4);
+            door_part_heading(ui, TREE_HEADING, sem);
+        }
+        for line in tree {
+            match line {
+                TreeLine::Group { depth, name } => door_group_row(ui, width, *depth, name, sem),
+                TreeLine::Protocol { depth, dir, run } => {
+                    let recent = Recent {
+                        id: remembered_id(
+                            &dir.join(arc::spec::MANIFEST_FILENAME).to_string_lossy(),
+                        ),
+                        name: display_name(dir),
+                        run: *run,
+                        grid_layout: Default::default(),
+                        grid_spot: Default::default(),
+                        opened_at: 0,
+                    };
+                    self.door_row(ui, width, &recent, now, Some(*depth), sem, requests);
+                }
+            }
         }
     }
 
@@ -11432,15 +14936,23 @@ impl MeridianApp {
     /// One Protocols row: the Protocol's name, the run state it was last seen
     /// in, and when that was — the whole row clickable, raising the same
     /// [`Request::Open`] its Datasets card raises.
+    ///
+    /// `depth` is `None` for a row of Recents, and for a row of the tree how many groups deep its
+    /// Protocol is: the row is indented that far, and draws no time, since the tree says where a
+    /// Protocol is rather than when it was opened.
+    #[allow(clippy::too_many_arguments)]
     fn door_row(
         &mut self,
         ui: &mut egui::Ui,
         width: f32,
         recent: &Recent,
         now: u64,
+        depth: Option<usize>,
         sem: &semantic::Semantic,
         requests: &mut Vec<Request>,
     ) {
+        let in_tree = depth.is_some();
+        let indent = depth.map_or(0.0, tree_indent);
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(width, PROTOCOL_ROW_HEIGHT), egui::Sense::click());
         // Laid out ahead of the visibility test rather than inside it, because
@@ -11456,12 +14968,16 @@ impl MeridianApp {
             recent.name.clone(),
             ui_font(),
             chrome::colour(sem.text.primary),
-            PROTOCOL_ROW_NAME_WIDTH - spacing::SPACE_4,
+            (PROTOCOL_ROW_NAME_WIDTH - spacing::SPACE_4 - indent).max(spacing::SPACE_9),
         );
         // The time is laid out first because it is the field set against the
         // right edge, and the run state between the two gets what is left.
         let when = ui.painter().layout_no_wrap(
-            relative_time(now, recent.opened_at),
+            if in_tree {
+                String::new()
+            } else {
+                relative_time(now, recent.opened_at)
+            },
             mono_font(),
             chrome::colour(sem.text.muted),
         );
@@ -11508,18 +15024,46 @@ impl MeridianApp {
             state: drawn_glyphs(&state),
             when: drawn_glyphs(&when),
             rect,
+            in_tree,
         });
+        if response.hovered() {
+            self.door_hovered = Some((recent.id.clone(), in_tree));
+        }
+        // A row naming a Protocol on disk is renamed from its context menu, or by F2 while the
+        // pointer is over it; its name is then a field until Enter or Esc.
+        let renaming = self.door_rename_id.as_deref() == Some(recent.id.as_str())
+            && self.door_rename_in_tree == in_tree;
+        if door_row_dir(&recent.id).is_some() {
+            let mut rename = false;
+            response.context_menu(|ui| {
+                if ui.button("Rename…").clicked() {
+                    rename = true;
+                    ui.close();
+                }
+            });
+            if rename {
+                self.open_door_rename(&recent.id, in_tree);
+            }
+        }
+        if renaming {
+            self.door_rename_field(ui, rect.with_min_x(rect.min.x + indent), &recent.id);
+        }
         if ui.is_rect_visible(rect) {
             let painter = ui.painter().with_clip_rect(rect);
             if response.hovered() {
                 painter.rect_filled(rect, radius::CONTROL, chrome::colour(sem.surfaces.raised));
             }
             let mid = rect.center().y;
-            painter.galley(
-                egui::pos2(rect.min.x + spacing::SPACE_4, mid - name.size().y / 2.0),
-                name,
-                chrome::colour(sem.text.primary),
-            );
+            if !renaming {
+                painter.galley(
+                    egui::pos2(
+                        rect.min.x + spacing::SPACE_4 + indent,
+                        mid - name.size().y / 2.0,
+                    ),
+                    name,
+                    chrome::colour(sem.text.primary),
+                );
+            }
             painter.galley(
                 egui::pos2(
                     rect.min.x + PROTOCOL_ROW_NAME_WIDTH,
@@ -11537,7 +15081,7 @@ impl MeridianApp {
                 chrome::colour(sem.text.muted),
             );
         }
-        if response.clicked() {
+        if response.clicked() && !renaming {
             // Two kinds of row, because there are two kinds of thing a window
             // can have been. A shipped start is leaked into the request queue
             // as a `&'static str`, which is what `Request::Open` carries, and
@@ -11556,6 +15100,37 @@ impl MeridianApp {
             } else {
                 self.door_open_protocol = Some(recent.id.clone());
             }
+        }
+    }
+
+    /// The name field over the front-door row `id` at `rect`, while it is being renamed: Enter
+    /// latches the rename for after the frame, and Esc or a click elsewhere closes it unchanged.
+    fn door_rename_field(&mut self, ui: &mut egui::Ui, rect: egui::Rect, id: &str) {
+        let Some(open) = self.door_rename.as_mut() else {
+            return;
+        };
+        let field = egui::Rect::from_min_size(
+            egui::pos2(rect.min.x + spacing::SPACE_2, rect.min.y + spacing::SPACE_1),
+            egui::vec2(
+                PROTOCOL_ROW_NAME_WIDTH - spacing::SPACE_4,
+                rect.height() - spacing::SPACE_1 * 2.0,
+            ),
+        );
+        let text_id = ui.id().with(("door-rename", id));
+        let output = egui::TextEdit::singleline(&mut open.text)
+            .id(text_id)
+            .font(ui_font())
+            .desired_width(field.width())
+            .show(&mut ui.new_child(egui::UiBuilder::new().max_rect(field)));
+        if open.focus {
+            open.focus = false;
+            output.response.request_focus();
+        } else if output.response.lost_focus() {
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                self.door_renamed = Some((id.to_string(), open.text.clone()));
+            }
+            self.door_rename = None;
+            self.door_rename_id = None;
         }
     }
 
@@ -12440,9 +16015,9 @@ fn canvas_occupants(region: &Region) -> (&'static [Projection], ItemId) {
 }
 
 /// The front door's row for the own-files Protocol in `dir`, under `id`: named for its folder,
-/// fresh once it has a database, and opened when its model file last changed.
+/// and opened when its model file last changed. Its run state is read from its run records when
+/// the door draws it.
 fn own_protocol_recent(dir: &std::path::Path, id: String) -> Recent {
-    let ran = arc::spec::protocol_db_path(dir).is_ok_and(|db| db.is_file());
     let opened_at = std::fs::metadata(dir.join(crate::discovery::MODEL_FILE))
         .and_then(|m| m.modified())
         .ok()
@@ -12453,15 +16028,212 @@ fn own_protocol_recent(dir: &std::path::Path, id: String) -> Recent {
         name: dir
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
-        run: if ran {
-            RunState::Fresh
-        } else {
-            RunState::NeverRun
-        },
+        run: RunState::NeverRun,
         grid_layout: Default::default(),
         grid_spot: Default::default(),
         opened_at,
     }
+}
+
+/// The words over the door's Recents, drawn when the tree is drawn beneath them.
+pub const RECENTS_HEADING: &str = "Recent";
+
+/// The words over the door's tree of the Protocols folder, drawn when Recents are drawn above it.
+pub const TREE_HEADING: &str = "In the Protocols folder";
+
+/// One line of the door's tree, flattened for drawing: a group's name, or a Protocol, each with
+/// how many groups deep it is.
+#[derive(Clone, Debug)]
+enum TreeLine {
+    Group {
+        depth: usize,
+        name: String,
+    },
+    Protocol {
+        depth: usize,
+        dir: PathBuf,
+        run: RunState,
+    },
+}
+
+/// Flatten `nodes`, the tree under `parent`, into `out` depth first, leaving out what is no
+/// longer on disk: a group whose folder has gone, with all it held, and a Protocol whose folder or
+/// manifest has gone. A stat per line, so a folder deleted or moved in the Finder loses its row on
+/// the next frame without the tree being read again.
+fn tree_lines(
+    nodes: &[crate::door_tree::Node],
+    parent: &std::path::Path,
+    depth: usize,
+    out: &mut Vec<TreeLine>,
+) {
+    for node in nodes {
+        match node {
+            crate::door_tree::Node::Group { name, children } => {
+                let path = parent.join(name);
+                if !path.is_dir() {
+                    continue;
+                }
+                out.push(TreeLine::Group {
+                    depth,
+                    name: name.clone(),
+                });
+                tree_lines(children, &path, depth + 1, out);
+            }
+            crate::door_tree::Node::Protocol { dir, .. } => {
+                if dir.join(arc::spec::MANIFEST_FILENAME).is_file() {
+                    out.push(TreeLine::Protocol {
+                        depth,
+                        dir: dir.clone(),
+                        run: RunState::NeverRun,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// How far a line of the tree `depth` groups deep is set in from the column's edge.
+fn tree_indent(depth: usize) -> f32 {
+    depth as f32 * spacing::SPACE_6
+}
+
+/// How many Protocols the door's tree `nodes` holds, in every group.
+fn count_protocols(nodes: &[crate::door_tree::Node]) -> usize {
+    nodes
+        .iter()
+        .map(|node| match node {
+            crate::door_tree::Node::Group { children, .. } => count_protocols(children),
+            crate::door_tree::Node::Protocol { .. } => 1,
+        })
+        .sum()
+}
+
+/// The files and folders `request` names, none for a link.
+fn request_paths(request: &crate::open_queue::OpenRequest) -> Vec<PathBuf> {
+    use crate::open_queue::OpenRequest;
+    match request {
+        OpenRequest::Path(path) | OpenRequest::AddSource(path) => vec![path.clone()],
+        OpenRequest::Paths(paths) | OpenRequest::AddSources(paths) => paths.clone(),
+        OpenRequest::Link(_) => Vec::new(),
+    }
+}
+
+/// Whether `dir` is inside `folder`, as written or once both are resolved.
+fn is_within(dir: &std::path::Path, folder: &std::path::Path) -> bool {
+    dir.starts_with(folder)
+        || matches!(
+            (dir.canonicalize(), folder.canonicalize()),
+            (Ok(d), Ok(f)) if d.starts_with(&f)
+        )
+}
+
+/// The variable that sets the Protocols folder for this launch, when it is set: Preferences then
+/// shows the folder and does not change the setting.
+fn protocols_dir_override() -> Option<&'static str> {
+    std::env::var_os(crate::protocols_dir::PROTOCOLS_DIR_VAR)
+        .filter(|v| !v.is_empty())
+        .map(|_| crate::protocols_dir::PROTOCOLS_DIR_VAR)
+}
+
+/// The Protocol folder a door row's id names, when it names a Protocol's `arcform.yaml` on disk:
+/// the folder whose run records the row's run state is read from. A shipped start's id names none.
+fn protocol_dir_of(id: &str) -> Option<PathBuf> {
+    if crate::starts::find(id).is_some() {
+        return None;
+    }
+    let path = std::path::Path::new(id);
+    (path
+        .file_name()
+        .is_some_and(|n| n == arc::spec::MANIFEST_FILENAME)
+        && path.is_file())
+    .then(|| path.parent().map(std::path::Path::to_path_buf))
+    .flatten()
+}
+
+/// The words over one half of the door's Protocols section, Recents or the tree: quieter than the
+/// section's own heading, which they sit under.
+fn door_part_heading(ui: &mut egui::Ui, name: &str, sem: &semantic::Semantic) {
+    ui.label(
+        egui::RichText::new(name)
+            .text_style(egui::TextStyle::Small)
+            .color(chrome::colour(sem.text.muted)),
+    );
+    ui.add_space(spacing::SPACE_2);
+}
+
+/// One group of the door's tree: a folder's glyph and its name, set in by its depth. Not
+/// clickable: organising Protocols is the Finder's, and the door shows what it holds.
+fn door_group_row(
+    ui: &mut egui::Ui,
+    width: f32,
+    depth: usize,
+    name: &str,
+    sem: &semantic::Semantic,
+) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(width, PROTOCOL_ROW_HEIGHT), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter().with_clip_rect(rect);
+    let ink = chrome::colour(sem.text.secondary);
+    let left = rect.min.x + spacing::SPACE_4 + tree_indent(depth);
+    let glyph = spacing::SPACE_6;
+    let mid = rect.center().y;
+    if let Some(folder) = meridian_egui::Icon::by_name("folder") {
+        folder.paint(
+            &painter,
+            egui::Rect::from_min_size(
+                egui::pos2(left, mid - glyph / 2.0),
+                egui::vec2(glyph, glyph),
+            ),
+            ink,
+        );
+    }
+    let text = painter.layout(
+        name.to_string(),
+        ui_font(),
+        ink,
+        (width - (left - rect.min.x) - glyph - spacing::ICON_LABEL_GAP).max(spacing::SPACE_9),
+    );
+    painter.galley(
+        egui::pos2(
+            left + glyph + spacing::ICON_LABEL_GAP,
+            mid - text.size().y / 2.0,
+        ),
+        text,
+        ink,
+    );
+}
+
+/// The line of a run's `log` that says what went wrong: the first that mentions an error, else
+/// the first with anything on it, else words saying the run printed nothing.
+fn first_error_line(log: &str) -> &str {
+    let mut lines = log.lines().map(str::trim).filter(|l| !l.is_empty());
+    log.lines()
+        .map(str::trim)
+        .find(|l| l.to_lowercase().contains("error"))
+        .or_else(|| lines.next())
+        .unwrap_or("it printed nothing")
+}
+
+/// The Protocol folder a front-door row's id names, when it names one the window would rename: an
+/// own-files Protocol on disk, of one source or of a model, as the locator band's name field
+/// renames. A row is remembered by the Protocol's `arcform.yaml`, or by its folder.
+fn door_row_dir(id: &str) -> Option<PathBuf> {
+    let path = std::path::Path::new(id);
+    let dir = if path
+        .file_name()
+        .is_some_and(|n| n == arc::spec::MANIFEST_FILENAME)
+    {
+        path.parent()?
+    } else {
+        path
+    };
+    (crate::own_files::own_protocol_dir(dir).is_some()
+        || crate::own_files::one_source_protocol_dir(dir).is_some()
+        || crate::own_files::empty_protocol_dir(dir).is_some())
+    .then(|| dir.to_path_buf())
 }
 
 /// Whether a recorded recent is something this build can reopen — the filter
@@ -14117,6 +17889,27 @@ fn subject_icon(
     }
 }
 
+/// The canvas of a Protocol with no sources, into the whole of `ui`: `said`, how to add one,
+/// over Add source…, in the window's theme. Answers whether Add source… was clicked.
+fn draw_empty_canvas(ui: &mut egui::Ui, said: &str, mode: Mode) -> bool {
+    let sem = semantic(mode.is_dark());
+    let mut add = false;
+    ui.vertical_centered(|ui| {
+        ui.add_space(spacing::SECTION_GAP);
+        ui.set_max_width(DOOR_COLUMN_WIDTH.min(ui.available_width()));
+        ui.label(
+            egui::RichText::new(said)
+                .font(ui_font())
+                .color(chrome::colour(sem.text.secondary)),
+        );
+        ui.add_space(spacing::CONTROL_GAP);
+        add = ui
+            .button(egui::RichText::new("Add source\u{2026}").font(ui_font()))
+            .clicked();
+    });
+    add
+}
+
 /// The model pane, framed with its header band, into the whole of `ui`: its empty state when
 /// the model names no table, its item's body otherwise.
 fn draw_model_pane(
@@ -14154,7 +17947,7 @@ fn draw_model_pane(
     }
     // Discovery's full pass, on its worker: a fold draws again at once, and a pass still running
     // is looked for again shortly.
-    if doc.poll_discovery().is_some() {
+    if doc.poll_discovery(now_ms).is_some() {
         ui.ctx().request_repaint();
     }
     if doc.discovering() {
@@ -14363,6 +18156,201 @@ fn locator_band_ui(
         );
     }
     link
+}
+
+/// What the locator band's place fields did on a frame: where the name and the Location were
+/// drawn, which one a click opened, and the rename or move typed into one and entered.
+struct PlaceDrawn {
+    rects: (egui::Rect, egui::Rect),
+    opened: Option<PlaceField>,
+    entered: Option<Move>,
+    /// Whether the Location field's Choose… button was clicked.
+    choose: bool,
+    /// Where it was drawn, while the Location field is open.
+    choose_rect: Option<egui::Rect>,
+}
+
+/// How wide the Location field's Choose… button is.
+const CHOOSE_WIDTH: f32 = 72.0;
+
+/// The open Protocol's place, at the locator band's right, before the source note: its name and
+/// the folder it is in, each drawn as a link that opens a field for typing. The folder is named by
+/// its last part and its whole path is the tooltip, so a picture of the band is not a picture of
+/// one Mac's folders. Enter in a field enters it, and Esc or a click elsewhere closes it unchanged.
+fn place_band_ui(
+    ui: &mut egui::Ui,
+    dir: &std::path::Path,
+    source: Option<&str>,
+    edit: &mut Option<PlaceEdit>,
+    mode: Mode,
+) -> PlaceDrawn {
+    let sem = semantic(mode.is_dark());
+    let rect = ui.max_rect();
+    let note_font = egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0);
+    let mut right = rect.right() - spacing::SPACE_4;
+    if let Some(source) = source {
+        let width = ui
+            .painter()
+            .layout_no_wrap(source.to_owned(), note_font, egui::Color32::PLACEHOLDER)
+            .size()
+            .x;
+        right -= width + spacing::SPACE_6;
+    }
+    let parent = dir.parent();
+    let fields = [
+        (
+            PlaceField::Location,
+            "Location",
+            parent.map_or_else(String::new, display_name),
+            parent.map_or_else(String::new, |p| p.display().to_string()),
+        ),
+        (
+            PlaceField::Name,
+            "Name",
+            display_name(dir),
+            "Rename the Protocol and its folder".to_string(),
+        ),
+    ];
+    let mut rects = [egui::Rect::NOTHING; 2];
+    let mut opened = None;
+    let mut entered = None;
+    let mut closed = false;
+    let mut choose = false;
+    let mut choose_drawn = None;
+    for (at, (field, label, value, about)) in fields.into_iter().enumerate() {
+        let label_galley = ui.painter().layout_no_wrap(
+            label.to_owned(),
+            ui_font(),
+            chrome::colour(sem.text.muted),
+        );
+        let value_galley =
+            ui.painter()
+                .layout_no_wrap(value, ui_font(), chrome::colour(sem.text.secondary));
+        let editing = edit.as_ref().is_some_and(|e| e.field == field);
+        let value_width = if editing {
+            match field {
+                PlaceField::Name => 200.0,
+                PlaceField::Location => 320.0,
+            }
+        } else {
+            value_galley.size().x
+        };
+        // The Location field's Choose… button, beside it while it is open.
+        let choose_width = if editing && field == PlaceField::Location {
+            CHOOSE_WIDTH + spacing::SPACE_2
+        } else {
+            0.0
+        };
+        let width = label_galley.size().x + spacing::SPACE_2 + value_width + choose_width;
+        let left = right - width;
+        let y = rect.center().y;
+        let whole = egui::Rect::from_min_max(
+            egui::pos2(left, rect.top()),
+            egui::pos2(right, rect.bottom()),
+        );
+        rects[at] = whole;
+        ui.painter().galley(
+            egui::pos2(left, y - label_galley.size().y / 2.0),
+            label_galley.clone(),
+            chrome::colour(sem.text.muted),
+        );
+        let value_left = left + label_galley.size().x + spacing::SPACE_2;
+        let choose_rect = (choose_width > 0.0).then(|| {
+            egui::Rect::from_min_size(
+                egui::pos2(
+                    value_left + value_width + spacing::SPACE_2,
+                    rect.top() + spacing::SPACE_1,
+                ),
+                egui::vec2(CHOOSE_WIDTH, rect.height() - spacing::SPACE_1 * 2.0),
+            )
+        });
+        if let Some(at) = choose_rect {
+            choose_drawn = Some(at);
+        }
+        if editing {
+            let id = ui.id().with(("locator-place-field", at));
+            let field_rect = egui::Rect::from_min_size(
+                egui::pos2(value_left, rect.top() + spacing::SPACE_1),
+                egui::vec2(value_width, rect.height() - spacing::SPACE_1 * 2.0),
+            );
+            let open = edit.as_mut().expect("the field being edited");
+            let output = egui::TextEdit::singleline(&mut open.text)
+                .id(id)
+                .font(ui_font())
+                .desired_width(value_width)
+                .show(&mut ui.new_child(egui::UiBuilder::new().max_rect(field_rect)));
+            if open.focus {
+                open.focus = false;
+                output.response.request_focus();
+                let mut state = output.state;
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(open.text.chars().count()),
+                    )));
+                state.store(ui.ctx(), id);
+            } else if output.response.lost_focus() {
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    entered = Some(match field {
+                        PlaceField::Name => Move::Rename(open.text.clone()),
+                        PlaceField::Location => Move::Relocate(crate::rename::resolve_location(
+                            &open.text,
+                            dir.parent().unwrap_or(dir),
+                        )),
+                    });
+                    closed = true;
+                } else if !choose_rect.is_some_and(|r| ui.rect_contains_pointer(r)) {
+                    // A press on Choose… takes the focus from the field; the field stays for
+                    // the button's click to land.
+                    closed = true;
+                }
+            }
+            if let Some(at) = choose_rect {
+                let button = ui.put(
+                    at,
+                    egui::Button::new(egui::RichText::new("Choose…").font(ui_font())),
+                );
+                if button.clicked() {
+                    choose = true;
+                    closed = true;
+                }
+            }
+        } else {
+            let at_value = egui::pos2(value_left, y - value_galley.size().y / 2.0);
+            let hit = egui::Rect::from_min_size(at_value, value_galley.size());
+            let response = ui
+                .interact(
+                    hit,
+                    ui.id().with(("locator-place", at)),
+                    egui::Sense::click(),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(about);
+            if response.hovered() {
+                ui.painter().line_segment(
+                    [hit.left_bottom(), hit.right_bottom()],
+                    egui::Stroke::new(1.0, chrome::colour(sem.text.secondary)),
+                );
+            }
+            ui.painter()
+                .galley(at_value, value_galley, chrome::colour(sem.text.secondary));
+            if response.clicked() {
+                opened = Some(field);
+            }
+        }
+        right = left - spacing::SPACE_6;
+    }
+    if closed {
+        *edit = None;
+    }
+    PlaceDrawn {
+        rects: (rects[1], rects[0]),
+        opened,
+        entered,
+        choose,
+        choose_rect: choose_drawn,
+    }
 }
 
 /// How wide the top bar's right-hand group would be if it drew: the renderer

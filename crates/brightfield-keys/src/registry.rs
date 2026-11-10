@@ -491,6 +491,60 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Return to the front door (keeps your place under Continue)",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "cmd-shift-h = home; free of the editor chord set" }),
         },
+        // The open picker, the door's Open button as a chord. Global, so it reaches from any pane
+        // and from a focused text field, as Cmd+O does in every Mac app; no text field reads it.
+        VerbEntry {
+            longname: "open",
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-o")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Open a data file, folder or Protocol",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 5, motor_note: "cmd-o = open (universal Mac convention); free of the editor chord set" }),
+        },
+        // New Protocol, the door's button as a chord: it asks where, then makes an empty
+        // Protocol there. Global, as Cmd+N is in every Mac app; no text field reads it. Making a
+        // Protocol is kept at once and writes no step, so View, as open is.
+        VerbEntry {
+            longname: "new-protocol",
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-n")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Make a new, empty Protocol, choosing where it goes",
+            scores: Some(Scores { frequency: 2, mnemonic: 5, convention: 5, motor_note: "cmd-n = new (universal Mac convention); global, asks where first" }),
+        },
+        // Preferences, where the Protocols folder is chosen. Global, as Cmd+, is in every Mac app;
+        // no text field reads it. It writes no step, so View, as open is.
+        VerbEntry {
+            longname: "open-preferences",
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-,")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Open Preferences, where the Protocols folder is chosen",
+            scores: Some(Scores { frequency: 1, mnemonic: 3, convention: 5, motor_note: "cmd-, = preferences (universal Mac convention); global" }),
+        },
+        // Quit, asking the close question first over a draft. Global, as Cmd+Q is in every Mac
+        // app. On the Mac the app menu's Quit item takes the chord before the window does and
+        // reaches the window's same handler; the binding is the route where no menu takes it.
+        VerbEntry {
+            longname: "quit",
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-q")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Quit Brightfield, asking first about anything not saved",
+            scores: Some(Scores { frequency: 2, mnemonic: 5, convention: 5, motor_note: "cmd-q = quit (universal Mac convention); global, asks the close question over a draft" }),
+        },
         // ---- presentation + save: shipped fixed points, sourced here so
         //      the registry is the single binding source ----
         VerbEntry {
@@ -514,6 +568,37 @@ pub fn registry() -> Vec<VerbEntry> {
             reserved_reason: None,
             help: "Save the Protocol this data file opened as",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 5, motor_note: "cmd-s = save (universal; shipped, editor-scoped)" }),
+        },
+        // The window's Save, on the same chord everywhere else. The editor's `save-spec` layers
+        // over it while the YAML editor holds the keys, and raises this after saving its buffer,
+        // so one press saves both there. Global, so it reaches from any pane and from a text
+        // field that does not read the chord, as Cmd+S does in every Mac app.
+        VerbEntry {
+            longname: "save-protocol",
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-s")],
+            scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Save the Protocol: record its draft steps and write its chart",
+            scores: Some(Scores { frequency: 4, mnemonic: 5, convention: 5, motor_note: "cmd-s = save (universal Mac convention); global, with the editor's save-spec layered over it while the editor holds the keys" }),
+        },
+        // Rename the open Protocol, its folder and its name together: the locator band's name
+        // field, opened from the keyboard. F2 is rename in the Finder's neighbours (Windows
+        // Explorer, VS Code and most file managers); cmd-r, the other candidate, is reload-spec.
+        // Global, so it reaches from any pane; no text field reads a function key. A rename is
+        // kept at once and writes no step, so View, as save-protocol is.
+        VerbEntry {
+            longname: "rename-protocol",
+            tier: CommandTier::View,
+            binding_specs: vec![global("f2")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Rename the Protocol and its folder",
+            scores: Some(Scores { frequency: 1, mnemonic: 2, convention: 4, motor_note: "f2 = rename (Windows Explorer, VS Code, file managers); cmd-r is taken by reload-spec" }),
         },
         // The run: the verb behind the ledger strip's Run control. It writes
         // the spec as save-spec does and asks `arc` to run it, and what it
@@ -738,6 +823,20 @@ pub fn registry() -> Vec<VerbEntry> {
             reserved_reason: None,
             help: "Yank the focused asset's dotted address to the clipboard",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "y = yank (vim); a Data verb — logged by longname + dotted address" }),
+        },
+        // Remove the step that makes the selected asset, or put back one removed. A removal is a
+        // draft until Save, as every step edit is, and Save writes it into `arcform.yaml`, so Data.
+        // The window decides whether it may go: a load or a step later steps read is refused.
+        VerbEntry {
+            longname: "remove-step",
+            tier: CommandTier::Data,
+            binding_specs: vec![proto("d d")],
+            scope_applicability: vec![Protocol],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Remove the step that makes the selected asset, or put back one removed; kept as a draft until Save",
+            scores: Some(Scores { frequency: 2, mnemonic: 5, convention: 5, motor_note: "d d = delete the line (vim); doubled so a stray d removes nothing; d d again puts the step back" }),
         },
         // ---- the Outline's column rows: put the column under the cursor on a
         //      channel. `z` opens a chord beside `z a`, and the rows answer in the
@@ -1491,6 +1590,57 @@ pub fn help_sheet(reg: &[VerbEntry]) -> Vec<HelpRow> {
 mod tests {
     use super::*;
 
+    /// Whether a binding in `a` and one in `b` can both fire on one press: the same context, or
+    /// either of them global, since a global binding fires from every focus.
+    fn contexts_overlap(a: BindingContext, b: BindingContext) -> bool {
+        a == b || a == BindingContext::Global || b == BindingContext::Global
+    }
+
+    /// No two verbs share a chord where both could fire, so a new key cannot quietly take one an
+    /// older verb holds. The one sharing allowed is a deliberate layer of an editor binding over a
+    /// global one, named here: the editor's `save-spec` over the window's `save-protocol`, which
+    /// saves the buffer and then raises the window's Save.
+    #[test]
+    fn no_two_verbs_share_a_chord_in_overlapping_contexts() {
+        const LAYERED_OVER_GLOBAL: &[(&str, &str)] = &[("save-spec", "save-protocol")];
+        let bound = keymap_bindings(&registry());
+        let mut clashes = Vec::new();
+        for (i, a) in bound.iter().enumerate() {
+            for b in &bound[i + 1..] {
+                if a.keystrokes != b.keystrokes
+                    || a.longname == b.longname
+                    || !contexts_overlap(a.context, b.context)
+                {
+                    continue;
+                }
+                let layered = |editor: &BoundKey, global: &BoundKey| {
+                    editor.context == BindingContext::Editor
+                        && global.context == BindingContext::Global
+                        && LAYERED_OVER_GLOBAL.contains(&(editor.longname, global.longname))
+                };
+                if layered(a, b) || layered(b, a) {
+                    continue;
+                }
+                clashes.push(format!(
+                    "{} ({:?}) and {} ({:?}) on {}",
+                    a.longname, a.context, b.longname, b.context, a.keystrokes
+                ));
+            }
+        }
+        assert!(clashes.is_empty(), "chords shared: {clashes:#?}");
+    }
+
+    #[test]
+    fn rename_protocol_has_a_chord_of_its_own() {
+        let reg = registry();
+        let verb = reg
+            .iter()
+            .find(|v| v.longname == "rename-protocol")
+            .expect("rename-protocol is in the registry");
+        assert_eq!(verb.primary_key(), Some("f2"));
+        assert_eq!(verb.binding_specs[0].context, BindingContext::Global);
+    }
+
     fn is_kebab_case(s: &str) -> bool {
         !s.is_empty()
             && s.chars()
@@ -1620,8 +1770,14 @@ mod tests {
             "reload-spec",
             "reload-data",
             "open-home",
+            "open",
+            "new-protocol",
+            "open-preferences",
+            "quit",
             "toggle-presentation",
             "save-spec",
+            "save-protocol",
+            "rename-protocol",
             "run-protocol",
             "copy-chart-picture",
             "export-chart-picture",
@@ -1644,6 +1800,7 @@ mod tests {
             "protocol-drill-out",
             "open-steps-sheet",
             "yank-address",
+            "remove-step",
             "put-column-on-x",
             "put-column-on-y",
             "put-column-on-colour",
@@ -1712,8 +1869,8 @@ mod tests {
             .collect();
         // The Data-tier set is exactly the addressed spec-edit verbs plus undo,
         // the Outline's put-a-column-on-a-channel verbs, the shelf's keep, the
-        // Versions panel's step back, which Save writes, and the model pane's
-        // reshape verbs, which write the Ossie file.
+        // Versions panel's step back and the spine's step removal, which Save
+        // writes, and the model pane's reshape verbs, which write the Ossie file.
         let mut got = durable.clone();
         got.sort_unstable();
         let mut expected = vec![
@@ -1733,6 +1890,7 @@ mod tests {
             "keep-shelf-choice",
             "set-shelf-setting-to-auto",
             "step-back-to-version",
+            "remove-step",
             "keep-join",
             "drop-join",
             "add-join",

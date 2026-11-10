@@ -13,6 +13,9 @@
 //! the hero's composition, the band's cells, the Outline's rows and chips, the
 //! spec the page is drawn from and the window title.
 
+#[path = "support/agent_protocol.rs"]
+mod agent_protocol;
+
 use brightfield_keys::{registry, VerbStatus};
 use brightfield_protocol::layout::Flow;
 use brightfield_render::channel::Channel;
@@ -23,7 +26,7 @@ use brightfield_shell::protocol::{OutlineChipDrawn, SpineRole, SpineRowDrawn, OU
 use brightfield_shell::starts;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::text_ink;
-use brightfield_shell::window::{Boot, MeridianApp, UNSAVED_MARK};
+use brightfield_shell::window::{Boot, MeridianApp, PlaceField, UNSAVED_MARK};
 use brightfield_spec::ast::Spec;
 use brightfield_workbench::channel::ShelfChannel;
 use brightfield_workbench::{ItemId, PaneKey};
@@ -142,6 +145,41 @@ impl Window {
 
     /// The shipped crosswalk, its graph on the canvas: a Protocol with
     /// families, siblings and a drill for the grammar to act on.
+    /// A window holding the one-source Protocol an open of a copy of the housing sample made, in
+    /// a Protocols folder under the temp directory, with the cargo-built binary as its runner.
+    fn own_protocol() -> Self {
+        agent_protocol::arc_stores();
+        let root = std::env::temp_dir().join(format!("bf-shelf-route-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("input")).expect("a scratch folder");
+        std::env::set_var(
+            brightfield_shell::protocols_dir::PROTOCOLS_DIR_VAR,
+            root.join("protocols"),
+        );
+        let csv = root.join("input").join("rename_me.csv");
+        std::fs::copy(housing(), &csv).expect("the housing sample copies");
+        let app = MeridianApp::headless_with_layout(Boot::empty(), default_layout(), Mode::Light)
+            .running_with(Some(brightfield_shell::run::Runner::at(env!(
+                "CARGO_BIN_EXE_brightfield-shell"
+            ))));
+        let mut win = Self {
+            app,
+            ctx: egui::Context::default(),
+            screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0)),
+            texts: Vec::new(),
+        };
+        win.settle();
+        win.app
+            .open_queue()
+            .push(brightfield_shell::open_queue::OpenRequest::Path(csv));
+        win.settle();
+        assert!(
+            win.app.own_protocol().is_some(),
+            "the open made no Protocol to rename"
+        );
+        win
+    }
+
     fn crosswalk() -> Self {
         let boot = Boot::start(starts::CROSSWALK, Flow::Vertical).expect("the crosswalk ships");
         let win = Self::over(boot);
@@ -388,6 +426,13 @@ impl Window {
 
     /// Open the palette with `space`, type `longname` and confirm it.
     fn confirm(&mut self, longname: &str) {
+        let left = self.confirm_leaving(longname);
+        assert_eq!(left, None, "confirming {longname} left the palette open");
+    }
+
+    /// Open the palette with `space`, type `longname`, confirm it, and say which overlay is open
+    /// after: a verb that opens a sheet of its own leaves that sheet, not nothing.
+    fn confirm_leaving(&mut self, longname: &str) -> Option<&'static str> {
         self.press(egui::Key::Space);
         assert_eq!(
             self.app.open_overlay(),
@@ -398,11 +443,7 @@ impl Window {
         self.run(vec![egui::Event::Text(longname.to_owned())]);
         self.run(Vec::new());
         self.press(egui::Key::Enter);
-        assert_eq!(
-            self.app.open_overlay(),
-            None,
-            "confirming {longname} left the palette open"
-        );
+        self.app.open_overlay()
     }
 
     /// The rows the palette lists when `space` opens it, closed again after.
@@ -1023,6 +1064,46 @@ fn every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen()
                 assert!(
                     at.app.front_door_is_live(),
                     "{verb} did not go to the front door"
+                );
+            }
+            "quit" => {
+                let mut at = Window::crosswalk();
+                at.confirm(verb);
+                assert!(
+                    at.app.is_closing(),
+                    "{verb} did not close a window with nothing to lose"
+                );
+            }
+            "rename-protocol" => {
+                let mut at = Window::own_protocol();
+                at.graph_to_canvas();
+                at.confirm(verb);
+                assert_eq!(
+                    at.app.place_field(),
+                    Some(PlaceField::Name),
+                    "{verb} did not open the Protocol's name field"
+                );
+            }
+            "open" => {
+                let mut at = Window::crosswalk();
+                let before = at.app.picker_asks();
+                at.confirm(verb);
+                assert!(at.app.picker_asks() > before, "{verb} raised no picker");
+            }
+            "new-protocol" => {
+                let mut at = Window::crosswalk();
+                assert_eq!(
+                    at.confirm_leaving(verb),
+                    Some("new-protocol"),
+                    "{verb} opened no location chooser"
+                );
+            }
+            "open-preferences" => {
+                let mut at = Window::crosswalk();
+                assert_eq!(
+                    at.confirm_leaving(verb),
+                    Some("preferences"),
+                    "{verb} opened no Preferences sheet"
                 );
             }
             other => panic!(

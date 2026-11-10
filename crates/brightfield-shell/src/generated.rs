@@ -629,9 +629,35 @@ fn read_generated(
     else {
         return Ok(None);
     };
-    let mut made: BTreeSet<String> = BTreeSet::from([root_table.to_lowercase()]);
-    let mut steps = Vec::new();
-    for ((step, model), sql) in rest.iter().zip(models).zip(sql_parsed) {
+    let made: BTreeSet<String> = BTreeSet::from([root_table.to_lowercase()]);
+    let steps = read_steps(rest.iter().zip(models).zip(sql_parsed), made)?;
+    Ok(Some(GeneratedProtocol {
+        data,
+        dir: dir.to_path_buf(),
+        root_table,
+        steps,
+    }))
+}
+
+/// Each of `steps` read as the step arc generated, with the model text it was given and, for a
+/// SQL step already parsed, that parse; `made` the tables (case folded) the steps before them
+/// make.
+///
+/// # Errors
+///
+/// A message naming the step, when a step has no model, does not match the template it carries,
+/// or reads a table no earlier step makes.
+fn read_steps<'a>(
+    steps: impl Iterator<
+        Item = (
+            (&'a brightfield_protocol::Step, Option<String>),
+            Option<Result<GeneratedStep, String>>,
+        ),
+    >,
+    mut made: BTreeSet<String>,
+) -> Result<Vec<GeneratedStep>, String> {
+    let mut read = Vec::new();
+    for ((step, model), sql) in steps {
         let Some(model) = model else {
             return Err(format!(
                 "step {:?} has no model file to read beside the generated steps",
@@ -644,25 +670,136 @@ fn read_generated(
             sql.unwrap_or_else(|| parse_sql_step(&step.name, &model))?
         };
         // DuckDB resolves a table name without regard to case.
-        if let Some(read) = parsed
+        if let Some(table) = parsed
             .reads
             .iter()
-            .find(|read| !made.contains(&read.to_lowercase()))
+            .find(|table| !made.contains(&table.to_lowercase()))
         {
             return Err(format!(
-                "step {:?} reads {read:?}, which no earlier step makes",
+                "step {:?} reads {table:?}, which no earlier step makes",
                 step.name
             ));
         }
         made.insert(step.name.to_lowercase());
-        steps.push(parsed);
+        read.push(parsed);
     }
+    Ok(read)
+}
+
+/// The steps recorded into the own-files Protocol of one source in `dir` after the steps it was
+/// made with (`made_with`, by name), for `source`, the grid copy of its one table that the window
+/// opened. `Ok(None)` when the folder's table is not `source`'s; a step recorded is read
+/// (`cmd_s_on_a_one_source_protocol_shows_the_step_on_the_spine` in
+/// `tests/cmd_s_saves_the_protocol.rs`).
+///
+/// A folder with no step recorded yet answers its made-with steps and no recorded one, rather
+/// than `Ok(None)`: the window then reads the folder's manifest whole from the first open, so a
+/// run of it, which runs those steps, is taken onto the strip
+/// (`run_on_a_just_opened_csv_shows_its_run_on_the_strip`).
+///
+/// Their root is the table the Protocol's silver step makes, which is `source`'s table and the
+/// rows its grid copy holds, so a grid over a recorded step previews it through its chain from
+/// that copy as it does in a Protocol beside its data file.
+///
+/// # Errors
+///
+/// As [`generated_protocol_in`], for a recorded step.
+pub fn generated_protocol_of_one_source(
+    manifest_text: &str,
+    dir: &Path,
+    source: &crate::one_step::OneStepProtocol,
+    table: &str,
+    made_with: &std::collections::HashSet<String>,
+) -> Result<Option<GeneratedProtocol>, String> {
+    if !table.eq_ignore_ascii_case(&source.name) {
+        return Ok(None);
+    }
+    let Ok(manifest) = brightfield_protocol::parse_manifest_str(manifest_text) else {
+        return Ok(None);
+    };
+    let (own, recorded): (Vec<_>, Vec<_>) = manifest
+        .steps
+        .iter()
+        .partition(|step| made_with.contains(&step.name));
+    let made: BTreeSet<String> = own
+        .iter()
+        .flat_map(|step| &step.produces)
+        .map(|t| t.to_lowercase())
+        .chain([source.name.to_lowercase()])
+        .collect();
+    let models = recorded.iter().map(|s| {
+        s.sql
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(dir.join(p)).ok())
+    });
+    let steps = read_steps(
+        recorded
+            .iter()
+            .copied()
+            .zip(models)
+            .zip(std::iter::repeat_with(|| None)),
+        made,
+    )?;
     Ok(Some(GeneratedProtocol {
-        data,
+        data: source.data.clone(),
         dir: dir.to_path_buf(),
-        root_table,
+        root_table: source.name.clone(),
         steps,
     }))
+}
+
+/// **The steps recorded into the own-files Protocol of several tables in `dir` from the grid of
+/// `source`'s table**: each step after the ones it was made with (`made_with`, by name) whose
+/// chain starts at that table, in the manifest's order, rooted at the table.
+///
+/// A step recorded from another table's grid, and a step whose model is not one brightfield can
+/// read, are another chain's and are left out: they are the Protocol's all the same, and the
+/// grid of this table shows the steps that start at it.
+#[must_use]
+pub fn generated_protocol_of_folder_table(
+    manifest_text: &str,
+    dir: &Path,
+    source: &crate::one_step::OneStepProtocol,
+    made_with: &std::collections::HashSet<String>,
+) -> Option<GeneratedProtocol> {
+    let manifest = brightfield_protocol::parse_manifest_str(manifest_text).ok()?;
+    let mut chain: BTreeSet<String> = [source.name.to_lowercase()].into_iter().collect();
+    let mut steps = Vec::new();
+    for step in manifest
+        .steps
+        .iter()
+        .filter(|step| !made_with.contains(&step.name))
+    {
+        let Some(model) = step
+            .sql
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(dir.join(p)).ok())
+        else {
+            continue;
+        };
+        let parsed = if has_header(&model) {
+            parse_generated(&step.name, &model)
+        } else {
+            parse_sql_step(&step.name, &model)
+        };
+        let Ok(parsed) = parsed else {
+            continue;
+        };
+        if parsed
+            .reads
+            .iter()
+            .any(|table| chain.contains(&table.to_lowercase()))
+        {
+            chain.insert(step.name.to_lowercase());
+            steps.push(parsed);
+        }
+    }
+    Some(GeneratedProtocol {
+        data: source.data.clone(),
+        dir: dir.to_path_buf(),
+        root_table: source.name.clone(),
+        steps,
+    })
 }
 
 /// Whether the data file `data` sits in `dir`, the folder of the manifest that

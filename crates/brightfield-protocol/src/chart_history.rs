@@ -14,6 +14,13 @@
 //! own `arcform.yaml` is not recorded here, so its history lists what it listed
 //! before.
 //!
+//! **The steps a close without saving drops ride with the chart.** A grid view
+//! or a typed statement kept in a window is a step for `arcform.yaml`, which
+//! only arc writes. The unsaved version of the chart carries them as a block
+//! of YAML comments after the chart's own text ([`PendingStep`]), so the chart
+//! still parses, steps back and draws as it would have, and the Versions panel
+//! reads the steps back off the version ([`ChartVersion::kept`]).
+//!
 //! **A Save is not blocked by the history.** A store that cannot be opened, or
 //! an entry that cannot be written, leaves the chart written and is returned as
 //! [`NotRecorded`] for the window to say. arcform's own edit roads refuse the
@@ -249,12 +256,22 @@ impl ChartVersions {
 /// version could not be recorded. A text the newest version already holds is
 /// not recorded again, and that is not a failure: the store holds it.
 ///
+/// `pending` is each step the window held and no file did, a grid view or a
+/// typed statement, written after the chart's text as [`PendingStep`] says.
+/// With none the version is the chart's text alone, byte for byte.
+///
 /// # Errors
 ///
 /// [`NotRecorded`] with the reason, for a store that cannot be opened, a
 /// folder that cannot be made, and an entry that cannot be written.
-pub fn record_unsaved(store: &HistoryStore, file: &Path, text: &str) -> Result<(), NotRecorded> {
+pub fn record_unsaved(
+    store: &HistoryStore,
+    file: &Path,
+    text: &str,
+    pending: &[PendingStep],
+) -> Result<(), NotRecorded> {
     let history = store.open()?;
+    let text = with_pending_steps(text, pending);
     let folder = file
         .parent()
         .filter(|folder| !folder.as_os_str().is_empty());
@@ -270,7 +287,7 @@ pub fn record_unsaved(store: &HistoryStore, file: &Path, text: &str) -> Result<(
         }
         _ => None,
     };
-    match history.record_unsaved_for_file(file, text) {
+    match history.record_unsaved_for_file(file, &text) {
         Ok(_) => Ok(()),
         Err(e) => {
             if let Some(folder) = made {
@@ -280,6 +297,112 @@ pub fn record_unsaved(store: &HistoryStore, file: &Path, text: &str) -> Result<(
             Err(NotRecorded::new(e.to_string()))
         }
     }
+}
+
+/// **A step a window held and no file did when it closed without saving**: a
+/// grid view or a typed statement, which a Save would have recorded into
+/// `arcform.yaml` through arc.
+///
+/// The unsaved version of the chart carries each as YAML comments after the
+/// chart's own text, under [`PENDING_STEPS_HEADING`]: a `# - ` line with the
+/// step in the window's words, then the step's SQL a line at a time, each line
+/// led by `#   `. Comments, so the version is still the chart, and stepping
+/// back to it draws the chart and no step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingStep {
+    /// The step as the close question words it: `Grid view · where
+    /// house_age > 28`, `SQL step · housing_sql_by_age`.
+    pub words: String,
+    /// The SQL the step would have run: a view's condition and order, or the
+    /// statement typed.
+    pub sql: String,
+}
+
+/// The comment line the pending steps follow in an unsaved version.
+pub const PENDING_STEPS_HEADING: &str =
+    "# Steps this window held when it closed without saving, not recorded in arcform.yaml:";
+
+/// `text` with `pending` written after it as comments, or `text` itself when
+/// there are none.
+///
+/// A block already in `text`, as a version stepped back to and saved again may
+/// carry, is taken out first, so a version carries one block, of its own steps.
+fn with_pending_steps(text: &str, pending: &[PendingStep]) -> String {
+    let mut out = without_pending_steps(text);
+    if pending.is_empty() {
+        return out;
+    }
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(PENDING_STEPS_HEADING);
+    out.push('\n');
+    for step in pending {
+        out.push_str("# - ");
+        out.push_str(&step.words);
+        out.push('\n');
+        for line in step.sql.lines() {
+            out.push_str("#   ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// **`text` without the pending steps a close without saving wrote after the
+/// chart**: the chart's own text, which is what stepping back to an unsaved
+/// version draws and what a Save of it writes. A text without them is
+/// returned as it is.
+#[must_use]
+pub fn without_pending_steps(text: &str) -> String {
+    if !text.lines().any(|line| line == PENDING_STEPS_HEADING) {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut in_block = false;
+    for line in text.split_inclusive('\n') {
+        let bare = line.trim_end_matches(['\n', '\r']);
+        if bare == PENDING_STEPS_HEADING {
+            in_block = true;
+            continue;
+        }
+        if in_block && (bare.starts_with("# - ") || bare.starts_with("#   ")) {
+            continue;
+        }
+        in_block = false;
+        out.push_str(line);
+    }
+    out
+}
+
+/// **The steps an unsaved version carries**, in the order written, read back
+/// from the comments [`record_unsaved`] wrote after the chart
+/// (`an_unsaved_chart_carries_the_steps_the_window_held`): an empty list for a
+/// text without them.
+#[must_use]
+pub fn pending_steps_in(text: &str) -> Vec<PendingStep> {
+    let mut lines = text.lines();
+    if !lines.any(|line| line == PENDING_STEPS_HEADING) {
+        return Vec::new();
+    }
+    let mut steps: Vec<PendingStep> = Vec::new();
+    for line in lines {
+        if let Some(words) = line.strip_prefix("# - ") {
+            steps.push(PendingStep {
+                words: words.to_string(),
+                sql: String::new(),
+            });
+        } else if let (Some(sql), Some(step)) = (line.strip_prefix("#   "), steps.last_mut()) {
+            if !step.sql.is_empty() {
+                step.sql.push('\n');
+            }
+            step.sql.push_str(sql);
+        } else {
+            break;
+        }
+    }
+    steps
 }
 
 // ------------------------------------------------------------ listing a file's versions
@@ -341,6 +464,11 @@ pub struct ChartVersion {
     /// here and has since been pruned from the store, which keeps at most
     /// `HISTORY_MAX_ENTRIES` versions of a file.
     pub on_this_machine: bool,
+    /// The steps a window held when it closed without saving, which this
+    /// unsaved version carries after the chart ([`PendingStep`]), read off
+    /// its text. Empty for a save, a checkpoint, and a version whose text is
+    /// not on this machine.
+    pub kept: Vec<PendingStep>,
 }
 
 /// The route a version was made by: the interface word arc wrote on its log
@@ -505,6 +633,11 @@ impl HistoryStore {
                     bytes: entry.bytes,
                     change: VersionChange::NoPredecessor,
                     on_this_machine: true,
+                    kept: if entry.kind == HistoryKind::Unsaved {
+                        pending_steps_in(&text)
+                    } else {
+                        Vec::new()
+                    },
                 },
                 Some(text),
             ));
@@ -526,6 +659,7 @@ impl HistoryStore {
                     change: VersionChange::NoPredecessor,
                     who: Who::from_interface(line.interface.as_deref()),
                     on_this_machine: false,
+                    kept: Vec::new(),
                 },
                 None,
             ));

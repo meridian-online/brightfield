@@ -3,8 +3,8 @@
 //! source file.
 //!
 //! The load steps read the files where they are, by absolute path, so nothing the analyst gave is
-//! copied or moved. The Protocol is made under [`crate::starts::datasets_dir`], beside the
-//! Protocols that ship with the app, in a folder of its own per open.
+//! copied or moved. The Protocol is made in the Protocols folder ([`crate::protocols_dir::root`]),
+//! in a folder of its own per open, named after the first source.
 //!
 //! The profile is a Parquet snapshot of each raw table (lineage columns left out), read through
 //! the engine's profiler as any opened file is, and it is kept in a `.profile` folder inside the
@@ -26,6 +26,7 @@ use brightfield_spec::{parse_spec, Format};
 use serde_json::{json, Value};
 
 use crate::discovery::MODEL_FILE;
+use crate::protocols_dir;
 use crate::run::{Finished, Run, Runner};
 use crate::starts;
 
@@ -38,7 +39,7 @@ const PROFILE_DIR: &str = ".profile";
 
 /// The file in the Protocol folder recording the tables the open found and the files it passed
 /// over, so the folder can be opened again ([`reopen`]) without finding them afresh.
-const SOURCES_FILE: &str = ".sources.json";
+pub(crate) const SOURCES_FILE: &str = ".sources.json";
 
 /// The name prefixes of the silver steps and the files holding their SQL.
 const SILVER_STEP: &str = "silver_";
@@ -64,50 +65,581 @@ pub struct OwnProtocol {
 ///
 /// The reason when nothing in `opened` can be read, or the folder cannot be written.
 pub fn create(opened: &Path) -> Result<OwnProtocol, String> {
-    let sources = sources::discover(opened)?;
+    create_in(&protocols_dir::root(), opened)
+}
+
+/// [`create`], making the Protocol folder in `parent` rather than in the Protocols folder.
+///
+/// # Errors
+///
+/// The reason when nothing in `opened` can be read, or the folder cannot be written.
+pub fn create_in(parent: &Path, opened: &Path) -> Result<OwnProtocol, String> {
+    create_of(parent, opened, sources::discover(opened)?)
+}
+
+/// Make one Protocol folder in the Protocols folder for the paths in `opened` together, named
+/// after the first: what one gesture handed over at once, as [`create`] does for one path. The
+/// paths `refused` before discovery are recorded as skipped with their reasons.
+///
+/// # Errors
+///
+/// The reason when `opened` is empty, nothing in it can be read, or the folder cannot be written.
+pub fn create_all(
+    opened: &[std::path::PathBuf],
+    refused: Vec<(std::path::PathBuf, String)>,
+) -> Result<OwnProtocol, String> {
+    let first = opened.first().ok_or("nothing was given to open")?;
+    let mut found = sources::discover_all(opened)?;
+    found.skipped.extend(refused);
+    create_of(&protocols_dir::root(), first, found)
+}
+
+/// The Protocol folder for `sources`, in `parent`, named after `named`.
+fn create_of(parent: &Path, named: &Path, sources: SourceSet) -> Result<OwnProtocol, String> {
     if sources.tables.is_empty() {
         return Err(format!(
             "{}: no tables Brightfield can read{}",
-            opened.display(),
+            named.display(),
             skipped_note(&sources)
         ));
     }
-    let slug = slug_of(opened);
-    let parent = starts::datasets_dir().join("protocols").join(OWN_DIR);
-    std::fs::create_dir_all(&parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    // `create_dir` is the claim on a number: it fails if the folder exists, so two opens at once
-    // cannot both take it.
-    let (dir, name) = (1..)
-        .find_map(|n| {
-            let name = format!("{slug}-{n}");
-            let dir = parent.join(&name);
-            match std::fs::create_dir(&dir) {
-                Ok(()) => Some(Ok((dir, name))),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
-                Err(e) => Some(Err(format!("{}: {e}", dir.display()))),
-            }
-        })
-        .expect("an unbounded range")?;
+    let (dir, name) = protocols_dir::claim(parent, &slug_of(named)).map_err(|e| e.to_string())?;
 
-    let models = dir.join("models");
-    std::fs::create_dir(&models).map_err(|e| format!("{}: {e}", models.display()))?;
-    let mut manifest = format!("name: {name}\nengine: duckdb\nsteps:\n");
-    for table in &sources.tables {
-        let step = format!("load_{}", table.name);
-        let file = format!("models/01_{step}.sql");
-        let sql = format!("{}\n", sources::load_sql(table, &dir));
-        std::fs::write(dir.join(&file), sql).map_err(|e| format!("{file}: {e}"))?;
-        let _ = writeln!(manifest, "  - name: {step}\n    sql: {file}");
-        let _ = writeln!(manifest, "    produces:\n      - raw_{}", table.name);
+    // A folder half written is taken away again, as `create_empty` takes its own.
+    let written = (|| -> Result<(), String> {
+        let models = dir.join("models");
+        std::fs::create_dir(&models).map_err(|e| format!("{}: {e}", models.display()))?;
+        let mut manifest = format!("name: {name}\nengine: duckdb\nsteps:\n");
+        for table in &sources.tables {
+            let step = load_step(&table.name);
+            let file = format!("models/01_{step}.sql");
+            let sql = format!("{}\n", sources::load_sql(table, &dir));
+            std::fs::write(dir.join(&file), sql).map_err(|e| format!("{file}: {e}"))?;
+            let _ = writeln!(manifest, "  - name: {step}\n    sql: {file}");
+            let _ = writeln!(manifest, "    produces:\n      - raw_{}", table.name);
+        }
+        let path = dir.join("arcform.yaml");
+        std::fs::write(&path, manifest).map_err(|e| format!("{}: {e}", path.display()))?;
+        write_sources(&dir, &sources)
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(e);
     }
-    let path = dir.join("arcform.yaml");
-    std::fs::write(&path, manifest).map_err(|e| format!("{}: {e}", path.display()))?;
-    write_sources(&dir, &sources)?;
     Ok(OwnProtocol {
         dir,
         sources,
         profiles: Vec::new(),
     })
+}
+
+/// The name New Protocol gives the Protocol it makes, before a source names it: `Untitled`, then
+/// `Untitled-2` and so on in the same folder.
+pub const UNTITLED: &str = "Untitled";
+
+/// The file in a Protocol folder that records the name New Protocol gave it, while nobody has
+/// named it since. The first source names the Protocol after itself while this is there and the
+/// folder still has that name, so whether the analyst named it is decided by what happened to the
+/// folder, not by whether its name looks like one Brightfield gives: an analyst who renames a
+/// Protocol to `Untitled` keeps that name
+/// (`a_renamed_untitled_keeps_its_name_when_a_source_is_added` in `tests/new_protocol.rs`). A
+/// rename takes it away ([`crate::rename::rename_with`]).
+pub(crate) const UNTITLED_FILE: &str = ".untitled";
+
+/// A join the analyst accepted between two sources, each side a table and one of its columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedJoin {
+    /// The table and column the join reads from, the side with many rows to each of the other's.
+    pub left: (String, String),
+    /// The table and column it finds a row of for each.
+    pub right: (String, String),
+}
+
+/// Make an empty Protocol in `parent`, as New Protocol does: a folder named [`UNTITLED`] (or
+/// `Untitled-2` and so on when that is taken), an `arcform.yaml` with no steps, and a record of
+/// no sources, so it opens again as the empty Protocol it is. Sources are added with
+/// [`add_source`].
+///
+/// # Errors
+///
+/// The reason the folder could not be claimed, such as the system refusing a write in `parent`,
+/// or a file in it not written; a folder half written is taken away again.
+pub fn create_empty(parent: &Path) -> Result<OwnProtocol, String> {
+    let (dir, name) = protocols_dir::claim(parent, UNTITLED).map_err(|e| match e {
+        protocols_dir::ClaimError::Refused(parent) => format!(
+            "Brightfield cannot make a Protocol in {}. Allow it under System Settings → Privacy & \
+             Security → Files and Folders, then choose New Protocol again.",
+            parent.display()
+        ),
+        protocols_dir::ClaimError::Io(message) => message,
+    })?;
+    let written = (|| -> Result<(), String> {
+        let models = dir.join("models");
+        std::fs::create_dir(&models).map_err(|e| format!("{}: {e}", models.display()))?;
+        let path = dir.join("arcform.yaml");
+        std::fs::write(&path, format!("name: {name}\nengine: duckdb\nsteps: []\n"))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        write_sources(&dir, &SourceSet::default())?;
+        let marker = dir.join(UNTITLED_FILE);
+        std::fs::write(&marker, format!("{name}\n"))
+            .map_err(|e| format!("{}: {e}", marker.display()))
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(e);
+    }
+    Ok(OwnProtocol {
+        dir,
+        sources: SourceSet::default(),
+        profiles: Vec::new(),
+    })
+}
+
+/// Whether the Protocol in `dir` still has the name New Protocol gave it, nobody having named it
+/// since: see `UNTITLED_FILE`.
+#[must_use]
+pub fn still_untitled(dir: &Path) -> bool {
+    let Ok(given) = std::fs::read_to_string(dir.join(UNTITLED_FILE)) else {
+        return false;
+    };
+    dir.file_name()
+        .is_some_and(|n| n.to_string_lossy() == given.trim())
+}
+
+/// The empty Protocol `path` names, when it names one: the folder itself or its `arcform.yaml`,
+/// holding a record of its sources that names none, and no model file.
+#[must_use]
+pub fn empty_protocol_dir(path: &Path) -> Option<PathBuf> {
+    let dir = if path.is_dir() {
+        path
+    } else if path.file_name().is_some_and(|n| n == "arcform.yaml") {
+        path.parent()?
+    } else {
+        return None;
+    };
+    if !dir.join("arcform.yaml").is_file() || dir.join(MODEL_FILE).exists() {
+        return None;
+    }
+    let sources = read_sources(dir).ok()?;
+    sources
+        .tables
+        .is_empty()
+        .then(|| std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()))
+}
+
+/// Add what `path` holds (a data file, a folder, a workbook or a database) to the Protocol `p` as
+/// more sources, with the join the analyst accepted in `joins` written into its model, run by this
+/// binary. See [`add_sources_with`].
+///
+/// # Errors
+///
+/// As [`add_sources_with`], and a binary that cannot say where it is.
+pub fn add_source(p: &mut OwnProtocol, path: &Path, joins: &[AcceptedJoin]) -> Result<(), String> {
+    let runner = Runner::this_binary().ok_or("no runner to run the Protocol with")?;
+    add_source_with(
+        p,
+        path,
+        joins,
+        &runner,
+        &crate::discovery::Dovetail::new(&runner),
+    )
+    .map(|_| ())
+}
+
+/// [`add_sources_with`] for one path.
+///
+/// # Errors
+///
+/// As [`add_sources_with`].
+pub fn add_source_with(
+    p: &mut OwnProtocol,
+    path: &Path,
+    joins: &[AcceptedJoin],
+    runner: &Runner,
+    discovery: &dyn crate::discovery::Discovery,
+) -> Result<Added, String> {
+    add_sources_with(p, &[path.to_path_buf()], joins, runner, discovery)
+}
+
+/// Add what `paths` hold to the Protocol `p` as more sources, together, kept at once: nothing
+/// waits for a save. Answers what is left to say of a rename the add made, or could not make
+/// ([`Added`]).
+///
+/// `p`'s sources are read again from its folder first, so a `p` held since an earlier add is not
+/// added to as it was. The tables `paths` hold are appended to its tables with a load step each,
+/// after its other loads, and the record of its sources is written again. A table whose name one
+/// of `p`'s already has, or would make, takes `_2` and so on. The Protocol is run with `runner` to
+/// load and profile them, and the run is marked a preview, so the door does not say the Protocol
+/// has been run. With two tables or more, `discovery` finds the model again over all of them,
+/// keeping what the analyst decided in the model on disk, `joins` are written into it as the
+/// analyst's, and it is written; one table has nothing to relate and has no model. The silver
+/// steps are written for the model and the Protocol run again.
+///
+/// Once that has gone through, the first sources added to a Protocol New Protocol made, which
+/// nobody has named since ([`still_untitled`]), name it after the first of `paths`, renaming its
+/// folder ([`crate::rename::rename_claiming`]) and taking `-2` and so on when the name is taken,
+/// as a Protocol made from that source would
+/// (`a_failed_first_add_leaves_it_untitled_and_a_later_add_names_it` in `tests/new_protocol.rs`).
+/// A rename that fails leaves the sources added and says why in [`Added::not_named`].
+///
+/// # Errors
+///
+/// The reason `paths` hold no table Brightfield reads, or a step of the add failed. When a step
+/// fails, the files the add may write in the folder are put back as they were, and those it made
+/// are taken away (see `FilesBefore`), so the Protocol opens as the kind it was before
+/// (`a_failed_add_puts_a_one_source_protocol_back` in `tests/new_protocol.rs`).
+pub fn add_sources_with(
+    p: &mut OwnProtocol,
+    paths: &[PathBuf],
+    joins: &[AcceptedJoin],
+    runner: &Runner,
+    discovery: &dyn crate::discovery::Discovery,
+) -> Result<Added, String> {
+    let first = paths.first().ok_or("nothing was given to add")?;
+    p.sources = read_sources(&p.dir)?;
+    let mut found = sources::discover_all(paths)?;
+    if found.tables.is_empty() {
+        return Err(format!(
+            "{}: no tables Brightfield can read{}",
+            first.display(),
+            skipped_note(&found)
+        ));
+    }
+    let mut taken: HashSet<String> = p
+        .sources
+        .tables
+        .iter()
+        .flat_map(|t| derived_names(&t.name))
+        .collect();
+    for table in &mut found.tables {
+        table.name = unclashed(&table.name, &mut taken);
+    }
+    let untitled = p.sources.tables.is_empty() && still_untitled(&p.dir);
+
+    let before = FilesBefore::take(&p.dir)?;
+    let mut next = p.clone();
+    next.profiles.clear();
+    next.sources.tables.extend(found.tables.iter().cloned());
+    next.sources.skipped.extend(found.skipped);
+    let added = (|| -> Result<(), String> {
+        let manifest_path = next.dir.join("arcform.yaml");
+        let text = std::fs::read_to_string(&manifest_path)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        let mut manifest: serde_yaml::Value =
+            serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        let map = manifest
+            .as_mapping_mut()
+            .ok_or_else(|| format!("{}: not a manifest", manifest_path.display()))?;
+        if !map.get("steps").is_some_and(serde_yaml::Value::is_sequence) {
+            map.insert("steps".into(), serde_yaml::Value::Sequence(Vec::new()));
+        }
+        let steps = map
+            .get_mut("steps")
+            .and_then(serde_yaml::Value::as_sequence_mut)
+            .expect("made a sequence above");
+        let loads = load_steps(p);
+        let after = steps
+            .iter()
+            .rposition(|s| is_load(s, &loads))
+            .map_or(0, |i| i + 1);
+        for (at, table) in (after..).zip(&found.tables) {
+            let step = load_step(&table.name);
+            let file = format!("models/01_{step}.sql");
+            let sql = format!("{}\n", sources::load_sql(table, &next.dir));
+            let to = next.dir.join(&file);
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("{}: {e}", parent.display()))?;
+            }
+            std::fs::write(&to, sql).map_err(|e| format!("{file}: {e}"))?;
+            steps.insert(
+                at,
+                serde_yaml::from_str(&format!(
+                    "name: {}\nsql: {}\nproduces:\n  - {}\n",
+                    quoted_yaml(&step),
+                    quoted_yaml(&file),
+                    quoted_yaml(&format!("raw_{}", table.name))
+                ))
+                .map_err(|e| e.to_string())?,
+            );
+        }
+        let out = serde_yaml::to_string(&manifest).map_err(|e| e.to_string())?;
+        std::fs::write(&manifest_path, out)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        write_sources(&next.dir, &next.sources)?;
+
+        run_loads(&next, runner)?;
+        profile(&mut next)?;
+        write_packages(&next)?;
+        let stand_in = crate::discovery::StandIn;
+        let model = if next.sources.tables.len() > 1 {
+            // When dovetail's sample pass fails, the tables are still added, each unclear with no
+            // joins but those accepted, as an open of several tables does.
+            let mut model = crate::discovery::sample_pass(discovery, &next, None).or_else(|e| {
+                eprintln!("dovetail's sample pass failed, so the tables are added unclear: {e}");
+                crate::discovery::sample_pass(&stand_in, &next, None)
+            })?;
+            for join in joins {
+                model = accept_join(&model, join)?;
+            }
+            crate::discovery::write_model_file(&next.dir, &brightfield_ossie::write(&model))?;
+            model
+        } else {
+            crate::discovery::sample_pass(&stand_in, &next, None)?
+        };
+        write_silver(&next, &model)?;
+        drop_unmade_silver(&next, &model)?;
+        run_loads(&next, runner)
+    })();
+    if let Err(e) = added {
+        before.restore();
+        return Err(e);
+    }
+    before.discard();
+
+    let mut added = Added::default();
+    if untitled {
+        match crate::rename::rename_claiming(&next.dir, &slug_of(first)) {
+            Ok(moved) => {
+                next.dir = moved.to;
+                added.warnings = moved.warnings;
+            }
+            Err(e) => added.not_named = Some(e),
+        }
+    }
+    // The Protocol has a source, so it is no longer waiting for one to name it.
+    let _ = std::fs::remove_file(next.dir.join(UNTITLED_FILE));
+    *p = next;
+    Ok(added)
+}
+
+/// What an add that went through left to say.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Added {
+    /// What did not follow the folder when the first sources renamed it, each in a sentence, as
+    /// a rename's warnings say it.
+    pub warnings: Vec<String>,
+    /// Why the folder kept the name New Protocol gave it, when the first sources could not rename
+    /// it after themselves. The sources are added all the same.
+    pub not_named: Option<String>,
+}
+
+/// The files an add may write in a Protocol folder, as they were before it, so a failed add puts
+/// the folder back: the manifest, the record of sources, the model file and the Untitled record
+/// byte for byte, whether or not they read as what they should, and every file under `models/` and
+/// `packages/`, with any file made there since taken away. The profile's snapshots, which may be
+/// large, are not read: their folder is set aside under another name and put back.
+struct FilesBefore {
+    dir: PathBuf,
+    files: Vec<(PathBuf, Vec<u8>)>,
+    /// The folders under `models/` and `packages/`, and those two, that were there: any other
+    /// left empty by the putting back was made by the add, and goes.
+    folders: HashSet<PathBuf>,
+    profile_aside: Option<PathBuf>,
+}
+
+/// The files at the top of the folder an add may write.
+const ADD_WRITES_FILES: [&str; 4] = ["arcform.yaml", SOURCES_FILE, MODEL_FILE, UNTITLED_FILE];
+
+/// The folders an add may write files in, read whole.
+const ADD_WRITES_FOLDERS: [&str; 2] = ["models", "packages"];
+
+impl FilesBefore {
+    fn take(dir: &Path) -> Result<Self, String> {
+        let profile = dir.join(PROFILE_DIR);
+        let aside = dir.join(format!("{PROFILE_DIR}.before-add"));
+        // An add that stopped part way, the process ending under it, left the profile set aside
+        // and none in its place: it is put back before anything else.
+        if !profile.exists() && aside.is_dir() {
+            std::fs::rename(&aside, &profile).map_err(|e| format!("{}: {e}", aside.display()))?;
+        }
+        let mut files = Vec::new();
+        let mut paths: Vec<PathBuf> = ADD_WRITES_FILES.iter().map(|f| dir.join(f)).collect();
+        for folder in ADD_WRITES_FOLDERS {
+            paths.extend(files_under(&dir.join(folder)));
+        }
+        for path in paths {
+            match std::fs::read(&path) {
+                Ok(bytes) => files.push((path, bytes)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("{}: {e}", path.display())),
+            }
+        }
+        let folders = ADD_WRITES_FOLDERS
+            .iter()
+            .flat_map(|f| folders_under(&dir.join(f)))
+            .collect();
+        let profile_aside = if profile.exists() {
+            let _ = std::fs::remove_dir_all(&aside);
+            std::fs::rename(&profile, &aside).map_err(|e| format!("{}: {e}", profile.display()))?;
+            Some(aside)
+        } else {
+            None
+        };
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            files,
+            folders,
+            profile_aside,
+        })
+    }
+
+    /// Put the folder back as it was.
+    fn restore(self) {
+        let kept: HashSet<&Path> = self.files.iter().map(|(p, _)| p.as_path()).collect();
+        let mut now: Vec<PathBuf> = ADD_WRITES_FILES.iter().map(|f| self.dir.join(f)).collect();
+        for folder in ADD_WRITES_FOLDERS {
+            now.extend(files_under(&self.dir.join(folder)));
+        }
+        for path in now {
+            if !kept.contains(path.as_path()) {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+        for (path, bytes) in &self.files {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(e) = std::fs::write(path, bytes) {
+                eprintln!(
+                    "could not put {} back after a failed add: {e}",
+                    path.display()
+                );
+            }
+        }
+        // The deepest first, so a folder emptied by taking away the one inside it goes too.
+        let mut made: Vec<PathBuf> = ADD_WRITES_FOLDERS
+            .iter()
+            .flat_map(|f| folders_under(&self.dir.join(f)))
+            .filter(|f| !self.folders.contains(f))
+            .collect();
+        made.sort_by_key(|f| std::cmp::Reverse(f.components().count()));
+        for folder in made {
+            // `remove_dir` takes away an empty folder and refuses one with files in it.
+            let _ = std::fs::remove_dir(&folder);
+        }
+        let profile = self.dir.join(PROFILE_DIR);
+        let _ = std::fs::remove_dir_all(&profile);
+        if let Some(aside) = &self.profile_aside {
+            if let Err(e) = std::fs::rename(aside, &profile) {
+                eprintln!(
+                    "could not put {} back after a failed add: {e}",
+                    profile.display()
+                );
+            }
+        }
+    }
+
+    /// The add went through: what was set aside goes.
+    fn discard(self) {
+        if let Some(aside) = &self.profile_aside {
+            let _ = std::fs::remove_dir_all(aside);
+        }
+    }
+}
+
+/// `dir` and every folder under it, at any depth; none when it is missing.
+fn folders_under(dir: &Path) -> Vec<PathBuf> {
+    if !dir.is_dir() {
+        return Vec::new();
+    }
+    let mut found = vec![dir.to_path_buf()];
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            found.extend(folders_under(&entry.path()));
+        }
+    }
+    found
+}
+
+/// Every file under `dir`, at any depth; none when it is missing.
+fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(t) if t.is_dir() => found.extend(files_under(&path)),
+            Ok(_) => found.push(path),
+            Err(_) => {}
+        }
+    }
+    found
+}
+
+/// `model` with the join `join` in it as the analyst's: a join it has already, either way round,
+/// is marked as decided by the analyst, and any other is added.
+fn accept_join(model: &Model, join: &AcceptedJoin) -> Result<Model, String> {
+    let (from, from_column) = &join.left;
+    let (to, to_column) = &join.right;
+    let one = |c: &String| vec![c.clone()];
+    let found = model.relationships.iter().position(|r| {
+        (r.from == *from
+            && r.to == *to
+            && r.from_columns == one(from_column)
+            && r.to_columns == one(to_column))
+            || (r.from == *to
+                && r.to == *from
+                && r.from_columns == one(to_column)
+                && r.to_columns == one(from_column))
+    });
+    if let Some(at) = found {
+        let mut model = model.clone();
+        model.relationships[at].meta.decided_by = brightfield_ossie::DecidedBy::Analyst;
+        return Ok(model);
+    }
+    brightfield_ossie::apply(
+        model,
+        &brightfield_ossie::Edit::AddJoin {
+            from: from.clone(),
+            from_columns: one(from_column),
+            to: to.clone(),
+            to_columns: one(to_column),
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Whether `step` is the step that keeps the values of a table that did not cast, and `table` the
+/// `<name>__failed` table it makes: the pair the spine leaves out while the table holds no rows.
+#[must_use]
+pub(crate) fn is_failed_rows(step: &str, table: &str) -> bool {
+    match (
+        step.strip_prefix(FAILED_STEP),
+        table.strip_suffix("__failed"),
+    ) {
+        (Some(of_step), Some(of_table)) => !of_step.is_empty() && of_step == of_table,
+        _ => false,
+    }
+}
+
+/// The names a source table called `name` gives to what is made of it: the table, its raw and
+/// failed-value tables, and its load, silver and failed steps. Two tables clash when any of these
+/// are shared.
+fn derived_names(name: &str) -> [String; 6] {
+    [
+        name.to_string(),
+        format!("raw_{name}"),
+        format!("{name}__failed"),
+        load_step(name),
+        format!("{SILVER_STEP}{name}"),
+        format!("{FAILED_STEP}{name}"),
+    ]
+}
+
+/// `base`, or `base_2`, `base_3` and so on when what it would make is `taken`, as tables found
+/// together are named; what the chosen name makes is added to `taken`.
+fn unclashed(base: &str, taken: &mut HashSet<String>) -> String {
+    let mut name = base.to_string();
+    let mut n = 2;
+    while derived_names(&name).iter().any(|d| taken.contains(d)) {
+        name = format!("{base}_{n}");
+        n += 1;
+    }
+    taken.extend(derived_names(&name));
+    name
 }
 
 /// Held by the own-files flow's writes to a Protocol's database, [`run_loads`] and
@@ -124,7 +656,8 @@ pub fn database_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Run the Protocol's steps with `runner`, which makes the raw tables, and wait for it.
+/// Run the Protocol's steps with `runner`, which makes the raw tables, and wait for it. The run is
+/// a preview, and is marked as one ([`crate::run::mark_preview`]).
 ///
 /// # Errors
 ///
@@ -132,6 +665,9 @@ pub fn database_lock() -> std::sync::MutexGuard<'static, ()> {
 pub fn run_loads(p: &OwnProtocol, runner: &Runner) -> Result<(), String> {
     let _writing = database_lock();
     let finished: Finished = Run::begin(runner, &p.dir, || {}).wait();
+    // Brightfield ran it to make the tables it previews, so it is marked as a preview: the door
+    // says the Protocol has not been run until the analyst runs it.
+    crate::run::mark_preview(&p.dir, &finished);
     if finished.succeeded {
         Ok(())
     } else {
@@ -142,6 +678,29 @@ pub fn run_loads(p: &OwnProtocol, runner: &Runner) -> Result<(), String> {
 /// The datasets that may have a silver table: the source tables, then each dataset of `model` with
 /// a combination, in model order and without repeats. A combined dataset has no source table of
 /// its own, because it is built from its parts' raw tables by a query.
+/// The name of the step that loads the source table `table`.
+fn load_step(table: &str) -> String {
+    format!("load_{table}")
+}
+
+/// The names of `p`'s load steps, one per source table. A step is a load by its exact name, not
+/// by its prefix: a grid view recorded on a table named `load_profile` is named
+/// `load_profile_filtered_by_…`, and is not a load.
+fn load_steps(p: &OwnProtocol) -> HashSet<String> {
+    p.sources
+        .tables
+        .iter()
+        .map(|t| load_step(&t.name))
+        .collect()
+}
+
+/// Whether the manifest step `step` is one of `loads`.
+fn is_load(step: &serde_yaml::Value, loads: &HashSet<String>) -> bool {
+    step.get("name")
+        .and_then(serde_yaml::Value::as_str)
+        .is_some_and(|n| loads.contains(n))
+}
+
 fn silver_datasets(model: &Model, sources: &[&str]) -> Vec<String> {
     let mut names: Vec<String> = sources.iter().map(|s| (*s).to_string()).collect();
     for d in &model.datasets {
@@ -159,7 +718,9 @@ fn silver_datasets(model: &Model, sources: &[&str]) -> Vec<String> {
 /// Every call rewrites them: the new files and manifest are written first and the earlier files
 /// the manifest no longer names are removed after, so a failed write leaves a usable folder. A
 /// dataset that has since been excluded or folded into another loses its silver table's steps. The
-/// load steps are left as they are. Run the Protocol afterwards to make the tables.
+/// load steps are left as they are, and so are steps recorded after them, such as a grid view arc
+/// recorded on a silver table: the silver steps are put back straight after the loads, ahead of
+/// what reads them. Run the Protocol afterwards to make the tables.
 ///
 /// # Errors
 ///
@@ -182,6 +743,11 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
             .unwrap_or("");
         !(name.starts_with(SILVER_STEP) || name.starts_with(FAILED_STEP))
     });
+    let loads = load_steps(p);
+    let mut at = steps
+        .iter()
+        .rposition(|s| is_load(s, &loads))
+        .map_or(0, |i| i + 1);
 
     let mut written: HashSet<String> = HashSet::new();
     let sources: Vec<&str> = p.sources.tables.iter().map(|t| t.name.as_str()).collect();
@@ -208,7 +774,8 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
             std::fs::write(p.dir.join(&file), format!("{sql};\n"))
                 .map_err(|e| format!("{file}: {e}"))?;
             written.insert(file.clone());
-            steps.push(
+            steps.insert(
+                at,
                 serde_yaml::from_str(&format!(
                     "name: {}\nsql: {}\nproduces:\n  - {}\n",
                     quoted_yaml(&step),
@@ -217,6 +784,7 @@ pub fn write_silver(p: &OwnProtocol, model: &Model) -> Result<(), String> {
                 ))
                 .map_err(|e| e.to_string())?,
             );
+            at += 1;
         }
     }
     let out = serde_yaml::to_string(&manifest).map_err(|e| e.to_string())?;
@@ -662,7 +1230,7 @@ fn frictionless_type(label: Option<&str>, duckdb_type: &str) -> &'static str {
 }
 
 /// The path from `base` (a directory) to `target`, both absolute.
-fn relative_to(target_path: &Path, base: &Path) -> Result<String, String> {
+pub(crate) fn relative_to(target_path: &Path, base: &Path) -> Result<String, String> {
     let target: Vec<Component> = target_path.components().collect();
     let base: Vec<Component> = base.components().collect();
     let common = target.iter().zip(&base).take_while(|(a, b)| a == b).count();
@@ -697,17 +1265,224 @@ pub fn own_protocol_dir(path: &Path) -> Option<PathBuf> {
         .then(|| std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()))
 }
 
-/// The own-files Protocol folders under `<datasets>/protocols/own/`, the most recently changed
-/// model first.
+/// The own-files Protocol of one source `path` names, when it names one: the folder itself or its
+/// `arcform.yaml`, holding the record of the tables its open found, that record naming one table,
+/// and no model file, since one table has nothing to relate.
+#[must_use]
+pub fn one_source_protocol_dir(path: &Path) -> Option<PathBuf> {
+    let dir = if path.is_dir() {
+        path
+    } else if path.file_name().is_some_and(|n| n == "arcform.yaml") {
+        path.parent()?
+    } else {
+        return None;
+    };
+    if !dir.join("arcform.yaml").is_file() || dir.join(MODEL_FILE).exists() {
+        return None;
+    }
+    let sources = read_sources(dir).ok()?;
+    (sources.tables.len() == 1)
+        .then(|| std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()))
+}
+
+/// The names of the steps the own-files Protocol of one source in `dir` was made with, its load
+/// and its silver and failed steps, when `dir` holds one: every other step of its manifest was
+/// recorded after, from the grid or from typed SQL. Known by exact name, as `load_steps` knows
+/// a load, so a step recorded on a table whose name starts like one of these is not taken for it.
+#[must_use]
+pub fn one_source_steps(dir: &Path) -> Option<(String, HashSet<String>)> {
+    one_source_protocol_dir(dir)?;
+    let sources = read_sources(dir).ok()?;
+    let [table] = sources.tables.as_slice() else {
+        return None;
+    };
+    let name = &table.name;
+    let steps = [
+        load_step(name),
+        format!("{SILVER_STEP}{name}"),
+        format!("{FAILED_STEP}{name}"),
+    ];
+    Some((name.clone(), steps.into_iter().collect()))
+}
+
+/// The load steps of the own-files Protocol in `dir`, one per table it records, by exact name as
+/// `load_steps` knows them. Empty when `dir` records no tables.
+#[must_use]
+pub fn load_step_names(dir: &Path) -> HashSet<String> {
+    read_sources(dir)
+        .map(|sources| sources.tables.iter().map(|t| load_step(&t.name)).collect())
+        .unwrap_or_default()
+}
+
+/// Whether the step `name` is one of the model's: a silver or failed step [`write_silver`] writes.
+/// Known by its prefix, as `write_silver` itself knows which steps to drop and write again, so a
+/// step taken out by hand would come back the next time the model is written.
+#[must_use]
+pub fn is_model_step(name: &str) -> bool {
+    name.starts_with(SILVER_STEP) || name.starts_with(FAILED_STEP)
+}
+
+/// The names of the steps the own-files Protocol of several tables in `dir` was made with, each
+/// table's load and its silver and failed steps, when `dir` holds one and `table` is one of its
+/// tables: what a step recorded from that table's grid comes after.
+#[must_use]
+pub fn folder_table_steps(dir: &Path, table: &str) -> Option<HashSet<String>> {
+    own_protocol_dir(dir)?;
+    let sources = read_sources(dir).ok()?;
+    if !sources
+        .tables
+        .iter()
+        .any(|t| t.name.eq_ignore_ascii_case(table))
+    {
+        return None;
+    }
+    Some(
+        sources
+            .tables
+            .iter()
+            .flat_map(|t| {
+                [
+                    load_step(&t.name),
+                    format!("{SILVER_STEP}{}", t.name),
+                    format!("{FAILED_STEP}{}", t.name),
+                ]
+            })
+            .collect(),
+    )
+}
+
+/// Open the own-files Protocol of one source in `dir` again: the table its open recorded, the
+/// Protocol run, which reads the source file afresh where it changed, and the raw table profiled.
+/// No folder is made.
+///
+/// # Errors
+///
+/// The reason when the folder holds no record of its tables, the run fails, or the raw table
+/// cannot be profiled.
+pub fn reopen_one_source(dir: &Path, runner: &Runner) -> Result<OwnProtocol, String> {
+    let mut p = OwnProtocol {
+        dir: dir.to_path_buf(),
+        sources: read_sources(dir)?,
+        profiles: Vec::new(),
+    };
+    run_loads(&p, runner)?;
+    profile(&mut p)?;
+    Ok(p)
+}
+
+/// The own-files Protocol of one source in `dir` with its raw table read afresh from the source
+/// file and profiled, for its silver steps to be written again from what the file holds now: a
+/// column added, renamed or retyped since the Protocol was made.
+///
+/// Only the load steps are run. The steps after them were written for the file's earlier columns,
+/// and a silver step naming a column the file no longer has would fail the run before the new
+/// columns could be profiled. arc runs a whole manifest, so the loads are run from a manifest of
+/// their own in a temporary folder, naming the Protocol's database by path (arc's `db:` key) so
+/// they write the tables the Protocol reads. The Protocol's own `arcform.yaml` is not touched.
+///
+/// # Errors
+///
+/// The reason when the folder holds no record of its tables, its manifest cannot be read, the
+/// temporary manifest cannot be written, the load fails, or the raw table cannot be profiled.
+pub fn reload_one_source(dir: &Path, runner: &Runner) -> Result<OwnProtocol, String> {
+    let mut p = OwnProtocol {
+        dir: dir.to_path_buf(),
+        sources: read_sources(dir)?,
+        profiles: Vec::new(),
+    };
+    let manifest_path = dir.join("arcform.yaml");
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    let mut manifest: serde_yaml::Value =
+        serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    let loads = load_steps(&p);
+    let mut files = Vec::new();
+    if let Some(steps) = manifest
+        .get_mut("steps")
+        .and_then(serde_yaml::Value::as_sequence_mut)
+    {
+        steps.retain(|s| is_load(s, &loads));
+        files.extend(
+            steps
+                .iter()
+                .filter_map(|s| s.get("sql").and_then(serde_yaml::Value::as_str))
+                .map(str::to_owned),
+        );
+    }
+    let db = arc::spec::protocol_db_path(dir).map_err(|e| e.to_string())?;
+    let db = std::path::absolute(&db).unwrap_or(db);
+    if let Some(map) = manifest.as_mapping_mut() {
+        map.insert("db".into(), db.to_string_lossy().into_owned().into());
+    }
+    let scratch = tempfile::tempdir().map_err(|e| format!("a temporary folder: {e}"))?;
+    for file in &files {
+        let to = scratch.path().join(file);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+        std::fs::copy(dir.join(file), &to).map_err(|e| format!("{file}: {e}"))?;
+    }
+    let loads_only = serde_yaml::to_string(&manifest).map_err(|e| e.to_string())?;
+    let at = scratch.path().join("arcform.yaml");
+    std::fs::write(&at, loads_only).map_err(|e| format!("{}: {e}", at.display()))?;
+    run_loads(
+        &OwnProtocol {
+            dir: scratch.path().to_path_buf(),
+            sources: p.sources.clone(),
+            profiles: Vec::new(),
+        },
+        runner,
+    )?;
+    forget_after_loads(&p)?;
+    profile(&mut p)?;
+    Ok(p)
+}
+
+/// Forget arc's record of each step other than a load succeeding, so the next run runs them over
+/// the raw tables a loads-only run has just made. Without this, a silver step whose SQL had not
+/// changed sat out the next run as unchanged, though the loads-only run had changed its input
+/// (`reloading_the_data_rereads_the_analysts_file` in `tests/open_makes_a_protocol.rs`).
+fn forget_after_loads(p: &OwnProtocol) -> Result<(), String> {
+    let _writing = database_lock();
+    let db = arc::spec::protocol_db_path(&p.dir).map_err(|e| e.to_string())?;
+    if !db.is_file() {
+        return Ok(());
+    }
+    let conn = duckdb::Connection::open(&db).map_err(|e| format!("{}: {e}", db.display()))?;
+    let state: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = '_arcform_state'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("{}: {e}", db.display()))?;
+    if state == 0 {
+        return Ok(());
+    }
+    let mut loads: Vec<String> = load_steps(p).iter().map(|n| literal(n)).collect();
+    loads.sort();
+    conn.execute_batch(&format!(
+        "DELETE FROM _arcform_state WHERE step_name NOT IN ({})",
+        loads.join(", ")
+    ))
+    .map_err(|e| format!("{}: {e}", db.display()))
+}
+
+/// The own-files Protocol folders in the Protocols folder and in the older
+/// `<datasets>/protocols/own/` (where earlier builds made them), the most recently changed model
+/// first.
 #[must_use]
 pub fn listed() -> Vec<PathBuf> {
-    let parent = starts::datasets_dir().join("protocols").join(OWN_DIR);
-    let Ok(entries) = std::fs::read_dir(&parent) else {
-        return Vec::new();
-    };
+    let old = starts::datasets_dir().join("protocols").join(OWN_DIR);
+    let mut entries: Vec<PathBuf> = Vec::new();
+    for parent in [protocols_dir::root(), old] {
+        if let Ok(read) = std::fs::read_dir(&parent) {
+            entries.extend(read.flatten().map(|e| e.path()));
+        }
+    }
     let mut found: Vec<(std::time::SystemTime, PathBuf)> = entries
-        .flatten()
-        .filter_map(|e| own_protocol_dir(&e.path()))
+        .iter()
+        .filter_map(|e| own_protocol_dir(e))
         .map(|dir| {
             let changed = std::fs::metadata(dir.join(MODEL_FILE))
                 .and_then(|m| m.modified())
@@ -716,6 +1491,7 @@ pub fn listed() -> Vec<PathBuf> {
         })
         .collect();
     found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    found.dedup_by(|a, b| a.1 == b.1);
     found.into_iter().map(|(_, dir)| dir).collect()
 }
 
@@ -765,7 +1541,8 @@ pub fn grid_copy(p: &OwnProtocol, name: &str) -> Result<PathBuf, String> {
     )
 }
 
-/// Record `set` in the Protocol folder `dir`, for [`reopen`].
+/// Record `set` in the Protocol folder `dir`, for [`reopen`], with the folder's canonical path as
+/// `dir`, which is how an open notices the folder was moved since ([`crate::rename::moved_since`]).
 fn write_sources(dir: &Path, set: &SourceSet) -> Result<(), String> {
     let tables: Vec<Value> = set
         .tables
@@ -785,10 +1562,32 @@ fn write_sources(dir: &Path, set: &SourceSet) -> Result<(), String> {
         .iter()
         .map(|(path, reason)| json!({ "path": path.to_string_lossy(), "reason": reason }))
         .collect();
-    let text = serde_json::to_string_pretty(&json!({ "tables": tables, "skipped": skipped }))
-        .map_err(|e| e.to_string())?;
+    let place = dir
+        .canonicalize()
+        .unwrap_or_else(|_| dir.to_path_buf())
+        .to_string_lossy()
+        .into_owned();
+    let text = serde_json::to_string_pretty(
+        &json!({ "dir": place, "tables": tables, "skipped": skipped }),
+    )
+    .map_err(|e| e.to_string())?;
     let path = dir.join(SOURCES_FILE);
     std::fs::write(&path, text + "\n").map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The source files the own-files Protocol in `dir` reads, each once, in the order its record lists
+/// them: `None` when `dir` holds no record of its sources. A workbook or database of several tables
+/// is one file.
+#[must_use]
+pub fn source_files(dir: &Path) -> Option<Vec<PathBuf>> {
+    let set = read_sources(dir).ok()?;
+    let mut files: Vec<PathBuf> = Vec::new();
+    for table in set.tables {
+        if !files.contains(&table.file) {
+            files.push(table.file);
+        }
+    }
+    Some(files)
 }
 
 /// The tables and skipped files [`write_sources`] recorded in `dir`.
@@ -900,6 +1699,26 @@ fn quoted_yaml(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_protocols_manifest_is_one_arc_reads() {
+        let parent = tempfile::tempdir().expect("a temporary folder");
+        let p = create_empty(parent.path()).expect("an empty Protocol");
+        let text = std::fs::read_to_string(p.dir.join("arcform.yaml")).expect("the manifest");
+        let manifest = arc::spec::Manifest::from_yaml_str(&text).expect("arc reads it");
+        assert_eq!(manifest.name, "Untitled");
+        assert!(still_untitled(&p.dir));
+        assert_eq!(empty_protocol_dir(&p.dir), Some(p.dir.clone()));
+    }
+
+    #[test]
+    fn a_table_named_as_one_already_there_takes_a_number() {
+        let mut taken: HashSet<String> = derived_names("orders").into_iter().collect();
+        assert_eq!(unclashed("orders", &mut taken), "orders_2");
+        // `orders` loads into `raw_orders`, and `orders_2` into `raw_orders_2`, so both are taken.
+        assert_eq!(unclashed("raw_orders", &mut taken), "raw_orders_3");
+        assert_eq!(unclashed("customers", &mut taken), "customers");
+    }
 
     #[test]
     fn storage_types_win_and_labels_type_varchar() {

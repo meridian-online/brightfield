@@ -161,6 +161,10 @@ pub const RESHAPE_VERBS: [&str; 10] = [
 /// The verb that runs discovery again and folds what it proposes around the analyst's decisions.
 pub const REDISCOVER_MODEL: &str = "rediscover-model";
 
+/// How long a full pass held for an edit whose file could not be written waits before it tries
+/// the write again, in milliseconds.
+pub const WRITE_RETRY_MS: u64 = 2_000;
+
 /// Whether `longname` is one of the model pane's verbs.
 #[must_use]
 pub fn is_model_verb(longname: &str) -> bool {
@@ -259,9 +263,16 @@ pub struct ModelPane {
     /// Whether the last text read was refused, so it stays in the editor until put right or
     /// discarded.
     draft_refused: bool,
+    /// Whether the last text read was a model whose file could not be written, so it stays in
+    /// the editor, and is read again by the next Save, rather than the file's text taking its
+    /// place.
+    draft_unwritten: bool,
     /// Whether a text the editor read was written as the model without the Protocol run for it,
     /// which happens once the editor lets go of the keyboard or the file view is left.
     run_owed: bool,
+    /// Whether a run for the model was started without its joins then being measured, because it
+    /// failed or the measurement did, so the next Run that succeeds measures them.
+    joins_unmeasured: bool,
     /// Bumped whenever the model changes, so the diagram is drawn again.
     generation: u64,
     raster: Option<(DiagramKey, egui::TextureId)>,
@@ -280,6 +291,12 @@ pub struct ModelPane {
     drag_from: Option<String>,
     /// Discovery's full pass, while it runs on its worker.
     full_pass: Option<FullPass>,
+    /// The full pass's answer once it has landed, while it waits for the file view's edit to be
+    /// settled before it is folded in.
+    landed: Option<Result<Model, String>>,
+    /// When a held full pass next tries the write of an edit whose file could not be written, on
+    /// the frame clock, so a folder that refuses it is not written to on every poll.
+    write_retry_due: Option<u64>,
 }
 
 /// What became of a [`ModelAction`] the pane dispatched.
@@ -325,7 +342,9 @@ impl ModelPane {
             file_scrolled_for: None,
             file_focused: false,
             draft_refused: false,
+            draft_unwritten: false,
             run_owed: false,
+            joins_unmeasured: false,
             generation: 0,
             raster: None,
             drawn: ModelDrawn::default(),
@@ -341,6 +360,8 @@ impl ModelPane {
             status: None,
             drag_from: None,
             full_pass: None,
+            landed: None,
+            write_retry_due: None,
         };
         // A Protocol already run has silver tables to measure the joins over; one not yet run
         // has none, and nothing is measured.
@@ -381,23 +402,7 @@ impl ModelPane {
     /// open skipped no file.
     #[must_use]
     pub fn skipped_line(&self) -> Option<String> {
-        let skipped = &self.protocol.sources.skipped;
-        if skipped.is_empty() {
-            return None;
-        }
-        let named: Vec<String> = skipped
-            .iter()
-            .map(|(path, reason)| {
-                let reason = reason.lines().next().unwrap_or("").trim();
-                format!("{} ({reason})", file_name(path))
-            })
-            .collect();
-        Some(format!(
-            "{} {} skipped: {}",
-            skipped.len(),
-            if skipped.len() == 1 { "file" } else { "files" },
-            named.join(", ")
-        ))
+        skipped_line_of(&self.protocol.sources.skipped)
     }
 
     /// The Ossie file's text as it is on disk.
@@ -431,6 +436,7 @@ impl ModelPane {
         let ran = self.run_if_owed();
         if !self.file_focused
             && !self.draft_refused
+            && !self.draft_unwritten
             && self.file_draft == self.file_read
             && self.file_draft != self.file_text
         {
@@ -455,6 +461,30 @@ impl ModelPane {
                 ran
             }
         }
+    }
+
+    /// Settle what the pane holds and no run has followed, as Save does before the window leaves
+    /// it: the file view's edit is settled (`settle_file_edit`), and a run it owes, or an
+    /// earlier read owed, is made, as Run settles them ([`Self::run_whole`]).
+    ///
+    /// # Errors
+    ///
+    /// An edit that does not read, a file that could not be written, or the run's failure.
+    pub fn save_draft(&mut self) -> Result<(), String> {
+        self.settle_file_edit()?;
+        if self.run_owed {
+            self.run_silver(true)?;
+        }
+        Ok(())
+    }
+
+    /// Whether the file view holds text its file does not: an edit waiting out its pause, or one
+    /// that was read and refused, or whose file could not be written, which stays in the editor as
+    /// typed until it is fixed or discarded.
+    #[must_use]
+    pub fn file_edit_unsaved(&self) -> bool {
+        self.file_draft != self.file_read
+            || ((self.draft_refused || self.draft_unwritten) && self.file_draft != self.file_text)
     }
 
     /// Whether a text the editor read is the model without the Protocol having run for it yet.
@@ -509,6 +539,7 @@ impl ModelPane {
             brightfield_ossie::read(&self.file_text).unwrap_or_else(|_| self.model.clone());
         self.file_pause = None;
         self.draft_refused = false;
+        self.draft_unwritten = false;
         self.kept.roles.clear();
     }
 
@@ -517,6 +548,7 @@ impl ModelPane {
     /// editor keeps the text as typed.
     fn read_file_draft(&mut self) -> Result<(), String> {
         self.file_read = self.file_draft.clone();
+        self.draft_unwritten = false;
         self.file_pause = None;
         // The tables a discovery pass could propose, which is what a hand deletion holds.
         let names: Vec<String> = self
@@ -546,12 +578,17 @@ impl ModelPane {
                 Ok(())
             }
             Ok(edit) => {
-                // The next edit of this text starts from it, as typed.
-                self.file_base = edit.typed;
+                // The text reads, so whatever came of its write, it is no longer a refused one.
+                self.draft_refused = false;
+                // The next edit of this text starts from it, as typed, once it is written.
+                let base = std::mem::replace(&mut self.file_base, edit.typed);
                 // The run waits until the typing is done ([`Self::run_if_owed`]).
                 let saved = self.write_model(edit.model, edit.kept, true);
                 if saved.is_ok() {
                     self.run_owed = true;
+                } else {
+                    self.file_base = base;
+                    self.draft_unwritten = true;
                 }
                 self.let_go_of_what_is_gone();
                 saved
@@ -565,17 +602,29 @@ impl ModelPane {
         result
     }
 
-    /// Before a reshape saves: read an edit still waiting out its pause, and refuse when the
-    /// editor holds one that does not read.
+    /// Settle the file view's edit before anything writes the model, runs it or folds discovery
+    /// into it, so none of them works from the model before the edit or puts the file's text over
+    /// it: Save, a reshape or an inspector action, Rediscover, Run, and a full pass landing all
+    /// come through here. An edit still waiting out its pause is read, and so is one read before
+    /// that was refused or whose file could not be written, which may read or write now.
+    ///
+    /// # Errors
+    ///
+    /// An edit that does not read, or the reason its file could not be written; either way the
+    /// edit stays in the file view as typed, and the caller stops.
     fn settle_file_edit(&mut self) -> Result<(), String> {
-        if self.file_draft != self.file_read {
-            // Its outcome stands in the file view; what matters here is whether it was refused.
-            let _ = self.read_file_draft();
+        if self.file_draft == self.file_read && !self.draft_refused && !self.draft_unwritten {
+            return Ok(());
         }
-        if self.draft_refused {
-            Err("The file has an edit that doesn't read — fix or discard it first".to_string())
-        } else {
-            Ok(())
+        // What the read made of the text stands in the file view either way. A text that does
+        // not read is named by its first line, as the file view names it; one that reads but
+        // could not be written answers the write's own error.
+        match self.read_file_draft() {
+            Err(e) if self.draft_refused => Err(format!(
+                "The file has an edit that doesn't read — fix or discard it first. {}",
+                e.lines().next().unwrap_or_default()
+            )),
+            read => read,
         }
     }
 
@@ -823,8 +872,10 @@ impl ModelPane {
         if let Err(e) = self.settle_file_edit() {
             return Dispatched::Failed(e);
         }
-        // A pass still running answers for a model this one replaces.
+        // A pass still running, or landed and waiting, answers for a model this one replaces.
         self.full_pass = None;
+        self.landed = None;
+        self.write_retry_due = None;
         let model = match sample_pass(&*discovery, &self.protocol, Some(&self.model)) {
             Ok(model) => model,
             Err(e) => return Dispatched::Failed(format!("Discovery failed: {e}")),
@@ -851,36 +902,64 @@ impl ModelPane {
     /// which is told to stop, to land through [`Self::poll_discovery`]. The window starts one when the pane opens, whose
     /// model is the sample pass's.
     pub fn start_full_pass(&mut self, discovery: impl Discovery + Send + 'static) {
+        self.landed = None;
+        self.write_retry_due = None;
         self.full_pass = Some(FullPass::start(Box::new(discovery), &self.protocol));
     }
 
-    /// Whether discovery's full pass is still to land, so the window keeps polling.
+    /// Whether discovery's full pass is still to land, or has landed and waits for the file
+    /// view's edit to be settled, so the window keeps polling.
     #[must_use]
     pub fn discovering(&self) -> bool {
-        self.full_pass.is_some()
+        self.full_pass.is_some() || self.landed.is_some()
     }
 
     /// Fold discovery's full pass into the model once it has landed, and answer what came of it;
-    /// `None` while it runs, or while it waits for a hand edit in the file view to be read or
-    /// discarded, so the fold sees the model the edit made. A fold that changes the model saves
-    /// it, as an action's model is, and says so in the status line, as a failed pass does; what
-    /// the analyst decided stays as it is.
-    pub fn poll_discovery(&mut self) -> Option<Dispatched> {
-        if self.file_edit_armed() || self.draft_refused {
+    /// `None` while it runs, while a hand edit in the file view waits out its pause, or while
+    /// the edit does not settle (`settle_file_edit`): one that does not read, or whose
+    /// file cannot be written. The fold then sees the model the edit made. A fold that changes the
+    /// model saves it, as an action's model is, and says so in the status line, as a failed pass
+    /// does; what the analyst decided stays as it is.
+    ///
+    /// `now_ms` is the frame clock. While the edit is one whose file could not be written, its
+    /// write is tried again at most every [`WRITE_RETRY_MS`], rather than on every poll
+    /// (`a_held_full_pass_retries_an_unwritten_edit_only_every_so_often`).
+    pub fn poll_discovery(&mut self, now_ms: u64) -> Option<Dispatched> {
+        // The pane's tick reads an edit once its pause is out; the fold waits for that read.
+        if self.file_edit_armed() {
             return None;
         }
-        let answer = self.full_pass.as_ref()?.try_take()?;
-        self.full_pass = None;
+        if self.landed.is_none() {
+            let answer = self.full_pass.as_ref()?.try_take()?;
+            self.full_pass = None;
+            self.landed = Some(answer);
+        }
+        if self.draft_unwritten && self.write_retry_due.is_some_and(|due| now_ms < due) {
+            return None;
+        }
+        if self.settle_file_edit().is_err() {
+            self.write_retry_due = self
+                .draft_unwritten
+                .then_some(now_ms.saturating_add(WRITE_RETRY_MS));
+            return None;
+        }
+        self.write_retry_due = None;
+        let answer = self.landed.take()?;
         Some(self.fold_full_pass(answer))
     }
 
-    /// [`Self::poll_discovery`], waiting for the full pass to land: `None` when no pass is out,
-    /// or a hand edit in the file view waits to be read.
+    /// [`Self::poll_discovery`], waiting for the full pass to land, and reading an edit still
+    /// waiting out its pause rather than waiting for it: `None` when no pass is out, or the edit
+    /// does not settle.
     pub fn finish_discovery(&mut self) -> Option<Dispatched> {
-        if self.file_edit_armed() || self.draft_refused {
+        if self.full_pass.is_none() && self.landed.is_none() {
             return None;
         }
-        let answer = self.full_pass.take()?.wait();
+        self.settle_file_edit().ok()?;
+        let answer = match self.landed.take() {
+            Some(answer) => answer,
+            None => self.full_pass.take()?.wait(),
+        };
         Some(self.fold_full_pass(answer))
     }
 
@@ -990,11 +1069,16 @@ impl ModelPane {
     /// ([`measure_joins`]), and when that changes the model it is written again, without a run:
     /// evidence is what the file says about the data, not a step of the Protocol.
     ///
+    /// The file view's edit is settled first (`settle_file_edit`), so a save never puts
+    /// the file's text over an edit that is still to be read, refused or unwritten
+    /// (`save_model_settles_the_file_view_first`).
+    ///
     /// # Errors
     ///
-    /// The reason the file or the silver steps could not be written, or what arc printed when
-    /// the run failed.
+    /// An edit in the file view that does not settle, the reason the file or the silver steps
+    /// could not be written, or what arc printed when the run failed.
     pub fn save_model(&mut self, model: Model) -> Result<(), String> {
+        self.settle_file_edit()?;
         let kept = model_file::still_kept(&model, &self.kept);
         self.save_with(model, kept, false)
     }
@@ -1007,12 +1091,61 @@ impl ModelPane {
         self.run_silver(from_editor)
     }
 
+    /// Run the whole Protocol through arc and wait for it, as Run does in any window: a run the
+    /// analyst asked for, so it is not marked as a preview, and the door reads it as the
+    /// Protocol's run.
+    ///
+    /// What the pane owes the folder is paid first, so the run is of the model the pane shows: the
+    /// file view's edit is settled (`settle_file_edit`), and the silver steps are
+    /// rewritten for the model, which settles a run an earlier edit left owed. An edit that does
+    /// not read, or whose file cannot be written, refuses the run, rather than running the steps
+    /// of the model before it.
+    ///
+    /// It holds the database while it runs, as the pane's own runs do, so discovery's pass does
+    /// not copy a database arc is writing. When an edit owed the run, a run that succeeds measures
+    /// each join's evidence again over the new tables and writes the model when that changed it,
+    /// as does one after a run that failed before it measured them; otherwise the model is left as
+    /// it is.
+    ///
+    /// # Errors
+    ///
+    /// Why the run was not started: an edit that does not read, a file or silver steps that could
+    /// not be written.
+    pub fn run_whole(&mut self) -> Result<crate::run::Finished, String> {
+        self.settle_file_edit()?;
+        own_files::write_silver(&self.protocol, &self.model)?;
+        own_files::drop_unmade_silver(&self.protocol, &self.model)?;
+        // This run is the one the edit was owed, so it measures the joins afterwards as that run
+        // would have, and so does a run after one that stopped short of measuring them. With
+        // neither, the joins were measured over the model's last run, and the model is not
+        // written again.
+        if std::mem::take(&mut self.run_owed) {
+            self.joins_unmeasured = true;
+        }
+        let finished = {
+            let _writing = own_files::database_lock();
+            crate::run::Run::begin(&self.runner, &self.protocol.dir, || {}).wait()
+        };
+        // The run changed the tables under the model the inspector last read.
+        self.inspected = None;
+        if self.joins_unmeasured && finished.succeeded {
+            // The run's outcome stands either way; a measurement that fails is said in the file
+            // view, as the owed run's own failure would have been.
+            if let Err(e) = self.reverify(true) {
+                self.file_error = Some(e);
+            }
+        }
+        Ok(finished)
+    }
+
     /// Rewrite the silver steps for the pane's model, run the Protocol and measure the joins
     /// again, as [`Self::save_model`] does after writing the file. A run the editor's text owed is
     /// paid by it, whether it succeeds or not, so a failed run is said once and not retried each
     /// frame.
     fn run_silver(&mut self, from_editor: bool) -> Result<(), String> {
         self.run_owed = false;
+        // Until the measurement below succeeds, the next Run owes it.
+        self.joins_unmeasured = true;
         own_files::write_silver(&self.protocol, &self.model)?;
         own_files::drop_unmade_silver(&self.protocol, &self.model)?;
         own_files::run_loads(&self.protocol, &self.runner)?;
@@ -1045,12 +1178,13 @@ impl ModelPane {
     /// when that changed it. `from_editor` is as [`Self::save_with`] takes it.
     fn reverify(&mut self, from_editor: bool) -> Result<(), String> {
         let measured = measure_joins(&self.protocol.dir, &self.model)?;
-        if measured == self.model {
-            return Ok(());
+        if measured != self.model {
+            // Measuring renames and removes nothing, so what the file kept beside the model stands.
+            let kept = self.kept.clone();
+            self.write_model(measured, kept, from_editor)?;
         }
-        // Measuring renames and removes nothing, so what the file kept beside the model stands.
-        let kept = self.kept.clone();
-        self.write_model(measured, kept, from_editor)
+        self.joins_unmeasured = false;
+        Ok(())
     }
 
     /// Raster the diagram through `host` when it is showing and what it depends on changed.
@@ -1760,4 +1894,26 @@ impl Item<ModelPane> for ModelItem {
             Handled::No
         }
     }
+}
+
+/// The line that names the files an open passed over, each with the first line of its reason, as
+/// [`ModelPane::skipped_line`] says it. `None` when `skipped` is empty.
+#[must_use]
+pub fn skipped_line_of(skipped: &[(std::path::PathBuf, String)]) -> Option<String> {
+    if skipped.is_empty() {
+        return None;
+    }
+    let named: Vec<String> = skipped
+        .iter()
+        .map(|(path, reason)| {
+            let reason = reason.lines().next().unwrap_or("").trim();
+            format!("{} ({reason})", file_name(path))
+        })
+        .collect();
+    Some(format!(
+        "{} {} skipped: {}",
+        skipped.len(),
+        if skipped.len() == 1 { "file" } else { "files" },
+        named.join(", ")
+    ))
 }

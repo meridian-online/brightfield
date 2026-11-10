@@ -56,6 +56,14 @@
 //! one `arc run` away from being real, where one saved elsewhere carries an
 //! absolute path that breaks the moment either end moves.
 //!
+//! **A new open no longer writes one of these beside the analyst's data.**
+//! Opening a lone file makes a Protocol of one source in the Protocols folder
+//! ([`crate::data_file::open_any`]), and the grid opens on that Protocol's
+//! copy of the table, inside its folder, so the data file this type is built
+//! over, and the directory it saves into, are the Protocol's own. A Protocol
+//! an earlier Brightfield saved beside its CSV still opens and saves through
+//! this type where it is.
+//!
 //! # Why the file is spelled `./name`
 //!
 //! [`brightfield_protocol::graph`] reads a `depends_on:` entry with no path
@@ -215,9 +223,42 @@ pub struct OneStepProtocol {
     /// it, so a read of the file outside the session, such as a typed statement's preview, reads
     /// the columns as the session does. Empty for a file read as it is.
     pub casts: Vec<(String, String)>,
+    /// Which of a model's rows the file is the grid copy of, when it was opened from the model
+    /// pane: a table's or a join's. Each keeps its chart apart from the Protocol's own panel
+    /// ([`Self::chart_file`]). `None` for a file opened as itself.
+    pub model_grid: Option<ModelGrid>,
+}
+
+/// Which of a model's rows a grid opened from the model pane copies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelGrid {
+    /// One of the model's tables.
+    Table,
+    /// One of the model's joins, whose rows no manifest step makes.
+    Join,
 }
 
 impl OneStepProtocol {
+    /// **The chart file a Save of this Protocol's chart writes**, and an open
+    /// reads back: the panel file for its name, or, for rows opened from the
+    /// model, the table's own file under `panels/tables/` or the join's under
+    /// `panels/joins/`.
+    #[must_use]
+    pub fn chart_file(&self) -> PathBuf {
+        use brightfield_model::panel_capture::{join_panel_file, panel_file, table_panel_file};
+        match self.model_grid {
+            Some(ModelGrid::Join) => join_panel_file(&self.dir, &self.name),
+            Some(ModelGrid::Table) => table_panel_file(&self.dir, &self.name),
+            None => panel_file(&self.dir, &self.name),
+        }
+    }
+
+    /// Whether the file is the grid copy of a model's joined rows.
+    #[must_use]
+    pub fn is_join(&self) -> bool {
+        self.model_grid == Some(ModelGrid::Join)
+    }
+
     /// The Protocol for `path`, over the columns the engine profiled and the
     /// dashboard the generator chose from them.
     #[must_use]
@@ -243,6 +284,7 @@ impl OneStepProtocol {
             data: path.to_path_buf(),
             dir,
             spelled,
+            model_grid: None,
         }
     }
 
@@ -329,11 +371,10 @@ impl OneStepProtocol {
         typed: &[crate::typed_sql::TypedStep],
     ) -> Result<ProtocolInputs, String> {
         let mut inputs = self.folder_inputs(typed)?;
-        for view in crate::run::records_newest_first(&self.dir, &self.name) {
-            if inputs.adopt_run(&view) {
-                break;
-            }
-        }
+        // By the name the folder's manifest declares, which a run records: this file's own name,
+        // unless it is the grid copy in an own-files Protocol named otherwise.
+        let protocol = inputs.protocol.clone();
+        inputs.adopt_newest_run(&self.dir, &protocol);
         Ok(inputs)
     }
 
@@ -381,7 +422,9 @@ impl OneStepProtocol {
             }
         }
         let mut inputs = crate::protocol::load_manifest(&manifest, &sources);
-        inputs.hold_table(self.table_id());
+        // Spelled against the manifest's name, as the graph spells the table: this file's own
+        // name, unless it is the grid copy in an own-files Protocol named otherwise.
+        inputs.hold_table(format!("asset.{}.{}", manifest.name, self.name));
         inputs.columns.clone_from(&self.columns);
         inputs.tiles.clone_from(&self.tiles);
         inputs.source = Some(self.clone());
@@ -410,13 +453,58 @@ impl OneStepProtocol {
         };
         let generated = match crate::generated::generated_protocol_for(&text, &self.dir, self) {
             Ok(Some(generated)) => generated,
-            Ok(None) => return one_step(None),
+            Ok(None) => match self.recorded_in_own_folder(&text) {
+                Ok(Some(generated)) => generated,
+                Ok(None) => return one_step(None),
+                Err(e) => return one_step(Some(e)),
+            },
             Err(e) => return one_step(Some(e)),
         };
         let manifest = brightfield_protocol::parse_manifest_str(&text)
             .map_err(|e| format!("protocol parse error: {e}"))?;
         let sources = brightfield_protocol::graph::load_model_sources(&manifest, &self.dir);
         Ok((manifest, sources, Some(generated), None))
+    }
+
+    /// The steps recorded after the steps it was made with in the own-files Protocol this file
+    /// is the grid copy of one table of, read from its manifest `text`: `Ok(None)` when this
+    /// file's folder is not one, or its table is not this file's. A Protocol with nothing
+    /// recorded yet answers its made-with steps and no recorded one, so its manifest is read
+    /// whole and its runs are taken on.
+    ///
+    /// Such a folder's manifest loads the analyst's files where they are and makes this file's
+    /// table in a silver step, so it is not the one-step shape
+    /// [`crate::generated::generated_protocol_for`] reads; without this, a Save that recorded a
+    /// view into it would be taken back on as the bare load, and a run of its steps refused as a
+    /// run of other steps. A folder of several tables answers the recorded steps whose chain starts
+    /// at this file's table ([`crate::generated::generated_protocol_of_folder_table`]).
+    fn recorded_in_own_folder(
+        &self,
+        text: &str,
+    ) -> Result<Option<crate::generated::GeneratedProtocol>, String> {
+        // A copy of a model's joined rows in a folder Protocol: no step starts at the join, and
+        // the folder's manifest is still the Protocol a Run runs, so it is read whole, with its
+        // runs, and no step after it. Asked before the tables are, because a join can be named
+        // as one of the folder's tables is, and must not take that table's steps.
+        if self.is_join() && crate::own_files::own_protocol_dir(&self.dir).is_some() {
+            return Ok(Some(crate::generated::GeneratedProtocol {
+                data: self.data.clone(),
+                dir: self.dir.clone(),
+                root_table: self.name.clone(),
+                steps: Vec::new(),
+            }));
+        }
+        if let Some(made_with) = crate::own_files::folder_table_steps(&self.dir, &self.name) {
+            return Ok(crate::generated::generated_protocol_of_folder_table(
+                text, &self.dir, self, &made_with,
+            ));
+        }
+        let Some((table, made_with)) = crate::own_files::one_source_steps(&self.dir) else {
+            return Ok(None);
+        };
+        crate::generated::generated_protocol_of_one_source(
+            text, &self.dir, self, &table, &made_with,
+        )
     }
 
     /// The asset id of the table this Protocol produces — the outline row the
