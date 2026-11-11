@@ -1253,7 +1253,12 @@ fn main() -> Result<(), String> {
         layout.window.size = [w, h];
         fit = Some((w, h));
     }
-    let mut viewport = egui::ViewportBuilder::default().with_inner_size(layout.window.size);
+    // An empty icon tells eframe to leave the application icon alone. Without
+    // it eframe sets its own egui logo as the app icon once the window opens,
+    // which on a Mac replaces Brightfield.icns from the app bundle in the Dock.
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size(layout.window.size)
+        .with_icon(std::sync::Arc::new(egui::IconData::default()));
     if let Some([x, y]) = layout.window.position {
         viewport = viewport.with_position([x, y]);
     }
