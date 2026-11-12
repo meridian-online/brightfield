@@ -3987,7 +3987,9 @@ impl Item<ProtocolDoc> for OutlinePane {
         } = doc.model.spine_with_joins();
         // The gutter the join curves are drawn in, left of every spine row's
         // marker, so the rows hang off one ladder whether or not a curve
-        // reaches them. No width at all when there is no join.
+        // reaches them. No width at all when there is no join, and never wider
+        // than `SPINE_GUTTER_MAX`: past that the lanes narrow, so a table
+        // joined to many leaves the rows their room for names.
         let routes = curve_lanes(&join_curves);
         let lanes = routes
             .iter()
@@ -3995,7 +3997,13 @@ impl Item<ProtocolDoc> for OutlinePane {
             .max()
             .unwrap_or(0);
         #[allow(clippy::cast_precision_loss)] // a handful of lanes
-        let gutter = SPINE_LANE * lanes as f32;
+        let lane_width = if lanes == 0 {
+            0.0
+        } else {
+            (SPINE_GUTTER_MAX / lanes as f32).min(SPINE_LANE)
+        };
+        #[allow(clippy::cast_precision_loss)] // a handful of lanes
+        let gutter = lane_width * lanes as f32;
         let mut curves: Vec<SpineCurveDrawn> = Vec::with_capacity(routes.len());
         let columns = doc.model.column_rows();
         let spine_caption = doc.model.spine_caption();
@@ -4084,7 +4092,7 @@ impl Item<ProtocolDoc> for OutlinePane {
                     curves.push(paint_join_curve(
                         ui.painter(),
                         (&drawn[first + from], &drawn[first + to]),
-                        lane,
+                        (lane, lane_width),
                         gutter,
                         cx.mode,
                     ));
@@ -4791,6 +4799,10 @@ const SPINE_MARKER_RADIUS: f32 = 2.5;
 /// curve that would otherwise cross another is moved out by.
 pub const SPINE_LANE: f32 = spacing::SPACE_3;
 
+/// The widest the spine's gutter is drawn, in logical points: four lanes at
+/// [`SPINE_LANE`]. More lanes than that share it, each narrower.
+pub const SPINE_GUTTER_MAX: f32 = 4.0 * SPINE_LANE;
+
 /// Where a spine row drawn in `rect` puts its marker's leading edge, with
 /// `gutter` of room for the join curves to its left.
 fn spine_marker_left(rect: egui::Rect, gutter: f32) -> f32 {
@@ -4849,14 +4861,15 @@ fn curve_lanes(curves: &[(usize, usize)]) -> Vec<(usize, usize, usize)> {
 }
 
 /// Paint one join's curve in the spine's gutter, between the markers of the
-/// rows `rows` drew, out in lane `lane` of a gutter `gutter` wide.
+/// rows `rows` drew, out in lane `lane` of a gutter `gutter` wide whose lanes
+/// are each `lane_width` wide.
 ///
 /// In the ink the sources browser draws an accepted join in, so a join reads
 /// as the same thing on the canvas it was accepted on and on the spine.
 fn paint_join_curve(
     painter: &egui::Painter,
     rows: (&SpineRowDrawn, &SpineRowDrawn),
-    lane: usize,
+    (lane, lane_width): (usize, f32),
     gutter: f32,
     mode: Mode,
 ) -> SpineCurveDrawn {
@@ -4868,7 +4881,7 @@ fn paint_join_curve(
     // point three quarters of the way out to them.
     let start = marker_left - spacing::SPACE_1 / 2.0;
     #[allow(clippy::cast_precision_loss)] // a handful of lanes
-    let reach = marker_left - SPINE_LANE * (lane as f32 + 0.75);
+    let reach = marker_left - lane_width * (lane as f32 + 0.75);
     let control = start - (start - reach) / 0.75;
     let (a, b) = (from.rect.center().y, to.rect.center().y);
     let points = [
