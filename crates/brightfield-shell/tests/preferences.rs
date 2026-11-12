@@ -937,9 +937,16 @@ impl Window {
     /// One headless window built as a launch from the app builds it, which may ask the
     /// default-app question.
     fn from_the_app() -> Self {
+        Self::offering(true)
+    }
+
+    /// One headless window built as `main` builds it, with `from_the_app` saying whether macOS
+    /// can be asked from this launch.
+    fn offering(from_the_app: bool) -> Self {
         scratch();
         let mut win = Self {
-            app: MeridianApp::headless(Boot::empty(), Mode::Light).offering_default_app(true),
+            app: MeridianApp::headless(Boot::empty(), Mode::Light)
+                .offering_default_app(from_the_app),
             ctx: egui::Context::default(),
             time: 0.0,
         };
@@ -1010,9 +1017,15 @@ fn a_launch_not_from_the_app_leaves_the_question_unasked() {
     let _serial = serial();
     let _ = roots("default_app_not_app");
     unasked();
-    let win = Window::new();
-    assert_eq!(win.app.open_overlay(), None);
+    let win = Window::offering(false);
+    assert_eq!(win.app.open_overlay(), None, "it does not ask");
     assert_eq!(kept_answer().0, None, "nothing is kept");
+    let app = Window::from_the_app();
+    assert_eq!(
+        app.app.open_overlay(),
+        Some("default-app"),
+        "the app's first launch still asks"
+    );
 }
 
 #[test]

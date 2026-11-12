@@ -13097,11 +13097,16 @@ impl MeridianApp {
         }
     }
 
-    /// Ask macOS to make Brightfield the default for each kind, unless an ask is still under way.
-    /// A window that may not raise the system's dialogs counts the ask and asks nothing, so a test
-    /// cannot change the Mac's default apps.
+    /// Ask macOS to make Brightfield the default for each kind, unless an ask is still under way,
+    /// which a toast then says. A window that may not raise the system's dialogs counts the ask
+    /// and asks nothing, so a test cannot change the Mac's default apps.
     fn ask_macos_for_default(&mut self, ctx: &egui::Context) {
         if self.default_app_asking.is_some() {
+            self.toasts.push(Toast::new(
+                Severity::Info,
+                "macOS is still asking about the last request to make Brightfield the default",
+            ));
+            ctx.request_repaint();
             return;
         }
         self.default_app_asks += 1;
