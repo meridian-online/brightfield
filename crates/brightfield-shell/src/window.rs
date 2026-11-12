@@ -12097,9 +12097,9 @@ impl MeridianApp {
     }
 
     /// **Open the sources browser over the Protocol the window holds**, on its first source in
-    /// that source's folder, or on the home folder for a Protocol with none, as `A`, the palette
-    /// and the empty canvas's Add source… do. Over a Protocol Brightfield did not make, a banner
-    /// says sources are added only to its own, and nothing opens.
+    /// that source's folder, or on the home folder for a Protocol with no sources yet, as `A`, the
+    /// palette and the empty canvas's Add source… do. Over a Protocol Brightfield did not make, a
+    /// banner says sources are added only to its own, and the browser stays closed.
     pub fn open_sources_browser(&mut self, ctx: &egui::Context) {
         if self.front_door_is_live() {
             return;

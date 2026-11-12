@@ -249,9 +249,9 @@ pub fn frame(ui: &egui::Ui) -> egui::Frame {
 /// **Draw the browser into `ui`**, in its frame and the theme of `mode`, and answer what its keys
 /// and clicks asked of the window this frame.
 ///
-/// The keys are read before anything is drawn and taken out of the frame's input, so a `j`
-/// moves the cursor and reaches nothing behind the sheet, and `Esc` closes the browser rather
-/// than a layer under it. While the glob's field holds the keys they type into it, and `Enter`
+/// The keys are read before the sheet is drawn and taken out of the frame's input, so a `j`
+/// moves the browser's cursor and not the grid's behind the sheet, and `Esc` closes the browser
+/// rather than a layer under it. While the glob's field holds the keys they type into it, and `Enter`
 /// and `Esc` leave it. A key with a modifier held, such as the window's `Cmd+S`, is left in the
 /// input for the window.
 pub fn show(ui: &mut egui::Ui, sheet: &mut Sheet, mode: Mode) -> Effect {

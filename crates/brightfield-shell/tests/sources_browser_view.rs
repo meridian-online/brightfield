@@ -1,8 +1,8 @@
 //! **The sources browser, drawn**: by click as well as by key, its foot naming the keys of the
 //! column that holds them, its previews read off the frame thread, and its colours the window's
 //! theme in both modes. And the window around it: New Protocol, `A` and Add source… open it, a
-//! folder whose tables dovetail proposes joins between opens it on that folder's canvas by every
-//! way in, a folder with no join is added at once, and what the browser adds is kept in the
+//! folder whose tables dovetail proposes joins between opens it on that folder's canvas, from the
+//! picker and from a drop alike, a folder with no join is added at once, and what the browser adds is kept in the
 //! Protocol with the joins accepted on its canvas.
 //!
 //! The view's tests draw a [`Sheet`] into a plain context over folders of this file's own, with
