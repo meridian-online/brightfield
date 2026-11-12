@@ -6,7 +6,7 @@
 //! and a click: a row is clicked to move to it and double-clicked as Enter, a join is clicked as
 //! Space on it, and the keys the focused column answers stand along the foot, where a click on
 //! one does what the key does. The colours are the window's theme tokens
-//! ([`meridian_design::semantic`]) in light and dark (`it_takes_the_window_theme`).
+//! ([`meridian_design::semantic()`]) in light and dark (`it_takes_the_window_theme`).
 //!
 //! What the preview shows is read off the frame thread, as the grid's summaries are: a file's
 //! first page of rows, and the joins dovetail proposes between a folder's tables. [`Previews`]
