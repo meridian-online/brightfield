@@ -883,6 +883,104 @@ fn an_add_from_the_browser_keeps_the_folder_with_its_accepted_joins() {
     );
 }
 
+#[test]
+fn a_folder_dropped_on_an_empty_protocol_opens_the_browser_on_its_canvas() {
+    let folder = retail(&input("dropped-on-empty"));
+    let mut win = Window::previewing(instant(Vec::new()));
+    win.app
+        .make_new_protocol_in(&win.ctx.clone(), &input("dropped-on-empty-protocols"));
+    win.settle();
+    win.key(egui::Key::Escape);
+    assert_eq!(win.app.open_overlay(), None);
+    assert!(win.app.empty_protocol().is_some());
+
+    win.run_raw(egui::RawInput {
+        dropped_files: vec![egui::DroppedFile {
+            path: Some(folder.clone()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    win.settle();
+    assert_eq!(
+        win.app.open_overlay(),
+        Some("sources-browser"),
+        "the folder is added and the browser opens on its canvas: {}",
+        win.said()
+    );
+    let b = win.browser();
+    assert_eq!(b.canvas_folder(), Some(folder.as_path()));
+    assert_eq!(b.focus, Pane::Canvas);
+    let first = b
+        .canvas_joins()
+        .first()
+        .map(|(j, _)| j.clone())
+        .expect("dovetail's joins are on the canvas");
+    assert!(b.canvas_joins().iter().all(|(_, accepted)| !accepted));
+
+    win.key(egui::Key::Space);
+    win.key(egui::Key::Enter);
+    assert_eq!(win.app.open_overlay(), None, "{}", win.said());
+    assert!(
+        analyst_keeps(
+            &win,
+            (&first.left.0, &first.left.1),
+            (&first.right.0, &first.right.1)
+        ),
+        "the accepted join is the analyst's"
+    );
+    assert_eq!(
+        win.app
+            .model_pane()
+            .expect("the model")
+            .protocol
+            .sources
+            .tables
+            .len(),
+        3,
+        "the folder's tables, added once"
+    );
+}
+
+#[test]
+fn an_accepted_join_names_the_table_the_add_makes() {
+    use brightfield_shell::own_files::{self, AcceptedJoin};
+    let place = input("renamed-join");
+    let first = place.join("customers.csv");
+    std::fs::write(&first, CUSTOMERS).expect("a CSV");
+    let shop = place.join("shop");
+    std::fs::create_dir_all(&shop).expect("a folder");
+    std::fs::write(shop.join("customers.csv"), CUSTOMERS).expect("a CSV");
+    std::fs::write(shop.join("orders.csv"), ORDERS).expect("a CSV");
+    let runner = runner();
+    let stand_in = brightfield_shell::discovery::StandIn;
+    let mut p = own_files::create_empty(&input("renamed-join-protocols")).expect("made");
+    own_files::add_source_with(&mut p, &first, &[], &runner, &stand_in).expect("added");
+
+    // The folder's canvas names its tables as a preview of the folder alone finds them.
+    let join = AcceptedJoin {
+        left: ("orders".into(), "customer_id".into()),
+        right: ("customers".into(), "id".into()),
+    };
+    own_files::add_source_with(&mut p, &shop, &[join], &runner, &stand_in).expect("added");
+    let names: Vec<&str> = p.sources.tables.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["customers", "customers_2", "orders"]);
+
+    let text = std::fs::read_to_string(p.dir.join("model.ossie.yaml")).expect("the model");
+    let model = brightfield_ossie::read(&text).expect("it reads");
+    let analysts: Vec<(&str, &str)> = model
+        .relationships
+        .iter()
+        .filter(|r| r.meta.decided_by == brightfield_ossie::DecidedBy::Analyst)
+        .map(|r| (r.from.as_str(), r.to.as_str()))
+        .collect();
+    assert_eq!(
+        analysts,
+        [("orders", "customers_2")],
+        "the join runs to the folder's customers, which the add named customers_2"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The baselines: a CSV's preview and a folder's canvas, in both themes.
 // ---------------------------------------------------------------------------

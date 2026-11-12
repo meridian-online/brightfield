@@ -11,7 +11,7 @@
 //! Protocol so nothing later mistakes it for data the analyst gave. The data packages are the
 //! boundary file the model is built from; FineType will write them once it can.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 
@@ -275,6 +275,12 @@ pub fn add_source_with(
 /// analyst's, and it is written; one table has nothing to relate and has no model. The silver
 /// steps are written for the model and the Protocol run again.
 ///
+/// A table `joins` names by the name one of `paths`' tables was found under is that table, under
+/// the name the add gives it: a folder's `customers` that takes `customers_2` beside the
+/// Protocol's own `customers` is joined as `customers_2`
+/// (`an_accepted_join_names_the_table_the_add_makes` in `tests/sources_browser_view.rs`). A name
+/// none of `paths`' tables was found under names one of the Protocol's tables.
+///
 /// Once that has gone through, the first sources added to a Protocol New Protocol made, which
 /// nobody has named since ([`still_untitled`]), name it after the first of `paths`, renaming its
 /// folder ([`crate::rename::rename_claiming`]) and taking `-2` and so on when the name is taken,
@@ -311,9 +317,27 @@ pub fn add_sources_with(
         .iter()
         .flat_map(|t| derived_names(&t.name))
         .collect();
+    // The joins name `paths`' tables as they were found, before a clash renamed them, as the
+    // sources browser's canvas proposed them: each such name is read as the table the add makes.
+    let mut renamed: HashMap<String, String> = HashMap::new();
     for table in &mut found.tables {
+        let found_as = table.name.clone();
         table.name = unclashed(&table.name, &mut taken);
+        renamed.insert(found_as, table.name.clone());
     }
+    let joins: Vec<AcceptedJoin> = joins
+        .iter()
+        .map(|join| {
+            let side = |(table, column): &(String, String)| {
+                let table = renamed.get(table).unwrap_or(table).clone();
+                (table, column.clone())
+            };
+            AcceptedJoin {
+                left: side(&join.left),
+                right: side(&join.right),
+            }
+        })
+        .collect();
     let untitled = p.sources.tables.is_empty() && still_untitled(&p.dir);
 
     let before = FilesBefore::take(&p.dir)?;
@@ -379,7 +403,7 @@ pub fn add_sources_with(
                 eprintln!("dovetail's sample pass failed, so the tables are added unclear: {e}");
                 crate::discovery::sample_pass(&stand_in, &next, None)
             })?;
-            for join in joins {
+            for join in &joins {
                 model = accept_join(&model, join)?;
             }
             crate::discovery::write_model_file(&next.dir, &brightfield_ossie::write(&model))?;

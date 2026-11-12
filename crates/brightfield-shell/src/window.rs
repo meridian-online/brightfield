@@ -12122,13 +12122,13 @@ impl MeridianApp {
 
     /// Put the sources browser over the window, on `at` in its folder with it under the cursor,
     /// or on the home folder. With `joins_of`, `at` is a folder the open Protocol was just made of
-    /// or given, and its canvas shows those joins from the Protocol's model, each with whether the
-    /// analyst has accepted it, and holds the keys.
+    /// or given, and its canvas shows those joins from the Protocol's model, none accepted yet,
+    /// and holds the keys.
     fn show_sources_browser(
         &mut self,
         ctx: &egui::Context,
         at: Option<&std::path::Path>,
-        joins_of: Option<Vec<(crate::sources_browser::ProposedJoin, bool)>>,
+        joins_of: Option<Vec<crate::sources_browser::ProposedJoin>>,
     ) {
         use crate::sources_browser::{Browser, Disk, Pane};
         let browser = Browser::open_at(at, &Disk);
@@ -12136,16 +12136,9 @@ impl MeridianApp {
         let mut made_of = None;
         if let (Some(folder), Some(joins)) = (at, joins_of) {
             let folder = std::path::absolute(folder).unwrap_or_else(|_| folder.to_path_buf());
-            sheet
-                .previews_mut()
-                .know_joins(&folder, joins.iter().map(|(j, _)| j.clone()).collect());
+            sheet.previews_mut().know_joins(&folder, joins.clone());
             let b = &mut sheet.browser;
-            b.set_joins(&folder, joins.iter().map(|(j, _)| j.clone()).collect());
-            for (at, (_, accepted)) in joins.iter().enumerate() {
-                if *accepted {
-                    b.toggle_join(at);
-                }
-            }
+            b.set_joins(&folder, joins);
             if !b.canvas_joins().is_empty() {
                 b.focus = Pane::Canvas;
             }
@@ -12162,9 +12155,9 @@ impl MeridianApp {
     /// once `folder` is among the open Protocol's sources: by every way in, a folder with a
     /// proposed join is shown so its joins are accepted before the analyst works on the model
     /// (`a_folder_with_a_proposed_join_opens_the_browser_on_it_before_adding`). The joins shown
-    /// are the model's that touch a table read from the folder; one of them still dovetail's,
-    /// not decided by the analyst, opens the browser. A folder of one table, or whose tables
-    /// dovetail proposes no join between, opens nothing.
+    /// are the model's that touch a table read from the folder and are still dovetail's, not yet
+    /// decided by the analyst. A folder of one table, or whose tables dovetail proposes no join
+    /// between, leaves the browser closed.
     fn offer_folder_joins(&mut self, ctx: &egui::Context, folder: &std::path::Path) {
         let Some(model) = self.model.as_ref() else {
             return;
@@ -12179,23 +12172,24 @@ impl MeridianApp {
             .filter(|t| t.file.starts_with(&folder))
             .map(|t| t.name.as_str())
             .collect();
-        let joins: Vec<(crate::sources_browser::ProposedJoin, bool)> = model
+        let joins: Vec<crate::sources_browser::ProposedJoin> = model
             .doc
             .model
             .relationships
             .iter()
+            .filter(|r| r.meta.decided_by != brightfield_ossie::DecidedBy::Analyst)
             .filter(|r| tables.contains(r.from.as_str()) || tables.contains(r.to.as_str()))
             .filter_map(
                 |r| match (r.from_columns.as_slice(), r.to_columns.as_slice()) {
-                    ([from], [to]) => Some((
-                        crate::sources_browser::ProposedJoin::new((&r.from, from), (&r.to, to)),
-                        r.meta.decided_by == brightfield_ossie::DecidedBy::Analyst,
+                    ([from], [to]) => Some(crate::sources_browser::ProposedJoin::new(
+                        (&r.from, from),
+                        (&r.to, to),
                     )),
                     _ => None,
                 },
             )
             .collect();
-        if !joins.iter().any(|(_, accepted)| !accepted) {
+        if joins.is_empty() {
             return;
         }
         self.show_sources_browser(ctx, Some(&folder), Some(joins));
@@ -12203,8 +12197,8 @@ impl MeridianApp {
 
     /// **What the browser's add asks of the window.** A folder the Protocol was just made of or
     /// given is among its sources already, so its joins ticked on the canvas are kept in the
-    /// model, as the model pane's Keep keeps one, and any dropped there are left as dovetail
-    /// proposed them. Everything else is added to the Protocol with the joins accepted, through
+    /// model, as the model pane's Keep keeps one, and those left unticked stay dovetail's
+    /// proposals, as the canvas showed them. Everything else is added to the Protocol with the joins accepted, through
     /// the open queue, so a draft is asked about first as before any add.
     fn browser_adds(
         &mut self,
