@@ -77,6 +77,18 @@ pub fn create_in(parent: &Path, opened: &Path) -> Result<OwnProtocol, String> {
     create_of(parent, opened, sources::discover(opened)?)
 }
 
+/// [`create_in`], for a Protocol Brightfield makes only to read for itself and then removes, such
+/// as the sources browser's preview of a folder's joins. It is not recorded in the trust store:
+/// it is not a Protocol Brightfield made for the analyst, and the record would outlive its folder
+/// (`a_folder_preview_writes_no_trust_record`).
+///
+/// # Errors
+///
+/// As [`create_in`].
+pub fn create_scratch_in(parent: &Path, opened: &Path) -> Result<OwnProtocol, String> {
+    write_of(parent, opened, sources::discover(opened)?)
+}
+
 /// Make one Protocol folder in the Protocols folder for the paths in `opened` together, named
 /// after the first: what one gesture handed over at once, as [`create`] does for one path. The
 /// paths `refused` before discovery are recorded as skipped with their reasons.
@@ -94,8 +106,16 @@ pub fn create_all(
     create_of(&protocols_dir::root(), first, found)
 }
 
-/// The Protocol folder for `sources`, in `parent`, named after `named`.
+/// The Protocol folder for `sources`, in `parent`, named after `named`, recorded in the trust
+/// store as one Brightfield made.
 fn create_of(parent: &Path, named: &Path, sources: SourceSet) -> Result<OwnProtocol, String> {
+    let made = write_of(parent, named, sources)?;
+    record_made(&made.dir);
+    Ok(made)
+}
+
+/// The Protocol folder for `sources`, in `parent`, named after `named`, with no trust record.
+fn write_of(parent: &Path, named: &Path, sources: SourceSet) -> Result<OwnProtocol, String> {
     if sources.tables.is_empty() {
         return Err(format!(
             "{}: no tables Brightfield can read{}",
@@ -126,7 +146,6 @@ fn create_of(parent: &Path, named: &Path, sources: SourceSet) -> Result<OwnProto
         let _ = std::fs::remove_dir_all(&dir);
         return Err(e);
     }
-    record_made(&dir);
     Ok(OwnProtocol {
         dir,
         sources,

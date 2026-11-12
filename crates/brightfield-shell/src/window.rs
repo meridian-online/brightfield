@@ -19109,18 +19109,6 @@ fn canvas_head(ui: &mut egui::Ui, head: egui::Rect, name: &str, mode: Mode) {
     );
 }
 
-/// The locator band: where the subject sits, said as a breadcrumb, and where
-/// the document came from at its right.
-///
-/// The right-hand note is what stops this band repeating the title band on a
-/// window whose subject has no trail below it: a chart has no drill state, so
-/// its crumb line is one entry, and the file it was composed from is the thing
-/// a locator can say that the title cannot.
-///
-/// `counts` draws immediately after the last crumb, in the mono caption face
-/// rather than joined by `\u{203a}`: it is not one more step in the trail, it
-/// is what the trail's one entry — `Protocol` — expands to when there is no
-/// deeper crumb to draw.
 /// Whether the Protocol folder `dir` has a shape Brightfield writes: an own-files Protocol of no,
 /// one or several sources, or a one-step or generated Protocol beside its data file. What the
 /// once-only record of the Protocols made before trust reads in Recents; it grants trust at no
@@ -19199,6 +19187,18 @@ fn restricted_band_ui(
     asked
 }
 
+/// The locator band: where the subject sits, said as a breadcrumb, and where
+/// the document came from at its right.
+///
+/// The right-hand note is what stops this band repeating the title band on a
+/// window whose subject has no trail below it: a chart has no drill state, so
+/// its crumb line is one entry, and the file it was composed from is the thing
+/// a locator can say that the title cannot.
+///
+/// `counts` draws immediately after the last crumb, in the mono caption face
+/// rather than joined by `\u{203a}`: it is not one more step in the trail, it
+/// is what the trail's one entry — `Protocol` — expands to when there is no
+/// deeper crumb to draw.
 fn locator_band_ui(
     ui: &egui::Ui,
     crumbs: &[String],

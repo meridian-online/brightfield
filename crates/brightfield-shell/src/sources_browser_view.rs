@@ -1202,7 +1202,7 @@ pub fn propose_joins(
     let scratch =
         std::env::temp_dir().join(format!("brightfield-folder-preview-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
-    let mut protocol = crate::own_files::create_in(&scratch, folder)?;
+    let mut protocol = crate::own_files::create_scratch_in(&scratch, folder)?;
     let dir = protocol.dir.clone();
     let proposed = (|| -> Result<Vec<ProposedJoin>, String> {
         // The scratch Protocol's database is its own, so the run takes no lock the window's
@@ -1233,5 +1233,7 @@ pub fn propose_joins(
         let _ = std::fs::remove_file(wal);
     }
     let _ = std::fs::remove_dir_all(&dir);
+    // The per-process folder too, once no other preview's Protocol is in it.
+    let _ = std::fs::remove_dir(&scratch);
     proposed
 }

@@ -523,6 +523,27 @@ fn runner() -> Runner {
     Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))
 }
 
+/// **A folder's preview leaves the trust store as it was**: dovetail's sample pass reads a scratch
+/// Protocol of the folder made in the system's temporary folder and taken away again, which is
+/// not a Protocol Brightfield made for the analyst. A trust record for it would outlive its
+/// folder, and one would be added for each folder previewed.
+#[test]
+fn a_folder_preview_writes_no_trust_record() {
+    let shop = input("preview-trust");
+    std::fs::write(shop.join("customers.csv"), CUSTOMERS).expect("a CSV");
+    std::fs::write(shop.join("orders.csv"), ORDERS).expect("a CSV");
+    view::propose_joins(&shop, &runner()).expect("dovetail's sample pass over the folder");
+    let store = scratch()
+        .join("config")
+        .join(brightfield_shell::trust::TRUST_FILE);
+    let kept = std::fs::read_to_string(&store).unwrap_or_default();
+    let preview = format!("brightfield-folder-preview-{}", std::process::id());
+    assert!(
+        !kept.contains(&preview),
+        "the trust store kept a record of the preview's scratch Protocol: {kept}"
+    );
+}
+
 /// A folder of the test's own under the scratch input folder, emptied first.
 fn input(test: &str) -> PathBuf {
     let dir = scratch().join("input").join(test);
