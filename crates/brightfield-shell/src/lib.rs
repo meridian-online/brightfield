@@ -108,6 +108,7 @@ pub mod column_record;
 pub mod dashboard;
 pub mod data_file;
 pub mod data_grid;
+pub mod default_app;
 pub mod devtools;
 pub mod discovery;
 pub mod door_tree;
@@ -123,7 +124,7 @@ pub mod inspector;
 pub mod interval_drag;
 pub mod legend;
 // The crate's one module that writes `unsafe`: Objective-C messages to the Apple Event manager,
-// the app menu and the open panel.
+// the app menu, the open panel and the workspace's default-app call.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod mac_open;

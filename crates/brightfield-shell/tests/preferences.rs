@@ -15,6 +15,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use brightfield_protocol::HistoryStore;
+use brightfield_shell::default_app;
 use brightfield_shell::design::Mode;
 use brightfield_shell::open_queue::OpenRequest;
 use brightfield_shell::overlays::{CloseAnswer, MOVE_TO_FOLDER_QUESTION_TITLE};
@@ -909,4 +910,169 @@ fn a_folder_running_and_drafted_is_left_once() {
         "a drafted folder of its own is listed: {left:?}"
     );
     assert_eq!(left[1], (other, Left::Draft));
+}
+
+/// Take the default-app question's answer out of the Preferences file, as on a Mac that has not
+/// been asked yet, keeping the file's other settings.
+fn unasked() {
+    let path = preferences_file();
+    let mut fields: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    fields.remove(default_app::ASKED_FIELD);
+    std::fs::write(&path, serde_json::to_string_pretty(&fields).unwrap()).unwrap();
+}
+
+/// The default-app question's answer as the Preferences file keeps it, and the Protocols folder
+/// it holds beside it.
+fn kept_answer() -> (Option<String>, Option<String>) {
+    let text = std::fs::read_to_string(preferences_file()).unwrap_or_default();
+    let fields: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    let field = |name: &str| fields.get(name).and_then(|v| v.as_str()).map(str::to_owned);
+    (field(default_app::ASKED_FIELD), field("protocols_dir"))
+}
+
+impl Window {
+    /// One headless window built as a launch from the app builds it, which may ask the
+    /// default-app question.
+    fn from_the_app() -> Self {
+        scratch();
+        let mut win = Self {
+            app: MeridianApp::headless(Boot::empty(), Mode::Light).offering_default_app(true),
+            ctx: egui::Context::default(),
+            time: 0.0,
+        };
+        win.settle();
+        win
+    }
+}
+
+#[test]
+fn the_default_app_question_is_asked_once_and_remembered() {
+    let _serial = serial();
+    let (old, _new) = roots("default_app_once");
+    unasked();
+    let mut first = Window::from_the_app();
+    assert_eq!(
+        first.app.open_overlay(),
+        Some("default-app"),
+        "the first launch asks"
+    );
+    // Esc is Not now.
+    first.run(vec![press(egui::Key::Escape, egui::Modifiers::NONE)]);
+    first.settle();
+    assert_eq!(first.app.open_overlay(), None, "the answer closes it");
+    assert_eq!(
+        first.app.default_app_asks(),
+        0,
+        "Not now asks macOS nothing"
+    );
+    let (answer, folder) = kept_answer();
+    assert_eq!(answer.as_deref(), Some("declined"), "the answer is kept");
+    assert_eq!(
+        folder,
+        Some(old.display().to_string()),
+        "beside the Protocols folder, which is kept"
+    );
+    assert_eq!(protocols_dir::root(), old);
+
+    let second = Window::from_the_app();
+    assert_eq!(
+        second.app.open_overlay(),
+        None,
+        "the next launch does not ask"
+    );
+    assert_eq!(kept_answer().0.as_deref(), Some("declined"));
+}
+
+#[test]
+fn accepting_the_default_app_question_asks_macos_and_is_remembered() {
+    let _serial = serial();
+    let _ = roots("default_app_accept");
+    unasked();
+    let mut win = Window::from_the_app();
+    assert_eq!(win.app.open_overlay(), Some("default-app"));
+    // Enter is Make Brightfield the Default.
+    win.run(vec![press(egui::Key::Enter, egui::Modifiers::NONE)]);
+    win.settle();
+    assert_eq!(win.app.open_overlay(), None);
+    assert_eq!(win.app.default_app_asks(), 1, "macOS is asked once");
+    assert_eq!(kept_answer().0.as_deref(), Some("accepted"));
+    let again = Window::from_the_app();
+    assert_eq!(again.app.open_overlay(), None, "and not asked again");
+}
+
+/// A window that is not a launch from the app, such as a build run from the repo, cannot be made
+/// the default, so it does not ask, and leaves the question for the app's first launch.
+#[test]
+fn a_launch_not_from_the_app_leaves_the_question_unasked() {
+    let _serial = serial();
+    let _ = roots("default_app_not_app");
+    unasked();
+    let win = Window::new();
+    assert_eq!(win.app.open_overlay(), None);
+    assert_eq!(kept_answer().0, None, "nothing is kept");
+}
+
+#[test]
+fn preferences_makes_brightfield_the_default_at_any_time() {
+    let _serial = serial();
+    let _ = roots("default_app_preferences");
+    unasked();
+    let mut win = Window::from_the_app();
+    win.run(vec![press(egui::Key::Escape, egui::Modifiers::NONE)]);
+    win.settle();
+    assert_eq!(kept_answer().0.as_deref(), Some("declined"));
+    win.app.open_preferences();
+    win.settle();
+    win.app.make_default_app(&win.ctx.clone());
+    win.settle();
+    assert_eq!(win.app.default_app_asks(), 1, "Preferences asks macOS");
+    win.app.make_default_app(&win.ctx.clone());
+    assert_eq!(win.app.default_app_asks(), 2, "each time it is pressed");
+    assert_eq!(
+        kept_answer().0.as_deref(),
+        Some("declined"),
+        "the first launch's answer is kept as it was"
+    );
+}
+
+/// Opening Preferences over the question and making Brightfield the default there answers the
+/// question too, so it does not come back once Preferences closes.
+#[test]
+fn making_the_default_from_preferences_answers_the_question() {
+    let _serial = serial();
+    let _ = roots("default_app_answered_there");
+    unasked();
+    let mut win = Window::from_the_app();
+    assert_eq!(win.app.open_overlay(), Some("default-app"));
+    win.app.open_preferences();
+    win.settle();
+    win.app.make_default_app(&win.ctx.clone());
+    win.run(vec![press(egui::Key::Escape, egui::Modifiers::NONE)]);
+    win.settle();
+    assert_eq!(win.app.open_overlay(), None, "the question stays answered");
+    assert_eq!(kept_answer().0.as_deref(), Some("accepted"));
+}
+
+/// Another sheet taking the window's one modal slot puts the question off until it closes,
+/// rather than losing it for the launch.
+#[test]
+fn the_question_waits_out_another_sheet() {
+    let _serial = serial();
+    let _ = roots("default_app_waits");
+    unasked();
+    let mut win = Window::from_the_app();
+    win.app.open_preferences();
+    win.settle();
+    assert_eq!(win.app.open_overlay(), Some("preferences"));
+    assert_eq!(kept_answer().0, None, "not answered by being covered");
+    win.run(vec![press(egui::Key::Escape, egui::Modifiers::NONE)]);
+    win.settle();
+    assert_eq!(
+        win.app.open_overlay(),
+        Some("default-app"),
+        "it is asked once the sheet closes"
+    );
 }

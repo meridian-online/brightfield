@@ -2270,7 +2270,56 @@ enum Overlay {
     WhichProtocol(WhichProtocolSheet),
     /// The sources browser, adding files, folders and databases to the open Protocol.
     SourcesBrowser(Box<BrowserOverlay>),
+    /// The question the first launch from the app asks once: make Brightfield the default app
+    /// for CSV, Parquet and DuckDB files, or not now ([`crate::default_app`]).
+    DefaultApp,
 }
+
+/// Where the first launch's default-app question stands in this launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefaultAppQuestion {
+    /// Not this launch's to ask: it is not from the app, or the question has been answered.
+    Settled,
+    /// To ask once the window's modal slot is free and no open is waiting.
+    Due,
+    /// Up in the modal slot.
+    Shown,
+}
+
+/// The first launch's default-app question: what it does and its two answers. Answers
+/// `Some(true)` for Make Brightfield the default and `Some(false)` for Not now.
+fn default_app_body(ui: &mut egui::Ui) -> Option<bool> {
+    use meridian_egui::MeridianUi as _;
+    let gap = ui.tokens().section_gap;
+    let sem = meridian_design::semantic(ui.visuals().dark_mode);
+    ui.label(
+        "CSV, Parquet and DuckDB files would then open in Brightfield when you double-click them. \
+         macOS asks you to confirm each kind of file.",
+    );
+    ui.label(
+        egui::RichText::new("You can do this later in Preferences.")
+            .color(chrome::colour(sem.text.secondary)),
+    );
+    ui.add_space(gap);
+    ui.horizontal(|ui| {
+        let make = ui
+            .button(crate::preferences::MAKE_DEFAULT)
+            .on_hover_text("macOS shows its own confirmation for each kind")
+            .clicked();
+        let not_now = ui.button(DEFAULT_APP_NOT_NOW).clicked();
+        if make {
+            Some(true)
+        } else if not_now {
+            Some(false)
+        } else {
+            None
+        }
+    })
+    .inner
+}
+
+/// The default-app question's second answer, which asks macOS nothing.
+pub const DEFAULT_APP_NOT_NOW: &str = "Not now";
 
 /// The sources browser as the window holds it: the sheet, and the folder the open Protocol was
 /// just made of or given, when the browser opened on its canvas for its joins.
@@ -2553,6 +2602,10 @@ pub const PREFERENCES_BANNER: &str = "preferences";
 /// The banner that says what moving the old Protocols folder's Protocols did, when not all of
 /// them moved or something did not follow one.
 pub const MOVE_ALL_BANNER: &str = "move-all-protocols";
+
+/// The banner that says Brightfield could not be made the default app, or which kinds of file
+/// macOS left with the apps they had.
+pub const DEFAULT_APP_BANNER: &str = "default-app";
 
 /// The `open-preferences` verb's longname: the registry's, spelled once here for the window's key
 /// and the palette.
@@ -3439,6 +3492,13 @@ pub struct MeridianApp {
     preferences_pick_requested: bool,
     /// Whether the Preferences file has been checked for a setting it could not read.
     preferences_checked: bool,
+    /// Where the first launch's default-app question stands in this launch.
+    default_app_question: DefaultAppQuestion,
+    /// macOS's answers to the default-app ask under way, until each kind has one.
+    default_app_asking: Option<crate::default_app::Asking>,
+    /// How many times this window has asked macOS to make Brightfield the default app, or would
+    /// have where it may not raise the system's dialogs.
+    default_app_asks: usize,
     /// What the last move of the old Protocols folder's Protocols did.
     move_report: Option<crate::protocols_dir::MoveReport>,
     /// A saved Protocol whose front-door row was clicked, latched for after the
@@ -3976,6 +4036,9 @@ impl MeridianApp {
             new_protocol_pick_requested: false,
             preferences_pick_requested: false,
             preferences_checked: false,
+            default_app_question: DefaultAppQuestion::Settled,
+            default_app_asking: None,
+            default_app_asks: 0,
             move_report: None,
             door_open_protocol: None,
             door_hovered: None,
@@ -5930,6 +5993,8 @@ impl MeridianApp {
         if self.open_queue.take_preferences() {
             self.open_preferences();
         }
+        self.raise_default_app_question();
+        self.poll_default_app();
         // Before anything is laid out: a fetch that finished since the last
         // frame replaces the documents, and a frame that drew the door first
         // and adopted the document after would draw one frame of a door for a
@@ -8721,6 +8786,7 @@ impl MeridianApp {
         let mut trusted_folders: Vec<PathBuf> = Vec::new();
         let mut question_dismissed = false;
         let mut browser_effect = None;
+        let mut default_app_answer = None;
         match &mut overlay {
             Overlay::Palette(picker) => {
                 let chrome = ModalChrome::new().title("Commands").enter_hint("run");
@@ -8957,14 +9023,45 @@ impl MeridianApp {
                 let folder = crate::protocols_dir::root();
                 let overridden = protocols_dir_override();
                 trusted_folders = crate::trust::Store::current().folders();
+                // The default-app button is the Mac's, and says why where this launch cannot
+                // press it.
+                let default_app = cfg!(target_os = "macos").then(crate::default_app::available);
                 let chrome = ModalChrome::new().title("Preferences").esc_hint("close");
                 let shown = ModalLayer::show(ctx, "bf-overlay-preferences", &chrome, |ui| {
-                    crate::preferences::body(ui, sheet, &folder, overridden, &trusted_folders)
+                    crate::preferences::body(
+                        ui,
+                        sheet,
+                        &folder,
+                        overridden,
+                        default_app.as_ref(),
+                        &trusted_folders,
+                    )
                 });
                 preferences_action = shown.inner;
                 // Closing the sheet with an offer waiting leaves the Protocols where they are:
                 // the offer is made once.
                 close = shown.dismissed;
+            }
+            Overlay::DefaultApp => {
+                // Enter is Make Brightfield the default, read before the card draws so no button
+                // takes the press as well; Esc and a click on the backdrop are Not now.
+                let enter =
+                    ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                let chrome = ModalChrome::new()
+                    .title("Make Brightfield the default app?")
+                    .enter_hint("make it the default")
+                    .esc_hint("not now")
+                    .narrow();
+                let shown =
+                    ModalLayer::show(ctx, "bf-overlay-default-app", &chrome, default_app_body);
+                default_app_answer = if enter || shown.inner == Some(true) {
+                    Some(crate::default_app::Answer::Accepted)
+                } else if shown.inner == Some(false) || shown.dismissed {
+                    Some(crate::default_app::Answer::Declined)
+                } else {
+                    None
+                };
+                close = default_app_answer.is_some();
             }
         }
         if let Some(next) = becomes {
@@ -9025,7 +9122,11 @@ impl MeridianApp {
                     self.untrust_folder(ctx, folder);
                 }
             }
+            Some(crate::preferences::PreferencesAction::MakeDefault) => self.make_default_app(ctx),
             None => {}
+        }
+        if let Some(answer) = default_app_answer {
+            self.answer_default_app(ctx, answer);
         }
     }
 
@@ -10188,6 +10289,7 @@ impl MeridianApp {
             Overlay::Preferences(_) => "preferences",
             Overlay::WhichProtocol(_) => "which-protocol",
             Overlay::SourcesBrowser(_) => "sources-browser",
+            Overlay::DefaultApp => "default-app",
         })
     }
 
@@ -12913,6 +13015,137 @@ impl MeridianApp {
             self.overlay = Some(Overlay::Preferences(
                 crate::preferences::PreferencesSheet::default(),
             ));
+        }
+    }
+
+    /// **Ask once whether to make Brightfield the default app**, at this window's first free
+    /// moment, where `from_the_app` says this launch can ask macOS and the Preferences file keeps
+    /// no answer ([`crate::default_app::due`]). `main` passes whether macOS can be asked
+    /// ([`crate::default_app::available`]), so a build run from the repo leaves the question for
+    /// the app's first launch.
+    #[must_use]
+    pub fn offering_default_app(mut self, from_the_app: bool) -> Self {
+        if from_the_app && crate::default_app::due() {
+            self.default_app_question = DefaultAppQuestion::Due;
+        }
+        self
+    }
+
+    /// Put the default-app question up once the modal slot is free and no open is waiting, and
+    /// back up once another sheet that took its place before it was answered has closed.
+    fn raise_default_app_question(&mut self) {
+        if self.default_app_question == DefaultAppQuestion::Shown
+            && !matches!(self.overlay, Some(Overlay::DefaultApp))
+        {
+            self.default_app_question = DefaultAppQuestion::Due;
+        }
+        if self.default_app_question == DefaultAppQuestion::Due
+            && self.overlay.is_none()
+            && self.pending_open.is_none()
+            && self.held_for_question.is_empty()
+            && self.open_queue.has_launched()
+        {
+            self.overlay = Some(Overlay::DefaultApp);
+            self.default_app_question = DefaultAppQuestion::Shown;
+        }
+    }
+
+    /// **Answer the default-app question**, as its buttons, Enter and Esc do: the answer is kept
+    /// in the Preferences file, so the question is not asked again, and accepting asks macOS as
+    /// Preferences' button does ([`Self::make_default_app`]).
+    pub fn answer_default_app(&mut self, ctx: &egui::Context, answer: crate::default_app::Answer) {
+        self.settle_default_app_question(answer);
+        if answer == crate::default_app::Answer::Accepted {
+            self.ask_macos_for_default(ctx);
+        }
+    }
+
+    /// **Make Brightfield the default app for CSV, Parquet and DuckDB files**, as Preferences'
+    /// button does at any time: macOS is asked for each kind, and confirms each with the analyst
+    /// itself. Pressed while the first launch's question waits, it answers that too.
+    pub fn make_default_app(&mut self, ctx: &egui::Context) {
+        if self.default_app_question != DefaultAppQuestion::Settled {
+            self.settle_default_app_question(crate::default_app::Answer::Accepted);
+        }
+        self.ask_macos_for_default(ctx);
+    }
+
+    /// How many times this window has asked macOS to make Brightfield the default app, counting
+    /// the asks a window that may not raise the system's dialogs makes without raising them.
+    #[must_use]
+    pub fn default_app_asks(&self) -> usize {
+        self.default_app_asks
+    }
+
+    /// Take the default-app question down for this launch and keep `answer` in the Preferences
+    /// file. A file that will not take it leaves the question for the next launch, and says so.
+    fn settle_default_app_question(&mut self, answer: crate::default_app::Answer) {
+        self.default_app_question = DefaultAppQuestion::Settled;
+        if matches!(self.overlay, Some(Overlay::DefaultApp)) {
+            self.overlay = None;
+        }
+        if let Err(e) = crate::default_app::record(answer) {
+            eprintln!("warning: the default-app answer was not kept: {e}");
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(DEFAULT_APP_BANNER),
+                    Severity::Warning,
+                    "The default-app answer was not kept",
+                )
+                .body(format!("{e}. The next launch asks again.")),
+            );
+        }
+    }
+
+    /// Ask macOS to make Brightfield the default for each kind, unless an ask is still under way.
+    /// A window that may not raise the system's dialogs counts the ask and asks nothing, so a test
+    /// cannot change the Mac's default apps.
+    fn ask_macos_for_default(&mut self, ctx: &egui::Context) {
+        if self.default_app_asking.is_some() {
+            return;
+        }
+        self.default_app_asks += 1;
+        if !self.dialogs_allowed {
+            return;
+        }
+        let wake = ctx.clone();
+        match crate::default_app::ask(move || wake.request_repaint()) {
+            Ok(asking) => self.default_app_asking = Some(asking),
+            Err(why) => self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(DEFAULT_APP_BANNER),
+                    Severity::Warning,
+                    "Brightfield could not be made the default app",
+                )
+                .body(why),
+            ),
+        }
+    }
+
+    /// Say what asking macOS came to, once it has answered for each kind: a toast when
+    /// Brightfield is the default for each, and a banner naming each kind macOS left with the app
+    /// it had.
+    fn poll_default_app(&mut self) {
+        let Some(outcome) = self
+            .default_app_asking
+            .as_ref()
+            .and_then(crate::default_app::Asking::finished)
+        else {
+            return;
+        };
+        self.default_app_asking = None;
+        if outcome.complete() {
+            self.toasts
+                .push(Toast::new(Severity::Success, outcome.said()));
+        } else {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(DEFAULT_APP_BANNER),
+                    Severity::Info,
+                    "macOS kept some files with the apps they had",
+                )
+                .body(outcome.said()),
+            );
         }
     }
 

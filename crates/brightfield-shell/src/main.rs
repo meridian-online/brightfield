@@ -1345,6 +1345,9 @@ fn main() -> Result<(), String> {
                     .allowing_dialogs()
                     .opening_from(open_queue)
                     .recording_older_protocols_once()
+                    // Asked once, and only where macOS can be asked: a build run from the repo
+                    // leaves the question for the app's first launch.
+                    .offering_default_app(brightfield_shell::default_app::available().is_ok())
                     .restoring_at_launch(spec.as_deref())
                     .running_with(brightfield_shell::run::Runner::this_binary())
                     .keeping_history(Some(brightfield_protocol::HistoryStore::Arcform)),

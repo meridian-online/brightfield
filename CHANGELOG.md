@@ -19,6 +19,7 @@ Releases before 0.1.6 predate this file; their tags and the commit history are t
 - `d d` removes a step from a Protocol's spine, and puts it back.
 - The front door lists Recents and a tree of the Protocols folder, with each Protocol's run state. Brightfield's own previews are not runs: a Protocol only previewed reads "previewed, not run".
 - Relaunching restores the Protocol that was open.
+- The first launch from the app asks once whether to make Brightfield the default app for CSV, Parquet and DuckDB files, and Preferences does the same at any time. macOS confirms each kind of file itself.
 
 ### Changed
 

@@ -1,7 +1,8 @@
 //! The Preferences sheet: the Protocols folder, shown as a path, with Choose… to pick another with
 //! the system's folder picker, and, once one is chosen, the offer to move the old folder's
-//! Protocols into it. Below it, once a folder has been trusted with the Protocols beneath it, the
-//! trusted folders, each with Remove.
+//! Protocols into it. Below it, on a Mac, the button that asks macOS to make Brightfield the
+//! default app for CSV, Parquet and DuckDB files ([`crate::default_app`]). Below that, once a
+//! folder has been trusted with the Protocols beneath it, the trusted folders, each with Remove.
 //!
 //! The sheet draws in the window's theme tokens inside the window's modal layer, as every sheet
 //! does. What its controls ask for is answered by the window after the frame
@@ -40,7 +41,13 @@ pub enum PreferencesAction {
     Leave,
     /// Stop trusting the folder at this place in the list of trusted folders.
     Untrust(usize),
+    /// Ask macOS to make Brightfield the default app for CSV, Parquet and DuckDB files.
+    MakeDefault,
 }
+
+/// The button that asks macOS to make Brightfield the default app, on the first launch's question
+/// and in Preferences.
+pub const MAKE_DEFAULT: &str = "Make Brightfield the default";
 
 /// Width kept beside the path for the Choose… button and the gap before it.
 const CHOOSE_ROOM: f32 = 110.0;
@@ -82,14 +89,16 @@ pub(crate) fn elide_path(ui: &egui::Ui, path: &Path, font: &egui::FontId, room: 
     }
 }
 
-/// Draw the sheet's body: the Protocols folder `folder`, the offer while one waits, and the
-/// folders in `trusted` when there are any. `overridden` is the variable that sets the folder for
-/// this launch, when it is set.
+/// Draw the sheet's body: the Protocols folder `folder`, the offer while one waits, the default-app
+/// button where `default_app` says there is one (`Err` with why it cannot be pressed in this
+/// launch), and the folders in `trusted` when there are any. `overridden` is the variable that
+/// sets the folder for this launch, when it is set.
 pub fn body(
     ui: &mut egui::Ui,
     sheet: &PreferencesSheet,
     folder: &Path,
     overridden: Option<&str>,
+    default_app: Option<&Result<(), String>>,
     trusted: &[PathBuf],
 ) -> Option<PreferencesAction> {
     use meridian_egui::MeridianUi as _;
@@ -155,6 +164,25 @@ pub fn body(
                 action = Some(PreferencesAction::Leave);
             }
         });
+    }
+    if let Some(can) = default_app {
+        ui.add_space(gap);
+        ui.label(egui::RichText::new("Default app").strong());
+        ui.label(
+            egui::RichText::new(
+                "Make Brightfield the default app for CSV, Parquet and DuckDB files, so they open \
+                 here when you double-click them. macOS asks you to confirm each kind of file.",
+            )
+            .color(chrome::colour(sem.text.secondary)),
+        );
+        let button = ui.add_enabled(can.is_ok(), egui::Button::new(MAKE_DEFAULT));
+        let button = match can {
+            Ok(()) => button.on_hover_text("macOS shows its own confirmation for each kind"),
+            Err(why) => button.on_disabled_hover_text(why.as_str()),
+        };
+        if button.clicked() {
+            action = Some(PreferencesAction::MakeDefault);
+        }
     }
     if !trusted.is_empty() {
         ui.add_space(gap);
