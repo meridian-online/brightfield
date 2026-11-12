@@ -1032,13 +1032,7 @@ impl Window {
             win.app.sources_browser().is_some(),
             "the browser opens over the folder's proposed joins"
         );
-        win.frame(vec![egui::Event::Key {
-            key: egui::Key::Escape,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }]);
+        win.frame(vec![key(egui::Key::Escape)]);
         win.frame(Vec::new());
         assert!(
             win.app.sources_browser().is_none(),
