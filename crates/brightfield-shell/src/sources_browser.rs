@@ -469,8 +469,13 @@ impl Browser {
     }
 
     /// Take the joins dovetail proposes between the tables of `folder`. A join the analyst
-    /// accepted on the folder before, while the browser has been open, comes back accepted.
+    /// accepted on the folder before, while the browser has been open, comes back accepted while
+    /// it is still proposed; one no longer proposed is let go, so it cannot come back unseen
+    /// (`an_add_carries_the_accepted_joins_the_canvas_shows`).
     pub fn set_joins(&mut self, folder: &Path, proposed: Vec<ProposedJoin>) {
+        if let Some(kept) = self.accepted.get_mut(folder) {
+            kept.retain(|join| proposed.contains(join));
+        }
         let kept = self.accepted.get(folder);
         self.joins = proposed
             .into_iter()
@@ -794,9 +799,10 @@ impl Browser {
         }
     }
 
-    /// `folder` added whole, with the joins accepted on its canvas and the marked files outside
+    /// `folder` added whole, with the joins its canvas shows accepted and the marked files outside
     /// its top level; a folder with no data file at its top adds nothing and says how to reach
-    /// what is below.
+    /// what is below. Before its joins are proposed the canvas shows none, and it is added with
+    /// none.
     fn add_folder(&mut self, folder: &Path, fs: &dyn Listing) -> Effect {
         if !fs.list(folder).iter().any(|e| e.kind == Kind::Data) {
             let name = folder.file_name().map_or_else(
@@ -809,11 +815,15 @@ impl Browser {
             ));
             return Effect::None;
         }
-        let joins = self
-            .accepted
-            .get(folder)
-            .map(|kept| kept.iter().map(ProposedJoin::accepted).collect())
-            .unwrap_or_default();
+        let joins = if self.joins_for.as_deref() == Some(folder) {
+            self.joins
+                .iter()
+                .filter(|(_, accepted)| *accepted)
+                .map(|(join, _)| join.accepted())
+                .collect()
+        } else {
+            Vec::new()
+        };
         let mut paths = vec![folder.to_path_buf()];
         paths.extend(
             self.marks
@@ -1509,12 +1519,39 @@ mod tests {
             b.canvas_joins().is_empty(),
             "joins proposed for tides are not drawn on shop"
         );
+        assert_eq!(
+            b.clone().press("a", &fs),
+            Effect::Add(vec![path(SHOP)], Vec::new()),
+            "before shop is proposed again its canvas shows no join, and none is added"
+        );
         b.set_joins(Path::new(SHOP), shop_joins());
         assert_eq!(answers(&b), [true, false]);
         assert_eq!(
             b.press("a", &fs),
             Effect::Add(vec![path(SHOP)], vec![shop_joins()[0].accepted()])
         );
+    }
+
+    #[test]
+    fn an_add_carries_the_accepted_joins_the_canvas_shows() {
+        let fs = disk();
+        let mut b = on_shop(&fs);
+        b.press("tab", &fs);
+        b.press("space", &fs);
+        b.press("j", &fs);
+        b.press("space", &fs);
+        assert_eq!(answers(&b), [true, true]);
+        // dovetail proposes again without the first join, as when a table it named was renamed.
+        b.set_joins(Path::new(SHOP), vec![shop_joins()[1].clone()]);
+        assert_eq!(answers(&b), [true]);
+        assert_eq!(
+            b.clone().press("enter", &fs),
+            Effect::Add(vec![path(SHOP)], vec![shop_joins()[1].accepted()]),
+            "the join no longer proposed is not added"
+        );
+        // Nor does it come back accepted if it is proposed once more.
+        b.set_joins(Path::new(SHOP), shop_joins());
+        assert_eq!(answers(&b), [false, true]);
     }
 
     #[test]
