@@ -2705,8 +2705,8 @@ fn sources_manifest(name: &str, tables: &[&str]) -> (String, Vec<(String, String
     (manifest, models)
 }
 
-/// The star Protocol, its model making `joins` — or no model at all for
-/// `None` — on a window of its own.
+/// The star Protocol, its model making `joins`, or with no model for `None`,
+/// on a window of its own.
 fn star_boot(joins: Option<&[(&str, &str)]>) -> Boot {
     let (manifest, models) = sources_manifest("star", &STAR);
     let models: Vec<(&str, &str)> = models
