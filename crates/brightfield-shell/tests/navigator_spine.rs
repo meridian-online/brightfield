@@ -2986,7 +2986,7 @@ fn a_protocol_with_no_joins_keeps_todays_order() {
 /// A shop of five sources where some rows are not a table's own: `orders`
 /// keeps its failed rows, `customers` and `products` are two sheets read out
 /// of one workbook, `order_details` is made from two joined tables and
-/// `daily_weather` from `weather`, one of the two sources nothing joins.
+/// `daily_weather` from `weather`, one of the two sources with no join.
 fn shop() -> (String, Vec<(String, String)>) {
     let step = |name: &str, reads: Option<&str>, makes: &str, sql: &str| {
         let depends = reads.map_or_else(String::new, |file| {

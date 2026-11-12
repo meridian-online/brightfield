@@ -3987,9 +3987,11 @@ impl Item<ProtocolDoc> for OutlinePane {
         } = doc.model.spine_with_joins();
         // The gutter the join curves are drawn in, left of every spine row's
         // marker, so the rows hang off one ladder whether or not a curve
-        // reaches them. No width when there is no join, and never wider
-        // than `SPINE_GUTTER_MAX`: past that the lanes narrow, so a table
-        // joined to many leaves the rows their room for names.
+        // reaches them. No width when there is no join, and at most
+        // `SPINE_GUTTER_MAX` wide, as
+        // `a_table_joined_to_many_keeps_the_gutter_narrow` pins: past that the
+        // lanes narrow, so a table joined to many leaves the rows their room
+        // for names.
         let routes = curve_lanes(&join_curves);
         let lanes = routes
             .iter()
