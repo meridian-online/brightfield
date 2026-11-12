@@ -1,6 +1,7 @@
 //! The Preferences sheet: the Protocols folder, shown as a path, with Choose… to pick another with
 //! the system's folder picker, and, once one is chosen, the offer to move the old folder's
-//! Protocols into it.
+//! Protocols into it. Below it, once a folder has been trusted with the Protocols beneath it, the
+//! trusted folders, each with Remove.
 //!
 //! The sheet draws in the window's theme tokens inside the window's modal layer, as every sheet
 //! does. What its controls ask for is answered by the window after the frame
@@ -37,6 +38,8 @@ pub enum PreferencesAction {
     Move,
     /// Leave them where they are.
     Leave,
+    /// Stop trusting the folder at this place in the list of trusted folders.
+    Untrust(usize),
 }
 
 /// Width kept beside the path for the Choose… button and the gap before it.
@@ -79,13 +82,15 @@ pub(crate) fn elide_path(ui: &egui::Ui, path: &Path, font: &egui::FontId, room: 
     }
 }
 
-/// Draw the sheet's body: the Protocols folder `folder`, and the offer while one waits.
-/// `overridden` is the variable that sets the folder for this launch, when it is set.
+/// Draw the sheet's body: the Protocols folder `folder`, the offer while one waits, and the
+/// folders in `trusted` when there are any. `overridden` is the variable that sets the folder for
+/// this launch, when it is set.
 pub fn body(
     ui: &mut egui::Ui,
     sheet: &PreferencesSheet,
     folder: &Path,
     overridden: Option<&str>,
+    trusted: &[PathBuf],
 ) -> Option<PreferencesAction> {
     use meridian_egui::MeridianUi as _;
     let gap = ui.tokens().section_gap;
@@ -150,6 +155,27 @@ pub fn body(
                 action = Some(PreferencesAction::Leave);
             }
         });
+    }
+    if !trusted.is_empty() {
+        ui.add_space(gap);
+        ui.label(egui::RichText::new("Trusted folders").strong());
+        ui.label(
+            egui::RichText::new(
+                "Protocols in these folders run when they open, including ones added later.",
+            )
+            .color(chrome::colour(sem.text.secondary)),
+        );
+        for (index, trusted) in trusted.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let font = egui::TextStyle::Monospace.resolve(ui.style());
+                let room = (ui.available_width() - CHOOSE_ROOM).max(0.0);
+                ui.label(egui::RichText::new(elide_path(ui, trusted, &font, room)).monospace())
+                    .on_hover_text(trusted.display().to_string());
+                if ui.button("Remove").clicked() {
+                    action = Some(PreferencesAction::Untrust(index));
+                }
+            });
+        }
     }
     action
 }

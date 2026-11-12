@@ -1002,8 +1002,15 @@ fn a_cloned_parent_keeps_paths_that_still_resolve_and_runs() {
         "the clone records the bundle's place"
     );
 
+    // A copy is a folder Brightfield did not make, so it opens restricted until it is trusted.
     let mut win = Window::new();
     win.open(OpenRequest::Path(cloned.clone()));
+    assert!(win.app.restricted().is_some(), "{}", win.said());
+    let ctx = win.ctx.clone();
+    assert!(win
+        .app
+        .trust_restricted(&ctx, brightfield_shell::window::TrustScope::Protocol));
+    win.settle();
     assert_eq!(win.dir(), Some(cloned.clone()), "{}", win.said());
     assert_eq!(
         package(&cloned),

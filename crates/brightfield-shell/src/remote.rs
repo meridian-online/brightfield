@@ -104,11 +104,11 @@ impl Meter {
             .then(|| self.declared.load(Ordering::Relaxed))
     }
 
-    fn add_received(&self, n: u64) {
+    pub(crate) fn add_received(&self, n: u64) {
         self.received.fetch_add(n, Ordering::Relaxed);
     }
 
-    fn declare(&self, total: u64) {
+    pub(crate) fn declare(&self, total: u64) {
         self.declared.store(total, Ordering::Relaxed);
         self.length_declared.store(true, Ordering::Relaxed);
     }

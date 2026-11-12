@@ -57,6 +57,9 @@ pub struct ProtocolPanels {
     pub tiles: Vec<PanelTile>,
     /// The Parquet snapshot the tiles read, removed when this drops.
     tables: tempfile::TempDir,
+    /// Whether the tiles are composed with DuckDB confined to the snapshot, as a Protocol nobody
+    /// has trusted is drawn ([`load_shipped`]).
+    pub confined: bool,
 }
 
 impl ProtocolPanels {
@@ -88,6 +91,7 @@ impl ProtocolPanels {
                     &tables,
                     viewport,
                     mode,
+                    self.confined,
                 ));
                 tile.outcome = outcome;
                 tile.notes = notes;
@@ -115,8 +119,15 @@ impl ProtocolPanels {
                 "the Protocol has no panel {index}"
             )));
         }
-        compose_tile(source, &self.dir, self.tables.path(), viewport, mode)
-            .map(|(composed, _)| composed)
+        compose_tile(
+            source,
+            &self.dir,
+            self.tables.path(),
+            viewport,
+            mode,
+            self.confined,
+        )
+        .map(|(composed, _)| composed)
     }
 
     /// The tile at `index` as a live dashboard over the snapshot, with its
@@ -127,6 +138,16 @@ impl ProtocolPanels {
     ///
     /// No tile at `index`, or the panel does not parse or load.
     pub fn live_tile(&self, index: usize) -> Result<(LiveDashboard, Composed), String> {
+        // A live chart queries again on every brush and edit, through a session this module
+        // does not confine, so a Protocol drawn confined keeps its charts as pictures until it
+        // is trusted.
+        if self.confined {
+            return Err(format!(
+                "{} is restricted, so its charts are pictures of the results it came with. Trust \
+                 it to work with them.",
+                self.name
+            ));
+        }
         let tile = self
             .tiles
             .get(index)
@@ -362,7 +383,7 @@ pub fn load(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenProblem> {
                 "could not make a folder for the panels' tables: {e}"
             ))
         })?;
-    snapshot_tables(&db, &wanted, tables.path())?;
+    snapshot_tables(&db, &wanted, tables.path(), false)?;
     let run_id = arc::spec::run_tables(dir, None).ok().map(|run| run.run_id);
 
     let tiles = checked
@@ -379,6 +400,7 @@ pub fn load(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenProblem> {
                     tables.path(),
                     viewport,
                     Mode::Light,
+                    false,
                 ))
             } else {
                 (
@@ -403,7 +425,102 @@ pub fn load(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenProblem> {
         run_id,
         tiles,
         tables,
+        confined: false,
     })
+}
+
+/// Open the Protocol in `dir` for its panels as a Protocol nobody has trusted opens: from the
+/// results it carries, the database its manifest's `db:` names inside its own folder, and nothing
+/// else.
+///
+/// The database is read with DuckDB confined to that file and the snapshot folder, with external
+/// access, the network and extension loading off, so a view in it that reads another file is
+/// refused rather than run. Each panel is composed confined to the snapshot. arc's panel check is
+/// not run, since it opens the database without that bound; a panel naming a table the snapshot
+/// lacks says so as its own problem.
+///
+/// # Errors
+///
+/// An [`OpenProblem`] when the folder does not open for its panels, and
+/// [`OpenProblem::NotRun`] for one that carries no database inside its folder.
+pub fn load_shipped(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenProblem> {
+    if !dir.join(MANIFEST_FILENAME).is_file() {
+        return Err(OpenProblem::NotAProtocol(dir.to_path_buf()));
+    }
+    let manifest = arc::spec::Manifest::load(dir).map_err(|e| OpenProblem::Arc(e.to_string()))?;
+    let paths = panel_paths(dir);
+    if paths.is_empty() {
+        return Err(OpenProblem::NoPanels {
+            dir: dir.to_path_buf(),
+        });
+    }
+    let db = shipped_database(dir, &manifest).ok_or_else(|| OpenProblem::NotRun {
+        dir: dir.to_path_buf(),
+    })?;
+    let mut wanted = BTreeSet::new();
+    for path in &paths {
+        if let Some(panel) = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_yaml::from_str::<Value>(&text).ok())
+        {
+            wanted.extend(database_tables(&panel));
+        }
+    }
+    let tables = tempfile::Builder::new()
+        .prefix("brightfield-protocol-tables-")
+        .tempdir()
+        .map_err(|e| {
+            OpenProblem::Arc(format!(
+                "could not make a folder for the panels' tables: {e}"
+            ))
+        })?;
+    snapshot_tables(&db, &wanted, tables.path(), true)?;
+    let run_id = arc::spec::run_tables(dir, None).ok().map(|run| run.run_id);
+    let tiles = paths
+        .iter()
+        .map(|path| {
+            let file = path.strip_prefix(dir).unwrap_or(path).to_path_buf();
+            let source = std::fs::read_to_string(path).unwrap_or_default();
+            let title = serde_yaml::from_str::<Value>(&source)
+                .ok()
+                .and_then(|panel| panel.get("title")?.as_str().map(str::to_string));
+            let (outcome, notes) = split(compose_tile(
+                &source,
+                dir,
+                tables.path(),
+                viewport,
+                Mode::Light,
+                true,
+            ));
+            PanelTile {
+                file,
+                title,
+                source,
+                outcome,
+                notes,
+            }
+        })
+        .collect();
+    Ok(ProtocolPanels {
+        dir: dir.to_path_buf(),
+        name: manifest.name,
+        db,
+        run_id,
+        tiles,
+        tables,
+        confined: true,
+    })
+}
+
+/// The database the manifest's `db:` names, when it is a file inside the Protocol's own folder
+/// once links are followed: the results a Protocol carries. `None` for a manifest that names
+/// none, which keeps its database in arc's own folder, and for one that names a place outside.
+#[must_use]
+pub fn shipped_database(dir: &Path, manifest: &arc::spec::Manifest) -> Option<PathBuf> {
+    let named = manifest.db.as_ref()?;
+    let root = dir.canonicalize().ok()?;
+    let db = root.join(named).canonicalize().ok()?;
+    (db.starts_with(&root) && db.is_file()).then_some(db)
 }
 
 /// `panel` with a `T: { file: <tables_dir>/t.parquet }` entry added to its
@@ -585,8 +702,27 @@ fn compose_tile(
     tables_dir: &Path,
     viewport: Rect,
     mode: Mode,
+    confined: bool,
 ) -> Result<(Composed, NoteBand), PanelProblem> {
+    // Spelled as the system spells it, so the folder DuckDB is confined to and the files the
+    // panel is given are one path.
+    let tables_dir = &tables_dir
+        .canonicalize()
+        .unwrap_or_else(|_| tables_dir.to_path_buf());
     let text = with_protocol_tables(source, tables_dir).map_err(PanelProblem::Failed)?;
+    let compose = |viewport: Rect| {
+        if confined {
+            crate::pipeline::compose_spec_str_confined(
+                &text,
+                Some(dir),
+                viewport,
+                mode,
+                std::slice::from_ref(tables_dir),
+            )
+        } else {
+            compose_spec_str_in(&text, Some(dir), viewport, mode)
+        }
+    };
     let parsed = brightfield_spec::parse_spec(&text, brightfield_spec::Format::Yaml)
         .map_err(|e| PanelProblem::Failed(format!("parse error: {e}")))?;
     let mut blocking: Vec<String> = Vec::new();
@@ -599,8 +735,7 @@ fn compose_tile(
     if !blocking.is_empty() {
         return Err(PanelProblem::Unsupported(blocking));
     }
-    let composed =
-        compose_spec_str_in(&text, Some(dir), viewport, mode).map_err(PanelProblem::Failed)?;
+    let composed = compose(viewport).map_err(PanelProblem::Failed)?;
     let notes = NoteBand::of(&composed, viewport.height);
     let band = notes.height();
     if band > 0.0 {
@@ -608,8 +743,7 @@ fn compose_tile(
             height: viewport.height - band,
             ..viewport
         };
-        let composed = compose_spec_str_in(&text, Some(dir), below_notes, mode)
-            .map_err(PanelProblem::Failed)?;
+        let composed = compose(below_notes).map_err(PanelProblem::Failed)?;
         return Ok((composed, notes));
     }
     Ok((composed, notes))
@@ -690,16 +824,53 @@ pub(crate) fn sql_string(text: &str) -> String {
 }
 
 /// Copy each table of `wanted` the database at `db` holds into Parquet under
-/// `out`, holding the database only between the attach and the detach.
-fn snapshot_tables(db: &Path, wanted: &BTreeSet<String>, out: &Path) -> Result<(), OpenProblem> {
+/// `out`, holding the database only between the attach and the detach. With
+/// `confined`, DuckDB may touch the database and `out` alone, with external
+/// access, autoload and autoinstall off, so a view in the database that reads
+/// another file or the network fails instead of running.
+fn snapshot_tables(
+    db: &Path,
+    wanted: &BTreeSet<String>,
+    out: &Path,
+    confined: bool,
+) -> Result<(), OpenProblem> {
     let failed = |what: &str, e: duckdb::Error| {
         OpenProblem::Arc(format!(
             "could not read the Protocol's database {}: {what}: {e}",
             db.display()
         ))
     };
+    let out = &out.canonicalize().unwrap_or_else(|_| out.to_path_buf());
     let conn =
         duckdb::Connection::open_in_memory().map_err(|e| failed("an in-memory database", e))?;
+    if confined {
+        let wal = {
+            let mut name = db.as_os_str().to_os_string();
+            name.push(".wal");
+            PathBuf::from(name)
+        };
+        let mut folder = out.to_string_lossy().into_owned();
+        if !folder.ends_with(std::path::MAIN_SEPARATOR) {
+            folder.push(std::path::MAIN_SEPARATOR);
+        }
+        // DuckDB lets a session read its temporary directory whatever external access says, so
+        // the copy spills into a folder of its own in the snapshot, not the system's.
+        let spill = out.join(".spill");
+        conn.execute_batch(&format!(
+            "SET temp_directory={}; \
+             SET autoinstall_known_extensions=false; \
+             SET autoload_known_extensions=false; \
+             SET custom_extension_repository='/dev/null/brightfield-no-network'; \
+             SET allowed_paths=[{}, {}]; \
+             SET allowed_directories=[{}]; \
+             SET enable_external_access=false;",
+            sql_string(&spill.to_string_lossy()),
+            sql_string(&db.to_string_lossy()),
+            sql_string(&wal.to_string_lossy()),
+            sql_string(&folder),
+        ))
+        .map_err(|e| failed("confining DuckDB to it", e))?;
+    }
     conn.execute_batch(&format!(
         "ATTACH {} AS {} (READ_ONLY)",
         sql_string(&db.to_string_lossy()),

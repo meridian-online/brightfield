@@ -1014,6 +1014,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "ureq 2.12.1",
+ "url",
  "vello",
  "zip 6.0.0",
 ]

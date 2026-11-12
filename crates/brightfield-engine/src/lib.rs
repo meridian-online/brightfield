@@ -369,6 +369,19 @@ pub struct LoadOptions {
     /// all, since a given label needs no classifier. A name that is not a
     /// column of a source is ignored for that source.
     pub given_labels: BTreeMap<String, String>,
+    /// The folders this session may read, with every other file, the
+    /// network and extension loading closed to it: how a Protocol nobody has
+    /// trusted is drawn, from the results it carries. `None`, the default,
+    /// leaves DuckDB's access as it is.
+    ///
+    /// Set before any source is bound, as DuckDB's `allowed_directories`
+    /// with `enable_external_access` off, and autoload, autoinstall and the
+    /// extension repository closed as [`NetworkPolicy::Disabled`] closes them.
+    /// DuckDB refuses to turn external access back on, or to change the
+    /// folders, once access is off, so a statement the session runs later
+    /// cannot widen it. The configuration is not locked beyond that, since
+    /// the session narrows its memory settings for a copy and puts them back.
+    pub confined_to: Option<Vec<PathBuf>>,
 }
 
 impl LoadOptions {
@@ -477,7 +490,19 @@ impl Engine {
         //
         // A failure to set it is not a reason to refuse the spec — the old
         // behaviour is the fallback, and it is where this build was until now.
-        let temp_directory = std::env::temp_dir();
+        //
+        // A confined session spills into a folder of its own inside the first
+        // folder it may read, or not at all: DuckDB lets a session read its
+        // temporary directory whatever `enable_external_access` says, so the
+        // system temp directory would open every file in it to the session
+        // (`restricted_drawing_reads_only_shipped_results`).
+        let temp_directory = match &options.confined_to {
+            Some(allowed) => allowed
+                .first()
+                .map(|dir| dir.join(".spill"))
+                .unwrap_or_default(),
+            None => std::env::temp_dir(),
+        };
         let quoted_temp = temp_directory.to_string_lossy().replace('\'', "''");
         if let Err(e) = conn.execute_batch(&format!("SET temp_directory='{quoted_temp}';")) {
             eprintln!("warning: DuckDB kept its default temporary directory: {e}");
@@ -512,6 +537,28 @@ impl Engine {
                  SET autoload_known_extensions=false; \
                  SET custom_extension_repository='/dev/null/brightfield-no-network';",
             )
+            .map_err(|e| EngineError::ConnectionFailed { cause: e })?;
+        }
+        if let Some(allowed) = &options.confined_to {
+            // Each written as a folder, with its trailing separator.
+            let folders = allowed
+                .iter()
+                .map(|dir| {
+                    let mut text = dir.to_string_lossy().into_owned();
+                    if !text.ends_with(std::path::MAIN_SEPARATOR) {
+                        text.push(std::path::MAIN_SEPARATOR);
+                    }
+                    format!("'{}'", text.replace('\'', "''"))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            conn.execute_batch(&format!(
+                "SET autoinstall_known_extensions=false; \
+                 SET autoload_known_extensions=false; \
+                 SET custom_extension_repository='/dev/null/brightfield-no-network'; \
+                 SET allowed_directories=[{folders}]; \
+                 SET enable_external_access=false;"
+            ))
             .map_err(|e| EngineError::ConnectionFailed { cause: e })?;
         }
         if relax_signatures {

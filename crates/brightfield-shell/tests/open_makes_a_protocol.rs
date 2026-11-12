@@ -347,7 +347,7 @@ fn the_run_an_open_previews_with_is_called_a_preview() {
     assert_eq!(model.last_run_label(), "last preview");
 }
 
-/// A link this build cannot open yet says so in a banner titled for a link, not for a data file.
+/// A link the window refuses says why in a banner titled for a link, not for a data file.
 #[test]
 fn a_link_is_refused_as_a_link() {
     let mut win = Window::new();

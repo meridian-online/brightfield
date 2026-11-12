@@ -126,11 +126,25 @@ fn create_of(parent: &Path, named: &Path, sources: SourceSet) -> Result<OwnProto
         let _ = std::fs::remove_dir_all(&dir);
         return Err(e);
     }
+    record_made(&dir);
     Ok(OwnProtocol {
         dir,
         sources,
         profiles: Vec::new(),
     })
+}
+
+/// Record the Protocol Brightfield has just made in `dir` as trusted, wherever it was made: it
+/// runs without the restriction a Protocol from elsewhere opens under ([`crate::trust`]). A store
+/// that cannot be written is said on stderr, and the Protocol then opens restricted, which asks
+/// before anything runs rather than running something unrecorded.
+fn record_made(dir: &Path) {
+    if let Err(e) = crate::trust::Store::current().trust(dir) {
+        eprintln!(
+            "warning: {}: not recorded as a Protocol Brightfield made: {e}",
+            dir.display()
+        );
+    }
 }
 
 /// The name New Protocol gives the Protocol it makes, before a source names it: `Untitled`, then
@@ -188,6 +202,7 @@ pub fn create_empty(parent: &Path) -> Result<OwnProtocol, String> {
         let _ = std::fs::remove_dir_all(&dir);
         return Err(e);
     }
+    record_made(&dir);
     Ok(OwnProtocol {
         dir,
         sources: SourceSet::default(),

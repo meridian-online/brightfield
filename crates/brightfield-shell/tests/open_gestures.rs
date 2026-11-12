@@ -530,8 +530,10 @@ fn the_menu_quit_banner_says_quit_will_not_ask() {
     assert!(!shown(&app), "routed late, it comes down");
 }
 
+/// An archive handed over with other files opens on its own, as a Protocol directory among files
+/// does: unpacked into the Protocols folder and opened restricted, with the others not opened.
 #[test]
-fn an_archive_among_several_files_says_nothing_opened() {
+fn an_archive_among_several_files_opens_on_its_own() {
     use std::io::Write as _;
     let dir = scratch().join("input").join("archive_among");
     std::fs::create_dir_all(&dir).expect("a folder");
@@ -554,29 +556,30 @@ fn an_archive_among_several_files_says_nothing_opened() {
         .push(OpenRequest::Paths(vec![csv, archive]));
     frame(&mut app, &ctx, egui::RawInput::default());
 
-    let titles: Vec<String> = app
-        .notifications()
-        .iter()
-        .map(|n| n.title.clone())
-        .collect();
-    assert!(
-        !titles.iter().any(|t| t == "Only the Protocol was opened"),
-        "nothing is said to have opened: {titles:?}"
+    let restricted = app
+        .restricted()
+        .unwrap_or_else(|| panic!("the archive opens, restricted: {}", said(&app)));
+    assert_eq!(
+        restricted
+            .dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned()),
+        Some("bundle".to_string())
     );
-    let refusal = app
+    let only = app
         .notifications()
         .iter()
-        .find(|n| n.title == "Could not open that data file")
-        .unwrap_or_else(|| panic!("the archive is refused: {}", said(&app)));
+        .find(|n| n.title == "Only the Protocol was opened")
+        .unwrap_or_else(|| panic!("the others are said not opened: {}", said(&app)));
     assert!(
-        refusal
-            .body
+        only.body
             .as_deref()
-            .is_some_and(|b| b.contains("The other 1 was not opened")),
-        "and says the other was not opened: {:?}",
-        refusal.body
+            .is_some_and(|b| b.contains("bundle.zip is a Protocol archive")
+                && b.contains("the other 1 was not opened")),
+        "{:?}",
+        only.body
     );
-    assert!(app.front_door_is_live(), "nothing opened");
+    assert!(!app.front_door_is_live(), "the archive opened");
 }
 
 #[test]

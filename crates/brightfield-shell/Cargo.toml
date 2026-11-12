@@ -135,6 +135,10 @@ rfd = "0.17"
 # that a source served with `Content-Encoding: gzip` arrives usable rather than
 # as a compressed file DuckDB cannot read.
 ureq = "2"
+# Reads the `brightfield://open?url=<address>` link and the address it names, and resolves a
+# redirect's `Location` against the address it came from, in `crate::protocol_archive`. MIT OR
+# Apache-2.0, and not new to the graph: ureq 2 already resolves the same 2.x line.
+url = "2"
 # Opens the archive the California Housing start fetches — `crate::housing`,
 # which reads the one text file inside it. NOT a new crate in this binary's
 # graph: `arc` already resolves zip 6 with exactly these features, for its
