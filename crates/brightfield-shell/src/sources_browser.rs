@@ -170,7 +170,7 @@ impl Listing for Disk {
 }
 
 /// `entries` in the order a list shows them: folders first, then by name with case ignored, as
-/// the Finder sorts them, and by the exact name where two differ only in case.
+/// the Finder sorts them, and by the exact name where two differ in case alone.
 pub fn sort_entries(entries: &mut [Entry]) {
     entries.sort_by(|a, b| {
         let folder = |e: &Entry| e.kind != Kind::Folder;
@@ -291,7 +291,7 @@ pub struct Browser {
     /// The column that holds the keys.
     pub focus: Pane,
     /// The glob typed after `/`, while one is: the list shows the files under [`Self::dir`] it
-    /// matches. `Some` and empty while it is being typed and holds nothing yet.
+    /// matches. `Some` and empty while it is being typed and holds no text yet.
     pub glob: Option<String>,
     /// How a folder under the cursor is previewed.
     pub preview: PreviewMode,
@@ -313,7 +313,7 @@ pub struct Browser {
 
 impl Browser {
     /// The browser opened on `first_source`, in its folder with it under the cursor, or on the
-    /// home folder when there is none, over this Mac's [`places`].
+    /// home folder when there is no source, over this Mac's [`places`].
     #[must_use]
     pub fn open_at(first_source: Option<&Path>, fs: &dyn Listing) -> Self {
         let home = std::env::home_dir().unwrap_or_default();
@@ -675,7 +675,7 @@ impl Browser {
         }
     }
 
-    /// What `a` adds from the list: every file the glob matches, with the marked files; else the
+    /// What `a` adds from the list: the files the glob matches, with the marked files; else the
     /// marked files; else what is under the cursor, a folder with the joins accepted on its
     /// canvas.
     fn add(&mut self, fs: &dyn Listing) -> Effect {

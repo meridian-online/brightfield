@@ -34,7 +34,7 @@ pub enum DispatchContext {
     /// bare verbs, so `Enter` steps the chart back rather than dives in and
     /// `Esc` returns to now rather than clears a selection.
     VersionsFocused,
-    /// The sources browser is open and none of its text fields holds the keys —
+    /// The sources browser is open and its text fields do not hold the keys —
     /// its grammar resolves here, isolated from the chart canvas's bare verbs,
     /// so `Space` marks a file rather than opens the palette and `a` adds a
     /// source rather than a mark.
