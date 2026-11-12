@@ -12198,8 +12198,8 @@ impl MeridianApp {
     /// **What the browser's add asks of the window.** A folder the Protocol was just made of or
     /// given is among its sources already, so its joins ticked on the canvas are kept in the
     /// model, as the model pane's Keep keeps one, and those left unticked stay dovetail's
-    /// proposals, as the canvas showed them. Everything else is added to the Protocol with the joins accepted, through
-    /// the open queue, so a draft is asked about first as before any add.
+    /// proposals, as the canvas showed them. Everything else is added to the Protocol with the
+    /// joins accepted, through the open queue, so a draft is asked about first as before any add.
     fn browser_adds(
         &mut self,
         ctx: &egui::Context,
