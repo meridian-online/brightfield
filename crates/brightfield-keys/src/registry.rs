@@ -51,6 +51,13 @@ pub enum BindingContext {
     /// clear-selection bindings on the same keys
     /// (`the_versions_context_moves_the_cursor_steps_back_and_returns_to_now`).
     Versions,
+    /// Browser-scoped: fires while the sources browser is open and none of its
+    /// text fields holds the keys. A distinct context, as the grid's is, so the
+    /// browser's yazi keys (`h` up a folder, `l` and `Enter` into it or add the
+    /// file, `Space` to mark, `a` to add) never collide with the chart grammar's
+    /// pop-out, dive-in, palette and add-mark bindings on the same keys
+    /// (`the_browser_answers_its_yazi_keys_and_the_canvas_keeps_its_own`).
+    Browser,
     /// Global (`context = None`): fires from any focus (palette twin, focus
     /// toggle, save/reload-from-anywhere).
     Global,
@@ -233,7 +240,7 @@ const DASHBOARD_AND_VIEW: &[Altitude] = &[Altitude::Dashboard, Altitude::View];
 /// and [`help_sheet`].
 #[must_use]
 pub fn registry() -> Vec<VerbEntry> {
-    use Altitude::{Dashboard, Model, Protocol, View};
+    use Altitude::{Browser, Dashboard, Model, Protocol, View};
     use BindingContext::{Editor, Global, Workspace};
     use Drives as D;
 
@@ -264,6 +271,10 @@ pub fn registry() -> Vec<VerbEntry> {
     let versions = |k: &'static str| BindingSpec {
         keystrokes: k,
         context: BindingContext::Versions,
+    };
+    let browser = |k: &'static str| BindingSpec {
+        keystrokes: k,
+        context: BindingContext::Browser,
     };
 
     vec![
@@ -1466,6 +1477,136 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Run discovery again and fold what it finds around what you have decided",
             scores: Some(Scores { frequency: 1, mnemonic: 4, convention: 3, motor_note: "shift-r = run again (vim R replaces, a rerun key in many tools); bare r is set-role, and the shift makes a rewrite of the whole model deliberate; cmd-shift-r stays the data reload" }),
         },
+        // ---- the sources browser: yazi's keys over three columns, the places,
+        //      a folder's list and the preview of what is under the cursor,
+        //      which for a folder is the canvas of the joins dovetail proposes
+        //      between its tables. Each key also has a click, and the keys that
+        //      apply in the focused column are shown along the browser's foot.
+        //      They resolve in the Browser context alone, at the browser's
+        //      altitude, so the chart's `Space`, `a` and `v` keep their meanings
+        //      on the canvas. The two that add a source are Data: an add is kept
+        //      in the Protocol at once, with no Save. ----
+        VerbEntry {
+            longname: "move-browser-cursor-down",
+            tier: CommandTier::View,
+            binding_specs: vec![browser("j"), browser("down")],
+            scope_applicability: vec![Browser],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move to the next row of the focused column, or to the next join on a folder's canvas",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "j = down (vim, yazi); the arrow is the same verb for a stranger who has not learnt j" }),
+        },
+        VerbEntry {
+            longname: "move-browser-cursor-up",
+            tier: CommandTier::View,
+            binding_specs: vec![browser("k"), browser("up")],
+            scope_applicability: vec![Browser],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move to the row above in the focused column, or to the join before on a folder's canvas",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "k = up (vim, yazi); the arrow is the same verb" }),
+        },
+        VerbEntry {
+            longname: "go-up-a-folder",
+            tier: CommandTier::View,
+            binding_specs: vec![browser("h"), browser("left")],
+            scope_applicability: vec![Browser],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Go up a folder, or clear the glob typed; on a folder's canvas, go back to the list",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "h = left, the parent column (yazi, ranger, miller columns)" }),
+        },
+        VerbEntry {
+            longname: "go-in-or-add",
+            tier: CommandTier::Data,
+            binding_specs: vec![browser("l"), browser("right"), browser("enter")],
+            scope_applicability: vec![Browser],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Go into the folder under the cursor, or add the file to the Protocol; on a folder's canvas, add the folder with the joins accepted on it",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "l and enter are one action, as yazi's smart-enter binds l: into a folder, or open the file, which here adds it" }),
+        },
+        VerbEntry {
+            longname: "add-sources",
+            tier: CommandTier::Data,
+            binding_specs: vec![browser("a")],
+            scope_applicability: vec![Browser],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Add what is highlighted to the Protocol: the folder with the joins accepted on its canvas, the file, or the marked files",
+            scores: Some(Scores { frequency: 4, mnemonic: 5, convention: 3, motor_note: "a = add; the browser's purpose on one bare key, and a whole folder without going into it" }),
+        },
+        VerbEntry {
+            longname: "mark-or-accept",
+            tier: CommandTier::View,
+            binding_specs: vec![browser("space")],
+            scope_applicability: vec![Browser],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Mark the file under the cursor, or unmark it; on a folder's canvas, accept or drop the highlighted join",
+            scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 5, motor_note: "space = toggle the selection (yazi, ranger); accepting a join is the same gesture as marking a file" }),
+        },
+        VerbEntry {
+            longname: "next-browser-pane",
+            tier: CommandTier::View,
+            binding_specs: vec![browser("tab")],
+            scope_applicability: vec![Browser],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move between the places, the folder's list and a folder's canvas",
+            scores: Some(Scores { frequency: 3, mnemonic: 3, convention: 4, motor_note: "tab = the next pane (dual-pane file managers, a dialog's next control)" }),
+        },
+        VerbEntry {
+            longname: "type-glob",
+            tier: CommandTier::View,
+            binding_specs: vec![browser("/")],
+            scope_applicability: vec![Browser],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Type a glob, such as *.csv, to list the files under this folder it matches",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "/ = search and filter (vim, less, yazi's filter)" }),
+        },
+        VerbEntry {
+            longname: "fill-browser-with-preview",
+            tier: CommandTier::View,
+            binding_specs: vec![browser("g t")],
+            scope_applicability: vec![Browser],
+            drives: D::Presentation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Fill the browser with the preview, or give the three columns back",
+            scores: Some(Scores { frequency: 2, mnemonic: 3, convention: 3, motor_note: "g t = a two-key chord in vim's g family, so a stray g changes nothing; a filled canvas has room for a folder's joins" }),
+        },
+        VerbEntry {
+            longname: "switch-folder-preview",
+            tier: CommandTier::View,
+            binding_specs: vec![browser("v")],
+            scope_applicability: vec![Browser],
+            drives: D::Presentation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Preview a folder as the canvas of its joins, or as its list of files",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "v = view, as the model pane's v steps through its views" }),
+        },
+        VerbEntry {
+            longname: "close-sources-browser",
+            tier: CommandTier::View,
+            binding_specs: vec![browser("escape")],
+            scope_applicability: vec![Browser],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Close the sources browser, adding nothing more",
+            scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 5, motor_note: "esc = close the sheet (macOS sheets, the Esc ladder)" }),
+        },
     ]
 }
 
@@ -1850,6 +1991,17 @@ mod tests {
             "include-table",
             "retype-column",
             "rediscover-model",
+            "move-browser-cursor-down",
+            "move-browser-cursor-up",
+            "go-up-a-folder",
+            "go-in-or-add",
+            "add-sources",
+            "mark-or-accept",
+            "next-browser-pane",
+            "type-glob",
+            "fill-browser-with-preview",
+            "switch-folder-preview",
+            "close-sources-browser",
         ];
         assert_eq!(got, expected);
     }
@@ -1870,7 +2022,9 @@ mod tests {
         // The Data-tier set is exactly the addressed spec-edit verbs plus undo,
         // the Outline's put-a-column-on-a-channel verbs, the shelf's keep, the
         // Versions panel's step back and the spine's step removal, which Save
-        // writes, and the model pane's reshape verbs, which write the Ossie file.
+        // writes, the model pane's reshape verbs, which write the Ossie file,
+        // and the sources browser's two adds, which write the source into the
+        // Protocol at once.
         let mut got = durable.clone();
         got.sort_unstable();
         let mut expected = vec![
@@ -1902,6 +2056,8 @@ mod tests {
             "include-table",
             "retype-column",
             "rediscover-model",
+            "go-in-or-add",
+            "add-sources",
         ];
         expected.sort_unstable();
         assert_eq!(got, expected, "only durable-writing (Data) verbs write");
@@ -2170,6 +2326,84 @@ mod tests {
             .filter(|b| b.context == BindingContext::Versions)
             .count();
         assert_eq!(in_versions_count, expected.len(), "Versions bindings");
+    }
+
+    /// The sources browser's table of keys, each row bound in the Browser
+    /// context to one verb at the browser's altitude, with the arrows as the
+    /// twins of `h` `j` `k` `l`. `l` and `Enter` are one verb, since they are one
+    /// action: into a folder, or add the file.
+    #[test]
+    fn the_browser_context_carries_a_verb_for_each_of_the_browsers_keys() {
+        let reg = registry();
+        let bound = keymap_bindings(&reg);
+        let in_browser = |keys: &str| -> Vec<&'static str> {
+            bound
+                .iter()
+                .filter(|b| b.context == BindingContext::Browser && b.keystrokes == keys)
+                .map(|b| b.longname)
+                .collect()
+        };
+        let expected = [
+            ("j", "move-browser-cursor-down"),
+            ("down", "move-browser-cursor-down"),
+            ("k", "move-browser-cursor-up"),
+            ("up", "move-browser-cursor-up"),
+            ("h", "go-up-a-folder"),
+            ("left", "go-up-a-folder"),
+            ("l", "go-in-or-add"),
+            ("right", "go-in-or-add"),
+            ("enter", "go-in-or-add"),
+            ("a", "add-sources"),
+            ("space", "mark-or-accept"),
+            ("tab", "next-browser-pane"),
+            ("/", "type-glob"),
+            ("g t", "fill-browser-with-preview"),
+            ("v", "switch-folder-preview"),
+            ("escape", "close-sources-browser"),
+        ];
+        for (keys, longname) in expected {
+            assert_eq!(
+                in_browser(keys),
+                vec![longname],
+                "Browser context, `{keys}`"
+            );
+            let verb = reg.iter().find(|v| v.longname == longname).unwrap();
+            assert_eq!(
+                verb.scope_applicability,
+                vec![Altitude::Browser],
+                "{longname} applies in the browser alone"
+            );
+            assert!(!verb.help.is_empty(), "{longname} has no help line");
+            let scores = verb
+                .scores
+                .as_ref()
+                .unwrap_or_else(|| panic!("{longname} has no scores"));
+            for score in [scores.frequency, scores.mnemonic, scores.convention] {
+                assert!((1..=5).contains(&score), "{longname} score {score}");
+            }
+        }
+        // The two that add sources write the Protocol at once; the rest change
+        // what the browser shows and write nothing.
+        for (_, longname) in expected {
+            let tier = reg.iter().find(|v| v.longname == longname).unwrap().tier;
+            let adds = ["go-in-or-add", "add-sources"].contains(&longname);
+            assert_eq!(tier.is_logged(), adds, "{longname}'s tier");
+        }
+        let in_browser_count = bound
+            .iter()
+            .filter(|b| b.context == BindingContext::Browser)
+            .count();
+        assert_eq!(in_browser_count, expected.len(), "Browser bindings");
+        // And no verb outside the context applies at the browser's altitude.
+        for v in reg.iter().filter(|v| v.applies_at(Altitude::Browser)) {
+            assert!(
+                v.binding_specs
+                    .iter()
+                    .all(|b| b.context == BindingContext::Browser),
+                "{} applies in the browser but binds elsewhere",
+                v.longname
+            );
+        }
     }
 
     #[test]

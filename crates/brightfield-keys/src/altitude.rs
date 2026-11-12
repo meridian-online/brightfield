@@ -23,6 +23,11 @@ pub enum Altitude {
     /// distinct altitude, as the protocol panel's is, so the model's verbs
     /// never leak into the chart or protocol grammar.
     Model,
+    /// The sources browser, the sheet sources are added to a Protocol from: its
+    /// places, a folder's list, and the preview of what is under the cursor. A
+    /// distinct altitude, as the model pane's is, so its keys and its palette
+    /// rows are offered nowhere else.
+    Browser,
 }
 
 impl Altitude {
@@ -34,6 +39,7 @@ impl Altitude {
             Altitude::View => "view",
             Altitude::Protocol => "protocol",
             Altitude::Model => "model",
+            Altitude::Browser => "sources browser",
         }
     }
 }

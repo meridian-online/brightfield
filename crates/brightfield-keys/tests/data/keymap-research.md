@@ -239,6 +239,24 @@ it takes the shifted form of the role key beside it.
 | `retype-column` | `shift-t` | 2 / 4 / 2 | `shift-t` = type; bare `t` stays with the deferred point-select verb |
 | `rediscover-model` | `shift-r` | 1 / 4 / 3 | `shift-r` = run again; bare `r` is set-role, and the shift makes a rewrite of the whole model deliberate; `cmd-shift-r` stays the data reload |
 
+### The sources browser — adding files, folders and databases to a Protocol, in a key context of its own
+
+The sources browser follows yazi: three columns, the places, the current folder's list and a preview of what is under the cursor, which for a folder is the canvas of the joins dovetail proposes between its tables. It takes the grid's precedent, a key context of its own (`Browser`) at an altitude of its own, so its `Space`, `a`, `v`, `h` and `l` never reach the chart's palette, add-mark, model view, pop-out and dive-in on the same keys. `l` and `Enter` are one verb, as yazi's smart-enter binds `l`: into a folder, or add the file. `a` adds what is highlighted without going in, a whole folder included. On a folder's canvas `j` and `k` move between its joins and `Space` accepts or drops one, the same gesture that marks a file. The arrows are the twins of `h` `j` `k` `l` for an analyst who has not learnt them. The two verbs that add a source are **Data**-tier, since an add is kept in the Protocol at once with no Save; the rest are **View**-tier and write nothing.
+
+| longname | key(s) | freq / mnem / conv | motor note |
+|----------|--------|--------------------|------------|
+| `move-browser-cursor-down` | `j` · `down` | 5 / 4 / 5 | `j` = down (vim, yazi); the arrow is its twin; on a folder's canvas, the next join |
+| `move-browser-cursor-up` | `k` · `up` | 5 / 4 / 5 | `k` = up (vim, yazi); the arrow is its twin |
+| `go-up-a-folder` | `h` · `left` | 5 / 4 / 5 | `h` = the parent column (yazi, ranger, miller columns); clears a glob first |
+| `go-in-or-add` | `l` · `right` · `enter` | 5 / 4 / 5 | yazi's smart-enter: into a folder, or open the file, which here adds it; a Data verb |
+| `add-sources` | `a` | 4 / 5 / 3 | `a` = add; the browser's purpose on one bare key; a Data verb |
+| `mark-or-accept` | `space` | 4 / 4 / 5 | `space` = toggle the selection (yazi, ranger); accepts or drops a join on a folder's canvas |
+| `next-browser-pane` | `tab` | 3 / 3 / 4 | `tab` = the next pane (dual-pane file managers, a dialog's next control) |
+| `type-glob` | `/` | 3 / 4 / 5 | `/` = search and filter (vim, less, yazi's filter) |
+| `fill-browser-with-preview` | `g t` | 2 / 3 / 3 | a `g` chord, so a stray `g` changes nothing; a filled canvas has room for a folder's joins |
+| `switch-folder-preview` | `v` | 3 / 5 / 4 | `v` = view, as the model pane's `v` steps its views |
+| `close-sources-browser` | `escape` | 4 / 4 / 5 | esc = close the sheet (macOS sheets, the Esc ladder) |
+
 Reserved verbs are deliberately unscored (no key yet), shown greyed in the palette until their keys land:
 needs-keyboard-target (`filter-view`, `cross-filter-all`, `toggle-point-select`, `set-param`) and
 needs-command-log (`change-mark-type`, `add-mark`, `set-channel`, `remove-mark`, `undo`).

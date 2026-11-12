@@ -72,6 +72,9 @@
 //!   `brightfield://` link, pushed onto that queue.
 //! - [`own_files`] — the Protocol folder an analyst's own files are written as: a load step
 //!   per table, the raw tables' FineType profile, and a Frictionless data package per source.
+//! - [`sources_browser`] — the sources browser's state and keys, with no drawing: the places, a
+//!   folder's list, the marked files, a glob, and a folder's canvas of proposed joins, answering
+//!   the registry's Browser-context keys.
 //! - [`shelf_edit`] — a column put on a chart's x or y, as the list of chart
 //!   edits that make it: the layers that bind the channel move together, and
 //!   a map taken off its coordinate pair loses its projection.
@@ -148,6 +151,7 @@ pub mod resample;
 pub mod run;
 pub mod shelf;
 pub mod shelf_edit;
+pub mod sources_browser;
 mod sql_ident;
 pub mod starts;
 pub mod startup;
