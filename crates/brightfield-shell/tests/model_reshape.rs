@@ -856,6 +856,18 @@ impl Window {
         pane.save_model(retail_model())
             .expect("the written model runs");
         win.frame(Vec::new());
+        // A folder whose tables dovetail proposes joins between opens the sources browser over
+        // its model, on the folder's canvas. Esc closes it and leaves the proposal as it stands,
+        // so the keys these tests press reach the model pane.
+        assert!(
+            win.app.sources_browser().is_some(),
+            "the browser opens over the folder's proposed joins"
+        );
+        win.key(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(
+            win.app.sources_browser().is_none(),
+            "Esc closes the browser"
+        );
         win
     }
 

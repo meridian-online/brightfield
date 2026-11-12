@@ -84,6 +84,39 @@ const OVERLAY_ALLOW: &[Allow] = &[
          id, so a second hand-rolled overlay in this file is still a violation \
          (a_second_hand_rolled_overlay_beside_the_statement_form_is_still_a_violation).",
     ),
+    (
+        "src/window.rs",
+        r#"egui::Modal::new(egui::Id::new("bf-overlay-sources-browser"))"#,
+        "The sources browser's sheet. It holds three columns (places, a folder's list, \
+         and a preview that can be a folder's canvas of joins), so it is sized to the \
+         window, and ModalLayer sets a card's width to one of its two rungs, narrow or \
+         default, with no third. The sheet is otherwise ModalLayer's treatment: the \
+         same token scrim behind it, and sources_browser_view::frame, which spells \
+         meridian-egui's card frame (the overlay surface, its default border, the \
+         panel radius, the modal padding and the window shadow) because that frame \
+         is private to the layer. The entry is anchored to this Modal's id salt, so \
+         a second hand-rolled overlay in this file is still a violation \
+         (a_second_hand_rolled_overlay_beside_the_browser_or_the_trust_band_is_still_a_violation). \
+         The standing fix is a sheet width in meridian-egui's ModalLayer, which is a \
+         different repository; when it lands, this entry goes.",
+    ),
+    (
+        "src/window.rs",
+        r#"egui::Area::new(egui::Id::new("bf-restricted-band"))"#,
+        "The band over a restricted Protocol's canvas, which says where the Protocol \
+         came from and carries Trust this Protocol and the folders above it that can \
+         be trusted. The design gives trust no dialog, so it is not ModalLayer's \
+         centred card under a scrim: it is anchored to the canvas's top, and the \
+         Protocol's spine and the pictures of its shipped results stay in reach \
+         beside it. NotificationLayer's banners carry a title and a body but no \
+         buttons. That makes it a third caller of the want the hover \
+         readout's and the shelf card's entries name, a layer placed at a rect, and \
+         it takes its frame from egui's popup frame for the window's style rather \
+         than inventing one. The entry is anchored to this Area's id salt \
+         (a_second_hand_rolled_overlay_beside_the_browser_or_the_trust_band_is_still_a_violation). \
+         The standing fix is that rect-anchored layer, or banners with actions, in \
+         meridian-egui, a different repository; when it lands, this entry goes.",
+    ),
 ];
 
 /// Call fragments that construct a floating layer by hand. `egui::Modal` has
@@ -272,6 +305,38 @@ fn a_second_hand_rolled_overlay_beside_the_statement_form_is_still_a_violation()
         !allowed(OVERLAY_ALLOW, "src/window.rs", sanctioned),
         "the allowlist admits the form's line in another file"
     );
+}
+
+/// **The browser's sheet and the trust band are sanctioned by their ids, not by their file.**
+/// `window.rs` holds both entries, so the same constructions under other ids, or the two ids in
+/// another file, are still violations.
+#[test]
+fn a_second_hand_rolled_overlay_beside_the_browser_or_the_trust_band_is_still_a_violation() {
+    let sanctioned = [
+        r#"                let shown = egui::Modal::new(egui::Id::new("bf-overlay-sources-browser"))"#,
+        r#"    egui::Area::new(egui::Id::new("bf-restricted-band"))"#,
+    ];
+    for line in sanctioned {
+        assert!(
+            allowed(OVERLAY_ALLOW, "src/window.rs", line),
+            "the entry does not admit its own line `{line}`"
+        );
+        assert!(
+            !allowed(OVERLAY_ALLOW, "src/overlays.rs", line),
+            "the allowlist admits `{line}` in another file"
+        );
+    }
+    for other in [
+        r#"                let shown = egui::Modal::new(egui::Id::new("bf-overlay-other-sheet"))"#,
+        r#"    egui::Area::new(egui::Id::new("bf-restricted-band-2"))"#,
+        r#"    egui::Area::new(egui::Id::new("bf-overlay-sources-browser"))"#,
+        r#"    egui::Window::new("bf-restricted-band")"#,
+    ] {
+        assert!(
+            !allowed(OVERLAY_ALLOW, "src/window.rs", other),
+            "the allowlist admits `{other}` in the window, wider than the two calls it names"
+        );
+    }
 }
 
 #[test]

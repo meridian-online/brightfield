@@ -565,14 +565,16 @@ fn columns(
 fn column<R>(ui: &mut egui::Ui, size: egui::Vec2, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let sem = semantic(ui.visuals().dark_mode);
     let t = ui.tokens();
+    let hairline = 1.0;
+    // The frame adds its margin and its hairline outside what it holds, on each side.
+    let outside = 2.0 * (t.space[2] + hairline);
     ui.allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Min), |ui| {
         egui::Frame::new()
             .fill(to_color32(sem.surfaces.raised))
-            .stroke(egui::Stroke::new(1.0, to_color32(sem.borders.subtle)))
+            .stroke(egui::Stroke::new(hairline, to_color32(sem.borders.subtle)))
             .inner_margin(egui::Margin::same(t.space[2] as i8))
             .show(ui, |ui| {
-                // The frame adds its margin and its hairline outside what it holds.
-                let inner = size - egui::Vec2::splat(2.0 * t.space[2] + 2.0);
+                let inner = size - egui::Vec2::splat(outside);
                 ui.set_min_size(inner);
                 ui.set_max_size(inner);
                 ui.spacing_mut().item_spacing.x = t.space[1];

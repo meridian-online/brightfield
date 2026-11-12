@@ -18938,7 +18938,8 @@ fn subject_icon(
 fn sources_browser_size(ctx: &egui::Context) -> egui::Vec2 {
     use meridian_egui::MeridianUi as _;
     let t = ctx.tokens();
-    let room = ctx.content_rect().size() - egui::Vec2::splat(2.0 * t.space[9]);
+    let margins = 2.0 * t.space[9];
+    let room = ctx.content_rect().size() - egui::Vec2::splat(margins);
     egui::vec2(
         room.x.clamp(t.modal_width_default, 1280.0),
         room.y.clamp(t.modal_width_narrow * 0.75, 820.0),
