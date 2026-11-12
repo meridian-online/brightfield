@@ -737,6 +737,21 @@ fn an_archive_naming_an_absolute_local_path_is_refused_naming_it() {
             ],
             "/Users/someone/a.duckdb",
         ),
+        (
+            "distinct",
+            vec![
+                (
+                    "p/arcform.yaml",
+                    b"name: p\nengine: duckdb\nsteps:\n  - name: a\n    sql: models/a.sql\n"
+                        .to_vec(),
+                ),
+                (
+                    "p/models/a.sql",
+                    b"SELECT DISTINCT * FROM '/Users/someone/b.csv'\n".to_vec(),
+                ),
+            ],
+            "/Users/someone/b.csv",
+        ),
     ] {
         let zip = dir.join(format!("{case}.zip"));
         let borrowed: Vec<(&str, &[u8])> =
@@ -764,7 +779,7 @@ fn an_archive_naming_an_absolute_local_path_is_refused_naming_it() {
                 "p/models/a.sql",
                 b"SELECT * FROM read_parquet('https://meridian.online/a.parquet') WHERE s = '/' \
                   AND p LIKE '/api/%' AND regexp_replace(q, '/+$', '') = '\\\\' \
-                  AND r = '/index.html' AND t SIMILAR TO '/api/.*' AND u IS DISTINCT FROM '/x'\n",
+                  AND r = '/index.html' AND t SIMILAR TO '/api/.*' AND u IS DISTINCT FROM '/x' AND v IS NOT DISTINCT FROM '/y'\n",
             ),
         ],
     );

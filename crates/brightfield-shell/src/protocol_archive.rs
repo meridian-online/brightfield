@@ -564,13 +564,10 @@ const FILE_FUNCTIONS: [&str; 11] = [
 /// `LOAD 'e.duckdb_extension'`, and `IMPORT DATABASE 'f'` and `EXPORT DATABASE 'f'`.
 const FILE_WORDS: [&str; 7] = ["from", "join", "attach", "exists", "to", "load", "database"];
 
-/// The word pairs that end in one of [`FILE_WORDS`] and compare with a pattern rather than read a
-/// file: `SIMILAR TO '/api/.*'` and `IS [NOT] DISTINCT FROM '/x'`.
-const PATTERN_WORDS: [(&str, &str); 2] = [("similar", "to"), ("distinct", "from")];
-
 /// The single-quoted literals in `sql` that name files: an argument of a function whose name
 /// starts `read_` or is one of [`FILE_FUNCTIONS`], a list inside one, and a literal straight after
-/// one of [`FILE_WORDS`] that is not one of [`PATTERN_WORDS`]. Other literals, such as a pattern
+/// one of [`FILE_WORDS`] that does not end an operator comparing with a pattern ([`compares`]).
+/// Other literals, such as a pattern
 /// for `LIKE` or `regexp_replace`, are not files and are passed over, as are comments and quoted
 /// identifiers.
 fn file_literals(sql: &str) -> Vec<String> {
@@ -578,27 +575,27 @@ fn file_literals(sql: &str) -> Vec<String> {
     let mut out = Vec::new();
     // For each open parenthesis, whether it holds a file function's arguments.
     let mut calls: Vec<bool> = Vec::new();
-    // The last word read, in lower case, and whether it is the last thing read but spaces, so
-    // `read_csv (` and `FROM '` are told from `x) (` and `= '`.
-    let mut word = String::new();
-    // The word before it, so a pattern after `SIMILAR TO` is told from a file after `COPY t TO`.
-    let mut previous = String::new();
-    let mut after_word = false;
+    // The words read since the last symbol, in lower case: `read_csv (` and `FROM '` are told
+    // from `x) (` and `= '` by the word straight before, and `IS DISTINCT FROM '` from
+    // `DISTINCT * FROM '` by the words before that.
+    let mut words: Vec<String> = Vec::new();
     let mut in_word = false;
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
         if c.is_alphanumeric() || c == '_' {
             if !in_word {
-                previous = std::mem::take(&mut word);
+                words.push(String::new());
             }
-            word.extend(c.to_lowercase());
+            if let Some(word) = words.last_mut() {
+                word.extend(c.to_lowercase());
+            }
             in_word = true;
-            after_word = true;
             i += 1;
             continue;
         }
         in_word = false;
+        let last = words.last().map_or("", String::as_str);
         match c {
             '-' if chars.get(i + 1) == Some(&'-') => {
                 while i < chars.len() && chars[i] != '\n' {
@@ -612,6 +609,10 @@ fn file_literals(sql: &str) -> Vec<String> {
                     i += 1;
                 }
                 i += 2;
+                continue;
+            }
+            c if c.is_whitespace() => {
+                i += 1;
                 continue;
             }
             '\'' | '"' => {
@@ -631,34 +632,36 @@ fn file_literals(sql: &str) -> Vec<String> {
                 }
                 if c == '\'' {
                     let in_call = calls.last().copied().unwrap_or(false);
-                    let pattern = PATTERN_WORDS
-                        .iter()
-                        .any(|(before, last)| *before == previous && *last == word);
-                    let after_file_word =
-                        after_word && FILE_WORDS.contains(&word.as_str()) && !pattern;
-                    if in_call || after_file_word {
+                    if in_call || (FILE_WORDS.contains(&last) && !compares(&words)) {
                         out.push(text);
                     }
                 }
-                after_word = false;
             }
-            c if c.is_whitespace() => {}
             '(' => {
-                calls.push(
-                    after_word
-                        && (word.starts_with("read_") || FILE_FUNCTIONS.contains(&word.as_str())),
-                );
-                after_word = false;
+                calls.push(last.starts_with("read_") || FILE_FUNCTIONS.contains(&last));
             }
             ')' => {
                 calls.pop();
-                after_word = false;
             }
-            _ => after_word = false,
+            _ => {}
         }
+        // A symbol ends the run of words.
+        words.clear();
         i += 1;
     }
     out
+}
+
+/// Whether the run of `words` ends in an operator that compares with a pattern rather than reads
+/// a file: `SIMILAR TO`, or `IS DISTINCT FROM` and `IS NOT DISTINCT FROM`.
+fn compares(words: &[String]) -> bool {
+    match words {
+        [.., before, last] if before == "similar" && last == "to" => true,
+        [.., is, before, last] if before == "distinct" && last == "from" => {
+            is == "is" || is == "not"
+        }
+        _ => false,
+    }
 }
 
 /// An archive download running on a worker thread, unpacked on the same worker once it has
