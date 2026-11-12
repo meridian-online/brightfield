@@ -15190,7 +15190,9 @@ impl MeridianApp {
 
     /// **Trust the restricted Protocol**, or the folder `scope` names with every Protocol beneath
     /// it, as the band's Trust does, and open it again as a trusted Protocol opens, so it can run.
-    /// Answers whether it was trusted; a store that cannot be written says so in a banner.
+    /// The reopen goes the way any open goes, with the close question first over a draft; kept
+    /// editing, the Protocol stays as it is, trusted from its next open. Answers whether it was
+    /// trusted; a store that cannot be written says so in a banner.
     pub fn trust_restricted(&mut self, ctx: &egui::Context, scope: TrustScope) -> bool {
         let Some(restricted) = self.restricted.clone() else {
             return false;
@@ -15215,8 +15217,7 @@ impl MeridianApp {
         }
         self.notifications
             .dismiss(NotificationId::new(RESTRICTED_BANNER));
-        let manifest = restricted.dir.join(arc::spec::MANIFEST_FILENAME);
-        self.open_protocol_path(ctx, &manifest.to_string_lossy());
+        self.take_or_ask(ctx, crate::open_queue::OpenRequest::Path(restricted.dir));
         true
     }
 

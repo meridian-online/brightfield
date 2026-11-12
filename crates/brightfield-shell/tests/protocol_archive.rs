@@ -504,6 +504,14 @@ fn an_archive_with_dotdot_or_absolute_entries_writes_nothing() {
             ],
         ),
         ("no-manifest", vec![("p/a.txt", b"a".to_vec())]),
+        (
+            "case",
+            vec![
+                ("p/arcform.yaml", manifest("p")),
+                ("p/models/a.sql", b"SELECT 1\n".to_vec()),
+                ("p/MODELS/a.sql", b"SELECT 2\n".to_vec()),
+            ],
+        ),
     ] {
         let zip = dir.join(format!("{case}.zip"));
         let borrowed: Vec<(&str, &[u8])> =
@@ -653,6 +661,37 @@ fn an_archive_naming_an_absolute_local_path_is_refused_naming_it() {
             ],
             "~/data/a.parquet",
         ),
+        (
+            "from",
+            vec![
+                (
+                    "p/arcform.yaml",
+                    b"name: p\nengine: duckdb\nsteps:\n  - name: a\n    sql: models/a.sql\n"
+                        .to_vec(),
+                ),
+                (
+                    "p/models/a.sql",
+                    b"SELECT * FROM '/Users/someone/a.parquet'\n".to_vec(),
+                ),
+            ],
+            "/Users/someone/a.parquet",
+        ),
+        (
+            // The manifest spells the step's file another way; the file is read all the same.
+            "spelled",
+            vec![
+                (
+                    "p/arcform.yaml",
+                    b"name: p\nengine: duckdb\nsteps:\n  - name: a\n    sql: ./models/a.sql\n"
+                        .to_vec(),
+                ),
+                (
+                    "p/models/a.sql",
+                    b"COPY (SELECT 1) TO '/Users/someone/out.csv'\n".to_vec(),
+                ),
+            ],
+            "/Users/someone/out.csv",
+        ),
     ] {
         let zip = dir.join(format!("{case}.zip"));
         let borrowed: Vec<(&str, &[u8])> =
@@ -666,7 +705,8 @@ fn an_archive_naming_an_absolute_local_path_is_refused_naming_it() {
         assert!(folders_in(&into).is_empty(), "{case}: nothing was written");
     }
 
-    // A remote source is not a local path.
+    // A remote source is not a local path, and a literal that is not a file, such as a pattern,
+    // is not one either.
     let zip = dir.join("remote.zip");
     zip_of(
         &zip,
@@ -677,7 +717,9 @@ fn an_archive_naming_an_absolute_local_path_is_refused_naming_it() {
             ),
             (
                 "p/models/a.sql",
-                b"SELECT * FROM read_parquet('https://meridian.online/a.parquet') WHERE s = '/'\n",
+                b"SELECT * FROM read_parquet('https://meridian.online/a.parquet') WHERE s = '/' \
+                  AND p LIKE '/api/%' AND regexp_replace(q, '/+$', '') = '\\\\' \
+                  AND r = '/index.html'\n",
             ),
         ],
     );
@@ -1463,4 +1505,75 @@ fn a_good_archive_unpacks_and_draws() {
     let mut buf = Vec::new();
     let _ = std::fs::File::open(&zip).map(|mut f| f.read_to_end(&mut buf));
     assert!(!buf.is_empty());
+}
+
+#[test]
+fn a_download_that_stalls_ends_with_a_sentence() {
+    // Headers, then silence on an open connection.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                if line == "\r\n" {
+                    break;
+                }
+                line.clear();
+            }
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\nPK",
+            );
+            let _ = stream.flush();
+            std::thread::sleep(Duration::from_secs(30));
+        }
+    });
+    let into = input("stalled-into");
+    let address = url::Url::parse(&format!("http://127.0.0.1:{port}/stalled.zip")).unwrap();
+    let mut download = protocol_archive::Download::begin_within(
+        address,
+        this_mac_or_site,
+        into.clone(),
+        Duration::from_secs(1),
+        || {},
+    );
+    let started = Instant::now();
+    let refused = wait_for(&mut download).expect_err("a stalled download ends");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "it ends after the silence, not the server's sleep"
+    );
+    assert!(refused.contains("could not download"), "{refused}");
+    assert!(folders_in(&into).is_empty());
+}
+
+#[test]
+fn trust_over_a_draft_asks_the_close_question_first() {
+    let dir = input("trust-draft").join("trust_draft");
+    shipped_protocol(&dir, "trust_draft");
+    let mut app = app();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx);
+    app.open_queue().push(OpenRequest::Path(dir.clone()));
+    frame(&mut app, &ctx);
+    assert!(app.restricted().is_some(), "{}", said(&app));
+    app.chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("mass_g > 4000".to_owned()),
+            order: None,
+        });
+    frame(&mut app, &ctx);
+    assert!(app.has_unsaved_work(), "a draft is held");
+
+    assert!(app.trust_restricted(&ctx, TrustScope::Protocol));
+    frame(&mut app, &ctx);
+    assert!(
+        app.close_question().is_some(),
+        "the reopen asks about the draft first: {}",
+        said(&app)
+    );
+    assert!(app.has_unsaved_work(), "and nothing was dropped unasked");
+    assert!(Store::current().is_trusted(&dir), "the trust is recorded");
 }

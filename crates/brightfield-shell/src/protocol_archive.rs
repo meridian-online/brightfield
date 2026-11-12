@@ -50,6 +50,11 @@ const MAX_REDIRECTS: usize = 5;
 /// How long a connection may take to establish, as [`crate::remote`] allows.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// How long a download waits for its next bytes before it gives up: silence, not the whole
+/// download, so a slow archive still arrives, and a stalled one ends with a sentence rather than
+/// holding the one download the window runs at a time.
+pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The largest text file read into memory to be checked before anything is written.
 const MAX_CHECKED_TEXT: u64 = 16 * 1024 * 1024;
 
@@ -222,6 +227,9 @@ fn plan(
     let mut top: Option<String> = None;
     let mut manifest = false;
     let mut entries = Vec::with_capacity(archive.len());
+    // Each file by its path in lower case: a Mac's file system ignores case, so two entries whose
+    // paths differ only in case would write one file, the second over the first once it is checked.
+    let mut files = std::collections::HashSet::new();
     for index in 0..archive.len() {
         let entry = archive
             .by_index_raw(index)
@@ -275,6 +283,12 @@ fn plan(
         if !dir && rest == Path::new(MANIFEST) {
             manifest = true;
         }
+        if !dir && !files.insert(rest.to_string_lossy().to_lowercase()) {
+            return Err(format!(
+                "{named} holds two entries named {raw}, apart from their case, and a Mac keeps one \
+                 file for both. {nothing}"
+            ));
+        }
         entries.push((index, rest, dir));
     }
     let top = top.filter(|_| manifest).ok_or_else(|| {
@@ -315,8 +329,9 @@ fn read_text(
 }
 
 /// Refuse a Protocol that names a path on the Mac it was made on, or one outside its own folder:
-/// in its manifest's database, dotenv files and step SQL files, in the paths its steps' SQL reads,
-/// in its record of sources, and in its data packages.
+/// in its manifest's database, dotenv files and step SQL files, in the files its SQL reads (every
+/// `.sql` file in the archive, however the manifest spells its path), in its record of sources,
+/// and in its data packages.
 fn check_contents(
     archive: &mut zip::ZipArchive<std::fs::File>,
     plan: &Plan,
@@ -349,16 +364,27 @@ fn check_contents(
         refuse("dotenv file", dotenv)?;
     }
     for step in &manifest.steps {
-        let Some(sql) = &step.sql else {
+        if let Some(sql) = &step.sql {
+            refuse(&format!("step {}", step.name), sql)?;
+        }
+    }
+    let sql_files: Vec<PathBuf> = plan
+        .entries
+        .iter()
+        .filter(|(_, path, dir)| {
+            !dir && path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("sql"))
+        })
+        .map(|(_, path, _)| path.clone())
+        .collect();
+    for sql in sql_files {
+        let Some(text) = read_text(archive, plan, &sql, named)? else {
             continue;
         };
-        refuse(&format!("step {}", step.name), sql)?;
-        let Some(text) = read_text(archive, plan, Path::new(sql), named)? else {
-            continue;
-        };
-        for literal in sql_literals(&text) {
+        for literal in file_literals(&text) {
             if !remote(&literal) {
-                refuse(&format!("step {}", step.name), &literal)?;
+                refuse(&format!("SQL file {}", sql.display()), &literal)?;
             }
         }
     }
@@ -518,17 +544,57 @@ fn escapes(base: &Path, path: &str) -> bool {
     false
 }
 
-/// The single-quoted string literals in `sql`, with comments and quoted identifiers passed over.
-fn sql_literals(sql: &str) -> Vec<String> {
+/// The functions besides the `read_` ones whose string arguments name files.
+const FILE_FUNCTIONS: [&str; 9] = [
+    "parquet_scan",
+    "parquet_metadata",
+    "parquet_schema",
+    "parquet_file_metadata",
+    "glob",
+    "sniff_csv",
+    "st_read",
+    "delta_scan",
+    "iceberg_scan",
+];
+
+/// The words a file's literal follows in SQL: `FROM 'a.csv'`, `JOIN 'b.parquet'`,
+/// `ATTACH 'c.duckdb'`, `COPY t TO 'd.csv'` and `LOAD 'e.duckdb_extension'`.
+const FILE_WORDS: [&str; 5] = ["from", "join", "attach", "to", "load"];
+
+/// The single-quoted literals in `sql` that name files: an argument of a function whose name
+/// starts `read_` or is one of [`FILE_FUNCTIONS`], a list inside one, and a literal straight after
+/// one of [`FILE_WORDS`]. Other literals, such as a pattern for `LIKE` or `regexp_replace`, are
+/// not files and are passed over, as are comments and quoted identifiers.
+fn file_literals(sql: &str) -> Vec<String> {
     let chars: Vec<char> = sql.chars().collect();
     let mut out = Vec::new();
+    // For each open parenthesis, whether it holds a file function's arguments.
+    let mut calls: Vec<bool> = Vec::new();
+    // The last word read, in lower case, and whether it is the last thing read but spaces, so
+    // `read_csv (` and `FROM '` are told from `x) (` and `= '`.
+    let mut word = String::new();
+    let mut after_word = false;
+    let mut in_word = false;
     let mut i = 0;
     while i < chars.len() {
-        match chars[i] {
+        let c = chars[i];
+        if c.is_alphanumeric() || c == '_' {
+            if !in_word {
+                word.clear();
+            }
+            word.extend(c.to_lowercase());
+            in_word = true;
+            after_word = true;
+            i += 1;
+            continue;
+        }
+        in_word = false;
+        match c {
             '-' if chars.get(i + 1) == Some(&'-') => {
                 while i < chars.len() && chars[i] != '\n' {
                     i += 1;
                 }
+                continue;
             }
             '/' if chars.get(i + 1) == Some(&'*') => {
                 i += 2;
@@ -536,14 +602,15 @@ fn sql_literals(sql: &str) -> Vec<String> {
                     i += 1;
                 }
                 i += 2;
+                continue;
             }
-            quote @ ('\'' | '"') => {
+            '\'' | '"' => {
                 let mut text = String::new();
                 i += 1;
                 while i < chars.len() {
-                    if chars[i] == quote {
-                        if chars.get(i + 1) == Some(&quote) {
-                            text.push(quote);
+                    if chars[i] == c {
+                        if chars.get(i + 1) == Some(&c) {
+                            text.push(c);
                             i += 2;
                             continue;
                         }
@@ -552,13 +619,30 @@ fn sql_literals(sql: &str) -> Vec<String> {
                     text.push(chars[i]);
                     i += 1;
                 }
-                i += 1;
-                if quote == '\'' {
-                    out.push(text);
+                if c == '\'' {
+                    let in_call = calls.last().copied().unwrap_or(false);
+                    let after_file_word = after_word && FILE_WORDS.contains(&word.as_str());
+                    if in_call || after_file_word {
+                        out.push(text);
+                    }
                 }
+                after_word = false;
             }
-            _ => i += 1,
+            c if c.is_whitespace() => {}
+            '(' => {
+                calls.push(
+                    after_word
+                        && (word.starts_with("read_") || FILE_FUNCTIONS.contains(&word.as_str())),
+                );
+                after_word = false;
+            }
+            ')' => {
+                calls.pop();
+                after_word = false;
+            }
+            _ => after_word = false,
         }
+        i += 1;
     }
     out
 }
@@ -583,12 +667,32 @@ impl Download {
         into: PathBuf,
         wake: impl Fn() + Send + 'static,
     ) -> Self {
+        Self::begin_within(address, allowed, into, READ_TIMEOUT, wake)
+    }
+
+    /// [`Self::begin`], giving up after `silence` with no bytes, so a test can stall a download
+    /// without waiting [`READ_TIMEOUT`].
+    #[must_use]
+    pub fn begin_within(
+        address: Url,
+        allowed: Allowed,
+        into: PathBuf,
+        silence: Duration,
+        wake: impl Fn() + Send + 'static,
+    ) -> Self {
         let meter = Arc::new(crate::remote::Meter::default());
         let (tx, outcome) = mpsc::channel();
         let worker_meter = Arc::clone(&meter);
         let worker_address = address.clone();
         std::thread::spawn(move || {
-            let result = download_and_unpack(&worker_address, allowed, &into, &worker_meter, &wake);
+            let result = download_and_unpack(
+                &worker_address,
+                allowed,
+                &into,
+                silence,
+                &worker_meter,
+                &wake,
+            );
             tx.send(result).ok();
             wake();
         });
@@ -640,6 +744,7 @@ fn download_and_unpack(
     address: &Url,
     allowed: Allowed,
     into: &Path,
+    silence: Duration,
     meter: &crate::remote::Meter,
     wake: &(impl Fn() + Send + 'static),
 ) -> Result<PathBuf, String> {
@@ -657,22 +762,24 @@ fn download_and_unpack(
         })
         .unwrap_or_else(|| "protocol.zip".to_string());
     let file = scratch.path().join(name);
-    fetch(address, allowed, &file, meter, wake)?;
+    fetch(address, allowed, &file, silence, meter, wake)?;
     unpack(&file, into)
 }
 
 /// Fetch `address` into `file`, following at most [`MAX_REDIRECTS`] redirects, each checked by
-/// `allowed`.
+/// `allowed`, and giving up after `silence` with no bytes.
 fn fetch(
     address: &Url,
     allowed: Allowed,
     file: &Path,
+    silence: Duration,
     meter: &crate::remote::Meter,
     wake: &(impl Fn() + Send + 'static),
 ) -> Result<(), String> {
     let agent = ureq::AgentBuilder::new()
         .redirects(0)
         .timeout_connect(CONNECT_TIMEOUT)
+        .timeout_read(silence)
         .build();
     let mut at = address.clone();
     for _ in 0..=MAX_REDIRECTS {
@@ -745,10 +852,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_literal_is_read_past_comments_and_identifiers() {
+    fn a_file_literal_is_read_past_comments_identifiers_and_patterns() {
         let sql = "-- reads '/etc/passwd'\nSELECT \"it's\" FROM read_csv('data/a.csv') /* '/x' */ \
-                   WHERE s = 'it''s'";
-        assert_eq!(sql_literals(sql), vec!["data/a.csv", "it's"]);
+                   WHERE s = 'it''s' AND p LIKE '/api/%' AND regexp_replace(q, '/+$', '') = '\\\\'";
+        assert_eq!(file_literals(sql), vec!["data/a.csv"]);
+        assert_eq!(
+            file_literals(
+                "SELECT * FROM 'b.parquet' JOIN read_parquet(['c.parquet', 'd.parquet'], \
+                 hive_partitioning = true) USING (k); COPY t TO 'e.csv'; ATTACH 'f.duckdb' AS f"
+            ),
+            vec!["b.parquet", "c.parquet", "d.parquet", "e.csv", "f.duckdb"]
+        );
+        assert_eq!(
+            file_literals("SELECT * FROM READ_CSV ('g.csv', delim = ',')"),
+            vec!["g.csv", ","]
+        );
     }
 
     #[test]
