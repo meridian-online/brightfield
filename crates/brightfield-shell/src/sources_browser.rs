@@ -13,7 +13,7 @@
 //! Protocol, or the browser closed. The disk is read through [`Listing`], so the tests drive the
 //! browser over a disk held in memory and write nothing.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -234,7 +234,7 @@ pub fn places() -> Vec<Place> {
 
 /// A join dovetail proposes between two tables of a folder under the cursor, each side a table
 /// and one of its columns, as [`AcceptedJoin`] records one the analyst accepted.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProposedJoin {
     /// The table and column the join reads from, the side with many rows to each of the other's.
     pub left: (String, String),
@@ -276,6 +276,10 @@ pub enum Effect {
 
 /// The sources browser: where it is, what is under its cursor and marked, and which column holds
 /// the keys.
+///
+/// The rows the list shows are read from the disk when the list changes folder or glob, and again
+/// on [`Browser::refresh`], not on each key or frame: a glob over many folders is walked once
+/// when it is typed (`a_glob_reads_the_disk_when_typed_not_on_each_key`).
 #[derive(Debug, Clone)]
 pub struct Browser {
     /// The places column.
@@ -283,26 +287,37 @@ pub struct Browser {
     /// The place under the places column's cursor.
     pub place: usize,
     /// The folder the list shows.
-    pub dir: PathBuf,
-    /// The row under the list's cursor.
+    dir: PathBuf,
+    /// The rows the list shows: the folder's entries, or the files the glob matches.
+    rows: Vec<Entry>,
+    /// The row under the list's cursor. Read through [`Browser::current`], which keeps it inside
+    /// the list as it stands.
     pub cursor: usize,
     /// The files marked with `Space`, in any folder: going into another folder keeps them.
     pub marks: BTreeSet<PathBuf>,
     /// The column that holds the keys.
     pub focus: Pane,
-    /// The glob typed after `/`, while one is: the list shows the files under [`Self::dir`] it
+    /// The glob typed after `/`, while one is: the list shows the files under the folder it
     /// matches. `Some` and empty while it is being typed and holds no text yet.
-    pub glob: Option<String>,
+    glob: Option<String>,
+    /// Whether the glob stopped reading folders at `glob_limit` with more left to read.
+    glob_stopped: bool,
+    /// The most folders a glob reads: [`GLOB_FOLDER_LIMIT`], and fewer in a test.
+    glob_limit: usize,
     /// How a folder under the cursor is previewed.
     pub preview: PreviewMode,
     /// Whether the preview fills the browser.
     pub full: bool,
-    /// The joins proposed for the folder [`Self::joins_for`] names, each with whether the analyst
+    /// The joins proposed for the folder `joins_for` names, each with whether the analyst
     /// accepted it.
-    pub joins: Vec<(ProposedJoin, bool)>,
-    /// The folder [`Self::joins`] were proposed for. They are the canvas's while it is the folder
-    /// under the cursor.
-    pub joins_for: Option<PathBuf>,
+    joins: Vec<(ProposedJoin, bool)>,
+    /// The folder `joins` were proposed for. They are the canvas's while it is the folder under
+    /// the cursor.
+    joins_for: Option<PathBuf>,
+    /// The joins the analyst accepted, by the folder they were proposed for, kept while the
+    /// browser is open, so a folder proposed again keeps its answers
+    /// (`accepted_joins_are_kept_for_a_folder_proposed_again`).
+    accepted: BTreeMap<PathBuf, BTreeSet<ProposedJoin>>,
     /// The join under the canvas's cursor.
     pub join_cursor: usize,
     /// A sentence for the foot when a key could not do what it asked, until the next key.
@@ -343,26 +358,39 @@ impl Browser {
             places,
             place,
             dir,
+            rows: Vec::new(),
             cursor: 0,
             marks: BTreeSet::new(),
             focus: Pane::List,
             glob: None,
+            glob_stopped: false,
+            glob_limit: GLOB_FOLDER_LIMIT,
             preview: PreviewMode::Canvas,
             full: false,
             joins: Vec::new(),
             joins_for: None,
+            accepted: BTreeMap::new(),
             join_cursor: 0,
             note: None,
             pending: None,
         };
+        browser.read_rows(fs);
         if let Some(under) = under {
-            browser.cursor = browser
-                .entries(fs)
-                .iter()
-                .position(|e| e.path == under)
-                .unwrap_or(0);
+            browser.cursor = browser.row_of(&under).unwrap_or(0);
         }
         browser
+    }
+
+    /// The folder the list shows.
+    #[must_use]
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// The glob as typed after `/`, while one is open.
+    #[must_use]
+    pub fn glob(&self) -> Option<&str> {
+        self.glob.as_deref()
     }
 
     /// The glob in force: the one typed, when it holds more than spaces.
@@ -374,100 +402,118 @@ impl Browser {
             .filter(|g| !g.is_empty())
     }
 
-    /// The rows the list shows: the files under [`Self::dir`] the glob matches while one is in
+    /// Whether the glob in force stopped reading folders before it had read each folder it could
+    /// match in, so the list may be missing files it matches; an add is then refused
+    /// (`a_glob_that_stops_reading_says_so_and_adds_nothing`).
+    #[must_use]
+    pub fn glob_stopped(&self) -> bool {
+        self.glob_stopped
+    }
+
+    /// The rows the list shows: the files under the folder the glob matches while one is in
     /// force, and the folder's entries otherwise.
     #[must_use]
-    pub fn entries(&self, fs: &dyn Listing) -> Vec<Entry> {
-        if self.active_glob().is_some() {
-            return self
-                .matches(fs)
-                .into_iter()
-                .map(|path| Entry {
-                    path,
-                    kind: Kind::Data,
-                })
-                .collect();
-        }
-        fs.list(&self.dir)
+    pub fn entries(&self) -> &[Entry] {
+        &self.rows
     }
 
     /// The row under the list's cursor, kept inside the list as it now stands.
     #[must_use]
-    pub fn current(&self, fs: &dyn Listing) -> Option<Entry> {
-        let entries = self.entries(fs);
-        let last = entries.len().checked_sub(1)?;
-        entries.into_iter().nth(self.cursor.min(last))
+    pub fn current(&self) -> Option<&Entry> {
+        let last = self.rows.len().checked_sub(1)?;
+        self.rows.get(self.cursor.min(last))
     }
 
-    /// The data files under [`Self::dir`] the glob in force matches, by their path from it, in
-    /// that path's order with case ignored. `*` and `?` match within one folder's names and `**`
-    /// matches any depth of folders, none included, so `**/*.csv` matches the CSVs at the top as
+    /// The data files under the folder the glob in force matches, by their path from it, in that
+    /// path's order with case ignored. `*` and `?` match within one folder's names and `**`
+    /// matches any depth of folders, zero included, so `**/*.csv` matches the CSVs at the top as
     /// well as those below (`a_glob_matches_by_name_and_a_double_star_crosses_folders`). Names
     /// are matched with case ignored, as the Mac's own disk treats them.
     #[must_use]
-    pub fn matches(&self, fs: &dyn Listing) -> Vec<PathBuf> {
-        let Some(glob) = self.active_glob() else {
+    pub fn matches(&self) -> Vec<PathBuf> {
+        if self.active_glob().is_none() {
             return Vec::new();
-        };
-        let pattern: Vec<&str> = glob.split('/').filter(|s| !s.is_empty()).collect();
-        let depth = if pattern.contains(&"**") {
-            usize::MAX
-        } else {
-            pattern.len()
-        };
-        let mut found = Vec::new();
-        let mut budget = GLOB_FOLDER_LIMIT;
-        walk(fs, &self.dir, "", depth, &mut budget, &pattern, &mut found);
-        found.sort_by(|(a, _), (b, _)| a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b)));
-        found.into_iter().map(|(_, path)| path).collect()
+        }
+        self.rows.iter().map(|e| e.path.clone()).collect()
     }
 
-    /// Put `text` in the glob, as the analyst types it after `/`, with the list's cursor on its
-    /// first match.
-    pub fn set_glob(&mut self, text: &str) {
+    /// Put `text` in the glob, as the analyst types it after `/`, and list what it matches, with
+    /// the list's cursor on its first match.
+    pub fn set_glob(&mut self, text: &str, fs: &dyn Listing) {
         self.glob = Some(text.to_string());
         self.cursor = 0;
         self.note = None;
+        self.read_rows(fs);
+    }
+
+    /// Read the list's rows from the disk again, keeping the cursor on the row it was on while
+    /// that row is still listed: a file the Finder added or took away shows.
+    pub fn refresh(&mut self, fs: &dyn Listing) {
+        let at = self.current().map(|e| e.path.clone());
+        self.read_rows(fs);
+        if let Some(row) = at.and_then(|at| self.row_of(&at)) {
+            self.cursor = row;
+        }
     }
 
     /// The folder under the list's cursor, whose joins the canvas previews: none while a glob is
     /// in force, since the list then holds files.
     #[must_use]
-    pub fn canvas_folder(&self, fs: &dyn Listing) -> Option<PathBuf> {
+    pub fn canvas_folder(&self) -> Option<&Path> {
         if self.active_glob().is_some() {
             return None;
         }
-        self.current(fs)
+        self.current()
             .filter(|e| e.kind == Kind::Folder)
-            .map(|e| e.path)
+            .map(|e| e.path.as_path())
     }
 
-    /// Take the joins dovetail proposes between the tables of `folder`, none of them accepted.
-    /// Proposals again for the folder they were proposed for keep the answer the analyst gave on
-    /// each join proposed both times.
+    /// Take the joins dovetail proposes between the tables of `folder`. A join the analyst
+    /// accepted on the folder before, while the browser has been open, comes back accepted.
     pub fn set_joins(&mut self, folder: &Path, proposed: Vec<ProposedJoin>) {
-        let again = self.joins_for.as_deref() == Some(folder);
-        let before = std::mem::take(&mut self.joins);
+        let kept = self.accepted.get(folder);
         self.joins = proposed
             .into_iter()
             .map(|join| {
-                let accepted = again && before.iter().any(|(j, yes)| *yes && *j == join);
+                let accepted = kept.is_some_and(|k| k.contains(&join));
                 (join, accepted)
             })
             .collect();
-        if !again {
+        if self.joins_for.as_deref() != Some(folder) {
             self.join_cursor = 0;
         }
         self.join_cursor = self.join_cursor.min(self.joins.len().saturating_sub(1));
         self.joins_for = Some(folder.to_path_buf());
     }
 
-    /// The joins on the canvas: those proposed for the folder under the cursor, once they are.
+    /// The joins on the canvas: those proposed for the folder under the cursor, once they are,
+    /// each with whether the analyst accepted it.
     #[must_use]
-    pub fn canvas_joins(&self, fs: &dyn Listing) -> &[(ProposedJoin, bool)] {
-        match (&self.joins_for, self.canvas_folder(fs)) {
-            (Some(for_folder), Some(folder)) if *for_folder == folder => &self.joins,
+    pub fn canvas_joins(&self) -> &[(ProposedJoin, bool)] {
+        match (&self.joins_for, self.canvas_folder()) {
+            (Some(for_folder), Some(folder)) if for_folder == folder => &self.joins,
             _ => &[],
+        }
+    }
+
+    /// Accept the canvas's join `at`, or drop it if it was accepted, as `Space` on it does and a
+    /// click on it will.
+    pub fn toggle_join(&mut self, at: usize) {
+        let Some(folder) = self.canvas_folder().map(Path::to_path_buf) else {
+            return;
+        };
+        if self.joins_for.as_deref() != Some(folder.as_path()) {
+            return;
+        }
+        let Some((join, accepted)) = self.joins.get_mut(at) else {
+            return;
+        };
+        *accepted = !*accepted;
+        let kept = self.accepted.entry(folder).or_default();
+        if *accepted {
+            kept.insert(join.clone());
+        } else {
+            kept.remove(join);
         }
     }
 
@@ -503,11 +549,11 @@ impl Browser {
         match verb {
             CLOSE => return Effect::Close,
             NEXT_PANE => {
-                self.next_pane(fs);
+                self.next_pane();
                 return Effect::None;
             }
             FILL => {
-                self.fill(fs);
+                self.fill();
                 return Effect::None;
             }
             SWITCH_PREVIEW => {
@@ -518,6 +564,7 @@ impl Browser {
                 return Effect::None;
             }
             TYPE_GLOB => {
+                // An empty glob lists the folder as it is, so the rows need no reading again.
                 self.glob.get_or_insert_with(String::new);
                 self.focus = Pane::List;
                 self.full = false;
@@ -550,20 +597,21 @@ impl Browser {
     }
 
     fn list_key(&mut self, verb: &str, fs: &dyn Listing) -> Effect {
+        let last = self.rows.len().saturating_sub(1);
         match verb {
             MOVE_DOWN => {
-                let last = self.entries(fs).len().saturating_sub(1);
                 self.cursor = (self.cursor + 1).min(last);
                 self.join_cursor = 0;
             }
             MOVE_UP => {
-                self.cursor = self.cursor.saturating_sub(1);
+                self.cursor = self.cursor.min(last).saturating_sub(1);
                 self.join_cursor = 0;
             }
             GO_UP => {
                 if self.glob.is_some() {
                     self.glob = None;
                     self.cursor = 0;
+                    self.read_rows(fs);
                 } else if let Some(parent) = self.dir.parent().map(Path::to_path_buf) {
                     let from = self.dir.clone();
                     self.go_to(&parent, Some(&from), fs);
@@ -573,7 +621,7 @@ impl Browser {
                 if self.active_glob().is_some() {
                     return self.add(fs);
                 }
-                match self.current(fs) {
+                match self.current().cloned() {
                     Some(Entry {
                         path,
                         kind: Kind::Folder,
@@ -584,11 +632,14 @@ impl Browser {
             }
             ADD => return self.add(fs),
             MARK_OR_ACCEPT => {
-                if let Some(entry) = self.current(fs).filter(|e| e.kind == Kind::Data) {
-                    if !self.marks.remove(&entry.path) {
-                        self.marks.insert(entry.path);
+                if let Some(path) = self
+                    .current()
+                    .filter(|e| e.kind == Kind::Data)
+                    .map(|e| e.path.clone())
+                {
+                    if !self.marks.remove(&path) {
+                        self.marks.insert(path);
                     }
-                    let last = self.entries(fs).len().saturating_sub(1);
                     self.cursor = (self.cursor + 1).min(last);
                 }
             }
@@ -599,23 +650,20 @@ impl Browser {
 
     fn canvas_key(&mut self, verb: &str, fs: &dyn Listing) -> Effect {
         let joins = if self.preview == PreviewMode::Canvas {
-            self.canvas_joins(fs).len()
+            self.canvas_joins().len()
         } else {
             0
         };
         match verb {
             MOVE_DOWN if joins > 0 => self.join_cursor = (self.join_cursor + 1).min(joins - 1),
             MOVE_UP if joins > 0 => self.join_cursor = self.join_cursor.saturating_sub(1),
-            MARK_OR_ACCEPT if joins > 0 => {
-                let at = self.join_cursor.min(joins - 1);
-                self.joins[at].1 = !self.joins[at].1;
-            }
+            MARK_OR_ACCEPT if joins > 0 => self.toggle_join(self.join_cursor.min(joins - 1)),
             GO_UP => {
                 self.focus = Pane::List;
                 self.full = false;
             }
             GO_IN_OR_ADD | ADD => {
-                if let Some(folder) = self.canvas_folder(fs) {
+                if let Some(folder) = self.canvas_folder().map(Path::to_path_buf) {
                     return self.add_folder(&folder, fs);
                 }
             }
@@ -626,12 +674,12 @@ impl Browser {
 
     /// Whether `Tab` and `g t` can put the keys on the canvas: a folder is under the cursor,
     /// previewed as its canvas, with joins proposed on it to move between.
-    fn canvas_reachable(&self, fs: &dyn Listing) -> bool {
-        self.preview == PreviewMode::Canvas && !self.canvas_joins(fs).is_empty()
+    fn canvas_reachable(&self) -> bool {
+        self.preview == PreviewMode::Canvas && !self.canvas_joins().is_empty()
     }
 
-    fn next_pane(&mut self, fs: &dyn Listing) {
-        let canvas = self.canvas_reachable(fs);
+    fn next_pane(&mut self) {
+        let canvas = self.canvas_reachable();
         self.focus = if self.full {
             if self.focus == Pane::Canvas || !canvas {
                 Pane::List
@@ -647,29 +695,50 @@ impl Browser {
         };
     }
 
-    fn fill(&mut self, fs: &dyn Listing) {
+    fn fill(&mut self) {
         self.full = !self.full;
-        if self.full && self.canvas_reachable(fs) {
+        if self.full && self.canvas_reachable() {
             self.focus = Pane::Canvas;
         } else if !self.full && self.focus == Pane::Canvas {
             self.focus = Pane::List;
         }
     }
 
+    /// The row of the list whose path is `path`.
+    fn row_of(&self, path: &Path) -> Option<usize> {
+        self.rows.iter().position(|e| e.path == path)
+    }
+
+    /// Read the rows the list shows: the files the glob in force matches, walked breadth first so
+    /// the folders nearest the top are read before deep ones, or the folder's entries.
+    fn read_rows(&mut self, fs: &dyn Listing) {
+        if let Some(glob) = self.active_glob().map(str::to_string) {
+            let (found, stopped) = glob_walk(fs, &self.dir, &glob, self.glob_limit);
+            self.rows = found
+                .into_iter()
+                .map(|path| Entry {
+                    path,
+                    kind: Kind::Data,
+                })
+                .collect();
+            self.glob_stopped = stopped;
+        } else {
+            self.rows = fs.list(&self.dir);
+            self.glob_stopped = false;
+        }
+    }
+
     /// Show `dir` in the list, with `under` under the cursor when it is one of its rows and the
-    /// first row otherwise. A glob and the joins of the folder left are let go; the marks stay.
+    /// first row otherwise. The glob is let go; the marks, and the joins accepted, stay.
     fn go_to(&mut self, dir: &Path, under: Option<&Path>, fs: &dyn Listing) {
         self.dir = dir.to_path_buf();
         self.glob = None;
-        self.joins.clear();
-        self.joins_for = None;
         self.join_cursor = 0;
         if self.focus == Pane::Canvas {
             self.focus = Pane::List;
         }
-        self.cursor = under
-            .and_then(|u| self.entries(fs).iter().position(|e| e.path == u))
-            .unwrap_or(0);
+        self.read_rows(fs);
+        self.cursor = under.and_then(|u| self.row_of(u)).unwrap_or(0);
         if let Some(place) = place_for(&self.places, &self.dir) {
             self.place = place;
         }
@@ -679,9 +748,16 @@ impl Browser {
     /// marked files; else what is under the cursor, a folder with the joins accepted on its
     /// canvas.
     fn add(&mut self, fs: &dyn Listing) -> Effect {
-        if let Some(glob) = self.active_glob() {
-            let glob = glob.to_string();
-            let mut found = self.matches(fs);
+        if let Some(glob) = self.active_glob().map(str::to_string) {
+            if self.glob_stopped {
+                self.note = Some(format!(
+                    "{glob} stopped after reading {} folders, so it may not have found each file \
+                     it matches. Type a narrower glob, such as */*.csv, to add what it matches.",
+                    self.glob_limit
+                ));
+                return Effect::None;
+            }
+            let mut found = self.matches();
             if found.is_empty() {
                 self.note = Some(format!(
                     "No files in {} or below match {glob}.",
@@ -701,7 +777,7 @@ impl Browser {
         if !self.marks.is_empty() {
             return Effect::Add(self.marks.iter().cloned().collect(), Vec::new());
         }
-        let Some(entry) = self.current(fs) else {
+        let Some(entry) = self.current().cloned() else {
             return Effect::None;
         };
         match entry.kind {
@@ -733,15 +809,11 @@ impl Browser {
             ));
             return Effect::None;
         }
-        let joins = if self.joins_for.as_deref() == Some(folder) {
-            self.joins
-                .iter()
-                .filter(|(_, accepted)| *accepted)
-                .map(|(join, _)| join.accepted())
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let joins = self
+            .accepted
+            .get(folder)
+            .map(|kept| kept.iter().map(ProposedJoin::accepted).collect())
+            .unwrap_or_default();
         let mut paths = vec![folder.to_path_buf()];
         paths.extend(
             self.marks
@@ -782,42 +854,47 @@ fn browser_verb(keystrokes: &str) -> Option<&'static str> {
         .map(|b| b.longname)
 }
 
-/// Gather into `found` the data files under `dir` whose path from the glob's folder, `rel` and
-/// then their name, matches `pattern`, reading folders `depth` levels down and stopping once
-/// `budget` folders have been read.
-fn walk(
-    fs: &dyn Listing,
-    dir: &Path,
-    rel: &str,
-    depth: usize,
-    budget: &mut usize,
-    pattern: &[&str],
-    found: &mut Vec<(String, PathBuf)>,
-) {
-    if *budget == 0 {
-        return;
-    }
-    *budget -= 1;
-    for entry in fs.list(dir) {
-        let name = entry.name();
-        let here = if rel.is_empty() {
-            name
-        } else {
-            format!("{rel}/{name}")
-        };
-        match entry.kind {
-            Kind::Data => {
-                let parts: Vec<&str> = here.split('/').collect();
-                if segments_match(pattern, &parts) {
-                    found.push((here, entry.path));
+/// The data files under `top` whose path from it matches `glob`, in that path's order with case
+/// ignored, and whether the walk stopped with folders left to read. Folders are read breadth
+/// first, as deep as the glob's parts reach, and the walk stops once it has read `limit` folders.
+fn glob_walk(fs: &dyn Listing, top: &Path, glob: &str, limit: usize) -> (Vec<PathBuf>, bool) {
+    let pattern: Vec<&str> = glob.split('/').filter(|s| !s.is_empty()).collect();
+    let depth = if pattern.contains(&"**") {
+        usize::MAX
+    } else {
+        pattern.len()
+    };
+    let mut queue = VecDeque::from([(top.to_path_buf(), String::new(), depth)]);
+    let mut read = 0;
+    let mut found: Vec<(String, PathBuf)> = Vec::new();
+    let mut stopped = false;
+    while let Some((dir, rel, depth)) = queue.pop_front() {
+        if read == limit {
+            stopped = true;
+            break;
+        }
+        read += 1;
+        for entry in fs.list(&dir) {
+            let name = entry.name();
+            let here = if rel.is_empty() {
+                name
+            } else {
+                format!("{rel}/{name}")
+            };
+            match entry.kind {
+                Kind::Data => {
+                    let parts: Vec<&str> = here.split('/').collect();
+                    if segments_match(&pattern, &parts) {
+                        found.push((here, entry.path));
+                    }
                 }
+                Kind::Folder if depth > 1 => queue.push_back((entry.path, here, depth - 1)),
+                Kind::Folder | Kind::Other => {}
             }
-            Kind::Folder if depth > 1 => {
-                walk(fs, &entry.path, &here, depth - 1, budget, pattern, found)
-            }
-            Kind::Folder | Kind::Other => {}
         }
     }
+    found.sort_by(|(a, _), (b, _)| a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b)));
+    (found.into_iter().map(|(_, path)| path).collect(), stopped)
 }
 
 /// Whether the path `parts` matches the glob `pattern`, a part each: `**` takes any number of
@@ -860,7 +937,7 @@ fn name_matches(pattern: &str, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::cell::Cell;
 
     use super::*;
 
@@ -914,23 +991,35 @@ mod tests {
         }
     }
 
+    /// A disk that counts the folders read from it.
+    struct Counting<'a>(&'a Memory, Cell<usize>);
+
+    impl Listing for Counting<'_> {
+        fn list(&self, dir: &Path) -> Vec<Entry> {
+            self.1.set(self.1.get() + 1);
+            self.0.list(dir)
+        }
+    }
+
     const HOME: &str = "/home/ana";
     const DATA: &str = "/home/ana/data";
     const SHOP: &str = "/home/ana/data/shop";
     const TIDES: &str = "/home/ana/data/tides";
 
+    const FILES: &[&str] = &[
+        "/home/ana/Desktop/",
+        "/home/ana/data/archive/2023/q1.csv",
+        "/home/ana/data/shop/customers.csv",
+        "/home/ana/data/shop/orders.csv",
+        "/home/ana/data/shop/products.parquet",
+        "/home/ana/data/tides/stations.csv",
+        "/home/ana/data/tides/tides.csv",
+        "/home/ana/data/earthquakes.csv",
+        "/home/ana/data/notes.txt",
+    ];
+
     fn disk() -> Memory {
-        Memory::of(&[
-            "/home/ana/Desktop/",
-            "/home/ana/data/archive/2023/q1.csv",
-            "/home/ana/data/shop/customers.csv",
-            "/home/ana/data/shop/orders.csv",
-            "/home/ana/data/shop/products.parquet",
-            "/home/ana/data/tides/stations.csv",
-            "/home/ana/data/tides/tides.csv",
-            "/home/ana/data/earthquakes.csv",
-            "/home/ana/data/notes.txt",
-        ])
+        Memory::of(FILES)
     }
 
     fn places_here() -> Vec<Place> {
@@ -965,16 +1054,20 @@ mod tests {
         b
     }
 
-    fn under_cursor(b: &Browser, fs: &Memory) -> String {
-        b.current(fs).map(|e| e.name()).unwrap_or_default()
+    fn under_cursor(b: &Browser) -> String {
+        b.current().map(Entry::name).unwrap_or_default()
+    }
+
+    fn answers(b: &Browser) -> Vec<bool> {
+        b.canvas_joins().iter().map(|(_, yes)| *yes).collect()
     }
 
     #[test]
     fn it_opens_on_the_first_source_in_its_folder_with_it_under_the_cursor() {
         let fs = disk();
         let b = at("earthquakes.csv", &fs);
-        assert_eq!(b.dir, path(DATA));
-        assert_eq!(under_cursor(&b, &fs), "earthquakes.csv");
+        assert_eq!(b.dir(), Path::new(DATA));
+        assert_eq!(under_cursor(&b), "earthquakes.csv");
         assert_eq!(b.places[b.place].label, "data", "the place it is in");
         assert_eq!(b.focus, Pane::List);
     }
@@ -983,15 +1076,15 @@ mod tests {
     fn it_opens_on_a_folder_source_in_its_parent_so_the_canvas_previews_it() {
         let fs = disk();
         let b = at("shop", &fs);
-        assert_eq!(b.dir, path(DATA));
-        assert_eq!(b.canvas_folder(&fs), Some(path(SHOP)));
+        assert_eq!(b.dir(), Path::new(DATA));
+        assert_eq!(b.canvas_folder(), Some(Path::new(SHOP)));
     }
 
     #[test]
     fn it_opens_on_the_home_folder_without_a_source() {
         let fs = disk();
         let b = Browser::open_among(places_here(), Path::new(HOME), None, &fs);
-        assert_eq!(b.dir, path(HOME));
+        assert_eq!(b.dir(), Path::new(HOME));
         assert_eq!(b.cursor, 0);
         assert_eq!(b.places[b.place].label, "Home");
     }
@@ -1001,18 +1094,18 @@ mod tests {
         let fs = disk();
         let mut b = Browser::open_among(places_here(), Path::new(DATA), None, &fs);
         // archive, shop, tides, earthquakes.csv, notes.txt
-        assert_eq!(under_cursor(&b, &fs), "archive");
+        assert_eq!(under_cursor(&b), "archive");
         b.press("k", &fs);
-        assert_eq!(under_cursor(&b, &fs), "archive", "k stops at the top");
+        assert_eq!(under_cursor(&b), "archive", "k stops at the top");
         b.press("j", &fs);
         b.press("down", &fs);
-        assert_eq!(under_cursor(&b, &fs), "tides");
+        assert_eq!(under_cursor(&b), "tides");
         for _ in 0..9 {
             b.press("j", &fs);
         }
-        assert_eq!(under_cursor(&b, &fs), "notes.txt", "j stops at the foot");
+        assert_eq!(under_cursor(&b), "notes.txt", "j stops at the foot");
         b.press("up", &fs);
-        assert_eq!(under_cursor(&b, &fs), "earthquakes.csv");
+        assert_eq!(under_cursor(&b), "earthquakes.csv");
     }
 
     #[test]
@@ -1021,8 +1114,8 @@ mod tests {
         for key in ["l", "enter", "right"] {
             let mut b = at("tides", &fs);
             assert_eq!(b.press(key, &fs), Effect::None, "{key}");
-            assert_eq!(b.dir, path(TIDES), "{key} went into the folder");
-            assert_eq!(under_cursor(&b, &fs), "stations.csv", "{key}");
+            assert_eq!(b.dir(), Path::new(TIDES), "{key} went into the folder");
+            assert_eq!(under_cursor(&b), "stations.csv", "{key}");
         }
     }
 
@@ -1058,17 +1151,17 @@ mod tests {
         let fs = disk();
         let mut b = at("tides", &fs);
         b.press("l", &fs);
-        assert_eq!(b.dir, path(TIDES));
+        assert_eq!(b.dir(), Path::new(TIDES));
         b.press("h", &fs);
-        assert_eq!(b.dir, path(DATA));
+        assert_eq!(b.dir(), Path::new(DATA));
         assert_eq!(
-            under_cursor(&b, &fs),
+            under_cursor(&b),
             "tides",
             "the folder left is under the cursor"
         );
         b.press("left", &fs);
-        assert_eq!(b.dir, path(HOME));
-        assert_eq!(under_cursor(&b, &fs), "data");
+        assert_eq!(b.dir(), Path::new(HOME));
+        assert_eq!(under_cursor(&b), "data");
         assert_eq!(b.places[b.place].label, "Home");
     }
 
@@ -1091,7 +1184,11 @@ mod tests {
             b.press("a", &fs),
             Effect::Add(vec![path(SHOP)], vec![shop_joins()[1].accepted()])
         );
-        assert_eq!(b.dir, path(DATA), "a adds the folder without going into it");
+        assert_eq!(
+            b.dir(),
+            Path::new(DATA),
+            "a adds the folder without going into it"
+        );
     }
 
     #[test]
@@ -1116,7 +1213,7 @@ mod tests {
         );
         b.press("h", &fs);
         b.press("k", &fs);
-        assert_eq!(under_cursor(&b, &fs), "shop");
+        assert_eq!(under_cursor(&b), "shop");
         b.press("l", &fs);
         b.press("j", &fs);
         b.press("space", &fs);
@@ -1147,7 +1244,7 @@ mod tests {
             BTreeSet::from([path("/home/ana/data/earthquakes.csv")])
         );
         assert_eq!(
-            under_cursor(&b, &fs),
+            under_cursor(&b),
             "notes.txt",
             "the cursor moves on, as yazi's does"
         );
@@ -1174,15 +1271,9 @@ mod tests {
         let mut b = on_shop(&fs);
         b.press("tab", &fs);
         b.press("space", &fs);
-        assert_eq!(
-            b.joins.iter().map(|(_, yes)| *yes).collect::<Vec<_>>(),
-            [true, false]
-        );
+        assert_eq!(answers(&b), [true, false]);
         b.press("space", &fs);
-        assert_eq!(
-            b.joins.iter().map(|(_, yes)| *yes).collect::<Vec<_>>(),
-            [false, false]
-        );
+        assert_eq!(answers(&b), [false, false]);
         assert!(b.marks.is_empty(), "Space on the canvas marks no file");
     }
 
@@ -1199,7 +1290,7 @@ mod tests {
         b.press("k", &fs);
         assert_eq!(b.join_cursor, 0, "k stops at the first");
         assert_eq!(
-            under_cursor(&b, &fs),
+            under_cursor(&b),
             "shop",
             "the list's cursor stays on the folder"
         );
@@ -1236,7 +1327,7 @@ mod tests {
         b.press("j", &fs);
         b.press("j", &fs);
         b.press("enter", &fs);
-        assert_eq!(b.dir, path("/home/ana/Desktop"));
+        assert_eq!(b.dir(), Path::new("/home/ana/Desktop"));
         assert_eq!(b.focus, Pane::List, "the keys go to the place's list");
     }
 
@@ -1245,29 +1336,83 @@ mod tests {
         let fs = disk();
         let mut b = at("earthquakes.csv", &fs);
         b.press("/", &fs);
-        assert_eq!(b.glob.as_deref(), Some(""), "the glob is open to type");
-        assert_eq!(b.entries(&fs).len(), 5, "an empty glob filters nothing");
-        b.set_glob("*.csv");
-        assert_eq!(b.matches(&fs), [path("/home/ana/data/earthquakes.csv")]);
-        b.set_glob("*/*.CSV");
-        assert_eq!(b.matches(&fs).len(), 4, "shop's two CSVs and tides' two");
-        b.set_glob("**/*.csv");
-        assert_eq!(b.matches(&fs).len(), 6, "every CSV at any depth");
-        assert_eq!(b.entries(&fs).len(), 6, "the list shows the matches");
+        assert_eq!(b.glob(), Some(""), "the glob is open to type");
+        assert_eq!(b.entries().len(), 5, "an empty glob filters nothing");
+        b.set_glob("*.csv", &fs);
+        assert_eq!(b.matches(), [path("/home/ana/data/earthquakes.csv")]);
+        b.set_glob("*/*.CSV", &fs);
+        assert_eq!(b.matches().len(), 4, "shop's two CSVs and tides' two");
+        b.set_glob("**/*.csv", &fs);
+        assert_eq!(b.matches().len(), 6, "the CSVs at each depth");
+        assert_eq!(b.entries().len(), 6, "the list shows the matches");
+        assert!(!b.glob_stopped());
         let Effect::Add(added, joins) = b.clone().press("enter", &fs) else {
             panic!("Enter with a glob adds what it matches");
         };
-        assert_eq!(added, b.matches(&fs));
+        assert_eq!(added, b.matches());
         assert!(joins.is_empty());
-        b.set_glob("*.json");
+        b.set_glob("*.json", &fs);
         assert_eq!(b.press("a", &fs), Effect::None);
         assert!(b
             .note
             .as_deref()
             .is_some_and(|n| n.contains("match *.json")));
         b.press("h", &fs);
-        assert_eq!(b.glob, None, "h clears the glob");
-        assert_eq!(b.dir, path(DATA), "and stays in the folder");
+        assert_eq!(b.glob(), None, "h clears the glob");
+        assert_eq!(b.dir(), Path::new(DATA), "and stays in the folder");
+        assert_eq!(b.entries().len(), 5, "and lists the folder again");
+    }
+
+    #[test]
+    fn a_glob_that_stops_reading_says_so_and_adds_nothing() {
+        let fs = disk();
+        let mut b = at("earthquakes.csv", &fs);
+        b.glob_limit = 2;
+        b.set_glob("**/*.csv", &fs);
+        assert!(b.glob_stopped(), "two folders do not hold the whole tree");
+        assert_eq!(
+            b.matches(),
+            [path("/home/ana/data/earthquakes.csv")],
+            "read breadth first, the top folder's match is found before the deep ones"
+        );
+        assert_eq!(b.press("a", &fs), Effect::None);
+        let note = b.note.clone().expect("a sentence for the foot");
+        assert!(note.contains("stopped after reading 2 folders"), "{note}");
+        b.glob_limit = GLOB_FOLDER_LIMIT;
+        b.set_glob("**/*.csv", &fs);
+        assert!(!b.glob_stopped());
+    }
+
+    #[test]
+    fn a_glob_reads_the_disk_when_typed_not_on_each_key() {
+        let memory = disk();
+        let fs = Counting(&memory, Cell::new(0));
+        let mut b = Browser::open_among(places_here(), Path::new(DATA), None, &fs);
+        b.set_glob("**/*.csv", &fs);
+        let read = fs.1.get();
+        assert!(read > 1, "the glob read the folders below");
+        for key in ["j", "space", "k", "tab", "tab", "v", "v"] {
+            b.press(key, &fs);
+        }
+        let _ = (b.entries(), b.current(), b.matches());
+        assert_eq!(
+            fs.1.get(),
+            read,
+            "the keys and the reads after it walked nothing again"
+        );
+    }
+
+    #[test]
+    fn refresh_reads_the_folder_again_and_keeps_the_cursor_on_its_row() {
+        let fs = disk();
+        let mut b = at("tides", &fs);
+        let mut more = FILES.to_vec();
+        more.push("/home/ana/data/aardvark.csv");
+        more.push("/home/ana/data/abc/");
+        let grown = Memory::of(&more);
+        b.refresh(&grown);
+        assert_eq!(b.entries().len(), 7, "the files made since are listed");
+        assert_eq!(under_cursor(&b), "tides", "the cursor stays on its row");
     }
 
     #[test]
@@ -1303,7 +1448,7 @@ mod tests {
         b.press("g", &fs);
         b.press("j", &fs);
         assert!(!b.full);
-        assert_eq!(under_cursor(&b, &fs), "tides");
+        assert_eq!(under_cursor(&b), "tides");
     }
 
     #[test]
@@ -1331,7 +1476,7 @@ mod tests {
         b.press("k", &fs);
         b.press("k", &fs);
         b.press("k", &fs);
-        assert_eq!(under_cursor(&b, &fs), "shop");
+        assert_eq!(under_cursor(&b), "shop");
         b.set_joins(Path::new(SHOP), shop_joins());
         b.press("tab", &fs);
         b.press("space", &fs);
@@ -1349,20 +1494,26 @@ mod tests {
     }
 
     #[test]
-    fn proposals_again_for_the_same_folder_keep_the_answers_given() {
+    fn accepted_joins_are_kept_for_a_folder_proposed_again() {
         let fs = disk();
         let mut b = on_shop(&fs);
         b.press("tab", &fs);
         b.press("space", &fs);
-        b.set_joins(Path::new(SHOP), shop_joins());
-        assert_eq!(
-            b.joins.iter().map(|(_, yes)| *yes).collect::<Vec<_>>(),
-            [true, false]
-        );
+        b.press("h", &fs);
+        // The cursor moves to tides, whose joins are proposed, and back to shop, proposed again.
+        b.press("j", &fs);
         b.set_joins(Path::new(TIDES), Vec::new());
+        assert!(b.canvas_joins().is_empty(), "tides' joins are not shop's");
+        b.press("k", &fs);
         assert!(
-            b.canvas_joins(&fs).is_empty(),
-            "joins for another folder are not shop's"
+            b.canvas_joins().is_empty(),
+            "joins proposed for tides are not drawn on shop"
+        );
+        b.set_joins(Path::new(SHOP), shop_joins());
+        assert_eq!(answers(&b), [true, false]);
+        assert_eq!(
+            b.press("a", &fs),
+            Effect::Add(vec![path(SHOP)], vec![shop_joins()[0].accepted()])
         );
     }
 
@@ -1380,10 +1531,10 @@ mod tests {
     fn a_key_the_browser_does_not_bind_does_nothing() {
         let fs = disk();
         let mut b = at("earthquakes.csv", &fs);
-        let before = (b.dir.clone(), b.cursor, b.focus);
+        let before = (b.dir().to_path_buf(), b.cursor, b.focus);
         assert_eq!(b.press("cmd-s", &fs), Effect::None);
         assert_eq!(b.press("x", &fs), Effect::None);
-        assert_eq!((b.dir.clone(), b.cursor, b.focus), before);
+        assert_eq!((b.dir().to_path_buf(), b.cursor, b.focus), before);
     }
 
     /// Each verb the browser answers is bound in the registry's Browser context, and each verb
