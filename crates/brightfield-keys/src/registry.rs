@@ -849,6 +849,19 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Remove the step that makes the selected asset, or put back one removed; kept as a draft until Save",
             scores: Some(Scores { frequency: 2, mnemonic: 5, convention: 5, motor_note: "d d = delete the line (vim); doubled so a stray d removes nothing; d d again puts the step back" }),
         },
+        // Open the sources browser over the Protocol, on its first source. Opening it writes
+        // nothing, so View; the add the browser then makes is its own Data verb.
+        VerbEntry {
+            longname: "open-sources-browser",
+            tier: CommandTier::View,
+            binding_specs: vec![proto("shift-a")],
+            scope_applicability: vec![Protocol],
+            drives: D::PaletteMeta,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Open the sources browser to add files, folders and databases to the Protocol",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 3, motor_note: "A = add sources (vim A appends); the browser's bare a adds what is highlighted, so the shift opens the sheet the a works in" }),
+        },
         // ---- the Outline's column rows: put the column under the cursor on a
         //      channel. `z` opens a chord beside `z a`, and the rows answer in the
         //      Protocol context. Each acts on a column's row and does nothing on a
@@ -1942,6 +1955,7 @@ mod tests {
             "open-steps-sheet",
             "yank-address",
             "remove-step",
+            "open-sources-browser",
             "put-column-on-x",
             "put-column-on-y",
             "put-column-on-colour",

@@ -257,6 +257,12 @@ The sources browser follows yazi: three columns, the places, the current folder'
 | `switch-folder-preview` | `v` | 3 / 5 / 4 | `v` = view, as the model pane's `v` steps its views |
 | `close-sources-browser` | `escape` | 4 / 4 / 5 | esc = close the sheet (macOS sheets, the Esc ladder) |
 
+The browser is opened from a Protocol by a key of the Protocol context, which the spine answers while it holds the keys and the graph answers while it is on the canvas. It is a View verb: opening the browser writes nothing, and the add that may follow is the browser's own Data verb.
+
+| longname | key(s) | freq / mnem / conv | motor note |
+|----------|--------|--------------------|------------|
+| `open-sources-browser` | `shift-a` | 3 / 5 / 3 | `A` = add sources (vim `A` appends); the browser's own bare `a` adds what is highlighted, so the shift opens the sheet the `a` then works in; the Protocol context keeps it apart from the model's `add-join` on the same key |
+
 Reserved verbs are deliberately unscored (no key yet), shown greyed in the palette until their keys land:
 needs-keyboard-target (`filter-view`, `cross-filter-all`, `toggle-point-select`, `set-param`) and
 needs-command-log (`change-mark-type`, `add-mark`, `set-channel`, `remove-mark`, `undo`).

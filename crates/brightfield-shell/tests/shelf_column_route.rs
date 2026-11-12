@@ -1098,6 +1098,15 @@ fn every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen()
                     "{verb} opened no location chooser"
                 );
             }
+            "open-sources-browser" => {
+                let mut at = Window::own_protocol();
+                at.graph_to_canvas();
+                assert_eq!(
+                    at.confirm_leaving(verb),
+                    Some("sources-browser"),
+                    "{verb} opened no sources browser"
+                );
+            }
             "open-preferences" => {
                 let mut at = Window::crosswalk();
                 assert_eq!(

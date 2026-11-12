@@ -32,6 +32,9 @@ pub enum OpenRequest {
     /// Several files or folders handed over by one gesture, added together as sources to the
     /// Protocol open now.
     AddSources(Vec<PathBuf>),
+    /// What the sources browser adds to the Protocol open now: these files and folders, with the
+    /// joins the analyst accepted on a folder's canvas written into its model.
+    AddJoined(Vec<PathBuf>, Vec<crate::own_files::AcceptedJoin>),
 }
 
 /// Where a path goes when it is opened.

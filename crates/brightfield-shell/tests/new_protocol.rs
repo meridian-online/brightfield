@@ -171,12 +171,18 @@ impl Window {
     fn new() -> Self {
         scratch();
         let mut win = Self {
-            // A chart kept as a version, rather than saved, needs somewhere to keep it.
+            // A chart kept as a version, rather than saved, needs somewhere to keep it. The
+            // sources browser New Protocol opens on the home folder previews nothing there: its
+            // reads answer at once, so no file under the home folder is read.
             app: MeridianApp::headless(Boot::empty(), Mode::Light)
                 .running_with(Some(runner()))
                 .keeping_history(Some(brightfield_protocol::HistoryStore::At(
                     scratch().join("history"),
-                ))),
+                )))
+                .previewing_sources_with(
+                    std::sync::Arc::new(|_: &Path| Ok(Default::default())),
+                    std::sync::Arc::new(|_: &Path| Ok(Vec::new())),
+                ),
             ctx: egui::Context::default(),
             time: 0.0,
         };
@@ -317,7 +323,11 @@ fn new_protocol_asks_where_with_the_protocols_folder_preselected() {
     win.click(row.center());
     assert_eq!(win.app.new_protocol_selected(), Some(1));
     win.key(egui::Key::Enter);
-    assert_eq!(win.app.open_overlay(), None);
+    assert_eq!(
+        win.app.open_overlay(),
+        Some("sources-browser"),
+        "the sheet closed, and the sources browser opened over the new Protocol"
+    );
     let made = group.join("Untitled");
     assert!(
         made.join("arcform.yaml").is_file(),
@@ -347,6 +357,11 @@ fn new_protocol_makes_untitled_and_opens_the_browser() {
     assert!(
         win.app.browser_requested(),
         "an empty Protocol asks for the sources browser"
+    );
+    assert_eq!(
+        win.app.open_overlay(),
+        Some("sources-browser"),
+        "and the browser opens over its empty canvas"
     );
     let canvas = win
         .app

@@ -2268,6 +2268,17 @@ enum Overlay {
     /// The question opening a data file asks when known Protocols already read it and none of
     /// them is plainly the one: which to open, or a new Protocol.
     WhichProtocol(WhichProtocolSheet),
+    /// The sources browser, adding files, folders and databases to the open Protocol.
+    SourcesBrowser(Box<BrowserOverlay>),
+}
+
+/// The sources browser as the window holds it: the sheet, and the folder the open Protocol was
+/// just made of or given, when the browser opened on its canvas for its joins.
+struct BrowserOverlay {
+    sheet: crate::sources_browser_view::Sheet,
+    /// The folder already among the Protocol's sources whose canvas shows the joins of the
+    /// Protocol's own model: adding it accepts the joins ticked there rather than adding it again.
+    made_of: Option<PathBuf>,
 }
 
 /// The sheet that asks which Protocol a data file opens: each known Protocol that reads it, by
@@ -3337,14 +3348,19 @@ pub struct MeridianApp {
     /// `None` for any other document.
     empty_protocol: Option<crate::own_files::OwnProtocol>,
     /// Whether the open Protocol asks for the sources browser: New Protocol made it with nothing
-    /// in it. The browser itself is not built yet; until it is, the empty canvas says how to add
-    /// a source, and this is what the browser will answer to.
+    /// in it, so the browser opened over its empty canvas, and the first source added lets it go.
     browser_requested: bool,
+    /// What the sources browser's previews are read with: a test's, in place of reading files
+    /// with DuckDB and asking dovetail about folders with this window's runner.
+    browser_previews: Option<(
+        crate::sources_browser_view::ReadPage,
+        crate::sources_browser_view::ProposeJoins,
+    )>,
+    /// The registry's key for `open-sources-browser`, read here over a Protocol with no sources,
+    /// whose canvas has no spine to answer it.
+    browser_binding: Option<&'static str>,
     /// What the empty canvas said on the last frame, when it was drawn.
     empty_canvas_said: Option<String>,
-    /// The empty canvas's Add source… was clicked: the file picker is raised after the frame, as
-    /// the door's Open is, and what it chooses is added to the open Protocol.
-    add_source_pick_requested: bool,
     /// Where the front door drew New Protocol on the last frame.
     door_new_protocol: Option<egui::Rect>,
     /// The New Protocol sheet's Other… was chosen: the folder picker is raised after the frame,
@@ -3877,8 +3893,12 @@ impl MeridianApp {
             own_protocol: None,
             empty_protocol: None,
             browser_requested: false,
+            browser_previews: None,
+            browser_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == crate::protocol::OPEN_SOURCES_BROWSER)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
             empty_canvas_said: None,
-            add_source_pick_requested: false,
             door_new_protocol: None,
             new_protocol_pick_requested: false,
             preferences_pick_requested: false,
@@ -6274,7 +6294,7 @@ impl MeridianApp {
             self.regions.push((canvas.id, drawn.response.rect));
             self.empty_canvas_said = Some(said);
             if add {
-                self.add_source_pick_requested = true;
+                self.open_sources_browser(&ctx);
             }
         } else {
             // Content somewhere, so the regions — and no stale door geometry: a
@@ -7263,6 +7283,7 @@ impl MeridianApp {
         // F2, and a place field entered this frame: a rename or move reopens the Protocol, so it
         // waits until every pane has drawn.
         self.rename_key(&ctx);
+        self.browser_key(&ctx);
         self.new_protocol_key(&ctx);
         self.preferences_key(&ctx);
         if std::mem::take(&mut self.location_pick_requested) && self.dialogs_allowed {
@@ -7282,8 +7303,8 @@ impl MeridianApp {
         if let Some(to) = self.place_move.take() {
             self.leave(&ctx, Leaving::Move(to));
         }
-        // New Protocol's Other…, and the empty canvas's Add source…: each raises a system picker,
-        // after the frame and only where dialogs are allowed, as Choose… does.
+        // New Protocol's Other… raises a system picker, after the frame and only where dialogs are
+        // allowed, as Choose… does.
         if std::mem::take(&mut self.new_protocol_pick_requested) && self.dialogs_allowed {
             if let Some(chosen) = rfd::FileDialog::new()
                 .set_title("Make the Protocol in")
@@ -7302,9 +7323,6 @@ impl MeridianApp {
             {
                 self.choose_protocols_folder(&ctx, &chosen);
             }
-        }
-        if std::mem::take(&mut self.add_source_pick_requested) && self.dialogs_allowed {
-            crate::data_file::pick(&self.open_queue, crate::open_queue::OpenRequest::of_sources);
         }
         if let Some((id, name)) = self.door_renamed.take() {
             self.rename_door_row(&ctx, &id, &name);
@@ -8616,6 +8634,7 @@ impl MeridianApp {
         let mut which_open: Option<PathBuf> = None;
         let mut preferences_action = None;
         let mut question_dismissed = false;
+        let mut browser_effect = None;
         match &mut overlay {
             Overlay::Palette(picker) => {
                 let chrome = ModalChrome::new().title("Commands").enter_hint("run");
@@ -8822,6 +8841,32 @@ impl MeridianApp {
                     close = shown.dismissed;
                 }
             }
+            Overlay::SourcesBrowser(open) => {
+                // A sheet wider than the modal rungs, for its three columns, on the same scrim
+                // and in the same frame a modal card takes from the theme. Its keys, Esc among
+                // them, are the browser's; a click on the backdrop closes it, adding nothing.
+                let size = sources_browser_size(ctx);
+                let scrim = crate::design::to_color32(semantic(self.mode.is_dark()).surfaces.scrim);
+                let mode = self.mode;
+                let shown = egui::Modal::new(egui::Id::new("bf-overlay-sources-browser"))
+                    .backdrop_color(scrim)
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| {
+                        ui.set_width(size.x);
+                        ui.set_height(size.y);
+                        crate::sources_browser_view::show(ui, &mut open.sheet, mode)
+                    });
+                close = shown.should_close()
+                    || matches!(
+                        shown.inner,
+                        crate::sources_browser::Effect::Add(..)
+                            | crate::sources_browser::Effect::Close
+                    );
+                browser_effect = Some((shown.inner, open.made_of.clone()));
+                if open.sheet.reading() {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                }
+            }
             Overlay::Preferences(sheet) => {
                 let folder = crate::protocols_dir::root();
                 let overridden = protocols_dir_override();
@@ -8855,6 +8900,9 @@ impl MeridianApp {
         }
         if let Some(answer) = answered {
             self.answer_close_question(ctx, answer);
+        }
+        if let Some((crate::sources_browser::Effect::Add(paths, joins), made_of)) = browser_effect {
+            self.browser_adds(ctx, paths, joins, made_of);
         }
         if question_dismissed {
             self.dismiss_close_question(ctx);
@@ -9464,7 +9512,8 @@ impl MeridianApp {
                 Leaving::Move(Move::Relocate(_)) => crate::overlays::AskedBefore::Moving,
                 Leaving::Open(
                     crate::open_queue::OpenRequest::AddSource(_)
-                    | crate::open_queue::OpenRequest::AddSources(_),
+                    | crate::open_queue::OpenRequest::AddSources(_)
+                    | crate::open_queue::OpenRequest::AddJoined(..),
                 ) => crate::overlays::AskedBefore::AddingSource,
                 Leaving::Make(_) => crate::overlays::AskedBefore::Making,
                 Leaving::MoveAll { .. } => crate::overlays::AskedBefore::MovingToNewFolder,
@@ -9546,13 +9595,15 @@ impl MeridianApp {
             }),
             OpenRequest::Link(link) => link.clone(),
             OpenRequest::AddSource(path) => display_name(path),
-            OpenRequest::AddSources(paths) => paths.first().map_or_else(String::new, |p| {
-                if paths.len() > 1 {
-                    format!("{} and {} more", display_name(p), paths.len() - 1)
-                } else {
-                    display_name(p)
-                }
-            }),
+            OpenRequest::AddSources(paths) | OpenRequest::AddJoined(paths, _) => {
+                paths.first().map_or_else(String::new, |p| {
+                    if paths.len() > 1 {
+                        format!("{} and {} more", display_name(p), paths.len() - 1)
+                    } else {
+                        display_name(p)
+                    }
+                })
+            }
         };
         self.notifications.raise(
             Notification::new(
@@ -10044,6 +10095,7 @@ impl MeridianApp {
             Overlay::NewProtocol(_) => "new-protocol",
             Overlay::Preferences(_) => "preferences",
             Overlay::WhichProtocol(_) => "which-protocol",
+            Overlay::SourcesBrowser(_) => "sources-browser",
         })
     }
 
@@ -10552,6 +10604,11 @@ impl MeridianApp {
                     self.open_place_field(PlaceField::Name);
                     ctx.request_repaint();
                 }
+                // open-sources-browser is the window's as A is: the browser adds to the Protocol
+                // the window holds, whichever document is on the canvas.
+                Request::Verb(verb) if verb.as_str() == crate::protocol::OPEN_SOURCES_BROWSER => {
+                    self.open_sources_browser(ctx);
+                }
                 // The picture verbs are the window's: what they draw is the
                 // chart document's, and where a file goes is the window's to
                 // say. Over the graph there is no chart, and they say so.
@@ -10694,6 +10751,10 @@ impl MeridianApp {
         if let Some(step) = self.protocol.doc.model.take_remove_ask() {
             self.ask_remove_step(&step);
             ctx.request_repaint();
+        }
+        // …and `A`, from the spine or the graph: the browser over the Protocol the window holds.
+        if self.protocol.doc.model.take_browser_ask() {
+            self.open_sources_browser(ctx);
         }
         self.protocol
             .doc
@@ -11362,6 +11423,11 @@ impl MeridianApp {
         self.own_protocol = None;
         self.empty_protocol = None;
         self.browser_requested = false;
+        // The sources browser adds to the Protocol it was opened over, which is going: an add
+        // that gave an empty Protocol its first source, or an open of another, closes it.
+        if matches!(self.overlay, Some(Overlay::SourcesBrowser(_))) {
+            self.overlay = None;
+        }
         self.tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         // The model pane belongs to the own-files Protocol it was opened for, and a different
         // document is arriving. `open_model_pane` and `open_model_in_grid` put it back after.
@@ -11786,7 +11852,8 @@ impl MeridianApp {
             OpenRequest::Path(_)
             | OpenRequest::Paths(_)
             | OpenRequest::AddSource(_)
-            | OpenRequest::AddSources(_) => {
+            | OpenRequest::AddSources(_)
+            | OpenRequest::AddJoined(..) => {
                 self.leave(ctx, Leaving::Open(request));
             }
             OpenRequest::Link(_) => {
@@ -11837,6 +11904,12 @@ impl MeridianApp {
                     }
                     Ok(crate::data_file::Opened::Model(protocol)) => {
                         self.open_model_pane(ctx, protocol, runner, true);
+                        // A folder whose tables dovetail proposes joins between opens the browser
+                        // on its canvas, by every way in, so its joins are accepted before the
+                        // analyst works on the model; a workbook or database opens on the model.
+                        if path.is_dir() {
+                            self.offer_folder_joins(ctx, &path);
+                        }
                     }
                     Err(e) => self.say_open_failed(ctx, chosen, e),
                 }
@@ -11857,8 +11930,9 @@ impl MeridianApp {
                 self.open_paths_knowing(ctx, paths, &installed);
             }
             OpenRequest::Link(link) => self.say_link_not_opened(ctx, &link),
-            OpenRequest::AddSource(path) => self.add_sources(ctx, &[path]),
-            OpenRequest::AddSources(paths) => self.add_sources(ctx, &paths),
+            OpenRequest::AddSource(path) => self.add_sources(ctx, &[path], None),
+            OpenRequest::AddSources(paths) => self.add_sources(ctx, &paths, None),
+            OpenRequest::AddJoined(paths, joins) => self.add_sources(ctx, &paths, Some(&joins)),
         }
     }
 
@@ -11967,11 +12041,224 @@ impl MeridianApp {
     }
 
     /// Whether the open Protocol asks for the sources browser, as one New Protocol has just made
-    /// does: the hook the browser will answer to. Until the browser is built, such a Protocol's
-    /// canvas says how to add a source ([`Self::empty_canvas_said`]).
+    /// does: the browser opens over its empty canvas, which says how to add a source once the
+    /// browser is closed ([`Self::empty_canvas_said`]).
     #[must_use]
     pub fn browser_requested(&self) -> bool {
         self.browser_requested
+    }
+
+    /// The sources browser, while it is open: a test hook.
+    #[must_use]
+    pub fn sources_browser(&self) -> Option<&crate::sources_browser_view::Sheet> {
+        match &self.overlay {
+            Some(Overlay::SourcesBrowser(open)) => Some(&open.sheet),
+            _ => None,
+        }
+    }
+
+    /// This window reading the sources browser's previews with `read` and `propose`, so a test
+    /// can hold a read or name the joins a folder is proposed.
+    #[must_use]
+    pub fn previewing_sources_with(
+        mut self,
+        read: crate::sources_browser_view::ReadPage,
+        propose: crate::sources_browser_view::ProposeJoins,
+    ) -> Self {
+        self.browser_previews = Some((read, propose));
+        self
+    }
+
+    /// The reads the sources browser's previews take: the test's when one named them, else a
+    /// file's first page read with DuckDB and a folder's joins proposed by dovetail, run by this
+    /// window's runner.
+    fn browser_previews(&self) -> crate::sources_browser_view::Previews {
+        use crate::sources_browser_view::{propose_joins, read_first_page, Previews};
+        if let Some((read, propose)) = &self.browser_previews {
+            return Previews::new(std::sync::Arc::clone(read), std::sync::Arc::clone(propose));
+        }
+        let runner = self.runner.clone().or_else(crate::run::Runner::this_binary);
+        Previews::new(
+            std::sync::Arc::new(read_first_page),
+            std::sync::Arc::new(move |folder: &std::path::Path| match &runner {
+                Some(runner) => propose_joins(folder, runner),
+                None => Err("there is no runner to load its tables with".to_string()),
+            }),
+        )
+    }
+
+    /// The Protocol the window holds that sources can be added to: one Brightfield made, with no
+    /// sources yet, one source, or a model of several.
+    fn protocol_taking_sources(&self) -> Option<&crate::own_files::OwnProtocol> {
+        self.empty_protocol
+            .as_ref()
+            .or(self.own_protocol.as_ref())
+            .or_else(|| self.model.as_ref().map(|m| &m.doc.protocol))
+    }
+
+    /// **Open the sources browser over the Protocol the window holds**, on its first source in
+    /// that source's folder, or on the home folder for a Protocol with none, as `A`, the palette
+    /// and the empty canvas's Add source… do. Over a Protocol Brightfield did not make, a banner
+    /// says sources are added only to its own, and nothing opens.
+    pub fn open_sources_browser(&mut self, ctx: &egui::Context) {
+        if self.front_door_is_live() {
+            return;
+        }
+        let Some(protocol) = self.protocol_taking_sources() else {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(ADD_SOURCE_REFUSED_BANNER),
+                    Severity::Warning,
+                    "Sources were not added",
+                )
+                .body(ADD_SOURCE_REFUSED.to_string()),
+            );
+            ctx.request_repaint();
+            return;
+        };
+        let first = protocol.sources.tables.first().map(|t| t.file.clone());
+        self.show_sources_browser(ctx, first.as_deref(), None);
+    }
+
+    /// Put the sources browser over the window, on `at` in its folder with it under the cursor,
+    /// or on the home folder. With `joins_of`, `at` is a folder the open Protocol was just made of
+    /// or given, and its canvas shows those joins from the Protocol's model, each with whether the
+    /// analyst has accepted it, and holds the keys.
+    fn show_sources_browser(
+        &mut self,
+        ctx: &egui::Context,
+        at: Option<&std::path::Path>,
+        joins_of: Option<Vec<(crate::sources_browser::ProposedJoin, bool)>>,
+    ) {
+        use crate::sources_browser::{Browser, Disk, Pane};
+        let browser = Browser::open_at(at, &Disk);
+        let mut sheet = crate::sources_browser_view::Sheet::new(browser, self.browser_previews());
+        let mut made_of = None;
+        if let (Some(folder), Some(joins)) = (at, joins_of) {
+            let folder = std::path::absolute(folder).unwrap_or_else(|_| folder.to_path_buf());
+            sheet
+                .previews_mut()
+                .know_joins(&folder, joins.iter().map(|(j, _)| j.clone()).collect());
+            let b = &mut sheet.browser;
+            b.set_joins(&folder, joins.iter().map(|(j, _)| j.clone()).collect());
+            for (at, (_, accepted)) in joins.iter().enumerate() {
+                if *accepted {
+                    b.toggle_join(at);
+                }
+            }
+            if !b.canvas_joins().is_empty() {
+                b.focus = Pane::Canvas;
+            }
+            made_of = Some(folder);
+        }
+        self.overlay = Some(Overlay::SourcesBrowser(Box::new(BrowserOverlay {
+            sheet,
+            made_of,
+        })));
+        ctx.request_repaint();
+    }
+
+    /// **Open the browser on `folder`'s canvas when dovetail proposes joins between its tables**,
+    /// once `folder` is among the open Protocol's sources: by every way in, a folder with a
+    /// proposed join is shown so its joins are accepted before the analyst works on the model
+    /// (`a_folder_with_a_proposed_join_opens_the_browser_on_it_before_adding`). The joins shown
+    /// are the model's that touch a table read from the folder; one of them still dovetail's,
+    /// not decided by the analyst, opens the browser. A folder of one table, or whose tables
+    /// dovetail proposes no join between, opens nothing.
+    fn offer_folder_joins(&mut self, ctx: &egui::Context, folder: &std::path::Path) {
+        let Some(model) = self.model.as_ref() else {
+            return;
+        };
+        let folder = std::path::absolute(folder).unwrap_or_else(|_| folder.to_path_buf());
+        let tables: BTreeSet<&str> = model
+            .doc
+            .protocol
+            .sources
+            .tables
+            .iter()
+            .filter(|t| t.file.starts_with(&folder))
+            .map(|t| t.name.as_str())
+            .collect();
+        let joins: Vec<(crate::sources_browser::ProposedJoin, bool)> = model
+            .doc
+            .model
+            .relationships
+            .iter()
+            .filter(|r| tables.contains(r.from.as_str()) || tables.contains(r.to.as_str()))
+            .filter_map(
+                |r| match (r.from_columns.as_slice(), r.to_columns.as_slice()) {
+                    ([from], [to]) => Some((
+                        crate::sources_browser::ProposedJoin::new((&r.from, from), (&r.to, to)),
+                        r.meta.decided_by == brightfield_ossie::DecidedBy::Analyst,
+                    )),
+                    _ => None,
+                },
+            )
+            .collect();
+        if !joins.iter().any(|(_, accepted)| !accepted) {
+            return;
+        }
+        self.show_sources_browser(ctx, Some(&folder), Some(joins));
+    }
+
+    /// **What the browser's add asks of the window.** A folder the Protocol was just made of or
+    /// given is among its sources already, so its joins ticked on the canvas are kept in the
+    /// model, as the model pane's Keep keeps one, and any dropped there are left as dovetail
+    /// proposed them. Everything else is added to the Protocol with the joins accepted, through
+    /// the open queue, so a draft is asked about first as before any add.
+    fn browser_adds(
+        &mut self,
+        ctx: &egui::Context,
+        mut paths: Vec<PathBuf>,
+        mut joins: Vec<crate::own_files::AcceptedJoin>,
+        made_of: Option<PathBuf>,
+    ) {
+        if let Some(folder) = made_of.filter(|f| paths.contains(f)) {
+            paths.retain(|p| *p != folder);
+            for join in std::mem::take(&mut joins) {
+                let name = self.model.as_ref().and_then(|m| {
+                    m.doc
+                        .model
+                        .relationships
+                        .iter()
+                        .find(|r| {
+                            let one = |c: &String| vec![c.clone()];
+                            (r.from == join.left.0
+                                && r.to == join.right.0
+                                && r.from_columns == one(&join.left.1)
+                                && r.to_columns == one(&join.right.1))
+                                || (r.from == join.right.0
+                                    && r.to == join.left.0
+                                    && r.from_columns == one(&join.right.1)
+                                    && r.to_columns == one(&join.left.1))
+                        })
+                        .filter(|r| r.meta.decided_by != brightfield_ossie::DecidedBy::Analyst)
+                        .map(|r| r.name.clone())
+                });
+                if let Some(name) = name {
+                    self.perform_model_action(ctx, crate::model_inspector::ModelAction::Keep(name));
+                }
+            }
+        }
+        if !paths.is_empty() {
+            self.open_queue
+                .push(crate::open_queue::OpenRequest::AddJoined(paths, joins));
+        }
+        ctx.request_repaint();
+    }
+
+    /// `A` over a Protocol with no sources, whose canvas has no spine to answer it, while no
+    /// overlay or text field holds the keys: the browser opens again as Add source… opens it.
+    fn browser_key(&mut self, ctx: &egui::Context) {
+        if self.empty_protocol.is_none()
+            || self.overlay.is_some()
+            || ctx.egui_wants_keyboard_input()
+        {
+            return;
+        }
+        if self.browser_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.open_sources_browser(ctx);
+        }
     }
 
     /// What the canvas of a Protocol with no sources said on the last frame, when it drew one.
@@ -12087,6 +12374,8 @@ impl MeridianApp {
         self.forget_door_listing();
         self.toasts.push(Toast::new(Severity::Success, said));
         self.retitle(ctx);
+        // An empty Protocol shows the sources browser over its empty canvas.
+        self.show_sources_browser(ctx, None, None);
         ctx.request_repaint();
     }
 
@@ -12099,7 +12388,18 @@ impl MeridianApp {
     /// With the door showing, `paths` open as a new Protocol, as an open of them would. Sources
     /// are added only to Protocols Brightfield made; over any other, a banner says so and nothing
     /// is added. A Protocol whose folder has gone says so, as every write into it does.
-    fn add_sources(&mut self, ctx: &egui::Context, paths: &[PathBuf]) {
+    ///
+    /// `joins` are those the analyst accepted in the sources browser, written into the model as
+    /// the analyst's. An add that did not come from the browser (`None`), of one folder whose
+    /// tables dovetail proposes joins between, opens the browser on that folder's canvas once the
+    /// folder is added, so the analyst can accept them before working on the model
+    /// ([`Self::offer_folder_joins`]).
+    fn add_sources(
+        &mut self,
+        ctx: &egui::Context,
+        paths: &[PathBuf],
+        joins: Option<&[crate::own_files::AcceptedJoin]>,
+    ) {
         let Some(first) = paths.first() else {
             return;
         };
@@ -12153,8 +12453,13 @@ impl MeridianApp {
         let was = protocol.dir.clone();
         let canonical = was.canonicalize().ok();
         let discoverer = crate::discovery::Dovetail::new(&runner);
-        let added =
-            crate::own_files::add_sources_with(&mut protocol, paths, &[], &runner, &discoverer);
+        let added = crate::own_files::add_sources_with(
+            &mut protocol,
+            paths,
+            joins.unwrap_or_default(),
+            &runner,
+            &discoverer,
+        );
         let added = match added {
             Ok(added) => added,
             Err(e) => {
@@ -12218,6 +12523,11 @@ impl MeridianApp {
             format!("Added {what} to {name}"),
         ));
         self.retitle(ctx);
+        if let ([folder], None) = (paths, joins) {
+            if folder.is_dir() {
+                self.offer_folder_joins(ctx, folder);
+            }
+        }
         ctx.request_repaint();
     }
 
@@ -16113,7 +16423,9 @@ fn request_paths(request: &crate::open_queue::OpenRequest) -> Vec<PathBuf> {
     use crate::open_queue::OpenRequest;
     match request {
         OpenRequest::Path(path) | OpenRequest::AddSource(path) => vec![path.clone()],
-        OpenRequest::Paths(paths) | OpenRequest::AddSources(paths) => paths.clone(),
+        OpenRequest::Paths(paths)
+        | OpenRequest::AddSources(paths)
+        | OpenRequest::AddJoined(paths, _) => paths.clone(),
         OpenRequest::Link(_) => Vec::new(),
     }
 }
@@ -17887,6 +18199,18 @@ fn subject_icon(
         Some(_) => brightfield_workbench::subject::Icon("map-pin"),
         None => brightfield_workbench::subject::Icon("chart-bar"),
     }
+}
+
+/// The sources browser's sheet in a window whose content is `ctx`'s: the window less the widest
+/// margin on the spacing ladder each side, between a modal card's width and a wide reading width.
+fn sources_browser_size(ctx: &egui::Context) -> egui::Vec2 {
+    use meridian_egui::MeridianUi as _;
+    let t = ctx.tokens();
+    let room = ctx.content_rect().size() - egui::Vec2::splat(2.0 * t.space[9]);
+    egui::vec2(
+        room.x.clamp(t.modal_width_default, 1280.0),
+        room.y.clamp(t.modal_width_narrow * 0.75, 820.0),
+    )
 }
 
 /// The canvas of a Protocol with no sources, into the whole of `ui`: `said`, how to add one,
