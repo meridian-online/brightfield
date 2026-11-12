@@ -1003,9 +1003,10 @@ pub fn compose_spec_str_in(
     compose(parsed, None, base_dir, None, viewport, mode)
 }
 
-/// [`compose_spec_str_in`] with the session confined to the folders in `allowed`: every other
-/// file, the network and extension loading are closed to it
-/// ([`brightfield_engine::LoadOptions::confined_to`]). What a Protocol nobody has trusted is drawn
+/// [`compose_spec_str_in`] with the session confined to the folders in `allowed`, with other
+/// files, the network and extension loading closed to it
+/// ([`brightfield_engine::LoadOptions::confined_to`],
+/// `restricted_drawing_reads_only_shipped_results`). What a Protocol nobody has trusted is drawn
 /// through, from the result files it carries.
 ///
 /// # Errors

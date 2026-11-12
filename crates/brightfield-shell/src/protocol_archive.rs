@@ -5,9 +5,10 @@
 //! `meridian.online` or one of its subdomains ([`check_link`]). Anything else is refused with a
 //! sentence saying why, before anything is fetched.
 //!
-//! **The archive** is a `.zip` whose top level is one Protocol folder holding `arcform.yaml`. Every
-//! entry is checked before anything is written ([`unpack`]): none may be absolute, hold `..`, or
-//! be a link, there are at most [`MAX_ENTRIES`] of them, and the sizes their headers declare add
+//! **The archive** is a `.zip` whose top level is one Protocol folder holding `arcform.yaml`. Its
+//! entries are checked before a file is written ([`unpack`],
+//! `an_archive_with_dotdot_or_absolute_entries_writes_nothing`): an entry may not be absolute,
+//! hold `..`, or be a link, there are at most [`MAX_ENTRIES`] of them, and the sizes their headers declare add
 //! up to at most [`MAX_BYTES`]. A Protocol whose sources, steps, database or data packages name a
 //! path on the Mac it was made on, or a path outside its own folder, is refused naming that path,
 //! since it could run on no other Mac. Then a folder is claimed in the Protocols folder, named

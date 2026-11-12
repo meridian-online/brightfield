@@ -513,8 +513,8 @@ pub fn load_shipped(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenPr
 }
 
 /// The database the manifest's `db:` names, when it is a file inside the Protocol's own folder
-/// once links are followed: the results a Protocol carries. `None` for a manifest that names
-/// none, which keeps its database in arc's own folder, and for one that names a place outside.
+/// once links are followed: the results a Protocol carries. `None` for a manifest with no `db:`,
+/// which keeps its database in arc's own folder, and for one that names a place outside.
 #[must_use]
 pub fn shipped_database(dir: &Path, manifest: &arc::spec::Manifest) -> Option<PathBuf> {
     let named = manifest.db.as_ref()?;

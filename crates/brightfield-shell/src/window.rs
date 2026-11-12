@@ -15231,7 +15231,8 @@ impl MeridianApp {
     pub fn open_protocol_path(&mut self, ctx: &egui::Context, path: &str) {
         let named = std::path::Path::new(path);
         // A Protocol nobody trusted opens restricted, whatever shape it has and wherever it sits:
-        // trust is a record in the store, never read from the folder ([`crate::trust`]).
+        // trust is a record in the store ([`crate::trust`]), not read from the folder
+        // (`an_archive_carrying_a_made_by_brightfield_marker_or_the_one_step_layout_stays_restricted`).
         if let crate::open_queue::Route::Existing(dir) = crate::open_queue::route(named) {
             let store = crate::trust::Store::current();
             if !store.is_trusted(&dir) {
