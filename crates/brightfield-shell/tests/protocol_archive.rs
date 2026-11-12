@@ -692,6 +692,51 @@ fn an_archive_naming_an_absolute_local_path_is_refused_naming_it() {
             ],
             "/Users/someone/out.csv",
         ),
+        (
+            "sqlite",
+            vec![
+                (
+                    "p/arcform.yaml",
+                    b"name: p\nengine: duckdb\nsteps:\n  - name: a\n    sql: models/a.sql\n"
+                        .to_vec(),
+                ),
+                (
+                    "p/models/a.sql",
+                    b"SELECT * FROM sqlite_scan('/Users/someone/app.db', 'events')\n".to_vec(),
+                ),
+            ],
+            "/Users/someone/app.db",
+        ),
+        (
+            "import",
+            vec![
+                (
+                    "p/arcform.yaml",
+                    b"name: p\nengine: duckdb\nsteps:\n  - name: a\n    sql: models/a.sql\n"
+                        .to_vec(),
+                ),
+                (
+                    "p/models/a.sql",
+                    b"IMPORT DATABASE '/Users/someone/export'\n".to_vec(),
+                ),
+            ],
+            "/Users/someone/export",
+        ),
+        (
+            "attach-if",
+            vec![
+                (
+                    "p/arcform.yaml",
+                    b"name: p\nengine: duckdb\nsteps:\n  - name: a\n    sql: models/a.sql\n"
+                        .to_vec(),
+                ),
+                (
+                    "p/models/a.sql",
+                    b"ATTACH IF NOT EXISTS '/Users/someone/a.duckdb' AS a\n".to_vec(),
+                ),
+            ],
+            "/Users/someone/a.duckdb",
+        ),
     ] {
         let zip = dir.join(format!("{case}.zip"));
         let borrowed: Vec<(&str, &[u8])> =
@@ -719,7 +764,7 @@ fn an_archive_naming_an_absolute_local_path_is_refused_naming_it() {
                 "p/models/a.sql",
                 b"SELECT * FROM read_parquet('https://meridian.online/a.parquet') WHERE s = '/' \
                   AND p LIKE '/api/%' AND regexp_replace(q, '/+$', '') = '\\\\' \
-                  AND r = '/index.html'\n",
+                  AND r = '/index.html' AND t SIMILAR TO '/api/.*' AND u IS DISTINCT FROM '/x'\n",
             ),
         ],
     );

@@ -545,7 +545,9 @@ fn escapes(base: &Path, path: &str) -> bool {
 }
 
 /// The functions besides the `read_` ones whose string arguments name files.
-const FILE_FUNCTIONS: [&str; 9] = [
+const FILE_FUNCTIONS: [&str; 11] = [
+    "sqlite_scan",
+    "sqlite_attach",
     "parquet_scan",
     "parquet_metadata",
     "parquet_schema",
@@ -558,13 +560,19 @@ const FILE_FUNCTIONS: [&str; 9] = [
 ];
 
 /// The words a file's literal follows in SQL: `FROM 'a.csv'`, `JOIN 'b.parquet'`,
-/// `ATTACH 'c.duckdb'`, `COPY t TO 'd.csv'` and `LOAD 'e.duckdb_extension'`.
-const FILE_WORDS: [&str; 5] = ["from", "join", "attach", "to", "load"];
+/// `ATTACH 'c.duckdb'` and `ATTACH IF NOT EXISTS 'c.duckdb'`, `COPY t TO 'd.csv'`,
+/// `LOAD 'e.duckdb_extension'`, and `IMPORT DATABASE 'f'` and `EXPORT DATABASE 'f'`.
+const FILE_WORDS: [&str; 7] = ["from", "join", "attach", "exists", "to", "load", "database"];
+
+/// The word pairs that end in one of [`FILE_WORDS`] and compare with a pattern rather than read a
+/// file: `SIMILAR TO '/api/.*'` and `IS [NOT] DISTINCT FROM '/x'`.
+const PATTERN_WORDS: [(&str, &str); 2] = [("similar", "to"), ("distinct", "from")];
 
 /// The single-quoted literals in `sql` that name files: an argument of a function whose name
 /// starts `read_` or is one of [`FILE_FUNCTIONS`], a list inside one, and a literal straight after
-/// one of [`FILE_WORDS`]. Other literals, such as a pattern for `LIKE` or `regexp_replace`, are
-/// not files and are passed over, as are comments and quoted identifiers.
+/// one of [`FILE_WORDS`] that is not one of [`PATTERN_WORDS`]. Other literals, such as a pattern
+/// for `LIKE` or `regexp_replace`, are not files and are passed over, as are comments and quoted
+/// identifiers.
 fn file_literals(sql: &str) -> Vec<String> {
     let chars: Vec<char> = sql.chars().collect();
     let mut out = Vec::new();
@@ -573,6 +581,8 @@ fn file_literals(sql: &str) -> Vec<String> {
     // The last word read, in lower case, and whether it is the last thing read but spaces, so
     // `read_csv (` and `FROM '` are told from `x) (` and `= '`.
     let mut word = String::new();
+    // The word before it, so a pattern after `SIMILAR TO` is told from a file after `COPY t TO`.
+    let mut previous = String::new();
     let mut after_word = false;
     let mut in_word = false;
     let mut i = 0;
@@ -580,7 +590,7 @@ fn file_literals(sql: &str) -> Vec<String> {
         let c = chars[i];
         if c.is_alphanumeric() || c == '_' {
             if !in_word {
-                word.clear();
+                previous = std::mem::take(&mut word);
             }
             word.extend(c.to_lowercase());
             in_word = true;
@@ -621,7 +631,11 @@ fn file_literals(sql: &str) -> Vec<String> {
                 }
                 if c == '\'' {
                     let in_call = calls.last().copied().unwrap_or(false);
-                    let after_file_word = after_word && FILE_WORDS.contains(&word.as_str());
+                    let pattern = PATTERN_WORDS
+                        .iter()
+                        .any(|(before, last)| *before == previous && *last == word);
+                    let after_file_word =
+                        after_word && FILE_WORDS.contains(&word.as_str()) && !pattern;
                     if in_call || after_file_word {
                         out.push(text);
                     }
