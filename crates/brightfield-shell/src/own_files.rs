@@ -77,8 +77,8 @@ pub fn create_in(parent: &Path, opened: &Path) -> Result<OwnProtocol, String> {
     create_of(parent, opened, sources::discover(opened)?)
 }
 
-/// [`create_in`], for a Protocol Brightfield makes only to read for itself and then removes, such
-/// as the sources browser's preview of a folder's joins. It is not recorded in the trust store:
+/// [`create_in`], for a Protocol Brightfield makes to read for itself and then removes, such as
+/// the sources browser's preview of a folder's joins. It is not recorded in the trust store:
 /// it is not a Protocol Brightfield made for the analyst, and the record would outlive its folder
 /// (`a_folder_preview_writes_no_trust_record`).
 ///
