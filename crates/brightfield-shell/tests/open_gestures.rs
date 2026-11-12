@@ -19,8 +19,8 @@ use brightfield_shell::overlays::CloseAnswer;
 use brightfield_shell::run::Runner;
 use brightfield_shell::sources_browser::Pane;
 use brightfield_shell::window::{
-    Boot, Leaving, MeridianApp, DROP_REST_NOT_ADDED_BANNER, DROP_REST_NOT_ADDED_TITLE,
-    MENU_QUIT_UNROUTED_BANNER, MENU_QUIT_UNROUTED_TITLE,
+    Boot, Leaving, MeridianApp, ADD_SOURCE_REFUSED_BANNER, DROP_REST_NOT_ADDED_BANNER,
+    DROP_REST_NOT_ADDED_TITLE, MENU_QUIT_UNROUTED_BANNER, MENU_QUIT_UNROUTED_TITLE,
 };
 
 fn scratch() -> &'static Path {
@@ -162,6 +162,23 @@ fn retail_copy(dir: &Path, files: &[&str]) -> PathBuf {
         std::fs::copy(fixture.join(file), dir.join(file)).expect("the fixture copies");
     }
     dir.to_path_buf()
+}
+
+/// A copy of the committed Protocol Brightfield did not make, named `name`, in `folder`.
+fn shipped_copy(folder: &str, name: &str) -> PathBuf {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/shipped-protocol");
+    let dir = scratch().join("input").join(folder).join(name);
+    for file in [
+        "arcform.yaml",
+        "models/measures.sql",
+        "data/measures.csv",
+        "panels/overview.yaml",
+    ] {
+        let to = dir.join(file);
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::copy(fixture.join(file), &to).expect("the fixture copies");
+    }
+    dir
 }
 
 #[test]
@@ -414,22 +431,48 @@ fn a_protocol_dropped_with_files_on_an_open_protocol_opens_alone_and_adds_nothin
 }
 
 #[test]
+fn a_file_dropped_on_a_protocol_brightfield_did_not_make_is_refused_without_asking() {
+    let shipped = shipped_copy("dropped_refused", "shipped_refused");
+    let csv = housing_copy("dropped_refused", "refused_houses.csv");
+    let mut app = app();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, egui::RawInput::default());
+    app.open_queue().push(OpenRequest::Path(shipped.clone()));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert_eq!(
+        app.panel_tiles().map(|t| t.dir().to_path_buf()),
+        Some(shipped.clone()),
+        "the Protocol opens where it is: {}",
+        said(&app)
+    );
+    order_the_grid(&mut app);
+    assert!(app.carries_unsaved_mark(), "with a draft pending");
+    let held = std::fs::read_to_string(shipped.join("arcform.yaml")).expect("the manifest");
+
+    frame(&mut app, &ctx, dropped(&[csv]));
+    frame(&mut app, &ctx, egui::RawInput::default());
+
+    // The add cannot happen, so the draft is not asked about for it.
+    assert_eq!(app.leaving(), None, "nothing waits on a question");
+    assert_eq!(app.open_overlay(), None, "no close question is up");
+    assert!(
+        app.notifications()
+            .iter()
+            .any(|n| n.id == meridian_egui::NotificationId::new(ADD_SOURCE_REFUSED_BANNER)),
+        "a banner says sources are added only to Protocols Brightfield made: {}",
+        said(&app)
+    );
+    assert!(app.carries_unsaved_mark(), "the draft is still there");
+    assert_eq!(
+        std::fs::read_to_string(shipped.join("arcform.yaml")).expect("the manifest"),
+        held,
+        "and the Protocol is as it was"
+    );
+}
+
+#[test]
 fn a_data_file_in_a_protocols_folder_is_added_and_its_manifest_opens_it() {
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/shipped-protocol");
-    let shipped = scratch()
-        .join("input")
-        .join("dropped_inside")
-        .join("shipped_inside");
-    for file in [
-        "arcform.yaml",
-        "models/measures.sql",
-        "data/measures.csv",
-        "panels/overview.yaml",
-    ] {
-        let to = shipped.join(file);
-        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
-        std::fs::copy(fixture.join(file), &to).expect("the fixture copies");
-    }
+    let shipped = shipped_copy("dropped_inside", "shipped_inside");
     let target = housing_copy("dropped_inside", "inside_target.csv");
     let inside = shipped.join("inside_houses.csv");
     std::fs::copy(&target, &inside).expect("a data file in the Protocol's folder");

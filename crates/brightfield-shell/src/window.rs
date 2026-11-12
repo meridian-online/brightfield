@@ -2583,9 +2583,11 @@ pub const MENU_QUIT_UNROUTED_BANNER: &str = "menu-quit-unrouted";
 pub const MENU_QUIT_UNROUTED_TITLE: &str = "Quitting will not ask about unsaved work";
 
 /// The banner that says the files dropped onto an open Protocol beside a Protocol were not added.
+/// It is raised with the drop, before any close question is answered, so it says nothing of the
+/// dropped Protocol having opened.
 pub const DROP_REST_NOT_ADDED_BANNER: &str = "drop-rest-not-added";
 /// What it says.
-pub const DROP_REST_NOT_ADDED_TITLE: &str = "Only the Protocol opens";
+pub const DROP_REST_NOT_ADDED_TITLE: &str = "The rest of the drop was not added";
 
 /// The banner that says an open asked for while the window waits to close was not done.
 const NOT_OPENED_WHILE_CLOSING_BANNER: &str = "not-opened-while-closing";
@@ -5768,7 +5770,7 @@ impl MeridianApp {
                 self.open_queue.push(request);
             }
         } else if !dropped.is_empty() {
-            self.take_drop_on_protocol(dropped);
+            self.take_drop_on_protocol(&ctx, dropped);
         }
         // An open that waited for the frame before this one to draw what it is fetching: that
         // frame has been presented, so the open runs now.
@@ -12088,15 +12090,7 @@ impl MeridianApp {
             return;
         }
         let Some(protocol) = self.protocol_taking_sources() else {
-            self.notifications.raise(
-                Notification::new(
-                    NotificationId::new(ADD_SOURCE_REFUSED_BANNER),
-                    Severity::Warning,
-                    "Sources were not added",
-                )
-                .body(ADD_SOURCE_REFUSED.to_string()),
-            );
-            ctx.request_repaint();
+            self.say_sources_refused(ctx);
             return;
         };
         let first = protocol.sources.tables.first().map(|t| t.file.clone());
@@ -12358,20 +12352,40 @@ impl MeridianApp {
         ctx.request_repaint();
     }
 
+    /// Say that sources are added only to Protocols Brightfield made, as an add to any other is
+    /// answered.
+    fn say_sources_refused(&mut self, ctx: &egui::Context) {
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new(ADD_SOURCE_REFUSED_BANNER),
+                Severity::Warning,
+                "Sources were not added",
+            )
+            .body(ADD_SOURCE_REFUSED.to_string()),
+        );
+        ctx.request_repaint();
+    }
+
     /// **What a drop onto an open Protocol's window asks for.** Data files and folders are added
     /// to the Protocol as sources, the files of one drop together, through the open queue and
     /// [`Self::add_sources`], so a lone folder whose tables dovetail proposes joins between opens
-    /// the browser on it. A Protocol among them, by its folder, its manifest or an archive of it
+    /// the browser on it. Over a Protocol Brightfield did not make, which takes no sources, the
+    /// drop is refused at once, so a draft is not asked about for an add that cannot happen
+    /// (`a_file_dropped_on_a_protocol_brightfield_did_not_make_is_refused_without_asking`).
+    ///
+    /// A Protocol among them, by its folder, its manifest or an archive of it
     /// ([`crate::open_queue::protocol_named`]), opens instead, as an open from the picker does,
     /// with the close question first over a draft. A Protocol is not a source of another, so the
     /// rest of that drop is not added, and a banner says so.
-    fn take_drop_on_protocol(&mut self, dropped: Vec<PathBuf>) {
+    fn take_drop_on_protocol(&mut self, ctx: &egui::Context, dropped: Vec<PathBuf>) {
         use crate::open_queue::OpenRequest;
         let Some(protocol) = dropped
             .iter()
             .find_map(|p| crate::open_queue::protocol_named(p))
         else {
-            if let Some(request) = OpenRequest::of_sources(dropped) {
+            if self.protocol_taking_sources().is_none() {
+                self.say_sources_refused(ctx);
+            } else if let Some(request) = OpenRequest::of_sources(dropped) {
                 self.open_queue.push(request);
             }
             return;
@@ -12388,7 +12402,7 @@ impl MeridianApp {
             self.notifications.raise(
                 Notification::new(banner, Severity::Warning, DROP_REST_NOT_ADDED_TITLE).body(
                     format!(
-                        "{} is a Protocol, so it opens on its own rather than as a source. The \
+                        "{} is a Protocol, which opens on its own rather than as a source. The \
                          other {others} {were} not added; drop {them} by {themselves} to add \
                          {them}.",
                         display_name(&protocol)
@@ -12439,15 +12453,7 @@ impl MeridianApp {
             .or_else(|| self.model.as_ref().map(|m| m.doc.protocol.clone()));
         let chosen = first.to_string_lossy().into_owned();
         let Some(mut protocol) = held else {
-            self.notifications.raise(
-                Notification::new(
-                    NotificationId::new(ADD_SOURCE_REFUSED_BANNER),
-                    Severity::Warning,
-                    "Sources were not added",
-                )
-                .body(ADD_SOURCE_REFUSED.to_string()),
-            );
-            ctx.request_repaint();
+            self.say_sources_refused(ctx);
             return;
         };
         if self.refuse_if_the_folder_is_gone(ctx) {
