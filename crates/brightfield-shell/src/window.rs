@@ -5275,6 +5275,15 @@ impl MeridianApp {
         &self.protocol.doc.spine_drawn
     }
 
+    /// **The join curves the navigator rail's spine drew in its gutter in the
+    /// last frame**, one per join its model makes, read off the frame for the
+    /// reason [`Self::spine_rows`] is. Empty on a Protocol whose model joins no
+    /// two of its tables, and on a frame that drew no spine.
+    #[must_use]
+    pub fn spine_curves(&self) -> &[crate::protocol::SpineCurveDrawn] {
+        &self.protocol.doc.spine_curves
+    }
+
     /// **The controls the last frame drew, each with the name a stranger
     /// reads for it** — in its label, or in its hover text, as
     /// [`chrome::NamedControl::by`] says.
@@ -5986,6 +5995,7 @@ impl MeridianApp {
         // rail that is not there, which is the defect `canvas_panes` is cleared
         // per frame for.
         self.protocol.doc.spine_drawn.clear();
+        self.protocol.doc.spine_curves.clear();
         self.protocol.doc.spine_body = None;
         // …and the canvas's record of the chips it drew, for the same reason.
         self.protocol.doc.canvas_chips.clear();

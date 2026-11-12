@@ -169,6 +169,9 @@ pub struct ProtocolInputs {
     /// other; the spine marks them not recorded, and a run's record, which
     /// cannot hold them, is compared with the other steps.
     pub typed: BTreeMap<StepId, Option<u64>>,
+    /// The joins the Protocol's model makes between its tables, when its folder
+    /// holds a model file: what the spine leads with. `None` otherwise.
+    pub model_joins: Option<ModelJoins>,
 }
 
 impl ProtocolInputs {
@@ -207,6 +210,7 @@ impl ProtocolInputs {
             generated: None,
             folder_refused: None,
             typed: BTreeMap::new(),
+            model_joins: None,
         }
     }
 
@@ -447,7 +451,8 @@ pub fn run_less_manifest_refusal(what: &str) -> String {
 
 /// Load a protocol manifest (`arcform.yaml` + its `models/*.sql`) into
 /// [`ProtocolInputs`] — the gated offline/fixture path, the same input
-/// `brightfield-shot`/the shell consume.
+/// `brightfield-shot`/the shell consume — with the joins of the model file
+/// beside it, when there is one ([`ModelJoins::read`]).
 ///
 /// # Errors
 /// A human-readable message if the file cannot be read or is not a protocol
@@ -463,7 +468,9 @@ pub fn load_protocol_offline(spec_path: &str) -> Result<ProtocolInputs, String> 
         .parent()
         .unwrap_or_else(|| Path::new("."));
     let sources = brightfield_protocol::graph::load_model_sources(&manifest, dir);
-    Ok(inputs_from(&manifest, &sources))
+    let mut inputs = inputs_from(&manifest, &sources);
+    inputs.model_joins = ModelJoins::read(dir);
+    Ok(inputs)
 }
 
 /// The same load over manifest **text** and its models' text, rather than a
@@ -620,6 +627,7 @@ pub fn load_contract_str(bytes: &[u8]) -> Result<ProtocolInputs, String> {
         generated: None,
         folder_refused: None,
         typed: BTreeMap::new(),
+        model_joins: None,
     })
 }
 
@@ -716,6 +724,7 @@ fn inputs_from(
         generated: None,
         folder_refused: None,
         typed: BTreeMap::new(),
+        model_joins: None,
     }
 }
 
@@ -825,13 +834,76 @@ pub enum SpineRole {
     View,
     /// One column of the table.
     Column,
+    /// The model step: the joins a Protocol's model makes between its tables,
+    /// listed under the tables it joins.
+    Model,
+    /// The heading the sources with no join are listed under, after the model
+    /// step.
+    Unjoined,
+}
+
+/// **The joins a Protocol's model makes between its tables**: what the spine
+/// leads with ([`ProtocolModel::spine_with_joins`]).
+///
+/// Read from the model file a Protocol of several sources keeps beside its
+/// manifest ([`ModelJoins::read`]). A Protocol with no model file has none,
+/// and its spine keeps the outline's order, as one whose model makes no join
+/// does.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelJoins {
+    /// The model's tables, each a table one of the Protocol's steps makes, in
+    /// the model's order.
+    pub tables: Vec<String>,
+    /// Each join, as the table it reads from and the table it finds a row in:
+    /// one entry per join, so two joins between the same pair of tables are
+    /// two entries.
+    pub joins: Vec<(String, String)>,
+}
+
+impl ModelJoins {
+    /// The joins `model` makes: each relationship but a possible join dovetail
+    /// proposed and nobody has decided, which the model pane offers for review
+    /// rather than counting as made.
+    #[must_use]
+    pub fn of(model: &brightfield_ossie::Model) -> Self {
+        Self {
+            tables: model.datasets.iter().map(|d| d.name.clone()).collect(),
+            joins: model
+                .relationships
+                .iter()
+                .filter(|r| !brightfield_ossie::is_proposal(r))
+                .map(|r| (r.from.clone(), r.to.clone()))
+                .collect(),
+        }
+    }
+
+    /// The joins of the model file in the Protocol folder `dir`, when it holds
+    /// one Brightfield reads.
+    #[must_use]
+    pub fn read(dir: &Path) -> Option<Self> {
+        let text = std::fs::read_to_string(dir.join(crate::discovery::MODEL_FILE)).ok()?;
+        brightfield_ossie::read(&text).ok().map(|m| Self::of(&m))
+    }
+}
+
+/// The spine with the curves its gutter draws: [`ProtocolModel::spine_with_joins`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Spine {
+    /// The rows, in the order the pane lists them.
+    pub rows: Vec<SpineRow>,
+    /// One curve per join between two tables the spine lists: the index in
+    /// [`Self::rows`] of the row of the table the join reads from, then of the
+    /// table it finds a row in. Empty when the spine keeps the outline's order.
+    pub join_curves: Vec<(usize, usize)>,
 }
 
 /// One row of the Protocol pane's spine, before anything has drawn it.
 ///
 /// Derived by [`ProtocolModel::spine`], which is where the ordering rule lives:
 /// the assets in outline order, each preceded by the step that produces it, and
-/// a node's views listed under it.
+/// a node's views listed under it — and, on a Protocol whose model joins its
+/// tables, each table's rows moved so the joined tables lead
+/// ([`ProtocolModel::spine_with_joins`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpineRow {
     /// What the row is called — an asset's label, a step's name, a view's word.
@@ -883,6 +955,248 @@ fn viewable_nodes(graph: &AssetGraph) -> impl Iterator<Item = &AssetId> {
 /// A caption row's text: its clauses, separated.
 pub(crate) fn caption(clauses: &[&str]) -> String {
     clauses.join(CAPTION_SEPARATOR)
+}
+
+/// The model step row's label.
+pub const MODEL_STEP: &str = "model";
+
+/// The first clause of the heading the sources with no join are listed under.
+pub const UNJOINED_HEADING: &str = "NO JOIN";
+
+/// One asset's rows on the spine, before [`model_first`] orders them: the step
+/// that produced it, the asset's own row, and its views.
+struct SpineUnit {
+    /// The asset.
+    node: AssetId,
+    /// What the asset's own row is called.
+    label: String,
+    /// Whether the asset is a table, as each of a model's tables is.
+    tabular: bool,
+    /// Where the asset's own row is in [`Self::rows`].
+    at: usize,
+    /// The rows, in the order the spine lists them.
+    rows: Vec<SpineRow>,
+}
+
+/// The model step's row: the joins the model makes, counted.
+fn model_step_row(joins: usize) -> SpineRow {
+    SpineRow {
+        label: MODEL_STEP.to_string(),
+        kind: format!("model \u{b7} {}", counted(joins, "join")),
+        depth: 0,
+        // The model is in its file from the moment a join is made, so it is
+        // drawn as a thing that is there.
+        marker: SpineMarker::Filled,
+        role: SpineRole::Model,
+        selected: false,
+        id: None,
+        view: None,
+        struck: false,
+    }
+}
+
+/// The heading over the sources with no join: how many there are.
+fn unjoined_row(sources: usize) -> SpineRow {
+    SpineRow {
+        label: caption(&[UNJOINED_HEADING, &counted(sources, "source")]),
+        kind: String::new(),
+        depth: 0,
+        marker: SpineMarker::None,
+        role: SpineRole::Unjoined,
+        selected: false,
+        id: None,
+        view: None,
+        struck: false,
+    }
+}
+
+/// The tables `joins` joins, in the order the spine leads with them: breadth
+/// first from the table with the most joins, ties broken by name, each table's
+/// neighbours in name order, and again from the next such table for a group
+/// joined to none of the tables already listed.
+fn join_order<'a>(joins: &[(&'a str, &'a str)]) -> Vec<&'a str> {
+    let mut degree: BTreeMap<&'a str, usize> = BTreeMap::new();
+    let mut next: BTreeMap<&'a str, BTreeSet<&'a str>> = BTreeMap::new();
+    for &(from, to) in joins {
+        *degree.entry(from).or_default() += 1;
+        *degree.entry(to).or_default() += 1;
+        next.entry(from).or_default().insert(to);
+        next.entry(to).or_default().insert(from);
+    }
+    let mut order = Vec::with_capacity(degree.len());
+    let mut seen: BTreeSet<&'a str> = BTreeSet::new();
+    while let Some(start) = degree
+        .iter()
+        .filter(|(table, _)| !seen.contains(*table))
+        .max_by(|(a, da), (b, db)| da.cmp(db).then(b.cmp(a)))
+        .map(|(table, _)| *table)
+    {
+        seen.insert(start);
+        let mut queue = std::collections::VecDeque::from([start]);
+        while let Some(table) = queue.pop_front() {
+            order.push(table);
+            for &neighbour in next.get(table).into_iter().flatten() {
+                if seen.insert(neighbour) {
+                    queue.push_back(neighbour);
+                }
+            }
+        }
+    }
+    order
+}
+
+/// `node` and every asset of `parents` it is made from.
+fn lineage<'a>(
+    parents: &BTreeMap<&'a AssetId, Vec<&'a AssetId>>,
+    node: &'a AssetId,
+) -> BTreeSet<&'a AssetId> {
+    let mut seen = BTreeSet::from([node]);
+    let mut stack = vec![node];
+    while let Some(at) = stack.pop() {
+        for &parent in parents.get(at).into_iter().flatten() {
+            if seen.insert(parent) {
+                stack.push(parent);
+            }
+        }
+    }
+    seen
+}
+
+/// The spine of `units`, led by the tables `model` joins: the order
+/// [`ProtocolModel::spine_with_joins`] gives, and the reasons for it.
+fn model_first(graph: &AssetGraph, units: Vec<SpineUnit>, model: &ModelJoins) -> Spine {
+    // The unit of each of the model's tables the spine lists.
+    let table_unit: BTreeMap<&str, usize> = model
+        .tables
+        .iter()
+        .filter_map(|table| {
+            units
+                .iter()
+                .position(|u| u.tabular && u.label == *table)
+                .map(|at| (table.as_str(), at))
+        })
+        .collect();
+    let joins: Vec<(&str, &str)> = model
+        .joins
+        .iter()
+        .map(|(from, to)| (from.as_str(), to.as_str()))
+        .filter(|(from, to)| {
+            from != to && table_unit.contains_key(from) && table_unit.contains_key(to)
+        })
+        .collect();
+    if joins.is_empty() {
+        return Spine {
+            rows: units.into_iter().flat_map(|u| u.rows).collect(),
+            join_curves: Vec::new(),
+        };
+    }
+    let joined = join_order(&joins);
+    let mut loose: Vec<(usize, &str)> = table_unit
+        .iter()
+        .filter(|(table, _)| !joined.contains(*table))
+        .map(|(table, &at)| (at, *table))
+        .collect();
+    loose.sort_unstable();
+    let blocks: Vec<&str> = joined
+        .iter()
+        .copied()
+        .chain(loose.iter().map(|&(_, table)| table))
+        .collect();
+
+    // Where each unit goes, as a rank in the order the spine lists them: each
+    // joined table's own rows first, then the rows after the model step, then
+    // each source with no join, then the rows that read one of those.
+    let after_model = joined.len();
+    let rank_of_block = |block: usize| {
+        if block < after_model {
+            block
+        } else {
+            block + 1
+        }
+    };
+    let last = blocks.len() + 1;
+    let ranks: Vec<usize> = {
+        let mut parents: BTreeMap<&AssetId, Vec<&AssetId>> = BTreeMap::new();
+        for edge in &graph.edges {
+            parents.entry(&edge.to).or_default().push(&edge.from);
+        }
+        let unit_of: BTreeMap<&AssetId, usize> = units
+            .iter()
+            .enumerate()
+            .map(|(at, u)| (&u.node, at))
+            .collect();
+        let mut ranks: Vec<Option<usize>> = vec![None; units.len()];
+        // A table's own rows: what it is made from, the first table listed
+        // taking an asset two are made from.
+        for (block, table) in blocks.iter().enumerate() {
+            for node in lineage(&parents, &units[table_unit[table]].node) {
+                if let Some(&at) = unit_of.get(node) {
+                    ranks[at].get_or_insert(rank_of_block(block));
+                }
+            }
+        }
+        let tables: BTreeSet<&AssetId> = table_unit.values().map(|&at| &units[at].node).collect();
+        // The rest, in the outline's order, which lists what an asset is made
+        // from before it, so each one's ancestors are placed already.
+        for at in 0..units.len() {
+            if ranks[at].is_some() {
+                continue;
+            }
+            let node = &units[at].node;
+            let ancestors: Vec<&AssetId> = lineage(&parents, node)
+                .into_iter()
+                .filter(|a| *a != node)
+                .collect();
+            let highest = ancestors
+                .iter()
+                .filter_map(|a| unit_of.get(a).and_then(|&u| ranks[u]))
+                .max();
+            let rank = if ancestors.iter().any(|a| tables.contains(a)) {
+                // Made from a table of the model: after the model step, or
+                // after every source with no join when it reads one of those.
+                match highest.map_or(after_model, |h| h.max(after_model)) {
+                    rank if rank > after_model && rank < last => last,
+                    rank => rank,
+                }
+            } else {
+                // Made beside a table from what that table is made from, such
+                // as the failed-rows table: with those rows.
+                highest.unwrap_or(after_model)
+            };
+            ranks[at] = Some(rank);
+        }
+        ranks
+            .into_iter()
+            .map(|r| r.unwrap_or(after_model))
+            .collect()
+    };
+
+    let table_of: BTreeMap<usize, &str> = table_unit.iter().map(|(t, &at)| (at, *t)).collect();
+    let mut placed: Vec<Vec<(usize, SpineUnit)>> = (0..=last).map(|_| Vec::new()).collect();
+    for (at, unit) in units.into_iter().enumerate() {
+        placed[ranks[at]].push((at, unit));
+    }
+    let mut rows: Vec<SpineRow> = Vec::new();
+    let mut table_row: BTreeMap<&str, usize> = BTreeMap::new();
+    for (rank, group) in placed.into_iter().enumerate() {
+        if rank == after_model {
+            rows.push(model_step_row(joins.len()));
+        }
+        if rank == after_model + 1 && !loose.is_empty() {
+            rows.push(unjoined_row(loose.len()));
+        }
+        for (at, unit) in group {
+            if let Some(table) = table_of.get(&at) {
+                table_row.insert(*table, rows.len() + unit.at);
+            }
+            rows.extend(unit.rows);
+        }
+    }
+    let join_curves = joins
+        .iter()
+        .map(|(from, to)| (table_row[from], table_row[to]))
+        .collect();
+    Spine { rows, join_curves }
 }
 
 /// `n` and its noun, pluralised — `1 step`, `9 columns`.
@@ -1176,6 +1490,8 @@ pub struct ProtocolModel {
     folder_refused: Option<String>,
     /// See [`ProtocolInputs::typed`].
     typed: BTreeMap<StepId, Option<u64>>,
+    /// See [`ProtocolInputs::model_joins`].
+    model_joins: Option<ModelJoins>,
     /// Which column the chart document has selected — a tile's, or a column
     /// of the table the dashboard draws no tile for — mirrored in from it each
     /// frame so the rail's highlight and the inspector's heading cannot name
@@ -1272,6 +1588,7 @@ impl ProtocolModel {
             generated: inputs.generated,
             folder_refused: inputs.folder_refused,
             typed: inputs.typed,
+            model_joins: inputs.model_joins,
             selected_column: None,
             column_pick: None,
             on_column_row: false,
@@ -1858,13 +2175,57 @@ impl ProtocolModel {
     ///
     /// The order is the outline's and is not re-derived here, for the reason
     /// [`ProtocolModel::column_rows`] is a filter: the rail, the canvas and the
-    /// render proof read one topological order or they read two.
+    /// render proof read one topological order or they read two. A Protocol
+    /// whose model joins its tables moves each table's rows as a whole, and
+    /// keeps the outline's order inside each: see
+    /// [`ProtocolModel::spine_with_joins`].
     #[must_use]
     pub fn spine(&self) -> Vec<SpineRow> {
+        self.spine_with_joins().rows
+    }
+
+    /// **The spine, led by the model**: on a Protocol whose model joins its
+    /// tables ([`ModelJoins`]), the joined tables come first, each followed by
+    /// the tables it joins, then the model step, then the sources with no join
+    /// under a heading; with one curve in the gutter per join.
+    ///
+    /// The joined tables are read breadth first from the table with the most
+    /// joins, ties broken by name, and each table's neighbours in name order;
+    /// a second group of joined tables, joined to none of the first, follows
+    /// from its own table with the most joins. The sources with no join keep
+    /// the outline's order among themselves.
+    ///
+    /// **A table moves with every row that is its own**: the asset rows it is
+    /// made from, each with the step above it, and the rows made beside it from
+    /// those, such as the failed-rows table, so the file, its load and the
+    /// table read down together as they do on a Protocol of one source. An
+    /// asset two tables are made from, such as a workbook two sheets are read
+    /// out of, goes with the first of them the spine lists, so it still stands
+    /// above both. An asset made from a table of the model stands after the
+    /// model step, or after the sources with no join when it reads one of those,
+    /// so no row stands above an asset it is made from.
+    ///
+    /// A Protocol with no model, or a model that joins no two tables the spine
+    /// lists, keeps the outline's order, with no model step, heading or curve.
+    #[must_use]
+    pub fn spine_with_joins(&self) -> Spine {
+        let units = self.spine_units();
+        match self.model_joins.as_ref() {
+            Some(model) => model_first(&self.graph_collapsed, units, model),
+            None => Spine {
+                rows: units.into_iter().flat_map(|unit| unit.rows).collect(),
+                join_curves: Vec::new(),
+            },
+        }
+    }
+
+    /// The spine's rows in the outline's order, one [`SpineUnit`] per asset.
+    fn spine_units(&self) -> Vec<SpineUnit> {
         let graph = &self.graph_collapsed;
         let assets = outline_rows(graph, &self.statuses, self.selected.as_ref());
-        let mut rows = Vec::with_capacity(assets.len() * 2);
+        let mut units = Vec::with_capacity(assets.len());
         for row in assets {
+            let mut rows = Vec::with_capacity(2 + NodeView::ALL.len());
             let node = graph.nodes.get(&row.id);
             // **`step` means "produced by" except on a `Source` node**, which
             // `a_manifest_of_many_steps_puts_each_step_above_the_asset_it_produced`
@@ -1950,8 +2311,9 @@ impl ProtocolModel {
                 None if exists => (kind_label(row.kind).to_string(), SpineMarker::Filled),
                 None => (kind_label(row.kind).to_string(), SpineMarker::Hollow),
             };
+            let at = rows.len();
             rows.push(SpineRow {
-                label: row.label,
+                label: row.label.clone(),
                 kind,
                 depth: 0,
                 marker,
@@ -1974,8 +2336,15 @@ impl ProtocolModel {
                     struck: false,
                 }));
             }
+            units.push(SpineUnit {
+                node: row.id,
+                label: row.label,
+                tabular: row.kind.is_tabular(),
+                at,
+                rows,
+            });
         }
-        rows
+        units
     }
 
     /// How many distinct steps the spine lists — the count
@@ -3112,6 +3481,9 @@ pub struct ProtocolDoc {
     /// and a test that asked [`ProtocolModel::spine`] again would be comparing
     /// the derivation with itself.
     pub spine_drawn: Vec<SpineRowDrawn>,
+    /// The join curves the Protocol pane drew in its gutter in the last frame,
+    /// one per join, recorded for the reason [`ProtocolDoc::spine_drawn`] is.
+    pub spine_curves: Vec<SpineCurveDrawn>,
     /// The content box the Protocol pane was last handed — what the first
     /// caption row's `SPACE_1` of clearance is measured from. `None` until a
     /// frame has laid the pane out.
@@ -3312,6 +3684,7 @@ impl ProtocolDoc {
             viewport: None,
             canvas_holds: crate::window::CanvasHolds::Graph,
             spine_drawn: Vec::new(),
+            spine_curves: Vec::new(),
             spine_body: None,
             canvas_pick: None,
             graph_pick: false,
@@ -3330,6 +3703,7 @@ impl ProtocolDoc {
             viewport: None,
             canvas_holds: crate::window::CanvasHolds::Graph,
             spine_drawn: Vec::new(),
+            spine_curves: Vec::new(),
             spine_body: None,
             canvas_pick: None,
             graph_pick: false,
@@ -3607,7 +3981,22 @@ impl Item<ProtocolDoc> for OutlinePane {
     }
 
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        let spine = doc.model.spine();
+        let Spine {
+            rows: spine,
+            join_curves,
+        } = doc.model.spine_with_joins();
+        // The gutter the join curves are drawn in, left of every spine row's
+        // marker, so the rows hang off one ladder whether or not a curve
+        // reaches them. No width at all when there is no join.
+        let routes = curve_lanes(&join_curves);
+        let lanes = routes
+            .iter()
+            .map(|&(_, _, lane)| lane + 1)
+            .max()
+            .unwrap_or(0);
+        #[allow(clippy::cast_precision_loss)] // a handful of lanes
+        let gutter = SPINE_LANE * lanes as f32;
+        let mut curves: Vec<SpineCurveDrawn> = Vec::with_capacity(routes.len());
         let columns = doc.model.column_rows();
         let spine_caption = doc.model.spine_caption();
         let outline_caption = doc.model.outline_caption();
@@ -3654,8 +4043,15 @@ impl Item<ProtocolDoc> for OutlinePane {
                     spine_head_row(ui, &spine_caption, holds_graph, chip_live, cx.mode);
                 graph_picked = picked;
                 drawn.push(record);
+                let first = drawn.len();
                 for row in &spine {
-                    let (record, response) = spine_row(ui, row, holds.shows(row), cx.mode);
+                    if row.role == SpineRole::Unjoined {
+                        let mut record = caption_row(ui, &row.label, cx.mode);
+                        record.role = SpineRole::Unjoined;
+                        drawn.push(record);
+                        continue;
+                    }
+                    let (record, response) = spine_row(ui, row, holds.shows(row), gutter, cx.mode);
                     drawn.push(record);
                     if response.clicked() {
                         match (row.role, row.id.as_ref(), row.view) {
@@ -3683,6 +4079,15 @@ impl Item<ProtocolDoc> for OutlinePane {
                             _ => {}
                         }
                     }
+                }
+                for &(from, to, lane) in &routes {
+                    curves.push(paint_join_curve(
+                        ui.painter(),
+                        (&drawn[first + from], &drawn[first + to]),
+                        lane,
+                        gutter,
+                        cx.mode,
+                    ));
                 }
                 ui.add_space(spacing::SPACE_4);
                 if let Some(list) = list.as_mut() {
@@ -3713,6 +4118,7 @@ impl Item<ProtocolDoc> for OutlinePane {
             cx.request_repaint();
         }
         doc.spine_drawn = drawn;
+        doc.spine_curves = curves;
         if let Some(id) = clicked {
             doc.model.select_id(id);
         }
@@ -3985,6 +4391,7 @@ fn spine_row(
     ui: &mut egui::Ui,
     row: &SpineRow,
     on_canvas: bool,
+    gutter: f32,
     mode: Mode,
 ) -> (SpineRowDrawn, egui::Response) {
     let sem = semantic(mode.is_dark());
@@ -4015,10 +4422,11 @@ fn spine_row(
     // is not on the canvas draws a bar and reports none.
     let on_canvas = if on_canvas { bar } else { None };
 
-    // The marker's leading edge sits `SPACE_4` in, so its centre is one radius
-    // past that — and the name clears the whole marker whether one was drawn or
-    // not, so a view row and the node above it hang off one ladder.
-    let marker_left = rect.left() + spacing::SPACE_4;
+    // The marker's leading edge sits `SPACE_4` in, past the gutter the join
+    // curves take when there are any, so its centre is one radius past that —
+    // and the name clears the whole marker whether one was drawn or not, so a
+    // view row and the node above it hang off one ladder.
+    let marker_left = spine_marker_left(rect, gutter);
     let centre = egui::pos2(marker_left + SPINE_MARKER_RADIUS, rect.center().y);
     match row.marker {
         SpineMarker::Filled => {
@@ -4378,6 +4786,111 @@ fn paint_row_marks(
 /// off, while this carries existence in shape — filled or hollow — which reads
 /// at a size a tint would not.
 const SPINE_MARKER_RADIUS: f32 = 2.5;
+
+/// The width of one lane of the spine's gutter, in logical points: what each
+/// curve that would otherwise cross another is moved out by.
+pub const SPINE_LANE: f32 = spacing::SPACE_3;
+
+/// Where a spine row drawn in `rect` puts its marker's leading edge, with
+/// `gutter` of room for the join curves to its left.
+fn spine_marker_left(rect: egui::Rect, gutter: f32) -> f32 {
+    rect.left() + spacing::SPACE_4 + gutter
+}
+
+/// One **join curve** in the spine's gutter as it was drawn: from the row of
+/// the table a join reads from to the row of the table it finds a row in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpineCurveDrawn {
+    /// The label of the row the curve starts at.
+    pub from: String,
+    /// The label of the row it ends at.
+    pub to: String,
+    /// Its lane, counted out from the markers.
+    pub lane: usize,
+    /// The curve's start, its two control points and its end, in window-space
+    /// logical points.
+    pub points: [egui::Pos2; 4],
+    /// The leftmost the curve reaches.
+    pub reach: f32,
+}
+
+/// A lane for each of `curves` (pairs of row indices): the lane nearest the
+/// markers that no curve spanning a row of its own span holds, the shorter
+/// curves placed first so the longer ones go round them. Each answer is the
+/// curve's two rows and its lane, in the order `curves` gives them.
+fn curve_lanes(curves: &[(usize, usize)]) -> Vec<(usize, usize, usize)> {
+    let span = |&(a, b): &(usize, usize)| (a.min(b), a.max(b));
+    let mut order: Vec<usize> = (0..curves.len()).collect();
+    order.sort_by_key(|&at| {
+        let (top, bottom) = span(&curves[at]);
+        (bottom - top, top, at)
+    });
+    // The rows each lane's curves span.
+    let mut taken: Vec<Vec<(usize, usize)>> = Vec::new();
+    let mut lanes = vec![0; curves.len()];
+    for at in order {
+        let (top, bottom) = span(&curves[at]);
+        let free = |held: &Vec<(usize, usize)>| held.iter().all(|&(t, b)| bottom < t || top > b);
+        let lane = match taken.iter().position(free) {
+            Some(lane) => lane,
+            None => {
+                taken.push(Vec::new());
+                taken.len() - 1
+            }
+        };
+        taken[lane].push((top, bottom));
+        lanes[at] = lane;
+    }
+    curves
+        .iter()
+        .zip(lanes)
+        .map(|(&(a, b), lane)| (a, b, lane))
+        .collect()
+}
+
+/// Paint one join's curve in the spine's gutter, between the markers of the
+/// rows `rows` drew, out in lane `lane` of a gutter `gutter` wide.
+///
+/// In the ink the sources browser draws an accepted join in, so a join reads
+/// as the same thing on the canvas it was accepted on and on the spine.
+fn paint_join_curve(
+    painter: &egui::Painter,
+    rows: (&SpineRowDrawn, &SpineRowDrawn),
+    lane: usize,
+    gutter: f32,
+    mode: Mode,
+) -> SpineCurveDrawn {
+    let sem = semantic(mode.is_dark());
+    let (from, to) = rows;
+    let marker_left = spine_marker_left(from.rect, gutter);
+    // Each end stops a hair short of the marker it reaches, and the curve
+    // bows out to its lane: a cubic's controls at `control` take its leftmost
+    // point three quarters of the way out to them.
+    let start = marker_left - spacing::SPACE_1 / 2.0;
+    #[allow(clippy::cast_precision_loss)] // a handful of lanes
+    let reach = marker_left - SPINE_LANE * (lane as f32 + 0.75);
+    let control = start - (start - reach) / 0.75;
+    let (a, b) = (from.rect.center().y, to.rect.center().y);
+    let points = [
+        egui::pos2(start, a),
+        egui::pos2(control, a),
+        egui::pos2(control, b),
+        egui::pos2(start, b),
+    ];
+    painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+        points,
+        false,
+        egui::Color32::TRANSPARENT,
+        egui::Stroke::new(1.25, chrome::colour(sem.text.link)),
+    ));
+    SpineCurveDrawn {
+        from: from.label.clone(),
+        to: to.label.clone(),
+        lane,
+        points,
+        reach,
+    }
+}
 
 /// The face a caption row is drawn in: the mono family at one step under the UI
 /// size.
@@ -6921,7 +7434,7 @@ steps:
         };
         let mut drawn = None;
         let out = ctx.run_ui(raw, |ui| {
-            drawn = Some(spine_row(ui, row, on_canvas, mode).0);
+            drawn = Some(spine_row(ui, row, on_canvas, 0.0, mode).0);
         });
         let rects = out
             .shapes
