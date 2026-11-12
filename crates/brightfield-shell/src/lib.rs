@@ -72,6 +72,9 @@
 //!   `brightfield://` link, pushed onto that queue.
 //! - [`own_files`] — the Protocol folder an analyst's own files are written as: a load step
 //!   per table, the raw tables' FineType profile, and a Frictionless data package per source.
+//! - [`sources_browser`] — the sources browser's state and keys, with no drawing: the places, a
+//!   folder's list, the marked files, a glob, and a folder's canvas of proposed joins, answering
+//!   the registry's Browser-context keys.
 //! - [`shelf_edit`] — a column put on a chart's x or y, as the list of chart
 //!   edits that make it: the layers that bind the channel move together, and
 //!   a map taken off its coordinate pair loses its projection.
@@ -105,6 +108,7 @@ pub mod column_record;
 pub mod dashboard;
 pub mod data_file;
 pub mod data_grid;
+pub mod default_app;
 pub mod devtools;
 pub mod discovery;
 pub mod door_tree;
@@ -120,7 +124,7 @@ pub mod inspector;
 pub mod interval_drag;
 pub mod legend;
 // The crate's one module that writes `unsafe`: Objective-C messages to the Apple Event manager,
-// the app menu and the open panel.
+// the app menu, the open panel and the workspace's default-app call.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod mac_open;
@@ -138,6 +142,7 @@ pub mod panel_tiles;
 pub mod pipeline;
 pub mod preferences;
 pub mod protocol;
+pub mod protocol_archive;
 pub mod protocol_panels;
 pub mod protocols_dir;
 pub mod ranked_bars;
@@ -148,10 +153,13 @@ pub mod resample;
 pub mod run;
 pub mod shelf;
 pub mod shelf_edit;
+pub mod sources_browser;
+pub mod sources_browser_view;
 mod sql_ident;
 pub mod starts;
 pub mod startup;
 pub mod text_ink;
+pub mod trust;
 pub mod typed_card;
 pub mod typed_sql;
 pub mod versions;

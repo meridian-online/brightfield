@@ -578,8 +578,19 @@ impl OneStepProtocol {
             .map_err(|e| format!("{}: {e}", models_dir.display()))?;
         std::fs::write(&model, &self.model).map_err(|e| format!("{}: {e}", model.display()))?;
         if writes == SaveWrites::Both {
+            let made = !manifest.exists();
             std::fs::write(&manifest, &self.manifest)
                 .map_err(|e| format!("{}: {e}", manifest.display()))?;
+            // A folder this save made a Protocol of is one Brightfield made, so it runs without
+            // the restriction a Protocol from elsewhere opens under (`crate::trust`).
+            if made {
+                if let Err(e) = crate::trust::Store::current().trust(dir) {
+                    eprintln!(
+                        "warning: {}: not recorded as a Protocol Brightfield made: {e}",
+                        dir.display()
+                    );
+                }
+            }
         }
         Ok(manifest)
     }

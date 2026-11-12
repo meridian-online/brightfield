@@ -64,6 +64,10 @@ pub const PLACE_NOT_RECORDED: &str =
 /// What a working database that did not move says.
 pub const DATABASE_NOT_FOLLOWED: &str = "Its working data will be rebuilt on the next run";
 
+/// What a trust record that did not follow the move says.
+pub const TRUST_NOT_FOLLOWED: &str =
+    "Its trust was not recorded at the new place, so it opens restricted until trusted again";
+
 /// The two folder operations a move makes, so a test can make either fail: renaming the folder,
 /// and removing the original once a copy to another volume has been checked.
 pub struct FolderOps<'a> {
@@ -830,6 +834,10 @@ fn move_to(
     // The folder has moved, so what follows cannot fail the move: each step that fails says what
     // did not follow it.
     let mut warnings = Vec::new();
+    // Its trust follows it, so a move the analyst asked for does not leave it restricted.
+    if let Err(e) = crate::trust::Store::current().repoint(&was, &now) {
+        warnings.push(format!("{TRUST_NOT_FOLLOWED}: {e}"));
+    }
     if let Err(e) = repair(&now, &was) {
         warnings.push(format!("{SOURCES_NOT_FOLLOWED}: {e}"));
     }

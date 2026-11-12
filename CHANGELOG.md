@@ -11,7 +11,7 @@ Releases before 0.1.6 predate this file; their tags and the commit history are t
 ### Added
 
 - Every open makes a Protocol. A data file, folder, workbook or database becomes a Protocol in the Protocols folder, `~/Documents/Protocols` by default, named after its first source (`earthquakes_2024`, then `earthquakes_2024-2`). The folder is a setting in Preferences (`⌘,`), which offers to move the old folder's Protocols when it changes.
-- Open files the Mac's ways: double-click or Open With in Finder, drop onto the Dock icon or the front door, or `⌘O`, one panel for a file, a folder or a Protocol. A `brightfield://` link says it does not open yet.
+- Open files the Mac's ways: double-click or Open With in Finder, drop onto the Dock icon or the front door, or `⌘O`, one panel for a file, a folder or a Protocol.
 - Opening a file that already has a Protocol reopens it when that Protocol reads only that file and no other Protocol reads it; otherwise a sheet asks which.
 - `⌘S` saves the Protocol from anywhere in the window. Making a Protocol, adding a source, accepting or dropping a join, and rename are kept at once; every other edit is a draft until `⌘S`. Closing the window, going Home, opening another Protocol, adding a source or quitting over a draft asks to save, close without saving or keep editing, and closing without saving keeps the edits as a version.
 - Rename a Protocol from the window (`F2`) or its row on the front door, which renames its folder; move it with the Location field in the locator band. A Protocol moved in Finder is repaired when opened.
@@ -19,12 +19,19 @@ Releases before 0.1.6 predate this file; their tags and the commit history are t
 - `d d` removes a step from a Protocol's spine, and puts it back.
 - The front door lists Recents and a tree of the Protocols folder, with each Protocol's run state. Brightfield's own previews are not runs: a Protocol only previewed reads "previewed, not run".
 - Relaunching restores the Protocol that was open.
+- The first launch from the app asks once whether to make Brightfield the default app for CSV, Parquet and DuckDB files, and Preferences does the same at any time. macOS confirms each kind of file itself.
+- The sources browser adds files, folders and databases to a Protocol by key or by click: the places, the folder's list, and a preview of a file's first rows or of the joins dovetail proposes between a folder's tables, accepted with `Space`. The keys that apply stand along its foot. It opens from New Protocol, `⇧A` in a Protocol, an empty Protocol's Add source…, and over a folder whose tables dovetail proposes a join between.
+- Drop a data file or folder onto an open Protocol's window to add it as a source, or drop a Protocol or a Protocol archive there to open it.
+- Open in Brightfield: a `brightfield://open?url=<address>` link to a Protocol archive on meridian.online downloads it into the Protocols folder and opens it. `⌘O` and a drop open a Protocol archive too. An archive whose entries or paths leave its folder, name a path on another Mac, or pass 10,000 entries or 2 GiB is refused, and leaves nothing behind.
+- A Protocol Brightfield did not make opens restricted: its steps and sources are shown and its charts draw from the results it carries, and nothing runs until it, or a folder above it, is trusted from the band over the canvas. Preferences lists the trusted folders, each with Remove.
 
 ### Changed
 
 - A single CSV no longer opens as a bare file with its Protocol written beside it on Save. It opens as a Protocol made in the Protocols folder, and Save and Run write there.
 - The front door lists a Protocol from the moment it is made, saved or not.
 - The failed-values step and its table show on the spine only when they hold rows.
+- The spine lists a Protocol's joined tables first, then the model step, a curve for each join, and the sources with no join under a heading.
+- A Protocol an agent wrote, or any other Protocol folder Brightfield did not make, opens restricted from the window until trusted. The first launch of this build records the Protocols Brightfield made before it as trusted, and one named on the command line still opens unrestricted.
 
 ### Fixed
 

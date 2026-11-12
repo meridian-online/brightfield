@@ -1448,6 +1448,22 @@ const UNCHECKED_MODALS: &[(&str, &str)] = &[
          What this harness checks of the others and that pair does not is the \
          scrim composited over the window and the card's width rung",
     ),
+    (
+        "bf-overlay-default-app",
+        "the question the first launch from the app asks once, whether to make \
+         Brightfield the default app for CSV, Parquet and DuckDB files. It opens \
+         at the launch, not from a keystroke, and only when the window is built \
+         as a launch that can ask macOS and the Preferences file keeps no answer. \
+         An OverlayCase's window is built as neither, and this harness leaves the \
+         Preferences file where the Mac keeps it, so a case could not raise the \
+         question without reading that file. Its behaviour is preferences.rs's: \
+         the_default_app_question_is_asked_once_and_remembered, \
+         accepting_the_default_app_question_asks_macos_and_is_remembered, \
+         a_launch_not_from_the_app_leaves_the_question_unasked and \
+         the_question_waits_out_another_sheet. It is shown through ModalLayer on \
+         the narrow rung, so its scrim and width are the layer's; what it has is \
+         no baseline of its own",
+    ),
 ];
 
 /// [`OVERLAY_CASES`] plus [`UNCHECKED_MODALS`] account for the

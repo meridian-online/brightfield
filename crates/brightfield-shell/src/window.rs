@@ -2268,6 +2268,66 @@ enum Overlay {
     /// The question opening a data file asks when known Protocols already read it and none of
     /// them is plainly the one: which to open, or a new Protocol.
     WhichProtocol(WhichProtocolSheet),
+    /// The sources browser, adding files, folders and databases to the open Protocol.
+    SourcesBrowser(Box<BrowserOverlay>),
+    /// The question the first launch from the app asks once: make Brightfield the default app
+    /// for CSV, Parquet and DuckDB files, or not now ([`crate::default_app`]).
+    DefaultApp,
+}
+
+/// Where the first launch's default-app question stands in this launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefaultAppQuestion {
+    /// Not this launch's to ask: it is not from the app, or the question has been answered.
+    Settled,
+    /// To ask once the window's modal slot is free and no open is waiting.
+    Due,
+    /// Up in the modal slot.
+    Shown,
+}
+
+/// The first launch's default-app question: what it does and its two answers. Answers
+/// `Some(true)` for Make Brightfield the default and `Some(false)` for Not now.
+fn default_app_body(ui: &mut egui::Ui) -> Option<bool> {
+    use meridian_egui::MeridianUi as _;
+    let gap = ui.tokens().section_gap;
+    let sem = meridian_design::semantic(ui.visuals().dark_mode);
+    ui.label(
+        "CSV, Parquet and DuckDB files would then open in Brightfield when you double-click them. \
+         macOS asks you to confirm each kind of file.",
+    );
+    ui.label(
+        egui::RichText::new("You can do this later in Preferences.")
+            .color(chrome::colour(sem.text.secondary)),
+    );
+    ui.add_space(gap);
+    ui.horizontal(|ui| {
+        let make = ui
+            .button(crate::preferences::MAKE_DEFAULT)
+            .on_hover_text("macOS shows its own confirmation for each kind")
+            .clicked();
+        let not_now = ui.button(DEFAULT_APP_NOT_NOW).clicked();
+        if make {
+            Some(true)
+        } else if not_now {
+            Some(false)
+        } else {
+            None
+        }
+    })
+    .inner
+}
+
+/// The default-app question's second answer, which asks macOS nothing.
+pub const DEFAULT_APP_NOT_NOW: &str = "Not now";
+
+/// The sources browser as the window holds it: the sheet, and the folder the open Protocol was
+/// just made of or given, when the browser opened on its canvas for its joins.
+struct BrowserOverlay {
+    sheet: crate::sources_browser_view::Sheet,
+    /// The folder already among the Protocol's sources whose canvas shows the joins of the
+    /// Protocol's own model: adding it accepts the joins ticked there rather than adding it again.
+    made_of: Option<PathBuf>,
 }
 
 /// The sheet that asks which Protocol a data file opens: each known Protocol that reads it, by
@@ -2543,6 +2603,10 @@ pub const PREFERENCES_BANNER: &str = "preferences";
 /// them moved or something did not follow one.
 pub const MOVE_ALL_BANNER: &str = "move-all-protocols";
 
+/// The banner that says Brightfield could not be made the default app, or which kinds of file
+/// macOS left with the apps they had.
+pub const DEFAULT_APP_BANNER: &str = "default-app";
+
 /// The `open-preferences` verb's longname: the registry's, spelled once here for the window's key
 /// and the palette.
 pub const OPEN_PREFERENCES: &str = "open-preferences";
@@ -2571,14 +2635,12 @@ pub const MENU_QUIT_UNROUTED_BANNER: &str = "menu-quit-unrouted";
 /// What it says.
 pub const MENU_QUIT_UNROUTED_TITLE: &str = "Quitting will not ask about unsaved work";
 
-/// The banner that says a file dropped onto an open Protocol was not taken.
-pub const DROP_NOT_TAKEN_BANNER: &str = "drop-not-taken";
+/// The banner that says the files dropped onto an open Protocol beside a Protocol were not added.
+/// It is raised with the drop, before any close question is answered, so it says nothing of the
+/// dropped Protocol having opened.
+pub const DROP_REST_NOT_ADDED_BANNER: &str = "drop-rest-not-added";
 /// What it says.
-pub const DROP_NOT_TAKEN_TITLE: &str = "Drop files on the front door to open them";
-/// Its body.
-pub const DROP_NOT_TAKEN_BODY: &str =
-    "A file dropped here is not added to this Protocol yet. Go Home and drop it there, \
-     or open it with Open.";
+pub const DROP_REST_NOT_ADDED_TITLE: &str = "The rest of the drop was not added";
 
 /// The banner that says an open asked for while the window waits to close was not done.
 const NOT_OPENED_WHILE_CLOSING_BANNER: &str = "not-opened-while-closing";
@@ -2608,8 +2670,70 @@ fn display_name(path: &std::path::Path) -> String {
     )
 }
 
-/// The title of the banner a `brightfield://` link raises, which this build does not open yet.
-pub const LINK_NOTICE_TITLE: &str = "Links do not open yet";
+/// The title of the banner a `brightfield://` link raises when it is refused, or its archive does
+/// not download or unpack.
+pub const LINK_NOTICE_TITLE: &str = "Could not open that link";
+
+/// The title of the banner a Protocol archive opened from this Mac raises when it is refused.
+pub const ARCHIVE_NOTICE_TITLE: &str = "Could not open that archive";
+
+/// The banner that says a link's archive is downloading, and how far it has got.
+const DOWNLOAD_BANNER: &str = "open-link-download";
+
+/// The banner that says a restricted Protocol was not run, or could not be trusted.
+const RESTRICTED_BANNER: &str = "restricted-protocol";
+
+/// The headline of the band over a restricted Protocol's canvas.
+pub const RESTRICTED_TITLE: &str = "This Protocol is restricted";
+
+/// A Protocol the window holds restricted: nothing in it runs until it is trusted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Restricted {
+    /// The Protocol folder.
+    pub dir: PathBuf,
+    /// Where it came from, as the band names it: the host of the link it was downloaded by, the
+    /// archive it was unpacked from, or the folder it sits in.
+    pub origin: String,
+}
+
+impl Restricted {
+    /// What the band says under its headline.
+    #[must_use]
+    pub fn said(&self) -> String {
+        format!(
+            "It came from {}. Its steps do not run, nothing it fetches is fetched, and its charts \
+             are pictures of the results it came with, until you trust it.",
+            self.origin
+        )
+    }
+
+    /// The folders above the Protocol the band offers to trust with everything beneath them,
+    /// nearest first, up to the home folder, or to the top of the disk below the root.
+    #[must_use]
+    pub fn folders_above(&self) -> Vec<PathBuf> {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let mut out = Vec::new();
+        for folder in self.dir.ancestors().skip(1) {
+            if folder.parent().is_none() {
+                break;
+            }
+            out.push(folder.to_path_buf());
+            if home.as_deref() == Some(folder) {
+                break;
+            }
+        }
+        out
+    }
+}
+
+/// How far a Trust from the restricted band reaches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrustScope {
+    /// The Protocol alone.
+    Protocol,
+    /// The folder at this path above it, with every Protocol beneath it, including later ones.
+    Folder(PathBuf),
+}
 
 /// Consume the pressed key a registry keystroke token names, if it is down
 /// this frame. Only the tokens the shell actually wires live — the overlay
@@ -3330,6 +3454,15 @@ pub struct MeridianApp {
     /// The DuckDB extensions an open takes as installed, when a test names them; `None` asks
     /// DuckDB.
     installed_extensions: Option<Vec<String>>,
+    /// The Protocol held restricted, while one is open: nothing in it runs until it is trusted.
+    restricted: Option<Restricted>,
+    /// The Protocol archive a link asked for, downloading and unpacking on a worker.
+    downloading: Option<crate::protocol_archive::Download>,
+    /// How a link's address, and each address it redirects to, is checked:
+    /// [`crate::protocol_archive::check_address`] unless a test serves archives from this Mac.
+    archive_hosts: crate::protocol_archive::Allowed,
+    /// What a click on the restricted band asked to trust, taken after the frame.
+    trust_asked: Option<TrustScope>,
     /// The Protocol a lone table's grid and dashboard were opened from: the one-source Protocol
     /// an open made in the Protocols folder. `None` for any other document.
     own_protocol: Option<crate::own_files::OwnProtocol>,
@@ -3337,14 +3470,19 @@ pub struct MeridianApp {
     /// `None` for any other document.
     empty_protocol: Option<crate::own_files::OwnProtocol>,
     /// Whether the open Protocol asks for the sources browser: New Protocol made it with nothing
-    /// in it. The browser itself is not built yet; until it is, the empty canvas says how to add
-    /// a source, and this is what the browser will answer to.
+    /// in it, so the browser opened over its empty canvas, and the first source added lets it go.
     browser_requested: bool,
+    /// What the sources browser's previews are read with: a test's, in place of reading files
+    /// with DuckDB and asking dovetail about folders with this window's runner.
+    browser_previews: Option<(
+        crate::sources_browser_view::ReadPage,
+        crate::sources_browser_view::ProposeJoins,
+    )>,
+    /// The registry's key for `open-sources-browser`, read here over a Protocol with no sources,
+    /// whose canvas has no spine to answer it.
+    browser_binding: Option<&'static str>,
     /// What the empty canvas said on the last frame, when it was drawn.
     empty_canvas_said: Option<String>,
-    /// The empty canvas's Add source… was clicked: the file picker is raised after the frame, as
-    /// the door's Open is, and what it chooses is added to the open Protocol.
-    add_source_pick_requested: bool,
     /// Where the front door drew New Protocol on the last frame.
     door_new_protocol: Option<egui::Rect>,
     /// The New Protocol sheet's Other… was chosen: the folder picker is raised after the frame,
@@ -3354,6 +3492,13 @@ pub struct MeridianApp {
     preferences_pick_requested: bool,
     /// Whether the Preferences file has been checked for a setting it could not read.
     preferences_checked: bool,
+    /// Where the first launch's default-app question stands in this launch.
+    default_app_question: DefaultAppQuestion,
+    /// macOS's answers to the default-app ask under way, until each kind has one.
+    default_app_asking: Option<crate::default_app::Asking>,
+    /// How many times this window has asked macOS to make Brightfield the default app, or would
+    /// have where it may not raise the system's dialogs.
+    default_app_asks: usize,
     /// What the last move of the old Protocols folder's Protocols did.
     move_report: Option<crate::protocols_dir::MoveReport>,
     /// A saved Protocol whose front-door row was clicked, latched for after the
@@ -3874,15 +4019,26 @@ impl MeridianApp {
             unkept_accepted: false,
             open_queue: crate::open_queue::OpenQueue::default(),
             installed_extensions: None,
+            restricted: None,
+            downloading: None,
+            archive_hosts: crate::protocol_archive::check_address,
+            trust_asked: None,
             own_protocol: None,
             empty_protocol: None,
             browser_requested: false,
+            browser_previews: None,
+            browser_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == crate::protocol::OPEN_SOURCES_BROWSER)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
             empty_canvas_said: None,
-            add_source_pick_requested: false,
             door_new_protocol: None,
             new_protocol_pick_requested: false,
             preferences_pick_requested: false,
             preferences_checked: false,
+            default_app_question: DefaultAppQuestion::Settled,
+            default_app_asking: None,
+            default_app_asks: 0,
             move_report: None,
             door_open_protocol: None,
             door_hovered: None,
@@ -4304,10 +4460,6 @@ impl MeridianApp {
         self.typed_in_grid = None;
         self.typed_where_in_grid = None;
         self.typed_counts.clear();
-        // The banner that said a drop onto the Protocol was not taken is about the document that
-        // was open.
-        self.notifications
-            .dismiss(NotificationId::new(DROP_NOT_TAKEN_BANNER));
         self.reconcile_canvas_holds();
         // The ledger and inspector rails' collapsed default, and which
         // inspector pane the caret opens on — re-derived here so a document
@@ -5255,6 +5407,15 @@ impl MeridianApp {
         &self.protocol.doc.spine_drawn
     }
 
+    /// **The join curves the navigator rail's spine drew in its gutter in the
+    /// last frame**, one per join its model makes, read off the frame for the
+    /// reason [`Self::spine_rows`] is. Empty on a Protocol whose model joins no
+    /// two of its tables, and on a frame that drew no spine.
+    #[must_use]
+    pub fn spine_curves(&self) -> &[crate::protocol::SpineCurveDrawn] {
+        &self.protocol.doc.spine_curves
+    }
+
     /// **The controls the last frame drew, each with the name a stranger
     /// reads for it** — in its label, or in its hover text, as
     /// [`chrome::NamedControl::by`] says.
@@ -5345,6 +5506,9 @@ impl MeridianApp {
             && self.tiles.is_none()
             && !self.model.as_ref().is_some_and(ModelDoc::shown)
             && self.empty_protocol.is_none()
+            // A restricted Protocol is open even with no steps or panels to draw: its band says
+            // what it is and offers Trust.
+            && self.restricted.is_none()
     }
 
     /// The rect the front door drew the gallery card for the start `id` at,
@@ -5733,8 +5897,8 @@ impl MeridianApp {
         let ctx = ui.ctx().clone();
         self.open_queue.wake_with(&ctx);
         // Files dropped on the front door open as the picker's choice does, the files of one drop
-        // together as one Protocol. A drop onto an open Protocol with sources is not taken yet,
-        // and a banner says where a drop opens.
+        // together as one Protocol. Dropped on an open Protocol, they are added to it as sources,
+        // or the Protocol among them opens (`Self::take_drop_on_protocol`).
         let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
             i.raw
                 .dropped_files
@@ -5744,29 +5908,10 @@ impl MeridianApp {
         });
         if self.front_door_is_live() {
             if let Some(request) = crate::open_queue::OpenRequest::of_paths(dropped) {
-                self.notifications
-                    .dismiss(NotificationId::new(DROP_NOT_TAKEN_BANNER));
                 self.open_queue.push(request);
             }
-        } else if self.empty_protocol.is_some() {
-            // Files dropped on a Protocol with no sources yet are added to it, the files of one
-            // drop together, as its canvas says.
-            if !dropped.is_empty() {
-                self.notifications
-                    .dismiss(NotificationId::new(DROP_NOT_TAKEN_BANNER));
-                self.open_queue
-                    .push(crate::open_queue::OpenRequest::AddSources(dropped));
-            }
         } else if !dropped.is_empty() {
-            self.notifications.raise(
-                Notification::new(
-                    NotificationId::new(DROP_NOT_TAKEN_BANNER),
-                    Severity::Info,
-                    DROP_NOT_TAKEN_TITLE,
-                )
-                .body(DROP_NOT_TAKEN_BODY),
-            );
-            ctx.request_repaint();
+            self.take_drop_on_protocol(&ctx, dropped);
         }
         // An open that waited for the frame before this one to draw what it is fetching: that
         // frame has been presented, so the open runs now.
@@ -5824,6 +5969,7 @@ impl MeridianApp {
             };
             self.take_or_ask(&ctx, request);
         }
+        self.poll_download(&ctx);
         // The Mac's quit, from the app menu or the Dock, which reaches the window on the same
         // queue as its opens.
         if self.open_queue.take_quit() {
@@ -5847,6 +5993,8 @@ impl MeridianApp {
         if self.open_queue.take_preferences() {
             self.open_preferences();
         }
+        self.raise_default_app_question();
+        self.poll_default_app();
         // Before anything is laid out: a fetch that finished since the last
         // frame replaces the documents, and a frame that drew the door first
         // and adopted the document after would draw one frame of a door for a
@@ -5966,6 +6114,7 @@ impl MeridianApp {
         // rail that is not there, which is the defect `canvas_panes` is cleared
         // per frame for.
         self.protocol.doc.spine_drawn.clear();
+        self.protocol.doc.spine_curves.clear();
         self.protocol.doc.spine_body = None;
         // …and the canvas's record of the chips it drew, for the same reason.
         self.protocol.doc.canvas_chips.clear();
@@ -6274,7 +6423,7 @@ impl MeridianApp {
             self.regions.push((canvas.id, drawn.response.rect));
             self.empty_canvas_said = Some(said);
             if add {
-                self.add_source_pick_requested = true;
+                self.open_sources_browser(&ctx);
             }
         } else {
             // Content somewhere, so the regions — and no stale door geometry: a
@@ -7263,6 +7412,7 @@ impl MeridianApp {
         // F2, and a place field entered this frame: a rename or move reopens the Protocol, so it
         // waits until every pane has drawn.
         self.rename_key(&ctx);
+        self.browser_key(&ctx);
         self.new_protocol_key(&ctx);
         self.preferences_key(&ctx);
         if std::mem::take(&mut self.location_pick_requested) && self.dialogs_allowed {
@@ -7282,8 +7432,8 @@ impl MeridianApp {
         if let Some(to) = self.place_move.take() {
             self.leave(&ctx, Leaving::Move(to));
         }
-        // New Protocol's Other…, and the empty canvas's Add source…: each raises a system picker,
-        // after the frame and only where dialogs are allowed, as Choose… does.
+        // New Protocol's Other… raises a system picker, after the frame and only where dialogs are
+        // allowed, as Choose… does.
         if std::mem::take(&mut self.new_protocol_pick_requested) && self.dialogs_allowed {
             if let Some(chosen) = rfd::FileDialog::new()
                 .set_title("Make the Protocol in")
@@ -7302,9 +7452,6 @@ impl MeridianApp {
             {
                 self.choose_protocols_folder(&ctx, &chosen);
             }
-        }
-        if std::mem::take(&mut self.add_source_pick_requested) && self.dialogs_allowed {
-            crate::data_file::pick(&self.open_queue, crate::open_queue::OpenRequest::of_sources);
         }
         if let Some((id, name)) = self.door_renamed.take() {
             self.rename_door_row(&ctx, &id, &name);
@@ -7343,6 +7490,25 @@ impl MeridianApp {
         }
         if self.picker_asked && self.dialogs_allowed {
             crate::data_file::pick(&self.open_queue, crate::open_queue::OpenRequest::of_paths);
+        }
+        // The band over a restricted Protocol's canvas: where it came from, and Trust. Drawn over
+        // the canvas rather than in the arrangement, so it takes no room from what it is about.
+        if !door {
+            if let Some(restricted) = self.restricted.clone() {
+                if let Some(rect) = self
+                    .regions
+                    .iter()
+                    .find(|(id, _)| *id == canvas.id)
+                    .map(|(_, rect)| *rect)
+                {
+                    if let Some(scope) = restricted_band_ui(&ctx, rect, &restricted, self.mode) {
+                        self.trust_asked = Some(scope);
+                    }
+                }
+            }
+        }
+        if let Some(scope) = self.trust_asked.take() {
+            self.trust_restricted(&ctx, scope);
         }
         // A saved Protocol picked off the door. No dialog and no gate: the path
         // came off a row this build already decided it can reopen, so unlike
@@ -8615,7 +8781,12 @@ impl MeridianApp {
         let mut make_in: Option<NewProtocolPlace> = None;
         let mut which_open: Option<PathBuf> = None;
         let mut preferences_action = None;
+        // The folders the Preferences sheet listed as trusted this frame, which its Remove names
+        // by place in the list.
+        let mut trusted_folders: Vec<PathBuf> = Vec::new();
         let mut question_dismissed = false;
+        let mut browser_effect = None;
+        let mut default_app_answer = None;
         match &mut overlay {
             Overlay::Palette(picker) => {
                 let chrome = ModalChrome::new().title("Commands").enter_hint("run");
@@ -8822,17 +8993,75 @@ impl MeridianApp {
                     close = shown.dismissed;
                 }
             }
+            Overlay::SourcesBrowser(open) => {
+                // A sheet wider than the modal rungs, for its three columns, on the same scrim
+                // and in the same frame a modal card takes from the theme. Its keys, Esc among
+                // them, are the browser's; a click on the backdrop closes it, adding nothing.
+                let size = sources_browser_size(ctx);
+                let scrim = crate::design::to_color32(semantic(self.mode.is_dark()).surfaces.scrim);
+                let mode = self.mode;
+                let shown = egui::Modal::new(egui::Id::new("bf-overlay-sources-browser"))
+                    .backdrop_color(scrim)
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| {
+                        ui.set_width(size.x);
+                        ui.set_height(size.y);
+                        crate::sources_browser_view::show(ui, &mut open.sheet, mode)
+                    });
+                close = shown.should_close()
+                    || matches!(
+                        shown.inner,
+                        crate::sources_browser::Effect::Add(..)
+                            | crate::sources_browser::Effect::Close
+                    );
+                browser_effect = Some((shown.inner, open.made_of.clone()));
+                if open.sheet.reading() {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                }
+            }
             Overlay::Preferences(sheet) => {
                 let folder = crate::protocols_dir::root();
                 let overridden = protocols_dir_override();
+                trusted_folders = crate::trust::Store::current().folders();
+                // The default-app button is the Mac's, and says why where this launch cannot
+                // press it.
+                let default_app = cfg!(target_os = "macos").then(crate::default_app::available);
                 let chrome = ModalChrome::new().title("Preferences").esc_hint("close");
                 let shown = ModalLayer::show(ctx, "bf-overlay-preferences", &chrome, |ui| {
-                    crate::preferences::body(ui, sheet, &folder, overridden)
+                    crate::preferences::body(
+                        ui,
+                        sheet,
+                        &folder,
+                        overridden,
+                        default_app.as_ref(),
+                        &trusted_folders,
+                    )
                 });
                 preferences_action = shown.inner;
                 // Closing the sheet with an offer waiting leaves the Protocols where they are:
                 // the offer is made once.
                 close = shown.dismissed;
+            }
+            Overlay::DefaultApp => {
+                // Enter is Make Brightfield the default, read before the card draws so no button
+                // takes the press as well; Esc and a click on the backdrop are Not now.
+                let enter =
+                    ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                let chrome = ModalChrome::new()
+                    .title("Make Brightfield the default app?")
+                    .enter_hint("make it the default")
+                    .esc_hint("not now")
+                    .narrow();
+                let shown =
+                    ModalLayer::show(ctx, "bf-overlay-default-app", &chrome, default_app_body);
+                default_app_answer = if enter || shown.inner == Some(true) {
+                    Some(crate::default_app::Answer::Accepted)
+                } else if shown.inner == Some(false) || shown.dismissed {
+                    Some(crate::default_app::Answer::Declined)
+                } else {
+                    None
+                };
+                close = default_app_answer.is_some();
             }
         }
         if let Some(next) = becomes {
@@ -8855,6 +9084,9 @@ impl MeridianApp {
         }
         if let Some(answer) = answered {
             self.answer_close_question(ctx, answer);
+        }
+        if let Some((crate::sources_browser::Effect::Add(paths, joins), made_of)) = browser_effect {
+            self.browser_adds(ctx, paths, joins, made_of);
         }
         if question_dismissed {
             self.dismiss_close_question(ctx);
@@ -8885,7 +9117,16 @@ impl MeridianApp {
             Some(crate::preferences::PreferencesAction::Leave) => {
                 self.answer_move_offer(ctx, false);
             }
+            Some(crate::preferences::PreferencesAction::Untrust(index)) => {
+                if let Some(folder) = trusted_folders.get(index) {
+                    self.untrust_folder(ctx, folder);
+                }
+            }
+            Some(crate::preferences::PreferencesAction::MakeDefault) => self.make_default_app(ctx),
             None => {}
+        }
+        if let Some(answer) = default_app_answer {
+            self.answer_default_app(ctx, answer);
         }
     }
 
@@ -9464,7 +9705,8 @@ impl MeridianApp {
                 Leaving::Move(Move::Relocate(_)) => crate::overlays::AskedBefore::Moving,
                 Leaving::Open(
                     crate::open_queue::OpenRequest::AddSource(_)
-                    | crate::open_queue::OpenRequest::AddSources(_),
+                    | crate::open_queue::OpenRequest::AddSources(_)
+                    | crate::open_queue::OpenRequest::AddJoined(..),
                 ) => crate::overlays::AskedBefore::AddingSource,
                 Leaving::Make(_) => crate::overlays::AskedBefore::Making,
                 Leaving::MoveAll { .. } => crate::overlays::AskedBefore::MovingToNewFolder,
@@ -9546,13 +9788,15 @@ impl MeridianApp {
             }),
             OpenRequest::Link(link) => link.clone(),
             OpenRequest::AddSource(path) => display_name(path),
-            OpenRequest::AddSources(paths) => paths.first().map_or_else(String::new, |p| {
-                if paths.len() > 1 {
-                    format!("{} and {} more", display_name(p), paths.len() - 1)
-                } else {
-                    display_name(p)
-                }
-            }),
+            OpenRequest::AddSources(paths) | OpenRequest::AddJoined(paths, _) => {
+                paths.first().map_or_else(String::new, |p| {
+                    if paths.len() > 1 {
+                        format!("{} and {} more", display_name(p), paths.len() - 1)
+                    } else {
+                        display_name(p)
+                    }
+                })
+            }
         };
         self.notifications.raise(
             Notification::new(
@@ -10044,6 +10288,8 @@ impl MeridianApp {
             Overlay::NewProtocol(_) => "new-protocol",
             Overlay::Preferences(_) => "preferences",
             Overlay::WhichProtocol(_) => "which-protocol",
+            Overlay::SourcesBrowser(_) => "sources-browser",
+            Overlay::DefaultApp => "default-app",
         })
     }
 
@@ -10552,6 +10798,11 @@ impl MeridianApp {
                     self.open_place_field(PlaceField::Name);
                     ctx.request_repaint();
                 }
+                // open-sources-browser is the window's as A is: the browser adds to the Protocol
+                // the window holds, whichever document is on the canvas.
+                Request::Verb(verb) if verb.as_str() == crate::protocol::OPEN_SOURCES_BROWSER => {
+                    self.open_sources_browser(ctx);
+                }
                 // The picture verbs are the window's: what they draw is the
                 // chart document's, and where a file goes is the window's to
                 // say. Over the graph there is no chart, and they say so.
@@ -10695,6 +10946,10 @@ impl MeridianApp {
             self.ask_remove_step(&step);
             ctx.request_repaint();
         }
+        // …and `A`, from the spine or the graph: the browser over the Protocol the window holds.
+        if self.protocol.doc.model.take_browser_ask() {
+            self.open_sources_browser(ctx);
+        }
         self.protocol
             .doc
             .model
@@ -10782,6 +11037,7 @@ impl MeridianApp {
         if self.front_door_is_live() {
             return;
         }
+        self.restricted = None;
         self.tiles = None;
         self.model = None;
         self.empty_protocol = None;
@@ -11357,11 +11613,18 @@ impl MeridianApp {
     /// has to be put back **after** it rather than before.
     fn adopt_boot(&mut self, mut boot: Boot) {
         self.landing = None;
+        // What arrives is not the restricted Protocol; `open_restricted` marks it again after.
+        self.restricted = None;
         let open_panel = boot.open_panel;
         self.queue_open_later(boot.open_later.take());
         self.own_protocol = None;
         self.empty_protocol = None;
         self.browser_requested = false;
+        // The sources browser adds to the Protocol it was opened over, which is going: an add
+        // that gave an empty Protocol its first source, or an open of another, closes it.
+        if matches!(self.overlay, Some(Overlay::SourcesBrowser(_))) {
+            self.overlay = None;
+        }
         self.tiles = panel_tiles_of(boot.panels, boot.panels_problem);
         // The model pane belongs to the own-files Protocol it was opened for, and a different
         // document is arriving. `open_model_pane` and `open_model_in_grid` put it back after.
@@ -11440,19 +11703,160 @@ impl MeridianApp {
         }
     }
 
-    /// Raise the banner a `brightfield://` link leaves: titled for the link it is, since a link is
-    /// not a data file and this build opens none.
-    fn say_link_not_opened(&mut self, ctx: &egui::Context, link: &str) {
-        eprintln!("could not open {link}: this build cannot open a link yet");
+    /// **Take a `brightfield://open?url=<address>` link**: check it, and start downloading the
+    /// archive it names on a worker, which unpacks it into the Protocols folder. A link that is
+    /// refused says why in a banner titled for a link, and nothing is fetched. While one download
+    /// runs, another link is refused rather than started beside it.
+    fn begin_link(&mut self, ctx: &egui::Context, link: &str) {
+        let banner = NotificationId::new("open-data-file");
+        if let Some(running) = &self.downloading {
+            let why = format!(
+                "Brightfield is still downloading {}. Open the link again once that Protocol has \
+                 opened.",
+                running.address()
+            );
+            eprintln!("could not open {link}: {why}");
+            self.notifications
+                .raise(Notification::new(banner, Severity::Warning, LINK_NOTICE_TITLE).body(why));
+            ctx.request_repaint();
+            return;
+        }
+        let address = match crate::protocol_archive::check_link_with(link, self.archive_hosts) {
+            Ok(address) => address,
+            Err(why) => {
+                eprintln!("could not open {link}: {why}");
+                self.notifications
+                    .raise(Notification::new(banner, Severity::Error, LINK_NOTICE_TITLE).body(why));
+                ctx.request_repaint();
+                return;
+            }
+        };
+        self.notifications.dismiss(banner);
+        let wake = ctx.clone();
+        self.downloading = Some(crate::protocol_archive::Download::begin(
+            address,
+            self.archive_hosts,
+            crate::protocols_dir::root(),
+            move || wake.request_repaint(),
+        ));
+        self.say_downloading();
+        ctx.request_repaint();
+    }
+
+    /// Raise, or bring up to date, the banner a link's download shows while it runs.
+    fn say_downloading(&mut self) {
+        let Some(download) = &self.downloading else {
+            return;
+        };
+        let address = download.address();
+        let name = address
+            .path_segments()
+            .and_then(|mut s| s.next_back().map(str::to_string))
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| address.to_string());
+        let host = address.host_str().unwrap_or_default().to_string();
+        let readout = download.readout();
         self.notifications.raise(
             Notification::new(
-                NotificationId::new("open-data-file"),
-                Severity::Error,
-                LINK_NOTICE_TITLE,
+                NotificationId::new(DOWNLOAD_BANNER),
+                Severity::Info,
+                format!("Downloading {name}"),
             )
-            .body(format!("This build cannot open {link} yet.")),
+            .body(format!("From {host}, {readout}")),
         );
+    }
+
+    /// **Take a link's download once it answers**: the Protocol it unpacked opens, restricted
+    /// unless a folder above it is trusted, with the close question first over a draft, and the
+    /// host it came from noted for the band. A download that failed says why. Called once a
+    /// frame; while the download runs it brings the banner's readout up to date.
+    fn poll_download(&mut self, ctx: &egui::Context) {
+        let Some(download) = self.downloading.as_mut() else {
+            return;
+        };
+        let Some(result) = download.take() else {
+            self.say_downloading();
+            return;
+        };
+        let host = download
+            .address()
+            .host_str()
+            .unwrap_or_default()
+            .to_string();
+        let address = download.address().to_string();
+        self.downloading = None;
+        self.notifications
+            .dismiss(NotificationId::new(DOWNLOAD_BANNER));
+        match result {
+            Ok(dir) => {
+                if let Err(e) = crate::trust::Store::current().note_origin(&dir, &host) {
+                    eprintln!(
+                        "warning: {}: where it came from was not noted: {e}",
+                        dir.display()
+                    );
+                }
+                self.take_or_ask(ctx, crate::open_queue::OpenRequest::Path(dir));
+            }
+            Err(why) => {
+                eprintln!("could not open {address}: {why}");
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new("open-data-file"),
+                        Severity::Error,
+                        LINK_NOTICE_TITLE,
+                    )
+                    .body(why),
+                );
+            }
+        }
         ctx.request_repaint();
+    }
+
+    /// Whether a link's archive is downloading: a test hook.
+    #[must_use]
+    pub fn is_downloading(&self) -> bool {
+        self.downloading.is_some()
+    }
+
+    /// This window checking a link's address, and each address it redirects to, with `allowed`,
+    /// so a test can serve an archive from this Mac.
+    #[must_use]
+    pub fn fetching_archives_with(mut self, allowed: crate::protocol_archive::Allowed) -> Self {
+        self.archive_hosts = allowed;
+        self
+    }
+
+    /// **Unpack the Protocol archive at `archive`**, chosen on this Mac by Cmd+O, a drop or the
+    /// picker, into the Protocols folder, and open it as a restricted Protocol is opened, unless
+    /// a folder above it is trusted. Answers whether it opened; one that is refused says why.
+    fn open_archive(&mut self, ctx: &egui::Context, archive: &std::path::Path) -> bool {
+        match crate::protocol_archive::unpack(archive, &crate::protocols_dir::root()) {
+            Ok(dir) => {
+                let origin = format!("the archive {}", display_name(archive));
+                if let Err(e) = crate::trust::Store::current().note_origin(&dir, &origin) {
+                    eprintln!(
+                        "warning: {}: where it came from was not noted: {e}",
+                        dir.display()
+                    );
+                }
+                let manifest = dir.join(arc::spec::MANIFEST_FILENAME);
+                self.open_protocol_path(ctx, &manifest.to_string_lossy());
+                !self.front_door_is_live()
+            }
+            Err(why) => {
+                eprintln!("could not open {}: {why}", archive.display());
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new("open-data-file"),
+                        Severity::Error,
+                        ARCHIVE_NOTICE_TITLE,
+                    )
+                    .body(why),
+                );
+                ctx.request_repaint();
+                false
+            }
+        }
     }
 
     /// Raise the one banner a failed open leaves.
@@ -11599,23 +12003,15 @@ impl MeridianApp {
         {
             let others = paths.len() - 1;
             let were = if others == 1 { "was" } else { "were" };
-            // An archive cannot open yet, so nothing opened: its refusal says the others were not
-            // opened either, and no banner says the Protocol was
-            // (`an_archive_among_several_files_says_nothing_opened`).
+            // An archive that is refused opens nothing, so its own banner stands and none says
+            // the Protocol opened.
             if matches!(route, Route::Archive(_)) {
-                self.say_open_failed(
-                    ctx,
-                    &handed.to_string_lossy(),
-                    format!(
-                        "{} is a Protocol archive, which this build cannot open yet. Unzip it \
-                         and open its folder. The other {others} {were} not opened; open them by \
-                         themselves to make a Protocol of them.",
-                        display_name(handed)
-                    ),
-                );
-                return;
+                if !self.open_archive(ctx, handed) {
+                    return;
+                }
+            } else {
+                self.open_path_now(ctx, &handed.to_string_lossy());
             }
-            self.open_path_now(ctx, &handed.to_string_lossy());
             // What opened, named as the route found it: a file inside a Protocol is that
             // Protocol's, not a Protocol itself.
             let what = match &route {
@@ -11630,8 +12026,12 @@ impl MeridianApp {
                     display_name(handed),
                     display_name(dir)
                 ),
-                // Answered above, or not found by the search.
-                Route::Archive(_) | Route::New(_) => return,
+                Route::Archive(_) => format!(
+                    "{} is a Protocol archive, so it opened on its own",
+                    display_name(handed)
+                ),
+                // Not found by the search.
+                Route::New(_) => return,
             };
             self.notifications.raise(
                 Notification::new(banner, Severity::Warning, "Only the Protocol was opened").body(
@@ -11746,8 +12146,8 @@ impl MeridianApp {
         use crate::open_queue::OpenRequest;
         // A close question that is up is not replaced: the way out it was asked for stands, and
         // the open is held and taken once the question is answered
-        // (`an_open_during_the_move_question_waits_for_the_move`). A link only says it cannot
-        // open yet, so it is carried out at once.
+        // (`an_open_during_the_move_question_waits_for_the_move`). A link starts its download at
+        // once; the Protocol it brings opens as any open does, asking first over a draft.
         if matches!(self.overlay, Some(Overlay::CloseQuestion(_)))
             && !matches!(request, OpenRequest::Link(_))
         {
@@ -11786,7 +12186,8 @@ impl MeridianApp {
             OpenRequest::Path(_)
             | OpenRequest::Paths(_)
             | OpenRequest::AddSource(_)
-            | OpenRequest::AddSources(_) => {
+            | OpenRequest::AddSources(_)
+            | OpenRequest::AddJoined(..) => {
                 self.leave(ctx, Leaving::Open(request));
             }
             OpenRequest::Link(_) => {
@@ -11813,12 +12214,9 @@ impl MeridianApp {
                 let manifest = dir.join(arc::spec::MANIFEST_FILENAME);
                 self.open_protocol_path(ctx, &manifest.to_string_lossy());
             }
-            Route::Archive(_) => self.say_open_failed(
-                ctx,
-                chosen,
-                "This build cannot open a Protocol archive yet. Unzip it and open its folder."
-                    .to_string(),
-            ),
+            Route::Archive(archive) => {
+                self.open_archive(ctx, &archive);
+            }
             Route::New(path) => {
                 // The runner this window was given, else this binary, which is the runner when
                 // the window is the app's own.
@@ -11837,6 +12235,12 @@ impl MeridianApp {
                     }
                     Ok(crate::data_file::Opened::Model(protocol)) => {
                         self.open_model_pane(ctx, protocol, runner, true);
+                        // A folder whose tables dovetail proposes joins between opens the browser
+                        // on its canvas, by every way in, so its joins are accepted before the
+                        // analyst works on the model; a workbook or database opens on the model.
+                        if path.is_dir() {
+                            self.offer_folder_joins(ctx, &path);
+                        }
                     }
                     Err(e) => self.say_open_failed(ctx, chosen, e),
                 }
@@ -11856,9 +12260,10 @@ impl MeridianApp {
                     .unwrap_or_else(crate::data_file::installed_extensions);
                 self.open_paths_knowing(ctx, paths, &installed);
             }
-            OpenRequest::Link(link) => self.say_link_not_opened(ctx, &link),
-            OpenRequest::AddSource(path) => self.add_sources(ctx, &[path]),
-            OpenRequest::AddSources(paths) => self.add_sources(ctx, &paths),
+            OpenRequest::Link(link) => self.begin_link(ctx, &link),
+            OpenRequest::AddSource(path) => self.add_sources(ctx, &[path], None),
+            OpenRequest::AddSources(paths) => self.add_sources(ctx, &paths, None),
+            OpenRequest::AddJoined(paths, joins) => self.add_sources(ctx, &paths, Some(&joins)),
         }
     }
 
@@ -11967,11 +12372,212 @@ impl MeridianApp {
     }
 
     /// Whether the open Protocol asks for the sources browser, as one New Protocol has just made
-    /// does: the hook the browser will answer to. Until the browser is built, such a Protocol's
-    /// canvas says how to add a source ([`Self::empty_canvas_said`]).
+    /// does: the browser opens over its empty canvas, which says how to add a source once the
+    /// browser is closed ([`Self::empty_canvas_said`]).
     #[must_use]
     pub fn browser_requested(&self) -> bool {
         self.browser_requested
+    }
+
+    /// The sources browser, while it is open: a test hook.
+    #[must_use]
+    pub fn sources_browser(&self) -> Option<&crate::sources_browser_view::Sheet> {
+        match &self.overlay {
+            Some(Overlay::SourcesBrowser(open)) => Some(&open.sheet),
+            _ => None,
+        }
+    }
+
+    /// This window reading the sources browser's previews with `read` and `propose`, so a test
+    /// can hold a read or name the joins a folder is proposed.
+    #[must_use]
+    pub fn previewing_sources_with(
+        mut self,
+        read: crate::sources_browser_view::ReadPage,
+        propose: crate::sources_browser_view::ProposeJoins,
+    ) -> Self {
+        self.browser_previews = Some((read, propose));
+        self
+    }
+
+    /// The reads the sources browser's previews take: the test's when one named them, else a
+    /// file's first page read with DuckDB and a folder's joins proposed by dovetail, run by this
+    /// window's runner.
+    fn browser_previews(&self) -> crate::sources_browser_view::Previews {
+        use crate::sources_browser_view::{propose_joins, read_first_page, Previews};
+        if let Some((read, propose)) = &self.browser_previews {
+            return Previews::new(std::sync::Arc::clone(read), std::sync::Arc::clone(propose));
+        }
+        let runner = self.runner.clone().or_else(crate::run::Runner::this_binary);
+        Previews::new(
+            std::sync::Arc::new(read_first_page),
+            std::sync::Arc::new(move |folder: &std::path::Path| match &runner {
+                Some(runner) => propose_joins(folder, runner),
+                None => Err("there is no runner to load its tables with".to_string()),
+            }),
+        )
+    }
+
+    /// The Protocol the window holds that sources can be added to: one Brightfield made, with no
+    /// sources yet, one source, or a model of several.
+    fn protocol_taking_sources(&self) -> Option<&crate::own_files::OwnProtocol> {
+        self.empty_protocol
+            .as_ref()
+            .or(self.own_protocol.as_ref())
+            .or_else(|| self.model.as_ref().map(|m| &m.doc.protocol))
+    }
+
+    /// **Open the sources browser over the Protocol the window holds**, on its first source in
+    /// that source's folder, or on the home folder for a Protocol with no sources yet, as `A`, the
+    /// palette and the empty canvas's Add source… do. Over a Protocol Brightfield did not make, a
+    /// banner says sources are added only to its own, and the browser stays closed.
+    pub fn open_sources_browser(&mut self, ctx: &egui::Context) {
+        if self.front_door_is_live() {
+            return;
+        }
+        let Some(protocol) = self.protocol_taking_sources() else {
+            self.say_sources_refused(ctx);
+            return;
+        };
+        let first = protocol.sources.tables.first().map(|t| t.file.clone());
+        self.show_sources_browser(ctx, first.as_deref(), None);
+    }
+
+    /// Put the sources browser over the window, on `at` in its folder with it under the cursor,
+    /// or on the home folder. With `joins_of`, `at` is a folder the open Protocol was just made of
+    /// or given, and its canvas shows those joins from the Protocol's model, each as proposed,
+    /// and holds the keys.
+    fn show_sources_browser(
+        &mut self,
+        ctx: &egui::Context,
+        at: Option<&std::path::Path>,
+        joins_of: Option<Vec<crate::sources_browser::ProposedJoin>>,
+    ) {
+        use crate::sources_browser::{Browser, Disk, Pane};
+        let browser = Browser::open_at(at, &Disk);
+        let mut sheet = crate::sources_browser_view::Sheet::new(browser, self.browser_previews());
+        let mut made_of = None;
+        if let (Some(folder), Some(joins)) = (at, joins_of) {
+            let folder = std::path::absolute(folder).unwrap_or_else(|_| folder.to_path_buf());
+            sheet.previews_mut().know_joins(&folder, joins.clone());
+            let b = &mut sheet.browser;
+            b.set_joins(&folder, joins);
+            if !b.canvas_joins().is_empty() {
+                b.focus = Pane::Canvas;
+            }
+            made_of = Some(folder);
+        }
+        self.overlay = Some(Overlay::SourcesBrowser(Box::new(BrowserOverlay {
+            sheet,
+            made_of,
+        })));
+        ctx.request_repaint();
+    }
+
+    /// **Open the browser on `folder`'s canvas when dovetail proposes joins between its tables**,
+    /// once `folder` is among the open Protocol's sources: by every way in, a folder with a
+    /// proposed join is shown so its joins are accepted before the analyst works on the model
+    /// (`a_folder_with_a_proposed_join_opens_the_browser_on_it_before_adding`). The joins shown
+    /// are the model's between two tables read from the folder that are still dovetail's, not yet
+    /// decided by the analyst. A folder of one table, or whose tables dovetail proposes no join
+    /// between, leaves the browser closed: a join from one of its tables to a table the Protocol
+    /// had before stays a proposal on the model, as a file's join does
+    /// (`a_folder_of_one_table_dropped_on_an_open_protocol_is_added_at_once`).
+    fn offer_folder_joins(&mut self, ctx: &egui::Context, folder: &std::path::Path) {
+        let Some(model) = self.model.as_ref() else {
+            return;
+        };
+        let folder = std::path::absolute(folder).unwrap_or_else(|_| folder.to_path_buf());
+        let tables: BTreeSet<&str> = model
+            .doc
+            .protocol
+            .sources
+            .tables
+            .iter()
+            .filter(|t| t.file.starts_with(&folder))
+            .map(|t| t.name.as_str())
+            .collect();
+        let joins: Vec<crate::sources_browser::ProposedJoin> = model
+            .doc
+            .model
+            .relationships
+            .iter()
+            .filter(|r| r.meta.decided_by != brightfield_ossie::DecidedBy::Analyst)
+            .filter(|r| tables.contains(r.from.as_str()) && tables.contains(r.to.as_str()))
+            .filter_map(
+                |r| match (r.from_columns.as_slice(), r.to_columns.as_slice()) {
+                    ([from], [to]) => Some(crate::sources_browser::ProposedJoin::new(
+                        (&r.from, from),
+                        (&r.to, to),
+                    )),
+                    _ => None,
+                },
+            )
+            .collect();
+        if joins.is_empty() {
+            return;
+        }
+        self.show_sources_browser(ctx, Some(&folder), Some(joins));
+    }
+
+    /// **What the browser's add asks of the window.** A folder the Protocol was just made of or
+    /// given is among its sources already, so its joins ticked on the canvas are kept in the
+    /// model, as the model pane's Keep keeps one, and those left unticked stay dovetail's
+    /// proposals, as the canvas showed them. Everything else is added to the Protocol with the
+    /// joins accepted, through the open queue, so a draft is asked about first as before any add.
+    fn browser_adds(
+        &mut self,
+        ctx: &egui::Context,
+        mut paths: Vec<PathBuf>,
+        mut joins: Vec<crate::own_files::AcceptedJoin>,
+        made_of: Option<PathBuf>,
+    ) {
+        if let Some(folder) = made_of.filter(|f| paths.contains(f)) {
+            paths.retain(|p| *p != folder);
+            for join in std::mem::take(&mut joins) {
+                let name = self.model.as_ref().and_then(|m| {
+                    m.doc
+                        .model
+                        .relationships
+                        .iter()
+                        .find(|r| {
+                            let one = |c: &String| vec![c.clone()];
+                            (r.from == join.left.0
+                                && r.to == join.right.0
+                                && r.from_columns == one(&join.left.1)
+                                && r.to_columns == one(&join.right.1))
+                                || (r.from == join.right.0
+                                    && r.to == join.left.0
+                                    && r.from_columns == one(&join.right.1)
+                                    && r.to_columns == one(&join.left.1))
+                        })
+                        .filter(|r| r.meta.decided_by != brightfield_ossie::DecidedBy::Analyst)
+                        .map(|r| r.name.clone())
+                });
+                if let Some(name) = name {
+                    self.perform_model_action(ctx, crate::model_inspector::ModelAction::Keep(name));
+                }
+            }
+        }
+        if !paths.is_empty() {
+            self.open_queue
+                .push(crate::open_queue::OpenRequest::AddJoined(paths, joins));
+        }
+        ctx.request_repaint();
+    }
+
+    /// `A` over a Protocol with no sources, whose canvas has no spine to answer it, while no
+    /// overlay or text field holds the keys: the browser opens again as Add source… opens it.
+    fn browser_key(&mut self, ctx: &egui::Context) {
+        if self.empty_protocol.is_none()
+            || self.overlay.is_some()
+            || ctx.egui_wants_keyboard_input()
+        {
+            return;
+        }
+        if self.browser_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.open_sources_browser(ctx);
+        }
     }
 
     /// What the canvas of a Protocol with no sources said on the last frame, when it drew one.
@@ -12087,7 +12693,70 @@ impl MeridianApp {
         self.forget_door_listing();
         self.toasts.push(Toast::new(Severity::Success, said));
         self.retitle(ctx);
+        // An empty Protocol shows the sources browser over its empty canvas.
+        self.show_sources_browser(ctx, None, None);
         ctx.request_repaint();
+    }
+
+    /// Say that sources are added only to Protocols Brightfield made, as an add to any other is
+    /// answered.
+    fn say_sources_refused(&mut self, ctx: &egui::Context) {
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new(ADD_SOURCE_REFUSED_BANNER),
+                Severity::Warning,
+                "Sources were not added",
+            )
+            .body(ADD_SOURCE_REFUSED.to_string()),
+        );
+        ctx.request_repaint();
+    }
+
+    /// **What a drop onto an open Protocol's window asks for.** Data files and folders are added
+    /// to the Protocol as sources, the files of one drop together, through the open queue and
+    /// [`Self::add_sources`], so a lone folder whose tables dovetail proposes joins between opens
+    /// the browser on it. Over a Protocol Brightfield did not make, which takes no sources, the
+    /// drop is refused at once, so a draft is not asked about for an add that cannot happen
+    /// (`a_file_dropped_on_a_protocol_brightfield_did_not_make_is_refused_without_asking`).
+    ///
+    /// A Protocol among them, by its folder, its manifest or an archive of it
+    /// ([`crate::open_queue::protocol_named`]), opens instead, as an open from the picker does,
+    /// with the close question first over a draft. A Protocol is not a source of another, so the
+    /// rest of that drop is not added, and a banner says so.
+    fn take_drop_on_protocol(&mut self, ctx: &egui::Context, dropped: Vec<PathBuf>) {
+        use crate::open_queue::OpenRequest;
+        let Some(protocol) = dropped
+            .iter()
+            .find_map(|p| crate::open_queue::protocol_named(p))
+        else {
+            if self.protocol_taking_sources().is_none() {
+                self.say_sources_refused(ctx);
+            } else if let Some(request) = OpenRequest::of_sources(dropped) {
+                self.open_queue.push(request);
+            }
+            return;
+        };
+        let banner = NotificationId::new(DROP_REST_NOT_ADDED_BANNER);
+        self.notifications.dismiss(banner);
+        let others = dropped.len() - 1;
+        if others > 0 {
+            let (were, them, themselves) = if others == 1 {
+                ("was", "it", "itself")
+            } else {
+                ("were", "them", "themselves")
+            };
+            self.notifications.raise(
+                Notification::new(banner, Severity::Warning, DROP_REST_NOT_ADDED_TITLE).body(
+                    format!(
+                        "{} is a Protocol, which opens on its own rather than as a source. The \
+                         other {others} {were} not added; drop {them} by {themselves} to add \
+                         {them}.",
+                        display_name(&protocol)
+                    ),
+                ),
+            );
+        }
+        self.open_queue.push(OpenRequest::Path(protocol));
     }
 
     /// **Add what `paths` hold to the open Protocol as sources**, together, kept at once. Asked
@@ -12099,7 +12768,18 @@ impl MeridianApp {
     /// With the door showing, `paths` open as a new Protocol, as an open of them would. Sources
     /// are added only to Protocols Brightfield made; over any other, a banner says so and nothing
     /// is added. A Protocol whose folder has gone says so, as every write into it does.
-    fn add_sources(&mut self, ctx: &egui::Context, paths: &[PathBuf]) {
+    ///
+    /// `joins` are those the analyst accepted in the sources browser, written into the model as
+    /// the analyst's. An add that did not come from the browser (`None`), of one folder whose
+    /// tables dovetail proposes joins between, opens the browser on that folder's canvas once the
+    /// folder is added, so the analyst can accept them before working on the model
+    /// ([`Self::offer_folder_joins`]).
+    fn add_sources(
+        &mut self,
+        ctx: &egui::Context,
+        paths: &[PathBuf],
+        joins: Option<&[crate::own_files::AcceptedJoin]>,
+    ) {
         let Some(first) = paths.first() else {
             return;
         };
@@ -12119,15 +12799,7 @@ impl MeridianApp {
             .or_else(|| self.model.as_ref().map(|m| m.doc.protocol.clone()));
         let chosen = first.to_string_lossy().into_owned();
         let Some(mut protocol) = held else {
-            self.notifications.raise(
-                Notification::new(
-                    NotificationId::new(ADD_SOURCE_REFUSED_BANNER),
-                    Severity::Warning,
-                    "Sources were not added",
-                )
-                .body(ADD_SOURCE_REFUSED.to_string()),
-            );
-            ctx.request_repaint();
+            self.say_sources_refused(ctx);
             return;
         };
         if self.refuse_if_the_folder_is_gone(ctx) {
@@ -12153,8 +12825,13 @@ impl MeridianApp {
         let was = protocol.dir.clone();
         let canonical = was.canonicalize().ok();
         let discoverer = crate::discovery::Dovetail::new(&runner);
-        let added =
-            crate::own_files::add_sources_with(&mut protocol, paths, &[], &runner, &discoverer);
+        let added = crate::own_files::add_sources_with(
+            &mut protocol,
+            paths,
+            joins.unwrap_or_default(),
+            &runner,
+            &discoverer,
+        );
         let added = match added {
             Ok(added) => added,
             Err(e) => {
@@ -12218,6 +12895,11 @@ impl MeridianApp {
             format!("Added {what} to {name}"),
         ));
         self.retitle(ctx);
+        if let ([folder], None) = (paths, joins) {
+            if folder.is_dir() {
+                self.offer_folder_joins(ctx, folder);
+            }
+        }
         ctx.request_repaint();
     }
 
@@ -12333,6 +13015,142 @@ impl MeridianApp {
             self.overlay = Some(Overlay::Preferences(
                 crate::preferences::PreferencesSheet::default(),
             ));
+        }
+    }
+
+    /// **Ask once whether to make Brightfield the default app**, at this window's first free
+    /// moment, where `from_the_app` says this launch can ask macOS and the Preferences file keeps
+    /// no answer ([`crate::default_app::due`]). `main` passes whether macOS can be asked
+    /// ([`crate::default_app::available`]), so a build run from the repo leaves the question for
+    /// the app's first launch.
+    #[must_use]
+    pub fn offering_default_app(mut self, from_the_app: bool) -> Self {
+        if from_the_app && crate::default_app::due() {
+            self.default_app_question = DefaultAppQuestion::Due;
+        }
+        self
+    }
+
+    /// Put the default-app question up once the modal slot is free and no open is waiting, and
+    /// back up once another sheet that took its place before it was answered has closed.
+    fn raise_default_app_question(&mut self) {
+        if self.default_app_question == DefaultAppQuestion::Shown
+            && !matches!(self.overlay, Some(Overlay::DefaultApp))
+        {
+            self.default_app_question = DefaultAppQuestion::Due;
+        }
+        if self.default_app_question == DefaultAppQuestion::Due
+            && self.overlay.is_none()
+            && self.pending_open.is_none()
+            && self.held_for_question.is_empty()
+            && self.open_queue.has_launched()
+        {
+            self.overlay = Some(Overlay::DefaultApp);
+            self.default_app_question = DefaultAppQuestion::Shown;
+        }
+    }
+
+    /// **Answer the default-app question**, as its buttons, Enter and Esc do: the answer is kept
+    /// in the Preferences file, so the question is not asked again, and accepting asks macOS as
+    /// Preferences' button does ([`Self::make_default_app`]).
+    pub fn answer_default_app(&mut self, ctx: &egui::Context, answer: crate::default_app::Answer) {
+        self.settle_default_app_question(answer);
+        if answer == crate::default_app::Answer::Accepted {
+            self.ask_macos_for_default(ctx);
+        }
+    }
+
+    /// **Make Brightfield the default app for CSV, Parquet and DuckDB files**, as Preferences'
+    /// button does at any time: macOS is asked for each kind, and confirms each with the analyst
+    /// itself. Pressed while the first launch's question waits, it answers that too.
+    pub fn make_default_app(&mut self, ctx: &egui::Context) {
+        if self.default_app_question != DefaultAppQuestion::Settled {
+            self.settle_default_app_question(crate::default_app::Answer::Accepted);
+        }
+        self.ask_macos_for_default(ctx);
+    }
+
+    /// How many times this window has asked macOS to make Brightfield the default app, counting
+    /// the asks a window that may not raise the system's dialogs makes without raising them.
+    #[must_use]
+    pub fn default_app_asks(&self) -> usize {
+        self.default_app_asks
+    }
+
+    /// Take the default-app question down for this launch and keep `answer` in the Preferences
+    /// file. A file that will not take it leaves the question for the next launch, and says so.
+    fn settle_default_app_question(&mut self, answer: crate::default_app::Answer) {
+        self.default_app_question = DefaultAppQuestion::Settled;
+        if matches!(self.overlay, Some(Overlay::DefaultApp)) {
+            self.overlay = None;
+        }
+        if let Err(e) = crate::default_app::record(answer) {
+            eprintln!("warning: the default-app answer was not kept: {e}");
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(DEFAULT_APP_BANNER),
+                    Severity::Warning,
+                    "The default-app answer was not kept",
+                )
+                .body(format!("{e}. The next launch asks again.")),
+            );
+        }
+    }
+
+    /// Ask macOS to make Brightfield the default for each kind, unless an ask is still under way,
+    /// which a toast then says. A window that may not raise the system's dialogs counts the ask
+    /// and asks nothing, so a test cannot change the Mac's default apps.
+    fn ask_macos_for_default(&mut self, ctx: &egui::Context) {
+        if self.default_app_asking.is_some() {
+            self.toasts.push(Toast::new(
+                Severity::Info,
+                "macOS is still asking about the last request to make Brightfield the default",
+            ));
+            ctx.request_repaint();
+            return;
+        }
+        self.default_app_asks += 1;
+        if !self.dialogs_allowed {
+            return;
+        }
+        let wake = ctx.clone();
+        match crate::default_app::ask(move || wake.request_repaint()) {
+            Ok(asking) => self.default_app_asking = Some(asking),
+            Err(why) => self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(DEFAULT_APP_BANNER),
+                    Severity::Warning,
+                    "Brightfield could not be made the default app",
+                )
+                .body(why),
+            ),
+        }
+    }
+
+    /// Say what asking macOS came to, once it has answered for each kind: a toast when
+    /// Brightfield is the default for each, and a banner naming each kind macOS left with the app
+    /// it had.
+    fn poll_default_app(&mut self) {
+        let Some(outcome) = self
+            .default_app_asking
+            .as_ref()
+            .and_then(crate::default_app::Asking::finished)
+        else {
+            return;
+        };
+        self.default_app_asking = None;
+        if outcome.complete() {
+            self.toasts
+                .push(Toast::new(Severity::Success, outcome.said()));
+        } else {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(DEFAULT_APP_BANNER),
+                    Severity::Info,
+                    "macOS kept some files with the apps they had",
+                )
+                .body(outcome.said()),
+            );
         }
     }
 
@@ -12623,9 +13441,10 @@ impl MeridianApp {
     }
 
     /// The folder of the Protocol this window holds, of whichever kind: one made from the
-    /// analyst's own files or its model pane, an agent's Protocol drawn as panel tiles, and a
+    /// analyst's own files or its model pane, an agent's Protocol drawn as panel tiles, a
     /// Protocol of one step opened from its manifest, whose folder is the one its source's Save
-    /// writes. `None` on the door and for a document with no Protocol folder behind it.
+    /// writes, and a restricted Protocol however it is drawn. `None` on the door and for a
+    /// document with no Protocol folder behind it.
     ///
     /// The folder a move of the Protocols folder's Protocols asks about and opens again, and the
     /// one the folder-gone guard watches, so the two agree on what the window holds
@@ -12634,6 +13453,7 @@ impl MeridianApp {
     pub fn held_protocol_dir(&self) -> Option<PathBuf> {
         self.open_protocol_dir()
             .or_else(|| self.tiles.as_ref().map(|t| t.dir().to_path_buf()))
+            .or_else(|| self.restricted.as_ref().map(|r| r.dir.clone()))
             .or_else(|| self.protocol.doc.model.source().map(|s| s.dir.clone()))
             .filter(|dir| !dir.as_os_str().is_empty())
     }
@@ -12854,6 +13674,7 @@ impl MeridianApp {
         runner: crate::run::Runner,
         full_pass: bool,
     ) {
+        self.restricted = None;
         let dir = protocol.dir.clone();
         let discoverer = crate::discovery::Dovetail::new(&runner);
         let doc = match crate::model_pane::ModelPane::open(protocol, runner) {
@@ -14073,6 +14894,26 @@ impl MeridianApp {
         if self.refuse_if_the_folder_is_gone(ctx) {
             return false;
         }
+        // A restricted Protocol runs nothing until it is trusted.
+        if let Some(restricted) = &self.restricted {
+            let body = format!(
+                "{} came from {}, and its steps run once it is trusted. Trust it from the band \
+                 over its canvas.",
+                display_name(&restricted.dir),
+                restricted.origin
+            );
+            eprintln!("could not run the Protocol: {body}");
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(RESTRICTED_BANNER),
+                    Severity::Warning,
+                    "This Protocol is restricted, so it was not run",
+                )
+                .body(body),
+            );
+            ctx.request_repaint();
+            return false;
+        }
         let Some(source) = self.protocol.doc.model.source().cloned() else {
             if self.model.as_ref().is_some_and(ModelDoc::shown) {
                 return self.run_model_protocol(ctx);
@@ -14433,6 +15274,191 @@ impl MeridianApp {
         }
     }
 
+    /// **Open the Protocol in `dir` restricted**, as one nobody has trusted opens: its spine, its
+    /// steps and their SQL, and the sources it reads and fetches, with nothing run, fetched or
+    /// loaded. Its panels draw from the results it carries, the database its manifest names inside
+    /// its folder, with DuckDB confined to them ([`crate::protocol_panels::load_shipped`]); one
+    /// with no panels shows its spine on the canvas. A band over the canvas names where it came
+    /// from and offers Trust.
+    fn open_restricted(&mut self, ctx: &egui::Context, dir: &std::path::Path) {
+        // Spelled as it was given, made absolute, as the other routes hold a Protocol's folder.
+        let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+        let spec = dir
+            .join(arc::spec::MANIFEST_FILENAME)
+            .to_string_lossy()
+            .into_owned();
+        let banner = NotificationId::new("open-protocol");
+        let mut inputs = match load_protocol_offline(&spec) {
+            Ok(inputs) => inputs,
+            Err(e) => {
+                eprintln!("could not open {spec}: {e}");
+                self.notifications.raise(
+                    Notification::new(banner, Severity::Error, "Could not open that Protocol")
+                        .body(e),
+                );
+                ctx.request_repaint();
+                return;
+            }
+        };
+        if let Ok(manifest) = arc::spec::Manifest::load(&dir) {
+            inputs.adopt_newest_run(&dir, &manifest.name);
+        }
+        let flow = self.protocol.doc.model.flow();
+        let count = crate::protocol_panels::panel_count(&dir);
+        let boot = if count > 0 {
+            let viewport = crate::panel_tiles::viewport(boot_tile_body(count));
+            match crate::protocol_panels::load_shipped(&dir, viewport) {
+                Ok(panels) => Boot {
+                    protocol: inputs,
+                    ..Boot::agent_protocol(panels, flow)
+                },
+                Err(problem) => Boot {
+                    panels_problem: Some((dir.clone(), problem)),
+                    protocol: inputs,
+                    flow,
+                    ..Boot::empty()
+                },
+            }
+        } else {
+            Boot::protocol(inputs, flow, None)
+        };
+        self.adopt_boot(boot);
+        if let Some(tiles) = self.tiles.as_mut() {
+            tiles.confine();
+        }
+        self.notifications.dismiss(banner);
+        let origin = crate::trust::Store::current()
+            .origin_of(&dir)
+            .unwrap_or_else(|| {
+                let place = dir
+                    .parent()
+                    .map_or_else(|| dir.display().to_string(), |p| p.display().to_string());
+                format!("a folder Brightfield did not make, in {place}")
+            });
+        self.restricted = Some(Restricted {
+            dir: dir.clone(),
+            origin,
+        });
+        // Remembered as any Protocol opened from disk is, so Recents and the next launch reopen
+        // it, restricted again until it is trusted.
+        self.layout.live_mut().reopen_protocol_at(&dir);
+        let name = self.protocol.doc.model.protocol.clone();
+        let run = self.recorded_run_state();
+        let id = remembered_id(&spec);
+        self.layout.live_mut().remember(
+            &id,
+            &name,
+            run,
+            self.grid_layout,
+            self.grid_spot,
+            now_secs(),
+        );
+        self.toasts.push(Toast::new(
+            Severity::Info,
+            format!(
+                "Opened {}, restricted until you trust it",
+                display_name(&dir)
+            ),
+        ));
+        self.retitle(ctx);
+        ctx.request_repaint();
+    }
+
+    /// **Record the Protocols Brightfield made before trust as trusted, once**: the first launch
+    /// of a build that keeps trust records the own-files Protocols in the Protocols folder and in
+    /// the older Application Support folder ([`crate::own_files::listed`]), and the Protocols in
+    /// Recents whose shape is one Brightfield writes (a one-step or generated Protocol beside its
+    /// data, or an own-files Protocol of no, one or several sources). After that the store gains a
+    /// record only when Brightfield makes a Protocol or the analyst presses Trust. Answers whether
+    /// this call recorded them.
+    pub fn record_older_protocols_once(&mut self) -> bool {
+        let mut dirs = crate::own_files::listed();
+        let recents: Vec<PathBuf> = self
+            .layout
+            .live()
+            .recents
+            .iter()
+            .filter_map(|r| protocol_dir_of(&r.id).or_else(|| door_row_dir(&r.id)))
+            .collect();
+        for dir in recents {
+            if made_by_brightfield(&dir) && !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+        match crate::trust::Store::current().record_older_once(&dirs) {
+            Ok(recorded) => recorded,
+            Err(e) => {
+                eprintln!("warning: the Protocols made before trust were not recorded: {e}");
+                false
+            }
+        }
+    }
+
+    /// This window, with the Protocols Brightfield made before trust recorded as trusted on the
+    /// first launch that keeps trust ([`Self::record_older_protocols_once`]).
+    #[must_use]
+    pub fn recording_older_protocols_once(mut self) -> Self {
+        self.record_older_protocols_once();
+        self
+    }
+
+    /// **Stop trusting the folder `folder` with the Protocols beneath it**, as Remove beside it in
+    /// Preferences does. A Protocol trusted only through it opens restricted from then on; the one
+    /// open now stays as it is until it is opened again.
+    pub fn untrust_folder(&mut self, ctx: &egui::Context, folder: &std::path::Path) {
+        if let Err(e) = crate::trust::Store::current().revoke(folder) {
+            eprintln!("could not stop trusting {}: {e}", folder.display());
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(RESTRICTED_BANNER),
+                    Severity::Error,
+                    "Could not stop trusting that folder",
+                )
+                .body(e),
+            );
+        }
+        ctx.request_repaint();
+    }
+
+    /// The Protocol the window holds restricted, while one is open.
+    #[must_use]
+    pub fn restricted(&self) -> Option<&Restricted> {
+        self.restricted.as_ref()
+    }
+
+    /// **Trust the restricted Protocol**, or the folder `scope` names with every Protocol beneath
+    /// it, as the band's Trust does, and open it again as a trusted Protocol opens, so it can run.
+    /// The reopen goes the way any open goes, with the close question first over a draft; kept
+    /// editing, the Protocol stays as it is, trusted from its next open. Answers whether it was
+    /// trusted; a store that cannot be written says so in a banner.
+    pub fn trust_restricted(&mut self, ctx: &egui::Context, scope: TrustScope) -> bool {
+        let Some(restricted) = self.restricted.clone() else {
+            return false;
+        };
+        let store = crate::trust::Store::current();
+        let recorded = match &scope {
+            TrustScope::Protocol => store.trust(&restricted.dir),
+            TrustScope::Folder(folder) => store.trust_folder(folder),
+        };
+        if let Err(e) = recorded {
+            eprintln!("could not trust {}: {e}", restricted.dir.display());
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(RESTRICTED_BANNER),
+                    Severity::Error,
+                    "Could not trust this Protocol",
+                )
+                .body(e),
+            );
+            ctx.request_repaint();
+            return false;
+        }
+        self.notifications
+            .dismiss(NotificationId::new(RESTRICTED_BANNER));
+        self.take_or_ask(ctx, crate::open_queue::OpenRequest::Path(restricted.dir));
+        true
+    }
+
     /// Open the Protocol saved at `path` — the route a front door row for a
     /// saved Protocol takes.
     ///
@@ -14442,9 +15468,25 @@ impl MeridianApp {
     /// banner and changes nothing, exactly as a data file that will not read
     /// does.
     pub fn open_protocol_path(&mut self, ctx: &egui::Context, path: &str) {
+        let named = std::path::Path::new(path);
+        // A Protocol nobody trusted opens restricted, whatever shape it has and wherever it sits:
+        // trust is a record in the store ([`crate::trust`]), not read from the folder
+        // (`an_archive_carrying_a_made_by_brightfield_marker_or_the_one_step_layout_stays_restricted`).
+        if let crate::open_queue::Route::Existing(dir) = crate::open_queue::route(named) {
+            let store = crate::trust::Store::current();
+            if !store.is_trusted(&dir) {
+                self.open_restricted(ctx, &dir);
+                return;
+            }
+            if let Err(e) = store.follow(&dir) {
+                eprintln!(
+                    "warning: {}: its trust record was not moved: {e}",
+                    dir.display()
+                );
+            }
+        }
         // A Protocol moved in the Finder since it was last open: its sources are repaired from
         // where it was, and arc's database moved to its new path, before anything reads them.
-        let named = std::path::Path::new(path);
         if let Some(dir) = crate::own_files::own_protocol_dir(named)
             .or_else(|| crate::own_files::one_source_protocol_dir(named))
             .or_else(|| crate::own_files::empty_protocol_dir(named))
@@ -16113,7 +17155,9 @@ fn request_paths(request: &crate::open_queue::OpenRequest) -> Vec<PathBuf> {
     use crate::open_queue::OpenRequest;
     match request {
         OpenRequest::Path(path) | OpenRequest::AddSource(path) => vec![path.clone()],
-        OpenRequest::Paths(paths) | OpenRequest::AddSources(paths) => paths.clone(),
+        OpenRequest::Paths(paths)
+        | OpenRequest::AddSources(paths)
+        | OpenRequest::AddJoined(paths, _) => paths.clone(),
         OpenRequest::Link(_) => Vec::new(),
     }
 }
@@ -17889,6 +18933,19 @@ fn subject_icon(
     }
 }
 
+/// The sources browser's sheet in a window whose content is `ctx`'s: the window less the widest
+/// margin on the spacing ladder each side, between a modal card's width and a wide reading width.
+fn sources_browser_size(ctx: &egui::Context) -> egui::Vec2 {
+    use meridian_egui::MeridianUi as _;
+    let t = ctx.tokens();
+    let margins = 2.0 * t.space[9];
+    let room = ctx.content_rect().size() - egui::Vec2::splat(margins);
+    egui::vec2(
+        room.x.clamp(t.modal_width_default, 1280.0),
+        room.y.clamp(t.modal_width_narrow * 0.75, 820.0),
+    )
+}
+
 /// The canvas of a Protocol with no sources, into the whole of `ui`: `said`, how to add one,
 /// over Add source…, in the window's theme. Answers whether Add source… was clicked.
 fn draw_empty_canvas(ui: &mut egui::Ui, said: &str, mode: Mode) -> bool {
@@ -18051,6 +19108,84 @@ fn canvas_head(ui: &mut egui::Ui, head: egui::Rect, name: &str, mode: Mode) {
         [head.left_bottom(), head.right_bottom()],
         egui::Stroke::new(1.0, chrome::colour(sem.borders.subtle)),
     );
+}
+
+/// Whether the Protocol folder `dir` has a shape Brightfield writes: an own-files Protocol of no,
+/// one or several sources, or a one-step or generated Protocol beside its data file. What the
+/// once-only record of the Protocols made before trust reads in Recents; it grants trust at no
+/// other time.
+fn made_by_brightfield(dir: &std::path::Path) -> bool {
+    if crate::own_files::own_protocol_dir(dir).is_some()
+        || crate::own_files::one_source_protocol_dir(dir).is_some()
+        || crate::own_files::empty_protocol_dir(dir).is_some()
+    {
+        return true;
+    }
+    let Ok(text) = std::fs::read_to_string(dir.join(arc::spec::MANIFEST_FILENAME)) else {
+        return false;
+    };
+    crate::one_step::data_file_named_by(&text, dir).is_some()
+        || crate::generated::generated_protocol_in(&text, dir)
+            .ok()
+            .flatten()
+            .is_some()
+}
+
+/// Draw the band over a restricted Protocol's canvas, centred at the canvas's top: its headline,
+/// where the Protocol came from, Trust, and the folders above it that can be trusted with
+/// everything beneath them. Answers what a click asked to trust. It is drawn in the window's
+/// theme, in the popup frame its style gives.
+fn restricted_band_ui(
+    ctx: &egui::Context,
+    canvas: egui::Rect,
+    restricted: &Restricted,
+    mode: Mode,
+) -> Option<TrustScope> {
+    let sem = semantic(mode.is_dark());
+    let gap = spacing::SECTION_GAP;
+    let mut asked = None;
+    egui::Area::new(egui::Id::new("bf-restricted-band"))
+        .order(egui::Order::Foreground)
+        .pivot(egui::Align2::CENTER_TOP)
+        .fixed_pos(canvas.center_top() + egui::vec2(0.0, gap))
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_max_width((canvas.width() - 2.0 * gap).max(240.0));
+                ui.label(egui::RichText::new(RESTRICTED_TITLE).strong());
+                ui.label(
+                    egui::RichText::new(restricted.said())
+                        .color(chrome::colour(sem.text.secondary)),
+                );
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Trust this Protocol")
+                        .on_hover_text("Let its steps run, and its charts be worked with")
+                        .clicked()
+                    {
+                        asked = Some(TrustScope::Protocol);
+                    }
+                    let folders = restricted.folders_above();
+                    if !folders.is_empty() {
+                        ui.menu_button("Trust a folder above it", |ui| {
+                            for folder in folders {
+                                if ui
+                                    .button(folder.display().to_string())
+                                    .on_hover_text(
+                                        "Trust every Protocol in this folder, including ones \
+                                         added later",
+                                    )
+                                    .clicked()
+                                {
+                                    asked = Some(TrustScope::Folder(folder));
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+        });
+    asked
 }
 
 /// The locator band: where the subject sits, said as a breadcrumb, and where

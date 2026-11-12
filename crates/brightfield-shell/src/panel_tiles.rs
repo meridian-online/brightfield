@@ -43,7 +43,7 @@ use crate::canvas::EguiCanvasHost;
 use crate::design::Mode;
 use crate::protocol::ui_font;
 use crate::protocol_panels::{
-    load, panel_paths, OpenProblem, PanelProblem, ProtocolPanels, NOTE_HEIGHT,
+    load, load_shipped, panel_paths, OpenProblem, PanelProblem, ProtocolPanels, NOTE_HEIGHT,
 };
 
 /// The narrowest a tile is laid out: room for a bar chart's category labels,
@@ -163,6 +163,9 @@ pub struct PanelTiles {
     /// How often a reload a run's lock refused is tried again:
     /// [`LOCKED_RETRY_EVERY`] unless a test shortened it.
     locked_retry_every: Duration,
+    /// Whether the Protocol is restricted, so each reload opens it from the results it carries,
+    /// confined as [`load_shipped`] confines it.
+    confined: bool,
 }
 
 impl PanelTiles {
@@ -171,7 +174,22 @@ impl PanelTiles {
     pub fn new(panels: ProtocolPanels, body: egui::Vec2) -> Self {
         let dir = panels.dir.clone();
         let name = panels.name.clone();
-        Self::over(dir, name, Ok(panels), Some((body, Mode::Light)))
+        let confined = panels.confined;
+        let mut tiles = Self::over(dir, name, Ok(panels), Some((body, Mode::Light)));
+        tiles.confined = confined;
+        tiles
+    }
+
+    /// Hold the Protocol as restricted: each reload opens it from the results it carries,
+    /// confined, as a Protocol nobody has trusted is opened.
+    pub fn confine(&mut self) {
+        self.confined = true;
+    }
+
+    /// Whether the Protocol is held restricted ([`Self::confine`]).
+    #[must_use]
+    pub fn is_confined(&self) -> bool {
+        self.confined
     }
 
     /// The window's hold on a Protocol in `dir` that did not open for its
@@ -206,6 +224,7 @@ impl PanelTiles {
             last_load: Instant::now(),
             locked_retry: false,
             locked_retry_every: LOCKED_RETRY_EVERY,
+            confined: false,
         }
     }
 
@@ -341,7 +360,11 @@ impl PanelTiles {
         let (body, mode) = self
             .composed_at
             .unwrap_or((egui::vec2(MIN_TILE_WIDTH, MIN_TILE_HEIGHT), Mode::Light));
-        let loaded = load(&self.dir, viewport(body));
+        let loaded = if self.confined {
+            load_shipped(&self.dir, viewport(body))
+        } else {
+            load(&self.dir, viewport(body))
+        };
         self.last_load = Instant::now();
         // Open tiles that meet a run holding the database keep drawing what
         // they drew, and the mark is left where it was. The listing-only check

@@ -1003,6 +1003,31 @@ pub fn compose_spec_str_in(
     compose(parsed, None, base_dir, None, viewport, mode)
 }
 
+/// [`compose_spec_str_in`] with the session confined to the folders in `allowed`, with other
+/// files, the network and extension loading closed to it
+/// ([`brightfield_engine::LoadOptions::confined_to`],
+/// `restricted_drawing_reads_only_shipped_results`). What a Protocol nobody has trusted is drawn
+/// through, from the result files it carries.
+///
+/// # Errors
+///
+/// As [`compose_spec_str_in`], and a source outside `allowed`, which DuckDB refuses.
+pub fn compose_spec_str_confined(
+    source: &str,
+    base_dir: Option<&Path>,
+    viewport: Rect,
+    mode: Mode,
+    allowed: &[PathBuf],
+) -> Result<Composed, String> {
+    let parsed = parse_spec(source, Format::Yaml).map_err(|e| format!("parse error: {e}"))?;
+    let options = brightfield_engine::LoadOptions {
+        network: brightfield_engine::NetworkPolicy::Disabled,
+        confined_to: Some(allowed.to_vec()),
+        ..brightfield_engine::LoadOptions::default()
+    };
+    compose_with(parsed, None, base_dir, None, viewport, mode, &options)
+}
+
 /// The name a diagnostic cites for a spec loaded from a path: its file name,
 /// which is what the reader has open, not the absolute path they did not type.
 fn source_name(spec_path: &str) -> String {
@@ -1028,13 +1053,35 @@ fn compose(
     viewport: Rect,
     mode: Mode,
 ) -> Result<Composed, String> {
+    compose_with(
+        parsed,
+        source,
+        spec_dir,
+        sample,
+        viewport,
+        mode,
+        &brightfield_engine::LoadOptions::default(),
+    )
+}
+
+/// [`compose`], loading the session with `options`.
+#[allow(clippy::too_many_arguments)]
+fn compose_with(
+    parsed: ParseOutput,
+    source: Option<String>,
+    spec_dir: Option<&Path>,
+    sample: Option<SampleRate>,
+    viewport: Rect,
+    mode: Mode,
+    options: &brightfield_engine::LoadOptions,
+) -> Result<Composed, String> {
     let spec = parsed.spec;
     let analysis = analyse_spec(&spec).map_err(|e| format!("analysis error: {e}"))?;
     let diagnostics = LoadDiagnostics::collect(source, &spec, &parsed.warnings, &analysis.warnings);
 
     let engine = Engine::new();
     let load = engine
-        .load_spec(spec.clone(), analysis, spec_dir)
+        .load_spec_with(spec.clone(), analysis, spec_dir, options)
         .map_err(|e| format!("engine error: {e}"))?;
     let mut session = load.session;
     // Resolved BEFORE `execute_all`, which is the whole of the requirement: the

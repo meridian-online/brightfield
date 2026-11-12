@@ -22,7 +22,7 @@ use brightfield_protocol::contract_graph::{AssetMeta, SeamStatus};
 use brightfield_shell::app::GridLayout;
 use brightfield_shell::design::Mode;
 use brightfield_shell::protocol::{
-    GraphChipDrawn, NodeView, SpineMarker, SpineRole, SpineRowDrawn,
+    GraphChipDrawn, ModelJoins, NodeView, SpineMarker, SpineRole, SpineRowDrawn,
 };
 use brightfield_shell::window::{Boot, CanvasHolds, MeridianApp};
 use meridian_design::{control, semantic, spacing};
@@ -2663,4 +2663,699 @@ fn each_table_carries_a_grid_row_and_its_click_lands_on_that_nodes_grid() {
         )),
         "the held table's grid drew the empty state of a node the engine lacks"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The spine leads with the model
+// ---------------------------------------------------------------------------
+
+/// The five sources of the star Protocol, in the order a folder of them is
+/// read: a fact table, `orders`, that joins two dimensions, and two sources
+/// nothing joins.
+const STAR: [&str; 5] = ["customers", "holidays", "orders", "products", "weather"];
+
+/// The star's joins: the fact table to each dimension.
+const STAR_JOINS: [(&str, &str); 2] = [("orders", "customers"), ("orders", "products")];
+
+/// A Protocol of `tables` as a Protocol of several sources is written: a load
+/// step per table reading its file into `raw_<table>`, then a step per table
+/// making `<table>` from that. The manifest, and each model's path and SQL.
+fn sources_manifest(name: &str, tables: &[&str]) -> (String, Vec<(String, String)>) {
+    let mut manifest = format!("name: {name}\nengine: duckdb\nsteps:\n");
+    let mut models = Vec::new();
+    for t in tables {
+        manifest.push_str(&format!(
+            "  - name: load_{t}\n    sql: models/01_load_{t}.sql\n    depends_on:\n      \
+             - './{t}.csv'\n    produces:\n      - raw_{t}\n"
+        ));
+        models.push((
+            format!("models/01_load_{t}.sql"),
+            format!("CREATE OR REPLACE TABLE raw_{t} AS SELECT * FROM read_csv('./{t}.csv');\n"),
+        ));
+    }
+    for t in tables {
+        manifest.push_str(&format!(
+            "  - name: silver_{t}\n    sql: models/02_silver_{t}.sql\n    produces:\n      - {t}\n"
+        ));
+        models.push((
+            format!("models/02_silver_{t}.sql"),
+            format!("CREATE OR REPLACE TABLE {t} AS SELECT * FROM raw_{t};\n"),
+        ));
+    }
+    (manifest, models)
+}
+
+/// The star Protocol, its model making `joins`, or with no model for `None`,
+/// on a window of its own.
+fn star_boot(joins: Option<&[(&str, &str)]>) -> Boot {
+    let (manifest, models) = sources_manifest("star", &STAR);
+    manifest_boot(&manifest, &models, &STAR, joins)
+}
+
+/// A window over `manifest` and its `models`, its model holding `tables` and
+/// making `joins`, or with no model for `None`.
+fn manifest_boot(
+    manifest: &str,
+    models: &[(String, String)],
+    tables: &[&str],
+    joins: Option<&[(&str, &str)]>,
+) -> Boot {
+    Boot::protocol(
+        manifest_inputs(manifest, models, tables, joins),
+        brightfield_protocol::layout::Flow::Vertical,
+        None,
+    )
+}
+
+/// The inputs [`manifest_boot`] opens a window over.
+fn manifest_inputs(
+    manifest: &str,
+    models: &[(String, String)],
+    tables: &[&str],
+    joins: Option<&[(&str, &str)]>,
+) -> brightfield_shell::protocol::ProtocolInputs {
+    let models: Vec<(&str, &str)> = models
+        .iter()
+        .map(|(path, sql)| (path.as_str(), sql.as_str()))
+        .collect();
+    let mut inputs = brightfield_shell::protocol::load_protocol_str(manifest, &models)
+        .unwrap_or_else(|e| panic!("the manifest loads: {e}"));
+    inputs.model_joins = joins.map(|joins| ModelJoins {
+        tables: tables.iter().map(|t| (*t).to_string()).collect(),
+        joins: joins
+            .iter()
+            .map(|(from, to)| ((*from).to_string(), (*to).to_string()))
+            .collect(),
+    });
+    inputs
+}
+
+/// The rows of the spine proper, as the last frame drew them: under its head
+/// and above the outline's caption.
+fn spine_proper(win: &Live) -> Vec<SpineRowDrawn> {
+    win.rows()
+        .into_iter()
+        .skip(1)
+        .take_while(|row| row.role != SpineRole::Caption)
+        .collect()
+}
+
+/// The source a row of the star's spine is one of — its file, its load, its
+/// raw table, the step that makes its table, or its table — or `None` for the
+/// model step and the heading, which are no source's.
+fn source_of(row: &SpineRowDrawn) -> Option<String> {
+    if matches!(row.role, SpineRole::Model | SpineRole::Unjoined) {
+        return None;
+    }
+    let label = row.label.as_str();
+    let name = label
+        .strip_prefix("./")
+        .and_then(|l| l.strip_suffix(".csv"))
+        .or_else(|| label.strip_prefix("load_"))
+        .or_else(|| label.strip_prefix("raw_"))
+        .or_else(|| label.strip_prefix("silver_"))
+        .unwrap_or(label);
+    Some(name.to_string())
+}
+
+/// **The joined tables lead, each beside the tables it joins**: on a star of
+/// three tables and two sources nothing joins, the fact table's rows, then
+/// each dimension's, then the model step, then the heading and the two loose
+/// sources in the order the spine listed them before.
+///
+/// Read at two grains. The table rows with the model step and the heading in
+/// between are the order the design names; and every row of the spine proper is
+/// one source's or one of those two, each source's rows standing together, so
+/// a file or a load left behind in the outline's order fails here.
+#[test]
+fn joined_tables_lead_and_each_sits_beside_its_partner() {
+    let mut win = Live::open(star_boot(Some(&STAR_JOINS)));
+    win.settle();
+    let spine = spine_proper(&win);
+
+    let landmarks: Vec<(SpineRole, String)> = spine
+        .iter()
+        .filter(|row| {
+            matches!(row.role, SpineRole::Model | SpineRole::Unjoined)
+                || (row.role == SpineRole::Asset && STAR.contains(&row.label.as_str()))
+        })
+        .map(|row| (row.role, row.label.clone()))
+        .collect();
+    let asset = |label: &str| (SpineRole::Asset, label.to_string());
+    assert_eq!(
+        landmarks,
+        vec![
+            asset("orders"),
+            asset("customers"),
+            asset("products"),
+            (SpineRole::Model, "model".to_string()),
+            (
+                SpineRole::Unjoined,
+                "NO JOIN   \u{b7}   2 sources".to_string()
+            ),
+            asset("holidays"),
+            asset("weather"),
+        ],
+        "the spine does not lead with the joined tables"
+    );
+    let model = spine
+        .iter()
+        .find(|row| row.role == SpineRole::Model)
+        .expect("the model step is drawn");
+    assert_eq!(
+        model.kind, "model \u{b7} 2 joins",
+        "the model step counts its joins"
+    );
+
+    // Each source's rows together, in the order above.
+    let mut runs: Vec<Option<String>> = Vec::new();
+    for row in &spine {
+        let source = source_of(row);
+        if runs.last() != Some(&source) {
+            runs.push(source);
+        }
+    }
+    let run = |s: &str| Some(s.to_string());
+    assert_eq!(
+        runs,
+        vec![
+            run("orders"),
+            run("customers"),
+            run("products"),
+            None,
+            run("holidays"),
+            run("weather"),
+        ],
+        "a source's rows are split: {:?}",
+        spine.iter().map(|r| r.label.as_str()).collect::<Vec<_>>()
+    );
+    // Each source's five rows: its file, its load, its raw table, the step that
+    // makes its table, and its table.
+    for source in STAR {
+        let count = spine
+            .iter()
+            .filter(|row| source_of(row).as_deref() == Some(source))
+            .count();
+        assert_eq!(count, 5, "{source} has {count} rows on the spine, not 5");
+    }
+
+    // The loose sources keep the order the spine gives them with no model.
+    let mut before = Live::open(star_boot(None));
+    before.settle();
+    let loose: Vec<String> = spine_proper(&before)
+        .into_iter()
+        .filter(|row| {
+            row.role == SpineRole::Asset && ["holidays", "weather"].contains(&row.label.as_str())
+        })
+        .map(|row| row.label)
+        .collect();
+    assert_eq!(loose, ["holidays", "weather"]);
+}
+
+/// **One curve per join**, drawn in the gutter between the rows of the two
+/// tables it joins: each starts and ends at a table row's middle, left of the
+/// row's marker and inside the rail, and two whose rows overlap take two
+/// lanes, so neither runs over the other.
+///
+/// A second pair of tables joined twice draws two curves for them, since a
+/// curve is a join and not a pair of tables.
+#[test]
+fn one_curve_per_join() {
+    let mut win = Live::open(star_boot(Some(&STAR_JOINS)));
+    win.settle();
+    let rows = spine_proper(&win);
+    let curves = win.app.spine_curves().to_vec();
+    let mut pairs: Vec<(&str, &str)> = curves
+        .iter()
+        .map(|c| (c.from.as_str(), c.to.as_str()))
+        .collect();
+    pairs.sort_unstable();
+    assert_eq!(pairs, [("orders", "customers"), ("orders", "products")]);
+
+    for curve in &curves {
+        let row = |label: &str| {
+            rows.iter()
+                .find(|r| r.role == SpineRole::Asset && r.label == label)
+                .unwrap_or_else(|| panic!("no row for {label}"))
+        };
+        let (from, to) = (row(&curve.from), row(&curve.to));
+        let [start, _, _, end] = curve.points;
+        assert_eq!(
+            start.y,
+            from.rect.center().y,
+            "{curve:?} starts off its row"
+        );
+        assert_eq!(end.y, to.rect.center().y, "{curve:?} ends off its row");
+        for at in [start, end] {
+            assert!(
+                at.x < from.name_rect.left(),
+                "{curve:?} reaches into the row's name at {at:?}"
+            );
+        }
+        assert!(
+            curve.reach > from.rect.left() && curve.reach < start.x,
+            "{curve:?} does not bow out into the gutter inside the rail"
+        );
+    }
+    let lanes: std::collections::BTreeSet<usize> = curves.iter().map(|c| c.lane).collect();
+    assert_eq!(
+        lanes.len(),
+        2,
+        "the two curves from orders overlap and share a lane: {curves:?}"
+    );
+
+    let twice = [
+        ("orders", "customers"),
+        ("orders", "customers"),
+        ("orders", "products"),
+    ];
+    let mut win = Live::open(star_boot(Some(&twice)));
+    win.settle();
+    assert_eq!(
+        win.app.spine_curves().len(),
+        3,
+        "two joins between orders and customers draw one curve"
+    );
+}
+
+/// **A Protocol with no joins keeps today's order**: a model that joins no two
+/// tables draws the spine the outline gives, row for row, as a Protocol with
+/// no model does — no model step, no heading and no curve.
+#[test]
+fn a_protocol_with_no_joins_keeps_todays_order() {
+    let shape = |boot: Boot| {
+        let mut win = Live::open(boot);
+        win.settle();
+        let rows: Vec<(SpineRole, String, String, u8, egui::Rect)> = win
+            .rows()
+            .iter()
+            .map(|r| {
+                (
+                    r.role,
+                    r.label.clone(),
+                    r.kind.clone(),
+                    r.depth,
+                    r.name_rect,
+                )
+            })
+            .collect();
+        (rows, win.app.spine_curves().len())
+    };
+    let (today, none) = shape(star_boot(None));
+    assert_eq!(none, 0);
+    assert!(
+        today
+            .iter()
+            .all(|(role, ..)| !matches!(role, SpineRole::Model | SpineRole::Unjoined)),
+        "a Protocol with no model draws a model step or a heading"
+    );
+    for joins in [
+        &[][..],
+        &[("orders", "orders")][..],
+        &[("orders", "nowhere")][..],
+    ] {
+        let (rows, curves) = shape(star_boot(Some(joins)));
+        assert_eq!(
+            rows, today,
+            "a model joining {joins:?} moved the spine's rows"
+        );
+        assert_eq!(curves, 0, "a model joining {joins:?} drew a curve");
+    }
+}
+
+/// A shop of five sources where some rows are not a table's own: `orders`
+/// keeps its failed rows, `customers` and `products` are two sheets read out
+/// of one workbook, `order_details` is made from two joined tables and
+/// `daily_weather` from `weather`, one of the two sources with no join.
+fn shop() -> (String, Vec<(String, String)>) {
+    let step = |name: &str, reads: Option<&str>, makes: &str, sql: &str| {
+        let depends = reads.map_or_else(String::new, |file| {
+            format!("    depends_on:\n      - '{file}'\n")
+        });
+        (
+            format!(
+                "  - name: {name}\n    sql: models/{name}.sql\n{depends}    produces:\n      \
+                 - {makes}\n"
+            ),
+            (
+                format!("models/{name}.sql"),
+                format!("CREATE OR REPLACE TABLE {makes} AS {sql};\n"),
+            ),
+        )
+    };
+    let steps = [
+        step(
+            "load_orders",
+            Some("./orders.csv"),
+            "raw_orders",
+            "SELECT 1 AS id",
+        ),
+        step(
+            "load_customers",
+            Some("./dims.xlsx"),
+            "raw_customers",
+            "SELECT 1 AS id",
+        ),
+        step(
+            "load_products",
+            Some("./dims.xlsx"),
+            "raw_products",
+            "SELECT 1 AS id",
+        ),
+        step(
+            "load_weather",
+            Some("./weather.csv"),
+            "raw_weather",
+            "SELECT 1 AS id",
+        ),
+        step(
+            "load_zones",
+            Some("./zones.csv"),
+            "raw_zones",
+            "SELECT 1 AS id",
+        ),
+        step("silver_orders", None, "orders", "SELECT * FROM raw_orders"),
+        step(
+            "failed_orders",
+            None,
+            "orders__failed",
+            "SELECT * FROM raw_orders",
+        ),
+        step(
+            "silver_customers",
+            None,
+            "customers",
+            "SELECT * FROM raw_customers",
+        ),
+        step(
+            "silver_products",
+            None,
+            "products",
+            "SELECT * FROM raw_products",
+        ),
+        step(
+            "silver_weather",
+            None,
+            "weather",
+            "SELECT * FROM raw_weather",
+        ),
+        step("silver_zones", None, "zones", "SELECT * FROM raw_zones"),
+        step(
+            "detail_orders",
+            None,
+            "order_details",
+            "SELECT * FROM orders JOIN customers USING (id)",
+        ),
+        step(
+            "sum_weather",
+            None,
+            "daily_weather",
+            "SELECT * FROM weather",
+        ),
+    ];
+    let mut manifest = "name: shop\nengine: duckdb\nsteps:\n".to_string();
+    let mut models = Vec::new();
+    for (text, model) in steps {
+        manifest.push_str(&text);
+        models.push(model);
+    }
+    (manifest, models)
+}
+
+/// **A row that is no table's own stands where what it is made from puts it**:
+/// the failed-rows table with its table, a workbook two joined tables are read
+/// out of above both, an asset made from joined tables after the model step
+/// and before the heading, and an asset made from a source nothing joins
+/// after every such source.
+#[test]
+fn rows_that_are_no_tables_own_stand_where_they_are_made() {
+    let (manifest, models) = shop();
+    let tables = ["orders", "customers", "products", "weather", "zones"];
+    let joins = [("orders", "customers"), ("orders", "products")];
+    let mut inputs = manifest_inputs(&manifest, &models, &tables, Some(&joins));
+    // The failed-rows table holds rows, so the spine lists it.
+    inputs.assets.insert(
+        "asset.shop.orders__failed".to_string(),
+        AssetMeta {
+            row_count: Some(2),
+            materialized: true,
+            bytes: None,
+            content_hash: None,
+        },
+    );
+    let mut win = Live::open(Boot::protocol(
+        inputs,
+        brightfield_protocol::layout::Flow::Vertical,
+        None,
+    ));
+    win.settle();
+    let spine = spine_proper(&win);
+    let labels: Vec<&str> = spine.iter().map(|r| r.label.as_str()).collect();
+    let at = |label: &str| {
+        let found: Vec<usize> = labels
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| **l == label)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "{label} is listed {} times: {labels:?}",
+            found.len()
+        );
+        found[0]
+    };
+    let heading = labels
+        .iter()
+        .position(|l| l.starts_with("NO JOIN"))
+        .unwrap_or_else(|| panic!("no heading: {labels:?}"));
+
+    // The failed-rows table among the orders' own rows, before the next
+    // table's.
+    assert!(
+        at("./orders.csv") < at("orders__failed") && at("orders__failed") < at("./dims.xlsx"),
+        "the failed-rows table left its table's rows: {labels:?}"
+    );
+    // The workbook once, above both tables read out of it, with the first.
+    assert!(
+        at("./dims.xlsx") < at("raw_customers") && at("raw_customers") < at("raw_products"),
+        "the workbook does not stand above both its tables: {labels:?}"
+    );
+    // Made from two joined tables: after the model step, before the heading.
+    assert!(
+        at("model") < at("order_details") && at("order_details") < heading,
+        "the asset made from joined tables is not under the model step: {labels:?}"
+    );
+    // Made from a source nothing joins: after the rows of every such source,
+    // `zones` among them, which it is not made from.
+    assert!(
+        at("weather") < at("zones") && at("zones") < at("daily_weather"),
+        "the asset made from a loose source is not after the loose sources: {labels:?}"
+    );
+    assert_eq!(
+        labels.last(),
+        Some(&"daily_weather"),
+        "the asset made from a loose source is not last: {labels:?}"
+    );
+    // And no row above an asset it is made from: each step row stands right
+    // above the asset it makes, as the outline's order has it.
+    for pair in spine.windows(2) {
+        if pair[0].role == SpineRole::Step {
+            assert_eq!(
+                pair[1].role,
+                SpineRole::Asset,
+                "{:?} stands above no asset",
+                pair[0].label
+            );
+        }
+    }
+}
+
+/// **A table joined to many keeps the gutter narrow**: eight joins from one
+/// table take eight lanes, which share the gutter's widest rather than each
+/// taking a lane's width, so every name moves right by no more than that and
+/// every curve stays inside the rail.
+#[test]
+fn a_table_joined_to_many_keeps_the_gutter_narrow() {
+    let tables = ["orders", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8"];
+    let joins: Vec<(&str, &str)> = tables[1..].iter().map(|d| ("orders", *d)).collect();
+    let (manifest, models) = sources_manifest("hub", &tables);
+    let names = |joins: Option<&[(&str, &str)]>| {
+        let mut win = Live::open(manifest_boot(&manifest, &models, &tables, joins));
+        win.settle();
+        let rows: std::collections::BTreeMap<String, (f32, egui::Rect)> = spine_proper(&win)
+            .into_iter()
+            .filter(|r| r.role == SpineRole::Asset)
+            .map(|r| (r.label.clone(), (r.name_rect.left(), r.rect)))
+            .collect();
+        (rows, win.app.spine_curves().to_vec())
+    };
+    let (before, _) = names(None);
+    let (after, curves) = names(Some(&joins));
+    assert_eq!(curves.len(), 8);
+    let lanes: std::collections::BTreeSet<usize> = curves.iter().map(|c| c.lane).collect();
+    assert_eq!(
+        lanes.len(),
+        8,
+        "each join from orders takes a lane of its own"
+    );
+    for (label, (left, _)) in &after {
+        let moved = left - before[label].0;
+        assert!(
+            moved <= brightfield_shell::protocol::SPINE_GUTTER_MAX + 0.01,
+            "{label}'s name moved {moved} right, past the gutter's widest"
+        );
+    }
+    for curve in &curves {
+        let rail = after[&curve.from].1;
+        assert!(
+            curve.reach > rail.left(),
+            "{curve:?} reaches out of the rail at {}",
+            rail.left()
+        );
+    }
+}
+
+/// A folder holding a model file: the retail model `tests/discovery.rs` reads,
+/// beside a manifest of its eight tables.
+fn retail_folder() -> std::path::PathBuf {
+    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../brightfield-ossie/fixtures/retail_extract/model.ossie.yaml");
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("navigator-spine-retail-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("models")).expect("a folder for the Protocol");
+    let tables = [
+        "customers",
+        "stores",
+        "products",
+        "categories",
+        "transactions",
+        "loyalty_visits",
+        "customer_segments",
+        "promo_codes",
+    ];
+    let (manifest, models) = sources_manifest("retail_extract", &tables);
+    std::fs::write(dir.join("arcform.yaml"), manifest).expect("the manifest writes");
+    for (path, sql) in models {
+        std::fs::write(dir.join(path), sql).expect("a model writes");
+    }
+    std::fs::copy(&fixture, dir.join("model.ossie.yaml")).expect("the model file copies");
+    dir
+}
+
+/// **A Protocol folder's spine is led by the joins its model file makes**: the
+/// retail model read off disk, the table with the most joins first and the
+/// rest breadth first by name, and a join dovetail only proposed, which the
+/// model pane offers for review, neither counted nor curved — so the table it
+/// would join is listed with the sources with no join.
+#[test]
+fn a_protocol_folder_reads_its_joins_from_its_model_file() {
+    let dir = retail_folder();
+    let inputs = brightfield_shell::protocol::load_protocol_offline(
+        dir.join("arcform.yaml").to_str().expect("utf-8 path"),
+    )
+    .unwrap_or_else(|e| panic!("the retail Protocol loads: {e}"));
+    let mut win = Live::open(Boot::protocol(
+        inputs,
+        brightfield_protocol::layout::Flow::Vertical,
+        None,
+    ));
+    win.settle();
+    let tables = [
+        "customers",
+        "stores",
+        "products",
+        "categories",
+        "transactions",
+        "loyalty_visits",
+        "customer_segments",
+        "promo_codes",
+    ];
+    let landmarks: Vec<String> = spine_proper(&win)
+        .iter()
+        .filter(|row| {
+            matches!(row.role, SpineRole::Model | SpineRole::Unjoined)
+                || (row.role == SpineRole::Asset && tables.contains(&row.label.as_str()))
+        })
+        .map(|row| match row.role {
+            SpineRole::Model => format!("{} ({})", row.label, row.kind),
+            _ => row.label.clone(),
+        })
+        .collect();
+    assert_eq!(
+        landmarks,
+        [
+            "transactions",
+            "customers",
+            "products",
+            "stores",
+            "loyalty_visits",
+            "categories",
+            "model (model \u{b7} 6 joins)",
+            "NO JOIN   \u{b7}   2 sources",
+            "customer_segments",
+            "promo_codes",
+        ]
+    );
+    assert_eq!(win.app.spine_curves().len(), 6);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// The pair of baselines: the star's rail in each theme, through the crate's
+// real capture path, diffed with the `UPDATE_SNAPSHOTS=1` workflow
+// `tests/front_door.rs` uses.
+
+/// Photograph the star's window in `mode`, guarded first: under
+/// `UPDATE_SNAPSHOTS=1` a snapshot writes whatever it is handed, so a guard
+/// behind it would author a golden of the wrong window.
+fn spine_model_first_surface(mode: Mode, name: &str) {
+    // Tall enough for the whole spine — each source's rows, the model step,
+    // the heading and the loose sources — to stand above the outline's caption.
+    let size = (1280.0, 1100.0);
+    let mut win = Live::at(star_boot(Some(&STAR_JOINS)), size);
+    win.settle();
+    assert_eq!(
+        win.app.spine_curves().len(),
+        2,
+        "{name}: the guard window drew no curves"
+    );
+    let body = win.app.spine_body().expect("the rail drew its spine");
+    let outline = win
+        .rows()
+        .into_iter()
+        .filter(|row| row.role == SpineRole::Caption)
+        .nth(1)
+        .expect("the outline's caption is drawn");
+    assert!(
+        outline.rect.bottom() <= body.bottom(),
+        "{name}: the spine runs past the rail at {size:?}, so the picture would not show it whole"
+    );
+    let out =
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}.capture.png"));
+    let (w, h) = brightfield_shell::capture::capture_png_at(
+        star_boot(Some(&STAR_JOINS)),
+        mode,
+        1.0,
+        size,
+        &out,
+        Vec::new(),
+    )
+    .unwrap_or_else(|e| panic!("capture {name}: {e}"));
+    assert!(w > 0 && h > 0, "{name}: empty capture");
+    let image = image::open(&out)
+        .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
+        .to_rgba8();
+    egui_kittest::image_snapshot(&image, name);
+}
+
+#[test]
+fn spine_model_first_light_surface() {
+    spine_model_first_surface(Mode::Light, "spine_model_first_light");
+}
+
+#[test]
+fn spine_model_first_dark_surface() {
+    spine_model_first_surface(Mode::Dark, "spine_model_first_dark");
 }

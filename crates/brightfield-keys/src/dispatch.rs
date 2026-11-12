@@ -34,6 +34,11 @@ pub enum DispatchContext {
     /// bare verbs, so `Enter` steps the chart back rather than dives in and
     /// `Esc` returns to now rather than clears a selection.
     VersionsFocused,
+    /// The sources browser is open and its text fields do not hold the keys —
+    /// its grammar resolves here, isolated from the chart canvas's bare verbs,
+    /// so `Space` marks a file rather than opens the palette and `a` adds a
+    /// source rather than a mark.
+    BrowserFocused,
 }
 
 /// Whether a binding in `binding` context resolves in the `dispatch` situation.
@@ -51,7 +56,10 @@ pub enum DispatchContext {
 ///   move its cursor there and the arrows pan the chart only elsewhere;
 /// - a Versions binding resolves when the Versions panel is focused, so
 ///   `Enter` steps the chart back there and dives in on the canvas
-///   (`the_versions_panel_steps_back_and_returns_on_the_keys_that_dive_and_clear_elsewhere`).
+///   (`the_versions_panel_steps_back_and_returns_on_the_keys_that_dive_and_clear_elsewhere`);
+/// - a Browser binding resolves when the sources browser is focused, so
+///   `Space` marks a file there and opens the palette on the canvas
+///   (`the_browser_answers_its_yazi_keys_and_the_canvas_keeps_its_own`).
 #[must_use]
 pub fn fires(binding: BindingContext, dispatch: DispatchContext) -> bool {
     matches!(
@@ -63,6 +71,7 @@ pub fn fires(binding: BindingContext, dispatch: DispatchContext) -> bool {
             | (BindingContext::Shelf, DispatchContext::ShelfFocused)
             | (BindingContext::Grid, DispatchContext::GridFocused)
             | (BindingContext::Versions, DispatchContext::VersionsFocused)
+            | (BindingContext::Browser, DispatchContext::BrowserFocused)
     )
 }
 
@@ -286,10 +295,10 @@ mod tests {
 
     #[test]
     fn each_binding_context_fires_in_its_own_dispatch_context_and_global_in_all() {
-        use BindingContext::{Editor, Global, Grid, Protocol, Shelf, Versions, Workspace};
+        use BindingContext::{Browser, Editor, Global, Grid, Protocol, Shelf, Versions, Workspace};
         use DispatchContext::{
-            CanvasFocused, EditorFocused, GridFocused, OverlayOpen, ProtocolFocused, ShelfFocused,
-            VersionsFocused,
+            BrowserFocused, CanvasFocused, EditorFocused, GridFocused, OverlayOpen,
+            ProtocolFocused, ShelfFocused, VersionsFocused,
         };
         // Written as a `match`, so a new binding context does not compile until
         // this test says which dispatch context it fires in.
@@ -300,9 +309,12 @@ mod tests {
             Shelf => Some(ShelfFocused),
             Grid => Some(GridFocused),
             Versions => Some(VersionsFocused),
+            Browser => Some(BrowserFocused),
             Global => None,
         };
-        for binding in [Workspace, Editor, Protocol, Shelf, Grid, Versions, Global] {
+        for binding in [
+            Workspace, Editor, Protocol, Shelf, Grid, Versions, Browser, Global,
+        ] {
             for dispatch in [
                 CanvasFocused,
                 EditorFocused,
@@ -311,6 +323,7 @@ mod tests {
                 ShelfFocused,
                 GridFocused,
                 VersionsFocused,
+                BrowserFocused,
             ] {
                 let expected = own(binding).is_none_or(|own| own == dispatch);
                 assert_eq!(
@@ -320,6 +333,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_browser_answers_its_yazi_keys_and_the_canvas_keeps_its_own() {
+        let t = table();
+        // Exact vectors: a Workspace binding leaking into the browser's
+        // dispatch context would add a second verb, and Space would both mark a
+        // file and open the palette.
+        for (keys, verb) in [
+            ("j", "move-browser-cursor-down"),
+            ("k", "move-browser-cursor-up"),
+            ("h", "go-up-a-folder"),
+            ("l", "go-in-or-add"),
+            ("enter", "go-in-or-add"),
+            ("a", "add-sources"),
+            ("space", "mark-or-accept"),
+            ("tab", "next-browser-pane"),
+            ("/", "type-glob"),
+            ("g t", "fill-browser-with-preview"),
+            ("v", "switch-folder-preview"),
+            ("escape", "close-sources-browser"),
+        ] {
+            assert_eq!(
+                t.resolves(keys, DispatchContext::BrowserFocused),
+                vec![verb],
+                "`{keys}` with the sources browser focused"
+            );
+            assert!(
+                !t.resolves(keys, DispatchContext::CanvasFocused)
+                    .contains(&verb),
+                "{verb} leaked onto the canvas"
+            );
+        }
+        assert_eq!(
+            t.resolves("space", DispatchContext::CanvasFocused),
+            vec!["open-palette"]
+        );
+        assert_eq!(
+            t.resolves("a", DispatchContext::CanvasFocused),
+            vec!["add-mark"]
+        );
     }
 
     #[test]
@@ -370,6 +424,7 @@ mod tests {
             DispatchContext::ProtocolFocused,
             DispatchContext::ShelfFocused,
             DispatchContext::VersionsFocused,
+            DispatchContext::BrowserFocused,
             DispatchContext::OverlayOpen,
         ] {
             assert_eq!(

@@ -439,7 +439,7 @@ jobs:
       # serial-targets: gallery_gate ghosted_histogram grouped_histogram
       # serial-targets: grouped_histogram_shares keyed_canvas legend_baseline
       # serial-targets: legend_below_baseline legend_short_chart log_binned_histogram
-      # serial-targets: navigation_extent outline_list pane_reflow
+      # serial-targets: navigation_extent navigator_spine outline_list pane_reflow
       # serial-targets: model_scene part_of_whole_histogram point_map_baseline
       # serial-targets: protocol_degrade_channel protocol_frame_crop
       # serial-targets: ranked_category_bars sampled_export scatter_kind scripted_open

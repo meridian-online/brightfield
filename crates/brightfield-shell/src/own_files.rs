@@ -11,7 +11,7 @@
 //! Protocol so nothing later mistakes it for data the analyst gave. The data packages are the
 //! boundary file the model is built from; FineType will write them once it can.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 
@@ -77,6 +77,18 @@ pub fn create_in(parent: &Path, opened: &Path) -> Result<OwnProtocol, String> {
     create_of(parent, opened, sources::discover(opened)?)
 }
 
+/// [`create_in`], for a Protocol Brightfield makes to read for itself and then removes, such as
+/// the sources browser's preview of a folder's joins. It is not recorded in the trust store:
+/// it is not a Protocol Brightfield made for the analyst, and the record would outlive its folder
+/// (`a_folder_preview_writes_no_trust_record`).
+///
+/// # Errors
+///
+/// As [`create_in`].
+pub fn create_scratch_in(parent: &Path, opened: &Path) -> Result<OwnProtocol, String> {
+    write_of(parent, opened, sources::discover(opened)?)
+}
+
 /// Make one Protocol folder in the Protocols folder for the paths in `opened` together, named
 /// after the first: what one gesture handed over at once, as [`create`] does for one path. The
 /// paths `refused` before discovery are recorded as skipped with their reasons.
@@ -94,8 +106,16 @@ pub fn create_all(
     create_of(&protocols_dir::root(), first, found)
 }
 
-/// The Protocol folder for `sources`, in `parent`, named after `named`.
+/// The Protocol folder for `sources`, in `parent`, named after `named`, recorded in the trust
+/// store as one Brightfield made.
 fn create_of(parent: &Path, named: &Path, sources: SourceSet) -> Result<OwnProtocol, String> {
+    let made = write_of(parent, named, sources)?;
+    record_made(&made.dir);
+    Ok(made)
+}
+
+/// The Protocol folder for `sources`, in `parent`, named after `named`, with no trust record.
+fn write_of(parent: &Path, named: &Path, sources: SourceSet) -> Result<OwnProtocol, String> {
     if sources.tables.is_empty() {
         return Err(format!(
             "{}: no tables Brightfield can read{}",
@@ -131,6 +151,19 @@ fn create_of(parent: &Path, named: &Path, sources: SourceSet) -> Result<OwnProto
         sources,
         profiles: Vec::new(),
     })
+}
+
+/// Record the Protocol Brightfield has just made in `dir` as trusted, wherever it was made: it
+/// runs without the restriction a Protocol from elsewhere opens under ([`crate::trust`]). A store
+/// that cannot be written is said on stderr, and the Protocol then opens restricted, which asks
+/// before anything runs rather than running something unrecorded.
+fn record_made(dir: &Path) {
+    if let Err(e) = crate::trust::Store::current().trust(dir) {
+        eprintln!(
+            "warning: {}: not recorded as a Protocol Brightfield made: {e}",
+            dir.display()
+        );
+    }
 }
 
 /// The name New Protocol gives the Protocol it makes, before a source names it: `Untitled`, then
@@ -188,6 +221,7 @@ pub fn create_empty(parent: &Path) -> Result<OwnProtocol, String> {
         let _ = std::fs::remove_dir_all(&dir);
         return Err(e);
     }
+    record_made(&dir);
     Ok(OwnProtocol {
         dir,
         sources: SourceSet::default(),
@@ -275,6 +309,12 @@ pub fn add_source_with(
 /// analyst's, and it is written; one table has nothing to relate and has no model. The silver
 /// steps are written for the model and the Protocol run again.
 ///
+/// A table `joins` names by the name one of `paths`' tables was found under is that table, under
+/// the name the add gives it: a folder's `customers` that takes `customers_2` beside the
+/// Protocol's own `customers` is joined as `customers_2`
+/// (`an_accepted_join_names_the_table_the_add_makes` in `tests/sources_browser_view.rs`). A name
+/// none of `paths`' tables was found under names one of the Protocol's tables.
+///
 /// Once that has gone through, the first sources added to a Protocol New Protocol made, which
 /// nobody has named since ([`still_untitled`]), name it after the first of `paths`, renaming its
 /// folder ([`crate::rename::rename_claiming`]) and taking `-2` and so on when the name is taken,
@@ -311,9 +351,27 @@ pub fn add_sources_with(
         .iter()
         .flat_map(|t| derived_names(&t.name))
         .collect();
+    // The joins name `paths`' tables as they were found, before a clash renamed them, as the
+    // sources browser's canvas proposed them: each such name is read as the table the add makes.
+    let mut renamed: HashMap<String, String> = HashMap::new();
     for table in &mut found.tables {
+        let found_as = table.name.clone();
         table.name = unclashed(&table.name, &mut taken);
+        renamed.insert(found_as, table.name.clone());
     }
+    let joins: Vec<AcceptedJoin> = joins
+        .iter()
+        .map(|join| {
+            let side = |(table, column): &(String, String)| {
+                let table = renamed.get(table).unwrap_or(table).clone();
+                (table, column.clone())
+            };
+            AcceptedJoin {
+                left: side(&join.left),
+                right: side(&join.right),
+            }
+        })
+        .collect();
     let untitled = p.sources.tables.is_empty() && still_untitled(&p.dir);
 
     let before = FilesBefore::take(&p.dir)?;
@@ -379,7 +437,7 @@ pub fn add_sources_with(
                 eprintln!("dovetail's sample pass failed, so the tables are added unclear: {e}");
                 crate::discovery::sample_pass(&stand_in, &next, None)
             })?;
-            for join in joins {
+            for join in &joins {
                 model = accept_join(&model, join)?;
             }
             crate::discovery::write_model_file(&next.dir, &brightfield_ossie::write(&model))?;

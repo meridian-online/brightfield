@@ -1333,6 +1333,8 @@ fn main() -> Result<(), String> {
         brightfield_shell::mac_open::install(main_thread, open_queue.clone(), || {});
     }
     let menu_quit = Some((open_queue.clone(), 0));
+    // The trust store lives in the config folder beside the Preferences, from here on.
+    brightfield_shell::trust::use_config_dir();
     eframe::run_native(
         &title,
         options,
@@ -1347,6 +1349,10 @@ fn main() -> Result<(), String> {
                 app: MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode)
                     .allowing_dialogs()
                     .opening_from(open_queue)
+                    .recording_older_protocols_once()
+                    // Asked once, and only where macOS can be asked: a build run from the repo
+                    // leaves the question for the app's first launch.
+                    .offering_default_app(brightfield_shell::default_app::available().is_ok())
                     .restoring_at_launch(spec.as_deref())
                     .running_with(brightfield_shell::run::Runner::this_binary())
                     .keeping_history(Some(brightfield_protocol::HistoryStore::Arcform)),

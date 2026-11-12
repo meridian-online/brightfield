@@ -32,6 +32,9 @@ pub enum OpenRequest {
     /// Several files or folders handed over by one gesture, added together as sources to the
     /// Protocol open now.
     AddSources(Vec<PathBuf>),
+    /// What the sources browser adds to the Protocol open now: these files and folders, with the
+    /// joins the analyst accepted on a folder's canvas written into its model.
+    AddJoined(Vec<PathBuf>, Vec<crate::own_files::AcceptedJoin>),
 }
 
 /// Where a path goes when it is opened.
@@ -66,6 +69,21 @@ pub fn route(path: &Path) -> Route {
         return Route::Archive(path.to_path_buf());
     }
     Route::New(path.to_path_buf())
+}
+
+/// The Protocol `path` is itself, rather than data: the Protocol directory, for that directory or
+/// its `arcform.yaml`, and the archive, for an archive of one. `None` for data, which includes a
+/// data file or a folder inside a Protocol's folder: a drop onto an open Protocol adds those as
+/// sources, where [`route`] would open the Protocol they sit in.
+#[must_use]
+pub fn protocol_named(path: &Path) -> Option<PathBuf> {
+    match route(path) {
+        Route::Existing(dir) if dir == path || path.file_name().is_some_and(|n| n == MANIFEST) => {
+            Some(dir)
+        }
+        Route::Archive(archive) => Some(archive),
+        Route::Existing(_) | Route::New(_) => None,
+    }
 }
 
 /// Whether `path` is a `.zip` whose entries all sit under one top-level folder holding
@@ -287,5 +305,48 @@ mod tests {
             OpenRequest::of_sources(vec![a.clone(), b.clone()]),
             Some(OpenRequest::AddSources(vec![a, b]))
         );
+    }
+
+    /// A Protocol is named by its folder, its manifest or an archive of it; a file or a folder
+    /// inside a Protocol's folder is data.
+    #[test]
+    fn a_protocol_is_named_by_its_folder_its_manifest_or_an_archive() {
+        use std::io::Write as _;
+        let root = std::env::temp_dir().join(format!("bf-protocol-named-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let protocol = root.join("quakes");
+        std::fs::create_dir_all(protocol.join("data")).expect("a Protocol folder");
+        std::fs::write(protocol.join(MANIFEST), "name: quakes\n").expect("its manifest");
+        std::fs::write(protocol.join("beside.csv"), "id\n1\n").expect("a CSV in it");
+        let archive = root.join("quakes.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).expect("the zip"));
+        zip.start_file(
+            "quakes/arcform.yaml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .expect("an entry");
+        zip.write_all(b"name: quakes\n").expect("the manifest");
+        zip.finish().expect("the zip is written");
+        let loose = root.join("loose.csv");
+        std::fs::write(&loose, "id\n1\n").expect("a CSV");
+
+        assert_eq!(protocol_named(&protocol), Some(protocol.clone()));
+        assert_eq!(
+            protocol_named(&protocol.join(MANIFEST)),
+            Some(protocol.clone())
+        );
+        assert_eq!(protocol_named(&archive), Some(archive.clone()));
+        assert_eq!(
+            protocol_named(&protocol.join("beside.csv")),
+            None,
+            "a file beside the manifest is data"
+        );
+        assert_eq!(
+            protocol_named(&protocol.join("data")),
+            None,
+            "and so is a folder in the Protocol"
+        );
+        assert_eq!(protocol_named(&loose), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

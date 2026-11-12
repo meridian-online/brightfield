@@ -23,12 +23,17 @@
 //! menu, which asks the window to open Preferences on its queue
 //! ([`OpenQueue::ask_preferences`]).
 //!
+//! **Becoming the default app comes here too**, since it is the crate's other Objective-C call:
+//! [`ask_default_app`] asks the workspace to make the app the default for a content type, which
+//! macOS confirms with the analyst itself ([`crate::default_app`] says when it is asked).
+//!
 //! The Apple Event methods that take a four-character code are sent by selector rather than
 //! through the `objc2-foundation` methods that declare them, which need a feature whose crate the
-//! dependency graph does not otherwise hold.
+//! dependency graph does not otherwise hold. The workspace, bundle and content-type classes are
+//! sent messages by selector for the same reason.
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject, Sel};
+use objc2::runtime::{AnyClass, AnyObject, NSObject, Sel};
 use objc2::{class, define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadMarker};
 use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager, NSNotification, NSString};
 
@@ -442,6 +447,145 @@ fn panel_paths(panel: &AnyObject) -> Vec<std::path::PathBuf> {
             })
             .collect()
     }
+}
+
+// The content-type class the default-app call takes, `UTType`, is in this framework. AppKit loads
+// it on the systems that have the call, and linking it says so rather than relying on that.
+#[link(name = "UniformTypeIdentifiers", kind = "framework")]
+extern "C" {}
+
+/// The selector of the workspace's default-app call, which macOS 12 added.
+fn set_default_selector() -> Sel {
+    sel!(setDefaultApplicationAtURL:toOpenContentType:completionHandler:)
+}
+
+/// The app this process runs from and the shared workspace, when it can ask macOS to make the app
+/// a default: it runs from an app bundle, and the system has the call.
+fn default_app_parts() -> Result<(Retained<objc2_foundation::NSURL>, Retained<AnyObject>), String> {
+    let not_the_app = || {
+        "Brightfield is not running from its app, so macOS cannot make it the default. Open it \
+         from Applications to do this."
+            .to_owned()
+    };
+    let bundle = AnyClass::get(c"NSBundle").ok_or_else(not_the_app)?;
+    // SAFETY: `mainBundle` is NSBundle's, returning the bundle or nil, and `bundleURL` is
+    // NSBundle's, returning a file URL.
+    let app: Option<Retained<objc2_foundation::NSURL>> = unsafe {
+        let main: Option<Retained<AnyObject>> = msg_send![bundle, mainBundle];
+        match main {
+            Some(main) => msg_send![&*main, bundleURL],
+            None => None,
+        }
+    };
+    let app = app
+        .filter(|url| {
+            url.to_file_path()
+                .is_some_and(|path| path.extension().is_some_and(|ext| ext == "app"))
+        })
+        .ok_or_else(not_the_app)?;
+    let too_old = || "Making Brightfield the default app needs macOS 12 or later.".to_owned();
+    let workspace = AnyClass::get(c"NSWorkspace").ok_or_else(too_old)?;
+    // SAFETY: `sharedWorkspace` is NSWorkspace's, and `respondsToSelector:` NSObject's, taking a
+    // selector and returning a BOOL.
+    let workspace: Retained<AnyObject> = unsafe {
+        let shared: Option<Retained<AnyObject>> = msg_send![workspace, sharedWorkspace];
+        let shared = shared.ok_or_else(too_old)?;
+        let can: bool = msg_send![&*shared, respondsToSelector: set_default_selector()];
+        if !can || AnyClass::get(c"UTType").is_none() {
+            return Err(too_old());
+        }
+        shared
+    };
+    Ok((app, workspace))
+}
+
+/// Whether this process can ask macOS to make it the default app for a content type: it runs from
+/// an app bundle, on macOS 12 or later. `Err` says why not, in a sentence.
+///
+/// # Errors
+///
+/// Why it cannot ask.
+pub fn default_app_available() -> Result<(), String> {
+    default_app_parts().map(|_| ())
+}
+
+/// **Ask macOS to make this app the default for each of `types`**, a content type each, in turn:
+/// each is asked once macOS has answered for the one before, so the system's confirmations come one
+/// at a time. `answered` is called with each type's index in `types` and macOS's answer, `Ok` when
+/// the app is now the default for it, else macOS's reason. It is called off the main thread, from
+/// the workspace's completion handler.
+///
+/// # Errors
+///
+/// Why this process cannot ask, as [`default_app_available`] says it; nothing is asked then.
+pub fn ask_default_app(
+    types: &'static [&'static str],
+    answered: impl Fn(usize, Result<(), String>) + Send + Sync + 'static,
+) -> Result<(), String> {
+    let (app, workspace) = default_app_parts()?;
+    ask_default_from(app, workspace, types, 0, std::sync::Arc::new(answered));
+    Ok(())
+}
+
+/// Ask for the content type at `at` in `types`, and from its answer the next.
+fn ask_default_from(
+    app: Retained<objc2_foundation::NSURL>,
+    workspace: Retained<AnyObject>,
+    types: &'static [&'static str],
+    at: usize,
+    answered: std::sync::Arc<dyn Fn(usize, Result<(), String>) + Send + Sync>,
+) {
+    let Some(identifier) = types.get(at) else {
+        return;
+    };
+    let class = AnyClass::get(c"UTType");
+    let identifier = NSString::from_str(identifier);
+    // SAFETY: `typeWithIdentifier:` is UTType's, taking a string and returning the type or nil.
+    let content_type: Option<Retained<AnyObject>> = match class {
+        Some(class) => unsafe { msg_send![class, typeWithIdentifier: &*identifier] },
+        None => None,
+    };
+    let Some(content_type) = content_type else {
+        answered(
+            at,
+            Err(format!("macOS does not know the type {identifier}.")),
+        );
+        ask_default_from(app, workspace, types, at + 1, answered);
+        return;
+    };
+    let (next_app, next_workspace) = (app.clone(), workspace.clone());
+    let done = block2::RcBlock::new(move |error: *mut AnyObject| {
+        // SAFETY: the completion handler is given an NSError, or nil when the change was made.
+        let answer = match unsafe { error.as_ref() } {
+            None => Ok(()),
+            Some(error) => Err(error_text(error)),
+        };
+        answered(at, answer);
+        ask_default_from(
+            next_app.clone(),
+            next_workspace.clone(),
+            types,
+            at + 1,
+            answered.clone(),
+        );
+    });
+    // SAFETY: the call is NSWorkspace's, checked present by `default_app_parts`, taking the app's
+    // file URL, a UTType and a block taking an NSError or nil; the workspace copies the block.
+    unsafe {
+        let () = msg_send![
+            &*workspace,
+            setDefaultApplicationAtURL: &*app,
+            toOpenContentType: &*content_type,
+            completionHandler: &*done
+        ];
+    }
+}
+
+/// An NSError's description, in the system's words.
+fn error_text(error: &AnyObject) -> String {
+    // SAFETY: `localizedDescription` is NSError's, returning a string.
+    let text: Option<Retained<NSString>> = unsafe { msg_send![error, localizedDescription] };
+    text.map_or_else(|| "macOS gave no reason.".to_owned(), |t| t.to_string())
 }
 
 /// The handler `install` would register, kept by the caller, so a test can send it an event.

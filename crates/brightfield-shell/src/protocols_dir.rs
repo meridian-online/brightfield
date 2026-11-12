@@ -71,7 +71,7 @@ static SETTING: Mutex<Option<Held>> = Mutex::new(None);
 
 /// Where the Preferences file is: in the config directory the layout file is in, which
 /// `BRIGHTFIELD_CONFIG_DIR` moves. `None` on a machine with no config directory.
-fn preferences_path() -> Option<PathBuf> {
+pub(crate) fn preferences_path() -> Option<PathBuf> {
     brightfield_workbench::persist::config_dir(
         std::env::var(crate::startup::CONFIG_DIR_VAR)
             .ok()
@@ -94,7 +94,7 @@ fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
 /// # Errors
 ///
 /// Why a file that is there could not be read, or is not a JSON object.
-fn read_preferences(path: &Path) -> Result<Map<String, Value>, String> {
+pub(crate) fn read_preferences(path: &Path) -> Result<Map<String, Value>, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
@@ -263,18 +263,26 @@ pub fn set_root_saying(dir: &Path) -> Result<Option<String>, String> {
         PROTOCOLS_DIR_FIELD.to_string(),
         Value::String(dir.to_string_lossy().into_owned()),
     );
-    let text =
-        serde_json::to_string_pretty(&Value::Object(preferences)).map_err(|e| e.to_string())?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    }
-    // Written beside and renamed over, so a failed write leaves the old setting whole.
-    let partial = path.with_extension("json.partial");
-    std::fs::write(&partial, text).map_err(|e| format!("{}: {e}", partial.display()))?;
-    std::fs::rename(&partial, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+    write_preferences(&path, preferences)?;
     let now = stamp(&path);
     *SETTING.lock().unwrap_or_else(PoisonError::into_inner) = Some((path, now, Ok(Some(dir))));
     Ok(said)
+}
+
+/// Write `fields` as the Preferences file at `path`, making its folder if it is missing. The file
+/// is written beside and renamed over, so a failed write leaves the old settings whole.
+///
+/// # Errors
+///
+/// The file system's failure, naming the file it was writing.
+pub(crate) fn write_preferences(path: &Path, fields: Map<String, Value>) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(&Value::Object(fields)).map_err(|e| e.to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let partial = path.with_extension("json.partial");
+    std::fs::write(&partial, text).map_err(|e| format!("{}: {e}", partial.display()))?;
+    std::fs::rename(&partial, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Why a Protocol was left in the old Protocols folder rather than moved.
