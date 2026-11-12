@@ -2582,14 +2582,10 @@ pub const MENU_QUIT_UNROUTED_BANNER: &str = "menu-quit-unrouted";
 /// What it says.
 pub const MENU_QUIT_UNROUTED_TITLE: &str = "Quitting will not ask about unsaved work";
 
-/// The banner that says a file dropped onto an open Protocol was not taken.
-pub const DROP_NOT_TAKEN_BANNER: &str = "drop-not-taken";
+/// The banner that says the files dropped onto an open Protocol beside a Protocol were not added.
+pub const DROP_REST_NOT_ADDED_BANNER: &str = "drop-rest-not-added";
 /// What it says.
-pub const DROP_NOT_TAKEN_TITLE: &str = "Drop files on the front door to open them";
-/// Its body.
-pub const DROP_NOT_TAKEN_BODY: &str =
-    "A file dropped here is not added to this Protocol yet. Go Home and drop it there, \
-     or open it with Open.";
+pub const DROP_REST_NOT_ADDED_TITLE: &str = "Only the Protocol opens";
 
 /// The banner that says an open asked for while the window waits to close was not done.
 const NOT_OPENED_WHILE_CLOSING_BANNER: &str = "not-opened-while-closing";
@@ -4324,10 +4320,6 @@ impl MeridianApp {
         self.typed_in_grid = None;
         self.typed_where_in_grid = None;
         self.typed_counts.clear();
-        // The banner that said a drop onto the Protocol was not taken is about the document that
-        // was open.
-        self.notifications
-            .dismiss(NotificationId::new(DROP_NOT_TAKEN_BANNER));
         self.reconcile_canvas_holds();
         // The ledger and inspector rails' collapsed default, and which
         // inspector pane the caret opens on — re-derived here so a document
@@ -5762,8 +5754,8 @@ impl MeridianApp {
         let ctx = ui.ctx().clone();
         self.open_queue.wake_with(&ctx);
         // Files dropped on the front door open as the picker's choice does, the files of one drop
-        // together as one Protocol. A drop onto an open Protocol with sources is not taken yet,
-        // and a banner says where a drop opens.
+        // together as one Protocol. Dropped on an open Protocol, they are added to it as sources,
+        // or the Protocol among them opens (`Self::take_drop_on_protocol`).
         let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
             i.raw
                 .dropped_files
@@ -5773,29 +5765,10 @@ impl MeridianApp {
         });
         if self.front_door_is_live() {
             if let Some(request) = crate::open_queue::OpenRequest::of_paths(dropped) {
-                self.notifications
-                    .dismiss(NotificationId::new(DROP_NOT_TAKEN_BANNER));
                 self.open_queue.push(request);
             }
-        } else if self.empty_protocol.is_some() {
-            // Files dropped on a Protocol with no sources yet are added to it, the files of one
-            // drop together, as its canvas says.
-            if !dropped.is_empty() {
-                self.notifications
-                    .dismiss(NotificationId::new(DROP_NOT_TAKEN_BANNER));
-                self.open_queue
-                    .push(crate::open_queue::OpenRequest::AddSources(dropped));
-            }
         } else if !dropped.is_empty() {
-            self.notifications.raise(
-                Notification::new(
-                    NotificationId::new(DROP_NOT_TAKEN_BANNER),
-                    Severity::Info,
-                    DROP_NOT_TAKEN_TITLE,
-                )
-                .body(DROP_NOT_TAKEN_BODY),
-            );
-            ctx.request_repaint();
+            self.take_drop_on_protocol(dropped);
         }
         // An open that waited for the frame before this one to draw what it is fetching: that
         // frame has been presented, so the open runs now.
@@ -12165,9 +12138,11 @@ impl MeridianApp {
     /// once `folder` is among the open Protocol's sources: by every way in, a folder with a
     /// proposed join is shown so its joins are accepted before the analyst works on the model
     /// (`a_folder_with_a_proposed_join_opens_the_browser_on_it_before_adding`). The joins shown
-    /// are the model's that touch a table read from the folder and are still dovetail's, not yet
+    /// are the model's between two tables read from the folder that are still dovetail's, not yet
     /// decided by the analyst. A folder of one table, or whose tables dovetail proposes no join
-    /// between, leaves the browser closed.
+    /// between, leaves the browser closed: a join from one of its tables to a table the Protocol
+    /// had before stays a proposal on the model, as a file's join does
+    /// (`a_folder_of_one_table_dropped_on_an_open_protocol_is_added_at_once`).
     fn offer_folder_joins(&mut self, ctx: &egui::Context, folder: &std::path::Path) {
         let Some(model) = self.model.as_ref() else {
             return;
@@ -12188,7 +12163,7 @@ impl MeridianApp {
             .relationships
             .iter()
             .filter(|r| r.meta.decided_by != brightfield_ossie::DecidedBy::Analyst)
-            .filter(|r| tables.contains(r.from.as_str()) || tables.contains(r.to.as_str()))
+            .filter(|r| tables.contains(r.from.as_str()) && tables.contains(r.to.as_str()))
             .filter_map(
                 |r| match (r.from_columns.as_slice(), r.to_columns.as_slice()) {
                     ([from], [to]) => Some(crate::sources_browser::ProposedJoin::new(
@@ -12381,6 +12356,47 @@ impl MeridianApp {
         // An empty Protocol shows the sources browser over its empty canvas.
         self.show_sources_browser(ctx, None, None);
         ctx.request_repaint();
+    }
+
+    /// **What a drop onto an open Protocol's window asks for.** Data files and folders are added
+    /// to the Protocol as sources, the files of one drop together, through the open queue and
+    /// [`Self::add_sources`], so a lone folder whose tables dovetail proposes joins between opens
+    /// the browser on it. A Protocol among them, by its folder, its manifest or an archive of it
+    /// ([`crate::open_queue::protocol_named`]), opens instead, as an open from the picker does,
+    /// with the close question first over a draft. A Protocol is not a source of another, so the
+    /// rest of that drop is not added, and a banner says so.
+    fn take_drop_on_protocol(&mut self, dropped: Vec<PathBuf>) {
+        use crate::open_queue::OpenRequest;
+        let Some(protocol) = dropped
+            .iter()
+            .find_map(|p| crate::open_queue::protocol_named(p))
+        else {
+            if let Some(request) = OpenRequest::of_sources(dropped) {
+                self.open_queue.push(request);
+            }
+            return;
+        };
+        let banner = NotificationId::new(DROP_REST_NOT_ADDED_BANNER);
+        self.notifications.dismiss(banner);
+        let others = dropped.len() - 1;
+        if others > 0 {
+            let (were, them, themselves) = if others == 1 {
+                ("was", "it", "itself")
+            } else {
+                ("were", "them", "themselves")
+            };
+            self.notifications.raise(
+                Notification::new(banner, Severity::Warning, DROP_REST_NOT_ADDED_TITLE).body(
+                    format!(
+                        "{} is a Protocol, so it opens on its own rather than as a source. The \
+                         other {others} {were} not added; drop {them} by {themselves} to add \
+                         {them}.",
+                        display_name(&protocol)
+                    ),
+                ),
+            );
+        }
+        self.open_queue.push(OpenRequest::Path(protocol));
     }
 
     /// **Add what `paths` hold to the open Protocol as sources**, together, kept at once. Asked

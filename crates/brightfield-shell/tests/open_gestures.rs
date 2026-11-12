@@ -1,6 +1,8 @@
 //! The Mac's own ways in reach the window's one open queue: a file dropped on the front door, a
 //! request the operating system delivered before the window drew its first frame, and Cmd+O. The
 //! bundle's `Info.plist` declares the documents and the link scheme Launch Services hands over.
+//! A drop onto an open Protocol adds what it holds to that Protocol as sources, or opens the
+//! Protocol it holds after the close question.
 //!
 //! The Apple Events themselves cannot be sent to a headless test, so what is proved here is the
 //! queue's side of them: whatever arrives before the first frame is opened on it. Every window is
@@ -15,8 +17,9 @@ use brightfield_shell::design::Mode;
 use brightfield_shell::open_queue::OpenRequest;
 use brightfield_shell::overlays::CloseAnswer;
 use brightfield_shell::run::Runner;
+use brightfield_shell::sources_browser::Pane;
 use brightfield_shell::window::{
-    Boot, Leaving, MeridianApp, DROP_NOT_TAKEN_BANNER, DROP_NOT_TAKEN_TITLE,
+    Boot, Leaving, MeridianApp, DROP_REST_NOT_ADDED_BANNER, DROP_REST_NOT_ADDED_TITLE,
     MENU_QUIT_UNROUTED_BANNER, MENU_QUIT_UNROUTED_TITLE,
 };
 
@@ -123,8 +126,46 @@ fn a_file_dropped_on_the_door_opens_as_a_protocol() {
     assert_opened(&app, "dropped_housing");
 }
 
+/// What dropping `paths` together onto the window hands it.
+fn dropped(paths: &[PathBuf]) -> egui::RawInput {
+    egui::RawInput {
+        dropped_files: paths
+            .iter()
+            .map(|p| egui::DroppedFile {
+                path: Some(p.clone()),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+/// The names of the tables the model pane's Protocol reads, in order.
+fn model_tables(app: &MeridianApp) -> Vec<String> {
+    app.model_pane()
+        .unwrap_or_else(|| panic!("the model is open: {}", said(app)))
+        .protocol
+        .sources
+        .tables
+        .iter()
+        .map(|t| t.name.clone())
+        .collect()
+}
+
+/// `files` of the retail extract that dovetail joins, a visit's customer and store, copied into
+/// `dir`.
+fn retail_copy(dir: &Path, files: &[&str]) -> PathBuf {
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../brightfield-ossie/fixtures/retail_extract");
+    std::fs::create_dir_all(dir).expect("a folder for the retail tables");
+    for file in files {
+        std::fs::copy(fixture.join(file), dir.join(file)).expect("the fixture copies");
+    }
+    dir.to_path_buf()
+}
+
 #[test]
-fn a_file_dropped_on_an_open_protocol_says_a_drop_opens_from_the_door() {
+fn a_csv_dropped_on_an_open_protocol_is_added_as_a_source() {
     let csv = housing_copy("dropped_on_open", "dropped_on_open.csv");
     let other = housing_copy("dropped_on_open", "dropped_after.csv");
     let mut app = app();
@@ -134,37 +175,292 @@ fn a_file_dropped_on_an_open_protocol_says_a_drop_opens_from_the_door() {
     frame(&mut app, &ctx, egui::RawInput::default());
     assert_opened(&app, "dropped_on_open");
 
-    let dropped = egui::RawInput {
-        dropped_files: vec![egui::DroppedFile {
-            path: Some(other),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    frame(&mut app, &ctx, dropped);
+    frame(&mut app, &ctx, dropped(&[other]));
     frame(&mut app, &ctx, egui::RawInput::default());
 
-    assert_opened(&app, "dropped_on_open");
+    let dir = scratch().join("protocols").join("dropped_on_open");
+    assert_eq!(
+        model_tables(&app),
+        ["dropped_on_open", "dropped_after"],
+        "a second source shows the model"
+    );
+    assert_eq!(
+        app.open_protocol_dir(),
+        Some(dir.clone()),
+        "added to the Protocol that was open"
+    );
     assert!(
         !scratch().join("protocols").join("dropped_after").exists(),
-        "nothing is made of the drop"
+        "no Protocol is made of the drop"
+    );
+    let manifest = std::fs::read_to_string(dir.join("arcform.yaml")).expect("the manifest reads");
+    assert!(
+        manifest.contains("dropped_after"),
+        "the source is kept at once: {manifest}"
+    );
+    assert!(!app.carries_unsaved_mark(), "with nothing left to save");
+    assert_eq!(app.open_overlay(), None, "a file opens no browser");
+}
+
+#[test]
+fn a_folder_with_a_join_dropped_on_an_open_protocol_opens_the_browser_on_it() {
+    let csv = housing_copy("dropped_joined", "dropped_joined.csv");
+    let folder = retail_copy(
+        &scratch()
+            .join("input")
+            .join("dropped_joined")
+            .join("retail"),
+        &["customers.csv", "loyalty_visits.csv", "stores.csv"],
+    );
+    let mut app = app();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, egui::RawInput::default());
+    app.open_queue().push(OpenRequest::Path(csv));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert_opened(&app, "dropped_joined");
+
+    frame(&mut app, &ctx, dropped(std::slice::from_ref(&folder)));
+    frame(&mut app, &ctx, egui::RawInput::default());
+
+    assert_eq!(
+        app.open_overlay(),
+        Some("sources-browser"),
+        "the browser opens on the dropped folder: {}",
+        said(&app)
+    );
+    assert_eq!(
+        app.open_protocol_dir(),
+        Some(scratch().join("protocols").join("dropped_joined")),
+        "the folder is added to the Protocol that was open"
+    );
+    assert_eq!(
+        model_tables(&app),
+        ["dropped_joined", "customers", "loyalty_visits", "stores"],
+        "the folder's tables are added at once, before its joins are decided"
+    );
+    let b = &app
+        .sources_browser()
+        .unwrap_or_else(|| panic!("the browser is open: {}", said(&app)))
+        .browser;
+    assert_eq!(b.canvas_folder(), Some(folder.as_path()));
+    assert_eq!(b.focus, Pane::Canvas, "its canvas holds the keys");
+    let inside = ["customers", "loyalty_visits", "stores"];
+    assert!(
+        !b.canvas_joins().is_empty(),
+        "dovetail's joins are on its canvas"
+    );
+    assert!(
+        b.canvas_joins().iter().all(|(join, accepted)| {
+            !accepted
+                && inside.contains(&join.left.0.as_str())
+                && inside.contains(&join.right.0.as_str())
+        }),
+        "each a join between the folder's tables, none accepted yet: {:?}",
+        b.canvas_joins()
+    );
+}
+
+#[test]
+fn a_folder_of_one_table_dropped_on_an_open_protocol_is_added_at_once() {
+    // The Protocol holds the customers a visit names, so dovetail proposes a join from the dropped
+    // folder's one table to the Protocol's: a join the folder makes with the Protocol, not one in
+    // the folder, and no reason to open the browser.
+    let place = scratch().join("input").join("dropped_one_table");
+    let customers = retail_copy(&place.join("members"), &["customers.csv"]).join("customers.csv");
+    let visits = retail_copy(&place.join("visits"), &["loyalty_visits.csv"]);
+    let mut app = app();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, egui::RawInput::default());
+    app.open_queue().push(OpenRequest::Path(customers));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    let dir = app
+        .own_protocol()
+        .map(|p| p.dir.clone())
+        .unwrap_or_else(|| panic!("the customers open as a Protocol: {}", said(&app)));
+
+    frame(&mut app, &ctx, dropped(&[visits]));
+    frame(&mut app, &ctx, egui::RawInput::default());
+
+    assert_eq!(
+        app.open_overlay(),
+        None,
+        "a folder of one table opens no browser: {}",
+        said(&app)
+    );
+    assert_eq!(model_tables(&app), ["customers", "loyalty_visits"]);
+    assert_eq!(
+        app.open_protocol_dir(),
+        Some(dir),
+        "added to the open Protocol"
+    );
+    let pane = app.model_pane().expect("the model is open");
+    assert!(
+        pane.model.relationships.iter().any(|r| {
+            let ends = [r.from.as_str(), r.to.as_str()];
+            ends.contains(&"customers") && ends.contains(&"loyalty_visits")
+        }),
+        "dovetail proposes the visit's customer, a join to the Protocol's table: {:?}",
+        pane.model.relationships
+    );
+}
+
+#[test]
+fn a_protocol_dropped_on_an_open_protocol_opens_it_after_the_question() {
+    let first = housing_copy("dropped_protocol", "dropped_protocol.csv");
+    let target = housing_copy("drop_target", "drop_target.csv");
+    let mut app = app();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, egui::RawInput::default());
+    app.open_queue().push(OpenRequest::Path(first));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert_opened(&app, "dropped_protocol");
+    let protocol = scratch().join("protocols").join("dropped_protocol");
+    // Another Protocol, open over it, with an unsaved order on its grid.
+    app.open_queue().push(OpenRequest::Path(target));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert_opened(&app, "drop_target");
+    order_the_grid(&mut app);
+
+    frame(&mut app, &ctx, dropped(std::slice::from_ref(&protocol)));
+    frame(&mut app, &ctx, egui::RawInput::default());
+
+    // Nothing replaces the unsaved edits unasked, and the Protocol is not taken as a source.
+    assert_opened(&app, "drop_target");
+    assert!(
+        app.chart_doc().has_unsaved_work(),
+        "the edits are still there"
+    );
+    assert_eq!(
+        app.leaving(),
+        Some(&Leaving::Open(OpenRequest::Path(protocol.clone()))),
+        "the dropped Protocol opens once the question is answered: {}",
+        said(&app)
+    );
+    answer_and_frame_until(
+        &mut app,
+        &ctx,
+        CloseAnswer::SaveAndClose,
+        "the dropped Protocol never opened",
+        |app| app.open_protocol_dir() == Some(protocol.clone()),
+    );
+    let over = scratch().join("protocols").join("drop_target");
+    let saved =
+        std::fs::read_to_string(over.join("arcform.yaml")).expect("the target's manifest reads");
+    assert!(
+        saved.contains("median_income"),
+        "the order was saved before the open: {saved}"
+    );
+    assert!(
+        !saved.contains("dropped_protocol"),
+        "the dropped Protocol was not added to the one it was dropped on: {saved}"
+    );
+}
+
+#[test]
+fn a_protocol_dropped_with_files_on_an_open_protocol_opens_alone_and_adds_nothing() {
+    let first = housing_copy("dropped_with", "dropped_with.csv");
+    let target = housing_copy("dropped_with_target", "with_target.csv");
+    let beside = housing_copy("dropped_with", "dropped_beside.csv");
+    let mut app = app();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, egui::RawInput::default());
+    app.open_queue().push(OpenRequest::Path(first));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert_opened(&app, "dropped_with");
+    let protocol = scratch().join("protocols").join("dropped_with");
+    app.open_queue().push(OpenRequest::Path(target));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert_opened(&app, "with_target");
+
+    frame(&mut app, &ctx, dropped(&[beside, protocol.clone()]));
+    frame(&mut app, &ctx, egui::RawInput::default());
+
+    assert_eq!(
+        app.open_protocol_dir(),
+        Some(protocol),
+        "the Protocol in the drop opens: {}",
+        said(&app)
+    );
+    let target = std::fs::read_to_string(
+        scratch()
+            .join("protocols")
+            .join("with_target")
+            .join("arcform.yaml"),
+    )
+    .expect("the target's manifest reads");
+    assert!(
+        !target.contains("dropped_beside"),
+        "the file dropped beside the Protocol was not added: {target}"
+    );
+    assert!(
+        !scratch().join("protocols").join("dropped_beside").exists(),
+        "and nothing was made of it"
     );
     let banner = app
         .notifications()
         .iter()
-        .find(|n| n.id == meridian_egui::NotificationId::new(DROP_NOT_TAKEN_BANNER))
-        .unwrap_or_else(|| panic!("a banner says where a drop opens: {}", said(&app)));
-    assert_eq!(banner.title, DROP_NOT_TAKEN_TITLE);
-
-    // Home, as the banner says: the door is not told to go Home.
-    app.leave(&ctx, Leaving::Home);
-    frame(&mut app, &ctx, egui::RawInput::default());
-    assert!(app.front_door_is_live());
+        .find(|n| n.id == meridian_egui::NotificationId::new(DROP_REST_NOT_ADDED_BANNER))
+        .unwrap_or_else(|| panic!("a banner says the file was not added: {}", said(&app)));
+    assert_eq!(banner.title, DROP_REST_NOT_ADDED_TITLE);
     assert!(
-        !app.notifications()
-            .iter()
-            .any(|n| n.id == meridian_egui::NotificationId::new(DROP_NOT_TAKEN_BANNER)),
-        "the banner went with the Protocol it was about: {}",
+        banner
+            .body
+            .as_deref()
+            .is_some_and(|b| b.contains("dropped_with is a Protocol")
+                && b.contains("The other 1 was not added; drop it by itself to add it.")),
+        "naming the Protocol and what was not added: {:?}",
+        banner.body
+    );
+}
+
+#[test]
+fn a_data_file_in_a_protocols_folder_is_added_and_its_manifest_opens_it() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/shipped-protocol");
+    let shipped = scratch()
+        .join("input")
+        .join("dropped_inside")
+        .join("shipped_inside");
+    for file in [
+        "arcform.yaml",
+        "models/measures.sql",
+        "data/measures.csv",
+        "panels/overview.yaml",
+    ] {
+        let to = shipped.join(file);
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::copy(fixture.join(file), &to).expect("the fixture copies");
+    }
+    let target = housing_copy("dropped_inside", "inside_target.csv");
+    let inside = shipped.join("inside_houses.csv");
+    std::fs::copy(&target, &inside).expect("a data file in the Protocol's folder");
+    let mut app = app();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, egui::RawInput::default());
+    app.open_queue().push(OpenRequest::Path(target));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert_opened(&app, "inside_target");
+
+    // A data file is data wherever it sits: the drop adds it.
+    frame(&mut app, &ctx, dropped(&[inside]));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert_eq!(
+        model_tables(&app),
+        ["inside_target", "inside_houses"],
+        "the file is added to the open Protocol: {}",
+        said(&app)
+    );
+    assert!(
+        app.panel_tiles().is_none(),
+        "the Protocol it sits in is not opened"
+    );
+
+    // The manifest names the Protocol itself: the drop opens it.
+    frame(&mut app, &ctx, dropped(&[shipped.join("arcform.yaml")]));
+    frame(&mut app, &ctx, egui::RawInput::default());
+    assert_eq!(
+        app.panel_tiles().map(|t| t.dir().to_path_buf()),
+        Some(shipped),
+        "the Protocol opens where it is: {}",
         said(&app)
     );
 }
