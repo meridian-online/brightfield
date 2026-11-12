@@ -12122,7 +12122,7 @@ impl MeridianApp {
 
     /// Put the sources browser over the window, on `at` in its folder with it under the cursor,
     /// or on the home folder. With `joins_of`, `at` is a folder the open Protocol was just made of
-    /// or given, and its canvas shows those joins from the Protocol's model, none accepted yet,
+    /// or given, and its canvas shows those joins from the Protocol's model, each as proposed,
     /// and holds the keys.
     fn show_sources_browser(
         &mut self,
