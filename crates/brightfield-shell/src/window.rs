@@ -3144,7 +3144,7 @@ struct ModelDoc {
     last_run_said: Option<String>,
     /// The model table whose rows the grid holds while the pane waits behind it: `None` while the
     /// pane is on the canvas, and for a join's rows. Held beside [`Self::in_grid`], whose words
-    /// are for the header, so nothing parses them back.
+    /// are for the header, so the table's name is not read back out of them.
     grid_table: Option<String>,
     /// The Protocol's spine as the pane's model makes it, built on a frame and kept until the
     /// model or the run moves on.
