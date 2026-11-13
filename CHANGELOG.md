@@ -31,6 +31,7 @@ Releases before 0.1.6 predate this file; their tags and the commit history are t
 - The front door lists a Protocol from the moment it is made, saved or not.
 - The failed-values step and its table show on the spine only when they hold rows.
 - The spine lists a Protocol's joined tables first, then the model step, a curve for each join, and the sources with no join under a heading.
+- The model pane has the Protocol's spine on the navigator rail beside it, the model step selected. A click on a table's row opens its rows in the grid with the spine kept on the rail, and a click on the model step or another table's row goes back.
 - A Protocol an agent wrote, or any other Protocol folder Brightfield did not make, opens restricted from the window until trusted. The first launch of this build records the Protocols Brightfield made before it as trusted, and one named on the command line still opens unrestricted.
 
 ### Fixed
