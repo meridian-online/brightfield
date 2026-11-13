@@ -449,3 +449,58 @@ fn the_spine_rows_beside_the_model_are_named_controls() {
         );
     }
 }
+
+/// Opens `customers`' grid and makes its dashboard dirty, as the unsaved-edits test does.
+fn dirty_customers_grid() -> Window {
+    let mut win = Window::over_fixture();
+    let row = win.drawn_row("customers");
+    win.click(row.rect.center());
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("1 = 1".to_string()),
+            order: None,
+        });
+    win.frame(Vec::new());
+    assert!(win.app.chart_doc().has_unsaved_work(), "the grid is clean");
+    win
+}
+
+#[test]
+fn unsaved_grid_edits_hold_a_click_on_another_tables_row() {
+    let mut win = dirty_customers_grid();
+    let other = win.drawn_row("loyalty_visits");
+    win.click(other.rect.center());
+    assert!(win.app.is_model_behind_grid());
+    assert_eq!(win.app.model_grid_table(), Some("customers"));
+    assert!(
+        win.app
+            .notifications()
+            .iter()
+            .any(|n| n.title == "These rows have unsaved edits"),
+        "no notice of the unsaved edits"
+    );
+}
+
+#[test]
+fn a_click_on_the_row_of_the_table_in_the_grid_does_nothing() {
+    // With a dirty dashboard: a reopen would raise the unsaved-edits notice and let go of the
+    // edits, and neither happens.
+    let mut win = dirty_customers_grid();
+    let own = win.drawn_row("customers");
+    assert!(!own.control, "the grid's own table is drawn as a control");
+    win.click(own.rect.center());
+    assert!(win.app.is_model_behind_grid());
+    assert_eq!(win.app.model_grid_table(), Some("customers"));
+    assert!(
+        win.app.chart_doc().has_unsaved_work(),
+        "the grid was reopened"
+    );
+    assert!(
+        !win.app
+            .notifications()
+            .iter()
+            .any(|n| n.title == "These rows have unsaved edits"),
+        "the click tried to go back"
+    );
+}

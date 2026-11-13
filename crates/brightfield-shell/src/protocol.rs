@@ -4090,9 +4090,13 @@ impl Item<ProtocolDoc> for OutlinePane {
                         None => holds.shows(row),
                     },
                     senses_click: &|row| match &overridden {
+                        // The table already in the grid is not a control: a click on it would
+                        // reopen the rows it is showing.
                         Some(o) => {
                             row.role == SpineRole::Model
-                                || (row.role == SpineRole::Asset && o.tables.contains(&row.label))
+                                || (row.role == SpineRole::Asset
+                                    && row.label != o.selected_table
+                                    && o.tables.contains(&row.label))
                         }
                         None => default_senses_click(row),
                     },
