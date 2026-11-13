@@ -4240,7 +4240,7 @@ impl Item<ProtocolDoc> for OutlinePane {
     }
 }
 
-/// What [`spine_list_ui`] drew: the rows and curves as a test or a later pass
+/// What `spine_list_ui` drew: the rows and curves as a test or a later pass
 /// reads them, and what the pointer did.
 pub struct SpineListDrawn {
     /// The head row first, then each spine row, as the pane records them.
