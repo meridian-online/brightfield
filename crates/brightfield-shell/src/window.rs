@@ -3142,9 +3142,49 @@ struct ModelDoc {
     last_run: Option<brightfield_protocol::RunView>,
     /// What the toast said when that run landed, since the pane draws no strip to say it.
     last_run_said: Option<String>,
+    /// The model table whose rows the grid holds while the pane waits behind it: `None` while the
+    /// pane is on the canvas, and for a join's rows. Held beside [`Self::in_grid`], whose words
+    /// are for the header, so nothing parses them back.
+    grid_table: Option<String>,
+    /// The Protocol's spine as the pane's model makes it, built on a frame and kept until the
+    /// model or the run moves on.
+    spine: Option<ModelSpine>,
+}
+
+/// The Protocol's spine kept for the model pane, with the key it was built for.
+struct ModelSpine {
+    spine: crate::protocol::Spine,
+    /// The words the spine's rail captions it with, read by the rail beside the pane.
+    #[expect(dead_code, reason = "read by the rail that draws the spine")]
+    caption: String,
+    /// The pane's model generation, and the id of the last run the pane started, when it has.
+    key: (u64, Option<String>),
 }
 
 impl ModelDoc {
+    /// The spine of the Protocol the pane opened, built again whenever the model's generation or
+    /// the last run's id differs from the one it was built for. The manifest is read afresh for
+    /// each build, and one that cannot be read leaves the spine empty rather than the pane
+    /// unusable. The model's own joins stand in for the ones the manifest's models declare, so
+    /// the spine's order follows the pane.
+    fn spine(&mut self) -> &ModelSpine {
+        let key = (
+            self.doc.generation(),
+            self.last_run.as_ref().map(|r| r.run_id.clone()),
+        );
+        if self.spine.as_ref().is_none_or(|s| s.key != key) {
+            let mut inputs = agent_protocol_inputs(&self.doc.protocol.dir);
+            inputs.model_joins = Some(crate::protocol::ModelJoins::of(&self.doc.model));
+            let model = ProtocolModel::new(inputs, Flow::Vertical);
+            self.spine = Some(ModelSpine {
+                spine: model.spine_with_joins(),
+                caption: model.spine_caption(),
+                key,
+            });
+        }
+        self.spine.as_ref().expect("built above")
+    }
+
     /// Whether the pane is on the canvas, rather than waiting behind the grid.
     fn shown(&self) -> bool {
         self.in_grid.is_none()
@@ -13700,6 +13740,8 @@ impl MeridianApp {
             in_grid: None,
             last_run: None,
             last_run_said: None,
+            grid_table: None,
+            spine: None,
         });
         self.remember_own_protocol(&dir, false);
         self.toasts.push(Toast::new(
@@ -13834,6 +13876,10 @@ impl MeridianApp {
                         format!("Join {name}")
                     }
                 };
+                model.grid_table = match target {
+                    brightfield_render::model_scene::Selection::Dataset(name) => Some(name.clone()),
+                    brightfield_render::model_scene::Selection::Relationship(_) => None,
+                };
                 model.in_grid = Some(showing);
                 self.model = Some(model);
                 self.notifications
@@ -13878,6 +13924,7 @@ impl MeridianApp {
         };
         self.adopt_boot(Boot::empty());
         model.in_grid = None;
+        model.grid_table = None;
         model.doc.forget_raster();
         self.model = Some(model);
         true
@@ -13887,6 +13934,15 @@ impl MeridianApp {
     #[must_use]
     pub fn model_pane(&self) -> Option<&crate::model_pane::ModelPane> {
         self.model.as_ref().map(|model| &model.doc)
+    }
+
+    /// The rows of the spine the model pane holds, as last built on a frame: `None` before one
+    /// has been, or while the window holds no model pane. A test hook; it reads what is held,
+    /// not what was drawn.
+    #[must_use]
+    pub fn model_spine_rows(&self) -> Option<Vec<crate::protocol::SpineRow>> {
+        let spine = self.model.as_ref()?.spine.as_ref()?;
+        Some(spine.spine.rows.clone())
     }
 
     /// The model pane's document, mutably — the seam a test or a later verb saves a model
@@ -18976,6 +19032,9 @@ fn draw_model_pane(
     requests: &mut Vec<Request>,
 ) {
     let key = PaneKey::new(crate::model_pane::MODEL);
+    // Kept current on every frame the pane is on the canvas, so the rail beside it never reads
+    // a spine older than the model.
+    model.spine();
     let ModelDoc { doc, items, .. } = model;
     let Some(pane) = items.get_mut(&key) else {
         chrome::orphan_pane(ui, key, mode);
