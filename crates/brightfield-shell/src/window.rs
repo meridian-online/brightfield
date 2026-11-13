@@ -3157,8 +3157,10 @@ struct ModelSpine {
     /// The words the spine's rail captions it with, read by the rail beside the pane.
     #[expect(dead_code, reason = "read by the rail that draws the spine")]
     caption: String,
-    /// The pane's model generation, and the id of the last run the pane started, when it has.
-    key: (u64, Option<String>),
+    /// The pane's model generation, the id of the last run the pane started when it has, and the
+    /// manifest's modification time. A save from a table's grid writes a step into the manifest
+    /// without moving either of the first two.
+    key: (u64, Option<String>, Option<std::time::SystemTime>),
 }
 
 impl ModelDoc {
@@ -3168,21 +3170,34 @@ impl ModelDoc {
     /// unusable. The model's own joins stand in for the ones the manifest's models declare, so
     /// the spine's order follows the pane.
     fn spine(&mut self) -> &ModelSpine {
+        let manifest = self.doc.protocol.dir.join(arc::spec::MANIFEST_FILENAME);
         let key = (
             self.doc.generation(),
             self.last_run.as_ref().map(|r| r.run_id.clone()),
+            std::fs::metadata(manifest).and_then(|m| m.modified()).ok(),
         );
         if self.spine.as_ref().is_none_or(|s| s.key != key) {
             let mut inputs = agent_protocol_inputs(&self.doc.protocol.dir);
             inputs.model_joins = Some(crate::protocol::ModelJoins::of(&self.doc.model));
             let model = ProtocolModel::new(inputs, Flow::Vertical);
+            let mut spine = model.spine_with_joins();
+            // The pane always lists the model's step, which the spine leaves out while the model
+            // joins no two tables it lists.
+            if !spine.rows.iter().any(|r| r.role == SpineRole::Model) {
+                spine.rows.push(crate::protocol::model_step_row(0));
+            }
             self.spine = Some(ModelSpine {
-                spine: model.spine_with_joins(),
+                spine,
                 caption: model.spine_caption(),
                 key,
             });
         }
         self.spine.as_ref().expect("built above")
+    }
+
+    /// Bring the held spine up to date, for a frame that draws nothing from it.
+    fn refresh_spine(&mut self) {
+        self.spine();
     }
 
     /// Whether the pane is on the canvas, rather than waiting behind the grid.
@@ -19034,7 +19049,7 @@ fn draw_model_pane(
     let key = PaneKey::new(crate::model_pane::MODEL);
     // Kept current on every frame the pane is on the canvas, so the rail beside it never reads
     // a spine older than the model.
-    model.spine();
+    model.refresh_spine();
     let ModelDoc { doc, items, .. } = model;
     let Some(pane) = items.get_mut(&key) else {
         chrome::orphan_pane(ui, key, mode);

@@ -979,7 +979,7 @@ struct SpineUnit {
 }
 
 /// The model step's row: the joins the model makes, counted.
-fn model_step_row(joins: usize) -> SpineRow {
+pub(crate) fn model_step_row(joins: usize) -> SpineRow {
     SpineRow {
         label: MODEL_STEP.to_string(),
         kind: format!("model \u{b7} {}", counted(joins, "join")),

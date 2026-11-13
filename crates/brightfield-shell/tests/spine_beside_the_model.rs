@@ -55,12 +55,23 @@ struct Window {
 
 impl Window {
     fn over_fixture() -> Self {
+        Self::open(&fixture(), true)
+    }
+
+    /// The engine's own-files fixture as discovery left it: no join, no written model saved.
+    fn over_own_files() -> Self {
+        scratch();
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../brightfield-engine/tests/data/own_files");
+        Self::open(&dir, false)
+    }
+
+    fn open(dir: &Path, save_written: bool) -> Self {
         let mut win = Self {
             app: MeridianApp::headless(Boot::empty(), Mode::Light).running_with(Some(runner())),
             ctx: egui::Context::default(),
         };
         win.frame(Vec::new());
-        let dir = fixture();
         win.app
             .open_path_knowing(&win.ctx, &dir.to_string_lossy(), &[]);
         // The open's full pass lands before the test looks, then the written model is saved over
@@ -70,9 +81,11 @@ impl Window {
             .model_pane_mut()
             .expect("the folder opens into the model pane");
         pane.finish_discovery();
-        let text = std::fs::read_to_string(fixture().join("model.ossie.yaml")).unwrap();
-        pane.save_model(brightfield_ossie::read(&text).unwrap())
-            .expect("the written model runs");
+        if save_written {
+            let text = std::fs::read_to_string(dir.join("model.ossie.yaml")).unwrap();
+            pane.save_model(brightfield_ossie::read(&text).unwrap())
+                .expect("the written model runs");
+        }
         win.frame(Vec::new());
         win
     }
@@ -148,8 +161,6 @@ fn a_missing_manifest_leaves_an_empty_spine_and_the_pane() {
     let mut win = Window::over_fixture();
     let manifest = win.pane().protocol.dir.join("arcform.yaml");
     std::fs::remove_file(&manifest).expect("the opened Protocol has a manifest");
-    win.app
-        .perform_model_action(&win.ctx, ModelAction::Drop(LISTED_JOIN.to_string()));
     win.frame(Vec::new());
     let rows = win.rows();
     assert!(
@@ -157,4 +168,46 @@ fn a_missing_manifest_leaves_an_empty_spine_and_the_pane() {
         "table rows without a manifest: {rows:?}"
     );
     assert!(win.app.model_pane().is_some());
+}
+
+#[test]
+fn a_manifest_change_rebuilds_the_spine() {
+    let mut win = Window::over_fixture();
+    assert!(!win.rows().iter().any(|r| r.label == "extra_step"));
+    // A step written into the manifest, as a save from a table's grid does, with no model action.
+    let manifest = win.pane().protocol.dir.join("arcform.yaml");
+    let mut text = std::fs::read_to_string(&manifest).unwrap();
+    text.push_str(
+        "- name: extra_step\n  sql: models/01_load_customers.sql\n  produces:\n  - extra_table\n",
+    );
+    std::fs::write(&manifest, text).unwrap();
+    // The write may land inside the clock's granularity of the last one.
+    let file = std::fs::File::options()
+        .write(true)
+        .open(&manifest)
+        .unwrap();
+    file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(10))
+        .unwrap();
+    win.frame(Vec::new());
+    assert!(
+        win.rows().iter().any(|r| r.label == "extra_step"),
+        "the new step is not in {:?}",
+        win.rows()
+    );
+}
+
+#[test]
+fn a_model_with_no_join_still_lists_the_model_step() {
+    // The own-files fixture's discovery proposes no join, so its model makes none.
+    let mut win = Window::over_own_files();
+    let rows = win.rows();
+    let model: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.role == SpineRole::Model)
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(model, vec![rows.len() - 1], "{rows:?}");
+    assert_eq!(rows.last().unwrap().kind, "model \u{b7} 0 joins");
+    win.frame(Vec::new());
 }
