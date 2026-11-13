@@ -11,6 +11,7 @@ use brightfield_shell::model_pane::ModelPane;
 use brightfield_shell::protocol::{SpineRole, SpineRow, MODEL_STEP};
 use brightfield_shell::run::Runner;
 use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_workbench::arrangement;
 
 fn scratch() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -51,6 +52,8 @@ fn fixture() -> PathBuf {
 struct Window {
     app: MeridianApp,
     ctx: egui::Context,
+    /// The frame clock, which a click needs to move on between frames.
+    time: f64,
 }
 
 impl Window {
@@ -70,6 +73,7 @@ impl Window {
         let mut win = Self {
             app: MeridianApp::headless(Boot::empty(), Mode::Light).running_with(Some(runner())),
             ctx: egui::Context::default(),
+            time: 0.0,
         };
         win.frame(Vec::new());
         win.app
@@ -87,11 +91,24 @@ impl Window {
                 .expect("the written model runs");
         }
         win.frame(Vec::new());
+        // The open leaves the sources browser over the window, which would take every click.
+        if win.app.sources_browser().is_some() {
+            win.frame(vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            win.frame(Vec::new());
+        }
         win
     }
 
     fn frame(&mut self, events: Vec<egui::Event>) {
+        self.time += 1.0;
         let raw = egui::RawInput {
+            time: Some(self.time),
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::vec2(1440.0, 900.0),
@@ -210,4 +227,136 @@ fn a_model_with_no_join_still_lists_the_model_step() {
     assert_eq!(model, vec![rows.len() - 1], "{rows:?}");
     assert_eq!(rows.last().unwrap().kind, "model \u{b7} 0 joins");
     win.frame(Vec::new());
+}
+
+fn button_at(pos: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    }
+}
+
+impl Window {
+    fn click(&mut self, at: egui::Pos2) {
+        // One frame for the whole click: the frame clock moves a second a frame, and a press
+        // held across a second is no click.
+        self.frame(vec![
+            egui::Event::PointerMoved(at),
+            button_at(at, true),
+            button_at(at, false),
+        ]);
+        self.frame(Vec::new());
+        self.frame(Vec::new());
+    }
+
+    fn drawn_row(&self, label: &str) -> brightfield_shell::protocol::SpineRowDrawn {
+        self.app
+            .spine_rows()
+            .iter()
+            .find(|r| r.label == label)
+            .unwrap_or_else(|| panic!("no drawn row {label} in {:?}", self.app.spine_rows()))
+            .clone()
+    }
+}
+
+#[test]
+fn a_protocol_of_several_sources_draws_its_spine_beside_the_model() {
+    let win = Window::over_fixture();
+    let drawn = win.app.spine_rows();
+    let at = |label: &str| {
+        drawn
+            .iter()
+            .position(|r| r.label == label)
+            .unwrap_or_else(|| panic!("no drawn row {label} in {drawn:?}"))
+    };
+    for table in LISTED_TABLES {
+        assert!(at(table) < at(MODEL_STEP), "{table} follows the model row");
+    }
+    let model = &drawn[at(MODEL_STEP)];
+    assert_eq!(model.role, SpineRole::Model);
+    assert!(model.washed, "the model's row is not the selected one");
+    if let Some(unjoined) = drawn
+        .iter()
+        .position(|r| r.role == SpineRole::Caption && r.label.to_uppercase().contains("UNJOINED"))
+    {
+        assert!(unjoined > at(MODEL_STEP));
+    }
+    let canvas = win
+        .app
+        .region_rect(arrangement::CANVAS)
+        .expect("the canvas drew");
+    for row in drawn {
+        assert!(
+            row.rect.max.x <= canvas.min.x + 0.5,
+            "{} reaches into the model pane: {:?} vs {canvas:?}",
+            row.label,
+            row.rect
+        );
+    }
+    // One curve for each non-proposal join between two tables the spine lists.
+    let rows = win.rows();
+    let listed: Vec<&str> = rows
+        .iter()
+        .filter(|r| r.role == SpineRole::Asset)
+        .map(|r| r.label.as_str())
+        .collect();
+    let expected = win
+        .pane()
+        .model
+        .relationships
+        .iter()
+        .filter(|r| !brightfield_ossie::is_proposal(r))
+        .filter(|r| listed.contains(&r.from.as_str()) && listed.contains(&r.to.as_str()))
+        .count();
+    assert_eq!(win.app.spine_curves().len(), expected);
+    assert!(expected > 0);
+}
+
+#[test]
+fn a_click_on_a_tables_row_opens_its_grid_and_keeps_the_spine() {
+    let mut win = Window::over_fixture();
+    let row = win.drawn_row("customers");
+    assert!(row.control, "the table's row is not a control");
+    win.click(row.rect.center());
+    assert!(win.app.chart_doc().grid_drawn().is_some(), "no grid opened");
+    assert!(win.app.model_pane().is_some(), "the model pane was let go");
+}
+
+#[test]
+fn a_collapsed_navigator_beside_the_model_records_no_rows() {
+    let mut win = Window::over_fixture();
+    assert!(!win.app.spine_rows().is_empty());
+    let toggle = win
+        .app
+        .rail_collapse_rect(arrangement::NAVIGATOR_RAIL)
+        .expect("the rail drew a collapse control");
+    win.click(toggle.center());
+    assert!(
+        win.app.spine_rows().is_empty(),
+        "rows beside a collapsed rail"
+    );
+    assert!(win.app.region_rect(arrangement::CANVAS).is_some());
+    let toggle = win
+        .app
+        .rail_collapse_rect(arrangement::NAVIGATOR_RAIL)
+        .expect("the stub drew its control");
+    win.click(toggle.center());
+    assert!(!win.app.spine_rows().is_empty(), "the rows did not return");
+}
+
+#[test]
+fn the_spine_rows_beside_the_model_are_named_controls() {
+    let win = Window::over_fixture();
+    for table in LISTED_TABLES {
+        let row = win.drawn_row(table);
+        assert!(
+            win.app
+                .named_controls()
+                .iter()
+                .any(|c| c.rect == row.rect && c.name == table),
+            "{table} is not a named control"
+        );
+    }
 }

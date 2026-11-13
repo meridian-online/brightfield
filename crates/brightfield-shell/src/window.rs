@@ -3155,7 +3155,6 @@ struct ModelDoc {
 struct ModelSpine {
     spine: crate::protocol::Spine,
     /// The words the spine's rail captions it with, read by the rail beside the pane.
-    #[expect(dead_code, reason = "read by the rail that draws the spine")]
     caption: String,
     /// The pane's model generation, the id of the last run the pane started when it has, and the
     /// manifest's modification time. A save from a table's grid writes a step into the manifest
@@ -3193,11 +3192,6 @@ impl ModelDoc {
             });
         }
         self.spine.as_ref().expect("built above")
-    }
-
-    /// Bring the held spine up to date, for a frame that draws nothing from it.
-    fn refresh_spine(&mut self) {
-        self.spine();
     }
 
     /// Whether the pane is on the canvas, rather than waiting behind the grid.
@@ -6339,6 +6333,8 @@ impl MeridianApp {
         let mut requests: Vec<Request> = Vec::new();
         // What the model inspector's buttons chose, dispatched once the canvas has drawn.
         let mut model_actions = Vec::new();
+        // The table whose row on the navigator rail was clicked beside the model pane.
+        let mut model_table_clicked: Option<String> = None;
         self.empty_canvas_said = None;
         if door {
             // ---- the navigator rail, on the door.
@@ -6450,6 +6446,102 @@ impl MeridianApp {
             self.door_help = None;
             self.door_open_file = None;
             self.door_new_protocol = None;
+            // ---- the navigator rail beside the pane: the Protocol's spine, with the model's
+            // step marked as the one the canvas shows. It is drawn before the canvas, under the
+            // ids and sizes the dock's navigator takes, so the rail keeps its width and its
+            // collapsed state from one arrangement to the other.
+            let navigator = plan.expect_region(arrangement::NAVIGATOR_RAIL);
+            let navigator_collapsed = self.collapsed.contains(&navigator.id);
+            let navigator_widget = if navigator_collapsed {
+                Panel::left(panel_id(navigator, true))
+                    .resizable(false)
+                    .exact_size(rail_collapsed(navigator))
+            } else {
+                Panel::left(panel_id(navigator, false))
+                    .default_size(rail_default(navigator))
+                    .min_size(rail_min(navigator))
+                    .resizable(true)
+            };
+            let tables: Vec<String> = model
+                .doc
+                .model
+                .datasets
+                .iter()
+                .map(|d| d.name.clone())
+                .collect();
+            let (mut spine, caption) = {
+                let held = model.spine();
+                (held.spine.clone(), held.caption.clone())
+            };
+            for row in &mut spine.rows {
+                row.selected = row.role == SpineRole::Model;
+            }
+            let mut rail_strip = None;
+            let mut rail_clicked: Option<String> = None;
+            let protocol_doc = &mut self.protocol.doc;
+            let drawn = navigator_widget
+                .frame(chrome::region_frame(navigator.frame, ui, mode))
+                .show(ui, |ui| {
+                    let collapse = rail_collapse(navigator, navigator_collapsed);
+                    if navigator_collapsed {
+                        rail_strip =
+                            Some(chrome::rail_stub(ui, ui.max_rect(), collapse, mode, None));
+                        return;
+                    }
+                    ui.set_min_width(ui.available_width());
+                    let (strip, body) = chrome::rail_split(ui.max_rect());
+                    rail_strip = Some(chrome::rail_selector(
+                        ui,
+                        strip,
+                        &["Protocol"],
+                        0,
+                        Some(collapse),
+                        chrome::Trailing::default(),
+                        mode,
+                    ));
+                    let mut child = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(body)
+                            .layout(egui::Layout::top_down(egui::Align::Min)),
+                    );
+                    child.shrink_clip_rect(body);
+                    protocol_doc.spine_body = Some(body);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(&mut child, |ui| {
+                            ui.add_space(spacing::SPACE_1);
+                            let style = crate::protocol::SpineListStyle {
+                                caption: &caption,
+                                holds_graph: false,
+                                chip_live: false,
+                                shows: &|row| row.role == SpineRole::Model,
+                                senses_click: &|row| {
+                                    row.role == SpineRole::Asset && tables.contains(&row.label)
+                                },
+                            };
+                            let listed = crate::protocol::spine_list_ui(ui, &spine, &style, mode);
+                            protocol_doc.spine_drawn = listed.rows;
+                            protocol_doc.spine_curves = listed.curves;
+                            rail_clicked = listed
+                                .clicked
+                                .and_then(|i| spine.rows.get(i))
+                                .map(|row| row.label.clone());
+                        });
+                });
+            let mut rail_collapse_toggled = None;
+            if let Some(strip) = rail_strip {
+                if strip.toggled {
+                    rail_collapse_toggled = Some(navigator.id);
+                }
+                self.strips.push((navigator.id, strip));
+            }
+            self.regions.push((navigator.id, drawn.response.rect));
+            if let Some(id) = rail_collapse_toggled {
+                if !self.collapsed.remove(&id) {
+                    self.collapsed.insert(id);
+                }
+            }
+
             let drawn = CentralPanel::default()
                 .frame(chrome::region_frame(canvas.frame, ui, mode))
                 .show(ui, |ui| {
@@ -6457,6 +6549,7 @@ impl MeridianApp {
                 });
             self.regions.push((canvas.id, drawn.response.rect));
             model_actions = model.doc.take_actions();
+            model_table_clicked = rail_clicked;
         } else if let Some(name) = self.empty_protocol.as_ref().map(|p| display_name(&p.dir)) {
             // A Protocol with no sources, across the canvas region in place of the dock, as the
             // model pane is: both documents are empty, so every rail would draw its empty state.
@@ -7454,6 +7547,9 @@ impl MeridianApp {
 
         for action in model_actions {
             self.perform_model_action(&ctx, action);
+        }
+        if let Some(table) = model_table_clicked {
+            self.select_source(&ctx, &table);
         }
         self.status_rail_ui(&ctx, graph_on_canvas, &mut requests);
         self.controls = self.name_controls(std::mem::take(&mut bar.controls));
@@ -19047,9 +19143,6 @@ fn draw_model_pane(
     requests: &mut Vec<Request>,
 ) {
     let key = PaneKey::new(crate::model_pane::MODEL);
-    // Kept current on every frame the pane is on the canvas, so the rail beside it never reads
-    // a spine older than the model.
-    model.refresh_spine();
     let ModelDoc { doc, items, .. } = model;
     let Some(pane) = items.get_mut(&key) else {
         chrome::orphan_pane(ui, key, mode);
