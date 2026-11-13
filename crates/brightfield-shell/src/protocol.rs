@@ -979,7 +979,7 @@ struct SpineUnit {
 }
 
 /// The model step's row: the joins the model makes, counted.
-fn model_step_row(joins: usize) -> SpineRow {
+pub(crate) fn model_step_row(joins: usize) -> SpineRow {
     SpineRow {
         label: MODEL_STEP.to_string(),
         kind: format!("model \u{b7} {}", counted(joins, "join")),
@@ -3495,6 +3495,11 @@ pub struct ProtocolDoc {
     /// Whether a reader clicked the graph chip in the spine's head this frame.
     /// Taken by the window for the same reason [`ProtocolDoc::canvas_pick`] is.
     graph_pick: bool,
+    /// The Protocol's spine, to draw in place of this document's own while another document
+    /// holds the canvas. Set by the window each frame.
+    pub spine_override: Option<SpineOverride>,
+    /// What a reader asked of the overridden spine this frame. Taken by the window.
+    spine_ask: Option<SpineAsk>,
     /// **What the canvas returns to** when the graph gives it back — a view of
     /// a node, whose chip draws filled in the node's foot on the graph, or the
     /// dashboard, which has no chip to fill.
@@ -3674,7 +3679,76 @@ impl CanvasKey {
     }
 }
 
+/// A spine the window hands the Protocol document to draw in the navigator rail in place of the
+/// document's own: the Protocol's spine, while the grid holds one of its tables.
+#[derive(Clone, Debug)]
+pub struct SpineOverride {
+    pub spine: Spine,
+    pub caption: String,
+    /// The table whose rows the canvas holds: its row is the selected one and carries the
+    /// on-canvas bar.
+    pub selected_table: String,
+    /// Which row stands for each of the model's tables: the rows that answer a click.
+    pub tables: SpineTables,
+}
+
+/// **Which row of a Protocol's spine stands for each table of its model**, the row a click on
+/// opens that table's rows from.
+///
+/// A table's row is the asset row labelled with its name: the silver table the Protocol makes of
+/// it, which is what the grid opens. A table with no silver table, one left out of the model,
+/// folded into another or a part of a combination, has no rows to open, so no row stands for it,
+/// and nor does its raw table's row.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpineTables(BTreeMap<AssetId, String>);
+
+impl SpineTables {
+    /// The row of each of `tables` on `spine`, for the tables that have one.
+    #[must_use]
+    pub fn of(spine: &Spine, tables: &[String]) -> Self {
+        let mut rows = BTreeMap::new();
+        for table in tables {
+            let row = spine
+                .rows
+                .iter()
+                .find(|r| r.role == SpineRole::Asset && r.label == *table)
+                .and_then(|r| r.id.clone());
+            if let Some(id) = row {
+                rows.entry(id).or_insert_with(|| table.clone());
+            }
+        }
+        Self(rows)
+    }
+
+    /// The table `row` stands for, when it stands for one.
+    #[must_use]
+    pub fn table(&self, row: &SpineRow) -> Option<&str> {
+        if row.role != SpineRole::Asset {
+            return None;
+        }
+        row.id
+            .as_ref()
+            .and_then(|id| self.0.get(id))
+            .map(String::as_str)
+    }
+}
+
+/// What a click on an overridden spine asked for. The document cannot act on it: the window owns
+/// what the canvas holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpineAsk {
+    /// Back to the model.
+    Model,
+    /// The rows of this table.
+    Table(String),
+}
+
 impl ProtocolDoc {
+    /// Take what a reader asked of the overridden spine this frame, if anything.
+    pub fn take_spine_ask(&mut self) -> Option<SpineAsk> {
+        self.spine_ask.take()
+    }
+
     /// A document over `model`, rastering through `host`.
     #[must_use]
     pub fn new(model: ProtocolModel, host: EguiCanvasHost) -> Self {
@@ -3688,6 +3762,8 @@ impl ProtocolDoc {
             spine_body: None,
             canvas_pick: None,
             graph_pick: false,
+            spine_override: None,
+            spine_ask: None,
             returns_to: None,
             canvas_chips: Vec::new(),
             outline_chips: Vec::new(),
@@ -3707,6 +3783,8 @@ impl ProtocolDoc {
             spine_body: None,
             canvas_pick: None,
             graph_pick: false,
+            spine_override: None,
+            spine_ask: None,
             returns_to: None,
             canvas_chips: Vec::new(),
             outline_chips: Vec::new(),
@@ -3981,34 +4059,24 @@ impl Item<ProtocolDoc> for OutlinePane {
     }
 
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        let Spine {
-            rows: spine,
-            join_curves,
-        } = doc.model.spine_with_joins();
-        // The gutter the join curves are drawn in, left of every spine row's
-        // marker, so the rows hang off one ladder whether or not a curve
-        // reaches them. No width when there is no join, and at most
-        // `SPINE_GUTTER_MAX` wide, as
-        // `a_table_joined_to_many_keeps_the_gutter_narrow` pins: past that the
-        // lanes narrow, so a table joined to many leaves the rows their room
-        // for names.
-        let routes = curve_lanes(&join_curves);
-        let lanes = routes
-            .iter()
-            .map(|&(_, _, lane)| lane + 1)
-            .max()
-            .unwrap_or(0);
-        #[allow(clippy::cast_precision_loss)] // a handful of lanes
-        let lane_width = if lanes == 0 {
-            0.0
-        } else {
-            (SPINE_GUTTER_MAX / lanes as f32).min(SPINE_LANE)
+        let overridden = doc.spine_override.clone();
+        let spine = match &overridden {
+            // The selected table's row is the one marked, and the model's step is a row to go
+            // back by, so it is never the selected one here.
+            Some(o) => {
+                let mut spine = o.spine.clone();
+                for row in &mut spine.rows {
+                    row.selected = o.tables.table(row) == Some(o.selected_table.as_str());
+                }
+                spine
+            }
+            None => doc.model.spine_with_joins(),
         };
-        #[allow(clippy::cast_precision_loss)] // a handful of lanes
-        let gutter = lane_width * lanes as f32;
-        let mut curves: Vec<SpineCurveDrawn> = Vec::with_capacity(routes.len());
         let columns = doc.model.column_rows();
-        let spine_caption = doc.model.spine_caption();
+        let spine_caption = match &overridden {
+            Some(o) => o.caption.clone(),
+            None => doc.model.spine_caption(),
+        };
         let outline_caption = doc.model.outline_caption();
         let holds = doc.canvas_holds.clone();
         // A column's row offers the column verbs only while the dashboard holds
@@ -4018,7 +4086,8 @@ impl Item<ProtocolDoc> for OutlinePane {
         let verbs = matches!(holds, crate::window::CanvasHolds::Dashboard { .. });
         let mut outline_chips: Vec<OutlineChipDrawn> = Vec::new();
         let mut put: Option<(String, &'static str)> = None;
-        let mut drawn: Vec<SpineRowDrawn> = Vec::with_capacity(spine.len() + columns.len() + 2);
+        let mut drawn: Vec<SpineRowDrawn> = Vec::new();
+        let mut curves: Vec<SpineCurveDrawn> = Vec::new();
         let mut clicked: Option<AssetId> = None;
         let mut column: Option<String> = None;
         let mut pick: Option<crate::window::CanvasHolds> = None;
@@ -4039,8 +4108,12 @@ impl Item<ProtocolDoc> for OutlinePane {
         // views — every Protocol read from a manifest — has nothing for the
         // canvas to hold but the graph, so the chip there is a readout of that
         // and not a way anywhere. See `spine_head_row`.
-        let chip_live = doc.model.table().is_some();
-        let holds_graph = matches!(holds, crate::window::CanvasHolds::Graph);
+        // An overridden spine is the Protocol's, whose graph the canvas is not holding, so the
+        // chip there is a readout.
+        let chip_live = overridden.is_none() && doc.model.table().is_some();
+        let holds_graph =
+            overridden.is_none() && matches!(holds, crate::window::CanvasHolds::Graph);
+        let mut ask: Option<SpineAsk> = None;
         doc.spine_body = Some(ui.max_rect());
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -4049,55 +4122,63 @@ impl Item<ProtocolDoc> for OutlinePane {
                 // The spine's caption shares its row with the graph chip at the
                 // trailing end; the outline's caption below has the row to
                 // itself.
-                let (record, picked) =
-                    spine_head_row(ui, &spine_caption, holds_graph, chip_live, cx.mode);
-                graph_picked = picked;
-                drawn.push(record);
-                let first = drawn.len();
-                for row in &spine {
-                    if row.role == SpineRole::Unjoined {
-                        let mut record = caption_row(ui, &row.label, cx.mode);
-                        record.role = SpineRole::Unjoined;
-                        drawn.push(record);
-                        continue;
-                    }
-                    let (record, response) = spine_row(ui, row, holds.shows(row), gutter, cx.mode);
-                    drawn.push(record);
-                    if response.clicked() {
-                        match (row.role, row.id.as_ref(), row.view) {
-                            // A view row addresses no node the nav can focus —
-                            // it names one way of looking at the node above it,
-                            // and what it moves is the canvas.
-                            (SpineRole::View, Some(id), Some(v)) => {
-                                pick = Some(crate::window::CanvasHolds::View {
-                                    node: id.clone(),
-                                    view: v,
-                                });
-                            }
-                            // The dashboard's row is an asset row, and what it
-                            // moves is the canvas, as the view row it replaced
-                            // did: the page is what a reader clicks it to see.
-                            (SpineRole::Asset, Some(id), _)
-                                if dashboard.as_ref().is_some_and(|(d, _)| d == id) =>
-                            {
-                                if let Some((node, table)) = dashboard.clone() {
-                                    pick =
-                                        Some(crate::window::CanvasHolds::Dashboard { node, table });
-                                }
-                            }
-                            (SpineRole::Asset, Some(id), _) => clicked = Some(id.clone()),
-                            _ => {}
+                let style = SpineListStyle {
+                    caption: &spine_caption,
+                    holds_graph,
+                    chip_live,
+                    shows: &|row| match &overridden {
+                        Some(o) => o.tables.table(row) == Some(o.selected_table.as_str()),
+                        None => holds.shows(row),
+                    },
+                    senses_click: &|row| match &overridden {
+                        // The table already in the grid is not a control: a click on it would
+                        // reopen the rows it is showing.
+                        Some(o) => {
+                            row.role == SpineRole::Model
+                                || o.tables
+                                    .table(row)
+                                    .is_some_and(|table| table != o.selected_table)
                         }
+                        None => default_senses_click(row),
+                    },
+                };
+                let listed = spine_list_ui(ui, &spine, &style, cx.mode);
+                graph_picked = listed.graph_picked;
+                drawn = listed.rows;
+                curves = listed.curves;
+                if overridden.is_some() {
+                    if let (Some(row), Some(o)) =
+                        (listed.clicked.and_then(|i| spine.rows.get(i)), &overridden)
+                    {
+                        ask = match row.role {
+                            SpineRole::Model => Some(SpineAsk::Model),
+                            _ => o.tables.table(row).map(|t| SpineAsk::Table(t.to_string())),
+                        };
                     }
-                }
-                for &(from, to, lane) in &routes {
-                    curves.push(paint_join_curve(
-                        ui.painter(),
-                        (&drawn[first + from], &drawn[first + to]),
-                        (lane, lane_width),
-                        gutter,
-                        cx.mode,
-                    ));
+                } else if let Some(row) = listed.clicked.and_then(|i| spine.rows.get(i)) {
+                    match (row.role, row.id.as_ref(), row.view) {
+                        // A view row addresses no node the nav can focus — it
+                        // names one way of looking at the node above it, and
+                        // what it moves is the canvas.
+                        (SpineRole::View, Some(id), Some(v)) => {
+                            pick = Some(crate::window::CanvasHolds::View {
+                                node: id.clone(),
+                                view: v,
+                            });
+                        }
+                        // The dashboard's row is an asset row, and what it
+                        // moves is the canvas, as the view row it replaced
+                        // did: the page is what a reader clicks it to see.
+                        (SpineRole::Asset, Some(id), _)
+                            if dashboard.as_ref().is_some_and(|(d, _)| d == id) =>
+                        {
+                            if let Some((node, table)) = dashboard.clone() {
+                                pick = Some(crate::window::CanvasHolds::Dashboard { node, table });
+                            }
+                        }
+                        (SpineRole::Asset, Some(id), _) => clicked = Some(id.clone()),
+                        _ => {}
+                    }
                 }
                 ui.add_space(spacing::SPACE_4);
                 if let Some(list) = list.as_mut() {
@@ -4129,6 +4210,10 @@ impl Item<ProtocolDoc> for OutlinePane {
         }
         doc.spine_drawn = drawn;
         doc.spine_curves = curves;
+        if ask.is_some() {
+            doc.spine_ask = ask;
+            cx.request_repaint();
+        }
         if let Some(id) = clicked {
             doc.model.select_id(id);
         }
@@ -4152,6 +4237,111 @@ impl Item<ProtocolDoc> for OutlinePane {
             doc.graph_pick = true;
             cx.request_repaint();
         }
+    }
+}
+
+/// What `spine_list_ui` drew: the rows and curves as a test or a later pass
+/// reads them, and what the pointer did.
+pub struct SpineListDrawn {
+    /// The head row first, then each spine row, as the pane records them.
+    pub rows: Vec<SpineRowDrawn>,
+    pub curves: Vec<SpineCurveDrawn>,
+    /// The index, into the `Spine::rows` passed in, of the row clicked.
+    pub clicked: Option<usize>,
+    /// The head row's chip was clicked.
+    pub graph_picked: bool,
+}
+
+/// How one spine list is dressed: its caption and chip, and which rows carry
+/// the on-canvas bar and which are controls. The list is drawn from two places
+/// that differ in exactly these.
+pub struct SpineListStyle<'a> {
+    pub caption: &'a str,
+    /// The head row's on-canvas bar.
+    pub holds_graph: bool,
+    pub chip_live: bool,
+    /// The on-canvas bar, per row.
+    pub shows: &'a dyn Fn(&SpineRow) -> bool,
+    /// Which rows are controls; a row that is not senses hover only.
+    pub senses_click: &'a dyn Fn(&SpineRow) -> bool,
+}
+
+/// The rule the outline pane uses for which spine rows are controls: an asset
+/// or a view row answers a click, and a step or a caption is a readout.
+pub(crate) fn default_senses_click(row: &SpineRow) -> bool {
+    matches!(row.role, SpineRole::Asset | SpineRole::View)
+}
+
+/// Draws the spine as a list: the head row, each spine row (an `Unjoined` one as
+/// a caption), and the join curves in the gutter left of the rows.
+///
+/// The gutter is the width the join curves are drawn in, left of every spine
+/// row's marker, so the rows hang off one ladder whether or not a curve reaches
+/// them. It has no width when there is no join, and is at most
+/// `SPINE_GUTTER_MAX` wide, as `a_table_joined_to_many_keeps_the_gutter_narrow`
+/// pins: past that the lanes narrow, so a table joined to many leaves the rows
+/// their room for names.
+pub(crate) fn spine_list_ui(
+    ui: &mut egui::Ui,
+    spine: &Spine,
+    style: &SpineListStyle<'_>,
+    mode: Mode,
+) -> SpineListDrawn {
+    let routes = curve_lanes(&spine.join_curves);
+    let lanes = routes
+        .iter()
+        .map(|&(_, _, lane)| lane + 1)
+        .max()
+        .unwrap_or(0);
+    #[allow(clippy::cast_precision_loss)] // a handful of lanes
+    let lane_width = if lanes == 0 {
+        0.0
+    } else {
+        (SPINE_GUTTER_MAX / lanes as f32).min(SPINE_LANE)
+    };
+    #[allow(clippy::cast_precision_loss)] // a handful of lanes
+    let gutter = lane_width * lanes as f32;
+    let mut curves: Vec<SpineCurveDrawn> = Vec::with_capacity(routes.len());
+    let mut rows: Vec<SpineRowDrawn> = Vec::with_capacity(spine.rows.len() + 1);
+    let mut clicked = None;
+    let (record, graph_picked) =
+        spine_head_row(ui, style.caption, style.holds_graph, style.chip_live, mode);
+    rows.push(record);
+    let first = rows.len();
+    for (i, row) in spine.rows.iter().enumerate() {
+        if row.role == SpineRole::Unjoined {
+            let mut record = caption_row(ui, &row.label, mode);
+            record.role = SpineRole::Unjoined;
+            rows.push(record);
+            continue;
+        }
+        let (record, response) = spine_row(
+            ui,
+            row,
+            (style.shows)(row),
+            (style.senses_click)(row),
+            gutter,
+            mode,
+        );
+        rows.push(record);
+        if response.clicked() {
+            clicked = Some(i);
+        }
+    }
+    for &(from, to, lane) in &routes {
+        curves.push(paint_join_curve(
+            ui.painter(),
+            (&rows[first + from], &rows[first + to]),
+            (lane, lane_width),
+            gutter,
+            mode,
+        ));
+    }
+    SpineListDrawn {
+        rows,
+        curves,
+        clicked,
+        graph_picked,
     }
 }
 
@@ -4401,6 +4591,7 @@ fn spine_row(
     ui: &mut egui::Ui,
     row: &SpineRow,
     on_canvas: bool,
+    senses_click: bool,
     gutter: f32,
     mode: Mode,
 ) -> (SpineRowDrawn, egui::Response) {
@@ -4409,9 +4600,10 @@ fn spine_row(
     // A step row and a caption row are readouts rather than controls: no
     // gesture acts on a step yet, and a row that senses a click it does not
     // answer is a control that appears broken.
-    let sense = match row.role {
-        SpineRole::Asset | SpineRole::View => egui::Sense::click(),
-        _ => egui::Sense::hover(),
+    let sense = if senses_click {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
     };
     let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), b.row), sense);
     let painter = ui.painter();
@@ -7449,7 +7641,7 @@ steps:
         };
         let mut drawn = None;
         let out = ctx.run_ui(raw, |ui| {
-            drawn = Some(spine_row(ui, row, on_canvas, 0.0, mode).0);
+            drawn = Some(spine_row(ui, row, on_canvas, default_senses_click(row), 0.0, mode).0);
         });
         let rects = out
             .shapes

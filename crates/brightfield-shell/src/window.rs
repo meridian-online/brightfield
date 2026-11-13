@@ -3142,9 +3142,75 @@ struct ModelDoc {
     last_run: Option<brightfield_protocol::RunView>,
     /// What the toast said when that run landed, since the pane draws no strip to say it.
     last_run_said: Option<String>,
+    /// The model table whose rows the grid holds while the pane waits behind it: `None` while the
+    /// pane is on the canvas, and for a join's rows. Held beside [`Self::in_grid`], whose words
+    /// are for the header, so the table's name is not read back out of them.
+    grid_table: Option<String>,
+    /// The Protocol's spine as the pane's model makes it, built on a frame and kept until the
+    /// model, the run or the manifest's modification time moves on.
+    spine: Option<ModelSpine>,
+}
+
+/// The Protocol's spine kept for the model pane, with the key it was built for.
+struct ModelSpine {
+    spine: crate::protocol::Spine,
+    /// The words the spine's rail captions it with, read by the rail beside the pane.
+    caption: String,
+    /// Which row stands for each of the model's tables, the rows a click opens a table from.
+    tables: crate::protocol::SpineTables,
+    /// The pane's model generation, the id of the last run the pane started when it has, and the
+    /// manifest's modification time. A save from a table's grid writes a step into the manifest
+    /// without moving either of the first two.
+    key: (u64, Option<String>, Option<std::time::SystemTime>),
 }
 
 impl ModelDoc {
+    /// The spine of the Protocol the pane opened, built again whenever the model's generation,
+    /// the last run's id or the manifest's modification time differs from the one it was built
+    /// for. The manifest is read afresh for each build, and one that cannot be read leaves the
+    /// spine empty rather than the pane unusable. The model's own joins stand in for the ones the
+    /// manifest's models declare, so the spine's order follows the pane.
+    ///
+    /// The spine lists every step of its own, with no family folded to one row. The silver and
+    /// failed-value steps of tables with one-word names, such as `silver_stores` and
+    /// `failed_stores`, have the shape of a parameterised family, and folded they would leave
+    /// those tables with no row a click could open them from.
+    fn spine(&mut self) -> &ModelSpine {
+        let manifest = self.doc.protocol.dir.join(arc::spec::MANIFEST_FILENAME);
+        let key = (
+            self.doc.generation(),
+            self.last_run.as_ref().map(|r| r.run_id.clone()),
+            std::fs::metadata(manifest).and_then(|m| m.modified()).ok(),
+        );
+        if self.spine.as_ref().is_none_or(|s| s.key != key) {
+            let mut inputs = agent_protocol_inputs(&self.doc.protocol.dir);
+            inputs.graph_collapsed = inputs.graph_full.clone();
+            inputs.model_joins = Some(crate::protocol::ModelJoins::of(&self.doc.model));
+            let model = ProtocolModel::new(inputs, Flow::Vertical);
+            let mut spine = model.spine_with_joins();
+            // The pane always lists the model's step, which the spine leaves out while the model
+            // joins no two tables it lists.
+            if !spine.rows.iter().any(|r| r.role == SpineRole::Model) {
+                spine.rows.push(crate::protocol::model_step_row(0));
+            }
+            let tables: Vec<String> = self
+                .doc
+                .model
+                .datasets
+                .iter()
+                .map(|d| d.name.clone())
+                .filter(|name| crate::model_inspector::materialised(&self.doc.model, name))
+                .collect();
+            self.spine = Some(ModelSpine {
+                tables: crate::protocol::SpineTables::of(&spine, &tables),
+                spine,
+                caption: model.spine_caption(),
+                key,
+            });
+        }
+        self.spine.as_ref().expect("built above")
+    }
+
     /// Whether the pane is on the canvas, rather than waiting behind the grid.
     fn shown(&self) -> bool {
         self.in_grid.is_none()
@@ -6284,7 +6350,25 @@ impl MeridianApp {
         let mut requests: Vec<Request> = Vec::new();
         // What the model inspector's buttons chose, dispatched once the canvas has drawn.
         let mut model_actions = Vec::new();
+        // The table whose row on the navigator rail was clicked beside the model pane.
+        let mut model_table_clicked: Option<String> = None;
         self.empty_canvas_said = None;
+        // While a table's rows are in the grid with the model waiting behind, the navigator rail
+        // still lists the Protocol's spine, held by the model pane, with that table's row marked.
+        self.protocol.doc.spine_override = if self.model_behind_grid() {
+            self.model.as_mut().and_then(|model| {
+                let selected_table = model.grid_table.clone()?;
+                let held = model.spine();
+                Some(crate::protocol::SpineOverride {
+                    spine: held.spine.clone(),
+                    caption: held.caption.clone(),
+                    selected_table,
+                    tables: held.tables.clone(),
+                })
+            })
+        } else {
+            None
+        };
         if door {
             // ---- the navigator rail, on the door.
             //
@@ -6385,9 +6469,10 @@ impl MeridianApp {
             });
             self.regions.push((canvas.id, drawn.response.rect));
         } else if let Some(model) = self.model.as_mut().filter(|m| m.shown()) {
-            // The model pane, across the canvas region, in place of the dock: both documents are
-            // empty beside it, so every rail would draw its empty state. No stale door geometry,
-            // for the reason the dock's branch clears it.
+            // The model pane takes the canvas region, with the navigator rail beside it listing
+            // the Protocol's spine; the ledger and inspector rails are not drawn, since both
+            // documents are empty and they would show only their empty states. No stale door
+            // geometry, for the reason the dock's branch clears it.
             self.door_cards.clear();
             self.door_card_feet.clear();
             self.door_sections.clear();
@@ -6395,6 +6480,98 @@ impl MeridianApp {
             self.door_help = None;
             self.door_open_file = None;
             self.door_new_protocol = None;
+            // ---- the navigator rail beside the pane: the Protocol's spine, with the model's
+            // step marked as the one the canvas shows. It is drawn before the canvas, under the
+            // ids and sizes the dock's navigator takes, so the rail keeps its width and its
+            // collapsed state from one arrangement to the other.
+            let navigator = plan.expect_region(arrangement::NAVIGATOR_RAIL);
+            let navigator_collapsed = self.collapsed.contains(&navigator.id);
+            let navigator_widget = if navigator_collapsed {
+                Panel::left(panel_id(navigator, true))
+                    .resizable(false)
+                    .exact_size(rail_collapsed(navigator))
+            } else {
+                Panel::left(panel_id(navigator, false))
+                    .default_size(rail_default(navigator))
+                    .min_size(rail_min(navigator))
+                    .resizable(true)
+            };
+            let (mut spine, caption, tables) = {
+                let held = model.spine();
+                (
+                    held.spine.clone(),
+                    held.caption.clone(),
+                    held.tables.clone(),
+                )
+            };
+            for row in &mut spine.rows {
+                row.selected = row.role == SpineRole::Model;
+            }
+            let mut rail_strip = None;
+            let mut rail_clicked: Option<String> = None;
+            let protocol_doc = &mut self.protocol.doc;
+            let drawn = navigator_widget
+                .frame(chrome::region_frame(navigator.frame, ui, mode))
+                .show(ui, |ui| {
+                    let collapse = rail_collapse(navigator, navigator_collapsed);
+                    if navigator_collapsed {
+                        rail_strip =
+                            Some(chrome::rail_stub(ui, ui.max_rect(), collapse, mode, None));
+                        return;
+                    }
+                    ui.set_min_width(ui.available_width());
+                    let (strip, body) = chrome::rail_split(ui.max_rect());
+                    rail_strip = Some(chrome::rail_selector(
+                        ui,
+                        strip,
+                        &["Protocol"],
+                        0,
+                        Some(collapse),
+                        chrome::Trailing::default(),
+                        mode,
+                    ));
+                    let mut child = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(body)
+                            .layout(egui::Layout::top_down(egui::Align::Min)),
+                    );
+                    child.shrink_clip_rect(body);
+                    protocol_doc.spine_body = Some(body);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(&mut child, |ui| {
+                            ui.add_space(spacing::SPACE_1);
+                            let style = crate::protocol::SpineListStyle {
+                                caption: &caption,
+                                holds_graph: false,
+                                chip_live: false,
+                                shows: &|row| row.role == SpineRole::Model,
+                                senses_click: &|row| tables.table(row).is_some(),
+                            };
+                            let listed = crate::protocol::spine_list_ui(ui, &spine, &style, mode);
+                            protocol_doc.spine_drawn = listed.rows;
+                            protocol_doc.spine_curves = listed.curves;
+                            rail_clicked = listed
+                                .clicked
+                                .and_then(|i| spine.rows.get(i))
+                                .and_then(|row| tables.table(row))
+                                .map(str::to_string);
+                        });
+                });
+            let mut rail_collapse_toggled = None;
+            if let Some(strip) = rail_strip {
+                if strip.toggled {
+                    rail_collapse_toggled = Some(navigator.id);
+                }
+                self.strips.push((navigator.id, strip));
+            }
+            self.regions.push((navigator.id, drawn.response.rect));
+            if let Some(id) = rail_collapse_toggled {
+                if !self.collapsed.remove(&id) {
+                    self.collapsed.insert(id);
+                }
+            }
+
             let drawn = CentralPanel::default()
                 .frame(chrome::region_frame(canvas.frame, ui, mode))
                 .show(ui, |ui| {
@@ -6402,9 +6579,10 @@ impl MeridianApp {
                 });
             self.regions.push((canvas.id, drawn.response.rect));
             model_actions = model.doc.take_actions();
+            model_table_clicked = rail_clicked;
         } else if let Some(name) = self.empty_protocol.as_ref().map(|p| display_name(&p.dir)) {
-            // A Protocol with no sources, across the canvas region in place of the dock, as the
-            // model pane is: both documents are empty, so every rail would draw its empty state.
+            // A Protocol with no sources, across the canvas region in place of the dock, with no
+            // rail beside it: both documents are empty, so every rail would draw its empty state.
             // The canvas says how to add a source and offers the file picker for one.
             self.door_cards.clear();
             self.door_card_feet.clear();
@@ -7399,6 +7577,22 @@ impl MeridianApp {
 
         for action in model_actions {
             self.perform_model_action(&ctx, action);
+        }
+        if let Some(table) = model_table_clicked {
+            self.select_source(&ctx, &table);
+        }
+        // A click on the Protocol's spine while a table is in the grid: back to the model, and on
+        // to another table's rows when that is what was clicked. Unsaved edits in the grid hold
+        // the way back, and then the click does nothing else.
+        match self.protocol.doc.take_spine_ask() {
+            Some(crate::protocol::SpineAsk::Model) => {
+                self.back_to_model();
+            }
+            Some(crate::protocol::SpineAsk::Table(table)) if self.back_to_model() => {
+                self.select_source(&ctx, &table);
+            }
+            Some(crate::protocol::SpineAsk::Table(_)) => {}
+            None => {}
         }
         self.status_rail_ui(&ctx, graph_on_canvas, &mut requests);
         self.controls = self.name_controls(std::mem::take(&mut bar.controls));
@@ -13700,6 +13894,8 @@ impl MeridianApp {
             in_grid: None,
             last_run: None,
             last_run_said: None,
+            grid_table: None,
+            spine: None,
         });
         self.remember_own_protocol(&dir, false);
         self.toasts.push(Toast::new(
@@ -13717,6 +13913,19 @@ impl MeridianApp {
     /// Whether the model pane is waiting behind the grid, which holds rows opened from it.
     fn model_behind_grid(&self) -> bool {
         self.model.as_ref().is_some_and(|m| m.in_grid.is_some())
+    }
+
+    /// Whether the model pane is waiting behind the grid. A test hook.
+    #[must_use]
+    pub fn is_model_behind_grid(&self) -> bool {
+        self.model_behind_grid()
+    }
+
+    /// The model's table whose rows the grid holds over the waiting model pane, if one does. A
+    /// test hook.
+    #[must_use]
+    pub fn model_grid_table(&self) -> Option<&str> {
+        self.model.as_ref()?.grid_table.as_deref()
     }
 
     /// Carry out one of the model inspector's actions: the pane takes the edits and the view
@@ -13834,6 +14043,10 @@ impl MeridianApp {
                         format!("Join {name}")
                     }
                 };
+                model.grid_table = match target {
+                    brightfield_render::model_scene::Selection::Dataset(name) => Some(name.clone()),
+                    brightfield_render::model_scene::Selection::Relationship(_) => None,
+                };
                 model.in_grid = Some(showing);
                 self.model = Some(model);
                 self.notifications
@@ -13878,6 +14091,7 @@ impl MeridianApp {
         };
         self.adopt_boot(Boot::empty());
         model.in_grid = None;
+        model.grid_table = None;
         model.doc.forget_raster();
         self.model = Some(model);
         true
@@ -13887,6 +14101,15 @@ impl MeridianApp {
     #[must_use]
     pub fn model_pane(&self) -> Option<&crate::model_pane::ModelPane> {
         self.model.as_ref().map(|model| &model.doc)
+    }
+
+    /// The rows of the spine the model pane holds, as last built on a frame: `None` before one
+    /// has been, or while the window holds no model pane. A test hook; it reads what is held,
+    /// not what was drawn.
+    #[must_use]
+    pub fn model_spine_rows(&self) -> Option<Vec<crate::protocol::SpineRow>> {
+        let spine = self.model.as_ref()?.spine.as_ref()?;
+        Some(spine.spine.rows.clone())
     }
 
     /// The model pane's document, mutably — the seam a test or a later verb saves a model

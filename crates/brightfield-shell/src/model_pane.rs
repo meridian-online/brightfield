@@ -1174,6 +1174,13 @@ impl ModelPane {
         Ok(())
     }
 
+    /// How many times the model has been written: what a reader of the model keeps to know its
+    /// copy is stale.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Measure each join's evidence again over the Protocol's silver tables, and write the model
     /// when that changed it. `from_editor` is as [`Self::save_with`] takes it.
     fn reverify(&mut self, from_editor: bool) -> Result<(), String> {
