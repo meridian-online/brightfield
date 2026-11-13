@@ -3688,8 +3688,49 @@ pub struct SpineOverride {
     /// The table whose rows the canvas holds: its row is the selected one and carries the
     /// on-canvas bar.
     pub selected_table: String,
-    /// The model's tables, whose rows answer a click.
-    pub tables: Vec<String>,
+    /// Which row stands for each of the model's tables: the rows that answer a click.
+    pub tables: SpineTables,
+}
+
+/// **Which row of a Protocol's spine stands for each table of its model**, the row a click on
+/// opens that table's rows from.
+///
+/// A table's row is the asset row labelled with its name: the silver table the Protocol makes of
+/// it, which is what the grid opens. A table with no silver table, one left out of the model,
+/// folded into another or a part of a combination, has no rows to open, so no row stands for it,
+/// and nor does its raw table's row.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpineTables(BTreeMap<AssetId, String>);
+
+impl SpineTables {
+    /// The row of each of `tables` on `spine`, for the tables that have one.
+    #[must_use]
+    pub fn of(spine: &Spine, tables: &[String]) -> Self {
+        let mut rows = BTreeMap::new();
+        for table in tables {
+            let row = spine
+                .rows
+                .iter()
+                .find(|r| r.role == SpineRole::Asset && r.label == *table)
+                .and_then(|r| r.id.clone());
+            if let Some(id) = row {
+                rows.entry(id).or_insert_with(|| table.clone());
+            }
+        }
+        Self(rows)
+    }
+
+    /// The table `row` stands for, when it stands for one.
+    #[must_use]
+    pub fn table(&self, row: &SpineRow) -> Option<&str> {
+        if row.role != SpineRole::Asset {
+            return None;
+        }
+        row.id
+            .as_ref()
+            .and_then(|id| self.0.get(id))
+            .map(String::as_str)
+    }
 }
 
 /// What a click on an overridden spine asked for. The document cannot act on it: the window owns
@@ -4025,7 +4066,7 @@ impl Item<ProtocolDoc> for OutlinePane {
             Some(o) => {
                 let mut spine = o.spine.clone();
                 for row in &mut spine.rows {
-                    row.selected = row.role == SpineRole::Asset && row.label == o.selected_table;
+                    row.selected = o.tables.table(row) == Some(o.selected_table.as_str());
                 }
                 spine
             }
@@ -4086,7 +4127,7 @@ impl Item<ProtocolDoc> for OutlinePane {
                     holds_graph,
                     chip_live,
                     shows: &|row| match &overridden {
-                        Some(o) => row.role == SpineRole::Asset && row.label == o.selected_table,
+                        Some(o) => o.tables.table(row) == Some(o.selected_table.as_str()),
                         None => holds.shows(row),
                     },
                     senses_click: &|row| match &overridden {
@@ -4094,9 +4135,9 @@ impl Item<ProtocolDoc> for OutlinePane {
                         // reopen the rows it is showing.
                         Some(o) => {
                             row.role == SpineRole::Model
-                                || (row.role == SpineRole::Asset
-                                    && row.label != o.selected_table
-                                    && o.tables.contains(&row.label))
+                                || o.tables
+                                    .table(row)
+                                    .is_some_and(|table| table != o.selected_table)
                         }
                         None => default_senses_click(row),
                     },
@@ -4106,11 +4147,12 @@ impl Item<ProtocolDoc> for OutlinePane {
                 drawn = listed.rows;
                 curves = listed.curves;
                 if overridden.is_some() {
-                    if let Some(row) = listed.clicked.and_then(|i| spine.rows.get(i)) {
+                    if let (Some(row), Some(o)) =
+                        (listed.clicked.and_then(|i| spine.rows.get(i)), &overridden)
+                    {
                         ask = match row.role {
                             SpineRole::Model => Some(SpineAsk::Model),
-                            SpineRole::Asset => Some(SpineAsk::Table(row.label.clone())),
-                            _ => None,
+                            _ => o.tables.table(row).map(|t| SpineAsk::Table(t.to_string())),
                         };
                     }
                 } else if let Some(row) = listed.clicked.and_then(|i| spine.rows.get(i)) {

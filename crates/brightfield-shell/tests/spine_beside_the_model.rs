@@ -1,6 +1,7 @@
-//! The model pane holds its Protocol's spine: the model's step first, then the tables, built
-//! again on a frame when the model's generation moves. Windows are headless, as in the model
-//! pane's own tests, and what a test reads is the spine the window holds, not what was drawn.
+//! The model pane holds its Protocol's spine, built again on a frame when the model's generation
+//! moves, and the navigator rail draws it beside the pane and beside a table's grid. Windows are
+//! headless, as in the model pane's own tests. A test reads the spine the window holds through
+//! `model_spine_rows`, and what the rail drew through `spine_rows` and `spine_curves`.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -40,9 +41,8 @@ fn runner() -> Runner {
     Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"))
 }
 
-/// The retail extract: eight CSVs, and the model written for them. The own-files fixture's
-/// discovery proposes no join and its Protocol makes no silver tables before a model is saved,
-/// so the spine would list no table of the model.
+/// The retail extract: eight CSVs, and the model written for them, whose joins the spine leads
+/// with. The own-files fixture's discovery proposes no join, so its spine has no joined tables.
 fn fixture() -> PathBuf {
     scratch();
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../brightfield-ossie/fixtures/retail_extract")
@@ -109,9 +109,11 @@ impl Window {
         self.time += 1.0;
         let raw = egui::RawInput {
             time: Some(self.time),
+            // Tall enough that every row of the retail Protocol's spine is drawn inside the rail,
+            // beside the model pane and beside the grid, so a click lands without scrolling.
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(1440.0, 900.0),
+                egui::vec2(1440.0, 1600.0),
             )),
             events,
             ..Default::default()
@@ -130,11 +132,12 @@ impl Window {
     }
 }
 
-/// The one join of the written retail model between two tables the spine lists. The Protocol's
-/// silver steps for the other tables are gathered into a failed family the spine does not list
-/// as tables, so a join to one of them does not count in the model's row.
-const LISTED_JOIN: &str = "loyalty_visits_customers";
+/// Two of the joined tables of the written retail model, and the join between them.
 const LISTED_TABLES: [&str; 2] = ["loyalty_visits", "customers"];
+/// The written retail model's one possible join discovery proposed, which waits on the analyst:
+/// `customer_segments` is listed with no join until it is kept.
+const PROPOSED_JOIN: &str = "customer_segments_customers";
+const PROPOSED_TABLE: &str = "customer_segments";
 
 #[test]
 fn the_model_pane_holds_its_protocols_spine_model_first() {
@@ -165,12 +168,32 @@ fn the_spine_follows_the_model_when_a_join_changes() {
             .find(|r| r.role == SpineRole::Model)
             .map(|r| r.kind.clone())
     };
+    let drawn = |win: &Window| -> Vec<String> {
+        win.app
+            .spine_rows()
+            .iter()
+            .map(|r| r.label.clone())
+            .collect()
+    };
+    let drawn_before = drawn(&win);
+    let curves_before = win.app.spine_curves().len();
+    let at = |labels: &[String], label: &str| labels.iter().position(|l| l == label).unwrap();
+    assert!(at(&drawn_before, PROPOSED_TABLE) > at(&drawn_before, MODEL_STEP));
     win.app
-        .perform_model_action(&win.ctx, ModelAction::Drop(LISTED_JOIN.to_string()));
+        .perform_model_action(&win.ctx, ModelAction::Keep(PROPOSED_JOIN.to_string()));
     win.frame(Vec::new());
     let after = win.rows();
-    assert_ne!(before, after, "the spine did not follow the dropped join");
+    assert_ne!(before, after, "the spine did not follow the kept join");
     assert_ne!(joins(&before), joins(&after), "the model row's kind held");
+    // What the next frame drew: one curve more, and the table the join reaches moved up among
+    // the joined tables, ahead of the model's row.
+    let drawn_after = drawn(&win);
+    assert_eq!(win.app.spine_curves().len(), curves_before + 1);
+    assert_ne!(drawn_before, drawn_after, "the drawn rows did not move");
+    assert!(
+        at(&drawn_after, PROPOSED_TABLE) < at(&drawn_after, MODEL_STEP),
+        "{PROPOSED_TABLE} is not among the joined tables: {drawn_after:?}"
+    );
 }
 
 #[test]
@@ -277,12 +300,17 @@ fn a_protocol_of_several_sources_draws_its_spine_beside_the_model() {
     let model = &drawn[at(MODEL_STEP)];
     assert_eq!(model.role, SpineRole::Model);
     assert!(model.washed, "the model's row is not the selected one");
-    if let Some(unjoined) = drawn
+    // The retail model joins no table to `customer_segments` until its proposal is kept, so the
+    // heading over the sources with no join is drawn, after the model's row.
+    let heading = drawn
         .iter()
-        .position(|r| r.role == SpineRole::Caption && r.label.to_uppercase().contains("UNJOINED"))
-    {
-        assert!(unjoined > at(MODEL_STEP));
-    }
+        .position(|r| r.role == SpineRole::Unjoined)
+        .unwrap_or_else(|| panic!("no heading over the sources with no join in {drawn:?}"));
+    assert!(drawn[heading]
+        .label
+        .starts_with(brightfield_shell::protocol::UNJOINED_HEADING));
+    assert!(heading > at(MODEL_STEP), "the heading leads the model row");
+    assert!(at(PROPOSED_TABLE) > heading);
     let canvas = win
         .app
         .region_rect(arrangement::CANVAS)
@@ -355,6 +383,38 @@ fn the_spine_stays_the_protocols_while_a_table_is_in_the_grid() {
         !win.drawn_row(MODEL_STEP).washed,
         "the model's row is still selected"
     );
+    // The Protocol's graph is not what the head row's chip would put on the canvas, so the chip
+    // is a readout.
+    let chip = win
+        .app
+        .spine_rows()
+        .first()
+        .and_then(|head| head.chip)
+        .expect("the head row drew the graph chip");
+    assert!(!chip.live, "the graph chip is a control beside the grid");
+    // The column outline under the spine is the opened table's.
+    let columns: Vec<String> = win
+        .app
+        .spine_rows()
+        .iter()
+        .filter(|r| r.role == SpineRole::Column)
+        .map(|r| r.label.clone())
+        .collect();
+    let customers = win
+        .pane()
+        .model
+        .datasets
+        .iter()
+        .find(|d| d.name == "customers")
+        .expect("the model has customers");
+    for field in &customers.fields {
+        assert!(
+            columns.contains(&field.name),
+            "the outline lists no {} in {columns:?}",
+            field.name
+        );
+    }
+    assert!(!columns.iter().any(|c| c == "store_id"), "{columns:?}");
 }
 
 #[test]
@@ -390,17 +450,7 @@ fn another_tables_row_opens_that_table_instead() {
 
 #[test]
 fn unsaved_grid_edits_hold_the_spine_click() {
-    let mut win = Window::over_fixture();
-    let row = win.drawn_row("customers");
-    win.click(row.rect.center());
-    win.app
-        .chart_doc_mut()
-        .apply_grid_view(brightfield_engine::RowsView {
-            condition: Some("1 = 1".to_string()),
-            order: None,
-        });
-    win.frame(Vec::new());
-    assert!(win.app.chart_doc().has_unsaved_work(), "the grid is clean");
+    let mut win = dirty_customers_grid();
     let model = win.drawn_row(MODEL_STEP);
     win.click(model.rect.center());
     assert!(win.app.is_model_behind_grid(), "the grid let go");
@@ -450,7 +500,8 @@ fn the_spine_rows_beside_the_model_are_named_controls() {
     }
 }
 
-/// Opens `customers`' grid and makes its dashboard dirty, as the unsaved-edits test does.
+/// Opens `customers`' grid and makes its dashboard dirty, with a condition its view holds and no
+/// file does.
 fn dirty_customers_grid() -> Window {
     let mut win = Window::over_fixture();
     let row = win.drawn_row("customers");
@@ -503,4 +554,88 @@ fn a_click_on_the_row_of_the_table_in_the_grid_does_nothing() {
             .any(|n| n.title == "These rows have unsaved edits"),
         "the click tried to go back"
     );
+}
+
+/// The model's tables that have rows of their own for the grid to open, by name, in name order.
+fn model_tables(win: &Window) -> Vec<String> {
+    let model = &win.pane().model;
+    let mut tables: Vec<String> = model
+        .datasets
+        .iter()
+        .map(|d| d.name.clone())
+        .filter(|name| brightfield_shell::model_inspector::materialised(model, name))
+        .collect();
+    tables.sort();
+    tables
+}
+
+/// The table the grid's last open said it could not draw, read from the file it wrote for it.
+fn refused_table(win: &Window) -> Option<String> {
+    win.app
+        .notifications()
+        .iter()
+        .find(|n| n.title == "Could not open these rows in the grid")
+        .and_then(|n| n.body.as_deref())
+        .and_then(|body| body.split(".grid/").nth(1))
+        .and_then(|rest| rest.split(".parquet").next())
+        .map(str::to_string)
+}
+
+/// Each table of the model that has rows of its own has one row beside the model pane that
+/// answers a click, and the click opens that table's rows in the grid with its row selected on
+/// the rail. The rows are clicked in turn, with the model's row taken back to the model between
+/// them. A table whose rows the grid cannot draw says so, naming the file it wrote for that table,
+/// which is the click asking for the right table.
+fn every_table_opens_from_one_row(mut win: Window) {
+    let tables = model_tables(&win);
+    assert!(!tables.is_empty());
+    let drawn: Vec<(String, String, bool)> = win
+        .app
+        .spine_rows()
+        .iter()
+        .map(|r| (r.label.clone(), r.kind.clone(), r.control))
+        .collect();
+    let controls: Vec<String> = win
+        .app
+        .spine_rows()
+        .iter()
+        .filter(|r| r.control)
+        .map(|r| r.label.clone())
+        .collect();
+    assert_eq!(
+        controls.len(),
+        tables.len(),
+        "control rows {controls:?} for tables {tables:?}; drawn {drawn:?}"
+    );
+    let mut opened = Vec::new();
+    for label in controls {
+        let row = win.drawn_row(&label);
+        win.click(row.rect.center());
+        let Some(table) = win.app.model_grid_table().map(str::to_string) else {
+            let refused =
+                refused_table(&win).unwrap_or_else(|| panic!("a click on {label} opened no table"));
+            opened.push(refused);
+            continue;
+        };
+        assert!(
+            win.drawn_row(&label).washed,
+            "{label} is not selected while {table} is in the grid"
+        );
+        opened.push(table);
+        let model = win.drawn_row(MODEL_STEP);
+        win.click(model.rect.center());
+        assert!(!win.app.is_model_behind_grid(), "{label}'s grid held");
+    }
+    opened.sort();
+    assert_eq!(opened, tables, "the rows opened these tables");
+}
+
+#[test]
+fn every_table_of_the_retail_model_opens_from_its_row() {
+    every_table_opens_from_one_row(Window::over_fixture());
+}
+
+#[test]
+fn every_table_of_a_protocol_with_no_saved_model_opens_from_its_row() {
+    every_table_opens_from_one_row(Window::over_own_files());
 }

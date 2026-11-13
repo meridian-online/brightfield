@@ -3147,7 +3147,7 @@ struct ModelDoc {
     /// are for the header, so the table's name is not read back out of them.
     grid_table: Option<String>,
     /// The Protocol's spine as the pane's model makes it, built on a frame and kept until the
-    /// model or the run moves on.
+    /// model, the run or the manifest's modification time moves on.
     spine: Option<ModelSpine>,
 }
 
@@ -3156,6 +3156,8 @@ struct ModelSpine {
     spine: crate::protocol::Spine,
     /// The words the spine's rail captions it with, read by the rail beside the pane.
     caption: String,
+    /// Which row stands for each of the model's tables, the rows a click opens a table from.
+    tables: crate::protocol::SpineTables,
     /// The pane's model generation, the id of the last run the pane started when it has, and the
     /// manifest's modification time. A save from a table's grid writes a step into the manifest
     /// without moving either of the first two.
@@ -3163,11 +3165,16 @@ struct ModelSpine {
 }
 
 impl ModelDoc {
-    /// The spine of the Protocol the pane opened, built again whenever the model's generation or
-    /// the last run's id differs from the one it was built for. The manifest is read afresh for
-    /// each build, and one that cannot be read leaves the spine empty rather than the pane
-    /// unusable. The model's own joins stand in for the ones the manifest's models declare, so
-    /// the spine's order follows the pane.
+    /// The spine of the Protocol the pane opened, built again whenever the model's generation,
+    /// the last run's id or the manifest's modification time differs from the one it was built
+    /// for. The manifest is read afresh for each build, and one that cannot be read leaves the
+    /// spine empty rather than the pane unusable. The model's own joins stand in for the ones the
+    /// manifest's models declare, so the spine's order follows the pane.
+    ///
+    /// The spine lists every step of its own, with no family folded to one row. The silver and
+    /// failed-value steps of tables with one-word names, such as `silver_stores` and
+    /// `failed_stores`, have the shape of a parameterised family, and folded they would leave
+    /// those tables with no row a click could open them from.
     fn spine(&mut self) -> &ModelSpine {
         let manifest = self.doc.protocol.dir.join(arc::spec::MANIFEST_FILENAME);
         let key = (
@@ -3177,6 +3184,7 @@ impl ModelDoc {
         );
         if self.spine.as_ref().is_none_or(|s| s.key != key) {
             let mut inputs = agent_protocol_inputs(&self.doc.protocol.dir);
+            inputs.graph_collapsed = inputs.graph_full.clone();
             inputs.model_joins = Some(crate::protocol::ModelJoins::of(&self.doc.model));
             let model = ProtocolModel::new(inputs, Flow::Vertical);
             let mut spine = model.spine_with_joins();
@@ -3185,7 +3193,16 @@ impl ModelDoc {
             if !spine.rows.iter().any(|r| r.role == SpineRole::Model) {
                 spine.rows.push(crate::protocol::model_step_row(0));
             }
+            let tables: Vec<String> = self
+                .doc
+                .model
+                .datasets
+                .iter()
+                .map(|d| d.name.clone())
+                .filter(|name| crate::model_inspector::materialised(&self.doc.model, name))
+                .collect();
             self.spine = Some(ModelSpine {
+                tables: crate::protocol::SpineTables::of(&spine, &tables),
                 spine,
                 caption: model.spine_caption(),
                 key,
@@ -6341,19 +6358,12 @@ impl MeridianApp {
         self.protocol.doc.spine_override = if self.model_behind_grid() {
             self.model.as_mut().and_then(|model| {
                 let selected_table = model.grid_table.clone()?;
-                let tables = model
-                    .doc
-                    .model
-                    .datasets
-                    .iter()
-                    .map(|d| d.name.clone())
-                    .collect();
                 let held = model.spine();
                 Some(crate::protocol::SpineOverride {
                     spine: held.spine.clone(),
                     caption: held.caption.clone(),
                     selected_table,
-                    tables,
+                    tables: held.tables.clone(),
                 })
             })
         } else {
@@ -6486,16 +6496,13 @@ impl MeridianApp {
                     .min_size(rail_min(navigator))
                     .resizable(true)
             };
-            let tables: Vec<String> = model
-                .doc
-                .model
-                .datasets
-                .iter()
-                .map(|d| d.name.clone())
-                .collect();
-            let (mut spine, caption) = {
+            let (mut spine, caption, tables) = {
                 let held = model.spine();
-                (held.spine.clone(), held.caption.clone())
+                (
+                    held.spine.clone(),
+                    held.caption.clone(),
+                    held.tables.clone(),
+                )
             };
             for row in &mut spine.rows {
                 row.selected = row.role == SpineRole::Model;
@@ -6539,9 +6546,7 @@ impl MeridianApp {
                                 holds_graph: false,
                                 chip_live: false,
                                 shows: &|row| row.role == SpineRole::Model,
-                                senses_click: &|row| {
-                                    row.role == SpineRole::Asset && tables.contains(&row.label)
-                                },
+                                senses_click: &|row| tables.table(row).is_some(),
                             };
                             let listed = crate::protocol::spine_list_ui(ui, &spine, &style, mode);
                             protocol_doc.spine_drawn = listed.rows;
@@ -6549,7 +6554,8 @@ impl MeridianApp {
                             rail_clicked = listed
                                 .clicked
                                 .and_then(|i| spine.rows.get(i))
-                                .map(|row| row.label.clone());
+                                .and_then(|row| tables.table(row))
+                                .map(str::to_string);
                         });
                 });
             let mut rail_collapse_toggled = None;
