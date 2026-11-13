@@ -1278,6 +1278,9 @@ pub const REMOVE_STEP: &str = "remove-step";
 /// The `open-sources-browser` verb's longname: the registry's, spelled once here.
 pub const OPEN_SOURCES_BROWSER: &str = "open-sources-browser";
 
+/// The `organise-joins` verb's longname: the registry's, spelled once here.
+pub const ORGANISE_JOINS: &str = "organise-joins";
+
 /// The keystrokes the registry binds `remove-step` to in the Protocol context,
 /// which [`ProtocolModel::feed_events`] reads as a chord of two `d`s.
 const REMOVE_STEP_KEYS: &str = "d d";
@@ -1465,6 +1468,9 @@ pub struct ProtocolModel {
     /// Whether `open-sources-browser` was asked for this frame, drained by the
     /// window, which holds the sources browser and the Protocol it adds to.
     browser_ask: bool,
+    /// Whether `organise-joins` was asked for this frame, drained by the
+    /// window, which holds the Protocol's model and opens the organise sheet.
+    organise_ask: bool,
     /// The last yanked address, shown as a transient confirmation.
     yank_flash: Option<AssetId>,
     /// Drained by the shell to perform the actual clipboard copy.
@@ -1611,6 +1617,7 @@ impl ProtocolModel {
             removing: BTreeSet::new(),
             remove_ask: None,
             browser_ask: false,
+            organise_ask: false,
             yank_flash: None,
             yank_request: None,
             layout,
@@ -2636,6 +2643,12 @@ impl ProtocolModel {
         std::mem::take(&mut self.browser_ask)
     }
 
+    /// Take whether `organise-joins` was asked for since the last call: `o`,
+    /// from the spine or the graph, or the palette.
+    pub fn take_organise_ask(&mut self) -> bool {
+        std::mem::take(&mut self.organise_ask)
+    }
+
     /// `d d`: ask the window to remove the selected asset's step, or to put
     /// back one already removed. Nothing is asked on a step that cannot be
     /// removed.
@@ -3129,6 +3142,10 @@ impl ProtocolModel {
             REMOVE_STEP => self.ask_remove(),
             OPEN_SOURCES_BROWSER => {
                 self.browser_ask = true;
+                true
+            }
+            ORGANISE_JOINS => {
+                self.organise_ask = true;
                 true
             }
             other => match put_column_channel(other) {
@@ -6189,6 +6206,15 @@ mod tests {
         assert_eq!(t.get("shift-s").copied(), Some("open-steps-sheet"));
         assert_eq!(t.get("y").copied(), Some("yank-address"));
         assert_eq!(t.get("shift-a").copied(), Some(OPEN_SOURCES_BROWSER));
+        assert_eq!(t.get("o").copied(), Some(ORGANISE_JOINS));
+    }
+
+    #[test]
+    fn organise_joins_raises_the_ask_once() {
+        let mut m = model();
+        assert!(m.dispatch(ORGANISE_JOINS, None));
+        assert!(m.take_organise_ask());
+        assert!(!m.take_organise_ask());
     }
 
     fn key(k: egui::Key) -> egui::Event {

@@ -262,6 +262,7 @@ The browser is opened from a Protocol by a key of the Protocol context, which th
 | longname | key(s) | freq / mnem / conv | motor note |
 |----------|--------|--------------------|------------|
 | `open-sources-browser` | `shift-a` | 3 / 5 / 3 | `A` = add sources (vim `A` appends); the browser's own bare `a` adds what is highlighted, so the shift opens the sheet the `a` then works in; the Protocol context keeps it apart from the model's `add-join` on the same key |
+| `organise-joins` | `o` | 2 / 5 / 3 | `o` = organise the joins with dovetail; the grid's `o` sorts rows in the Grid context, so the Protocol context keeps them apart |
 
 Reserved verbs are deliberately unscored (no key yet), shown greyed in the palette until their keys land:
 needs-keyboard-target (`filter-view`, `cross-filter-all`, `toggle-point-select`, `set-param`) and
