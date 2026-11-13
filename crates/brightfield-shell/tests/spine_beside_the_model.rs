@@ -322,6 +322,95 @@ fn a_click_on_a_tables_row_opens_its_grid_and_keeps_the_spine() {
     win.click(row.rect.center());
     assert!(win.app.chart_doc().grid_drawn().is_some(), "no grid opened");
     assert!(win.app.model_pane().is_some(), "the model pane was let go");
+    assert!(win.app.is_model_behind_grid(), "the model is not waiting");
+    assert_eq!(win.app.model_grid_table(), Some("customers"));
+}
+
+/// The labels of the spine's rows as drawn, the head row first, without the column outline the
+/// grid's table adds below them.
+fn spine_labels(win: &Window, count: usize) -> Vec<String> {
+    win.app
+        .spine_rows()
+        .iter()
+        .take(count)
+        .map(|r| r.label.clone())
+        .collect()
+}
+
+#[test]
+fn the_spine_stays_the_protocols_while_a_table_is_in_the_grid() {
+    let mut win = Window::over_fixture();
+    let before = win.app.spine_rows().to_vec();
+    let row = win.drawn_row("customers");
+    win.click(row.rect.center());
+    assert!(win.app.is_model_behind_grid());
+    let after = spine_labels(&win, before.len());
+    let was: Vec<String> = before.iter().map(|r| r.label.clone()).collect();
+    assert_eq!(after, was, "the rows changed when the grid opened");
+    assert!(
+        win.drawn_row("customers").washed,
+        "the table's row is not selected"
+    );
+    assert!(
+        !win.drawn_row(MODEL_STEP).washed,
+        "the model's row is still selected"
+    );
+}
+
+#[test]
+fn the_model_row_goes_back_to_the_model() {
+    let mut win = Window::over_fixture();
+    let row = win.drawn_row("customers");
+    win.click(row.rect.center());
+    assert!(win.app.is_model_behind_grid());
+    let model = win.drawn_row(MODEL_STEP);
+    win.click(model.rect.center());
+    assert!(!win.app.is_model_behind_grid());
+    assert!(win.app.model_pane().is_some());
+    assert!(
+        win.drawn_row(MODEL_STEP).washed,
+        "the model's row is not selected again"
+    );
+}
+
+#[test]
+fn another_tables_row_opens_that_table_instead() {
+    let mut win = Window::over_fixture();
+    let row = win.drawn_row("customers");
+    win.click(row.rect.center());
+    assert_eq!(win.app.model_grid_table(), Some("customers"));
+    let other = win.drawn_row("loyalty_visits");
+    win.click(other.rect.center());
+    assert!(win.app.is_model_behind_grid());
+    assert_eq!(win.app.model_grid_table(), Some("loyalty_visits"));
+    assert!(win.app.chart_doc().grid_drawn().is_some());
+    assert!(win.drawn_row("loyalty_visits").washed);
+    assert!(!win.drawn_row("customers").washed);
+}
+
+#[test]
+fn unsaved_grid_edits_hold_the_spine_click() {
+    let mut win = Window::over_fixture();
+    let row = win.drawn_row("customers");
+    win.click(row.rect.center());
+    win.app
+        .chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("1 = 1".to_string()),
+            order: None,
+        });
+    win.frame(Vec::new());
+    assert!(win.app.chart_doc().has_unsaved_work(), "the grid is clean");
+    let model = win.drawn_row(MODEL_STEP);
+    win.click(model.rect.center());
+    assert!(win.app.is_model_behind_grid(), "the grid let go");
+    assert!(
+        win.app
+            .notifications()
+            .iter()
+            .any(|n| n.title == "These rows have unsaved edits"),
+        "no notice of the unsaved edits"
+    );
 }
 
 #[test]

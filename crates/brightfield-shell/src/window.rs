@@ -6336,6 +6336,29 @@ impl MeridianApp {
         // The table whose row on the navigator rail was clicked beside the model pane.
         let mut model_table_clicked: Option<String> = None;
         self.empty_canvas_said = None;
+        // While a table's rows are in the grid with the model waiting behind, the navigator rail
+        // still lists the Protocol's spine, held by the model pane, with that table's row marked.
+        self.protocol.doc.spine_override = if self.model_behind_grid() {
+            self.model.as_mut().and_then(|model| {
+                let selected_table = model.grid_table.clone()?;
+                let tables = model
+                    .doc
+                    .model
+                    .datasets
+                    .iter()
+                    .map(|d| d.name.clone())
+                    .collect();
+                let held = model.spine();
+                Some(crate::protocol::SpineOverride {
+                    spine: held.spine.clone(),
+                    caption: held.caption.clone(),
+                    selected_table,
+                    tables,
+                })
+            })
+        } else {
+            None
+        };
         if door {
             // ---- the navigator rail, on the door.
             //
@@ -6436,9 +6459,10 @@ impl MeridianApp {
             });
             self.regions.push((canvas.id, drawn.response.rect));
         } else if let Some(model) = self.model.as_mut().filter(|m| m.shown()) {
-            // The model pane, across the canvas region, in place of the dock: both documents are
-            // empty beside it, so every rail would draw its empty state. No stale door geometry,
-            // for the reason the dock's branch clears it.
+            // The model pane takes the canvas region, with the navigator rail beside it listing
+            // the Protocol's spine; the ledger and inspector rails are not drawn, since both
+            // documents are empty and they would show only their empty states. No stale door
+            // geometry, for the reason the dock's branch clears it.
             self.door_cards.clear();
             self.door_card_feet.clear();
             self.door_sections.clear();
@@ -6551,8 +6575,8 @@ impl MeridianApp {
             model_actions = model.doc.take_actions();
             model_table_clicked = rail_clicked;
         } else if let Some(name) = self.empty_protocol.as_ref().map(|p| display_name(&p.dir)) {
-            // A Protocol with no sources, across the canvas region in place of the dock, as the
-            // model pane is: both documents are empty, so every rail would draw its empty state.
+            // A Protocol with no sources, across the canvas region in place of the dock, with no
+            // rail beside it: both documents are empty, so every rail would draw its empty state.
             // The canvas says how to add a source and offers the file picker for one.
             self.door_cards.clear();
             self.door_card_feet.clear();
@@ -7550,6 +7574,19 @@ impl MeridianApp {
         }
         if let Some(table) = model_table_clicked {
             self.select_source(&ctx, &table);
+        }
+        // A click on the Protocol's spine while a table is in the grid: back to the model, and on
+        // to another table's rows when that is what was clicked. Unsaved edits in the grid hold
+        // the way back, and then the click does nothing else.
+        match self.protocol.doc.take_spine_ask() {
+            Some(crate::protocol::SpineAsk::Model) => {
+                self.back_to_model();
+            }
+            Some(crate::protocol::SpineAsk::Table(table)) if self.back_to_model() => {
+                self.select_source(&ctx, &table);
+            }
+            Some(crate::protocol::SpineAsk::Table(_)) => {}
+            None => {}
         }
         self.status_rail_ui(&ctx, graph_on_canvas, &mut requests);
         self.controls = self.name_controls(std::mem::take(&mut bar.controls));
@@ -13870,6 +13907,19 @@ impl MeridianApp {
     /// Whether the model pane is waiting behind the grid, which holds rows opened from it.
     fn model_behind_grid(&self) -> bool {
         self.model.as_ref().is_some_and(|m| m.in_grid.is_some())
+    }
+
+    /// Whether the model pane is waiting behind the grid. A test hook.
+    #[must_use]
+    pub fn is_model_behind_grid(&self) -> bool {
+        self.model_behind_grid()
+    }
+
+    /// The model's table whose rows the grid holds over the waiting model pane, if one does. A
+    /// test hook.
+    #[must_use]
+    pub fn model_grid_table(&self) -> Option<&str> {
+        self.model.as_ref()?.grid_table.as_deref()
     }
 
     /// Carry out one of the model inspector's actions: the pane takes the edits and the view

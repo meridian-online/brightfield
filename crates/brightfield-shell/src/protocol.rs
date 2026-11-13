@@ -3495,6 +3495,11 @@ pub struct ProtocolDoc {
     /// Whether a reader clicked the graph chip in the spine's head this frame.
     /// Taken by the window for the same reason [`ProtocolDoc::canvas_pick`] is.
     graph_pick: bool,
+    /// The Protocol's spine, to draw in place of this document's own while another document
+    /// holds the canvas. Set by the window each frame.
+    pub spine_override: Option<SpineOverride>,
+    /// What a reader asked of the overridden spine this frame. Taken by the window.
+    spine_ask: Option<SpineAsk>,
     /// **What the canvas returns to** when the graph gives it back — a view of
     /// a node, whose chip draws filled in the node's foot on the graph, or the
     /// dashboard, which has no chip to fill.
@@ -3674,7 +3679,35 @@ impl CanvasKey {
     }
 }
 
+/// A spine the window hands the Protocol document to draw in the navigator rail in place of the
+/// document's own: the Protocol's spine, while the grid holds one of its tables.
+#[derive(Clone, Debug)]
+pub struct SpineOverride {
+    pub spine: Spine,
+    pub caption: String,
+    /// The table whose rows the canvas holds: its row is the selected one and carries the
+    /// on-canvas bar.
+    pub selected_table: String,
+    /// The model's tables, whose rows answer a click.
+    pub tables: Vec<String>,
+}
+
+/// What a click on an overridden spine asked for. The document cannot act on it: the window owns
+/// what the canvas holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpineAsk {
+    /// Back to the model.
+    Model,
+    /// The rows of this table.
+    Table(String),
+}
+
 impl ProtocolDoc {
+    /// Take what a reader asked of the overridden spine this frame, if anything.
+    pub fn take_spine_ask(&mut self) -> Option<SpineAsk> {
+        self.spine_ask.take()
+    }
+
     /// A document over `model`, rastering through `host`.
     #[must_use]
     pub fn new(model: ProtocolModel, host: EguiCanvasHost) -> Self {
@@ -3688,6 +3721,8 @@ impl ProtocolDoc {
             spine_body: None,
             canvas_pick: None,
             graph_pick: false,
+            spine_override: None,
+            spine_ask: None,
             returns_to: None,
             canvas_chips: Vec::new(),
             outline_chips: Vec::new(),
@@ -3707,6 +3742,8 @@ impl ProtocolDoc {
             spine_body: None,
             canvas_pick: None,
             graph_pick: false,
+            spine_override: None,
+            spine_ask: None,
             returns_to: None,
             canvas_chips: Vec::new(),
             outline_chips: Vec::new(),
@@ -3981,9 +4018,24 @@ impl Item<ProtocolDoc> for OutlinePane {
     }
 
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        let spine = doc.model.spine_with_joins();
+        let overridden = doc.spine_override.clone();
+        let spine = match &overridden {
+            // The selected table's row is the one marked, and the model's step is a row to go
+            // back by, so it is never the selected one here.
+            Some(o) => {
+                let mut spine = o.spine.clone();
+                for row in &mut spine.rows {
+                    row.selected = row.role == SpineRole::Asset && row.label == o.selected_table;
+                }
+                spine
+            }
+            None => doc.model.spine_with_joins(),
+        };
         let columns = doc.model.column_rows();
-        let spine_caption = doc.model.spine_caption();
+        let spine_caption = match &overridden {
+            Some(o) => o.caption.clone(),
+            None => doc.model.spine_caption(),
+        };
         let outline_caption = doc.model.outline_caption();
         let holds = doc.canvas_holds.clone();
         // A column's row offers the column verbs only while the dashboard holds
@@ -4015,8 +4067,12 @@ impl Item<ProtocolDoc> for OutlinePane {
         // views — every Protocol read from a manifest — has nothing for the
         // canvas to hold but the graph, so the chip there is a readout of that
         // and not a way anywhere. See `spine_head_row`.
-        let chip_live = doc.model.table().is_some();
-        let holds_graph = matches!(holds, crate::window::CanvasHolds::Graph);
+        // An overridden spine is the Protocol's, whose graph the canvas is not holding, so the
+        // chip there is a readout.
+        let chip_live = overridden.is_none() && doc.model.table().is_some();
+        let holds_graph =
+            overridden.is_none() && matches!(holds, crate::window::CanvasHolds::Graph);
+        let mut ask: Option<SpineAsk> = None;
         doc.spine_body = Some(ui.max_rect());
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -4029,14 +4085,31 @@ impl Item<ProtocolDoc> for OutlinePane {
                     caption: &spine_caption,
                     holds_graph,
                     chip_live,
-                    shows: &|row| holds.shows(row),
-                    senses_click: &default_senses_click,
+                    shows: &|row| match &overridden {
+                        Some(o) => row.role == SpineRole::Asset && row.label == o.selected_table,
+                        None => holds.shows(row),
+                    },
+                    senses_click: &|row| match &overridden {
+                        Some(o) => {
+                            row.role == SpineRole::Model
+                                || (row.role == SpineRole::Asset && o.tables.contains(&row.label))
+                        }
+                        None => default_senses_click(row),
+                    },
                 };
                 let listed = spine_list_ui(ui, &spine, &style, cx.mode);
                 graph_picked = listed.graph_picked;
                 drawn = listed.rows;
                 curves = listed.curves;
-                if let Some(row) = listed.clicked.and_then(|i| spine.rows.get(i)) {
+                if overridden.is_some() {
+                    if let Some(row) = listed.clicked.and_then(|i| spine.rows.get(i)) {
+                        ask = match row.role {
+                            SpineRole::Model => Some(SpineAsk::Model),
+                            SpineRole::Asset => Some(SpineAsk::Table(row.label.clone())),
+                            _ => None,
+                        };
+                    }
+                } else if let Some(row) = listed.clicked.and_then(|i| spine.rows.get(i)) {
                     match (row.role, row.id.as_ref(), row.view) {
                         // A view row addresses no node the nav can focus — it
                         // names one way of looking at the node above it, and
@@ -4091,6 +4164,10 @@ impl Item<ProtocolDoc> for OutlinePane {
         }
         doc.spine_drawn = drawn;
         doc.spine_curves = curves;
+        if ask.is_some() {
+            doc.spine_ask = ask;
+            cx.request_repaint();
+        }
         if let Some(id) = clicked {
             doc.model.select_id(id);
         }
