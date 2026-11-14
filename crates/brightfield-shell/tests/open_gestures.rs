@@ -554,7 +554,12 @@ fn an_archive_among_several_files_opens_on_its_own() {
     frame(&mut app, &ctx, egui::RawInput::default());
     app.open_queue()
         .push(OpenRequest::Paths(vec![csv, archive]));
-    frame(&mut app, &ctx, egui::RawInput::default());
+    // The archive unpacks on a worker; the window opens it on the frame after it lands.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while app.restricted().is_none() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        frame(&mut app, &ctx, egui::RawInput::default());
+    }
 
     let restricted = app
         .restricted()

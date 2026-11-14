@@ -900,7 +900,9 @@ fn an_archived_protocol_opens_restricted_and_draws_its_shipped_results() {
     let ctx = egui::Context::default();
     frame(&mut app, &ctx);
     app.open_queue().push(OpenRequest::Path(zip));
-    frame(&mut app, &ctx);
+    until(&mut app, &ctx, "the archive opens restricted", |a| {
+        a.restricted().is_some()
+    });
     frame(&mut app, &ctx);
 
     let restricted = app
@@ -1211,7 +1213,9 @@ fn an_archive_reopened_from_recents_or_the_door_stays_restricted() {
     let ctx = egui::Context::default();
     frame(&mut app, &ctx);
     app.open_queue().push(OpenRequest::Path(zip));
-    frame(&mut app, &ctx);
+    until(&mut app, &ctx, "the archive opens restricted", |a| {
+        a.restricted().is_some()
+    });
     let unpacked = app
         .restricted()
         .map(|r| r.dir.clone())
@@ -1265,12 +1269,11 @@ fn an_archive_carrying_a_made_by_brightfield_marker_or_the_one_step_layout_stays
         let ctx = egui::Context::default();
         frame(&mut app, &ctx);
         app.open_queue().push(OpenRequest::Path(zip.clone()));
-        frame(&mut app, &ctx);
-        assert!(
-            app.restricted().is_some(),
-            "{} opens restricted: {}",
-            zip.display(),
-            said(&app)
+        until(
+            &mut app,
+            &ctx,
+            &format!("{} opens restricted", zip.display()),
+            |a| a.restricted().is_some(),
         );
     }
 }
@@ -1504,6 +1507,87 @@ fn restricted_drawing_reads_only_shipped_results() {
         &[dir.join("build")],
     );
     assert!(confined.is_err(), "a remote read is refused too");
+}
+
+/// A Protocol archive chosen on this Mac unpacks on a worker, as a link's archive does: frames
+/// keep being drawn while it unpacks, with a banner naming it, and it opens restricted once the
+/// worker answers. Another archive while it unpacks is refused saying which is unpacking, and an
+/// archive the check refuses says why, titled for an archive.
+#[test]
+fn a_local_archive_unpacks_off_the_frame_and_opens_restricted() {
+    let dir = input("off_frame");
+    shipped_protocol(&dir.join("src"), "off_frame");
+    let zip = dir.join("off_frame.zip");
+    zip_folder(&dir.join("src"), &zip, "off_frame");
+    let waiting = dir.join("waiting.zip");
+    std::fs::copy(&zip, &waiting).unwrap();
+
+    let gate = Arc::new(std::sync::Mutex::new(()));
+    let held = gate.lock().unwrap();
+    let mut app = app().unpacking_archives_after(Arc::clone(&gate));
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx);
+    app.open_queue().push(OpenRequest::Path(zip));
+    // The unpack is held, and the window goes on drawing frames meanwhile.
+    for _ in 0..5 {
+        frame(&mut app, &ctx);
+    }
+    assert!(app.is_unpacking_archive(), "{}", said(&app));
+    assert!(app.restricted().is_none(), "nothing opens before it lands");
+    assert!(
+        said(&app).contains("Unpacking off_frame.zip"),
+        "a banner names what is unpacking: {}",
+        said(&app)
+    );
+
+    app.open_queue().push(OpenRequest::Path(waiting));
+    frame(&mut app, &ctx);
+    assert!(
+        said(&app).contains(brightfield_shell::window::ARCHIVE_NOTICE_TITLE)
+            && said(&app).contains("still unpacking off_frame.zip"),
+        "a second archive waits for the first: {}",
+        said(&app)
+    );
+
+    drop(held);
+    until(&mut app, &ctx, "the archive opens once it lands", |a| {
+        a.restricted().is_some()
+    });
+    let restricted = app.restricted().cloned().unwrap();
+    assert_eq!(restricted.dir, protocols().join("off_frame"));
+    assert_eq!(restricted.origin, "the archive off_frame.zip");
+    assert!(!app.is_unpacking_archive());
+    assert!(
+        !said(&app).contains("Unpacking"),
+        "the banner is down: {}",
+        said(&app)
+    );
+
+    // An archive the check refuses says why once the worker answers, and opens nothing.
+    let refused = dir.join("climbs.zip");
+    zip_of(
+        &refused,
+        &[
+            ("climbs/arcform.yaml", &manifest("climbs")),
+            ("climbs/../../escaped.txt", b"out"),
+        ],
+    );
+    app.open_queue().push(OpenRequest::Path(refused));
+    until(&mut app, &ctx, "the refused archive answers", |a| {
+        !a.is_unpacking_archive()
+            && a.notifications().iter().any(|n| {
+                n.title == brightfield_shell::window::ARCHIVE_NOTICE_TITLE
+                    && n.body
+                        .as_deref()
+                        .is_some_and(|b| b.contains("Nothing was unpacked"))
+            })
+    });
+    assert!(!protocols().join("climbs").exists(), "nothing is written");
+    assert_eq!(
+        app.restricted().map(|r| r.dir.clone()),
+        Some(protocols().join("off_frame")),
+        "the open Protocol stays"
+    );
 }
 
 #[test]
