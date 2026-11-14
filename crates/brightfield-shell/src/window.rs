@@ -12521,8 +12521,8 @@ impl MeridianApp {
         // does, and nothing is left until it lands: the Protocol it brings then opens as any open
         // does, asking first over the draft the window holds by then, so an edit made while it
         // unpacks is asked about too.
-        // While a quit waits for runs, the open is refused as `leave` refuses any, before anything
-        // is unpacked.
+        // While a quit waits for runs, an archive goes to `leave`, which refuses the open, so the
+        // archive is not unpacked.
         if !self.close_after_runs {
             if let Some((archive, others)) = archive_handed_over(&request) {
                 self.begin_archive(ctx, &archive, others);
