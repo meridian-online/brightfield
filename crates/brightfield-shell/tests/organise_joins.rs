@@ -288,6 +288,46 @@ fn a_refused_drop_leaves_the_other_changes() {
 }
 
 #[test]
+fn several_changes_land_together_with_one_save() {
+    let mut win = Window::over_retail();
+    let before = win.app.model_pane().unwrap().generation();
+    win.o();
+    win.cursor_to(PROPOSAL);
+    win.key(egui::Key::Space);
+    // Back to the first row, a likely join, and untick it.
+    for _ in 0..8 {
+        win.key(egui::Key::K);
+    }
+    win.key(egui::Key::Space);
+    win.key(egui::Key::Enter);
+    let model = win.model();
+    assert_eq!(
+        relationship(model, PROPOSAL).map(|r| r.meta.decided_by),
+        Some(DecidedBy::Analyst),
+        "the proposal was not kept"
+    );
+    assert!(
+        relationship(model, LIKELY).is_none(),
+        "{LIKELY} was not dropped"
+    );
+    let batch = win.app.model_pane().unwrap().generation() - before;
+
+    // One change on its own, through the model pane's own Drop, writes the model as often as
+    // the two changes together did: one save, not one per change.
+    let one = win.app.model_pane().unwrap().generation();
+    let next = win.model().relationships[0].name.clone();
+    win.app.perform_model_action(
+        &win.ctx.clone(),
+        brightfield_shell::model_inspector::ModelAction::Drop(next),
+    );
+    let single = win.app.model_pane().unwrap().generation() - one;
+    assert_eq!(
+        batch, single,
+        "two changes wrote the model {batch} times, one {single}"
+    );
+}
+
+#[test]
 fn o_over_one_table_opens_nothing_and_says_why() {
     let mut win = Window::over_one_table();
     let toasts = win.app.toasts().len();
