@@ -1384,6 +1384,7 @@ fn key_token(key: egui::Key, mods: egui::Modifiers) -> Option<&'static str> {
         Key::Escape => "escape",
         Key::S if mods.shift => "shift-s",
         Key::A if mods.shift_only() => "shift-a",
+        Key::O if mods.is_none() => "o",
         _ => return None,
     })
 }
@@ -2721,15 +2722,23 @@ impl ProtocolModel {
     /// ([`Self::feed_events`]).
     ///
     /// Returns whether the key was taken: a `z`, or the channel's letter after
-    /// one, a `d` while the selected asset's step can be removed, or `A`, which
-    /// opens the sources browser. Any other key after a `z` or a `d` lets the
-    /// chord go and is not taken.
+    /// one, a `d` while the selected asset's step can be removed, `A`, which
+    /// opens the sources browser, or `o`, which organises the joins. Any other
+    /// key after a `z` or a `d` lets the chord go and is not taken.
     pub fn feed_column_chord(&mut self, key: egui::Key, mods: egui::Modifiers) -> bool {
         // `A` opens the sources browser from the spine as it does from the
         // graph: it is a key of the Protocol, not of the graph.
         if !self.pending_z && key == egui::Key::A && mods.shift_only() {
             self.pending_d = false;
             if let Some(verb) = self.key_table.get("shift-a").copied() {
+                return self.dispatch(verb, None);
+            }
+            return false;
+        }
+        // `o` organises the Protocol's joins from the spine as from the graph.
+        if !self.pending_z && key == egui::Key::O && mods.is_none() {
+            self.pending_d = false;
+            if let Some(verb) = self.key_table.get("o").copied() {
                 return self.dispatch(verb, None);
             }
             return false;
@@ -6207,6 +6216,19 @@ mod tests {
         assert_eq!(t.get("y").copied(), Some("yank-address"));
         assert_eq!(t.get("shift-a").copied(), Some(OPEN_SOURCES_BROWSER));
         assert_eq!(t.get("o").copied(), Some(ORGANISE_JOINS));
+    }
+
+    #[test]
+    fn o_from_the_graph_or_the_spine_asks_to_organise_the_joins() {
+        let mut m = model();
+        assert!(m.feed_events(&[key(egui::Key::O)], None));
+        assert!(m.take_organise_ask());
+        assert!(m.feed_column_chord(egui::Key::O, egui::Modifiers::NONE));
+        assert!(m.take_organise_ask());
+        // A modifier held leaves it to the window, as Cmd+O opens a file.
+        assert!(!m.feed_column_chord(egui::Key::O, egui::Modifiers::COMMAND));
+        assert!(!m.feed_events(&[key_shift(egui::Key::O)], None));
+        assert!(!m.take_organise_ask());
     }
 
     #[test]
