@@ -1107,6 +1107,20 @@ fn every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen()
                     "{verb} opened no sources browser"
                 );
             }
+            "organise-joins" => {
+                // The Protocol palette is drawn over the graph, which holds the canvas only for a
+                // Protocol of one source: over several, the model pane holds it and its palette
+                // lists the model's verbs. So here choosing it says, in a toast, that organising
+                // joins needs two sources; tests/organise_joins.rs opens the sheet over several.
+                let mut at = Window::own_protocol();
+                at.graph_to_canvas();
+                let toasts = at.app.toasts().len();
+                assert_eq!(at.confirm_leaving(verb), None, "{verb} opened a sheet");
+                assert!(
+                    at.app.toasts().len() > toasts,
+                    "{verb} said nothing over one source"
+                );
+            }
             "open-preferences" => {
                 let mut at = Window::crosswalk();
                 assert_eq!(

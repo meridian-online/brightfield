@@ -862,6 +862,20 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Open the sources browser to add files, folders and databases to the Protocol",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 3, motor_note: "A = add sources (vim A appends); the browser's bare a adds what is highlighted, so the shift opens the sheet the a works in" }),
         },
+        // Organise the Protocol's joins: a sheet over the model's joins, where the analyst
+        // ticks the ones to keep and unticks the ones to drop. Opening it writes nothing,
+        // so View; the Keep and Drop it applies are the model's own edits.
+        VerbEntry {
+            longname: "organise-joins",
+            tier: CommandTier::View,
+            binding_specs: vec![proto("o")],
+            scope_applicability: vec![Protocol],
+            drives: D::PaletteMeta,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Organise the Protocol's joins: tick the ones to keep and untick the ones to drop",
+            scores: Some(Scores { frequency: 2, mnemonic: 5, convention: 3, motor_note: "o = organise; the grid's o sorts in its own context, so the Protocol's o never meets it" }),
+        },
         // ---- the Outline's column rows: put the column under the cursor on a
         //      channel. `z` opens a chord beside `z a`, and the rows answer in the
         //      Protocol context. Each acts on a column's row and does nothing on a
@@ -1956,6 +1970,7 @@ mod tests {
             "yank-address",
             "remove-step",
             "open-sources-browser",
+            "organise-joins",
             "put-column-on-x",
             "put-column-on-y",
             "put-column-on-colour",
@@ -2143,6 +2158,7 @@ mod tests {
                 || v.longname == "toggle-fold"
                 || v.longname == "open-steps-sheet"
                 || v.longname == "yank-address"
+                || v.longname == "organise-joins"
         }) {
             assert_eq!(
                 v.scope_applicability,

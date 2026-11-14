@@ -136,6 +136,8 @@ pub mod one_step;
 pub mod open_queue;
 pub mod operation;
 pub mod operation_panel;
+pub mod organise_joins;
+pub mod organise_joins_view;
 pub mod overlays;
 pub mod own_files;
 pub mod panel_tiles;

@@ -2270,6 +2270,9 @@ enum Overlay {
     WhichProtocol(WhichProtocolSheet),
     /// The sources browser, adding files, folders and databases to the open Protocol.
     SourcesBrowser(Box<BrowserOverlay>),
+    /// The organise sheet over the Protocol's joins, opened by `o`: tick the ones to keep,
+    /// untick the ones to drop.
+    OrganiseJoins(Box<crate::organise_joins::Organise>),
     /// The question the first launch from the app asks once: make Brightfield the default app
     /// for CSV, Parquet and DuckDB files, or not now ([`crate::default_app`]).
     DefaultApp,
@@ -8980,6 +8983,7 @@ impl MeridianApp {
         let mut trusted_folders: Vec<PathBuf> = Vec::new();
         let mut question_dismissed = false;
         let mut browser_effect = None;
+        let mut organise_apply = None;
         let mut default_app_answer = None;
         match &mut overlay {
             Overlay::Palette(picker) => {
@@ -9213,6 +9217,23 @@ impl MeridianApp {
                     ctx.request_repaint_after(std::time::Duration::from_millis(100));
                 }
             }
+            Overlay::OrganiseJoins(sheet) => {
+                // A modal card of the default width: its keys, Esc among them, are the sheet's,
+                // and a click on the backdrop closes it, changing nothing.
+                let chrome = ModalChrome::new()
+                    .title("Organise joins")
+                    .enter_hint("apply")
+                    .esc_hint("close");
+                let mode = self.mode;
+                let shown = ModalLayer::show(ctx, "bf-overlay-organise-joins", &chrome, |ui| {
+                    crate::organise_joins_view::show(ui, sheet, mode)
+                });
+                close =
+                    shown.dismissed || !matches!(shown.inner, crate::organise_joins::Effect::None);
+                if let crate::organise_joins::Effect::Apply(actions) = shown.inner {
+                    organise_apply = Some(actions);
+                }
+            }
             Overlay::Preferences(sheet) => {
                 let folder = crate::protocols_dir::root();
                 let overridden = protocols_dir_override();
@@ -9281,6 +9302,9 @@ impl MeridianApp {
         }
         if let Some((crate::sources_browser::Effect::Add(paths, joins), made_of)) = browser_effect {
             self.browser_adds(ctx, paths, joins, made_of);
+        }
+        if let Some(actions) = organise_apply {
+            self.apply_organised_joins(ctx, &actions);
         }
         if question_dismissed {
             self.dismiss_close_question(ctx);
@@ -10483,6 +10507,7 @@ impl MeridianApp {
             Overlay::Preferences(_) => "preferences",
             Overlay::WhichProtocol(_) => "which-protocol",
             Overlay::SourcesBrowser(_) => "sources-browser",
+            Overlay::OrganiseJoins(_) => "organise-joins",
             Overlay::DefaultApp => "default-app",
         })
     }
@@ -10997,6 +11022,10 @@ impl MeridianApp {
                 Request::Verb(verb) if verb.as_str() == crate::protocol::OPEN_SOURCES_BROWSER => {
                     self.open_sources_browser(ctx);
                 }
+                // organise-joins is the window's too: the sheet is over the model it holds.
+                Request::Verb(verb) if verb.as_str() == crate::protocol::ORGANISE_JOINS => {
+                    self.open_organise_joins(ctx);
+                }
                 // The picture verbs are the window's: what they draw is the
                 // chart document's, and where a file goes is the window's to
                 // say. Over the graph there is no chart, and they say so.
@@ -11143,6 +11172,14 @@ impl MeridianApp {
         // …and `A`, from the spine or the graph: the browser over the Protocol the window holds.
         if self.protocol.doc.model.take_browser_ask() {
             self.open_sources_browser(ctx);
+        }
+        // …and `o`: the organise sheet over the model's joins, unless a sheet or a text field
+        // already holds the keys.
+        if self.protocol.doc.model.take_organise_ask()
+            && self.overlay.is_none()
+            && !ctx.egui_wants_keyboard_input()
+        {
+            self.open_organise_joins(ctx);
         }
         self.protocol
             .doc
@@ -11816,7 +11853,10 @@ impl MeridianApp {
         self.browser_requested = false;
         // The sources browser adds to the Protocol it was opened over, which is going: an add
         // that gave an empty Protocol its first source, or an open of another, closes it.
-        if matches!(self.overlay, Some(Overlay::SourcesBrowser(_))) {
+        if matches!(
+            self.overlay,
+            Some(Overlay::SourcesBrowser(_) | Overlay::OrganiseJoins(_))
+        ) {
             self.overlay = None;
         }
         self.tiles = panel_tiles_of(boot.panels, boot.panels_problem);
@@ -12571,6 +12611,42 @@ impl MeridianApp {
     #[must_use]
     pub fn browser_requested(&self) -> bool {
         self.browser_requested
+    }
+
+    /// **Open the organise sheet over the model's joins**, as `o` and the palette do. Over a
+    /// Protocol of fewer than two tables, or with no model, a toast says organising joins needs
+    /// two sources, and nothing opens.
+    pub fn open_organise_joins(&mut self, ctx: &egui::Context) {
+        if self.front_door_is_live() {
+            return;
+        }
+        match self
+            .model_pane()
+            .and_then(|pane| crate::organise_joins::Organise::over(&pane.model))
+        {
+            Some(sheet) => self.overlay = Some(Overlay::OrganiseJoins(Box::new(sheet))),
+            None => self.toasts.push(Toast::new(
+                Severity::Info,
+                "Organising joins needs a Protocol of two sources or more",
+            )),
+        }
+        ctx.request_repaint();
+    }
+
+    /// The organise sheet's rows while it is open, each as it reads and whether it is ticked: a
+    /// test hook.
+    #[must_use]
+    pub fn organise_joins_rows(&self) -> Option<Vec<(String, bool)>> {
+        match &self.overlay {
+            Some(Overlay::OrganiseJoins(sheet)) => Some(
+                sheet
+                    .rows
+                    .iter()
+                    .map(|r| (r.label.clone(), r.kept))
+                    .collect(),
+            ),
+            _ => None,
+        }
     }
 
     /// The sources browser, while it is open: a test hook.
@@ -13943,6 +14019,25 @@ impl MeridianApp {
         };
         let dispatched = model.doc.dispatch(action);
         self.report_model_dispatch(ctx, dispatched);
+    }
+
+    /// Carry out the organise sheet's changes: the model pane's own Keep and Drop, applied in
+    /// order with one save and one run ([`crate::model_pane::ModelPane::apply_joins`]), each
+    /// reported as the pane reports it; one the model refuses leaves the others.
+    fn apply_organised_joins(
+        &mut self,
+        ctx: &egui::Context,
+        actions: &[crate::model_inspector::ModelAction],
+    ) {
+        if actions.is_empty() || self.refuse_if_the_folder_is_gone(ctx) {
+            return;
+        }
+        let Some(model) = self.model.as_mut() else {
+            return;
+        };
+        for answer in model.doc.apply_joins(actions) {
+            self.report_model_dispatch(ctx, answer);
+        }
     }
 
     /// Say what came of a model action in a toast, or open the rows it names in the grid. A picker
