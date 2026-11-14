@@ -471,7 +471,7 @@ jobs:
       # run 42670024449, on which shard default-1 was cancelled mid-target.
       # Run 42712499711, the first whose shards all ran their tests to the
       # end, replaced every figure: each target's figure is its time on that
-      # run, and a target that run measured under 10 seconds has none. Not the `finished in` of its `test result:` line: cargo
+      # run, and a target that run measured under 10 seconds has none. `organise_joins` came later: its figure is 304 seconds for seven tests on run 43540731161, raised to 350 for its eighth. Not the `finished in` of its `test result:` line: cargo
       # prints the headers and libtest the results on different streams, and
       # in those logs a result often lands after the next target's header. `@lib`, `@bins` and
       # `@doc` are the three groups cargo selects by flag and not by name, and
