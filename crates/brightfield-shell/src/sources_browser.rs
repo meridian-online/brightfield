@@ -857,7 +857,7 @@ fn browser_keys() -> &'static [BoundKey] {
 }
 
 /// The verb the Browser context binds to `keystrokes`, if it binds one.
-fn browser_verb(keystrokes: &str) -> Option<&'static str> {
+pub(crate) fn browser_verb(keystrokes: &str) -> Option<&'static str> {
     browser_keys()
         .iter()
         .find(|b| b.keystrokes == keystrokes)
