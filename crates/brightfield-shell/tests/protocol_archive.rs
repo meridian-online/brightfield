@@ -1402,6 +1402,64 @@ fn removing_a_trusted_folder_restricts_what_it_covered() {
     assert!(app.restricted().is_some(), "{}", said(&app));
 }
 
+/// **Revoking the open Protocol's own trust opens it again restricted**, and the next open stays
+/// restricted; a Protocol a folder above it trusts stays trusted, open and unrestricted.
+#[test]
+fn untrusting_the_open_protocol_restricts_it_and_leaves_folder_trust_alone() {
+    let made = brightfield_shell::own_files::create_empty(&input("untrust-own")).expect("made");
+    // After `input`, which points the config folder at the scratch one.
+    let store = Store::current();
+    assert!(
+        store.is_trusted(&made.dir),
+        "Brightfield trusts what it makes"
+    );
+
+    let mut app = app();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx);
+    app.open_queue().push(OpenRequest::Path(made.dir.clone()));
+    frame(&mut app, &ctx);
+    assert!(app.restricted().is_none(), "{}", said(&app));
+    assert!(app.open_protocol_dir().is_some(), "{}", said(&app));
+
+    assert!(app.untrust_open_protocol(&ctx));
+    frame(&mut app, &ctx);
+    assert!(!store.is_trusted(&made.dir));
+    assert!(
+        app.restricted().is_some_and(|r| r.dir == made.dir),
+        "it opened again restricted: {}",
+        said(&app)
+    );
+    // Over a restricted Protocol there is nothing left to take away.
+    assert!(!app.untrust_open_protocol(&ctx));
+
+    let mut again = self::app();
+    frame(&mut again, &ctx);
+    again.open_queue().push(OpenRequest::Path(made.dir.clone()));
+    frame(&mut again, &ctx);
+    assert!(again.restricted().is_some(), "{}", said(&again));
+
+    // A Protocol a folder above it trusts keeps that trust when its own record goes.
+    let group = input("untrust-group");
+    let beneath = brightfield_shell::own_files::create_empty(&group).expect("made");
+    store.trust_folder(&group).unwrap();
+    let mut held = self::app();
+    frame(&mut held, &ctx);
+    held.open_queue()
+        .push(OpenRequest::Path(beneath.dir.clone()));
+    frame(&mut held, &ctx);
+    assert!(held.restricted().is_none(), "{}", said(&held));
+    let toasts = held.toasts().len();
+    assert!(!held.untrust_open_protocol(&ctx));
+    frame(&mut held, &ctx);
+    assert!(store.is_trusted(&beneath.dir));
+    assert!(held.restricted().is_none(), "{}", said(&held));
+    assert!(
+        held.toasts().len() > toasts,
+        "the window says the folder above still trusts it"
+    );
+}
+
 #[test]
 fn restricted_drawing_reads_only_shipped_results() {
     let dir = input("bounded").join("bounded");

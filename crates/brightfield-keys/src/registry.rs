@@ -611,6 +611,22 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Rename the Protocol and its folder",
             scores: Some(Scores { frequency: 1, mnemonic: 2, convention: 4, motor_note: "f2 = rename (Windows Explorer, VS Code, file managers); cmd-r is taken by reload-spec" }),
         },
+        // Stop trusting the open Protocol: its own trust record goes, and it opens again
+        // restricted, as Trust on the restricted band opens it again trusted. Every Protocol
+        // Brightfield makes is trusted, so Preferences does not list them; this verb is where a
+        // Protocol's own trust is taken away. Rare and undone by the band's Trust, so a chord no
+        // finger lands on by accident: cmd-shift-u, u for untrust. Global, as rename-protocol is.
+        VerbEntry {
+            longname: "untrust-protocol",
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-shift-u")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Stop trusting this Protocol, so it opens restricted until it is trusted again",
+            scores: Some(Scores { frequency: 1, mnemonic: 3, convention: 2, motor_note: "cmd-shift-u = untrust; no convention to follow, so a three-key chord nobody presses by accident" }),
+        },
         // The run: the verb behind the ledger strip's Run control. It writes
         // the spec as save-spec does and asks `arc` to run it, and what it
         // leaves is `arc`'s run record rather than a change to the document —
@@ -1946,6 +1962,7 @@ mod tests {
             "save-spec",
             "save-protocol",
             "rename-protocol",
+            "untrust-protocol",
             "run-protocol",
             "copy-chart-picture",
             "export-chart-picture",

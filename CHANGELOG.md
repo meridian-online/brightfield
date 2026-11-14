@@ -25,6 +25,7 @@ Releases before 0.1.6 predate this file; their tags and the commit history are t
 - Drop a data file or folder onto an open Protocol's window to add it as a source, or drop a Protocol or a Protocol archive there to open it.
 - Open in Brightfield: a `brightfield://open?url=<address>` link to a Protocol archive on meridian.online downloads it into the Protocols folder and opens it. `⌘O` and a drop open a Protocol archive too. An archive whose entries or paths leave its folder, name a path on another Mac, or pass 10,000 entries or 2 GiB is refused, and leaves nothing behind.
 - A Protocol Brightfield did not make opens restricted: its steps and sources are shown and its charts draw from the results it carries, and nothing runs until it, or a folder above it, is trusted from the band over the canvas. Preferences lists the trusted folders, each with Remove.
+- `⌘⇧U` (`untrust-protocol` in the palette) stops trusting the open Protocol and opens it again restricted. A Protocol a folder above it trusts stays trusted until that folder is removed in Preferences.
 
 ### Changed
 
