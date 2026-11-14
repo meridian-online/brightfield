@@ -361,7 +361,7 @@ fn where_shown(browser: &Browser) -> String {
 
 /// The registry's keystroke for an egui key pressed with no modifier, as the Browser context
 /// spells it.
-fn token(key: egui::Key) -> Option<&'static str> {
+pub(crate) fn token(key: egui::Key) -> Option<&'static str> {
     use egui::Key;
     Some(match key {
         Key::J => "j",
@@ -853,7 +853,6 @@ pub fn join_label(join: &ProposedJoin) -> String {
 /// cursor is marked, and a click on a join's row accepts or drops it, as `Space` on it does.
 fn canvas(ui: &mut egui::Ui, sheet: &mut Sheet, folder: &Path, name: &str) -> Option<Effect> {
     let sem = semantic(ui.visuals().dark_mode);
-    let t = ui.tokens();
     let muted = |s: &str| egui::RichText::new(s).color(to_color32(sem.text.muted));
     ui.label(egui::RichText::new(format!("{name}/")).strong());
     let joins: Vec<(ProposedJoin, bool)> = sheet.browser.canvas_joins().to_vec();
@@ -887,10 +886,74 @@ fn canvas(ui: &mut egui::Ui, sheet: &mut Sheet, folder: &Path, name: &str) -> Op
         (Some(Ok(_)), false) => {}
     }
 
-    // The tables, in the order the joins first name them, each a box down the canvas's left.
+    let canvas: Vec<CanvasJoin> = joins
+        .iter()
+        .map(|(join, accepted)| CanvasJoin {
+            left_table: join.left.0.clone(),
+            right_table: join.right.0.clone(),
+            label: join_label(join),
+            accepted: *accepted,
+        })
+        .collect();
+    let on_canvas = sheet.browser.focus == Pane::Canvas;
+    let drawn = draw_join_canvas(
+        ui,
+        &canvas,
+        sheet.browser.join_cursor,
+        on_canvas,
+        "accepted",
+    );
+    sheet.drawn.joins.extend(drawn.rows);
+    sheet.drawn.preview = Shown::Canvas(drawn.labels);
+    if let Some(at) = drawn.clicked {
+        sheet.browser.focus = Pane::Canvas;
+        sheet.browser.join_cursor = at;
+        sheet.browser.toggle_join(at);
+    }
+    None
+}
+
+/// One join as a join canvas draws it: the two tables it joins, how its row reads, and whether
+/// it is ticked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanvasJoin {
+    /// The table the join reads from.
+    pub left_table: String,
+    /// The table the join reads into.
+    pub right_table: String,
+    /// How its row reads, such as `orders.customer_id → customers.id`.
+    pub label: String,
+    /// Whether it is ticked.
+    pub accepted: bool,
+}
+
+/// What [`draw_join_canvas`] drew: each join's row, what each row says, and the row clicked.
+#[derive(Debug, Clone, Default)]
+pub struct CanvasDrawn {
+    /// Each join's row, in the order given.
+    pub rows: Vec<egui::Rect>,
+    /// Each row as it is spoken: its label, then `accepted_word` or `proposed`.
+    pub labels: Vec<String>,
+    /// The row clicked this frame, if one was.
+    pub clicked: Option<usize>,
+}
+
+/// **Draw a join canvas**: the joins' tables, each a box down the left in the order the joins
+/// first name them, one curve in the gutter per join, and a row per join with its tick, its label
+/// and `accepted_word` or `proposed`. The join at `cursor` is marked while `focused`. The sources
+/// browser's canvas and the organise sheet both draw with it.
+pub fn draw_join_canvas(
+    ui: &mut egui::Ui,
+    joins: &[CanvasJoin],
+    cursor: usize,
+    focused: bool,
+    accepted_word: &str,
+) -> CanvasDrawn {
+    let sem = semantic(ui.visuals().dark_mode);
+    let t = ui.tokens();
     let mut tables: Vec<String> = Vec::new();
-    for (join, _) in &joins {
-        for table in [&join.left.0, &join.right.0] {
+    for join in joins {
+        for table in [&join.left_table, &join.right_table] {
             if !tables.contains(table) {
                 tables.push(table.clone());
             }
@@ -932,18 +995,17 @@ fn canvas(ui: &mut egui::Ui, sheet: &mut Sheet, folder: &Path, name: &str) -> Op
             to_color32(sem.text.primary),
         );
     }
-    let on_canvas = sheet.browser.focus == Pane::Canvas;
-    let cursor = sheet.browser.join_cursor.min(joins.len().saturating_sub(1));
-    for (at, (join, accepted)) in joins.iter().enumerate() {
-        let (a, b) = (centre_of(&join.left.0), centre_of(&join.right.0));
+    let cursor = cursor.min(joins.len().saturating_sub(1));
+    for (at, join) in joins.iter().enumerate() {
+        let (a, b) = (centre_of(&join.left_table), centre_of(&join.right_table));
         let x = area.left() + box_w;
         let reach = reach_of(at);
-        let ink = if *accepted {
+        let ink = if join.accepted {
             sem.text.link
         } else {
             sem.text.muted
         };
-        let width = if on_canvas && at == cursor { 2.5 } else { 1.25 };
+        let width = if focused && at == cursor { 2.5 } else { 1.25 };
         let curve = egui::epaint::CubicBezierShape::from_points_stroke(
             [
                 egui::pos2(x, a),
@@ -959,15 +1021,18 @@ fn canvas(ui: &mut egui::Ui, sheet: &mut Sheet, folder: &Path, name: &str) -> Op
     }
 
     ui.add_space(t.section_gap);
-    let mut labels = Vec::new();
-    let mut toggled = None;
-    for (at, (join, accepted)) in joins.iter().enumerate() {
-        let label = join_label(join);
+    let mut drawn = CanvasDrawn::default();
+    for (at, join) in joins.iter().enumerate() {
+        let word = if join.accepted {
+            accepted_word
+        } else {
+            "proposed"
+        };
         let row = list_row(
             ui,
-            ListRow::new(RowHeight::Grid).selected(on_canvas && at == cursor),
+            ListRow::new(RowHeight::Grid).selected(focused && at == cursor),
             |ui, _| {
-                let (mark, ink) = if *accepted {
+                let (mark, ink) = if join.accepted {
                     ("\u{2611} ", sem.text.link)
                 } else {
                     ("\u{2610} ", sem.text.secondary)
@@ -978,33 +1043,24 @@ fn canvas(ui: &mut egui::Ui, sheet: &mut Sheet, folder: &Path, name: &str) -> Op
                         .color(to_color32(ink)),
                 );
                 ui.label(
-                    egui::RichText::new(&label)
+                    egui::RichText::new(&join.label)
                         .font(crate::protocol::mono_font())
                         .color(to_color32(sem.text.primary)),
                 );
                 ui.label(
-                    egui::RichText::new(if *accepted { "accepted" } else { "proposed" })
+                    egui::RichText::new(word)
                         .small()
                         .color(to_color32(sem.text.muted)),
                 );
             },
         );
-        sheet.drawn.joins.push(row.response.rect);
-        labels.push(format!(
-            "{label} {}",
-            if *accepted { "accepted" } else { "proposed" }
-        ));
+        drawn.rows.push(row.response.rect);
+        drawn.labels.push(format!("{} {word}", join.label));
         if row.clicked() {
-            toggled = Some(at);
+            drawn.clicked = Some(at);
         }
     }
-    sheet.drawn.preview = Shown::Canvas(labels);
-    if let Some(at) = toggled {
-        sheet.browser.focus = Pane::Canvas;
-        sheet.browser.join_cursor = at;
-        sheet.browser.toggle_join(at);
-    }
-    None
+    drawn
 }
 
 /// The keys the focused column answers, each with what it does there: what the foot shows.
