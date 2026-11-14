@@ -459,6 +459,32 @@ fn keep_editing_drops_the_open() {
     );
 }
 
+/// **Untrusting a Protocol with a draft asks first, and keeping editing leaves it unable to run.**
+/// The reopen restricted waits behind the close question; Esc keeps the draft on the canvas, and
+/// Run refuses the Protocol the store no longer trusts.
+#[test]
+fn keep_editing_after_untrusting_refuses_a_run() {
+    let mut win = Window::opened("untrust_kept");
+    win.keep_filter();
+    let ctx = win.ctx.clone();
+    assert!(win.app.untrust_open_protocol(&ctx));
+    win.settle();
+    assert!(win.asking(), "a draft asks before the reopen");
+
+    win.key(egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(!win.asking());
+    assert!(
+        win.app.restricted().is_none(),
+        "kept editing, it is not reopened"
+    );
+    assert!(!win.app.run_protocol(&ctx), "it does not run untrusted");
+    assert!(
+        win.said().contains("not trusted"),
+        "the window says why: {}",
+        win.said()
+    );
+}
+
 #[test]
 fn quit_with_a_draft_asks_and_waits() {
     let mut win = Window::opened("quit_asks");

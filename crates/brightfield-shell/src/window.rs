@@ -3528,6 +3528,10 @@ pub struct MeridianApp {
     installed_extensions: Option<Vec<String>>,
     /// The Protocol held restricted, while one is open: nothing in it runs until it is trusted.
     restricted: Option<Restricted>,
+    /// The Protocol `untrust-protocol` stopped trusting while it was open and kept on the canvas,
+    /// as keeping editing over a draft keeps it: it runs nothing until it is trusted again, though
+    /// it is not drawn restricted until it is opened again.
+    untrusted_open: Option<PathBuf>,
     /// The Protocol archive a link asked for, downloading and unpacking on a worker.
     downloading: Option<crate::protocol_archive::Download>,
     /// How a link's address, and each address it redirects to, is checked:
@@ -4092,6 +4096,7 @@ impl MeridianApp {
             open_queue: crate::open_queue::OpenQueue::default(),
             installed_extensions: None,
             restricted: None,
+            untrusted_open: None,
             downloading: None,
             archive_hosts: crate::protocol_archive::check_address,
             trust_asked: None,
@@ -15220,6 +15225,26 @@ impl MeridianApp {
         if self.refuse_if_the_folder_is_gone(ctx) {
             return false;
         }
+        // A Protocol whose trust was taken away while it was open runs nothing either, though a
+        // draft kept it on the canvas rather than opening it again restricted.
+        if let Some(dir) = self.held_untrusted() {
+            let body = format!(
+                "You stopped trusting {}, and its steps run once it is trusted again. Open it \
+                 again and trust it from the band over its canvas.",
+                display_name(&dir)
+            );
+            eprintln!("could not run the Protocol: {body}");
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(RESTRICTED_BANNER),
+                    Severity::Warning,
+                    "This Protocol is not trusted, so it was not run",
+                )
+                .body(body),
+            );
+            ctx.request_repaint();
+            return false;
+        }
         // A restricted Protocol runs nothing until it is trusted.
         if let Some(restricted) = &self.restricted {
             let body = format!(
@@ -15749,7 +15774,8 @@ impl MeridianApp {
     /// **Stop trusting the open Protocol**, as `untrust-protocol` does: its own trust record goes,
     /// and it opens again at once, restricted, so nothing in it runs until the restricted band's
     /// Trust trusts it again. The reopen goes the way any open goes, with the close question first
-    /// over a draft; kept editing, the Protocol stays as it is, restricted from its next open. A
+    /// over a draft; kept editing, the Protocol stays on the canvas, refuses to run, and opens
+    /// restricted next time. A
     /// Protocol a folder above it still trusts stays trusted and is not reopened, and a toast says
     /// to remove that folder in Preferences. Answers whether the Protocol is no longer trusted.
     pub fn untrust_open_protocol(&mut self, ctx: &egui::Context) -> bool {
@@ -15759,7 +15785,7 @@ impl MeridianApp {
                 .push(Toast::new(Severity::Info, "This Protocol is not trusted"));
             return false;
         }
-        let Some(dir) = self.open_protocol_dir() else {
+        let Some(dir) = self.held_protocol_dir() else {
             self.toasts.push(Toast::new(
                 Severity::Info,
                 "Open a Protocol to stop trusting it",
@@ -15787,8 +15813,18 @@ impl MeridianApp {
             ));
             return false;
         }
+        self.untrusted_open = Some(dir.clone());
         self.take_or_ask(ctx, crate::open_queue::OpenRequest::Path(dir));
         true
+    }
+
+    /// Whether the Protocol on the canvas is one `untrust-protocol` stopped trusting and the store
+    /// still does not trust: kept on the canvas over a draft, it runs nothing until it is trusted.
+    fn held_untrusted(&self) -> Option<PathBuf> {
+        let dir = self.untrusted_open.as_ref()?;
+        (self.held_protocol_dir().as_ref() == Some(dir)
+            && !crate::trust::Store::current().is_trusted(dir))
+        .then(|| dir.clone())
     }
 
     /// The Protocol the window holds restricted, while one is open.
