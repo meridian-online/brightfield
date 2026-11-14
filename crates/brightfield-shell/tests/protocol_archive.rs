@@ -1767,6 +1767,55 @@ fn a_launch_sweeps_the_staging_an_interrupted_unpack_left() {
     assert_eq!(folders_in(&into), vec![".hidden_other", "kept"]);
 }
 
+/// An edit made while an archive unpacks is asked about once the archive lands, with one close
+/// question, and the archive's Protocol opens once it is answered.
+#[test]
+fn an_edit_made_while_an_archive_unpacks_is_asked_about_once_it_lands() {
+    let dir = input("edit-during");
+    shipped_protocol(&dir.join("held"), "during_held");
+    shipped_protocol(&dir.join("src"), "edit_during");
+    let zip = dir.join("edit_during.zip");
+    zip_folder(&dir.join("src"), &zip, "edit_during");
+
+    let gate = Arc::new(std::sync::Mutex::new(()));
+    let held = gate.lock().unwrap();
+    let mut app = app().unpacking_archives_after(Arc::clone(&gate));
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx);
+    app.open_queue().push(OpenRequest::Path(dir.join("held")));
+    until(&mut app, &ctx, "the held Protocol opens", |a| {
+        a.restricted().is_some()
+    });
+    app.open_queue().push(OpenRequest::Path(zip));
+    frame(&mut app, &ctx);
+    assert!(app.is_unpacking_archive(), "{}", said(&app));
+    assert!(app.close_question().is_none(), "nothing is asked yet");
+
+    app.chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("mass_g > 4000".to_owned()),
+            order: None,
+        });
+    frame(&mut app, &ctx);
+    assert!(app.has_unsaved_work(), "an edit made while it unpacks");
+    drop(held);
+    until(
+        &mut app,
+        &ctx,
+        "the landed archive asks about the edit",
+        |a| a.close_question().is_some(),
+    );
+
+    app.answer_close_question(&ctx, CloseAnswer::CloseWithoutSaving);
+    app.answer_close_question(&ctx, CloseAnswer::CloseWithoutSaving);
+    until(&mut app, &ctx, "the archive's Protocol opens", |a| {
+        a.restricted()
+            .is_some_and(|r| r.dir == protocols().join("edit_during"))
+    });
+    frame(&mut app, &ctx);
+    assert!(app.close_question().is_none(), "asked once: {}", said(&app));
+}
+
 #[test]
 fn a_good_archive_unpacks_and_draws() {
     let dir = input("good");
