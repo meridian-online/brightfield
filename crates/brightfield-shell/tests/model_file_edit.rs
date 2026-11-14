@@ -1210,6 +1210,37 @@ fn a_typing_pause_runs_nothing_until_the_editor_lets_go() {
     assert_eq!(pane.tick_file_edit(FILE_PAUSE_MS * 5), None, "it runs once");
 }
 
+/// Trusts a Protocol folder again when dropped, so a test that stops trusting the folder every open
+/// shares gives it back even when it fails.
+struct TrustedAgain(PathBuf);
+
+impl Drop for TrustedAgain {
+    fn drop(&mut self) {
+        let _ = brightfield_shell::trust::Store::current().trust(&self.0);
+    }
+}
+
+/// **Saving a model edit of a Protocol untrusted while it is open writes its steps and owes no
+/// run**, so the close question's Save goes on to open it again restricted: the run is refused,
+/// and nothing is left for the window to call unsaved.
+#[test]
+fn saving_an_untrusted_protocol_writes_its_steps_without_the_run() {
+    let (mut pane, _held) = opened();
+    let _again = TrustedAgain(pane.protocol.dir.clone());
+    let _ctx = leave_promo_out_by_typing(&mut pane);
+    brightfield_shell::trust::Store::current()
+        .revoke_protocol(&pane.protocol.dir)
+        .expect("the store writes");
+    assert!(brightfield_shell::trust::refuses_run(&pane.protocol.dir));
+
+    assert_eq!(pane.save_draft(), Ok(()));
+    assert!(!pane.run_waiting(), "nothing is owed for Save to ask about");
+    assert!(
+        !promo_silver_step(&pane),
+        "the silver steps are the model's"
+    );
+}
+
 #[test]
 fn a_typing_pause_runs_once_the_file_view_is_left() {
     let (mut pane, _held) = opened();
