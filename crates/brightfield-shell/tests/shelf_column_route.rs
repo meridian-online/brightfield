@@ -1121,6 +1121,20 @@ fn every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen()
                     "{verb} said nothing over one source"
                 );
             }
+            "untrust-protocol" => {
+                let mut at = Window::own_protocol();
+                at.graph_to_canvas();
+                assert!(
+                    at.app.restricted().is_none(),
+                    "the made Protocol opened restricted"
+                );
+                at.confirm(verb);
+                at.settle();
+                assert!(
+                    at.app.restricted().is_some(),
+                    "{verb} did not open the Protocol again restricted"
+                );
+            }
             "open-preferences" => {
                 let mut at = Window::crosswalk();
                 assert_eq!(

@@ -71,6 +71,24 @@ static MEMORY: Mutex<Option<Ledger>> = Mutex::new(None);
 /// Held across each read and write of the store, so two changes at once do not lose one.
 static LOCK: Mutex<()> = Mutex::new(());
 
+/// The Protocols this process stopped trusting with [`Store::revoke_protocol`], by the path the
+/// store compares: one may still be on a window's canvas, kept there over a draft, and
+/// [`refuses_run`] keeps it from running.
+static REVOKED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Whether a run of the Protocol in `dir` is refused: this process stopped trusting it and the
+/// store does not trust it again. A Protocol never revoked here is not refused, so one opened from
+/// the command line, which runs with no record, still runs.
+#[must_use]
+pub fn refuses_run(dir: &Path) -> bool {
+    let path = Place::of(dir).path;
+    REVOKED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .contains(&path)
+        && !Store::current().is_trusted(dir)
+}
+
 /// Keep the trust store in the app's config folder from now on: what the app does at launch.
 pub fn use_config_dir() {
     let dir = brightfield_workbench::persist::config_dir(
@@ -145,6 +163,28 @@ impl Store {
         self.change(|ledger| {
             ledger.trusted.retain(|r| !place.is(r));
         })
+    }
+
+    /// Take away the Protocol in `dir`'s own record and leave every folder record alone, so a
+    /// folder record on `dir` itself or on a folder above it still trusts it. Answers whether
+    /// there was a record to take away.
+    ///
+    /// # Errors
+    ///
+    /// A store that cannot be written.
+    pub fn revoke_protocol(&self, dir: &Path) -> Result<bool, String> {
+        let place = Place::of(dir);
+        let mut taken = false;
+        self.change(|ledger| {
+            let before = ledger.trusted.len();
+            ledger.trusted.retain(|r| r.folder || !place.is(r));
+            taken = ledger.trusted.len() < before;
+        })?;
+        let mut revoked = REVOKED.lock().unwrap_or_else(PoisonError::into_inner);
+        if !revoked.contains(&place.path) {
+            revoked.push(place.path);
+        }
+        Ok(taken)
     }
 
     /// Whether the Protocol in `dir` is trusted: by a record of its own, or by a folder above it
@@ -572,6 +612,25 @@ mod tests {
         assert!(store.is_trusted(&a));
         assert!(!store.is_trusted(&b));
         assert!(!store.is_trusted(&tmp.path().join("gone")));
+    }
+
+    #[test]
+    fn revoking_a_protocol_leaves_the_folder_above_it_trusting_it() {
+        let (tmp, store) = scratch("own");
+        let group = tmp.path().join("group");
+        let a = group.join("a");
+        let b = tmp.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        store.trust(&a).unwrap();
+        store.trust(&b).unwrap();
+        store.trust_folder(&group).unwrap();
+        assert!(store.revoke_protocol(&b).unwrap());
+        assert!(!store.is_trusted(&b));
+        assert!(!store.revoke_protocol(&b).unwrap(), "nothing left to take");
+        assert!(store.revoke_protocol(&a).unwrap());
+        assert!(store.is_trusted(&a), "the folder above still trusts it");
+        assert!(store.folders().contains(&group.canonicalize().unwrap()));
     }
 
     #[test]
