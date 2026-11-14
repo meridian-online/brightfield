@@ -17,6 +17,7 @@ Releases before 0.1.6 predate this file; their tags and the commit history are t
 - Rename a Protocol from the window (`F2`) or its row on the front door, which renames its folder; move it with the Location field in the locator band. A Protocol moved in Finder is repaired when opened.
 - `⌘N` makes a new, empty Protocol, asking where.
 - `d d` removes a step from a Protocol's spine, and puts it back.
+- `o` organises a Protocol's joins: tick a proposal to keep it, untick a join to drop it, and `Enter` applies the changes as the model pane's own Keep and Drop.
 - The front door lists Recents and a tree of the Protocols folder, with each Protocol's run state. Brightfield's own previews are not runs: a Protocol only previewed reads "previewed, not run".
 - Relaunching restores the Protocol that was open.
 - The first launch from the app asks once whether to make Brightfield the default app for CSV, Parquet and DuckDB files, and Preferences does the same at any time. macOS confirms each kind of file itself.
