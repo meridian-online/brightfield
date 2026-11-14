@@ -9218,21 +9218,18 @@ impl MeridianApp {
                 }
             }
             Overlay::OrganiseJoins(sheet) => {
-                // On the sources browser's scrim and in its frame, sized for the canvas alone.
-                // Its keys, Esc among them, are the sheet's; a click on the backdrop closes it,
-                // changing nothing.
-                let width = organise_joins_width(ctx);
-                let scrim = crate::design::to_color32(semantic(self.mode.is_dark()).surfaces.scrim);
+                // A modal card of the default width: its keys, Esc among them, are the sheet's,
+                // and a click on the backdrop closes it, changing nothing.
+                let chrome = ModalChrome::new()
+                    .title("Organise joins")
+                    .enter_hint("apply")
+                    .esc_hint("close");
                 let mode = self.mode;
-                let shown = egui::Modal::new(egui::Id::new("bf-overlay-organise-joins"))
-                    .backdrop_color(scrim)
-                    .frame(egui::Frame::NONE)
-                    .show(ctx, |ui| {
-                        ui.set_width(width);
-                        crate::organise_joins_view::show(ui, sheet, mode)
-                    });
-                close = shown.should_close()
-                    || !matches!(shown.inner, crate::organise_joins::Effect::None);
+                let shown = ModalLayer::show(ctx, "bf-overlay-organise-joins", &chrome, |ui| {
+                    crate::organise_joins_view::show(ui, sheet, mode)
+                });
+                close =
+                    shown.dismissed || !matches!(shown.inner, crate::organise_joins::Effect::None);
                 if let crate::organise_joins::Effect::Apply(actions) = shown.inner {
                     organise_apply = Some(actions);
                 }
@@ -19252,14 +19249,6 @@ fn subject_icon(
         Some(_) => brightfield_workbench::subject::Icon("map-pin"),
         None => brightfield_workbench::subject::Icon("chart-bar"),
     }
-}
-
-/// The organise sheet's width: the default modal's, as the window allows.
-fn organise_joins_width(ctx: &egui::Context) -> f32 {
-    use meridian_egui::MeridianUi as _;
-    let t = ctx.tokens();
-    let room = ctx.content_rect().width() - 2.0 * t.space[9];
-    t.modal_width_default.min(room.max(t.modal_width_narrow))
 }
 
 /// The sources browser's sheet in a window whose content is `ctx`'s: the window less the widest

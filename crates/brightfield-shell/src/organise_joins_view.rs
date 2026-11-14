@@ -1,5 +1,6 @@
-//! The organise sheet drawn: a heading, the shared join canvas over the Protocol's joins, and a
-//! foot naming the keys. Its state and keys are [`crate::organise_joins`]'s.
+//! The organise sheet's body, inside the window's modal card: the shared join canvas over the
+//! Protocol's joins, and a line naming the key that ticks. Its state and keys are
+//! [`crate::organise_joins`]'s.
 
 use meridian_design::semantic;
 use meridian_egui::MeridianUi as _;
@@ -8,8 +9,8 @@ use crate::design::{to_color32, Mode};
 use crate::organise_joins::{Effect, Organise};
 use crate::sources_browser_view::{draw_join_canvas, token};
 
-/// **Draw the organise sheet into `ui`**, in the sources browser's frame and the theme of `mode`,
-/// and answer what its keys and clicks asked of the window this frame.
+/// **Draw the organise sheet's body into `ui`**, in the theme of `mode`, and answer what its keys
+/// and clicks asked of the window this frame.
 ///
 /// The keys are read before the sheet is drawn and taken out of the frame's input, so a `j`
 /// moves the sheet's cursor and not the graph's behind it, and `Esc` closes the sheet rather
@@ -23,31 +24,23 @@ pub fn show(ui: &mut egui::Ui, sheet: &mut Organise, mode: Mode) -> Effect {
     // A row is the click target, so the words on it are not selectable text that would take the
     // click from the row under them.
     ui.style_mut().interaction.selectable_labels = false;
+    let t = ui.tokens();
     let mut clicked = None;
-    crate::sources_browser_view::frame(ui).show(ui, |ui| {
-        let t = ui.tokens();
+    if sheet.rows.is_empty() {
         ui.label(
-            egui::RichText::new("Organise joins")
-                .strong()
-                .color(to_color32(sem.text.primary)),
-        );
-        ui.add_space(t.section_gap);
-        if sheet.rows.is_empty() {
-            ui.label(
-                egui::RichText::new("The model holds no joins between its tables yet.")
-                    .color(to_color32(sem.text.muted)),
-            );
-        } else {
-            let joins = sheet.canvas_joins();
-            clicked = draw_join_canvas(ui, &joins, sheet.cursor, true, "kept").clicked;
-        }
-        ui.add_space(t.section_gap);
-        ui.label(
-            egui::RichText::new("Space ticks or unticks \u{b7} Enter applies \u{b7} Esc closes")
-                .small()
+            egui::RichText::new("The model holds no joins between its tables yet.")
                 .color(to_color32(sem.text.muted)),
         );
-    });
+    } else {
+        let joins = sheet.canvas_joins();
+        clicked = draw_join_canvas(ui, &joins, sheet.cursor, true, "kept").clicked;
+    }
+    ui.add_space(t.section_gap);
+    ui.label(
+        egui::RichText::new("Space ticks or unticks the join under the cursor")
+            .small()
+            .color(to_color32(sem.text.muted)),
+    );
     if let Some(at) = clicked {
         sheet.toggle(at);
     }
