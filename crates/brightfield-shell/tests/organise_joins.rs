@@ -1,7 +1,7 @@
 //! `o` organises a Protocol's joins: over a Protocol of two tables or more it opens a sheet of the
 //! model's joins, each ticked when it is part of the model and unticked when it is a proposal
 //! waiting on the analyst; `Space` ticks or unticks the join under the cursor, `Enter` turns what
-//! changed into the model pane's Keep and Drop, and `Esc` changes nothing. Windows are headless,
+//! changed into the model pane's Keep and Drop, and `Esc` leaves the model as it was (`escape_changes_nothing`). Windows are headless,
 //! over the retail extract and the model written for it, as in the spine's tests.
 
 use std::path::{Path, PathBuf};
