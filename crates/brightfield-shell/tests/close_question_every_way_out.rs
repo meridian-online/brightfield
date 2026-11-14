@@ -483,6 +483,19 @@ fn keep_editing_after_untrusting_refuses_a_run() {
         "the window says why: {}",
         win.said()
     );
+    // Any arc run of it is refused, as the model pane's own runs start one.
+    let runner = Runner::at(env!("CARGO_BIN_EXE_brightfield-shell"));
+    let finished = brightfield_shell::run::Run::begin(&runner, &win.dir(), || {}).wait();
+    assert!(
+        !finished.succeeded && finished.record.is_none(),
+        "{}",
+        finished.log
+    );
+    // Trusted again, it may run.
+    brightfield_shell::trust::Store::current()
+        .trust(&win.dir())
+        .unwrap();
+    assert!(!brightfield_shell::trust::refuses_run(&win.dir()));
 }
 
 #[test]

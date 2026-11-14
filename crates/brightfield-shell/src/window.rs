@@ -3528,10 +3528,6 @@ pub struct MeridianApp {
     installed_extensions: Option<Vec<String>>,
     /// The Protocol held restricted, while one is open: nothing in it runs until it is trusted.
     restricted: Option<Restricted>,
-    /// The Protocol `untrust-protocol` stopped trusting while it was open and kept on the canvas,
-    /// as keeping editing over a draft keeps it: it runs nothing until it is trusted again, though
-    /// it is not drawn restricted until it is opened again.
-    untrusted_open: Option<PathBuf>,
     /// The Protocol archive a link asked for, downloading and unpacking on a worker.
     downloading: Option<crate::protocol_archive::Download>,
     /// How a link's address, and each address it redirects to, is checked:
@@ -4096,7 +4092,6 @@ impl MeridianApp {
             open_queue: crate::open_queue::OpenQueue::default(),
             installed_extensions: None,
             restricted: None,
-            untrusted_open: None,
             downloading: None,
             archive_hosts: crate::protocol_archive::check_address,
             trust_asked: None,
@@ -15813,18 +15808,17 @@ impl MeridianApp {
             ));
             return false;
         }
-        self.untrusted_open = Some(dir.clone());
         self.take_or_ask(ctx, crate::open_queue::OpenRequest::Path(dir));
         true
     }
 
     /// Whether the Protocol on the canvas is one `untrust-protocol` stopped trusting and the store
     /// still does not trust: kept on the canvas over a draft, it runs nothing until it is trusted.
+    /// Every arc run refuses it too ([`crate::trust::refuses_run`]); this is the one that says so
+    /// in a banner.
     fn held_untrusted(&self) -> Option<PathBuf> {
-        let dir = self.untrusted_open.as_ref()?;
-        (self.held_protocol_dir().as_ref() == Some(dir)
-            && !crate::trust::Store::current().is_trusted(dir))
-        .then(|| dir.clone())
+        self.held_protocol_dir()
+            .filter(|dir| crate::trust::refuses_run(dir))
     }
 
     /// The Protocol the window holds restricted, while one is open.
