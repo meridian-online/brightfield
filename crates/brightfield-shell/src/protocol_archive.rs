@@ -169,6 +169,26 @@ pub fn unpack(zip: &Path, into: &Path) -> Result<PathBuf, String> {
     unpack_within(zip, into, Limits::ARCHIVE)
 }
 
+/// The prefix of the hidden folder an unpack is written into before it is moved under its name.
+const STAGING_PREFIX: &str = ".unpacking-";
+
+/// **Remove the hidden folders unpacks left in `into`**, the Protocols folder, when the app quit
+/// or was killed while one was being written. Called at launch, before any unpack starts, since a
+/// sweep while one runs would remove the folder it writes into. Answers how many it removed.
+pub fn sweep_staging(into: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(into) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|e| {
+            e.file_name().to_string_lossy().starts_with(STAGING_PREFIX)
+                && e.file_type().is_ok_and(|t| t.is_dir())
+        })
+        .filter(|e| std::fs::remove_dir_all(e.path()).is_ok())
+        .count()
+}
+
 /// [`unpack`], within `limits`.
 ///
 /// # Errors
@@ -184,11 +204,22 @@ pub fn unpack_within(zip: &Path, into: &Path, limits: Limits) -> Result<PathBuf,
         .map_err(|e| format!("{named} is not a zip Brightfield can read: {e}"))?;
     let plan = plan(&mut archive, &named, limits)?;
     check_contents(&mut archive, &plan, &named)?;
+    // Written into a hidden folder beside the Protocols first, and moved under its name only once
+    // every entry is written, so an unpack the app quits under leaves no half-written Protocol;
+    // the front door's tree skips a hidden folder.
+    std::fs::create_dir_all(into).map_err(|e| format!("{}: {e}", into.display()))?;
+    let staging = tempfile::Builder::new()
+        .prefix(STAGING_PREFIX)
+        .tempdir_in(into)
+        .map_err(|e| format!("could not make a place to unpack into: {e}"))?;
+    write_entries(&mut archive, &plan, staging.path(), &named, limits.bytes)?;
     let (dir, _) = crate::protocols_dir::claim(into, &plan.top).map_err(|e| e.to_string())?;
-    if let Err(why) = write_entries(&mut archive, &plan, &dir, &named, limits.bytes) {
-        let _ = std::fs::remove_dir_all(&dir);
-        return Err(why);
+    // The claimed folder is empty, and a rename replaces an empty folder.
+    if let Err(e) = std::fs::rename(staging.path(), &dir) {
+        let _ = std::fs::remove_dir(&dir);
+        return Err(format!("{}: {e}", dir.display()));
     }
+    let _ = staging.keep();
     Ok(dir)
 }
 
@@ -664,10 +695,19 @@ fn compares(words: &[String]) -> bool {
     }
 }
 
-/// An archive download running on a worker thread, unpacked on the same worker once it has
-/// arrived.
+/// Where an archive job's archive comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// The address a `brightfield://open` link named, downloaded first.
+    Link(Url),
+    /// An archive chosen on this Mac, by `⌘O`, a drop or the picker.
+    Local(PathBuf),
+}
+
+/// An archive job running on a worker thread: a link's archive downloaded and then unpacked, or
+/// an archive on this Mac unpacked, so neither holds the window while it runs.
 pub struct Download {
-    address: Url,
+    source: Source,
     meter: Arc<crate::remote::Meter>,
     outcome: Receiver<Result<PathBuf, String>>,
     done: bool,
@@ -698,33 +738,82 @@ impl Download {
         wake: impl Fn() + Send + 'static,
     ) -> Self {
         let meter = Arc::new(crate::remote::Meter::default());
-        let (tx, outcome) = mpsc::channel();
         let worker_meter = Arc::clone(&meter);
         let worker_address = address.clone();
-        std::thread::spawn(move || {
-            let result = download_and_unpack(
+        Self::spawn(Source::Link(address), meter, wake, move |wake| {
+            download_and_unpack(
                 &worker_address,
                 allowed,
                 &into,
                 silence,
                 &worker_meter,
-                &wake,
-            );
-            tx.send(result).ok();
+                wake,
+            )
+        })
+    }
+
+    /// Unpack the archive at `archive`, on this Mac, into `into`, on a thread of its own. `wake`
+    /// is called once it has answered.
+    #[must_use]
+    pub fn unpack_local(archive: PathBuf, into: PathBuf, wake: impl Fn() + Send + 'static) -> Self {
+        Self::unpack_local_after(archive, into, None, wake)
+    }
+
+    /// [`Self::unpack_local`], starting only once `gate` can be locked, so a test can hold the
+    /// unpack while it draws frames.
+    #[must_use]
+    pub fn unpack_local_after(
+        archive: PathBuf,
+        into: PathBuf,
+        gate: Option<Arc<std::sync::Mutex<()>>>,
+        wake: impl Fn() + Send + 'static,
+    ) -> Self {
+        let worker_archive = archive.clone();
+        Self::spawn(
+            Source::Local(archive),
+            Arc::new(crate::remote::Meter::default()),
+            wake,
+            move |_| {
+                let _held = gate.as_ref().map(|g| g.lock());
+                unpack(&worker_archive, &into)
+            },
+        )
+    }
+
+    /// Run `work` on a thread of its own, handing it `wake` to call as it goes, sending its answer
+    /// back and calling `wake` once more after.
+    fn spawn<W: Fn() + Send + 'static>(
+        source: Source,
+        meter: Arc<crate::remote::Meter>,
+        wake: W,
+        work: impl FnOnce(&W) -> Result<PathBuf, String> + Send + 'static,
+    ) -> Self {
+        let (tx, outcome) = mpsc::channel();
+        std::thread::spawn(move || {
+            tx.send(work(&wake)).ok();
             wake();
         });
         Self {
-            address,
+            source,
             meter,
             outcome,
             done: false,
         }
     }
 
-    /// The address the link named.
+    /// Where the archive comes from.
     #[must_use]
-    pub fn address(&self) -> &Url {
-        &self.address
+    pub fn source(&self) -> &Source {
+        &self.source
+    }
+
+    /// The address the link named, when the job is a link's.
+    #[must_use]
+    pub fn address(&self) -> Option<&Url> {
+        match &self.source {
+            Source::Link(address) => Some(address),
+            Source::Local(_) => None,
+        }
     }
 
     /// The download's answer, once there is one: the unpacked Protocol folder, or a sentence.
@@ -740,10 +829,14 @@ impl Download {
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => {
                 self.done = true;
-                Some(Err(format!(
-                    "Downloading {} stopped without an answer.",
-                    self.address
-                )))
+                Some(Err(match &self.source {
+                    Source::Link(address) => {
+                        format!("Downloading {address} stopped without an answer.")
+                    }
+                    Source::Local(archive) => {
+                        format!("Unpacking {} stopped without an answer.", archive.display())
+                    }
+                }))
             }
         }
     }

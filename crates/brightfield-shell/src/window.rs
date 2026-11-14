@@ -2676,6 +2676,30 @@ fn display_name(path: &std::path::Path) -> String {
     )
 }
 
+/// The Protocol archive an open request hands over, when the Protocol it opens is one: the path
+/// itself, or, of several paths, the first that is a Protocol or an archive of one, when that one
+/// is an archive. With it, how many other paths were handed over, which are not opened.
+fn archive_handed_over(
+    request: &crate::open_queue::OpenRequest,
+) -> Option<(std::path::PathBuf, usize)> {
+    use crate::open_queue::{route, OpenRequest, Route};
+    match request {
+        OpenRequest::Path(path) => match route(path) {
+            Route::Archive(archive) => Some((archive, 0)),
+            _ => None,
+        },
+        OpenRequest::Paths(paths) => match paths
+            .iter()
+            .map(|p| route(p))
+            .find(|r| !matches!(r, Route::New(_)))
+        {
+            Some(Route::Archive(archive)) => Some((archive, paths.len() - 1)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// The title of the banner a `brightfield://` link raises when it is refused, or its archive does
 /// not download or unpack.
 pub const LINK_NOTICE_TITLE: &str = "Could not open that link";
@@ -2683,8 +2707,19 @@ pub const LINK_NOTICE_TITLE: &str = "Could not open that link";
 /// The title of the banner a Protocol archive opened from this Mac raises when it is refused.
 pub const ARCHIVE_NOTICE_TITLE: &str = "Could not open that archive";
 
-/// The banner that says a link's archive is downloading, and how far it has got.
+/// The banner that says a Protocol archive is downloading or unpacking, and how far a download
+/// has got.
 const DOWNLOAD_BANNER: &str = "open-link-download";
+
+/// The banner that says only the Protocol of several files handed over was opened.
+const REST_NOT_OPENED_BANNER: &str = "open-rest-not-opened";
+
+/// A Protocol archive downloading or unpacking on a worker, and how many other files were handed
+/// over with it, which are not opened.
+struct ArchiveJob {
+    job: crate::protocol_archive::Download,
+    others: usize,
+}
 
 /// The banner that says a restricted Protocol was not run, or could not be trusted.
 const RESTRICTED_BANNER: &str = "restricted-protocol";
@@ -3528,11 +3563,19 @@ pub struct MeridianApp {
     installed_extensions: Option<Vec<String>>,
     /// The Protocol held restricted, while one is open: nothing in it runs until it is trusted.
     restricted: Option<Restricted>,
-    /// The Protocol archive a link asked for, downloading and unpacking on a worker.
-    downloading: Option<crate::protocol_archive::Download>,
+    /// The Protocol archive a link asked for, downloading and unpacking on a worker, or one
+    /// chosen on this Mac, unpacking on one. One runs at a time.
+    downloading: Option<ArchiveJob>,
     /// How a link's address, and each address it redirects to, is checked:
     /// [`crate::protocol_archive::check_address`] unless a test serves archives from this Mac.
     archive_hosts: crate::protocol_archive::Allowed,
+    /// A lock a local archive's unpack waits on before it starts, when a test holds unpacks.
+    archive_gate: Option<std::sync::Arc<std::sync::Mutex<()>>>,
+    /// What to say once the Protocol an archive unpacked into opens, for each archive handed over
+    /// with other files: its folder, what opened and why, and how many others were not opened.
+    /// Said when that folder opens, and dropped when its open is cancelled or replaced by another
+    /// way out, so it is never said of a later, unrelated open.
+    rest_not_opened: Vec<(PathBuf, String, usize)>,
     /// What a click on the restricted band asked to trust, taken after the frame.
     trust_asked: Option<TrustScope>,
     /// The Protocol a lone table's grid and dashboard were opened from: the one-source Protocol
@@ -4094,6 +4137,8 @@ impl MeridianApp {
             restricted: None,
             downloading: None,
             archive_hosts: crate::protocol_archive::check_address,
+            archive_gate: None,
+            rest_not_opened: Vec::new(),
             trust_asked: None,
             own_protocol: None,
             empty_protocol: None,
@@ -9919,6 +9964,8 @@ impl MeridianApp {
             self.overlay = Some(Overlay::CloseQuestion(self.close_question_for_now()));
             self.unkept_accepted = false;
         }
+        // An open this way out replaces says nothing of the files handed over with it.
+        self.forget_rest_not_opened_for_leaving();
         // Worded for what it is asked before now, the latest way out.
         if let Some(Overlay::CloseQuestion(question)) = self.overlay.as_mut() {
             question.before = match &to {
@@ -9936,6 +9983,23 @@ impl MeridianApp {
             };
         }
         self.leaving = Some(to);
+    }
+
+    /// Drop what an archive's open would say of the files handed over with it, when the way out
+    /// the close question was asked for is that open.
+    fn forget_rest_not_opened_for_leaving(&mut self) {
+        if let Some(to) = self.leaving.take() {
+            self.forget_rest_not_opened_for(&to);
+            self.leaving = Some(to);
+        }
+    }
+
+    /// Drop what an archive's open would say of the files handed over with it, when `to` is that
+    /// open and it is not going ahead.
+    fn forget_rest_not_opened_for(&mut self, to: &Leaving) {
+        if let Leaving::Open(crate::open_queue::OpenRequest::Path(asked)) = to {
+            self.rest_not_opened.retain(|(dir, ..)| dir != asked);
+        }
     }
 
     /// Go where `to` says, with nothing left to ask.
@@ -10228,6 +10292,9 @@ impl MeridianApp {
     pub fn answer_close_question(&mut self, ctx: &egui::Context, answer: CloseAnswer) {
         match answer {
             CloseAnswer::KeepEditing => {
+                // An archive's Protocol whose open this cancels says nothing of the files handed
+                // over with it.
+                self.forget_rest_not_opened_for_leaving();
                 self.put_the_question_down();
                 // Keeping editing before the move into a new Protocols folder leaves the open
                 // Protocol where it is, and the rest still move.
@@ -10267,11 +10334,15 @@ impl MeridianApp {
                 let to = self.leaving.take().unwrap_or(Leaving::Close);
                 if self.save_for_close(ctx) {
                     self.go(ctx, to);
-                } else if let Leaving::MoveAll { from, .. } = &to {
-                    self.say_protocols_stayed(
-                        from,
-                        "The Protocol open could not be saved, so no Protocol was moved.",
-                    );
+                } else {
+                    // The save failed, so the way out is dropped, as Keep editing drops it.
+                    self.forget_rest_not_opened_for(&to);
+                    if let Leaving::MoveAll { from, .. } = &to {
+                        self.say_protocols_stayed(
+                            from,
+                            "The Protocol open could not be saved, so no Protocol was moved.",
+                        );
+                    }
                 }
             }
         }
@@ -11951,16 +12022,7 @@ impl MeridianApp {
     /// runs, another link is refused rather than started beside it.
     fn begin_link(&mut self, ctx: &egui::Context, link: &str) {
         let banner = NotificationId::new("open-data-file");
-        if let Some(running) = &self.downloading {
-            let why = format!(
-                "Brightfield is still downloading {}. Open the link again once that Protocol has \
-                 opened.",
-                running.address()
-            );
-            eprintln!("could not open {link}: {why}");
-            self.notifications
-                .raise(Notification::new(banner, Severity::Warning, LINK_NOTICE_TITLE).body(why));
-            ctx.request_repaint();
+        if self.refuse_while_archive_job_runs(ctx, link, "link", LINK_NOTICE_TITLE) {
             return;
         }
         let address = match crate::protocol_archive::check_link_with(link, self.archive_hosts) {
@@ -11975,22 +12037,105 @@ impl MeridianApp {
         };
         self.notifications.dismiss(banner);
         let wake = ctx.clone();
-        self.downloading = Some(crate::protocol_archive::Download::begin(
-            address,
-            self.archive_hosts,
-            crate::protocols_dir::root(),
-            move || wake.request_repaint(),
-        ));
+        self.downloading = Some(ArchiveJob {
+            job: crate::protocol_archive::Download::begin(
+                address,
+                self.archive_hosts,
+                crate::protocols_dir::root(),
+                move || wake.request_repaint(),
+            ),
+            others: 0,
+        });
         self.say_downloading();
         ctx.request_repaint();
     }
 
+    /// **Start unpacking the Protocol archive at `archive`**, chosen on this Mac by `⌘O`, a drop
+    /// or the picker, on a worker, as a link's archive is, so an archive near the size limit does
+    /// not hold the window. A banner names it while it unpacks, and it opens once it lands
+    /// ([`Self::poll_download`]). `others` counts the files handed over with it, which are not
+    /// opened. While another archive is downloading or unpacking, it is refused with a banner.
+    fn begin_archive(&mut self, ctx: &egui::Context, archive: &std::path::Path, others: usize) {
+        let named = archive.to_string_lossy();
+        if self.refuse_while_archive_job_runs(ctx, &named, "archive", ARCHIVE_NOTICE_TITLE) {
+            return;
+        }
+        self.notifications
+            .dismiss(NotificationId::new("open-data-file"));
+        self.notifications
+            .dismiss(NotificationId::new(REST_NOT_OPENED_BANNER));
+        let wake = ctx.clone();
+        self.downloading = Some(ArchiveJob {
+            job: crate::protocol_archive::Download::unpack_local_after(
+                archive.to_path_buf(),
+                crate::protocols_dir::root(),
+                self.archive_gate.clone(),
+                move || wake.request_repaint(),
+            ),
+            others,
+        });
+        self.say_downloading();
+        ctx.request_repaint();
+    }
+
+    /// Refuse to open `what`, a `kind` ("link" or "archive"), while another Protocol archive is
+    /// downloading or unpacking, raising a banner titled `title` that says which. Answers whether
+    /// it was refused.
+    fn refuse_while_archive_job_runs(
+        &mut self,
+        ctx: &egui::Context,
+        what: &str,
+        kind: &str,
+        title: &'static str,
+    ) -> bool {
+        let Some(running) = &self.downloading else {
+            return false;
+        };
+        let doing = match running.job.source() {
+            crate::protocol_archive::Source::Link(address) => format!("downloading {address}"),
+            crate::protocol_archive::Source::Local(archive) => {
+                format!("unpacking {}", display_name(archive))
+            }
+        };
+        let why = format!(
+            "Brightfield is still {doing}. Open the {kind} again once that Protocol has opened."
+        );
+        eprintln!("could not open {what}: {why}");
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new("open-data-file"),
+                Severity::Warning,
+                title,
+            )
+            .body(why),
+        );
+        ctx.request_repaint();
+        true
+    }
+
     /// Raise, or bring up to date, the banner a link's download shows while it runs.
     fn say_downloading(&mut self) {
-        let Some(download) = &self.downloading else {
+        let Some(running) = &self.downloading else {
             return;
         };
-        let address = download.address();
+        let download = &running.job;
+        let address = match download.source() {
+            crate::protocol_archive::Source::Link(address) => address,
+            crate::protocol_archive::Source::Local(archive) => {
+                let name = display_name(archive);
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new(DOWNLOAD_BANNER),
+                        Severity::Info,
+                        format!("Unpacking {name}"),
+                    )
+                    .body(format!(
+                        "{name} opens once it is unpacked into the Protocols folder."
+                    )),
+                );
+                return;
+            }
+        };
         let name = address
             .path_segments()
             .and_then(|mut s| s.next_back().map(str::to_string))
@@ -12008,44 +12153,64 @@ impl MeridianApp {
         );
     }
 
-    /// **Take a link's download once it answers**: the Protocol it unpacked opens, restricted
-    /// unless a folder above it is trusted, with the close question first over a draft, and the
-    /// host it came from noted for the band. A download that failed says why. Called once a
-    /// frame; while the download runs it brings the banner's readout up to date.
+    /// **Take an archive job once it answers**: the Protocol it unpacked opens, restricted
+    /// unless a folder above it is trusted, with the close question first over a draft, and where
+    /// it came from noted for the band: a link's host, or the archive's name. An archive handed
+    /// over with other files then says the rest were not opened. A job that failed says why,
+    /// under the link's title or the archive's. Called once a frame; while a download runs it
+    /// brings the banner's readout up to date.
     fn poll_download(&mut self, ctx: &egui::Context) {
-        let Some(download) = self.downloading.as_mut() else {
+        let Some(running) = self.downloading.as_mut() else {
             return;
         };
-        let Some(result) = download.take() else {
+        let Some(result) = running.job.take() else {
             self.say_downloading();
             return;
         };
-        let host = download
-            .address()
-            .host_str()
-            .unwrap_or_default()
-            .to_string();
-        let address = download.address().to_string();
+        let source = running.job.source().clone();
+        let others = running.others;
         self.downloading = None;
         self.notifications
             .dismiss(NotificationId::new(DOWNLOAD_BANNER));
+        let (origin, named, title) = match &source {
+            crate::protocol_archive::Source::Link(address) => (
+                address.host_str().unwrap_or_default().to_string(),
+                address.to_string(),
+                LINK_NOTICE_TITLE,
+            ),
+            crate::protocol_archive::Source::Local(archive) => (
+                format!("the archive {}", display_name(archive)),
+                archive.display().to_string(),
+                ARCHIVE_NOTICE_TITLE,
+            ),
+        };
         match result {
             Ok(dir) => {
-                if let Err(e) = crate::trust::Store::current().note_origin(&dir, &host) {
+                if let Err(e) = crate::trust::Store::current().note_origin(&dir, &origin) {
                     eprintln!(
                         "warning: {}: where it came from was not noted: {e}",
                         dir.display()
                     );
                 }
+                if let (crate::protocol_archive::Source::Local(archive), 1..) = (&source, others) {
+                    self.rest_not_opened.push((
+                        dir.clone(),
+                        format!(
+                            "{} is a Protocol archive, so it opened on its own",
+                            display_name(archive)
+                        ),
+                        others,
+                    ));
+                }
                 self.take_or_ask(ctx, crate::open_queue::OpenRequest::Path(dir));
             }
             Err(why) => {
-                eprintln!("could not open {address}: {why}");
+                eprintln!("could not open {named}: {why}");
                 self.notifications.raise(
                     Notification::new(
                         NotificationId::new("open-data-file"),
                         Severity::Error,
-                        LINK_NOTICE_TITLE,
+                        title,
                     )
                     .body(why),
                 );
@@ -12054,10 +12219,45 @@ impl MeridianApp {
         ctx.request_repaint();
     }
 
+    /// Raise the banner that says only the Protocol was opened: `what` says which opened and why,
+    /// and `others` counts the files handed over with it.
+    fn say_rest_not_opened(&mut self, what: &str, others: usize) {
+        let were = if others == 1 { "was" } else { "were" };
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new(REST_NOT_OPENED_BANNER),
+                Severity::Warning,
+                "Only the Protocol was opened",
+            )
+            .body(format!(
+                "{what}; the other {others} {were} not opened. Open them by themselves to make a \
+                 Protocol of them."
+            )),
+        );
+    }
+
     /// Whether a link's archive is downloading: a test hook.
     #[must_use]
     pub fn is_downloading(&self) -> bool {
-        self.downloading.is_some()
+        self.downloading
+            .as_ref()
+            .is_some_and(|r| r.job.address().is_some())
+    }
+
+    /// This window starting each local archive's unpack only once `gate` can be locked, so a test
+    /// can hold one while it draws frames.
+    #[must_use]
+    pub fn unpacking_archives_after(mut self, gate: std::sync::Arc<std::sync::Mutex<()>>) -> Self {
+        self.archive_gate = Some(gate);
+        self
+    }
+
+    /// Whether a Protocol archive chosen on this Mac is unpacking: a test hook.
+    #[must_use]
+    pub fn is_unpacking_archive(&self) -> bool {
+        self.downloading
+            .as_ref()
+            .is_some_and(|r| r.job.address().is_none())
     }
 
     /// This window checking a link's address, and each address it redirects to, with `allowed`,
@@ -12066,39 +12266,6 @@ impl MeridianApp {
     pub fn fetching_archives_with(mut self, allowed: crate::protocol_archive::Allowed) -> Self {
         self.archive_hosts = allowed;
         self
-    }
-
-    /// **Unpack the Protocol archive at `archive`**, chosen on this Mac by Cmd+O, a drop or the
-    /// picker, into the Protocols folder, and open it as a restricted Protocol is opened, unless
-    /// a folder above it is trusted. Answers whether it opened; one that is refused says why.
-    fn open_archive(&mut self, ctx: &egui::Context, archive: &std::path::Path) -> bool {
-        match crate::protocol_archive::unpack(archive, &crate::protocols_dir::root()) {
-            Ok(dir) => {
-                let origin = format!("the archive {}", display_name(archive));
-                if let Err(e) = crate::trust::Store::current().note_origin(&dir, &origin) {
-                    eprintln!(
-                        "warning: {}: where it came from was not noted: {e}",
-                        dir.display()
-                    );
-                }
-                let manifest = dir.join(arc::spec::MANIFEST_FILENAME);
-                self.open_protocol_path(ctx, &manifest.to_string_lossy());
-                !self.front_door_is_live()
-            }
-            Err(why) => {
-                eprintln!("could not open {}: {why}", archive.display());
-                self.notifications.raise(
-                    Notification::new(
-                        NotificationId::new("open-data-file"),
-                        Severity::Error,
-                        ARCHIVE_NOTICE_TITLE,
-                    )
-                    .body(why),
-                );
-                ctx.request_repaint();
-                false
-            }
-        }
     }
 
     /// Raise the one banner a failed open leaves.
@@ -12233,9 +12400,8 @@ impl MeridianApp {
             self.open_path_now(ctx, &first.to_string_lossy());
             return;
         }
-        let banner = NotificationId::new("open-rest-not-opened");
         self.notifications
-            .dismiss(NotificationId::new("open-rest-not-opened"));
+            .dismiss(NotificationId::new(REST_NOT_OPENED_BANNER));
         self.notifications
             .dismiss(NotificationId::new("open-skipped"));
         if let Some((handed, route)) = paths
@@ -12244,16 +12410,14 @@ impl MeridianApp {
             .find(|(_, route)| !matches!(route, Route::New(_)))
         {
             let others = paths.len() - 1;
-            let were = if others == 1 { "was" } else { "were" };
-            // An archive that is refused opens nothing, so its own banner stands and none says
-            // the Protocol opened.
+            // An archive unpacks on a worker, and says the rest were not opened once it lands; one
+            // that is refused opens nothing, so its own banner stands and none says the Protocol
+            // opened.
             if matches!(route, Route::Archive(_)) {
-                if !self.open_archive(ctx, handed) {
-                    return;
-                }
-            } else {
-                self.open_path_now(ctx, &handed.to_string_lossy());
+                self.begin_archive(ctx, handed, others);
+                return;
             }
+            self.open_path_now(ctx, &handed.to_string_lossy());
             // What opened, named as the route found it: a file inside a Protocol is that
             // Protocol's, not a Protocol itself.
             let what = match &route {
@@ -12268,21 +12432,10 @@ impl MeridianApp {
                     display_name(handed),
                     display_name(dir)
                 ),
-                Route::Archive(_) => format!(
-                    "{} is a Protocol archive, so it opened on its own",
-                    display_name(handed)
-                ),
-                // Not found by the search.
-                Route::New(_) => return,
+                // Taken above, and not found by the search.
+                Route::Archive(_) | Route::New(_) => return,
             };
-            self.notifications.raise(
-                Notification::new(banner, Severity::Warning, "Only the Protocol was opened").body(
-                    format!(
-                        "{what}; the other {others} {were} not opened. Open them by themselves to \
-                         make a Protocol of them."
-                    ),
-                ),
-            );
+            self.say_rest_not_opened(&what, others);
             return;
         }
         self.notifications
@@ -12396,6 +12549,18 @@ impl MeridianApp {
             self.held_for_question.push(request);
             return;
         }
+        // A Protocol archive chosen on this Mac, held as any open is while the question is up,
+        // otherwise starts unpacking at once, as a link's download does, and nothing is left
+        // until it lands: the Protocol it brings then opens as any open does, asking first over
+        // the draft the window holds by then, so an edit made while it unpacks is asked about
+        // too. While a quit waits for runs, an archive goes to `leave`, which refuses the open,
+        // so the archive is not unpacked.
+        if !self.close_after_runs {
+            if let Some((archive, others)) = archive_handed_over(&request) {
+                self.begin_archive(ctx, &archive, others);
+                return;
+            }
+        }
         match request {
             // A lone data file reopens the Protocol it already has, or asks which of several,
             // before anything is left: a Protocol is made of it only when none reads it.
@@ -12455,9 +12620,15 @@ impl MeridianApp {
             Route::Existing(dir) => {
                 let manifest = dir.join(arc::spec::MANIFEST_FILENAME);
                 self.open_protocol_path(ctx, &manifest.to_string_lossy());
+                // An archive's Protocol, handed over with other files, says they were not opened
+                // now that it has.
+                if let Some(at) = self.rest_not_opened.iter().position(|(d, ..)| *d == dir) {
+                    let (_, what, others) = self.rest_not_opened.remove(at);
+                    self.say_rest_not_opened(&what, others);
+                }
             }
             Route::Archive(archive) => {
-                self.open_archive(ctx, &archive);
+                self.begin_archive(ctx, &archive, 0);
             }
             Route::New(path) => {
                 // The runner this window was given, else this binary, which is the runner when
