@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use brightfield_shell::design::Mode;
 use brightfield_shell::open_queue::OpenRequest;
+use brightfield_shell::overlays::CloseAnswer;
 use brightfield_shell::protocol_archive::{self, Limits};
 use brightfield_shell::run::Runner;
 use brightfield_shell::trust::Store;
@@ -1588,6 +1589,73 @@ fn a_local_archive_unpacks_off_the_frame_and_opens_restricted() {
         Some(protocols().join("off_frame")),
         "the open Protocol stays"
     );
+}
+
+/// An archive handed over with other files, over a draft, says the others were not opened only
+/// once its Protocol has: keeping editing at the close question opens nothing and says nothing of
+/// them, and closing without saving opens it and says so.
+#[test]
+fn an_archive_among_files_over_a_draft_says_the_rest_only_once_it_opens() {
+    let dir = input("among-draft");
+    shipped_protocol(&dir.join("held"), "among_held");
+    shipped_protocol(&dir.join("src"), "among_draft");
+    let zip = dir.join("among_draft.zip");
+    zip_folder(&dir.join("src"), &zip, "among_draft");
+    let csv = dir.join("beside.csv");
+    std::fs::copy(measures_csv(), &csv).unwrap();
+    let only = |a: &MeridianApp| {
+        a.notifications()
+            .iter()
+            .any(|n| n.title == "Only the Protocol was opened")
+    };
+
+    let mut app = app();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx);
+    app.open_queue().push(OpenRequest::Path(dir.join("held")));
+    until(&mut app, &ctx, "the held Protocol opens", |a| {
+        a.restricted().is_some()
+    });
+    app.chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("mass_g > 4000".to_owned()),
+            order: None,
+        });
+    frame(&mut app, &ctx);
+    assert!(app.has_unsaved_work(), "a draft is held");
+
+    app.open_queue()
+        .push(OpenRequest::Paths(vec![csv.clone(), zip.clone()]));
+    until(&mut app, &ctx, "the unpacked archive asks first", |a| {
+        a.close_question().is_some()
+    });
+    assert!(
+        !only(&app),
+        "nothing is said before it opens: {}",
+        said(&app)
+    );
+    app.answer_close_question(&ctx, CloseAnswer::KeepEditing);
+    frame(&mut app, &ctx);
+    assert!(!only(&app), "kept editing, nothing opened: {}", said(&app));
+    assert_eq!(
+        app.restricted().map(|r| r.dir.clone()),
+        Some(dir.join("held")),
+        "the held Protocol stays"
+    );
+
+    app.open_queue().push(OpenRequest::Paths(vec![csv, zip]));
+    until(&mut app, &ctx, "the unpacked archive asks again", |a| {
+        a.close_question().is_some()
+    });
+    // A restricted Protocol has nowhere to keep the draft as a version, so the question says so,
+    // and the same answer again goes with nothing kept.
+    app.answer_close_question(&ctx, CloseAnswer::CloseWithoutSaving);
+    app.answer_close_question(&ctx, CloseAnswer::CloseWithoutSaving);
+    until(&mut app, &ctx, "the archive's Protocol opens", |a| {
+        a.restricted()
+            .is_some_and(|r| r.dir.starts_with(protocols()) && r.dir != dir.join("held"))
+    });
+    assert!(only(&app), "now it says the rest: {}", said(&app));
 }
 
 #[test]

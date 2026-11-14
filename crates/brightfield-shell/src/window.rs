@@ -3568,6 +3568,11 @@ pub struct MeridianApp {
     archive_hosts: crate::protocol_archive::Allowed,
     /// A lock a local archive's unpack waits on before it starts, when a test holds unpacks.
     archive_gate: Option<std::sync::Arc<std::sync::Mutex<()>>>,
+    /// What to say once the Protocol an archive unpacked into opens, when the archive was handed
+    /// over with other files: its folder, what opened and why, and how many others were not
+    /// opened. Taken by the next Protocol folder opened, and said only when that is this one, so
+    /// an open the close question cancels says nothing of the rest.
+    rest_not_opened: Option<(PathBuf, String, usize)>,
     /// What a click on the restricted band asked to trust, taken after the frame.
     trust_asked: Option<TrustScope>,
     /// The Protocol a lone table's grid and dashboard were opened from: the one-source Protocol
@@ -4130,6 +4135,7 @@ impl MeridianApp {
             downloading: None,
             archive_hosts: crate::protocol_archive::check_address,
             archive_gate: None,
+            rest_not_opened: None,
             trust_asked: None,
             own_protocol: None,
             empty_protocol: None,
@@ -10264,6 +10270,17 @@ impl MeridianApp {
     pub fn answer_close_question(&mut self, ctx: &egui::Context, answer: CloseAnswer) {
         match answer {
             CloseAnswer::KeepEditing => {
+                // An archive's Protocol whose open this cancels says nothing of the files handed
+                // over with it.
+                if let (
+                    Some(Leaving::Open(crate::open_queue::OpenRequest::Path(asked))),
+                    Some((unpacked, ..)),
+                ) = (&self.leaving, &self.rest_not_opened)
+                {
+                    if asked == unpacked {
+                        self.rest_not_opened = None;
+                    }
+                }
                 self.put_the_question_down();
                 // Keeping editing before the move into a new Protocols folder leaves the open
                 // Protocol where it is, and the rest still move.
@@ -12152,16 +12169,18 @@ impl MeridianApp {
                         dir.display()
                     );
                 }
-                self.take_or_ask(ctx, crate::open_queue::OpenRequest::Path(dir));
-                if let (crate::protocol_archive::Source::Local(archive), 1..) = (&source, others) {
-                    self.say_rest_not_opened(
-                        &format!(
+                self.rest_not_opened = match (&source, others) {
+                    (crate::protocol_archive::Source::Local(archive), 1..) => Some((
+                        dir.clone(),
+                        format!(
                             "{} is a Protocol archive, so it opened on its own",
                             display_name(archive)
                         ),
                         others,
-                    );
-                }
+                    )),
+                    _ => None,
+                };
+                self.take_or_ask(ctx, crate::open_queue::OpenRequest::Path(dir));
             }
             Err(why) => {
                 eprintln!("could not open {named}: {why}");
@@ -12502,9 +12521,13 @@ impl MeridianApp {
         // does, and nothing is left until it lands: the Protocol it brings then opens as any open
         // does, asking first over the draft the window holds by then, so an edit made while it
         // unpacks is asked about too.
-        if let Some((archive, others)) = archive_handed_over(&request) {
-            self.begin_archive(ctx, &archive, others);
-            return;
+        // While a quit waits for runs, the open is refused as `leave` refuses any, before anything
+        // is unpacked.
+        if !self.close_after_runs {
+            if let Some((archive, others)) = archive_handed_over(&request) {
+                self.begin_archive(ctx, &archive, others);
+                return;
+            }
         }
         // A close question that is up is not replaced: the way out it was asked for stands, and
         // the open is held and taken once the question is answered
@@ -12575,6 +12598,13 @@ impl MeridianApp {
             Route::Existing(dir) => {
                 let manifest = dir.join(arc::spec::MANIFEST_FILENAME);
                 self.open_protocol_path(ctx, &manifest.to_string_lossy());
+                // An archive's Protocol, handed over with other files, says they were not opened
+                // now that it has.
+                if let Some((unpacked, what, others)) = self.rest_not_opened.take() {
+                    if unpacked == dir {
+                        self.say_rest_not_opened(&what, others);
+                    }
+                }
             }
             Route::Archive(archive) => {
                 self.begin_archive(ctx, &archive, 0);
