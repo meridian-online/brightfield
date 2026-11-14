@@ -510,6 +510,7 @@ jobs:
       # target-seconds: new_protocol=185 one_step_protocol=21 open_gestures=62
       # target-seconds: open_makes_a_protocol=95 open_materialise=93
       # target-seconds: operation_from_the_cursor=24 operation_panel=23
+      # target-seconds: organise_joins=350
       # target-seconds: outline_list=33 overlay_wiring=15
       # target-seconds: own_files_protocol=37 point_map_baseline=13
       # target-seconds: preferences=127 protocol_degrade_channel=14
