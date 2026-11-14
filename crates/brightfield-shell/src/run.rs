@@ -431,6 +431,26 @@ impl Run {
     #[must_use]
     pub fn begin(runner: &Runner, dir: &Path, wake: impl Fn() + Send + 'static) -> Self {
         let (tx, outcome) = mpsc::channel();
+        // A Protocol the analyst stopped trusting while it was open runs nothing, whichever part
+        // of the window asks: the run ends at once, unrun, saying why.
+        if crate::trust::refuses_run(dir) {
+            tx.send(Finished {
+                record: None,
+                log: format!(
+                    "{} is not trusted, so it was not run; trust it from the band over its \
+                     canvas once it is opened again",
+                    dir.display()
+                ),
+                succeeded: false,
+            })
+            .ok();
+            wake();
+            return Self {
+                dir: dir.to_path_buf(),
+                outcome,
+                done: false,
+            };
+        }
         let program = runner.program.clone();
         let worker_dir = dir.to_path_buf();
         std::thread::spawn(move || {

@@ -71,6 +71,24 @@ static MEMORY: Mutex<Option<Ledger>> = Mutex::new(None);
 /// Held across each read and write of the store, so two changes at once do not lose one.
 static LOCK: Mutex<()> = Mutex::new(());
 
+/// The Protocols this process stopped trusting with [`Store::revoke_protocol`], by the path the
+/// store compares: one may still be on a window's canvas, kept there over a draft, and
+/// [`refuses_run`] keeps it from running.
+static REVOKED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Whether a run of the Protocol in `dir` is refused: this process stopped trusting it and the
+/// store does not trust it again. A Protocol never revoked here is not refused, so one opened from
+/// the command line, which runs with no record, still runs.
+#[must_use]
+pub fn refuses_run(dir: &Path) -> bool {
+    let path = Place::of(dir).path;
+    REVOKED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .contains(&path)
+        && !Store::current().is_trusted(dir)
+}
+
 /// Keep the trust store in the app's config folder from now on: what the app does at launch.
 pub fn use_config_dir() {
     let dir = brightfield_workbench::persist::config_dir(
@@ -162,6 +180,10 @@ impl Store {
             ledger.trusted.retain(|r| r.folder || !place.is(r));
             taken = ledger.trusted.len() < before;
         })?;
+        let mut revoked = REVOKED.lock().unwrap_or_else(PoisonError::into_inner);
+        if !revoked.contains(&place.path) {
+            revoked.push(place.path);
+        }
         Ok(taken)
     }
 
