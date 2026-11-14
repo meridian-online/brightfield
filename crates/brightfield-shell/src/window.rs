@@ -3568,11 +3568,11 @@ pub struct MeridianApp {
     archive_hosts: crate::protocol_archive::Allowed,
     /// A lock a local archive's unpack waits on before it starts, when a test holds unpacks.
     archive_gate: Option<std::sync::Arc<std::sync::Mutex<()>>>,
-    /// What to say once the Protocol an archive unpacked into opens, when the archive was handed
-    /// over with other files: its folder, what opened and why, and how many others were not
-    /// opened. Taken by the next Protocol folder opened, and said only when that is this one, so
-    /// an open the close question cancels says nothing of the rest.
-    rest_not_opened: Option<(PathBuf, String, usize)>,
+    /// What to say once the Protocol an archive unpacked into opens, for each archive handed over
+    /// with other files: its folder, what opened and why, and how many others were not opened.
+    /// Said when that folder opens, and dropped when its open is cancelled or replaced by another
+    /// way out, so it is never said of a later, unrelated open.
+    rest_not_opened: Vec<(PathBuf, String, usize)>,
     /// What a click on the restricted band asked to trust, taken after the frame.
     trust_asked: Option<TrustScope>,
     /// The Protocol a lone table's grid and dashboard were opened from: the one-source Protocol
@@ -4135,7 +4135,7 @@ impl MeridianApp {
             downloading: None,
             archive_hosts: crate::protocol_archive::check_address,
             archive_gate: None,
-            rest_not_opened: None,
+            rest_not_opened: Vec::new(),
             trust_asked: None,
             own_protocol: None,
             empty_protocol: None,
@@ -9961,6 +9961,8 @@ impl MeridianApp {
             self.overlay = Some(Overlay::CloseQuestion(self.close_question_for_now()));
             self.unkept_accepted = false;
         }
+        // An open this way out replaces says nothing of the files handed over with it.
+        self.forget_rest_not_opened_for_leaving();
         // Worded for what it is asked before now, the latest way out.
         if let Some(Overlay::CloseQuestion(question)) = self.overlay.as_mut() {
             question.before = match &to {
@@ -9978,6 +9980,15 @@ impl MeridianApp {
             };
         }
         self.leaving = Some(to);
+    }
+
+    /// Drop what an archive's open would say of the files handed over with it, when the way out
+    /// the close question was asked for is that open.
+    fn forget_rest_not_opened_for_leaving(&mut self) {
+        if let Some(Leaving::Open(crate::open_queue::OpenRequest::Path(asked))) = &self.leaving {
+            let asked = asked.clone();
+            self.rest_not_opened.retain(|(dir, ..)| *dir != asked);
+        }
     }
 
     /// Go where `to` says, with nothing left to ask.
@@ -10272,15 +10283,7 @@ impl MeridianApp {
             CloseAnswer::KeepEditing => {
                 // An archive's Protocol whose open this cancels says nothing of the files handed
                 // over with it.
-                if let (
-                    Some(Leaving::Open(crate::open_queue::OpenRequest::Path(asked))),
-                    Some((unpacked, ..)),
-                ) = (&self.leaving, &self.rest_not_opened)
-                {
-                    if asked == unpacked {
-                        self.rest_not_opened = None;
-                    }
-                }
+                self.forget_rest_not_opened_for_leaving();
                 self.put_the_question_down();
                 // Keeping editing before the move into a new Protocols folder leaves the open
                 // Protocol where it is, and the rest still move.
@@ -12169,17 +12172,16 @@ impl MeridianApp {
                         dir.display()
                     );
                 }
-                self.rest_not_opened = match (&source, others) {
-                    (crate::protocol_archive::Source::Local(archive), 1..) => Some((
+                if let (crate::protocol_archive::Source::Local(archive), 1..) = (&source, others) {
+                    self.rest_not_opened.push((
                         dir.clone(),
                         format!(
                             "{} is a Protocol archive, so it opened on its own",
                             display_name(archive)
                         ),
                         others,
-                    )),
-                    _ => None,
-                };
+                    ));
+                }
                 self.take_or_ask(ctx, crate::open_queue::OpenRequest::Path(dir));
             }
             Err(why) => {
@@ -12517,18 +12519,6 @@ impl MeridianApp {
     /// added under. A link is carried out at once.
     fn take_or_ask(&mut self, ctx: &egui::Context, request: crate::open_queue::OpenRequest) {
         use crate::open_queue::OpenRequest;
-        // A Protocol archive chosen on this Mac starts unpacking at once, as a link's download
-        // does, and nothing is left until it lands: the Protocol it brings then opens as any open
-        // does, asking first over the draft the window holds by then, so an edit made while it
-        // unpacks is asked about too.
-        // While a quit waits for runs, an archive goes to `leave`, which refuses the open, so the
-        // archive is not unpacked.
-        if !self.close_after_runs {
-            if let Some((archive, others)) = archive_handed_over(&request) {
-                self.begin_archive(ctx, &archive, others);
-                return;
-            }
-        }
         // A close question that is up is not replaced: the way out it was asked for stands, and
         // the open is held and taken once the question is answered
         // (`an_open_during_the_move_question_waits_for_the_move`). A link starts its download at
@@ -12538,6 +12528,18 @@ impl MeridianApp {
         {
             self.held_for_question.push(request);
             return;
+        }
+        // A Protocol archive chosen on this Mac, held as any open is while the question is up,
+        // otherwise starts unpacking at once, as a link's download does, and nothing is left
+        // until it lands: the Protocol it brings then opens as any open does, asking first over
+        // the draft the window holds by then, so an edit made while it unpacks is asked about
+        // too. While a quit waits for runs, an archive goes to `leave`, which refuses the open,
+        // so the archive is not unpacked.
+        if !self.close_after_runs {
+            if let Some((archive, others)) = archive_handed_over(&request) {
+                self.begin_archive(ctx, &archive, others);
+                return;
+            }
         }
         match request {
             // A lone data file reopens the Protocol it already has, or asks which of several,
@@ -12600,10 +12602,9 @@ impl MeridianApp {
                 self.open_protocol_path(ctx, &manifest.to_string_lossy());
                 // An archive's Protocol, handed over with other files, says they were not opened
                 // now that it has.
-                if let Some((unpacked, what, others)) = self.rest_not_opened.take() {
-                    if unpacked == dir {
-                        self.say_rest_not_opened(&what, others);
-                    }
+                if let Some(at) = self.rest_not_opened.iter().position(|(d, ..)| *d == dir) {
+                    let (_, what, others) = self.rest_not_opened.remove(at);
+                    self.say_rest_not_opened(&what, others);
                 }
             }
             Route::Archive(archive) => {

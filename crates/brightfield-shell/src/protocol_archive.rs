@@ -184,11 +184,22 @@ pub fn unpack_within(zip: &Path, into: &Path, limits: Limits) -> Result<PathBuf,
         .map_err(|e| format!("{named} is not a zip Brightfield can read: {e}"))?;
     let plan = plan(&mut archive, &named, limits)?;
     check_contents(&mut archive, &plan, &named)?;
+    // Written into a hidden folder beside the Protocols first, and moved under its name only once
+    // every entry is written, so an unpack the app quits under leaves no half-written Protocol;
+    // the front door's tree skips a hidden folder.
+    std::fs::create_dir_all(into).map_err(|e| format!("{}: {e}", into.display()))?;
+    let staging = tempfile::Builder::new()
+        .prefix(".unpacking-")
+        .tempdir_in(into)
+        .map_err(|e| format!("could not make a place to unpack into: {e}"))?;
+    write_entries(&mut archive, &plan, staging.path(), &named, limits.bytes)?;
     let (dir, _) = crate::protocols_dir::claim(into, &plan.top).map_err(|e| e.to_string())?;
-    if let Err(why) = write_entries(&mut archive, &plan, &dir, &named, limits.bytes) {
-        let _ = std::fs::remove_dir_all(&dir);
-        return Err(why);
+    // The claimed folder is empty, and a rename replaces an empty folder.
+    if let Err(e) = std::fs::rename(staging.path(), &dir) {
+        let _ = std::fs::remove_dir(&dir);
+        return Err(format!("{}: {e}", dir.display()));
     }
+    let _ = staging.keep();
     Ok(dir)
 }
 

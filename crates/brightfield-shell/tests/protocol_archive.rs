@@ -801,6 +801,11 @@ fn a_clashing_archive_takes_dash_two() {
     assert_eq!(second, into.join("quakes-2"));
     assert!(second.join("panels/overview.yaml").is_file());
     assert!(second.join("build/quakes.duckdb").is_file());
+    assert_eq!(
+        folders_in(&into),
+        vec!["quakes", "quakes-2"],
+        "each is moved under its name once written, leaving no staging folder behind"
+    );
 }
 
 #[test]
