@@ -15814,8 +15814,8 @@ impl MeridianApp {
 
     /// Whether the Protocol on the canvas is one `untrust-protocol` stopped trusting and the store
     /// still does not trust: kept on the canvas over a draft, it runs nothing until it is trusted.
-    /// Every arc run refuses it too ([`crate::trust::refuses_run`]); this is the one that says so
-    /// in a banner.
+    /// An arc run started anywhere else refuses it too ([`crate::trust::refuses_run`],
+    /// `keep_editing_after_untrusting_refuses_a_run`); this is the one that says so in a banner.
     fn held_untrusted(&self) -> Option<PathBuf> {
         self.held_protocol_dir()
             .filter(|dir| crate::trust::refuses_run(dir))

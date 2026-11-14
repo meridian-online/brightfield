@@ -472,6 +472,13 @@ impl ModelPane {
     /// An edit that does not read, a file that could not be written, or the run's failure.
     pub fn save_draft(&mut self) -> Result<(), String> {
         self.settle_file_edit()?;
+        // A Protocol the analyst stopped trusting while it was open is saved without its run,
+        // which stays owed until it is trusted again: the save is not refused for a run it cannot
+        // make.
+        if self.run_owed && crate::trust::refuses_run(&self.protocol.dir) {
+            own_files::write_silver(&self.protocol, &self.model)?;
+            return own_files::drop_unmade_silver(&self.protocol, &self.model);
+        }
         if self.run_owed {
             self.run_silver(true)?;
         }
