@@ -169,6 +169,26 @@ pub fn unpack(zip: &Path, into: &Path) -> Result<PathBuf, String> {
     unpack_within(zip, into, Limits::ARCHIVE)
 }
 
+/// The prefix of the hidden folder an unpack is written into before it is moved under its name.
+const STAGING_PREFIX: &str = ".unpacking-";
+
+/// **Remove the hidden folders unpacks left in `into`**, the Protocols folder, when the app quit
+/// or was killed while one was being written. Called at launch, before any unpack starts, since a
+/// sweep while one runs would remove the folder it writes into. Answers how many it removed.
+pub fn sweep_staging(into: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(into) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|e| {
+            e.file_name().to_string_lossy().starts_with(STAGING_PREFIX)
+                && e.file_type().is_ok_and(|t| t.is_dir())
+        })
+        .filter(|e| std::fs::remove_dir_all(e.path()).is_ok())
+        .count()
+}
+
 /// [`unpack`], within `limits`.
 ///
 /// # Errors
@@ -189,7 +209,7 @@ pub fn unpack_within(zip: &Path, into: &Path, limits: Limits) -> Result<PathBuf,
     // the front door's tree skips a hidden folder.
     std::fs::create_dir_all(into).map_err(|e| format!("{}: {e}", into.display()))?;
     let staging = tempfile::Builder::new()
-        .prefix(".unpacking-")
+        .prefix(STAGING_PREFIX)
         .tempdir_in(into)
         .map_err(|e| format!("could not make a place to unpack into: {e}"))?;
     write_entries(&mut archive, &plan, staging.path(), &named, limits.bytes)?;

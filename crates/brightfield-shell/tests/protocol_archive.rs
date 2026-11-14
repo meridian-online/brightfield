@@ -24,7 +24,7 @@ use brightfield_shell::overlays::CloseAnswer;
 use brightfield_shell::protocol_archive::{self, Limits};
 use brightfield_shell::run::Runner;
 use brightfield_shell::trust::Store;
-use brightfield_shell::window::{Boot, MeridianApp, TrustScope};
+use brightfield_shell::window::{Boot, Leaving, MeridianApp, TrustScope};
 
 /// How long a download or a run is waited for.
 const PATIENCE: Duration = Duration::from_secs(120);
@@ -1661,6 +1661,110 @@ fn an_archive_among_files_over_a_draft_says_the_rest_only_once_it_opens() {
             .is_some_and(|r| r.dir.starts_with(protocols()) && r.dir != dir.join("held"))
     });
     assert!(only(&app), "now it says the rest: {}", said(&app));
+}
+
+/// A window holding a restricted Protocol with a draft, so every open asks the close question.
+fn over_a_draft(dir: &Path) -> (MeridianApp, egui::Context) {
+    let mut app = app();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx);
+    app.open_queue().push(OpenRequest::Path(dir.to_path_buf()));
+    until(&mut app, &ctx, "the held Protocol opens", |a| {
+        a.restricted().is_some()
+    });
+    app.chart_doc_mut()
+        .apply_grid_view(brightfield_engine::RowsView {
+            condition: Some("mass_g > 4000".to_owned()),
+            order: None,
+        });
+    frame(&mut app, &ctx);
+    assert!(app.has_unsaved_work(), "a draft is held");
+    (app, ctx)
+}
+
+/// An archive handed over while the close question is up waits behind it, as any open does, so
+/// a quit answered there would start no unpack; once the question is answered it unpacks.
+#[test]
+fn an_archive_handed_over_during_the_close_question_waits_behind_it() {
+    let dir = input("behind-question");
+    shipped_protocol(&dir.join("held"), "behind_held");
+    shipped_protocol(&dir.join("src"), "behind_question");
+    let zip = dir.join("behind_question.zip");
+    zip_folder(&dir.join("src"), &zip, "behind_question");
+    let (mut app, ctx) = over_a_draft(&dir.join("held"));
+
+    app.leave(&ctx, Leaving::Home);
+    assert!(app.close_question().is_some(), "{}", said(&app));
+    app.open_queue().push(OpenRequest::Path(zip));
+    for _ in 0..3 {
+        frame(&mut app, &ctx);
+    }
+    assert!(
+        !app.is_unpacking_archive(),
+        "nothing unpacks behind the question"
+    );
+    assert!(!protocols().join("behind_question").exists());
+
+    app.answer_close_question(&ctx, CloseAnswer::KeepEditing);
+    until(&mut app, &ctx, "the held archive unpacks and asks", |a| {
+        protocols().join("behind_question").exists() && a.close_question().is_some()
+    });
+}
+
+/// An archive's open, among other files, that another way out replaces at the close question
+/// says nothing of those files when its folder is later opened by itself.
+#[test]
+fn an_archive_open_replaced_by_another_way_out_says_nothing_later() {
+    let dir = input("replaced-open");
+    shipped_protocol(&dir.join("held"), "replaced_held");
+    shipped_protocol(&dir.join("src"), "replaced_open");
+    let zip = dir.join("replaced_open.zip");
+    zip_folder(&dir.join("src"), &zip, "replaced_open");
+    let csv = dir.join("beside.csv");
+    std::fs::copy(measures_csv(), &csv).unwrap();
+    let unpacked = protocols().join("replaced_open");
+    let only = |a: &MeridianApp| {
+        a.notifications()
+            .iter()
+            .any(|n| n.title == "Only the Protocol was opened")
+    };
+    let (mut app, ctx) = over_a_draft(&dir.join("held"));
+
+    app.open_queue().push(OpenRequest::Paths(vec![csv, zip]));
+    until(&mut app, &ctx, "the unpacked archive asks first", |a| {
+        a.close_question().is_some()
+    });
+    app.leave(&ctx, Leaving::Home);
+    app.answer_close_question(&ctx, CloseAnswer::KeepEditing);
+    frame(&mut app, &ctx);
+
+    app.open_queue().push(OpenRequest::Path(unpacked.clone()));
+    until(&mut app, &ctx, "its folder asks first", |a| {
+        a.close_question().is_some()
+    });
+    app.answer_close_question(&ctx, CloseAnswer::CloseWithoutSaving);
+    app.answer_close_question(&ctx, CloseAnswer::CloseWithoutSaving);
+    until(&mut app, &ctx, "its folder opens by itself", |a| {
+        a.restricted().is_some_and(|r| r.dir == unpacked)
+    });
+    assert!(
+        !only(&app),
+        "nothing is said of the earlier files: {}",
+        said(&app)
+    );
+}
+
+/// The hidden folders an unpack the app quit under left behind are removed at the next launch,
+/// and nothing else in the Protocols folder is.
+#[test]
+fn a_launch_sweeps_the_staging_an_interrupted_unpack_left() {
+    let into = input("sweep-into");
+    std::fs::create_dir_all(into.join(".unpacking-abc123/data")).unwrap();
+    std::fs::write(into.join(".unpacking-abc123/arcform.yaml"), "name: x\n").unwrap();
+    std::fs::create_dir_all(into.join("kept")).unwrap();
+    std::fs::create_dir_all(into.join(".hidden_other")).unwrap();
+    assert_eq!(protocol_archive::sweep_staging(&into), 1);
+    assert_eq!(folders_in(&into), vec![".hidden_other", "kept"]);
 }
 
 #[test]

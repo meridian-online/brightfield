@@ -1341,6 +1341,11 @@ fn main() -> Result<(), String> {
         Box::new(move |cc| {
             let chart_host = host_from_frame(cc)?;
             let protocol_host = host_from_frame(cc)?;
+            // What an archive's unpack left half-written when the app last quit under it, before
+            // this launch starts one.
+            brightfield_shell::protocol_archive::sweep_staging(
+                &brightfield_shell::protocols_dir::root(),
+            );
             Ok(Box::new(BrightfieldApp {
                 // `allowing_dialogs` here and nowhere else: this is the one
                 // construction with an operating-system window behind it and a

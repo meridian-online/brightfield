@@ -9985,9 +9985,17 @@ impl MeridianApp {
     /// Drop what an archive's open would say of the files handed over with it, when the way out
     /// the close question was asked for is that open.
     fn forget_rest_not_opened_for_leaving(&mut self) {
-        if let Some(Leaving::Open(crate::open_queue::OpenRequest::Path(asked))) = &self.leaving {
-            let asked = asked.clone();
-            self.rest_not_opened.retain(|(dir, ..)| *dir != asked);
+        if let Some(to) = self.leaving.take() {
+            self.forget_rest_not_opened_for(&to);
+            self.leaving = Some(to);
+        }
+    }
+
+    /// Drop what an archive's open would say of the files handed over with it, when `to` is that
+    /// open and it is not going ahead.
+    fn forget_rest_not_opened_for(&mut self, to: &Leaving) {
+        if let Leaving::Open(crate::open_queue::OpenRequest::Path(asked)) = to {
+            self.rest_not_opened.retain(|(dir, ..)| dir != asked);
         }
     }
 
@@ -10323,11 +10331,15 @@ impl MeridianApp {
                 let to = self.leaving.take().unwrap_or(Leaving::Close);
                 if self.save_for_close(ctx) {
                     self.go(ctx, to);
-                } else if let Leaving::MoveAll { from, .. } = &to {
-                    self.say_protocols_stayed(
-                        from,
-                        "The Protocol open could not be saved, so no Protocol was moved.",
-                    );
+                } else {
+                    // The save failed, so the way out is dropped, as Keep editing drops it.
+                    self.forget_rest_not_opened_for(&to);
+                    if let Leaving::MoveAll { from, .. } = &to {
+                        self.say_protocols_stayed(
+                            from,
+                            "The Protocol open could not be saved, so no Protocol was moved.",
+                        );
+                    }
                 }
             }
         }
