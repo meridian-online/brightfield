@@ -1439,6 +1439,20 @@ fn untrusting_the_open_protocol_restricts_it_and_leaves_folder_trust_alone() {
     frame(&mut again, &ctx);
     assert!(again.restricted().is_some(), "{}", said(&again));
 
+    // One trusted from outside, drawn as its panels, is untrusted the same way.
+    let shipped = input("untrust-shipped").join("shipped");
+    shipped_protocol(&shipped, "shipped");
+    store.trust(&shipped).unwrap();
+    let mut drawn = self::app();
+    frame(&mut drawn, &ctx);
+    drawn.open_queue().push(OpenRequest::Path(shipped.clone()));
+    frame(&mut drawn, &ctx);
+    assert!(drawn.restricted().is_none(), "{}", said(&drawn));
+    assert!(drawn.untrust_open_protocol(&ctx), "{}", said(&drawn));
+    frame(&mut drawn, &ctx);
+    assert!(!store.is_trusted(&shipped));
+    assert!(drawn.restricted().is_some(), "{}", said(&drawn));
+
     // A Protocol a folder above it trusts keeps that trust when its own record goes.
     let group = input("untrust-group");
     let beneath = brightfield_shell::own_files::create_empty(&group).expect("made");
