@@ -1464,6 +1464,16 @@ const UNCHECKED_MODALS: &[(&str, &str)] = &[
          the narrow rung, so its scrim and width are the layer's; what it has is \
          no baseline of its own",
     ),
+    (
+        "bf-overlay-organise-joins",
+        "the organise sheet over a Protocol's joins, opened by `o`. It opens only \
+         over a model pane of two tables or more, which only a folder opened and \
+         run through arc makes, while an OverlayCase presses its key over a booted \
+         chart or Protocol graph that has no model pane; there `o` opens nothing \
+         and says so. Its behaviour is organise_joins.rs's, over the retail \
+         extract. It is shown through ModalLayer on the default rung, so its scrim \
+         and width are the layer's; what it has is no baseline of its own",
+    ),
 ];
 
 /// [`OVERLAY_CASES`] plus [`UNCHECKED_MODALS`] account for the
