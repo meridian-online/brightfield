@@ -51,7 +51,7 @@ brightfield-sql = { path = "crates/brightfield-sql" }
 # two moves in lockstep: this `rev` and Cargo.lock. See README §"The arcform
 # dependency". The package is named `arcform` upstream; `package =` keeps the
 # crate `arc` in this workspace's source.
-arc = { package = "arcform", git = "https://github.com/meridian-online/arcform", rev = "631c587cb24f30f796b801d904fef7fb678a1a65", default-features = false, features = ["http-fetch"] }
+arc = { package = "arcform", git = "https://github.com/meridian-online/arcform", rev = "40473103aba2c901d49e6fe175abe4bc99ddacbf", default-features = false, features = ["http-fetch"] }
 # The modelling layer, dovetail: the own-files flow's discoverer. Rev-pinned like `arc`
 # (pre-1.0, so every bump is deliberate). `default-features = false` leaves out its
 # `finetype-guided` typer, the candle ML stack, which this binary does not carry. It pins the
