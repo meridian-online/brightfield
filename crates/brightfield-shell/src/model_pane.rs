@@ -805,7 +805,9 @@ impl ModelPane {
     /// Keep or Drop is refused.
     pub fn apply_joins(&mut self, actions: &[ModelAction]) -> Vec<Dispatched> {
         if let Err(e) = self.settle_file_edit() {
-            return vec![Dispatched::Failed(e)];
+            let refused = Dispatched::Failed(e);
+            self.say(&refused);
+            return vec![refused];
         }
         let mut model = self.model.clone();
         let mut answers = Vec::new();
