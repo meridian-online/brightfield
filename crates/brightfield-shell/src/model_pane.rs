@@ -797,6 +797,60 @@ impl ModelPane {
         dispatched
     }
 
+    /// **Keep and drop several joins with one save**, as the organise sheet's `Enter` asks: each
+    /// Keep or Drop in `actions` is applied to the model in order, one the model refuses is
+    /// answered as refused and the rest still apply, and the model is then saved and the
+    /// Protocol run once, not once per join. Answers what came of each, in order; a save that
+    /// fails answers in place of every change that would have been saved. An action other than
+    /// Keep or Drop is refused.
+    pub fn apply_joins(&mut self, actions: &[ModelAction]) -> Vec<Dispatched> {
+        if let Err(e) = self.settle_file_edit() {
+            return vec![Dispatched::Failed(e)];
+        }
+        let mut model = self.model.clone();
+        let mut answers = Vec::new();
+        for action in actions {
+            let edit = match action {
+                ModelAction::Keep(relationship) => Edit::KeepJoin {
+                    relationship: relationship.clone(),
+                },
+                ModelAction::Drop(relationship) => Edit::DropJoin {
+                    relationship: relationship.clone(),
+                },
+                other => {
+                    answers.push(Dispatched::Failed(format!(
+                        "{other:?} is not a join kept or dropped"
+                    )));
+                    continue;
+                }
+            };
+            match brightfield_ossie::apply(&model, &edit) {
+                Ok(next) => {
+                    model = next;
+                    answers.push(Dispatched::Done(edit_said(&edit)));
+                }
+                Err(e) => answers.push(Dispatched::Failed(e.0)),
+            }
+        }
+        if model != self.model {
+            self.picker = None;
+            if let Err(e) = self.save_model(model) {
+                answers.retain(|a| !matches!(a, Dispatched::Done(_)));
+                answers.push(Dispatched::Failed(e));
+            }
+            // A dropped join is gone from the model, and so is anything selected on it.
+            if let Some(Selection::Relationship(name)) = &self.focus.selected {
+                if !self.model.relationships.iter().any(|r| r.name == *name) {
+                    self.focus.selected = None;
+                }
+            }
+        }
+        for answer in &answers {
+            self.say(answer);
+        }
+        answers
+    }
+
     fn carry_out(&mut self, action: ModelAction) -> Dispatched {
         let edit = match action {
             ModelAction::Keep(relationship) => Edit::KeepJoin { relationship },

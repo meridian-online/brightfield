@@ -9306,10 +9306,8 @@ impl MeridianApp {
         if let Some((crate::sources_browser::Effect::Add(paths, joins), made_of)) = browser_effect {
             self.browser_adds(ctx, paths, joins, made_of);
         }
-        // Each change the organise sheet applied is the model pane's own Keep or Drop, logged,
-        // undoable and reported as the pane's are; one the model refuses leaves the others.
-        for action in organise_apply.into_iter().flatten() {
-            self.perform_model_action(ctx, action);
+        if let Some(actions) = organise_apply {
+            self.apply_organised_joins(ctx, &actions);
         }
         if question_dismissed {
             self.dismiss_close_question(ctx);
@@ -14024,6 +14022,25 @@ impl MeridianApp {
         };
         let dispatched = model.doc.dispatch(action);
         self.report_model_dispatch(ctx, dispatched);
+    }
+
+    /// Carry out the organise sheet's changes: the model pane's own Keep and Drop, applied in
+    /// order with one save and one run ([`crate::model_pane::ModelPane::apply_joins`]), each
+    /// reported as the pane reports it; one the model refuses leaves the others.
+    fn apply_organised_joins(
+        &mut self,
+        ctx: &egui::Context,
+        actions: &[crate::model_inspector::ModelAction],
+    ) {
+        if actions.is_empty() || self.refuse_if_the_folder_is_gone(ctx) {
+            return;
+        }
+        let Some(model) = self.model.as_mut() else {
+            return;
+        };
+        for answer in model.doc.apply_joins(actions) {
+            self.report_model_dispatch(ctx, answer);
+        }
     }
 
     /// Say what came of a model action in a toast, or open the rows it names in the grid. A picker
