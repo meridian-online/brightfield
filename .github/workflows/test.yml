@@ -403,12 +403,7 @@ jobs:
       # not read off the source: each test executable was run with a dyld
       # interposer on `MTLCreateSystemDefaultDevice` and `MTLCopyAllDevices`
       # that logs the call, and a target is listed when its log was non-empty.
-      # The second group opens no device and still needs one thread:
-      # `grid_spot` failed
-      # `no_chrome_ink_is_drawn_inside_the_heros_data_area` in each of the
-      # five runs made at more than one thread (8 threads three times, 3
-      # twice), with the status band reading "spec changed on disk" where it
-      # expects "240 of 240 rows", and passed all 10 tests on one thread.
+      # The second group opens no device and still needs one thread.
       #
       # THE LIST IS THESE COMMENT LINES. The command's test steps read every
       # line below that begins `serial-targets:` out of this file, locally and
@@ -447,7 +442,7 @@ jobs:
       # serial-targets: snapshot sorted_bar_ink surfaces versions_panel
       # serial-targets: versions_step_back workflow_graph_baseline
       # Second group, the targets that open none and need one thread anyway:
-      # serial-targets: grid_spot region_gate
+      # serial-targets: region_gate
       # `region_gate` came here because of the shard split: two of its tests
       # write the California Housing start's data file into one shared
       # `target/tmp/config/datasets`, and the staging file that write renames
@@ -456,6 +451,11 @@ jobs:
       # `starts::write_fetched` (crates/brightfield-shell/src/starts.rs) now
       # names it per write, which removes that collision; the target stays in
       # this group until a sharded run at default threads shows it can leave.
+      # `grid_spot` left it: its tests all opened the committed housing
+      # sample, so each rewrote the generated spec another test's window was
+      # watching, and that window's status band read "spec changed on disk".
+      # Each test now opens a copy of its own (`housing` in
+      # crates/brightfield-shell/tests/grid_spot.rs).
       #
       # THE PARTITION. The command packs the one-thread targets onto the
       # one-thread shards and every other target onto the other shards, the
