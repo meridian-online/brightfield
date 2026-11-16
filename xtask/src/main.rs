@@ -18,6 +18,11 @@
 //! absent: the pinned toolchain, `cargo-deny`, `python3`, the sibling
 //! `open-analytics` checkout and the pinned DuckDB CLI.
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the gate command wires these in the next change")
+)]
+mod gate;
 mod runner;
 mod shard;
 mod steps;
@@ -33,7 +38,8 @@ const USAGE: &str = "\
 usage:
   cargo xtask ci                 run every step in order, the two test steps side by side, stopping at the first that fails
   cargo xtask ci --step <name>   run one step by name; this is how CI's jobs call the command
-  cargo xtask ci --list          name every step, in order, with what it runs";
+  cargo xtask ci --list          name every step, in order, with what it runs
+  cargo xtask gate <pr>   run the full gate on a pull request merged with main, and post its verdict as the local-gate status";
 
 /// What the command line asked for.
 #[derive(Debug, PartialEq)]
@@ -41,6 +47,7 @@ enum Invocation {
     All,
     One(String),
     List,
+    Gate(u64),
 }
 
 fn parse(args: &[String]) -> Result<Invocation, String> {
@@ -52,6 +59,10 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         ["ci", single] if single.starts_with("--step=") => {
             Ok(Invocation::One(single["--step=".len()..].to_owned()))
         }
+        ["gate", n] => n
+            .parse()
+            .map(Invocation::Gate)
+            .map_err(|_| USAGE.to_owned()),
         _ => Err(USAGE.to_owned()),
     }
 }
@@ -74,6 +85,10 @@ fn main() -> ExitCode {
         log: None,
     };
     match invocation {
+        Invocation::Gate(_) => {
+            eprintln!("cargo xtask gate: not yet wired");
+            ExitCode::from(2)
+        }
         Invocation::List => {
             let width = STEPS.iter().map(|s| s.name.len()).max().unwrap_or(0);
             for step in STEPS {
@@ -173,6 +188,13 @@ mod tests {
 
     fn words(line: &str) -> Vec<String> {
         line.split_whitespace().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn the_command_line_reads_a_gate_run() {
+        assert_eq!(parse(&words("gate 431")), Ok(Invocation::Gate(431)));
+        assert!(parse(&words("gate")).is_err());
+        assert!(parse(&words("gate x")).is_err());
     }
 
     #[test]
