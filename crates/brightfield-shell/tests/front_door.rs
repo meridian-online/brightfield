@@ -3268,6 +3268,11 @@ fn statlib_still_serves_the_housing_archive_the_fixture_is() {
     );
 }
 
+/// How many pixels of a thumbnail may cross the per-pixel threshold on macOS
+/// before [`render_thumbnails`] calls it drift; other platforms keep zero. The
+/// comment where it is used says why.
+const THUMBNAIL_JITTER_PIXELS: usize = 10;
+
 /// Render each start at the window it asks for, thumbnail it, and diff against
 /// the committed PNG for `mode` — `{id}.png` for [`Mode::Light`], `{id}-dark.png`
 /// for [`Mode::Dark`], so the two halves of the set stay apart by name.
@@ -3290,7 +3295,18 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) {
     };
     let _config = datasets_into_scratch(&format!("thumbnails_{set}_{mode:?}"));
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/starts");
-    let options = egui_kittest::SnapshotOptions::default().output_path(&assets);
+    // A macOS pixel budget over `kittest.toml`'s zero, at its per-pixel
+    // threshold, for rasteriser rounding. On an Apple M5 Max (Metal 4,
+    // macOS 27.2), six of the starts' thumbnails in each mode render 5 to 23
+    // pixels that differ from the committed PNG by at most 6 of 255 in any
+    // channel, and 1 to 6 of those pixels cross the threshold, the same on
+    // every run. CI's runners pass them at zero. The budget sits a little
+    // above the worst count seen there.
+    let options = egui_kittest::SnapshotOptions::default()
+        .output_path(&assets)
+        .failed_pixel_count_threshold(
+            egui_kittest::OsThreshold::new(0).macos(THUMBNAIL_JITTER_PIXELS),
+        );
     let mut failures = Vec::new();
     for start in starts {
         let mut boot =
