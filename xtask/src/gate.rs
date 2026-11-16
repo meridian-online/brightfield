@@ -896,7 +896,7 @@ pub enum Backstop {
 /// and `gh run view <id> --json jobs` for the newest run that has finished.
 /// A failed job makes it red; cancelled or timed-out jobs alone do not. The
 /// workflow's aggregate job, named in `AGGREGATE_JOBS`, is left out: it fails
-/// whenever a job under it was cancelled, so only the jobs under it count.
+/// whenever a job under it was cancelled, so the jobs under it are what count.
 pub fn read_backstop(workflow: &str, run_json: &str, jobs_json: &str) -> Result<Backstop, String> {
     let runs: Value = serde_json::from_str(run_json)
         .map_err(|e| format!("{workflow}: runs are not JSON: {e}"))?;
