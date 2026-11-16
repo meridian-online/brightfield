@@ -89,7 +89,8 @@ where
 /// to completion. If either fails, the run stops after the pair: every step
 /// after it is skipped, and the other of the pair is not cut short. Rows stay
 /// in table order. When either name is absent from `steps`, or either step
-/// runs only in CI, there is no pair and the run is `run_in_order`'s.
+/// is CI-only, there is no pair and the rows are `run_in_order`'s, as
+/// `without_the_pair_named_the_run_is_run_in_order` checks.
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "the local gate command that calls it comes next")
