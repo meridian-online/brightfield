@@ -17,6 +17,7 @@
 - Before each commit: `cargo xtask ci --step fmt`, `cargo xtask ci --step clippy`, and the tests the change touches. After each commit: `cargo xtask ci --step comment-citations`.
 - brightfield is public: no private planning identifiers, Kata refs, private repo names or local absolute paths in code, comments, commit messages, branch names or PR text.
 - Status context is exactly `local-gate`; description at most 140 characters.
+- The gate runs the merged tree's own `cargo xtask ci`, never the steps compiled into the checkout that started it. It refuses a pull request whose head is outside `meridian-online/brightfield`.
 - Redraw stop rule: an image is jitter when no pixel moves more than 16 of 255 in any channel and at most 50 pixels move. Hosted budget per test at most 50 failed pixels.
 - A red `main` run opens an issue only when a job failed; cancelled or timed-out-only runs are reported, not filed. One open backstop issue (label `main-red`) is reused while `main` stays red.
 - The reference machine (Apple M5 Max) keeps budget zero.
@@ -52,6 +53,7 @@
 - [ ] **Step 4: Implement `run_with_pair`** with `std::thread::scope`; implement `build_tests`.
 - [ ] **Step 5: Run `cargo test -p xtask`** — expected PASS. Cost: under a minute.
 - [ ] **Step 6: Commit** `xtask: run a pair of steps side by side`.
+- [ ] **Step 7 (review round): a full `cargo xtask ci` uses the pair.** `Invocation::All` calls `run_with_pair(STEPS, ("test-one-thread", "test-default"), …)` instead of `run_in_order`, and `warm-cache` becomes a local step (`only_in_ci: None`; its test becomes `warm_cache_runs_locally_before_the_suite`), so the test binaries are built as a named row just before the pair. Remove the `expect(dead_code)` on `run_with_pair`, and remove `build_tests` if nothing calls it. Extend `without_the_pair_named_the_run_is_run_in_order` to also call `run_with_pair(&steps, ("b", "c"), …)` with `b` CI-only and assert the rows equal `run_in_order`'s. Run `cargo test -p xtask` — PASS. Commit `xtask: a full ci run builds the tests, then runs both test steps at once`.
 
 ### Task 2: The gate's pure logic
 
@@ -62,15 +64,19 @@
 
 **Interfaces:**
 - Produces: `Invocation::Gate(u64)` from `["gate", n]`; `USAGE` gains `cargo xtask gate <pr>   run the full gate on a pull request merged with main, and post its verdict as the local-gate status`.
-- Produces: `pub fn description(rows: &[Row], took: Duration, main_sha: &str) -> String` — e.g. `passed 41 steps in 24m 10s on main 09c2efb` or `failed at test-default after 31 steps, 18m 2s, on main 09c2efb`; always `<= 140` chars (truncate the step name with `…` if needed).
-- Produces: `pub enum Backstop { Green, Red { run_id: u64, url: String, sha: String, workflow: String }, CancelledOnly { run_id: u64, url: String } }` and `pub fn read_backstop(workflow: &str, run_json: &str, jobs_json: &str) -> Result<Backstop, String>` reading `gh run list --json databaseId,conclusion,headSha,url` and `gh run view <id> --json jobs` output.
+- Produces: `pub struct Verdict { pub passed: usize, pub failed: Option<String> }` and `pub fn read_summary(json: &str) -> Result<Verdict, String>`, reading the summary file `ci --summary-json` writes (Task 3): `{"steps":[{"name":"fmt","outcome":"passed"}, …]}`, outcomes `passed|failed|skipped|ci-only`.
+- Produces: `pub fn description(verdict: &Verdict, took: Duration, main_sha: &str) -> String` — e.g. `passed 41 steps in 24m 10s on main 09c2efb` or `failed at test-default after 31 steps, 18m 2s, on main 09c2efb`; always `<= 140` chars (truncate the step name with `…` if needed).
+- Produces: `pub enum Backstop { Green { sha: String }, Red { run_id: u64, url: String, sha: String, workflow: String }, CancelledOnly { run_id: u64, url: String } }` and `pub fn read_backstop(workflow: &str, run_json: &str, jobs_json: &str) -> Result<Backstop, String>` reading `gh run list --json databaseId,conclusion,headSha,url` and `gh run view <id> --json jobs` output.
+- Produces: `pub enum MainState { Red(Vec<Backstop>), Green { sha: String }, Unsettled }` and `pub fn combine(each: &[Backstop]) -> MainState`: any `Red` → `Red` with the red ones; every one `Green` → `Green` (the latest sha); otherwise `Unsettled` (say nothing on the issue).
 - Produces: `pub struct Lock { path: PathBuf }` with `pub fn acquire(dir: &Path, say: impl Fn(&str)) -> Result<Lock, String>` (creates `gate.lock` with the owner pid; waits polling every 10 s while the owner pid is alive, saying who holds it; reclaims when the pid is dead) and `Drop` removing the file.
 
 - [ ] **Step 1: Write failing tests:**
   - `the_command_line_reads_a_gate_run`: `gate 431` → `Gate(431)`; `gate`, `gate x` → usage error.
-  - `a_passing_description_names_steps_time_and_main`: assert exact string `passed 3 steps in 1m 5s on main 09c2efb` for three passed rows, 65 s, sha `09c2efb0…`.
+  - `the_summary_file_is_read_into_a_verdict`: three `passed` and one `ci-only` → `Verdict { passed: 3, failed: None }`; a `failed` row → `failed: Some(name)`.
+  - `a_passing_description_names_steps_time_and_main`: assert exact string `passed 3 steps in 1m 5s on main 09c2efb` for `Verdict { passed: 3, failed: None }`, 65 s, sha `09c2efb0…`.
   - `a_failing_description_names_the_step`: assert it starts `failed at test-default`.
   - `a_description_never_exceeds_140_characters`: a 200-char step name → `len() <= 140`.
+  - `one_red_workflow_makes_main_red_whatever_the_other_says`: `combine(&[Red{..}, Green{..}])` is `Red`; `combine(&[Green, Green])` is `Green`; `combine(&[Green, CancelledOnly])` is `Unsettled`.
   - `a_failed_job_is_red_and_a_cancelled_one_is_not`: fixture JSON with one `failure` job → `Red`; only `cancelled`/`timed_out` jobs → `CancelledOnly`; `success` → `Green`.
   - `a_second_gate_waits_and_a_dead_owner_is_reclaimed`: write a lock with the current pid, acquire from a thread, assert it is still waiting after 1 s (use an injectable poll interval); write one with pid `999999` (dead), assert acquire succeeds at once.
 - [ ] **Step 2: Run `cargo test -p xtask gate`** — expected FAIL.
@@ -81,22 +87,24 @@
 ### Task 3: `cargo xtask gate <pr>`, end to end
 
 **Files:**
-- Modify: `xtask/src/gate.rs` (orchestration), `xtask/src/main.rs` (dispatch), `xtask/src/steps.rs` (`Ctx` gains `env: Vec<(OsString, OsString)>` applied in `Ctx::command`)
+- Modify: `xtask/src/gate.rs` (orchestration), `xtask/src/main.rs` (dispatch, and `ci --summary-json <path>`), `xtask/src/runner.rs` (`pub fn summary_json(rows: &[Row], steps: &[Step]) -> String`)
 
 **Interfaces:**
-- Consumes: `run_with_pair`, `build_tests` (Task 1); `description`, `read_backstop`, `Lock` (Task 2).
+- Consumes: a full `cargo xtask ci` that pairs the tests (Task 1); `read_summary`, `description`, `read_backstop`, `combine`, `Lock` (Task 2).
 - Produces: `pub fn run(pr: u64) -> ExitCode`.
 
 Order inside `run`, each failure posting a `failure` status where a head SHA is known:
-1. Backstop: for `test.yml` and `lint.yml`, `gh run list --repo meridian-online/brightfield --branch main --workflow <file> --status completed --limit 1 --json …`, then `read_backstop`. On `Red`: `kata list --label main-red --json` in brightfield's project; if an open one exists, `kata comment` the run; else `kata create "main is red: <workflow> at <sha7>" --body <url> --label main-red --idempotency-key main-red-<run_id> --agent` and `kata meta set <ref> work.attention needs-human`. On `Green` with an open `main-red` issue: comment that `main` is green at the run's SHA. `CancelledOnly`: print it. Continue either way.
+1. Backstop: for `test.yml` and `lint.yml`, `gh run list --repo meridian-online/brightfield --branch main --workflow <file> --status completed --limit 1 --json …`, then `read_backstop` each and `combine`. On `Red`: `kata list --label main-red --json` in brightfield's project (`--project brightfield`); with none open, `kata create "main is red" --body "<what the backstop is>" --label main-red --agent` and `kata meta set <ref> work.attention needs-human`; then for each red run whose URL is not already in the issue's comments (`kata show <ref> --json`), `kata comment` its workflow, short SHA and URL. On `Green` with an open `main-red` issue: comment `main is green at <sha7>` and `kata close <ref> --done --message … --agent`. `Unsettled`: print it. Continue either way. A failed kata call is printed and does not stop the gate.
 2. `Lock::acquire` in `~/.cache/meridian/gate/`.
 3. `gh pr view <pr> --json headRefOid,headRepository,headRepositoryOwner`; refuse a head from another repository. `git fetch origin main pull/<pr>/head`, `git worktree add --detach <tmp>/tree <head>`, `git -C <tree> merge --no-edit origin/main`; on conflict post failure `merge main into the branch first` and stop.
-4. Environment: fresh `HOME` and `TMPDIR` under the run's temp dir; `CARGO_HOME`/`RUSTUP_HOME` set to the real ones (from the environment, else `~/.cargo`/`~/.rustup`); `CARGO_TARGET_DIR` = `~/.cache/meridian/gate/target`; `OPEN_ANALYTICS_DIR` pointing at the real sibling checkout.
-5. Post `pending` with `running on main <sha7>`. Run `build_tests`, then `run_with_pair(STEPS, ("test-one-thread", "test-default"), …)` with `Ctx { root: <tree>, … }`, skipping `only_in_ci` steps as `run_in_order` does. Tee output to `~/.cache/meridian/gate/logs/pr-<pr>-<sha7>.log`.
+4. Environment for the child process: fresh `HOME` and `TMPDIR` under the run's temp dir; `CARGO_HOME`/`RUSTUP_HOME` set to the real ones (from the environment, else `~/.cargo`/`~/.rustup`); `CARGO_TARGET_DIR` = `~/.cache/meridian/gate/target`; `ARC_DUCKDB_BIN` = the invoking checkout's `target/duckdb-cli/duckdb` after `scripts/fetch-duckdb-cli.sh --check` passes (else fail naming the script); `OPEN_ANALYTICS_DIR` = the invoking checkout's resolved open-analytics sibling. Remove the `CARGO_*` package variables as `Ctx::command` does.
+5. Post `pending` with `running on main <sha7>`. Run the tree's own gate: `cargo xtask ci --summary-json <tmp>/summary.json` with the tree as working directory and that environment, its output teed to `~/.cache/meridian/gate/logs/pr-<pr>-<sha7>.log`. Read the verdict with `read_summary`; a missing or unreadable summary file is a failure (`the gate's run left no summary`), never a pass.
 6. Post `success`/`failure` with `description(...)` via `gh api repos/meridian-online/brightfield/statuses/<head> -f state=… -f context=local-gate -f description=…`, run with the real `HOME`. A failed post prints `the verdict was not posted: <error>` and exits non-zero.
 7. Print the summary and the log path; remove the worktree and temp dirs; the lock drops.
 
+- [ ] **Step 0: Write a failing test** `the_summary_json_names_every_step_and_its_outcome` in `runner.rs` for `summary_json`, then add `ci --summary-json <path>` (written after the run, whatever its verdict) and its parse test.
 - [ ] **Step 1: Write a failing test** `the_merge_conflict_is_reported_before_any_step`: in a temp git repo with two conflicting branches, `merge_with_main(tree, "origin/main")` (the extracted function) returns `Err("merge main into the branch first")`.
+- [ ] **Step 1b: Write a failing test** `a_fork_is_refused`: `check_head_repository("someone/brightfield")` is `Err` naming the fork; `"meridian-online/brightfield"` is `Ok`.
 - [ ] **Step 2: Write a failing test** `a_status_that_cannot_be_posted_is_an_error`: `post_status` with a `gh` replaced by a script that exits 1 (pass the program path in) returns `Err` containing `not posted`.
 - [ ] **Step 3: Run `cargo test -p xtask gate`** — expected FAIL; implement; expected PASS.
 - [ ] **Step 4: Commit** `xtask: cargo xtask gate runs the gate on a pull request and posts local-gate`.
@@ -110,15 +118,15 @@ Order inside `run`, each failure posting a `failure` status where a head SHA is 
 - Modify: `kittest.toml` (policy text), all committed baseline PNGs under `crates/brightfield-shell/tests/snapshots/`
 
 **Interfaces:**
-- Produces: `pub const HOSTED_RUNNER: &str` (the hosted macOS runner's adapter name, read from the hosted run), `pub const HOSTED_BUDGET: usize` (measured), and `pub fn options(base: SnapshotOptions) -> SnapshotOptions` that sets `failed_pixel_count_threshold(budget_on(HOSTED_RUNNER, HOSTED_BUDGET))`. `APPLE_M5_MAX` and its call-site budgets are removed.
+- Produces: `pub const HOSTED_RUNNER: &str` (the hosted macOS runner's adapter name, read from the hosted run) and `pub fn options(base: SnapshotOptions, hosted_pixels: usize) -> SnapshotOptions` that sets `failed_pixel_count_threshold(budget_on(HOSTED_RUNNER, hosted_pixels))`. Each call site passes its own measured count, zero where the hosted run was clean; a non-zero count carries a comment naming the jitter and the hosted runner, per `kittest.toml`'s policy. `APPLE_M5_MAX` and its call-site budgets are removed.
 - Produces: a test `the_adapter_is_named_in_the_log` that prints `adapter_name()` so the hosted log shows it.
 
-- [ ] **Step 1:** Add `options`, route every call site through it with `HOSTED_BUDGET = 0` and `HOSTED_RUNNER = "Apple Paravirtual device"` (provisional), remove the M5 Max budgets. Run `cargo test -p brightfield-shell` — expected: only the three tests PR 430 budgeted fail, by the known pixels.
+- [ ] **Step 1:** Add `options`, route every call site through it with `hosted_pixels = 0` and `HOSTED_RUNNER = "Apple Paravirtual device"` (provisional), remove the M5 Max budgets. Run `cargo test -p brightfield-shell` — expected: only the three tests PR 430 budgeted fail, by the known pixels.
 - [ ] **Step 2:** Redraw: `UPDATE_SNAPSHOTS=1 cargo test -p brightfield-shell -- --test-threads=1`. Then for each changed PNG, `git show HEAD:<png> > old.png` and compare with `cargo run -q -p brightfield-shell --bin bf-imgdiff -- old.png <png>`. Expected: every image within the stop rule. An image past it: restore it with `git checkout HEAD -- <png>`, list it, and flag the gate's Kata issue for Hugh.
-- [ ] **Step 3:** Run `cargo test -p brightfield-shell -- --test-threads=1` — expected PASS with budget zero on the M5 Max. Update `kittest.toml`'s policy text and the module comment: the Apple M5 Max is the reference machine; the hosted runner is allowed `HOSTED_BUDGET`.
+- [ ] **Step 3:** Run `cargo test -p brightfield-shell -- --test-threads=1` — expected PASS with budget zero on the M5 Max. Update `kittest.toml`'s policy text and the module comment: the Apple M5 Max is the reference machine; the hosted runner is allowed the per-test counts its runs measured.
 - [ ] **Step 4: Commit** `Draw the pixel baselines on the reference Mac`, the message saying the images moved only by rasteriser rounding, within 16 of 255 per channel and 50 pixels.
 - [ ] **Step 5:** Push and open the draft pull request (`test.yml` still runs on pull requests). Read the hosted run: the adapter name from `the_adapter_is_named_in_the_log` and every failing snapshot's failed-pixel count from the log or `gh run download -n kittest-snapshot-output`.
-- [ ] **Step 6:** Set `HOSTED_RUNNER` to the logged name and `HOSTED_BUDGET` to the largest count seen. If any test needs more than 50, keep its old hosted-drawn baseline instead and flag it on the Kata issue. Commit `Allow the hosted runner its measured rounding jitter`; push; expected: hosted `test` green.
+- [ ] **Step 6:** Set `HOSTED_RUNNER` to the logged name and each failing test's `hosted_pixels` to its own measured count. If any test needs more than 50, keep its old hosted-drawn baseline instead and flag it on the Kata issue. Commit `Allow the hosted runner its measured rounding jitter`; push; expected: hosted `test` green.
 
 ### Task 5: `test` and `lint` leave pull requests
 
