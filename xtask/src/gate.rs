@@ -37,8 +37,83 @@ fn say(message: &str) {
     eprintln!("cargo xtask gate: {message}");
 }
 
+/// Each backstop workflow's aggregate job, by workflow file and job name: a
+/// job that only reports whether the others passed, and that fails when one
+/// was cancelled. The backstop reads the jobs under it, so a cancelled run is
+/// not taken for a red one.
+/// `the_aggregate_jobs_the_backstop_leaves_out_are_still_in_their_workflows`
+/// holds each name to its workflow.
+pub const AGGREGATE_JOBS: &[(&str, &str)] = &[("test.yml", "test")];
+
+/// Where a gate stopped before its steps gave a verdict.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Stage {
+    Fork,
+    Fetch,
+    Worktree,
+    Merge,
+    DuckDb,
+    OpenAnalytics,
+    Start,
+    NoSummary,
+    ExitedNonZero,
+    Unexpected,
+}
+
+impl Stage {
+    /// The status text for the stage. It is fixed, since the repository is
+    /// public and the error behind it can carry the machine's paths.
+    fn phrase(self) -> &'static str {
+        match self {
+            Stage::Fork => "the head is in a fork, and the gate does not run a fork's code",
+            Stage::Fetch => "could not fetch the pull request",
+            Stage::Worktree => "could not make the worktree",
+            Stage::Merge => "merge main into the branch first",
+            Stage::DuckDb => "the pinned DuckDB CLI is missing",
+            Stage::OpenAnalytics => "the open-analytics checkout is missing",
+            Stage::Start => "could not start the gate's run",
+            Stage::NoSummary => "the gate's run left no summary",
+            Stage::ExitedNonZero => "the gate's run failed though no step did",
+            Stage::Unexpected => "the gate stopped unexpectedly",
+        }
+    }
+}
+
+/// A gate that stopped short: the stage, posted, and the error, printed.
+#[derive(Debug)]
+pub struct Failure {
+    stage: Stage,
+    detail: String,
+}
+
+impl Failure {
+    pub fn new(stage: Stage, detail: impl Into<String>) -> Failure {
+        Failure {
+            stage,
+            detail: detail.into(),
+        }
+    }
+}
+
+/// Why a gate stopped short of a verdict from the steps.
+enum Stop {
+    /// Post `failure` on the head with the stage's phrase.
+    Fail(Failure),
+    /// Nothing can be posted: say this and exit.
+    Unposted(String),
+}
+
+/// What a gate that ran its steps posts.
+struct Posted {
+    state: &'static str,
+    text: String,
+    /// test-default's own log, kept beside the gate's, when the run left one.
+    kept: Option<PathBuf>,
+}
+
 /// Run the gate on pull request `pr` and post its verdict.
 pub fn run(pr: u64) -> ExitCode {
+    let gh = OsStr::new("gh");
     let root = crate::repo_root();
     let Some(home) = std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
@@ -48,8 +123,6 @@ pub fn run(pr: u64) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let gate_dir = home.join(".cache/meridian/gate");
-
-    check_backstop();
 
     if let Err(e) = fs::create_dir_all(gate_dir.join("logs")) {
         say(&format!("cannot create {}: {e}", gate_dir.display()));
@@ -63,66 +136,81 @@ pub fn run(pr: u64) -> ExitCode {
         }
     };
 
-    let head = match head_of(pr) {
-        Ok(head) => head,
-        Err(Stop::Unposted(e)) => {
+    check_backstop();
+
+    let (head, repository) = match head_of(pr) {
+        Ok(found) => found,
+        Err(e) => {
             say(&e);
             return ExitCode::FAILURE;
         }
-        Err(Stop::Fail(sha, e)) => return post_failure(&sha, &e),
     };
+    if let Err(e) = check_head_repository(&repository) {
+        return post_failure(gh, &head, &Failure::new(Stage::Fork, e));
+    }
     let sha7: String = head.chars().take(7).collect();
-    let log = gate_dir.join(format!("logs/pr-{pr}-{sha7}.log"));
+    let logs = gate_dir.join("logs");
+    let log = logs.join(format!("pr-{pr}-{sha7}.log"));
+    let kept = logs.join(format!("pr-{pr}-{sha7}.test-default.log"));
     let scratch = Scratch {
         root: root.clone(),
         dir: std::env::temp_dir().join(format!("brightfield-gate-{pr}-{}", std::process::id())),
     };
-    let verdict = gate_head(pr, &root, &home, &gate_dir, &head, &scratch, &log);
+    let verdict = gate_head(
+        pr,
+        &Paths {
+            root: &root,
+            home: &home,
+            gate_dir: &gate_dir,
+            log: &log,
+            kept: &kept,
+        },
+        &head,
+        &scratch,
+    );
     drop(scratch);
-    let (state, text) = match verdict {
+    let posted = match verdict {
         Ok(posted) => posted,
         Err(Stop::Unposted(e)) => {
             say(&e);
             return ExitCode::FAILURE;
         }
-        Err(Stop::Fail(_, e)) => return post_failure(&head, &e),
+        Err(Stop::Fail(failure)) => return post_failure(gh, &head, &failure),
     };
-    if let Err(e) = post_status(OsStr::new("gh"), &head, state, &text) {
+    if let Err(e) = post_status(gh, &head, posted.state, &posted.text) {
         say(&e);
         return ExitCode::FAILURE;
     }
-    println!("local-gate {state} on {sha7}: {text}");
+    println!("local-gate {} on {sha7}: {}", posted.state, posted.text);
     println!("the full log is {}", log.display());
-    if state == "success" {
+    if let Some(kept) = &posted.kept {
+        println!("test-default's own log is {}", kept.display());
+    }
+    if posted.state == "success" {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     }
 }
 
-/// Why a gate stopped short of a verdict from the steps.
-enum Stop {
-    /// Post `failure` on this head with this description.
-    Fail(String, String),
-    /// Nothing can be posted: say this and exit.
-    Unposted(String),
-}
-
-/// Post a failure that stopped the gate before its steps gave a verdict.
-fn post_failure(head: &str, reason: &str) -> ExitCode {
-    say(reason);
-    let text = clip(reason);
-    if let Err(e) = post_status(OsStr::new("gh"), head, "failure", &text) {
-        say(&e);
-    } else {
-        let sha7: String = head.chars().take(7).collect();
-        println!("local-gate failure on {sha7}: {text}");
+/// Post a failure that stopped the gate before its steps gave a verdict: the
+/// error to the terminal, the stage's fixed phrase to the status.
+fn post_failure(gh: &OsStr, head: &str, failure: &Failure) -> ExitCode {
+    say(&failure.detail);
+    let text = failure.stage.phrase();
+    match post_status(gh, head, "failure", text) {
+        Ok(()) => {
+            let sha7: String = head.chars().take(7).collect();
+            println!("local-gate failure on {sha7}: {text}");
+        }
+        Err(e) => say(&e),
     }
     ExitCode::FAILURE
 }
 
-/// The pull request's head commit, refused when it lives in a fork.
-fn head_of(pr: u64) -> Result<String, Stop> {
+/// The pull request's head commit, and the repository it lives in as
+/// `owner/name`.
+fn head_of(pr: u64) -> Result<(String, String), String> {
     let pr_text = pr.to_string();
     let json = output_of(
         "gh",
@@ -135,15 +223,14 @@ fn head_of(pr: u64) -> Result<String, Stop> {
             "--json",
             "headRefOid,headRepository,headRepositoryOwner",
         ],
-    )
-    .map_err(Stop::Unposted)?;
-    let view: Value = serde_json::from_str(&json)
-        .map_err(|e| Stop::Unposted(format!("`gh pr view {pr}` is not JSON: {e}")))?;
+    )?;
+    let view: Value =
+        serde_json::from_str(&json).map_err(|e| format!("`gh pr view {pr}` is not JSON: {e}"))?;
     let head = view
         .get("headRefOid")
         .and_then(Value::as_str)
         .filter(|sha| !sha.is_empty())
-        .ok_or_else(|| Stop::Unposted(format!("pull request {pr} has no head commit")))?
+        .ok_or_else(|| format!("pull request {pr} has no head commit"))?
         .to_owned();
     let owner = view
         .pointer("/headRepositoryOwner/login")
@@ -153,8 +240,7 @@ fn head_of(pr: u64) -> Result<String, Stop> {
         (Some(owner), Some(name)) => format!("{owner}/{name}"),
         _ => "a repository that no longer exists".to_owned(),
     };
-    check_head_repository(&repository).map_err(|e| Stop::Fail(head.clone(), e))?;
-    Ok(head)
+    Ok((head, repository))
 }
 
 /// Refuse a head outside this repository: the gate builds and runs the
@@ -203,17 +289,47 @@ impl Drop for Scratch {
     }
 }
 
+/// The places a gate run reads and writes outside its scratch directory.
+struct Paths<'a> {
+    /// The checkout the gate was started from.
+    root: &'a Path,
+    /// The real HOME.
+    home: &'a Path,
+    /// The gate's cache: lock, target directory and logs.
+    gate_dir: &'a Path,
+    /// The run's teed output.
+    log: &'a Path,
+    /// Where test-default's own log is kept.
+    kept: &'a Path,
+}
+
+/// True for a variable the gate's run must not inherit: one that points the
+/// run back into the real HOME, or picks the toolchain over the tree's own
+/// file, or changes what is built, so the verdict is CI's. `CARGO_BUILD_JOBS`
+/// stays, since it caps the machine's build slots and changes no output.
+fn removed_from_child(key: &str) -> bool {
+    matches!(
+        key,
+        "RUSTUP_TOOLCHAIN"
+            | "CARGO"
+            | "XDG_CONFIG_HOME"
+            | "XDG_CACHE_HOME"
+            | "XDG_DATA_HOME"
+            | "XDG_STATE_HOME"
+            | "RUNNER_TEMP"
+            | "RUSTFLAGS"
+            | "RUSTDOCFLAGS"
+            | "CARGO_ENCODED_RUSTFLAGS"
+            | "CARGO_ENCODED_RUSTDOCFLAGS"
+            | "RUSTC_WRAPPER"
+            | "RUSTC_WORKSPACE_WRAPPER"
+    ) || (key.starts_with("CARGO_BUILD_") && key != "CARGO_BUILD_JOBS")
+}
+
 /// Build the tree to test, run its gate, and say what to post.
-fn gate_head(
-    pr: u64,
-    root: &Path,
-    home: &Path,
-    gate_dir: &Path,
-    head: &str,
-    scratch: &Scratch,
-    log: &Path,
-) -> Result<(&'static str, String), Stop> {
-    let fail = |e: String| Stop::Fail(head.to_owned(), e);
+fn gate_head(pr: u64, paths: &Paths, head: &str, scratch: &Scratch) -> Result<Posted, Stop> {
+    let fail = |stage: Stage| move |e: String| Stop::Fail(Failure::new(stage, e));
+    let root = paths.root;
     let git_in_root = |args: &[&str]| {
         let mut all = vec!["-C".to_owned(), root.display().to_string()];
         all.extend(args.iter().map(|a| (*a).to_owned()));
@@ -227,20 +343,22 @@ fn gate_head(
         "main",
         &format!("pull/{pr}/head"),
     ])
-    .map_err(fail)?;
+    .map_err(fail(Stage::Fetch))?;
     let main_sha = git_in_root(&["rev-parse", "origin/main"])
         .map(|sha| sha.trim().to_owned())
-        .map_err(fail)?;
+        .map_err(fail(Stage::Fetch))?;
 
     let tree = scratch.tree();
     let (child_home, child_tmp) = (scratch.dir.join("home"), scratch.dir.join("tmp"));
     for dir in [&child_home, &child_tmp] {
         fs::create_dir_all(dir)
-            .map_err(|e| fail(format!("cannot create {}: {e}", dir.display())))?;
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))
+            .map_err(fail(Stage::Worktree))?;
     }
     let tree_text = tree.display().to_string();
-    git_in_root(&["worktree", "add", "--quiet", "--detach", &tree_text, head]).map_err(fail)?;
-    merge_with_main(&tree, "origin/main").map_err(fail)?;
+    git_in_root(&["worktree", "add", "--quiet", "--detach", &tree_text, head])
+        .map_err(fail(Stage::Worktree))?;
+    merge_with_main(&tree, "origin/main").map_err(fail(Stage::Merge))?;
 
     let summary = scratch.dir.join("summary.json");
     let invoking = Ctx {
@@ -248,16 +366,16 @@ fn gate_head(
         cargo: "cargo".into(),
         log: None,
     };
-    let engine = steps::pinned_duckdb(&invoking).map_err(fail)?;
+    let engine = steps::pinned_duckdb(&invoking).map_err(fail(Stage::DuckDb))?;
     let open_analytics = steps::open_analytics(&invoking)
         .and_then(|dir| {
             fs::canonicalize(&dir).map_err(|e| format!("cannot resolve {}: {e}", dir.display()))
         })
-        .map_err(fail)?;
+        .map_err(fail(Stage::OpenAnalytics))?;
     let real = |var: &str, under_home: &str| {
         std::env::var_os(var)
             .filter(|v| !v.is_empty())
-            .map_or_else(|| home.join(under_home), PathBuf::from)
+            .map_or_else(|| paths.home.join(under_home), PathBuf::from)
     };
     let tree_ctx = Ctx {
         root: tree.clone(),
@@ -274,21 +392,13 @@ fn gate_head(
         .env("TMPDIR", &child_tmp)
         .env("CARGO_HOME", real("CARGO_HOME", ".cargo"))
         .env("RUSTUP_HOME", real("RUSTUP_HOME", ".rustup"))
-        .env("CARGO_TARGET_DIR", gate_dir.join("target"))
+        .env("CARGO_TARGET_DIR", paths.gate_dir.join("target"))
         .env("ARC_DUCKDB_BIN", &engine)
         .env("OPEN_ANALYTICS_DIR", &open_analytics);
-    // The tree's own toolchain file picks the toolchain, as it does in CI,
-    // and nothing points the run back into the real HOME.
-    for var in [
-        "RUSTUP_TOOLCHAIN",
-        "CARGO",
-        "XDG_CONFIG_HOME",
-        "XDG_CACHE_HOME",
-        "XDG_DATA_HOME",
-        "XDG_STATE_HOME",
-        "RUNNER_TEMP",
-    ] {
-        command.env_remove(var);
+    for (key, _) in std::env::vars_os() {
+        if removed_from_child(&key.to_string_lossy()) {
+            command.env_remove(&key);
+        }
     }
 
     let main7: String = main_sha.chars().take(7).collect();
@@ -301,20 +411,64 @@ fn gate_head(
     .map_err(Stop::Unposted)?;
     say(&format!(
         "running pull request {pr} merged with main {main7}; the log is {}",
-        log.display()
+        paths.log.display()
     ));
+    // Past the pending post, a panic must still end in a posted failure, or
+    // the head would stay pending.
+    let own_log = tree.join("target/xtask/test-default.log");
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_and_read(command, paths, &summary, &own_log, &main_sha)
+    }))
+    .unwrap_or_else(|_| {
+        Err(Stop::Fail(Failure::new(
+            Stage::Unexpected,
+            "the gate panicked while its run was under way",
+        )))
+    })
+}
+
+/// Run the tree's gate, keep test-default's own log, and read the verdict.
+fn run_and_read(
+    command: Command,
+    paths: &Paths,
+    summary: &Path,
+    own_log: &Path,
+    main_sha: &str,
+) -> Result<Posted, Stop> {
+    let fail = |stage: Stage| move |e: String| Stop::Fail(Failure::new(stage, e));
+    // A kept log from an earlier run of this head would read as this run's.
+    let _ = fs::remove_file(paths.kept);
     let started = Instant::now();
-    let status = run_teed(command, log).map_err(fail)?;
+    let status = run_teed(command, paths.log).map_err(fail(Stage::Start))?;
     let took = started.elapsed();
 
-    let no_summary = "the gate's run left no summary".to_owned();
-    let text = fs::read_to_string(&summary).map_err(|_| fail(no_summary.clone()))?;
-    let verdict = read_summary(&text).map_err(|e| {
-        say(&e);
-        fail(no_summary)
-    })?;
+    let kept = if own_log.is_file() {
+        match fs::copy(own_log, paths.kept) {
+            Ok(_) => {
+                say(&format!(
+                    "test-default's own log is kept at {}",
+                    paths.kept.display()
+                ));
+                Some(paths.kept.to_path_buf())
+            }
+            Err(e) => {
+                say(&format!(
+                    "could not keep test-default's log at {}: {e}",
+                    paths.kept.display()
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let text = fs::read_to_string(summary)
+        .map_err(|e| format!("cannot read {}: {e}", summary.display()))
+        .map_err(fail(Stage::NoSummary))?;
+    let verdict = read_summary(&text).map_err(fail(Stage::NoSummary))?;
     if verdict.failed.is_none() && !status.success() {
-        return Err(fail(format!(
+        return Err(fail(Stage::ExitedNonZero)(format!(
             "the gate's run exited with {status} though no step failed"
         )));
     }
@@ -323,7 +477,11 @@ fn gate_head(
     } else {
         "failure"
     };
-    Ok((state, description(&verdict, took, &main_sha)))
+    Ok(Posted {
+        state,
+        text: description(&verdict, took, main_sha),
+        kept,
+    })
 }
 
 /// Merge `main` into the worktree at `tree`. Any failure is reported as the
@@ -341,6 +499,10 @@ pub fn merge_with_main(tree: &Path, main: &str) -> Result<(), String> {
             "core.hooksPath=/dev/null",
             "-c",
             "commit.gpgsign=false",
+            // A merge that has to make a commit is a merge, not a conflict,
+            // whatever the person's own `merge.ff` says.
+            "-c",
+            "merge.ff=true",
             "merge",
             "--no-edit",
             "--quiet",
@@ -420,16 +582,6 @@ pub fn post_status(gh: &OsStr, sha: &str, state: &str, text: &str) -> Result<(),
             said
         };
         Err(format!("the verdict was not posted: {said}"))
-    }
-}
-
-/// A description cut to GitHub's limit.
-fn clip(text: &str) -> String {
-    if text.chars().count() <= DESCRIPTION_LIMIT {
-        text.to_owned()
-    } else {
-        let cut: String = text.chars().take(DESCRIPTION_LIMIT - 1).collect();
-        format!("{cut}…")
     }
 }
 
@@ -557,17 +709,11 @@ fn note_red(reds: &[Backstop]) {
                 RED_BODY,
                 "--label",
                 RED_LABEL,
-                "--force-new",
-                "--json",
+                "--agent",
             ])
-            .and_then(|json| {
-                let doc: Value = serde_json::from_str(&json)
-                    .map_err(|e| format!("`kata create` is not JSON: {e}"))?;
-                doc.pointer("/issue/short_id")
-                    .or_else(|| doc.get("short_id"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .ok_or_else(|| "`kata create` named no issue".to_owned())
+            .and_then(|_| open_red_issue())
+            .and_then(|issue| {
+                issue.ok_or_else(|| "`kata create` left no open main-red issue".to_owned())
             });
             match created {
                 Ok(issue) => {
@@ -748,7 +894,9 @@ pub enum Backstop {
 
 /// Read `gh run list --json databaseId,conclusion,headSha,url` (newest first)
 /// and `gh run view <id> --json jobs` for the newest run that has finished.
-/// A failed job makes it red; cancelled or timed-out jobs alone do not.
+/// A failed job makes it red; cancelled or timed-out jobs alone do not. The
+/// workflow's aggregate job, named in `AGGREGATE_JOBS`, is left out: it fails
+/// whenever a job under it was cancelled, so only the jobs under it count.
 pub fn read_backstop(workflow: &str, run_json: &str, jobs_json: &str) -> Result<Backstop, String> {
     let runs: Value = serde_json::from_str(run_json)
         .map_err(|e| format!("{workflow}: runs are not JSON: {e}"))?;
@@ -781,14 +929,24 @@ pub fn read_backstop(workflow: &str, run_json: &str, jobs_json: &str) -> Result<
         .and_then(Value::as_array)
         .filter(|jobs| !jobs.is_empty())
         .ok_or_else(|| format!("{workflow}: run {run_id} has no jobs"))?;
+    let aggregate = AGGREGATE_JOBS
+        .iter()
+        .find(|(file, _)| *file == workflow)
+        .map(|(_, job)| *job);
     let conclusions: Vec<&str> = jobs
         .iter()
+        .filter(|j| aggregate.is_none() || j.get("name").and_then(Value::as_str) != aggregate)
         .map(|j| {
             j.get("conclusion")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
         })
         .collect();
+    if conclusions.is_empty() {
+        return Err(format!(
+            "{workflow}: run {run_id} has no jobs but its aggregate one"
+        ));
+    }
     if conclusions.contains(&"failure") {
         Ok(Backstop::Red {
             run_id,
@@ -1175,6 +1333,112 @@ mod tests {
         assert!(error.contains("not posted"), "{error}");
         assert!(error.contains("Bad credentials"), "{error}");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_cancelled_cache_job_under_a_red_aggregate_is_cancelled_only() {
+        // Shaped like main's run 43951187684: warm-cache cancelled, the shards
+        // skipped, and only the aggregate `test` job failed.
+        let runs = r#"[{"databaseId":43951187684,"conclusion":"failure","headSha":"09c2efb","url":"https://github.com/o/r/actions/runs/43951187684"}]"#;
+        let jobs = r#"{"jobs":[
+            {"name":"Packaging stages the type source and the DuckDB CLI into both artifacts","conclusion":"cancelled"},
+            {"name":"The packaged artifact carries a type source (disk image)","conclusion":"success"},
+            {"name":"warm the build cache","conclusion":"cancelled"},
+            {"name":"The air-gap read jail refuses reads outside its grant","conclusion":"success"},
+            {"name":"test","conclusion":"failure"},
+            {"name":"test shard ${{ matrix.name }}","conclusion":"skipped"}]}"#;
+        assert_eq!(
+            read_backstop("test.yml", runs, jobs),
+            Ok(Backstop::CancelledOnly {
+                run_id: 43951187684,
+                url: "https://github.com/o/r/actions/runs/43951187684".into()
+            })
+        );
+        // A failed leaf job is still red, aggregate or not.
+        let red_leaf = jobs.replace(
+            r#""warm the build cache","conclusion":"cancelled""#,
+            r#""warm the build cache","conclusion":"failure""#,
+        );
+        assert!(matches!(
+            read_backstop("test.yml", runs, &red_leaf),
+            Ok(Backstop::Red { .. })
+        ));
+        // In a workflow with no aggregate job, a job named `test` is a leaf.
+        assert!(matches!(
+            read_backstop("lint.yml", runs, jobs),
+            Ok(Backstop::Red { .. })
+        ));
+    }
+
+    #[test]
+    fn a_failure_posts_a_fixed_phrase_and_no_local_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("phrase");
+        let gh = dir.join("gh");
+        let said = dir.join("args");
+        fs::write(
+            &gh,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", said.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        let failure = Failure::new(
+            Stage::Worktree,
+            "cannot create /var/folders/k0/T/brightfield-gate-1-2/home: Permission denied",
+        );
+        let code = post_failure(gh.as_os_str(), "abc123", &failure);
+        assert_eq!(code, ExitCode::FAILURE);
+        let args = fs::read_to_string(&said).unwrap();
+        let posted = args
+            .lines()
+            .find_map(|line| line.strip_prefix("description="))
+            .expect("a description was posted");
+        assert_eq!(posted, "could not make the worktree");
+        assert!(!posted.contains('/'), "{posted}");
+        assert!(args.lines().any(|line| line == "state=failure"), "{args}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_merge_that_must_make_a_commit_is_not_refused_by_merge_ff_only() {
+        let dir = scratch("ff-only");
+        git(&dir, &["init", "--quiet", "--initial-branch=main"]);
+        fs::write(dir.join("a.txt"), "base\n").unwrap();
+        git(&dir, &["add", "a.txt"]);
+        git(&dir, &["commit", "--quiet", "-m", "base"]);
+        git(&dir, &["checkout", "--quiet", "-b", "branch"]);
+        fs::write(dir.join("b.txt"), "branch\n").unwrap();
+        git(&dir, &["add", "b.txt"]);
+        git(&dir, &["commit", "--quiet", "-m", "branch"]);
+        git(&dir, &["checkout", "--quiet", "main"]);
+        fs::write(dir.join("c.txt"), "main\n").unwrap();
+        git(&dir, &["add", "c.txt"]);
+        git(&dir, &["commit", "--quiet", "-m", "main"]);
+        git(&dir, &["update-ref", "refs/remotes/origin/main", "main"]);
+        git(&dir, &["checkout", "--quiet", "branch"]);
+        git(&dir, &["config", "merge.ff", "only"]);
+        assert_eq!(merge_with_main(&dir, "origin/main"), Ok(()));
+        assert!(dir.join("c.txt").exists(), "main's change is merged in");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_child_loses_build_flags_and_keeps_the_job_cap() {
+        for key in [
+            "RUSTFLAGS",
+            "RUSTDOCFLAGS",
+            "CARGO_ENCODED_RUSTFLAGS",
+            "RUSTC_WRAPPER",
+            "CARGO_BUILD_TARGET",
+            "CARGO_BUILD_RUSTFLAGS",
+            "RUSTUP_TOOLCHAIN",
+            "XDG_CONFIG_HOME",
+        ] {
+            assert!(removed_from_child(key), "{key} should not reach the run");
+        }
+        for key in ["PATH", "CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "HOME"] {
+            assert!(!removed_from_child(key), "{key} should reach the run");
+        }
     }
 
     #[test]

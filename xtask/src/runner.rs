@@ -416,7 +416,15 @@ mod tests {
 
     #[test]
     fn the_summary_json_names_every_step_and_its_outcome() {
-        let steps = [step("a"), step("b"), ci_only("c"), step("d")];
+        let steps = [
+            Step {
+                runs: "the a check",
+                ..step("a")
+            },
+            step("b"),
+            ci_only("c"),
+            step("d"),
+        ];
         let rows = vec![
             Row {
                 name: "a",
@@ -451,6 +459,7 @@ mod tests {
                 ("d", "skipped")
             ]
         );
+        assert_eq!(doc["steps"][0]["runs"], "the a check");
         assert_eq!(doc["steps"][0]["seconds"], 1.5);
         assert_eq!(doc["steps"][1]["reason"], "b broke");
         assert_eq!(doc["steps"][2]["reason"], "it reads the event");

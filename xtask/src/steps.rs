@@ -464,15 +464,22 @@ fn selection(ctx: &Ctx) -> Result<shard::Selection, String> {
     shard::select(&serial, &seconds, &targets, shard.as_ref())
 }
 
+/// Where the DuckDB CLI is: `set`, ARC_DUCKDB_BIN's value, read against
+/// `root` when relative, or `target/duckdb-cli/duckdb` under `root` when it is
+/// unset or empty. Always absolute when `root` is.
+fn engine_path(root: &Path, set: Option<OsString>) -> PathBuf {
+    match set {
+        Some(path) if !path.is_empty() => root.join(path),
+        _ => root.join("target/duckdb-cli/duckdb"),
+    }
+}
+
 /// The pinned DuckDB CLI the run tests hand to arc: ARC_DUCKDB_BIN when it is
 /// set, `target/duckdb-cli/duckdb` when it is not, and either way accepted by
 /// `scripts/fetch-duckdb-cli.sh --check` before a test runs.
 pub(crate) fn pinned_duckdb(ctx: &Ctx) -> Result<PathBuf, String> {
     let host = host_triple()?;
-    let engine = match std::env::var_os("ARC_DUCKDB_BIN") {
-        Some(path) if !path.is_empty() => PathBuf::from(path),
-        _ => ctx.root.join("target/duckdb-cli/duckdb"),
-    };
+    let engine = engine_path(&ctx.root, std::env::var_os("ARC_DUCKDB_BIN"));
     let dir = engine.parent().unwrap_or(Path::new("."));
     let accepted = engine.file_name().is_some_and(|name| name == "duckdb")
         && ctx
@@ -741,6 +748,27 @@ fn conformance(ctx: &Ctx) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_relative_duckdb_path_is_read_from_the_checkout_root() {
+        let root = Path::new("/checkout");
+        assert_eq!(
+            engine_path(root, Some("target/duckdb-cli/duckdb".into())),
+            PathBuf::from("/checkout/target/duckdb-cli/duckdb")
+        );
+        assert_eq!(
+            engine_path(root, Some("/opt/duckdb/duckdb".into())),
+            PathBuf::from("/opt/duckdb/duckdb")
+        );
+        assert_eq!(
+            engine_path(root, Some("".into())),
+            PathBuf::from("/checkout/target/duckdb-cli/duckdb")
+        );
+        assert_eq!(
+            engine_path(root, None),
+            PathBuf::from("/checkout/target/duckdb-cli/duckdb")
+        );
+    }
 
     #[test]
     fn warm_cache_runs_locally_before_the_suite() {
