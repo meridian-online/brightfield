@@ -4,9 +4,9 @@
 
 **Goal:** A sandboxed build of Brightfield, the managed edition, that App Review can accept. It opens, saves, reopens and runs the analyst's own Protocols through folder grants it keeps, reports refused access in the window, and opens restricted any Protocol with a step it may not run.
 
-**Architecture:** One code base with an edition switch set at build time. Grants are security-scoped bookmarks kept in a grant store. Brightfield's arc and dovetail child roles, and a third role that is DuckDB's own shell compiled in, resolve the bookmarks passed in their environment. A separate packaging path signs the sandboxed bundle for the Store.
+**Architecture:** One code base with an edition switch set at build time. Grants are security-scoped bookmarks kept in a grant store and held open while children use them. Children inherit them, as measured. The managed edition runs on Meridian's own build of DuckDB with its extensions compiled in, as a linked library and as the CLI arc runs. A separate packaging path signs the sandboxed bundle for the Store.
 
-**Tech Stack:** Rust (the workspace's pinned toolchain), egui/eframe, objc2 and objc2-foundation for AppKit and Foundation calls, duckdb-rs 1.20000.0 bundled (DuckDB 2.0.0), DuckDB's shell source from the same release, `codesign`, `productbuild`.
+**Tech Stack:** Rust (the workspace's pinned toolchain), egui/eframe, objc2 and objc2-foundation for AppKit and Foundation calls, duckdb-rs 1.20000.0 (DuckDB 2.0.0) and, in the managed edition, Meridian's build of DuckDB 2.0.0 with extensions compiled in, `codesign`, `productbuild`.
 
 **Spec:** `docs/superpowers/specs/2026-11-16-mac-app-store-managed-edition-design.md`. Read it before any task. The plan argues from it.
 
@@ -18,8 +18,9 @@
 - The full edition's behaviour does not change, except the refused-access banner and the headless exit (Task 6), which apply to both editions.
 - Every grant is read-write.
 - Store entitlements, verbatim. App: `com.apple.security.app-sandbox`, `com.apple.security.files.user-selected.read-write`, `com.apple.security.files.bookmarks.app-scope`, `com.apple.security.files.downloads.read-write`, `com.apple.security.network.client`. Helpers: exactly `com.apple.security.app-sandbox` and `com.apple.security.inherit`.
-- Bundled DuckDB extensions: autocomplete (in the shell), excel, sqlite, httpfs, ducklake, spatial, FineType. Automatic install is off, and an `INSTALL` from the network is refused.
-- The stand-in is DuckDB's own shell from DuckDB 2.0.0, linked to the library Brightfield links. `--version` prints exactly what the pinned CLI prints.
+- Built-in DuckDB extensions, compiled in, with no `.duckdb_extension` file in the bundle: autocomplete, excel, sqlite, httpfs, ducklake, spatial, FineType. Automatic install and load are off, and any other `INSTALL` or `LOAD` is refused.
+- The managed edition's DuckDB CLI is DuckDB's own shell from Meridian's build of DuckDB 2.0.0 (`d54cbbe3df17e8e5ce68312f483b4155836112aa`). `--version` prints exactly what the pinned release prints.
+- Children are passed nothing: they inherit the grants (`docs/app-sandbox.md`). Brightfield keeps a grant open while a child uses it.
 - The repo is public: no private planning identifiers in code, comments, commits, branch names or pull request text.
 - The gate is `cargo xtask ci`. Before each commit run `cargo xtask ci --step fmt`, `--step clippy` and the tests the task touches, and after each commit `--step comment-citations`.
 
@@ -33,24 +34,9 @@
 
 ---
 
-### Task 1: Re-measure today's build under App Sandbox
+### Task 1: Re-measure today's build under App Sandbox (done, 2026-11-17)
 
-Runs in this planning issue when a build slot frees, before any build task. It builds `main` once in release.
-
-**Files:**
-- Create: `scripts/sandbox-measure.sh`: wraps a built binary in throwaway `.app` variants, ad-hoc signed with an entitlements plist per variant as the v0.1.2 measurement did, runs each case, and prints a table of case, stderr detector line, exit status and PNG sha256.
-- Create: `scripts/sandbox-measure/entitlements/*.plist`: one per variant: `sandbox`, `dir-ro`, `dir-rw`, `file-only`, `helper-inherit`.
-- Create: `scripts/sandbox-measure/bookmark-child/`: a small Rust or Swift probe that makes a security-scoped bookmark, passes it to a child signed with `inherit` (and on to a grandchild), and has each try to read a file in the folder.
-- Create: `docs/app-sandbox.md`: the method, the results table and what each result means for the design.
-
-- [ ] **Step 1:** Build release once: `cargo build --release -p brightfield-shell` (5 to 55 minutes, depending on the cache).
-- [ ] **Step 2:** Run the baseline cases from the spec's re-measure section, numbers 1 to 7, through `scripts/sandbox-measure.sh baseline`. The `temporary-exception.files.absolute-path` entitlements stand in for panel grants, as in v0.1.2. Cases 1 to 3 and 8 need the real panel or Finder, so do those by hand on the ad-hoc bundle and record them in `docs/app-sandbox.md`.
-- [ ] **Step 3:** Run the premise spikes, numbers 8 to 14, through `scripts/sandbox-measure.sh premises`.
-- [ ] **Step 4:** Write `docs/app-sandbox.md` with every result. For each premise that failed, write the change to the spec beside it.
-- [ ] **Step 5:** Revise the spec for each failed premise, and the tasks below that depend on it. Raise any change to what gets built with Hugh.
-- [ ] **Step 6:** Commit `scripts/sandbox-measure*`, `docs/app-sandbox.md` and the spec edits.
-
-**Verification:** `scripts/sandbox-measure.sh premises` prints a row per premise. Expected: rows 8 and 10 pass, which is the design's premise; any other result is recorded and acted on in Step 5. About 10 minutes on a built binary, plus about 30 minutes for the hand cases.
+Done: `scripts/sandbox-measure.sh`, `scripts/sandbox-measure/` and `docs/app-sandbox.md`, and the spec revised for its two findings with Hugh's rulings. The cases left for the first TestFlight build are in Task 14.
 
 ---
 
@@ -95,9 +81,7 @@ Runs in this planning issue when a build slot frees, before any build task. It b
   - `fn grant(&self, folder: &Path) -> Result<(), GrantError>`.
   - `fn covering(&self, path: &Path) -> Option<PathBuf>`, returning the granted folder at or above `path`.
   - `fn needs(&self, paths: &[PathBuf]) -> Vec<PathBuf>`, returning the folders still to grant for those paths.
-  - `fn env_value(&self, paths: &[PathBuf]) -> String`, the bookmarks covering `paths`, encoded for the child.
-  - `pub const GRANTS_ENV: &str = "BRIGHTFIELD_GRANTS"`.
-  - `pub fn resolve_from_env()`: in a child, resolves `GRANTS_ENV` and starts access.
+  - `fn hold(&self, folders: &[PathBuf]) -> GrantHold`: keeps access to `folders` started until the returned guard drops, for a run or a join proposal.
   - `pub enum GrantError { Unresolvable(PathBuf), Unmounted(PathBuf), Io(String) }`.
   - `pub fn store() -> &'static Grants`, the process-wide store.
   - `mac_grants`: `make_bookmark(path: &Path) -> Result<Vec<u8>, String>`, `resolve_bookmark(data: &[u8]) -> Result<(PathBuf, bool /* stale */), String>`, `start_access(path: &Path) -> bool`.
@@ -110,7 +94,7 @@ Runs in this planning issue when a build slot frees, before any build task. It b
   - `an_unmounted_volume_is_reported_not_dropped` (Review Focus 2): bookmark a path on a disk image attached with `hdiutil`, detach, reload. The result is `GrantError::Unmounted`, and the entry is still in `grants.json`. Mark it `#[ignore]` with the reason "attaches a disk image", and run it in CI's macOS job.
   - `needs_is_empty_in_the_full_edition`.
 - [ ] **Step 2:** Run `cargo test -p brightfield-shell --features managed-edition --test grants`. Expected: FAIL.
-- [ ] **Step 3:** Implement the store and the Foundation calls. Use `NSURL bookmarkDataWithOptions:` with `NSURLBookmarkCreationWithSecurityScope` for the store and with no options for `env_value`, which is Apple's way to hand a child a bookmark. Use `URLByResolvingBookmarkData:options:...bookmarkDataIsStale:`.
+- [ ] **Step 3:** Implement the store and the Foundation calls. Use `NSURL bookmarkDataWithOptions:` with `NSURLBookmarkCreationWithSecurityScope`, and `URLByResolvingBookmarkData:options:...bookmarkDataIsStale:` with `NSURLBookmarkResolutionWithSecurityScope`.
 - [ ] **Step 4:** Run the tests in Step 2, then `cargo test -p brightfield-shell --features managed-edition --test grants -- --ignored`. Expected: PASS.
 - [ ] **Step 5:** Commit.
 
@@ -201,76 +185,69 @@ Runs in this planning issue when a build slot frees, before any build task. It b
 
 ---
 
-### Task 7: Children receive the grants
+### Task 7: Runs and join proposals under the grants
 
 **Files:**
-- Modify: `crates/brightfield-shell/src/run.rs` (`arc_command` near `:528` sets `GRANTS_ENV` from `grants::store().env_value(...)` over the Protocol folder, its sources' folders and the Protocols folder; `serve_as_runner_if_asked` calls `grants::resolve_from_env()` first), `discovery.rs` (the same, for dovetail and `serve_as_dovetail_if_asked`), `refusal.rs` (run failures go through `refusal_in_engine_text`)
+- Modify: `crates/brightfield-shell/src/run.rs` (`arc_command` near `:528` takes a `GrantHold` over the Protocol folder, its sources' folders and the Protocols folder for the life of the run), `discovery.rs` (the same for dovetail), `refusal.rs` (run failures go through `refusal_in_engine_text`)
 - Test: `crates/brightfield-shell/tests/child_grants.rs`
 
 **Interfaces:**
-- Consumes: `Grants::env_value`, `grants::resolve_from_env`, `refusal::refusal_in_engine_text`.
+- Consumes: `Grants::hold`, `refusal::refusal_in_engine_text`.
 - Produces: the window raises a `Refusal { during: RefusedDuring::Run, .. }` for a refused run.
 
 - [ ] **Step 1:** Write the failing tests:
-  - `the_arc_child_is_handed_the_protocol_and_source_folders`: with a two-folder Protocol, the command built by `arc_command` carries `GRANTS_ENV`, which decodes to both folders.
+  - `a_run_holds_its_folders_until_it_ends`: while the run is going, the store reports the Protocol folder and both source folders held; after it ends, none.
   - `a_run_refused_mid_way_reports_the_path` (Review Focus 4): delete the source folder, or set it to `000`, after the run starts. The run ends with a refusal naming it.
-  - `dovetail_is_handed_the_folder_it_proposes_over`.
+  - `dovetail_holds_the_folder_it_proposes_over`.
 - [ ] **Step 2:** Run `cargo test -p brightfield-shell --features managed-edition --test child_grants`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run Step 2's test, then `cargo test -p brightfield-shell --test arc_child_way --test dovetail_child --test run_control --test protocol_run_start`. Expected: PASS.
 - [ ] **Step 5:** Commit.
 
-**Verification:** Step 4's commands, about 15 minutes incremental. Whether the sandboxed handover works is shown by `scripts/sandbox-measure.sh premises` row 8 on a managed build: about 10 minutes after a release build.
+**Verification:** Step 4's commands, about 15 minutes incremental. That a sandboxed run reaches the grant is shown by `scripts/sandbox-measure.sh premises` and by Task 13's packaged baseline.
 
 ---
 
-### Task 8: The DuckDB shell stand-in
+### Task 8: DuckDB built with its extensions
 
 **Files:**
-- Create: `crates/brightfield-duckdb-shell/` with:
-  - `Cargo.toml`;
-  - `build.rs`, which compiles the vendored shell with `cc` against libduckdb-sys's bundled headers;
-  - `src/lib.rs`, which exposes `pub fn run_shell(args: Vec<OsString>) -> i32`;
-  - `vendor/shell/`, DuckDB 2.0.0's `tools/shell` sources and the third-party code they include, with DuckDB's MIT licence and a `VENDORED.md` naming the release commit `d54cbbe3df17e8e5ce68312f483b4155836112aa`.
-- Modify: `crates/brightfield-shell/src/main.rs` (before every other role: when the executable's file name is `duckdb`, call `grants::resolve_from_env()`, then `exit(run_shell(args))`), `Cargo.toml` (workspace member), `deny.toml` if the licence check needs it
-- Test: `crates/brightfield-duckdb-shell/tests/forms.rs`
+- Create: `scripts/build-duckdb.sh`. It fetches the DuckDB 2.0.0 source at `d54cbbe3df17e8e5ce68312f483b4155836112aa` and the pinned sources of each extension, with checksums. It builds, with DuckDB's own build and an extension configuration listing them, a static library and the CLI with autocomplete, excel, sqlite, httpfs, ducklake, spatial and FineType compiled in, into `target/duckdb-managed/`.
+- Create: `scripts/duckdb-managed/extensions.cmake` (the extension configuration, each extension pinned to a commit), `scripts/build-duckdb-selftest.sh`
+- Modify: `crates/brightfield-shell/Cargo.toml` and the workspace `Cargo.toml` (under `managed-edition`, link duckdb-rs to `target/duckdb-managed/` rather than its bundled DuckDB), `xtask` (step `duckdb-managed`), `deny.toml` if the extensions' licences need it
+- Test: `scripts/build-duckdb-selftest.sh`, `crates/brightfield-engine/tests/managed_duckdb.rs`
 
 **Interfaces:**
-- Produces: `brightfield_duckdb_shell::run_shell(args: Vec<OsString>) -> i32`.
-- The role is chosen by executable file name, not by an environment variable. arc's environment carries `BRIGHTFIELD_RUN_AS_ARC`, which would otherwise turn the shell back into arc.
+- Produces: `target/duckdb-managed/duckdb` (CLI) and `target/duckdb-managed/libduckdb_static.a` with headers, and the `managed-edition` feature linking them.
 
-- [ ] **Step 1:** Write the failing tests. Each runs a copy of the built binary named `duckdb` beside the pinned CLI from `target/duckdb-cli`, and compares stdout, stderr and exit status byte for byte:
-  - `version_matches_the_pinned_cli`.
-  - `list_mode_c_matches`: `-noheader -list -c "select 1, 'a'"`.
-  - `file_then_dot_commands_match`: `<db> -f step.sql -c ".bail off" -c ".timer off" -c ".mode list" -c ".headers off" -c ".once '<tmp>'" -c "select extension_name, loaded from duckdb_extensions() order by 1"`, comparing the `.once` file too.
-  - `json_tokenizer_on_stdin_matches`: `-no-init -json` with `select * from sql_tokenize('select 1')` on stdin.
-  - `list_noheader_on_stdin_matches`.
-  - `brightfield_engine_check_form_matches`: `-batch -noheader -csv -init <file> -c "select 42"`.
-  - `a_failing_statement_exits_as_the_cli_does`.
-  - `agent_mode_zero_is_honoured`: the same output with `DUCKDB_AGENT_MODE=0` set.
-- [ ] **Step 2:** Run `cargo test -p brightfield-duckdb-shell --test forms`. Expected: FAIL.
-- [ ] **Step 3:** Vendor the shell and write `build.rs`. If DuckDB 2.0.0's `sql_tokenize` lives outside the core library, add the extension's source the same way.
-- [ ] **Step 4:** Run `cargo test -p brightfield-duckdb-shell --test forms`. Expected: PASS. A difference is a failure to fix, not to allow. If one cannot be fixed, stop and raise it with Hugh, with the spec's approach B as the alternative.
+- [ ] **Step 1:** Write `build-duckdb-selftest.sh`. On the built CLI it asserts:
+  - `--version` prints `v2.0.0 (Cyanoptera) d54cbbe3df`;
+  - `select extension_name from duckdb_extensions() where loaded and installed` lists each of the seven with `install_mode` statically linked;
+  - `install h3` fails, since autoinstall is off in this build;
+  - `otool -L` shows no dynamic DuckDB library.
+  Run it. Expected: FAIL.
+- [ ] **Step 2:** Write the failing test `managed_duckdb_has_the_extensions_in_process` in `managed_duckdb.rs`. Under `managed-edition`, an in-memory connection reads an `.xlsx` with `read_xlsx` and a SQLite file with `sqlite_scan`, with no extension directory and the network denied.
+- [ ] **Step 3:** Write `build-duckdb.sh` and the extension configuration, and wire the feature. FineType is the riskiest extension. If it will not build statically, stop and raise it with Hugh, because the spec's fallback (ship without in-process FineType typing first) needs his agreement.
+- [ ] **Step 4:** Run `cargo xtask ci --step duckdb-managed` (it runs the build and its self-test), then `cargo test -p brightfield-engine --features managed-edition --test managed_duckdb`. Expected: PASS.
 - [ ] **Step 5:** Commit.
 
-**Verification:** Step 4's command. About 20 to 40 minutes the first time, since it compiles the shell and needs `target/duckdb-cli`; about 5 minutes incremental.
+**Verification:** Step 4's commands. A cold DuckDB build with these extensions is long: budget 30 to 90 minutes, and spatial is the heaviest. Incremental runs are minutes.
 
 ---
 
 ### Task 9: The parity gate
 
 **Files:**
-- Create: `scripts/check-shell-parity.sh`. It checks out arcform at the revision `Cargo.lock` pins, and runs arc's engine and tokenizer tests with `ARC_DUCKDB_BIN` set first to the pinned CLI, then to the stand-in. It then runs every shipped Protocol that runs offline, and the agent Protocols `check-agent-protocols.sh` runs, under each, and compares their outputs, run records and exit statuses.
-- Create: `scripts/check-shell-parity-selftest.sh`. It proves the comparison fails when one output differs by a byte.
-- Modify: `xtask` (steps `shell-parity` and `shell-parity-selftest`), `.github/workflows/test.yml` (a job running `cargo xtask ci --step shell-parity` when paths under `crates/brightfield-duckdb-shell/`, `packaging/store/`, `Cargo.lock` or `scripts/check-shell-parity*` change)
+- Create: `scripts/check-duckdb-parity.sh`. It runs every shipped Protocol that runs offline, and the agent Protocols `check-agent-protocols.sh` runs, once with `ARC_DUCKDB_BIN` set to the pinned release CLI and once set to `target/duckdb-managed/duckdb`, and compares their outputs, run records and exit statuses. It then checks out arcform at the revision `Cargo.lock` pins and runs arc's engine and tokenizer tests against Meridian's CLI.
+- Create: `scripts/check-duckdb-parity-selftest.sh`. It proves the comparison fails when one output differs by a byte.
+- Modify: `xtask` (steps `duckdb-parity` and `duckdb-parity-selftest`), `.github/workflows/test.yml` (a job running them when `scripts/build-duckdb*`, `scripts/duckdb-managed/`, `packaging/store/`, `Cargo.lock` or `scripts/check-duckdb-parity*` change)
 
-- [ ] **Step 1:** Write the self-test first. Run `./scripts/check-shell-parity-selftest.sh`. Expected: FAIL, because the script does not exist.
-- [ ] **Step 2:** Write `check-shell-parity.sh` and wire the xtask steps.
-- [ ] **Step 3:** Run `cargo xtask ci --step shell-parity-selftest`, then `cargo xtask ci --step shell-parity`. Expected: PASS, with every Protocol named and "identical" beside it. A Protocol needing `uv`, such as edgar_gleif's resolve step, is listed as "restricted in the managed edition" and checked by Task 10's test instead.
+- [ ] **Step 1:** Write the self-test first. Run `./scripts/check-duckdb-parity-selftest.sh`. Expected: FAIL, because the script does not exist.
+- [ ] **Step 2:** Write `check-duckdb-parity.sh` and wire the xtask steps.
+- [ ] **Step 3:** Run `cargo xtask ci --step duckdb-parity-selftest`, then `cargo xtask ci --step duckdb-parity`. Expected: PASS, with every Protocol named and "identical" beside it. A Protocol needing `uv`, such as edgar_gleif's resolve step, is listed as "restricted in the managed edition" and checked by Task 10's test instead. A difference is a failure to fix, not to allow. If one cannot be fixed, stop and raise it with Hugh.
 - [ ] **Step 4:** Run `cargo xtask ci --step workflow-coverage`. Expected: PASS.
 - [ ] **Step 5:** Commit.
 
-**Verification:** `cargo xtask ci --step shell-parity`, about 20 to 30 minutes, most of it arc's tests run twice.
+**Verification:** `cargo xtask ci --step duckdb-parity`, about 20 to 30 minutes, most of it arc's tests.
 
 ---
 
@@ -288,7 +265,7 @@ Runs in this planning issue when a build slot frees, before any build task. It b
   - `pub struct BeyondEdition { pub step: String, pub reason: Reason }`.
   - `pub enum Reason { CommandStep(String), Precondition, OutsideProgram(String), Extension(String) }`.
   - `pub fn sentence(b: &BeyondEdition) -> String`, for example `Step clean runs uv, which this edition can't run.`
-- Outside programs: arc operators that start a program, except `finetype` once Task 12 ships it. Extensions: any `INSTALL`/`LOAD` or declared extension asset outside the bundled set listed in Global Constraints.
+- Outside programs: arc operators that start a program, except `finetype` once Task 12 ships it. Extensions: any `INSTALL`/`LOAD` or declared extension asset outside the built-in set listed in Global Constraints.
 
 - [ ] **Step 1:** Write the failing tests:
   - `a_command_step_is_beyond_the_managed_edition`: `command: uv run clean.py` gives `CommandStep("uv")`, with sentence `Step clean runs uv, which this edition can't run.`
@@ -308,27 +285,25 @@ Runs in this planning issue when a build slot frees, before any build task. It b
 
 ---
 
-### Task 11: Bundled extensions, downloads off
+### Task 11: Extensions built in, install and load off
 
 **Files:**
-- Modify: `crates/brightfield-engine/src/lib.rs` (in the managed edition, the extension directory is the bundle's, `autoinstall_known_extensions` is false, and `NetworkPolicy::Auto` never issues `INSTALL` from the network), `crates/brightfield-engine/src/sources.rs` (the load SQL's `INSTALL excel`/`INSTALL sqlite` become `LOAD` from the bundle in the managed edition), `scripts/package.sh`, or Task 13's `scripts/package-store.sh` (stage the extensions for DuckDB 2.0.0 on `osx_arm64`)
-- Create: `scripts/fetch-duckdb-extensions.sh` (fetches the pinned extensions with checksums, at package time, not at run time)
-- Test: `crates/brightfield-engine/tests/bundled_extensions.rs`
+- Modify: `crates/brightfield-engine/src/lib.rs` (in the managed edition, `autoinstall_known_extensions` and `autoload_known_extensions` are false, and `NetworkPolicy::Auto` never issues `INSTALL`), `crates/brightfield-engine/src/sources.rs` (the load SQL's `INSTALL excel; LOAD excel` and `INSTALL sqlite; LOAD sqlite` are left out in the managed edition, since the extensions are already loaded), `crates/brightfield-shell/src/semantic.rs` (FineType is not loaded from a file in the managed edition)
+- Test: `crates/brightfield-engine/tests/built_in_extensions.rs`
 
 **Interfaces:**
-- Consumes: `Edition`. The engine crate takes it as a constructor argument, because it doesn't depend on the shell crate.
-- Produces: `pub fn bundled_extension_dir() -> Option<PathBuf>` in the engine, which is `Contents/Resources/duckdb-extensions` beside the executable.
+- Consumes: `Edition`. The engine crate takes it as a constructor argument, because it doesn't depend on the shell crate. Task 8's `managed-edition` DuckDB.
 
 - [ ] **Step 1:** Write the failing tests:
-  - `managed_loads_excel_from_the_bundle_with_no_network`: run under `sandbox-exec` with the network denied, as `tests/front_door.rs` does, against a staged extension dir. Reading an `.xlsx` succeeds.
-  - `managed_refuses_install_from_the_network`: `INSTALL h3` errors with the edition sentence.
+  - `managed_reads_a_workbook_with_no_install_and_no_network`: run under `sandbox-exec` with the network denied, as `tests/front_door.rs` does. Reading an `.xlsx` succeeds.
+  - `managed_refuses_install_and_load_of_anything_else`: `INSTALL h3` and `LOAD '/x.duckdb_extension'` error with the edition sentence.
   - `the_full_edition_installs_as_before`.
-- [ ] **Step 2:** Run `cargo test -p brightfield-engine --features managed-edition --test bundled_extensions`. Expected: FAIL.
-- [ ] **Step 3:** Implement. Whether extensions keep DuckDB's signature check after `codesign` comes from Task 1, premise 12. Follow the revised spec.
-- [ ] **Step 4:** Run Step 2's test, then `./scripts/check-bundled-extension-selftest.sh`. Expected: PASS.
+- [ ] **Step 2:** Run `cargo test -p brightfield-engine --features managed-edition --test built_in_extensions`. Expected: FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Run Step 2's test, then `./scripts/check-bundled-extension-selftest.sh` for the full edition. Expected: PASS.
 - [ ] **Step 5:** Commit.
 
-**Verification:** Step 4's commands. About 10 to 20 minutes, including the extension fetch.
+**Verification:** Step 4's commands. About 10 to 20 minutes.
 
 ---
 
@@ -358,15 +333,15 @@ Runs in this planning issue when a build slot frees, before any build task. It b
 
 What `package-store.sh` does:
 1. Builds release with `--features managed-edition`.
-2. Lays out `Contents/MacOS/brightfield`, the helper copy, `Contents/Helpers/duckdb` (the helper under that name), `Contents/Helpers/finetype`, `Contents/Resources/duckdb-extensions/`, the FineType bundle and model, and no DuckDB CLI.
-3. Signs inside out: extensions, then FineType's extension, `finetype`, the helpers with `Helper.entitlements`, then the app with `Brightfield.entitlements` and the embedded provisioning profile.
+2. Lays out `Contents/MacOS/brightfield`, the helper copy for the arc and dovetail roles, `Contents/Helpers/duckdb` (Task 8's CLI), `Contents/Helpers/finetype`, and FineType's model. No `.duckdb_extension` file.
+3. Signs inside out: the helpers with `Helper.entitlements`, then the app with `Brightfield.entitlements` and the embedded provisioning profile.
 4. Runs `productbuild --sign "3rd Party Mac Developer Installer: …"`.
 5. Without Store identities, signs ad-hoc for local checks.
 
-- [ ] **Step 1:** Write `package-store-selftest.sh`. It asserts on an ad-hoc package: `codesign -d --entitlements -` on the app prints exactly the five app keys; on each helper it prints exactly `app-sandbox` and `inherit`; `Contents/Helpers/duckdb --version` prints the pinned version; no file named like the upstream CLI's signature is present. Run it. Expected: FAIL.
+- [ ] **Step 1:** Write `package-store-selftest.sh`. It asserts on an ad-hoc package: `codesign -d --entitlements -` on the app prints exactly the five app keys; on each helper it prints exactly `app-sandbox` and `inherit`; `Contents/Helpers/duckdb --version` prints the pinned version; `find` finds no `.duckdb_extension` in the bundle; `codesign --verify --strict --deep` passes on the app. Run it. Expected: FAIL.
 - [ ] **Step 2:** Write `package-store.sh` and the entitlements files.
 - [ ] **Step 3:** Run `cargo xtask ci --step package-store-selftest`. Expected: PASS.
-- [ ] **Step 4:** Run `scripts/sandbox-measure.sh baseline` against the ad-hoc Store package. Expected: every baseline case that failed in Task 1 now passes, except the cases that need a real panel, which are listed for the proof run.
+- [ ] **Step 4:** Run `scripts/sandbox-measure.sh baseline` against the ad-hoc Store package's `brightfield-shot`. Expected: a grant on `arcform.yaml` alone now exits 3, naming the refused model, rather than drawing the degraded picture at exit 0. The cases that need a real panel are listed for the proof run.
 - [ ] **Step 5:** Write `store.yml`. It triggers on `workflow_dispatch` and Store tags, imports the Mac App Distribution and Mac Installer Distribution identities and the profile from secrets, runs `package-store.sh`, and uploads the `.pkg` as an artifact. The upload to App Store Connect stays manual until Task 14. Run `cargo xtask ci --step workflow-coverage`. Expected: PASS.
 - [ ] **Step 6:** Commit.
 
@@ -389,7 +364,9 @@ Waits on the developer membership's move to the company. The steps marked **Hugh
   - quit and relaunch, and it reopens without asking;
   - set one model to mode `000` and reopen: the window reports the refused access;
   - run a Protocol;
-  - open edgar_gleif: it opens restricted, naming its resolve step.
+  - open edgar_gleif: it opens restricted, naming its resolve step;
+  - make Brightfield the default app for CSV, and confirm macOS takes it;
+  - with the full edition also installed, check that each opens its own Recents and that Finder's Open With lists both.
   Record each in `docs/app-sandbox.md`.
 - [ ] **Step 6, Hugh:** Submit for review.
 
@@ -400,7 +377,7 @@ Waits on the developer membership's move to the company. The steps marked **Hugh
 ### Task 15: Fold the design into the docs
 
 **Files:**
-- Modify: `README.md` (a section on the managed edition: the editions table with working names; what it runs and what opens restricted; the Protocols folder asked once; grants and the Grant access banner; opening from Terminal with `open -a Brightfield`, and a shell function the analyst can add), `CHANGELOG.md`, `docs/app-sandbox.md` (the architecture: grants, children, the stand-in, the parity gate, with each of Hugh's rulings and its reason)
+- Modify: `README.md` (a section on the managed edition: the editions table with working names; what it runs and what opens restricted; the Protocols folder asked once; grants and the Grant access banner; opening from Terminal with `open -a Brightfield`, and a shell function the analyst can add), `CHANGELOG.md`, `docs/app-sandbox.md` (the architecture: grants, children, Meridian's DuckDB build, the parity gate, with each of Hugh's rulings and its reason)
 - Delete: `docs/superpowers/specs/2026-11-16-mac-app-store-managed-edition-design.md` and this plan
 
 - [ ] **Step 1:** Write the docs.
@@ -411,11 +388,11 @@ Waits on the developer membership's move to the company. The steps marked **Hugh
 
 ## Order
 
-- Task 1 comes first, and its findings may change any task.
-- Then Task 2.
-- Then Tasks 3, 8, 11 and 12 in any order; they share nothing.
+- Task 1 is done.
+- Task 2 comes first.
+- Then Tasks 3, 8 and 12 in any order; they share nothing.
 - Task 3 comes before Tasks 4, 5, 6 and 7.
-- Task 8 comes before Task 9.
+- Task 8 comes before Tasks 9 and 11.
 - Task 2 comes before Task 10. Task 12 comes before Task 10's `finetype` exception, so if Task 10 lands first, it lands without the exception and Task 12 adds it.
 - Tasks 4 to 12 all come before Task 13.
 - Task 13 comes before Task 14.
