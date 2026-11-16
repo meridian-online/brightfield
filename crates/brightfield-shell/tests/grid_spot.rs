@@ -23,10 +23,37 @@ use brightfield_sql::ir::ScalarValue;
 use brightfield_workbench::arrangement::{CANVAS, LEDGER_RAIL, STATUS_BAND};
 use brightfield_workbench::RunState;
 
-/// The housing sample every criterion opens.
+/// The housing sample every criterion opens: **the calling test's own copy**
+/// of it, in a directory named after the test, so no two tests open one file.
+///
+/// Opening a data file writes the spec generated for it to a path keyed by the
+/// file's own path, and the window watches that spec. When every test opened
+/// the committed file, tests running at once each rewrote the spec another
+/// test's window was watching, and that window's status band read "spec
+/// changed on disk" where `no_chrome_ink_is_drawn_inside_the_heros_data_area`
+/// expects "240 of 240 rows". A copy at a path of the test's own gives each
+/// test a spec of its own. The file keeps its name, which is all the window
+/// shows of the path.
+///
+/// The directory is named after the thread, which libtest names after the test
+/// it runs. The bytes are written only when the copy is missing or differs, so
+/// a test that opens the file twice does not touch it under a window still
+/// watching it.
 fn housing() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/data/california_housing_sample.csv")
+    let committed = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/california_housing_sample.csv");
+    let bytes =
+        std::fs::read(&committed).unwrap_or_else(|e| panic!("read {}: {e}", committed.display()));
+    let thread = std::thread::current();
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("grid_spot")
+        .join(thread.name().unwrap_or("main").replace("::", "-"));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("make {}: {e}", dir.display()));
+    let copy = dir.join("california_housing_sample.csv");
+    if std::fs::read(&copy).ok().as_deref() != Some(bytes.as_slice()) {
+        std::fs::write(&copy, &bytes).unwrap_or_else(|e| panic!("write {}: {e}", copy.display()));
+    }
+    copy
 }
 
 /// The ledger strip's Rows name: Log, Quality, Rows, Editor, Versions.
