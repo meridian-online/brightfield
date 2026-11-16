@@ -30,6 +30,39 @@ use brightfield_workbench::persist::{self, LoadOutcome, LAYOUT_FILE, SAVE_DEBOUN
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{GridLayout, PaneKey, RunState, RECENTS_KEPT};
 
+/// Give this binary a Protocols folder and a config directory of its own, so
+/// what the developer keeps under their home folder cannot reach a frame.
+///
+/// Without it the front door lists the Protocols in the default folder,
+/// `~/Documents/Protocols`. On a machine that has any, they stack above the
+/// starts, the crosswalk run's card falls off the bottom of [`SCREEN`], and the
+/// controls-rail click lands on a Protocols row instead of on empty rail: two
+/// tests here failed on a developer's Mac and passed on a fresh CI runner. The
+/// config directory is moved for the same reason, and so that opening the
+/// crosswalk run writes its sample Protocols into scratch rather than into the
+/// developer's own `~/Library/Application Support/Brightfield`.
+///
+/// Both variables are process-wide and set once, before the first test reads
+/// either; every test calls this first, so a later caller waits on that one
+/// initialisation. The Protocols folder is never created, which the shell
+/// reads as an empty one.
+fn own_home() {
+    static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("layout_wiring");
+        let _ = std::fs::remove_dir_all(&root);
+        std::env::set_var(
+            brightfield_shell::protocols_dir::PROTOCOLS_DIR_VAR,
+            root.join("no-protocols"),
+        );
+        std::env::set_var(
+            brightfield_shell::startup::CONFIG_DIR_VAR,
+            root.join("config"),
+        );
+        root
+    });
+}
+
 /// A scratch directory that removes itself, so a failing run cannot poison the
 /// next one with a file it left behind.
 struct Scratch(std::path::PathBuf);
@@ -251,6 +284,7 @@ fn click_at(pos: egui::Pos2) -> Vec<egui::Event> {
 /// value — the reason to keep it `OFF` is the one written on it, not this.
 #[test]
 fn frames_nobody_rearranged_write_nothing() {
+    own_home();
     let scratch = Scratch::new("quiet");
     let path = scratch.file();
     let ctx = egui::Context::default();
@@ -322,6 +356,7 @@ fn frames_nobody_rearranged_write_nothing() {
 /// catches the deletion is the read-back at the end.
 #[test]
 fn a_layout_that_moved_is_written_and_reads_back() {
+    own_home();
     let scratch = Scratch::new("moved");
     let path = scratch.file();
     let ctx = egui::Context::default();
@@ -409,6 +444,7 @@ fn a_layout_that_moved_is_written_and_reads_back() {
 /// tracker was handed.
 #[test]
 fn the_window_geometry_the_user_left_is_what_the_next_boot_reads() {
+    own_home();
     let scratch = Scratch::new("geometry");
     let path = scratch.file();
     let ctx = egui::Context::default();
@@ -459,6 +495,7 @@ fn the_window_geometry_the_user_left_is_what_the_next_boot_reads() {
 /// says which way round it is.
 #[test]
 fn a_layout_from_before_this_field_existed_still_loads() {
+    own_home();
     let scratch = Scratch::new("upgrade");
     let path = scratch.file();
 
@@ -505,6 +542,7 @@ fn a_layout_from_before_this_field_existed_still_loads() {
 /// machine it is sitting on.
 #[test]
 fn a_layout_from_before_recents_existed_still_loads() {
+    own_home();
     let scratch = Scratch::new("upgrade-recents");
     let path = scratch.file();
     let _ = brightfield_shell::startup::boot_layout(None);
@@ -554,6 +592,7 @@ fn a_layout_from_before_recents_existed_still_loads() {
 /// of 0, which is the pane dragged shut by an upgrade nobody asked for.
 #[test]
 fn a_layout_from_before_the_canvas_split_existed_opens_at_the_even_split() {
+    own_home();
     let scratch = Scratch::new("upgrade-split");
     let path = scratch.file();
     let _ = brightfield_shell::startup::boot_layout(None);
@@ -602,6 +641,7 @@ fn a_layout_from_before_the_canvas_split_existed_opens_at_the_even_split() {
 /// bound" (9 against 6).
 #[test]
 fn the_recents_list_is_capped_and_most_recent_first() {
+    own_home();
     let mut layout = default_layout();
     for i in 0..(RECENTS_KEPT + 3) {
         layout.remember(
@@ -687,6 +727,7 @@ fn the_recents_list_is_capped_and_most_recent_first() {
 /// resized the window".
 #[test]
 fn a_layout_missing_a_pane_is_discarded_without_resizing_the_window() {
+    own_home();
     let scratch = Scratch::new("incomplete");
     let path = scratch.file();
     let _ = brightfield_shell::startup::boot_layout(None);
@@ -742,6 +783,7 @@ fn a_layout_missing_a_pane_is_discarded_without_resizing_the_window() {
 /// — fails at "a remembered start was not reopened".
 #[test]
 fn what_the_window_opens_on_prefers_the_command_line_then_what_was_open() {
+    own_home();
     let nothing =
         opening_boot(None, None, Flow::Vertical, None).expect("an empty boot cannot fail");
     assert!(
@@ -817,6 +859,7 @@ fn what_the_window_opens_on_prefers_the_command_line_then_what_was_open() {
 /// share".
 #[test]
 fn a_saved_share_cannot_move_a_declared_rail() {
+    own_home();
     let scratch = Scratch::new("rearranged");
     let path = scratch.file();
     let ctx = egui::Context::default();
@@ -918,6 +961,7 @@ fn a_saved_share_cannot_move_a_declared_rail() {
 /// "a launch that restored a Steps tab rewrote the layout file".
 #[test]
 fn a_restored_steps_tab_survives_the_first_frame() {
+    own_home();
     let scratch = Scratch::new("steps-tab");
     let path = scratch.file();
     let ctx = egui::Context::default();
@@ -995,6 +1039,7 @@ fn a_restored_steps_tab_survives_the_first_frame() {
 /// drawing".
 #[test]
 fn a_restored_session_is_titled_for_the_surface_it_draws() {
+    own_home();
     let mut saved = default_layout();
     saved.opened = Some(brightfield_shell::starts::CROSSWALK.to_string());
 
@@ -1027,6 +1072,7 @@ fn a_restored_session_is_titled_for_the_surface_it_draws() {
 /// and with the grid's state it had, and a row for anything else is left as it was.
 #[test]
 fn a_renamed_protocols_row_and_restore_follow_it() {
+    own_home();
     let mut layout = default_layout();
     layout.remember(
         "/p/other/arcform.yaml",
@@ -1071,6 +1117,7 @@ fn a_renamed_protocols_row_and_restore_follow_it() {
 /// folder.
 #[test]
 fn a_renamed_protocol_to_reopen_follows_it() {
+    own_home();
     let mut layout = default_layout();
     layout.reopen_protocol_at(std::path::Path::new("/p/sales"));
 
