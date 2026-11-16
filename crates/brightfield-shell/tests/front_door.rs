@@ -26,10 +26,10 @@
 
 #[path = "support/agent_protocol.rs"]
 mod agent_protocol;
-#[path = "support/shipped_protocol.rs"]
-mod shipped_protocol;
 #[path = "support/gpu_jitter.rs"]
 mod gpu_jitter;
+#[path = "support/shipped_protocol.rs"]
+mod shipped_protocol;
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
