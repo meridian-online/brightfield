@@ -46,7 +46,7 @@
 //! scratch directory first, through a `datasets_into_scratch` of its own —
 //! `front_door.rs`, `region_gate.rs`, `crosswalk_chart.rs`, `remote_start.rs`
 //! and `start_interaction.rs` under `crates/brightfield-shell/tests/` each
-//! carry one — and
+//! carry one, and `layout_wiring.rs` does the same in its `own_home` — and
 //! `a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_them`
 //! in `front_door.rs` is what fails if the resolution stops honouring the
 //! override. Nothing fails if a new suite forgets the call: the cost is a
