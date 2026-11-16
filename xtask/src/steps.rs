@@ -528,13 +528,25 @@ fn cargo_test(ctx: &Ctx, engine: &Path, args: &[String], threads_one: bool) -> R
     run(command, &shown)
 }
 
-/// What to show of a test log after a failure: from its last `failures:` line
-/// onward, or the last 60 lines when it has none.
+/// What to show of a test log after a failure: from the last detailed
+/// `failures:` block onward, or the last 60 lines when the log has none.
+/// libtest prints that block, with a `---- <test> stdout ----` section per
+/// failed test, and then a second `failures:` block that lists only names; the
+/// detailed one is the block whose first non-blank line is such a header.
 pub fn failure_excerpt(log: &str) -> String {
     let lines: Vec<&str> = log.lines().collect();
-    let from = lines
-        .iter()
-        .rposition(|line| line.trim() == "failures:")
+    let blocks: Vec<usize> = (0..lines.len())
+        .filter(|&at| lines[at].trim() == "failures:")
+        .collect();
+    let detailed = blocks.iter().rev().copied().find(|&at| {
+        lines[at + 1..]
+            .iter()
+            .map(|line| line.trim())
+            .find(|line| !line.is_empty())
+            .is_some_and(|line| line.starts_with("----") && line.ends_with("stdout ----"))
+    });
+    let from = detailed
+        .or(blocks.last().copied())
         .unwrap_or_else(|| lines.len().saturating_sub(60));
     lines[from..].join("\n")
 }
@@ -739,11 +751,11 @@ mod tests {
 
     #[test]
     fn the_failures_section_is_taken_from_the_log() {
-        let with = "running 2 tests\ntest a ... ok\ntest b ... FAILED\n\nfailures:\n\nfailures:\n    b\n\ntest result: FAILED. 1 passed\n";
-        assert_eq!(
-            failure_excerpt(with),
-            "failures:\n    b\n\ntest result: FAILED. 1 passed"
-        );
+        let with = "running 2 tests\ntest a ... ok\ntest b ... FAILED\n\nfailures:\n\n---- b stdout ----\nthread 'b' panicked at src/lib.rs:3:5:\nassertion failed: the panic message\n\n\nfailures:\n    b\n\ntest result: FAILED. 1 passed; 1 failed\n";
+        let excerpt = failure_excerpt(with);
+        assert!(excerpt.starts_with("failures:\n\n---- b stdout ----"));
+        assert!(excerpt.contains("assertion failed: the panic message"));
+        assert!(excerpt.ends_with("test result: FAILED. 1 passed; 1 failed"));
         let without: String = (1..=100).map(|n| format!("line {n}\n")).collect();
         let tail = failure_excerpt(&without);
         assert_eq!(tail.lines().count(), 60);

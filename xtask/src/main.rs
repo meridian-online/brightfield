@@ -139,12 +139,12 @@ fn main() -> ExitCode {
             let default_failed = rows.iter().any(|row| {
                 row.name == "test-default" && matches!(row.outcome, Outcome::Failed(..))
             });
-            if default_failed {
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            if default_failed && !text.trim().is_empty() {
                 eprintln!(
                     "\ntest-default's output is in {}; its failures:",
                     log.display()
                 );
-                let text = std::fs::read_to_string(&log).unwrap_or_default();
                 eprintln!("{}", steps::failure_excerpt(&text));
             }
             finish(&rows, STEPS)
