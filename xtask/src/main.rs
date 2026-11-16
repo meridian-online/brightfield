@@ -1,7 +1,8 @@
 //! The repository's gate as one command.
 //!
-//! `cargo xtask ci` runs what a pull request's checks run, in order, and stops
-//! at the first step that fails. It ends with a summary that names each step in
+//! `cargo xtask ci` runs what a pull request's checks run, in order except
+//! that the two test steps run side by side, and stops at the first step that
+//! fails. It ends with a summary that names each step in
 //! the order run, with its wall time, the failed step, and the steps the
 //! failure skipped. The workflow files call the same steps by name, one per
 //! workflow step, as `cargo xtask ci --step <name>`, so what CI runs is this
@@ -25,12 +26,12 @@ mod workflows;
 use std::path::Path;
 use std::process::ExitCode;
 
-use runner::{run_in_order, Outcome, Row};
+use runner::{run_with_pair, Outcome, Row};
 use steps::{Ctx, STEPS};
 
 const USAGE: &str = "\
 usage:
-  cargo xtask ci                 run every step in order, stopping at the first that fails
+  cargo xtask ci                 run every step in order, the two test steps side by side, stopping at the first that fails
   cargo xtask ci --step <name>   run one step by name; this is how CI's jobs call the command
   cargo xtask ci --list          name every step, in order, with what it runs";
 
@@ -105,7 +106,8 @@ fn main() -> ExitCode {
         }
         Invocation::All => {
             let total = STEPS.len();
-            let rows = run_in_order(STEPS, |step| {
+            // The two test steps start together, after the build row before them.
+            let rows = run_with_pair(STEPS, ("test-one-thread", "test-default"), |step| {
                 let position = STEPS.iter().position(|s| s.name == step.name).unwrap_or(0) + 1;
                 eprintln!("\n==> [{position}/{total}] {}: {}", step.name, step.runs);
                 (step.run)(&ctx)

@@ -91,10 +91,6 @@ where
 /// in table order. When either name is absent from `steps`, or either step
 /// is CI-only, there is no pair and the rows are `run_in_order`'s, as
 /// `without_the_pair_named_the_run_is_run_in_order` checks.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the local gate command that calls it comes next")
-)]
 pub fn run_with_pair<F>(steps: &[Step], pair: (&str, &str), run: F) -> Vec<Row>
 where
     F: Fn(&Step) -> Result<(), String> + Sync,
@@ -450,8 +446,8 @@ mod tests {
                 Ok(())
             }
         };
-        let paired = run_with_pair(&steps, ("x", "y"), behave);
         let ordered = run_in_order(&steps, behave);
+        let paired = run_with_pair(&steps, ("x", "y"), behave);
         let shape = |rows: &[Row]| -> Vec<String> {
             rows.iter()
                 .map(|r| match &r.outcome {
@@ -463,5 +459,8 @@ mod tests {
                 .collect()
         };
         assert_eq!(shape(&paired), shape(&ordered));
+        // A CI-only member of the pair leaves no pair either.
+        let ci_member = run_with_pair(&steps, ("b", "c"), behave);
+        assert_eq!(shape(&ci_member), shape(&ordered));
     }
 }

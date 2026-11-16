@@ -308,7 +308,7 @@ pub static STEPS: &[Step] = &[
     Step {
         name: "warm-cache",
         runs: "cargo test --locked --workspace --no-run; the sibling-manifest and conformance builds",
-        only_in_ci: Some("a local run's test steps build what they run"),
+        only_in_ci: None,
         run: warm_cache,
     },
     Step {
@@ -700,9 +700,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn warm_cache_is_ci_only_and_runs_before_the_suite() {
+    fn warm_cache_runs_locally_before_the_suite() {
         let at = |name: &str| STEPS.iter().position(|s| s.name == name).expect(name);
-        assert!(STEPS[at("warm-cache")].only_in_ci.is_some());
+        assert!(STEPS[at("warm-cache")].only_in_ci.is_none());
         assert!(at("warm-cache") < at("test-one-thread"));
     }
 
