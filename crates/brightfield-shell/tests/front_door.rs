@@ -26,6 +26,8 @@
 
 #[path = "support/agent_protocol.rs"]
 mod agent_protocol;
+#[path = "support/gpu_jitter.rs"]
+mod gpu_jitter;
 #[path = "support/shipped_protocol.rs"]
 mod shipped_protocol;
 
@@ -3290,7 +3292,13 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) {
     };
     let _config = datasets_into_scratch(&format!("thumbnails_{set}_{mode:?}"));
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/starts");
-    let options = egui_kittest::SnapshotOptions::default().output_path(&assets);
+    // On an Apple M5 Max, six of the starts' thumbnails in each mode render
+    // 5 to 23 pixels that differ from the committed PNG by at most 6 of 255 in
+    // any channel, and 1 to 6 of those cross the threshold. The budget sits a
+    // little above that worst count; every other GPU, CI's included, keeps zero.
+    let options = egui_kittest::SnapshotOptions::default()
+        .output_path(&assets)
+        .failed_pixel_count_threshold(gpu_jitter::budget_on(gpu_jitter::APPLE_M5_MAX, 10));
     let mut failures = Vec::new();
     for start in starts {
         let mut boot =
