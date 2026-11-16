@@ -237,7 +237,8 @@ pub fn summary(rows: &[Row], steps: &[Step]) -> String {
 
 /// The summary as JSON, for `ci --summary-json`: each row in order with its
 /// outcome (`passed`, `failed`, `skipped` or `ci-only`), what the step runs,
-/// its seconds when it ran, and the reason when it failed or runs only in CI.
+/// its seconds when it ran, and the reason when it failed or is CI's alone,
+/// as `the_summary_json_names_every_step_and_its_outcome` checks.
 pub fn summary_json(rows: &[Row], steps: &[Step]) -> String {
     let listed: Vec<serde_json::Value> = rows
         .iter()
