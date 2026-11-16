@@ -356,7 +356,7 @@ pub static STEPS: &[Step] = &[
 /// `--bin conformance` both select a narrower graph than `--workspace`, and
 /// cargo builds `libduckdb-sys` again for each graph that differs.
 fn warm_cache(ctx: &Ctx) -> Result<(), String> {
-    ctx.run_cargo(&["test", "--locked", "--workspace", "--no-run"])?;
+    build_tests(ctx)?;
     ctx.run_cargo(&[
         "test",
         "--locked",
@@ -367,6 +367,12 @@ fn warm_cache(ctx: &Ctx) -> Result<(), String> {
         "--no-run",
     ])?;
     ctx.run_cargo(&["build", "--locked", "--bin", "conformance"])
+}
+
+/// Compile every test target in the workspace without running any, so the
+/// test steps that follow find their binaries built.
+pub fn build_tests(ctx: &Ctx) -> Result<(), String> {
+    ctx.run_cargo(&["test", "--locked", "--workspace", "--no-run"])
 }
 
 fn workflow_coverage(ctx: &Ctx) -> Result<(), String> {
