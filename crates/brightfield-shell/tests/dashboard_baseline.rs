@@ -60,6 +60,9 @@
 //! and `tests/surfaces.rs`, and there is deliberately no skip switch here
 //! either — an env-var opt-out would render "no GPU here" as a passing test.
 
+#[path = "support/gpu_jitter.rs"]
+mod gpu_jitter;
+
 use std::path::PathBuf;
 
 use brightfield_protocol::layout::Flow;
@@ -2402,12 +2405,10 @@ fn the_grid_in_ledger_columns_light_baseline() {
 fn the_grid_in_ledger_columns_dark_baseline() {
     assert_grid_in_ledger_columns_is_what_is_being_photographed();
     let image = capture_grid_in_ledger_columns(Mode::Dark, "grid_in_ledger_columns_dark");
-    // A macOS pixel budget over `kittest.toml`'s zero, at its per-pixel
-    // threshold, for rasteriser rounding. On an Apple M5 Max (Metal 4,
-    // macOS 27.2) this frame renders six pixels that differ from the baseline
-    // by at most 7 of 255 in any channel, one of which crosses the threshold,
-    // the same on every run. CI's runners and the light twin pass at zero.
+    // On an Apple M5 Max this frame renders six pixels that differ from the
+    // baseline by at most 7 of 255 in any channel, one of which crosses the
+    // threshold. Every other GPU, CI's included, keeps zero.
     let options = egui_kittest::SnapshotOptions::default()
-        .failed_pixel_count_threshold(egui_kittest::OsThreshold::new(0).macos(4));
+        .failed_pixel_count_threshold(gpu_jitter::budget_on(gpu_jitter::APPLE_M5_MAX, 4));
     egui_kittest::image_snapshot_options(&image, "grid_in_ledger_columns_dark", &options);
 }
