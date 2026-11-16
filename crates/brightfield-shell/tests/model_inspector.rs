@@ -9,6 +9,7 @@
 //! it made by retyping a column.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use brightfield_ossie::{Edit, Grade, Model};
@@ -88,9 +89,17 @@ fn opened_retail() -> ModelPane {
     opened(&retail(), retail_model())
 }
 
-/// A pane over the written retail model, with no database behind it.
+/// A pane over the written retail model, with no database behind it, in a folder of its own.
+///
+/// One folder per call: when every call copied the model into one folder, a test's copy could
+/// truncate the file while a test on another thread was reading it, and that read failed with
+/// "missing field `version`".
 fn written_retail() -> ModelPane {
-    let dir = scratch().join("written-retail");
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = scratch().join(format!(
+        "written-retail-{}",
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::copy(
         retail().join("model.ossie.yaml"),
@@ -308,6 +317,25 @@ fn table_inspector_lists_failed_rows_with_lineage() {
         drawn.table,
         Some((failed.columns.clone(), failed.rows.len()))
     );
+}
+
+/// Panes over the written model made on several threads at once, as the tests that use
+/// `written_retail` are: each reads the whole model, not a copy another thread is midway through
+/// writing.
+#[test]
+fn written_retail_panes_made_at_once_each_read_the_whole_model() {
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            std::thread::spawn(|| {
+                for _ in 0..25 {
+                    assert_eq!(written_retail().model.datasets.len(), 8);
+                }
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().expect("each pane reads the whole model");
+    }
 }
 
 #[test]

@@ -1409,6 +1409,11 @@ fn the_spec_a_start_carries_is_the_spec_its_click_opens() {
 /// that opens a data file writes that file there and not into the developer's
 /// own `~/Library/Application Support/Brightfield`.
 ///
+/// "This target's" because the folder is named after it: `CARGO_TARGET_TMPDIR`
+/// is one folder for every test target in the crate, and two targets in
+/// processes running at once must not write or remove each other's start
+/// files. `region_gate.rs` says which two did.
+///
 /// A simpler twin of `datasets_into_scratch` in `tests/front_door.rs`: one test
 /// in this file loads such a start, so a fixed path has nothing to race, where
 /// several there do and each takes a directory of its own in turn. An
@@ -1417,6 +1422,8 @@ fn the_spec_a_start_carries_is_the_spec_its_click_opens() {
 fn datasets_into_scratch() {
     std::env::set_var(
         brightfield_shell::startup::CONFIG_DIR_VAR,
-        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("config"),
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join("start_interaction")
+            .join("config"),
     );
 }
