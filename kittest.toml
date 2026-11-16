@@ -15,6 +15,9 @@
 # rendering jitter it tolerates and the machine/driver where that jitter was
 # observed. A bare `.threshold(...)` with no such comment is a review blocker —
 # it silently buys back exactly the regressions this tier exists to catch.
+# When the jitter is one GPU's, as on the Apple M5 Max, key the override to that
+# GPU with `crates/brightfield-shell/tests/support/gpu_jitter.rs`, so every other
+# machine, CI's macOS runners included, keeps the floor below.
 #
 # If a second platform ever renders the chrome slightly differently, prefer a
 # per-OS override here over raising the global floor. The table keys are
