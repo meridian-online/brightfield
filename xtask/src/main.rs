@@ -18,17 +18,13 @@
 //! absent: the pinned toolchain, `cargo-deny`, `python3`, the sibling
 //! `open-analytics` checkout and the pinned DuckDB CLI.
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the gate command wires these in the next change")
-)]
 mod gate;
 mod runner;
 mod shard;
 mod steps;
 mod workflows;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use runner::{run_with_pair, Outcome, Row};
@@ -37,6 +33,8 @@ use steps::{Ctx, STEPS};
 const USAGE: &str = "\
 usage:
   cargo xtask ci                 run every step in order, the two test steps side by side, stopping at the first that fails
+  cargo xtask ci --summary-json <path>
+                                 the same, and write the summary to <path> as JSON once the run ends, whatever its verdict
   cargo xtask ci --step <name>   run one step by name; this is how CI's jobs call the command
   cargo xtask ci --list          name every step, in order, with what it runs
   cargo xtask gate <pr>          run the full gate on a pull request merged with main, and post its verdict as the local-gate status";
@@ -44,7 +42,8 @@ usage:
 /// What the command line asked for.
 #[derive(Debug, PartialEq)]
 enum Invocation {
-    All,
+    /// A full run, writing its summary as JSON to the path when one is given.
+    All(Option<PathBuf>),
     One(String),
     List,
     Gate(u64),
@@ -53,7 +52,8 @@ enum Invocation {
 fn parse(args: &[String]) -> Result<Invocation, String> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     match words.as_slice() {
-        ["ci"] => Ok(Invocation::All),
+        ["ci"] => Ok(Invocation::All(None)),
+        ["ci", "--summary-json", path] => Ok(Invocation::All(Some(PathBuf::from(path)))),
         ["ci", "--list"] => Ok(Invocation::List),
         ["ci", "--step", name] => Ok(Invocation::One((*name).to_owned())),
         ["ci", single] if single.starts_with("--step=") => {
@@ -77,18 +77,12 @@ fn main() -> ExitCode {
         }
     };
     let ctx = Ctx {
-        root: Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap_or(Path::new(".."))
-            .to_path_buf(),
+        root: repo_root(),
         cargo: std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
         log: None,
     };
     match invocation {
-        Invocation::Gate(_) => {
-            eprintln!("cargo xtask gate: not yet wired");
-            ExitCode::from(2)
-        }
+        Invocation::Gate(pr) => gate::run(pr),
         Invocation::List => {
             let width = STEPS.iter().map(|s| s.name.len()).max().unwrap_or(0);
             for step in STEPS {
@@ -120,7 +114,7 @@ fn main() -> ExitCode {
             let rows = vec![runner::run_named(step, |s| (s.run)(&ctx))];
             finish(&rows, &[])
         }
-        Invocation::All => {
+        Invocation::All(summary_path) => {
             let total = STEPS.len();
             // The two test steps stream at once, so their failure output would
             // interleave; test-default's goes to a log, shown if it fails.
@@ -162,9 +156,28 @@ fn main() -> ExitCode {
                 );
                 eprintln!("{}", steps::failure_excerpt(&text));
             }
-            finish(&rows, STEPS)
+            let written = summary_path.map_or(Ok(()), |path| {
+                std::fs::write(&path, runner::summary_json(&rows, STEPS))
+                    .map_err(|e| format!("cannot write the summary to {}: {e}", path.display()))
+            });
+            let verdict = finish(&rows, STEPS);
+            match written {
+                Ok(()) => verdict,
+                Err(message) => {
+                    eprintln!("cargo xtask ci: {message}");
+                    ExitCode::FAILURE
+                }
+            }
         }
     }
+}
+
+/// The repository this command was built from.
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or(Path::new(".."))
+        .to_path_buf()
 }
 
 /// Print the summary, and exit 0 only when no step failed.
@@ -198,8 +211,17 @@ mod tests {
     }
 
     #[test]
+    fn the_command_line_reads_where_a_full_run_writes_its_summary() {
+        assert_eq!(
+            parse(&words("ci --summary-json out/summary.json")),
+            Ok(Invocation::All(Some(PathBuf::from("out/summary.json"))))
+        );
+        assert!(parse(&words("ci --summary-json")).is_err());
+    }
+
+    #[test]
     fn the_command_line_reads_a_full_run_one_step_and_the_list() {
-        assert_eq!(parse(&words("ci")), Ok(Invocation::All));
+        assert_eq!(parse(&words("ci")), Ok(Invocation::All(None)));
         assert_eq!(
             parse(&words("ci --step fmt")),
             Ok(Invocation::One("fmt".to_owned()))

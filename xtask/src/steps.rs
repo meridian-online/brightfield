@@ -29,7 +29,7 @@ impl Ctx {
     /// A command run from the repository root. The variables cargo sets for
     /// the package it runs (this one) are removed, so a script or a nested
     /// cargo sees the environment CI's step would have given it.
-    fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+    pub(crate) fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut command = Command::new(program);
         command.current_dir(&self.root);
         for (key, _) in std::env::vars_os() {
@@ -467,7 +467,7 @@ fn selection(ctx: &Ctx) -> Result<shard::Selection, String> {
 /// The pinned DuckDB CLI the run tests hand to arc: ARC_DUCKDB_BIN when it is
 /// set, `target/duckdb-cli/duckdb` when it is not, and either way accepted by
 /// `scripts/fetch-duckdb-cli.sh --check` before a test runs.
-fn pinned_duckdb(ctx: &Ctx) -> Result<PathBuf, String> {
+pub(crate) fn pinned_duckdb(ctx: &Ctx) -> Result<PathBuf, String> {
     let host = host_triple()?;
     let engine = match std::env::var_os("ARC_DUCKDB_BIN") {
         Some(path) if !path.is_empty() => PathBuf::from(path),
@@ -602,7 +602,7 @@ fn test_default(ctx: &Ctx) -> Result<(), String> {
 /// The sibling open-analytics checkout: OPEN_ANALYTICS_DIR when set, else the
 /// checkout beside this one, or beside the main checkout when this is a
 /// worktree.
-fn open_analytics(ctx: &Ctx) -> Result<PathBuf, String> {
+pub(crate) fn open_analytics(ctx: &Ctx) -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("OPEN_ANALYTICS_DIR").filter(|d| !d.is_empty()) {
         let dir = PathBuf::from(dir);
         return if dir.is_dir() {

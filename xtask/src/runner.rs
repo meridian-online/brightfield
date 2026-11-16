@@ -235,6 +235,37 @@ pub fn summary(rows: &[Row], steps: &[Step]) -> String {
     out
 }
 
+/// The summary as JSON, for `ci --summary-json`: each row in order with its
+/// outcome (`passed`, `failed`, `skipped` or `ci-only`), what the step runs,
+/// its seconds when it ran, and the reason when it failed or runs only in CI.
+pub fn summary_json(rows: &[Row], steps: &[Step]) -> String {
+    let listed: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let mut entry = serde_json::Map::new();
+            entry.insert("name".into(), row.name.into());
+            let (outcome, took, reason) = match &row.outcome {
+                Outcome::Passed(took) => ("passed", Some(*took), None),
+                Outcome::Failed(took, reason) => ("failed", Some(*took), Some(reason.as_str())),
+                Outcome::Skipped => ("skipped", None, None),
+                Outcome::OnlyInCi(why) => ("ci-only", None, Some(*why)),
+            };
+            entry.insert("outcome".into(), outcome.into());
+            if let Some(step) = steps.iter().find(|step| step.name == row.name) {
+                entry.insert("runs".into(), step.runs.into());
+            }
+            if let Some(took) = took {
+                entry.insert("seconds".into(), took.as_secs_f64().into());
+            }
+            if let Some(reason) = reason {
+                entry.insert("reason".into(), reason.into());
+            }
+            serde_json::Value::Object(entry)
+        })
+        .collect();
+    serde_json::json!({ "steps": listed }).to_string()
+}
+
 /// A wall time as a person reads it: `0.4s`, `12.3s`, `4m 05s`, `1h 02m`.
 pub fn wall(took: Duration) -> String {
     let secs = took.as_secs_f64();
@@ -380,6 +411,48 @@ mod tests {
         assert!(lines[4].contains("skipped") && lines[4].contains("fourth"));
         assert!(text.contains("third runs only in CI: it reads the event"));
         assert!(text.contains("failed at second; 2 later step(s) skipped, 1 passed before it"));
+    }
+
+    #[test]
+    fn the_summary_json_names_every_step_and_its_outcome() {
+        let steps = [step("a"), step("b"), ci_only("c"), step("d")];
+        let rows = vec![
+            Row {
+                name: "a",
+                outcome: Outcome::Passed(Duration::from_millis(1500)),
+            },
+            Row {
+                name: "b",
+                outcome: Outcome::Failed(Duration::from_secs(2), "b broke".to_owned()),
+            },
+            Row {
+                name: "c",
+                outcome: Outcome::OnlyInCi("it reads the event"),
+            },
+            Row {
+                name: "d",
+                outcome: Outcome::Skipped,
+            },
+        ];
+        let doc: serde_json::Value = serde_json::from_str(&summary_json(&rows, &steps)).unwrap();
+        let listed: Vec<(&str, &str)> = doc["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| (s["name"].as_str().unwrap(), s["outcome"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("a", "passed"),
+                ("b", "failed"),
+                ("c", "ci-only"),
+                ("d", "skipped")
+            ]
+        );
+        assert_eq!(doc["steps"][0]["seconds"], 1.5);
+        assert_eq!(doc["steps"][1]["reason"], "b broke");
+        assert_eq!(doc["steps"][2]["reason"], "it reads the event");
     }
 
     #[test]
