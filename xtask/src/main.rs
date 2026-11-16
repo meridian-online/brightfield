@@ -39,7 +39,7 @@ usage:
   cargo xtask ci                 run every step in order, the two test steps side by side, stopping at the first that fails
   cargo xtask ci --step <name>   run one step by name; this is how CI's jobs call the command
   cargo xtask ci --list          name every step, in order, with what it runs
-  cargo xtask gate <pr>   run the full gate on a pull request merged with main, and post its verdict as the local-gate status";
+  cargo xtask gate <pr>          run the full gate on a pull request merged with main, and post its verdict as the local-gate status";
 
 /// What the command line asked for.
 #[derive(Debug, PartialEq)]

@@ -2,9 +2,9 @@
 //! reading of a `ci --summary-json` file and of the backstop workflows' runs,
 //! and the lock that keeps two gates from building at once.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::fs::{self, TryLockError};
+use std::io::Write;
+use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -42,6 +42,9 @@ pub fn read_summary(json: &str) -> Result<Verdict, String> {
             (Some(_), Some("skipped" | "ci-only")) => {}
             _ => return Err(format!("summary has a step it cannot read: {step}")),
         }
+    }
+    if passed == 0 && failed.is_none() {
+        return Err("the gate's run recorded no step that passed or failed".to_owned());
     }
     Ok(Verdict { passed, failed })
 }
@@ -184,80 +187,75 @@ pub fn combine(each: &[Backstop]) -> MainState {
     if !red.is_empty() {
         return MainState::Red(red);
     }
-    let mut latest = None;
+    let mut shas = Vec::new();
     for b in each {
         match b {
-            Backstop::Green { sha } => latest = Some(sha.clone()),
+            Backstop::Green { sha } => shas.push(sha),
             _ => return MainState::Unsettled,
         }
     }
-    latest.map_or(MainState::Unsettled, |sha| MainState::Green { sha })
-}
-
-/// Held while a gate builds: `gate.lock` in a directory, holding the owner's pid.
-#[derive(Debug)]
-pub struct Lock {
-    path: PathBuf,
-}
-
-fn alive(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
-impl Lock {
-    /// Take the lock, polling every `poll` while a live process holds it and
-    /// saying who does; a lock whose owner is dead is reclaimed.
-    pub fn acquire(dir: &Path, poll: Duration, say: impl Fn(&str)) -> Result<Lock, String> {
-        let path = dir.join("gate.lock");
-        let mine = std::process::id();
-        loop {
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(_) => {
-                    fs::write(&path, mine.to_string())
-                        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-                    return Ok(Lock { path });
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let owner = fs::read_to_string(&path)
-                        .ok()
-                        .and_then(|t| t.trim().parse::<u32>().ok());
-                    match owner {
-                        Some(pid) if alive(pid) => {
-                            say(&format!("another gate (pid {pid}) holds the lock; waiting"));
-                            std::thread::sleep(poll);
-                        }
-                        Some(_) => {
-                            // Dead owner: drop its file and try again.
-                            let _ = fs::remove_file(&path);
-                        }
-                        // Created but not yet written by its owner.
-                        None => std::thread::sleep(Duration::from_millis(50)),
-                    }
-                }
-                Err(e) => return Err(format!("cannot create {}: {e}", path.display())),
-            }
-        }
+    match shas.split_first() {
+        Some((first, rest)) if rest.iter().all(|s| s == first) => MainState::Green {
+            sha: (*first).clone(),
+        },
+        _ => MainState::Unsettled,
     }
 }
 
-impl Drop for Lock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+/// Held while a gate builds: an OS advisory lock on `gate.lock` in a
+/// directory. The OS drops it when the holder exits, however it exits, so a
+/// crashed gate never blocks the next one.
+#[derive(Debug)]
+pub struct Lock {
+    _file: fs::File,
+}
+
+impl Lock {
+    /// Take the lock, polling every `poll` while another gate holds it and
+    /// saying once who does (the pid inside the file is information only).
+    pub fn acquire(dir: &Path, poll: Duration, say: impl Fn(&str)) -> Result<Lock, String> {
+        let path = dir.join("gate.lock");
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+        let mut said = false;
+        loop {
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(TryLockError::WouldBlock) => {
+                    if !said {
+                        said = true;
+                        let owner = fs::read_to_string(&path)
+                            .ok()
+                            .and_then(|t| t.trim().parse::<u32>().ok());
+                        let who = owner.map_or_else(
+                            || "another gate".to_owned(),
+                            |p| format!("another gate (pid {p})"),
+                        );
+                        say(&format!("{who} holds the lock; waiting"));
+                    }
+                    std::thread::sleep(poll);
+                }
+                Err(TryLockError::Error(e)) => {
+                    return Err(format!("cannot lock {}: {e}", path.display()));
+                }
+            }
+        }
+        file.set_len(0)
+            .and_then(|()| file.write_all(std::process::id().to_string().as_bytes()))
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        Ok(Lock { _file: file })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
@@ -398,34 +396,70 @@ mod tests {
         assert!(read_backstop("ci", "[]", &jobs(&["success"])).is_err());
     }
 
-    #[test]
-    fn a_second_gate_waits_and_a_dead_owner_is_reclaimed() {
-        let dir = std::env::temp_dir().join(format!("gate-lock-test-{}", std::process::id()));
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("gate-lock-{tag}-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let lock = dir.join("gate.lock");
+        dir
+    }
 
-        fs::write(&lock, std::process::id().to_string()).unwrap();
+    #[test]
+    fn a_second_gate_waits_until_the_first_lock_is_dropped() {
+        let dir = scratch("wait");
+        let first = Lock::acquire(&dir, Duration::from_millis(50), |_| {}).unwrap();
         let done = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&done);
-        let waiter_dir = dir.clone();
+        let said = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (flag, count, wdir) = (Arc::clone(&done), Arc::clone(&said), dir.clone());
         let waiter = std::thread::spawn(move || {
-            let held = Lock::acquire(&waiter_dir, Duration::from_millis(100), |_| {});
+            let held = Lock::acquire(&wdir, Duration::from_millis(50), |m| {
+                assert!(m.contains("holds the lock"), "{m}");
+                count.fetch_add(1, Ordering::SeqCst);
+            });
             flag.store(true, Ordering::SeqCst);
             held
         });
         std::thread::sleep(Duration::from_secs(1));
         assert!(
             !done.load(Ordering::SeqCst),
-            "acquired while the owner was alive"
+            "acquired while the first was held"
         );
-        fs::remove_file(&lock).unwrap();
-        let held = waiter.join().unwrap().unwrap();
-        drop(held);
-        assert!(!lock.exists(), "drop removes the lock");
-
-        fs::write(&lock, "999999").unwrap();
-        let held = Lock::acquire(&dir, Duration::from_millis(100), |_| {}).unwrap();
-        drop(held);
+        drop(first);
+        let second = waiter.join().unwrap().unwrap();
+        assert_eq!(said.load(Ordering::SeqCst), 1, "says who holds it once");
+        drop(second);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_lock_file_nobody_holds_is_acquired_whatever_it_says() {
+        for (tag, text) in [
+            ("garbage", "not a pid"),
+            ("empty", ""),
+            ("dead", "999999"),
+            ("zero", "0"),
+        ] {
+            let dir = scratch(tag);
+            fs::write(dir.join("gate.lock"), text).unwrap();
+            let held = Lock::acquire(&dir, Duration::from_millis(50), |_| {}).unwrap();
+            drop(held);
+            fs::remove_dir_all(&dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_summary_with_no_step_passed_or_failed_is_an_error() {
+        let message = "the gate's run recorded no step that passed or failed";
+        assert_eq!(read_summary(r#"{"steps":[]}"#), Err(message.to_owned()));
+        let skipped = rows(&[("fmt", "skipped"), ("deny", "ci-only")]);
+        assert_eq!(read_summary(&skipped), Err(message.to_owned()));
+    }
+
+    #[test]
+    fn green_on_different_shas_is_unsettled() {
+        let on = |sha: &str| Backstop::Green { sha: sha.into() };
+        assert_eq!(combine(&[on("a"), on("b")]), MainState::Unsettled);
+        assert_eq!(
+            combine(&[on("a"), on("a")]),
+            MainState::Green { sha: "a".into() }
+        );
     }
 }
