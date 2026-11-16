@@ -702,6 +702,7 @@ fn note_red(reds: &[Backstop]) {
     let issue = match open_red_issue() {
         Ok(Some(issue)) => issue,
         Ok(None) => {
+            // `--force-new` past a closed look-alike is safe because this runs under the gate lock, after finding no open one.
             let created = kata(&[
                 "create",
                 "main is red",
@@ -709,6 +710,7 @@ fn note_red(reds: &[Backstop]) {
                 RED_BODY,
                 "--label",
                 RED_LABEL,
+                "--force-new",
                 "--agent",
             ])
             .and_then(|_| open_red_issue())
