@@ -72,13 +72,16 @@ where
     rows
 }
 
-/// Run one step through `run` and time it.
+/// Run one step through `run` and time it. A panic in the step is a failure
+/// of that step, whichever thread it ran on.
 fn timed<F>(step: &Step, run: &F) -> Outcome
 where
     F: Fn(&Step) -> Result<(), String>,
 {
     let started = Instant::now();
-    match run(step) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(step)))
+        .unwrap_or_else(|_| Err("the step panicked".to_owned()));
+    match result {
         Ok(()) => Outcome::Passed(started.elapsed()),
         Err(reason) => Outcome::Failed(started.elapsed(), reason),
     }
@@ -408,6 +411,21 @@ mod tests {
         assert!(matches!(rows[2].outcome, Outcome::Passed(_)));
         assert_eq!(rows[3].outcome, Outcome::Skipped);
         assert!(!passed(&rows));
+    }
+
+    #[test]
+    fn a_panic_in_the_first_of_the_pair_is_a_failed_row_and_the_second_still_finishes() {
+        let steps = [step("a"), step("b"), step("c"), step("d")];
+        let rows = run_with_pair(&steps, ("b", "c"), |s| {
+            if s.name == "b" {
+                panic!("b blew up");
+            }
+            Ok(())
+        });
+        assert!(matches!(rows[0].outcome, Outcome::Passed(_)));
+        assert!(matches!(rows[1].outcome, Outcome::Failed(..)), "{rows:?}");
+        assert!(matches!(rows[2].outcome, Outcome::Passed(_)));
+        assert_eq!(rows[3].outcome, Outcome::Skipped);
     }
 
     #[test]

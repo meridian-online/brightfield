@@ -20,6 +20,9 @@ use crate::{shard, workflows};
 pub struct Ctx {
     pub root: PathBuf,
     pub cargo: OsString,
+    /// When set, the test runs of the step this context is handed to write
+    /// their output to this file instead of the terminal.
+    pub log: Option<PathBuf>,
 }
 
 impl Ctx {
@@ -87,7 +90,7 @@ impl Ctx {
     }
 
     /// A scratch directory under `target/`, for files a step writes.
-    fn scratch(&self) -> Result<PathBuf, String> {
+    pub fn scratch(&self) -> Result<PathBuf, String> {
         let dir = std::env::var_os("RUNNER_TEMP")
             .map(PathBuf::from)
             .unwrap_or_else(|| self.root.join("target/xtask"));
@@ -354,7 +357,9 @@ pub static STEPS: &[Step] = &[
 /// Three builds, because the two steps after the suite each resolve their
 /// own feature set: `-p brightfield-protocol --test sibling_manifests` and
 /// `--bin conformance` both select a narrower graph than `--workspace`, and
-/// cargo builds `libduckdb-sys` again for each graph that differs.
+/// cargo builds `libduckdb-sys` again for each graph that differs. A full
+/// local run uses it too, as the row that builds every test binary before the
+/// two test steps start together.
 fn warm_cache(ctx: &Ctx) -> Result<(), String> {
     build_tests(ctx)?;
     ctx.run_cargo(&[
@@ -509,7 +514,29 @@ fn cargo_test(ctx: &Ctx, engine: &Path, args: &[String], threads_one: bool) -> R
     }
     let mut command = ctx.cargo(&all);
     command.env("ARC_DUCKDB_BIN", engine);
-    run(command, &format!("cargo {}", all.join(" ")))
+    let shown = format!("cargo {}", all.join(" "));
+    if let Some(path) = &ctx.log {
+        let open = || {
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|e| format!("cannot open {}: {e}", path.display()))
+        };
+        command.stdout(open()?).stderr(open()?);
+    }
+    run(command, &shown)
+}
+
+/// What to show of a test log after a failure: from its last `failures:` line
+/// onward, or the last 60 lines when it has none.
+pub fn failure_excerpt(log: &str) -> String {
+    let lines: Vec<&str> = log.lines().collect();
+    let from = lines
+        .iter()
+        .rposition(|line| line.trim() == "failures:")
+        .unwrap_or_else(|| lines.len().saturating_sub(60));
+    lines[from..].join("\n")
 }
 
 fn test_one_thread(ctx: &Ctx) -> Result<(), String> {
@@ -532,6 +559,10 @@ fn test_one_thread(ctx: &Ctx) -> Result<(), String> {
 }
 
 fn test_default(ctx: &Ctx) -> Result<(), String> {
+    if let Some(path) = &ctx.log {
+        // Start the log afresh; each cargo run below appends to it.
+        File::create(path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+    }
     let Some(part) = selection(ctx)?.default else {
         println!("this shard runs the one-thread group; test-default has nothing to run on it");
         return Ok(());
@@ -704,6 +735,19 @@ mod tests {
         let at = |name: &str| STEPS.iter().position(|s| s.name == name).expect(name);
         assert!(STEPS[at("warm-cache")].only_in_ci.is_none());
         assert!(at("warm-cache") < at("test-one-thread"));
+    }
+
+    #[test]
+    fn the_failures_section_is_taken_from_the_log() {
+        let with = "running 2 tests\ntest a ... ok\ntest b ... FAILED\n\nfailures:\n\nfailures:\n    b\n\ntest result: FAILED. 1 passed\n";
+        assert_eq!(
+            failure_excerpt(with),
+            "failures:\n    b\n\ntest result: FAILED. 1 passed"
+        );
+        let without: String = (1..=100).map(|n| format!("line {n}\n")).collect();
+        let tail = failure_excerpt(&without);
+        assert_eq!(tail.lines().count(), 60);
+        assert!(tail.starts_with("line 41\n") && tail.ends_with("line 100"));
     }
 
     #[test]

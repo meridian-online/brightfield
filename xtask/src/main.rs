@@ -71,6 +71,7 @@ fn main() -> ExitCode {
             .unwrap_or(Path::new(".."))
             .to_path_buf(),
         cargo: std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
+        log: None,
     };
     match invocation {
         Invocation::List => {
@@ -106,12 +107,46 @@ fn main() -> ExitCode {
         }
         Invocation::All => {
             let total = STEPS.len();
-            // The two test steps start together, after the build row before them.
+            // The two test steps stream at once, so their failure output would
+            // interleave; test-default's goes to a log, shown if it fails.
+            let log = match ctx.scratch() {
+                Ok(dir) => dir.join("test-default.log"),
+                Err(message) => {
+                    eprintln!("cargo xtask ci: {message}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let logged = Ctx {
+                root: ctx.root.clone(),
+                cargo: ctx.cargo.clone(),
+                log: Some(log.clone()),
+            };
             let rows = run_with_pair(STEPS, ("test-one-thread", "test-default"), |step| {
                 let position = STEPS.iter().position(|s| s.name == step.name).unwrap_or(0) + 1;
-                eprintln!("\n==> [{position}/{total}] {}: {}", step.name, step.runs);
-                (step.run)(&ctx)
+                if step.name == "test-default" {
+                    eprintln!(
+                        "\n==> [{position}/{total}] {}: {} (output in {})",
+                        step.name,
+                        step.runs,
+                        log.display()
+                    );
+                    (step.run)(&logged)
+                } else {
+                    eprintln!("\n==> [{position}/{total}] {}: {}", step.name, step.runs);
+                    (step.run)(&ctx)
+                }
             });
+            let default_failed = rows.iter().any(|row| {
+                row.name == "test-default" && matches!(row.outcome, Outcome::Failed(..))
+            });
+            if default_failed {
+                eprintln!(
+                    "\ntest-default's output is in {}; its failures:",
+                    log.display()
+                );
+                let text = std::fs::read_to_string(&log).unwrap_or_default();
+                eprintln!("{}", steps::failure_excerpt(&text));
+            }
             finish(&rows, STEPS)
         }
     }
