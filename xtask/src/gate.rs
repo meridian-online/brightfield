@@ -3,8 +3,8 @@
 //! isolated environment, and posts the verdict as the `local-gate` commit
 //! status on the pull request's head.
 //!
-//! The order of a run: read main's backstop workflows and keep the `main-red`
-//! issue in step with them; take the gate lock; refuse a fork's head; fetch,
+//! The order of a run: take the gate lock; read main's backstop workflows and
+//! keep the `main-red` issue in step with them; refuse a fork's head; fetch,
 //! make the worktree and merge main into it; post `pending`; run the tree's
 //! gate with its output teed to a log; post `success` or `failure`; clean up.
 //! Every failure after the head is known is posted as a `failure` status, and
@@ -305,8 +305,10 @@ struct Paths<'a> {
 
 /// True for a variable the gate's run must not inherit: one that points the
 /// run back into the real HOME, or picks the toolchain over the tree's own
-/// file, or changes what is built, so the verdict is CI's. `CARGO_BUILD_JOBS`
-/// stays, since it caps the machine's build slots and changes no output.
+/// file, or changes what is built (build, per-target and profile settings),
+/// so the verdict is CI's. `CARGO_BUILD_JOBS` stays, since it caps the
+/// machine's build slots and changes no output, and `CARGO_TARGET_DIR` is the
+/// gate's own.
 fn removed_from_child(key: &str) -> bool {
     matches!(
         key,
@@ -324,6 +326,8 @@ fn removed_from_child(key: &str) -> bool {
             | "RUSTC_WRAPPER"
             | "RUSTC_WORKSPACE_WRAPPER"
     ) || (key.starts_with("CARGO_BUILD_") && key != "CARGO_BUILD_JOBS")
+        || (key.starts_with("CARGO_TARGET_") && key != "CARGO_TARGET_DIR")
+        || key.starts_with("CARGO_PROFILE_")
 }
 
 /// Build the tree to test, run its gate, and say what to post.
@@ -585,23 +589,72 @@ pub fn post_status(gh: &OsStr, sha: &str, state: &str, text: &str) -> Result<(),
     }
 }
 
+/// How long a `gh`, `kata` or `git` call may take before the gate gives up on
+/// it. The backstop's calls run under the gate lock, so a hung one must not
+/// hold the lock for good.
+const CALL_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Run a program and return what it printed; a non-zero exit is the error,
-/// with what it said.
+/// with what it said, and so is a call that outlasts `CALL_TIMEOUT`.
 fn output_of(program: impl AsRef<OsStr>, args: &[&str]) -> Result<String, String> {
+    output_within(program, args, CALL_TIMEOUT)
+}
+
+/// Read a child's pipe to its end on a thread of its own.
+fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        bytes
+    })
+}
+
+/// `output_of` with the timeout given: a call still running after `timeout`
+/// is killed, and the error names it.
+fn output_within(
+    program: impl AsRef<OsStr>,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<String, String> {
     let program = program.as_ref();
     let shown = format!("{} {}", program.to_string_lossy(), args.join(" "));
-    let output = Command::new(program)
+    let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("could not start `{shown}`: {e}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    // Read both pipes on their own threads, so a call that prints more than a
+    // pipe holds cannot stall waiting for the gate to read.
+    let out = drain(child.stdout.take());
+    let err = drain(child.stderr.take());
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "`{shown}` timed out after {} and was stopped",
+                    wall(timeout)
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => return Err(format!("lost `{shown}`: {e}")),
+        }
+    };
+    let stdout = out.join().unwrap_or_default();
+    let stderr = err.join().unwrap_or_default();
+    if status.success() {
+        Ok(String::from_utf8_lossy(&stdout).into_owned())
     } else {
         Err(format!(
-            "`{shown}` exited with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
+            "`{shown}` exited with {status}: {}",
+            String::from_utf8_lossy(&stderr).trim()
         ))
     }
 }
@@ -1438,9 +1491,40 @@ mod tests {
         ] {
             assert!(removed_from_child(key), "{key} should not reach the run");
         }
-        for key in ["PATH", "CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "HOME"] {
+        for key in [
+            "CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS",
+            "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER",
+            "CARGO_PROFILE_DEV_OPT_LEVEL",
+            "CARGO_PROFILE_RELEASE_LTO",
+        ] {
+            assert!(removed_from_child(key), "{key} should not reach the run");
+        }
+        for key in [
+            "PATH",
+            "CARGO_BUILD_JOBS",
+            "RUST_TEST_THREADS",
+            "HOME",
+            "CARGO_TARGET_DIR",
+        ] {
             assert!(!removed_from_child(key), "{key} should reach the run");
         }
+    }
+
+    #[test]
+    fn a_call_that_outlasts_its_timeout_is_killed_and_named() {
+        let started = Instant::now();
+        let error = output_within("sleep", &["30"], Duration::from_millis(200)).unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "it waited out the sleep"
+        );
+        assert!(error.contains("`sleep 30`"), "{error}");
+        assert!(error.contains("timed out"), "{error}");
+        assert_eq!(
+            output_within("echo", &["hello"], Duration::from_secs(10)),
+            Ok("hello\n".to_owned())
+        );
     }
 
     #[test]
