@@ -110,6 +110,23 @@ Order inside `run`, each failure posting a `failure` status where a head SHA is 
 - [ ] **Step 4: Commit** `xtask: cargo xtask gate runs the gate on a pull request and posts local-gate`.
 - [ ] **Step 5: Verify for real** once this branch has a pull request: `cargo xtask gate <this pr>`. Expected: a `local-gate` status on the head commit (`gh api repos/meridian-online/brightfield/commits/<sha>/status` lists it) and Forge's pull request shows it after `curl -s -X POST http://127.0.0.1:8091/api/v1/pulls/github/meridian-online/brightfield/<pr>/sync`. Record the wall time and whether the pair ran side by side. Cost: about 25 to 40 minutes, one build slot.
 
+### Task 3b: Make the two test steps safe to run at once
+
+The gate's first run failed `model_inspector::a_list_row_selects_and_the_rest_dims`: `data_file::open_any` writes into the folder it opens, and several shell test files open the committed retail fixture under `folder_lock()`, an in-process `Mutex`. Test binaries used to run one at a time; with `test-one-thread` and `test-default` side by side, two processes now open and rewrite the same fixture at once.
+
+**Files:**
+- Create: `crates/brightfield-shell/tests/support/fixture_lock.rs`
+- Modify: every shell test file defining `fn folder_lock()` (discovery, model_rerun, model_inspector and the others `grep -rln 'fn folder_lock' crates` lists)
+
+**Interfaces:**
+- Produces: `pub fn folder_lock() -> FolderLock`, holding an exclusive `std::fs::File::lock()` on `brightfield-fixture-open.lock` in `std::env::temp_dir()` for as long as the guard lives. `flock` excludes other processes and other open files in the same process, so it replaces each file's `Mutex` without changing call sites.
+
+- [ ] **Step 1: Write a failing test** `the_folder_lock_excludes_another_process` in a support-using test file: spawn the current test binary as a child (filter to a helper test that takes the lock and holds it for 2 s, gated by an env var), wait until the child reports it holds the lock, then assert that `folder_lock()` in the parent takes at least 1 s to return.
+- [ ] **Step 2:** Run it — expected FAIL with the `Mutex` version (the parent returns at once).
+- [ ] **Step 3:** Implement `fixture_lock.rs`; replace each file's local `folder_lock` with `mod support; use support::fixture_lock::folder_lock;` (match how `gpu_jitter` is included).
+- [ ] **Step 4:** Run the touched test binaries one at a time (`cargo test -p brightfield-shell --test <name>` for each), then the new test — expected PASS.
+- [ ] **Step 5: Commit** `Lock the shared fixtures across test processes, not only threads`.
+
 ### Task 4: The Mac Studio draws the baselines
 
 **Files:**
