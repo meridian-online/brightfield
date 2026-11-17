@@ -174,6 +174,21 @@ pub fn root() -> PathBuf {
 /// (`cancelling_leaves_the_door_open_and_asks_again_on_new_protocol`).
 #[must_use]
 pub fn granted_root() -> Option<PathBuf> {
+    // A grant that did not open at launch, its drive since plugged back in, is tried again here.
+    granted_with(|dir| crate::grants::store().covering(dir).is_some())
+}
+
+/// [`root`] for a caller that asks on each frame it draws, such as the door's tree: it asks the
+/// grant store only about grants already open, so a folder on a drive that is not plugged in is
+/// not resolved again on every frame. [`granted_root`], asked by whatever acts on the folder,
+/// tries it again.
+#[must_use]
+pub fn root_now() -> PathBuf {
+    granted_with(|dir| crate::grants::store().covers_now(dir)).unwrap_or_else(default_root)
+}
+
+/// [`granted_root`], with `covered` saying whether the grant store covers the chosen folder.
+fn granted_with(covered: impl Fn(&Path) -> bool) -> Option<PathBuf> {
     use crate::edition::{self, Capability};
     if let Some(dir) = std::env::var_os(PROTOCOLS_DIR_VAR).filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(dir));
@@ -182,9 +197,7 @@ pub fn granted_root() -> Option<PathBuf> {
     if edition::current().allows(Capability::UngrantedPaths) {
         return Some(chosen.unwrap_or_else(default_root));
     }
-    // Asked on each frame the door draws, so a grant that did not open is not tried again here;
-    // [`out_of_reach`] tries it, when the folder is asked for.
-    chosen.filter(|dir| crate::grants::store().covers_now(dir))
+    chosen.filter(|dir| covered(dir))
 }
 
 /// The Protocols folder Preferences holds, whether or not this edition may reach it now: `None`

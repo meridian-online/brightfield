@@ -9859,7 +9859,7 @@ impl MeridianApp {
                 }
             }
             Overlay::Preferences(sheet) => {
-                let folder = crate::protocols_dir::root();
+                let folder = crate::protocols_dir::root_now();
                 let overridden = protocols_dir_override();
                 trusted_folders = crate::trust::Store::current().folders();
                 // The default-app button is the Mac's, and says why where this launch cannot
@@ -14295,7 +14295,7 @@ impl MeridianApp {
     /// The Protocols folder the Preferences sheet shows, while it is open.
     #[must_use]
     pub fn preferences_folder(&self) -> Option<PathBuf> {
-        matches!(self.overlay, Some(Overlay::Preferences(_))).then(crate::protocols_dir::root)
+        matches!(self.overlay, Some(Overlay::Preferences(_))).then(crate::protocols_dir::root_now)
     }
 
     /// Whether the Preferences sheet offers Choose…, while it is open: not while
@@ -17071,7 +17071,7 @@ impl MeridianApp {
         // The tree of the Protocols folder, read on the first door frame after the door was
         // hidden. A Protocol whose folder has gone since, deleted or moved in the Finder, loses
         // its row on this frame without the whole tree being read again.
-        let root = crate::protocols_dir::root();
+        let root = crate::protocols_dir::root_now();
         let tree = self
             .door_tree
             .get_or_insert_with(|| crate::door_tree::read(&root))

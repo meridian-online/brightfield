@@ -339,6 +339,17 @@ fn a_window_with_only_a_grant_stand_in_asks_nothing_at_first_launch() {
 }
 
 #[test]
+fn a_folder_inside_the_protocols_folder_chosen_is_refused() {
+    let _first = first_launch();
+    let chosen = scratch().join("chosen").join("nesting").join("Protocols");
+    protocols_dir::adopt(&chosen).expect("the first folder is kept");
+    let why = protocols_dir::adopt(&chosen.join("inside"))
+        .expect_err("a folder inside the Protocols folder is refused");
+    assert!(why.contains("is inside the Protocols folder now"), "{why}");
+    assert_eq!(protocols_dir::chosen(), Some(chosen));
+}
+
+#[test]
 fn a_containers_home_is_the_home_it_sits_in() {
     assert_eq!(
         protocols_dir::home_outside_container(Path::new(
