@@ -604,9 +604,10 @@ pub fn folders_of(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// **Keep access to the folders a child of the Protocol in `dir` uses started until the guard
-/// drops**: what a run, a call of `arc` and a join proposal take before they start their child. The
-/// child inherits the grants (`docs/app-sandbox.md`), so nothing is handed to it; the hold is what
-/// keeps the grant it reads through from ending while it reads.
+/// drops**: what a run, a call of `arc` and a join proposal take before they start their child. A
+/// sandboxed app's child reads and writes the folders the app holds grants on, as measured on
+/// macOS 27.2, so nothing is handed to it; the hold is what keeps the grant it reads through from
+/// ending while it reads.
 pub fn hold_for(dir: &Path) -> crate::grants::GrantHold<'static> {
     crate::grants::store().hold(&folders_of(dir))
 }
