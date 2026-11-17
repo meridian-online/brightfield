@@ -509,3 +509,86 @@ fn a_protocol_and_its_source_in_two_ungranted_folders_are_asked_for_in_turn() {
         said(&app)
     );
 }
+
+#[test]
+fn two_opens_waiting_on_grants_are_asked_for_and_opened_in_order() {
+    let first = folder("in-order-first");
+    let second = folder("in-order-second");
+    let a = housing_in(&first, "first_housing.csv");
+    let b = housing_in(&second, "second_housing.csv");
+
+    let panel = Panel::default();
+    panel.choose(true);
+    let mut app = app(&panel);
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx);
+    // Two Finder opens delivered before one frame, neither file granted.
+    app.open_queue().push(OpenRequest::Path(a));
+    app.open_queue().push(OpenRequest::Path(b));
+    for _ in 0..4 {
+        frame(&mut app, &ctx);
+    }
+    let protocols = scratch().join("protocols");
+    if managed() {
+        assert_eq!(panel.asked(), vec![first, second], "each folder, in order");
+    } else {
+        assert!(
+            panel.asked().is_empty(),
+            "the full edition asks for nothing"
+        );
+    }
+    assert!(
+        protocols
+            .join("first_housing")
+            .join("arcform.yaml")
+            .is_file(),
+        "the first opens: {}",
+        said(&app)
+    );
+    assert_eq!(
+        app.own_protocol().map(|p| p.dir.clone()),
+        Some(protocols.join("second_housing")),
+        "then the second: {}",
+        said(&app)
+    );
+}
+
+#[test]
+fn a_source_beside_another_protocols_manifest_is_added_with_its_own_grant() {
+    // The Protocol open in the window, made from a file granted on its own.
+    let own = folder("beside-own");
+    let csv = housing_in(&own, "beside_housing.csv");
+    grants::store().grant(&csv).expect("the file is granted");
+    // A data file sitting in another Protocol's folder, dropped and so granted on its own.
+    let other = folder("beside-other").join("other");
+    protocol_in(&other, None);
+    let added = housing_in(&other, "added.csv");
+    grants::store()
+        .grant(&added)
+        .expect("the dropped file is granted");
+
+    let panel = Panel::default();
+    let mut app = app(&panel);
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx);
+    app.open_queue().push(OpenRequest::Path(csv));
+    frame(&mut app, &ctx);
+    assert!(app.own_protocol().is_some(), "{}", said(&app));
+
+    app.open_queue().push(OpenRequest::AddSource(added));
+    frame(&mut app, &ctx);
+    frame(&mut app, &ctx);
+    assert!(
+        panel.asked().is_empty(),
+        "its own grant is enough: {}",
+        said(&app)
+    );
+    assert!(!needs_grant_raised(&app), "{}", said(&app));
+    let dir = scratch().join("protocols").join("beside_housing");
+    assert_eq!(
+        brightfield_shell::own_files::source_files(&dir).map(|f| f.len()),
+        Some(2),
+        "it is added: {}",
+        said(&app)
+    );
+}

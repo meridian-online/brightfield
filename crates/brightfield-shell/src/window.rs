@@ -5837,7 +5837,9 @@ impl MeridianApp {
             Some(asked) => folders.into_iter().filter(|f| !asked.contains(f)).collect(),
             None => folders,
         };
-        if !self.grant_report_only && !to_ask.is_empty() {
+        // One ask at a time: the queue waits behind it, so a second is seldom raised before the
+        // first is answered, and when one is, the first stands.
+        if !self.grant_report_only && !to_ask.is_empty() && self.grant_ask.is_none() {
             self.grant_ask = Some(GrantAsk {
                 folders: to_ask,
                 why,
@@ -6249,14 +6251,18 @@ impl MeridianApp {
         } else if !matches!(
             self.overlay,
             Some(Overlay::CloseQuestion(_) | Overlay::WhichProtocol(_))
-        ) && !self.held_for_question.is_empty()
+        ) && self.grant_ask.is_none()
+            && !self.held_for_question.is_empty()
         {
             let request = self.held_for_question.remove(0);
             self.take_or_ask(&ctx, request);
         }
         // The Which Protocol sheet holds the queue as a pending open does: a request pushed
-        // while it is up waits for its answer, rather than opening under it.
+        // while it is up waits for its answer, rather than opening under it. So does an open
+        // waiting on a grant ask, so the requests behind it are taken in order once it is answered
+        // (`two_opens_waiting_on_grants_are_asked_for_and_opened_in_order`).
         while self.pending_open.is_none()
+            && self.grant_ask.is_none()
             && !matches!(self.overlay, Some(Overlay::WhichProtocol(_)))
         {
             let Some(request) = self.open_queue.pop() else {
@@ -12755,18 +12761,27 @@ impl MeridianApp {
         // In the managed edition, an open whose folders are not all granted asks for them before
         // anything is left or read, and goes ahead once they are; adding a source asks for the
         // source's folder.
-        let why: fn(&std::path::Path) -> String = match request {
+        // A source added is data wherever it sits, even beside another Protocol's manifest, so
+        // its files are checked as they are; an open is checked as `admit` routes it.
+        let paths = request_paths(&request);
+        let held = match request {
             OpenRequest::AddSource(_) | OpenRequest::AddSources(_) | OpenRequest::AddJoined(..) => {
-                crate::ask_grant::why_source
+                let needed = crate::grants::store().needs(&paths);
+                self.hold_for_grants(
+                    ctx,
+                    needed,
+                    crate::ask_grant::why_source,
+                    GrantThen::Request(request.clone()),
+                )
             }
-            _ => crate::ask_grant::why_open,
+            _ => self.hold_open_for_grants(
+                ctx,
+                &paths,
+                crate::ask_grant::why_open,
+                GrantThen::Request(request.clone()),
+            ),
         };
-        if self.hold_open_for_grants(
-            ctx,
-            &request_paths(&request),
-            why,
-            GrantThen::Request(request.clone()),
-        ) {
+        if held {
             return;
         }
         // A Protocol archive chosen on this Mac, held as any open is while the question is up,
