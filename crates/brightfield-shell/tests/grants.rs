@@ -113,6 +113,18 @@ fn an_unreadable_store_is_set_aside_not_overwritten() {
         "{ not json"
     );
     assert_eq!(saved_paths(&config), vec![granted]);
+
+    std::fs::write(config.join(GRANTS_FILE), "{ broken again").expect("a second broken store");
+    let _ = Grants::load(&config);
+    assert_eq!(
+        std::fs::read_to_string(config.join("grants.json.unreadable")).expect("the first copy"),
+        "{ not json",
+        "an earlier copy set aside is kept"
+    );
+    assert_eq!(
+        std::fs::read_to_string(config.join("grants.json.unreadable.2")).expect("the second copy"),
+        "{ broken again"
+    );
 }
 
 #[test]

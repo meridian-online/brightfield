@@ -102,6 +102,8 @@ struct Inner {
 pub struct Grants {
     /// The file, or `None` for this process's memory.
     file: Option<PathBuf>,
+    /// Why the file must not be written: it could not be read, nor set aside.
+    frozen: Option<String>,
     inner: Mutex<Inner>,
 }
 
@@ -137,21 +139,31 @@ impl Grants {
     pub fn load(config_dir: &Path) -> Self {
         let file = config_dir.join(GRANTS_FILE);
         let mut problems = Vec::new();
+        let mut frozen = None;
         let entries = match read_file(&file) {
             Ok(entries) => entries,
             Err(e) => {
-                // Set aside rather than overwritten by the next save, so the bookmarks in it can
-                // still be recovered by hand.
-                let aside = file.with_extension("json.unreadable");
-                let moved = std::fs::rename(&file, &aside)
-                    .map(|()| format!("; set aside as {}", aside.display()))
-                    .unwrap_or_default();
-                problems.push(GrantError::Io(format!("{e}{moved}")));
+                // Set aside under a name not yet taken, rather than overwritten by the next save,
+                // so the bookmarks in it can still be recovered by hand. When it cannot be, the
+                // store is not saved for the rest of the process.
+                match set_aside(&file) {
+                    Ok(aside) => problems.push(GrantError::Io(format!(
+                        "{e}; set aside as {}",
+                        aside.display()
+                    ))),
+                    Err(why) => {
+                        let message =
+                            format!("{e}; not set aside ({why}), so grants are not saved");
+                        problems.push(GrantError::Io(message.clone()));
+                        frozen = Some(message);
+                    }
+                }
                 Vec::new()
             }
         };
         let grants = Self {
             file: Some(file),
+            frozen,
             inner: Mutex::new(Inner {
                 entries,
                 problems,
@@ -196,6 +208,7 @@ impl Grants {
     pub fn in_memory() -> Self {
         Self {
             file: None,
+            frozen: None,
             inner: Mutex::new(Inner::default()),
         }
     }
@@ -338,6 +351,9 @@ impl Grants {
     }
 
     fn save(&self, inner: &Inner) -> Result<(), GrantError> {
+        if let Some(why) = &self.frozen {
+            return Err(GrantError::Io(why.clone()));
+        }
         match &self.file {
             Some(file) => write_file(file, &inner.entries).map_err(GrantError::Io),
             None => Ok(()),
@@ -501,6 +517,23 @@ fn read_file(file: &Path) -> Result<Vec<Entry>, String> {
             })
         })
         .collect())
+}
+
+/// Rename the unreadable `file` to the first of `grants.json.unreadable`, `….unreadable.2`, … that
+/// is not taken, so an earlier copy set aside is never replaced.
+fn set_aside(file: &Path) -> Result<PathBuf, String> {
+    for n in 1..1000 {
+        let aside = if n == 1 {
+            file.with_extension("json.unreadable")
+        } else {
+            file.with_extension(format!("json.unreadable.{n}"))
+        };
+        if aside.symlink_metadata().is_err() {
+            std::fs::rename(file, &aside).map_err(|e| e.to_string())?;
+            return Ok(aside);
+        }
+    }
+    Err("every name for a copy set aside is taken".to_string())
 }
 
 /// Write `entries` to `file`, through a file beside it renamed into place, so a write cut short
