@@ -4792,21 +4792,13 @@ impl MeridianApp {
     fn note_run_refusal(&mut self, finished: &crate::run::Finished) {
         self.refused
             .retain(|r| r.during != crate::refusal::RefusedDuring::Run);
-        let refused = if finished.succeeded {
-            None
-        } else {
-            crate::refusal::refusal_in_engine_text(&finished.log)
-        };
-        let Some(path) = refused else {
+        let Some(refusal) = crate::refusal::refusal_in_run(finished) else {
             self.raise_refused();
             return;
         };
-        if self.refused.iter().all(|r| r.path != path) {
-            eprintln!("refused access: {}", path.display());
-            self.refused.push(crate::refusal::Refusal {
-                path,
-                during: crate::refusal::RefusedDuring::Run,
-            });
+        if self.refused.iter().all(|r| r.path != refusal.path) {
+            eprintln!("refused access: {}", refusal.path.display());
+            self.refused.push(refusal);
         }
         self.raise_refused();
     }

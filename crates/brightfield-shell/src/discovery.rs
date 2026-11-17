@@ -404,6 +404,7 @@ impl Dovetail {
         cancel: &Cancel,
     ) -> Result<Model, String> {
         let dir = &protocol.dir;
+        let _hold = crate::run::hold_for(dir);
         let proposals = dir.join(PROPOSALS_DIR);
         std::fs::create_dir_all(&proposals).map_err(|e| format!("{}: {e}", proposals.display()))?;
         remove_orphaned_runs(&proposals);
