@@ -12,6 +12,10 @@
 //! found by the name of the default wgpu adapter, which is the one the
 //! headless captures render on. Every other GPU, the reference machine
 //! included, keeps zero.
+//!
+//! A test that calls `image_snapshot` or `harness.snapshot` directly takes
+//! `kittest.toml`'s floor on every machine. It moves to [`options`] when a
+//! hosted run measures jitter on it, and not before.
 
 #![allow(dead_code)]
 

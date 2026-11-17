@@ -16,7 +16,7 @@
 //! production render agrees — every pixel of the written PNG is
 //! `rgba(0, 0, 0, 0)`.
 //!
-//! Measured on the reference machine (Apple M1 Pro, Metal) through the
+//! Measured on an Apple M1 Pro (Metal) through the
 //! PRODUCTION path — `cargo run -p brightfield-shell --bin brightfield-shot --
 //! --vello-only`, a debug build, one dot scatter in a 640×480 plot at scale 2:
 //!
