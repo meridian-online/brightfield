@@ -1089,14 +1089,31 @@ _SOURCE_TEXT: dict[tuple[Path, str | None, Path], str] = {}
 WORKTREE = Source(ROOT)
 
 
+# Third-party source kept as its authors published it. Its comments are theirs,
+# and scripts/check-vendored-libduckdb-sys.sh holds every file of it to the
+# published bytes, so this gate does not read them; the files Brightfield wrote
+# there are read as any other.
+THIRD_PARTY_PREFIXES = ("vendor/libduckdb-sys/",)
+BRIGHTFIELD_WRITTEN_THIRD_PARTY = {"vendor/libduckdb-sys/managed_linked.rs"}
+
+
+def is_third_party(rel: str) -> bool:
+    return rel.startswith(THIRD_PARTY_PREFIXES) and rel not in BRIGHTFIELD_WRITTEN_THIRD_PARTY
+
+
 def changed_files(repo: Path, base: str, head: str) -> list[Path]:
-    """The `.rs` files the diff between these two commits touched."""
+    """The `.rs` files the diff between these two commits touched, less the
+    third-party source above."""
     out = subprocess.run(
         ["git", "-C", str(repo), "diff", "--name-only", "--diff-filter=d", base, head],
         capture_output=True,
         text=True,
     )
-    return [repo / f for f in (out.stdout or "").split() if f.endswith(".rs")]
+    return [
+        repo / f
+        for f in (out.stdout or "").split()
+        if f.endswith(".rs") and not is_third_party(f)
+    ]
 
 
 def added_comment_lines(path: Path, repo: Path, base: str, head: str) -> list[tuple[int, str]]:

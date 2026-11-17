@@ -197,10 +197,10 @@ fn managed_duckdb_has_the_extensions_in_process() {
 /// own.**
 ///
 /// `otool -L` must list `@rpath/libduckdb.dylib` and no other DuckDB library,
-/// and the binary must define none of DuckDB's C API and bind `duckdb_open_ext`,
-/// which duckdb-rs opens a database with, from the library at launch. Linked against duckdb-rs's bundled
-/// DuckDB instead, the C API is defined in the binary itself and this fails
-/// there.
+/// and the binary must define no function of DuckDB's C API itself.
+/// It must also bind `duckdb_open_ext`, which duckdb-rs opens a database
+/// with, from the library at launch. Linked against duckdb-rs's bundled DuckDB
+/// instead, the C API is defined in the binary itself and this fails there.
 #[test]
 fn the_engine_links_the_managed_library_and_no_other_duckdb() {
     let exe = std::env::current_exe().expect("this test binary");

@@ -10,7 +10,8 @@
 //! add, so no feature can take `bundled` away again. `managed-linked` overrides
 //! it instead: with it on, this build script links the managed library through
 //! the crate's own linked-library path (`build_linked.rs`, as `DUCKDB_LIB_DIR`
-//! would), and the bundled DuckDB is not compiled at all.
+//! would), and the bundled DuckDB is not compiled. Brightfield's
+//! `the_engine_links_the_managed_library_and_no_other_duckdb` test holds that.
 //!
 //! The library is looked up in `$BRIGHTFIELD_DUCKDB_MANAGED_DIR`, or else in
 //! `target/duckdb-managed/` of the workspace this crate is vendored into.
