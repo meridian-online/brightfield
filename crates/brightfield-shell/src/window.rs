@@ -16114,6 +16114,8 @@ impl MeridianApp {
             }
             // A run landed, so the run records the rails read have moved.
             self.refresh_agent_protocol();
+            // The refresh read the models again, so their refusals are read again too.
+            self.say_refused();
             self.note_run_refusal(&finished);
             let banner = NotificationId::new("run-protocol");
             if finished.succeeded && finished.record.is_some() {

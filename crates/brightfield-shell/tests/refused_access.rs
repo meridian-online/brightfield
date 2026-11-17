@@ -300,3 +300,39 @@ fn a_run_refused_a_path_raises_the_banner_saying_the_run_could_not_finish() {
     );
     let _ = fs::remove_dir_all(&tmp);
 }
+
+/// A Protocol an agent drew panels for is captured as its panels, not its graph, and still reads
+/// its models: a refused one exits 3 there too.
+#[test]
+fn a_panels_capture_exits_3_on_a_refused_model() {
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("refused_access_panels");
+    let _ = fs::set_permissions(
+        tmp.join("co2-per-capita/models"),
+        fs::Permissions::from_mode(0o755),
+    );
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).expect("a scratch folder");
+    let dir = tmp.join("co2-per-capita");
+    let copied = Command::new("cp")
+        .arg("-R")
+        .arg(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/agent-protocols/co2-per-capita"),
+        )
+        .arg(&dir)
+        .status()
+        .expect("cp runs");
+    assert!(copied.success(), "the fixture copies");
+    let models = dir.join("models");
+    fs::set_permissions(&models, fs::Permissions::from_mode(0o000)).expect("chmod 000");
+    let guard = RestoreMode(models);
+    if refusal_is_impossible(&dir) {
+        eprintln!("SKIPPED: this process reads a 000 folder (running as root)");
+        return;
+    }
+    let (code, err) = shot(&dir, "panels");
+    drop(guard);
+    assert_eq!(code, Some(3), "stderr:\n{err}");
+    assert!(err.contains("refused access: "), "{err}");
+    let _ = fs::remove_dir_all(&tmp);
+}
