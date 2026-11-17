@@ -53,11 +53,18 @@ pub enum Reason {
     Extension(String),
 }
 
-/// The DuckDB extensions built into the managed edition, which a step may install and load.
+/// The DuckDB extensions built into the managed edition, which a step may install and load: those
+/// `scripts/duckdb-managed/extensions.cmake` compiles into its library, by the names a statement
+/// may give them. The sqlite extension answers to `sqlite` and to `sqlite_scanner`.
 pub const BUILT_IN_EXTENSIONS: &[&str] = &[
+    "core_functions",
+    "parquet",
+    "json",
+    "icu",
     "autocomplete",
     "excel",
     "sqlite",
+    "sqlite_scanner",
     "httpfs",
     "ducklake",
     "spatial",

@@ -144,7 +144,7 @@ fn spatial_and_excel_are_not() {
         UNBUNDLED,
         &[(
             "models/cells.sql",
-            "-- LOAD h3 is not used here\nINSTALL spatial;\nLOAD spatial;\nINSTALL excel; LOAD excel;\nCREATE OR REPLACE TABLE cells AS SELECT 1 AS x;\n",
+            "-- LOAD h3 is not used here\nINSTALL spatial;\nLOAD spatial;\nINSTALL excel; LOAD excel;\nLOAD json; LOAD parquet; LOAD icu; LOAD sqlite_scanner;\nCREATE OR REPLACE TABLE cells AS SELECT 1 AS x;\n",
         )],
     );
     assert_eq!(found(&dir, Edition::Managed), None);
