@@ -221,9 +221,9 @@ pub const GRANT_A_FOLDER: &str = "Grant a folder…";
 /// Downloads, the Protocols folder, and each volume mounted under `/Volumes` (a removable disk
 /// among them), leaving out a folder that is not there.
 ///
-/// In an edition that reads only what is granted, the places are the granted folders and
-/// Downloads instead, with "Grant a folder…" last ([`granted_places`]): a folder there is one the
-/// browser can list.
+/// In the managed edition the places are the granted folders and Downloads instead, with
+/// "Grant a folder…" last ([`granted_places`]), so a folder there is one the browser can list
+/// (`the_sources_browser_lists_granted_places_and_downloads`).
 #[must_use]
 pub fn places() -> Vec<Place> {
     let home = std::env::home_dir().unwrap_or_default();

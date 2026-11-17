@@ -95,8 +95,8 @@ pub enum OpenOutcome {
 ///
 /// The sources are read from the Protocol's folder, so while the folder is ungranted only the
 /// folder is asked for; once it is granted, the next check names any source folder still to ask.
-/// Always [`OpenOutcome::Opened`] in an edition that reads ungranted paths
-/// ([`crate::grants::Grants::needs`]).
+/// [`OpenOutcome::Opened`] in an edition that reads ungranted paths, with nothing read
+/// (`a_lone_manifest_asks_for_its_folder` checks that half in the full edition's build).
 #[must_use]
 pub fn admit(paths: &[PathBuf], grants: &crate::grants::Grants) -> OpenOutcome {
     use crate::edition::{self, Capability};
