@@ -84,14 +84,11 @@ fn options() -> SnapshotOptions {
 }
 
 /// Names the GPU this run renders on, so a run's log says which machine's
-/// pixel budget in `support/gpu_jitter.rs` applied. It writes to stderr
-/// directly rather than through `eprintln!`, which the test harness captures
-/// and drops for a passing test.
+/// pixel budget in `support/gpu_jitter.rs` applied: asking for the adapter's
+/// name writes it to stderr, past the test harness's capture.
 #[test]
 fn the_adapter_is_named_in_the_log() {
-    use std::io::Write;
-    let name = gpu_jitter::adapter_name();
-    let _ = writeln!(std::io::stderr(), "wgpu default adapter: {name:?}");
+    gpu_jitter::adapter_name();
 }
 
 #[test]

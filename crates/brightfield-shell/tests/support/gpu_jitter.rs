@@ -23,15 +23,21 @@ use egui_kittest::SnapshotOptions;
 pub const HOSTED_RUNNER: &str = "Apple Paravirtual device";
 
 /// The name of the default wgpu adapter, or an empty string when there is
-/// none. Asked once per test binary.
+/// none. Asked once per test binary, and written to stderr then, past
+/// libtest's capture, so a run's log names the GPU each binary that takes a
+/// budget rendered on, failing or not.
 pub fn adapter_name() -> &'static str {
     static NAME: OnceLock<String> = OnceLock::new();
     NAME.get_or_init(|| {
+        use std::io::Write;
         use vello::wgpu;
         let instance = wgpu::Instance::default();
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-            .map(|adapter| adapter.get_info().name)
-            .unwrap_or_default()
+        let name =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .map(|adapter| adapter.get_info().name)
+                .unwrap_or_default();
+        let _ = writeln!(std::io::stderr(), "wgpu default adapter: {name:?}");
+        name
     })
 }
 

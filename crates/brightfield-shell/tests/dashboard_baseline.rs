@@ -2405,6 +2405,8 @@ fn the_grid_in_ledger_columns_light_baseline() {
 fn the_grid_in_ledger_columns_dark_baseline() {
     assert_grid_in_ledger_columns_is_what_is_being_photographed();
     let image = capture_grid_in_ledger_columns(Mode::Dark, "grid_in_ledger_columns_dark");
-    let options = gpu_jitter::options(egui_kittest::SnapshotOptions::default(), 0);
+    // The hosted macOS runner's paravirtual GPU rounds 1 pixel of this frame
+    // differently from the reference Mac (hosted run 43995385670).
+    let options = gpu_jitter::options(egui_kittest::SnapshotOptions::default(), 1);
     egui_kittest::image_snapshot_options(&image, "grid_in_ledger_columns_dark", &options);
 }

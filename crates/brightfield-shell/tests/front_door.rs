@@ -3292,9 +3292,13 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) {
     };
     let _config = datasets_into_scratch(&format!("thumbnails_{set}_{mode:?}"));
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/starts");
+    // The hosted macOS runner's paravirtual GPU rounds up to 6 pixels of a
+    // thumbnail differently from the reference Mac, in both modes (hosted run
+    // 43995385670: edgar-gleif-crosswalk-chart 6, signals-dashboard 5 and 4,
+    // the rest 1 to 5). One budget covers each thumbnail in the set.
     let options = gpu_jitter::options(
         egui_kittest::SnapshotOptions::default().output_path(&assets),
-        0,
+        6,
     );
     let mut failures = Vec::new();
     for start in starts {
