@@ -17,7 +17,8 @@ use std::process::Command;
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::design::Mode;
 use brightfield_shell::protocol::load_protocol_offline;
-use brightfield_shell::refusal::refusal_in_engine_text;
+use brightfield_shell::refusal::{refusal_in_engine_text, RefusedDuring};
+use brightfield_shell::run::Runner;
 use brightfield_shell::window::{Boot, MeridianApp, REFUSED_TITLE};
 use brightfield_workbench::RunState;
 
@@ -194,4 +195,75 @@ fn engine_text_with_operation_not_permitted_names_the_path() {
         refusal_in_engine_text("IO Error: Cannot open file \"/a/b.csv\": Operation not permitted"),
         Some(PathBuf::from("/a/b.csv"))
     );
+}
+
+/// A run whose child says it was refused raises the same banner, worded as a run that could not
+/// finish. Driven down the panel-tiles route, a Protocol with agent panels, with a runner that
+/// prints DuckDB's refusal and exits 1 in place of arc.
+#[test]
+fn a_run_refused_a_path_raises_the_banner_saying_the_run_could_not_finish() {
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("refused_access_run");
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).expect("a scratch folder");
+    let dir = tmp.join("co2-per-capita");
+    let copied = Command::new("cp")
+        .arg("-R")
+        .arg(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/agent-protocols/co2-per-capita"),
+        )
+        .arg(&dir)
+        .status()
+        .expect("cp runs");
+    assert!(copied.success(), "the fixture copies");
+    let runner = tmp.join("refused-runner.sh");
+    fs::write(
+        &runner,
+        "#!/bin/sh\necho 'IO Error: Cannot open file \"/refused/owid.csv\": Operation not permitted' >&2\nexit 1\n",
+    )
+    .expect("write the runner");
+    fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).expect("chmod the runner");
+
+    let boot = Boot::open(
+        dir.join("arcform.yaml").to_str().expect("utf-8 path"),
+        Flow::Vertical,
+        None,
+    )
+    .expect("the Protocol opens");
+    let mut app = MeridianApp::headless(boot, Mode::Light).running_with(Some(Runner::at(&runner)));
+    let ctx = egui::Context::default();
+    let frame = |app: &mut MeridianApp| {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 820.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |ui| app.draw(ui));
+    };
+    frame(&mut app);
+    assert!(app.run_protocol(&ctx), "the run started");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while app.refused().is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the refused run never raised the banner"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        frame(&mut app);
+    }
+    assert_eq!(app.refused()[0].path, PathBuf::from("/refused/owid.csv"));
+    assert_eq!(app.refused()[0].during, RefusedDuring::Run);
+    let body = app
+        .notifications()
+        .iter()
+        .find(|n| n.title == REFUSED_TITLE)
+        .and_then(|n| n.body.clone())
+        .expect("the refused-access banner stands");
+    assert!(
+        body.contains("/refused/owid.csv") && body.contains("the run could not finish"),
+        "{body}"
+    );
+    let _ = fs::remove_dir_all(&tmp);
 }

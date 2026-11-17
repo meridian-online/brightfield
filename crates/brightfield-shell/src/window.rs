@@ -4692,8 +4692,9 @@ impl MeridianApp {
     /// reports. In the full edition the banner names System Settings, since a grant there is not
     /// Brightfield's to make.
     fn say_refused(&mut self) {
-        self.refused = self.protocol.doc.model.refusals();
-        for refusal in &self.refused {
+        let was = std::mem::replace(&mut self.refused, self.protocol.doc.model.refusals());
+        // Printed once per path: a lay-out again after a run reads the same refusals.
+        for refusal in self.refused.iter().filter(|r| !was.contains(r)) {
             eprintln!("refused access: {}", refusal.path.display());
         }
         self.raise_refused();
@@ -16088,9 +16089,11 @@ impl MeridianApp {
             }
             return;
         }
-        self.note_run_refusal(&finished);
         if let Some(landing) = landing {
             self.land_shipped_run(ctx, landing, &finished);
+            // After the landing, which may have gone back to the door and so taken down the
+            // banners of the document it left.
+            self.note_run_refusal(&finished);
             ctx.request_repaint();
             return;
         }
@@ -16102,6 +16105,7 @@ impl MeridianApp {
             }
             // A run landed, so the run records the rails read have moved.
             self.refresh_agent_protocol();
+            self.note_run_refusal(&finished);
             let banner = NotificationId::new("run-protocol");
             if finished.succeeded && finished.record.is_some() {
                 self.notifications.dismiss(banner);
