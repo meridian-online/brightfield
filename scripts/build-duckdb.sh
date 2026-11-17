@@ -66,6 +66,12 @@ if [ "${1:-}" = "--print-dir" ]; then
   exit 0
 fi
 [ $# -eq 0 ] || fail "usage: scripts/build-duckdb.sh [--print-dir]"
+# DuckDB's make passes its CMake variables through one space-separated string,
+# and otool's output is read by field, so a path with a space in it cannot
+# build. Say so before anything is fetched.
+case "${OUT}${ROOT}${BRIGHTFIELD_VCPKG_ROOT:-}" in
+  *" "*) fail "the build directory and the checkout must have no spaces in their paths: ${OUT}" ;;
+esac
 
 # The DuckDB release this edition runs: the version libduckdb-sys 1.20000.0
 # links into the full edition, and the shell scripts/fetch-duckdb-cli.sh fetches.
