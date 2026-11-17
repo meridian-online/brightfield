@@ -31,6 +31,15 @@ duckdb = { workspace = true, features = ["parquet"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 calamine = { workspace = true }
+# Only for the managed edition's feature below.
+libduckdb-sys = { workspace = true, optional = true }
+
+[features]
+# Runs the engine on the managed edition's DuckDB: the one library, with its
+# extensions compiled in, that scripts/build-duckdb.sh builds into
+# target/duckdb-managed/ and the Mac App Store bundle carries in
+# Contents/Frameworks. Without it the engine runs on duckdb-rs's bundled DuckDB.
+managed-edition = ["dep:libduckdb-sys", "libduckdb-sys/managed-linked"]
 
 [dev-dependencies]
 tempfile = "3"
