@@ -78,7 +78,9 @@ impl Refusal {
     pub fn remedy(&self) -> String {
         let folder = self.folder();
         if !edition::current().allows(Capability::UngrantedPaths)
-            && crate::grants::store().needs(std::slice::from_ref(&folder)).is_empty()
+            && crate::grants::store()
+                .needs(std::slice::from_ref(&folder))
+                .is_empty()
         {
             return format!(
                 "Brightfield may read {}, but the system still refused it: change its \
