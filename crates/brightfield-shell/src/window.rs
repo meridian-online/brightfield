@@ -16101,7 +16101,8 @@ impl MeridianApp {
         if let Some(landing) = landing {
             self.land_shipped_run(ctx, landing, &finished);
             // After the landing, which may have gone back to the door and so taken down the
-            // banners of the document it left.
+            // banners of the document it left, or read the start's models again.
+            self.say_refused();
             self.note_run_refusal(&finished);
             ctx.request_repaint();
             return;
