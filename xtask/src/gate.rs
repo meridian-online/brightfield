@@ -559,39 +559,42 @@ fn run_teed(mut command: Command, log: &Path) -> Result<ExitStatus, String> {
 }
 
 /// Post the `local-gate` status on `sha` with `gh`, which runs with this
-/// process's own HOME and so its own credentials.
+/// process's own HOME and so its own credentials. Every post happens under
+/// the gate lock, so it is held to `CALL_TIMEOUT` like the gate's other calls.
 pub fn post_status(gh: &OsStr, sha: &str, state: &str, text: &str) -> Result<(), String> {
-    let output = Command::new(gh)
-        .args([
-            "api",
-            "--silent",
-            &format!("repos/{REPO}/statuses/{sha}"),
-            "-f",
-            &format!("state={state}"),
-            "-f",
-            &format!("context={CONTEXT}"),
-            "-f",
-            &format!("description={text}"),
-        ])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("the verdict was not posted: could not start gh: {e}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        let said = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        let said = if said.is_empty() {
-            format!("gh exited with {}", output.status)
-        } else {
-            said
-        };
-        Err(format!("the verdict was not posted: {said}"))
-    }
+    post_status_within(gh, sha, state, text, CALL_TIMEOUT)
+}
+
+fn post_status_within(
+    gh: &OsStr,
+    sha: &str,
+    state: &str,
+    text: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    let endpoint = format!("repos/{REPO}/statuses/{sha}");
+    let state = format!("state={state}");
+    let context = format!("context={CONTEXT}");
+    let description = format!("description={text}");
+    let args = [
+        "api",
+        "--silent",
+        &endpoint,
+        "-f",
+        &state,
+        "-f",
+        &context,
+        "-f",
+        &description,
+    ];
+    output_within(gh, &args, timeout)
+        .map(|_| ())
+        .map_err(|e| format!("the verdict was not posted: {e}"))
 }
 
 /// How long a `gh`, `kata` or `git` call may take before the gate gives up on
-/// it. The backstop's calls run under the gate lock, so a hung one must not
-/// hold the lock for good.
+/// it. The backstop's calls and the status posts run under the gate lock, so a
+/// hung one must not hold the lock for good.
 const CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Run a program and return what it printed; a non-zero exit is the error,
@@ -1387,6 +1390,28 @@ mod tests {
         let error = post_status(gh.as_os_str(), "abc123", "success", "passed").unwrap_err();
         assert!(error.contains("not posted"), "{error}");
         assert!(error.contains("Bad credentials"), "{error}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_status_post_that_hangs_is_stopped_and_is_an_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("post-hang");
+        let gh = dir.join("gh");
+        fs::write(&gh, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        let started = Instant::now();
+        let error = post_status_within(
+            gh.as_os_str(),
+            "abc123",
+            "success",
+            "passed",
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(10), "{error}");
+        assert!(error.contains("not posted"), "{error}");
+        assert!(error.contains("timed out"), "{error}");
         fs::remove_dir_all(&dir).unwrap();
     }
 
