@@ -2536,6 +2536,9 @@ pub enum Leaving {
 pub const NEEDS_GRANT_BANNER: &str = "needs-grant";
 /// That banner's title.
 pub const NEEDS_GRANT_TITLE: &str = "Brightfield needs access to a folder";
+/// The banner saying a move or the sources browser's grant waited on another grant ask and was not
+/// carried out.
+pub const GRANT_WAITING_BANNER: &str = "grant-waiting";
 
 /// **Folders an open needs granted before it goes ahead**, and what to do once they are: the
 /// managed edition's ask, taken after the frame because the panel blocks.
@@ -5825,11 +5828,23 @@ impl MeridianApp {
         // while another ask stands waits behind it with the opens held for the close question, and
         // is checked again once the ask is answered.
         if self.grant_ask.is_some() && !self.grant_report_only {
-            match then {
-                GrantThen::Request(request) => self.held_for_question.push(request),
-                _ => eprintln!(
-                    "warning: an open waited on a grant while another was being asked for, and was \
-                     not carried out; ask for it again"
+            let request = match then {
+                GrantThen::Request(request) => Some(request),
+                GrantThen::Paths(paths) => crate::open_queue::OpenRequest::of_paths(paths),
+                GrantThen::Protocol(path) => {
+                    Some(crate::open_queue::OpenRequest::Path(PathBuf::from(path)))
+                }
+                GrantThen::Move(_) | GrantThen::Browse => None,
+            };
+            match request {
+                Some(request) => self.held_for_question.push(request),
+                None => self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new(GRANT_WAITING_BANNER),
+                        Severity::Warning,
+                        "Not done yet",
+                    )
+                    .body("Brightfield is asking for another folder first. Try again once it is answered."),
                 ),
             }
             return true;

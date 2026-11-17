@@ -592,3 +592,44 @@ fn a_source_beside_another_protocols_manifest_is_added_with_its_own_grant() {
         said(&app)
     );
 }
+
+#[test]
+fn a_recents_open_while_another_ask_stands_waits_behind_it() {
+    let first = folder("behind-first").join("quakes");
+    let second = folder("behind-second").join("storms");
+    protocol_in(&first, None);
+    protocol_in(&second, None);
+
+    let panel = Panel::default();
+    panel.choose(true);
+    let mut app = app(&panel);
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx);
+    // Two Recents rows chosen before a frame: the first raises an ask, and the second arrives
+    // while it stands.
+    app.open_protocol_path(&ctx, &first.join("arcform.yaml").to_string_lossy());
+    app.open_protocol_path(&ctx, &second.join("arcform.yaml").to_string_lossy());
+    if managed() {
+        assert!(
+            said(&app).contains(&*first.to_string_lossy())
+                && !said(&app).contains(&*second.to_string_lossy()),
+            "the banner names the folder the panel will ask for: {}",
+            said(&app)
+        );
+    }
+    for _ in 0..4 {
+        frame(&mut app, &ctx);
+    }
+    if !managed() {
+        assert!(
+            panel.asked().is_empty(),
+            "the full edition asks for nothing"
+        );
+        return;
+    }
+    assert_eq!(
+        panel.asked(),
+        vec![first, second],
+        "the second is asked for in its turn, not lost"
+    );
+}
