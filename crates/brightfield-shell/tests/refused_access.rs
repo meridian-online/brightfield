@@ -13,9 +13,11 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::design::Mode;
+use brightfield_shell::edition::{self, Edition};
 use brightfield_shell::protocol::load_protocol_offline;
 use brightfield_shell::refusal::{refusal_in_engine_text, RefusedDuring};
 use brightfield_shell::run::Runner;
@@ -335,4 +337,55 @@ fn a_panels_capture_exits_3_on_a_refused_model() {
     assert_eq!(code, Some(3), "stderr:\n{err}");
     assert!(err.contains("refused access: "), "{err}");
     let _ = fs::remove_dir_all(&tmp);
+}
+
+fn frame(app: &mut MeridianApp, ctx: &egui::Context) {
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1440.0, 900.0),
+        )),
+        ..Default::default()
+    };
+    let _ = ctx.run_ui(raw, |ui| app.draw(ui));
+}
+
+/// The managed edition asks for a refused folder as the Protocol opens, once however many frames
+/// follow, and the full edition does not ask, since its grant is System Settings'. The stand-in
+/// panel cancels, so the Protocol is not opened again.
+#[test]
+fn an_open_asks_once_for_the_refused_folder_in_the_managed_edition() {
+    let (dir, guard) = protocol("ask", true, false);
+    if refusal_is_impossible(&dir) {
+        eprintln!("SKIPPED: this process reads a 000 folder (running as root)");
+        return;
+    }
+    let asked: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+    let record = Arc::clone(&asked);
+    let mut app =
+        window_over(&dir).asking_grants_with(Box::new(move |folder: &Path, _why: &str| {
+            record
+                .lock()
+                .expect("the record")
+                .push(folder.to_path_buf());
+            None
+        }));
+    let ctx = egui::Context::default();
+    for _ in 0..3 {
+        frame(&mut app, &ctx);
+    }
+    drop(guard);
+
+    let asked = asked.lock().expect("the record").clone();
+    if edition::current() == Edition::Managed {
+        assert_eq!(
+            asked,
+            vec![dir.join("models")],
+            "the refused folder, asked once"
+        );
+    } else {
+        assert!(asked.is_empty(), "the full edition asks nothing: {asked:?}");
+    }
+    assert_eq!(app.refused().len(), 1, "the banner still names the refusal");
+    let _ = fs::remove_dir_all(&dir);
 }

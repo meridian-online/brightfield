@@ -2534,6 +2534,16 @@ pub enum Leaving {
     Reload,
 }
 
+/// Whether a reading of the open Protocol's refusals may ask for the refused folders: an open
+/// or a run landing may, a lay-out again over the same Protocol may not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ask {
+    /// An open or a run: the moment the analyst asked for the Protocol.
+    Now,
+    /// A lay-out again, after a typed statement or a Save.
+    Not,
+}
+
 /// The banner saying the system refused a read or a write, naming the paths
 /// (raised as the window opens a Protocol, and after its runs).
 pub const REFUSED_BANNER: &str = "refused-access";
@@ -4327,7 +4337,7 @@ impl MeridianApp {
         // runs on a later document swap.
         app.apply_rail_defaults();
         app.say_folder_refused();
-        app.say_refused();
+        app.say_refused(Ask::Now);
         // The restored spot is put through the move rather than left as the
         // field the struct literal wrote: the rail defaults above close the
         // ledger for a one-step Protocol, and a grid whose spot is the ledger
@@ -4657,7 +4667,7 @@ impl MeridianApp {
         // step to summarise.
         self.apply_rail_defaults();
         self.say_folder_refused();
-        self.say_refused();
+        self.say_refused(Ask::Now);
     }
 
     /// Raise the banner saying why the steps the folder's manifest holds after
@@ -4688,10 +4698,12 @@ impl MeridianApp {
     /// **Raise the refused-access banner over the open Protocol's refused model reads**, or take
     /// it down when there are none. Called beside [`Self::say_folder_refused`], so it follows the
     /// document swaps that one does. In the managed edition each refused folder is also asked for
-    /// once, after the frame, and the Protocol opened again when it is granted; a launch's restore,
-    /// and a window holding unsaved work, report it in the banner instead. In the full edition the banner names System Settings, since a grant there is not
+    /// once, after the frame, and the Protocol opened again when it is granted. `ask` says whether
+    /// this call may ask: an open or a run landing may, a lay-out again after a typed statement or
+    /// a Save may not. A launch's restore, and a window holding unsaved work, report the folder in
+    /// the banner and leave it to the next open or run to ask. In the full edition the banner names System Settings, since a grant there is not
     /// Brightfield's to make.
-    fn say_refused(&mut self) {
+    fn say_refused(&mut self, ask: Ask) {
         let was = std::mem::replace(&mut self.refused, self.protocol.doc.model.refusals());
         // Printed once per path: a lay-out again after a run reads the same refusals.
         for refusal in self.refused.iter().filter(|r| !was.contains(r)) {
@@ -4722,14 +4734,17 @@ impl MeridianApp {
         if folders.is_empty() {
             return;
         }
-        self.refusal_asked.extend(folders.iter().cloned());
-        // An ask is raised as the Protocol is opened or run, or not at all: granting it opens the
-        // Protocol again, so an ask held over to a later lay-out (a typed statement, a Save)
-        // would replace work the analyst has not saved. A suppressed ask is still counted as
-        // asked, and the banner goes on naming the folder.
-        if self.grant_report_only || self.grant_ask.is_some() || self.has_unsaved_work() {
+        // Granting the folder opens the Protocol again, so the ask waits for an open or a run
+        // over no unsaved work; a held-back ask is not counted as asked, and the next open or run
+        // asks it.
+        if ask == Ask::Not
+            || self.grant_report_only
+            || self.grant_ask.is_some()
+            || self.has_unsaved_work()
+        {
             return;
         }
+        self.refusal_asked.extend(folders.iter().cloned());
         self.grant_ask = Some(GrantAsk {
             folders,
             why: crate::refusal::why_refused,
@@ -10090,7 +10105,7 @@ impl MeridianApp {
                     self.apply_rail_defaults();
                 }
                 self.say_folder_refused();
-                self.say_refused();
+                self.say_refused(Ask::Not);
                 wire_columns(
                     &mut self.charts.doc,
                     &self.protocol.doc.model,
@@ -15344,7 +15359,7 @@ impl MeridianApp {
                 }
                 self.apply_rail_defaults();
                 self.say_folder_refused();
-                self.say_refused();
+                self.say_refused(Ask::Not);
                 wire_columns(
                     &mut self.charts.doc,
                     &self.protocol.doc.model,
@@ -16108,7 +16123,7 @@ impl MeridianApp {
             self.land_shipped_run(ctx, landing, &finished);
             // After the landing, which may have gone back to the door and so taken down the
             // banners of the document it left, or read the start's models again.
-            self.say_refused();
+            self.say_refused(Ask::Now);
             self.note_run_refusal(&finished);
             ctx.request_repaint();
             return;
@@ -16122,7 +16137,7 @@ impl MeridianApp {
             // A run landed, so the run records the rails read have moved.
             self.refresh_agent_protocol();
             // The refresh read the models again, so their refusals are read again too.
-            self.say_refused();
+            self.say_refused(Ask::Now);
             self.note_run_refusal(&finished);
             let banner = NotificationId::new("run-protocol");
             if finished.succeeded && finished.record.is_some() {
@@ -16147,7 +16162,7 @@ impl MeridianApp {
             Ok(inputs) => {
                 self.protocol.doc.open(inputs);
                 self.say_folder_refused();
-                self.say_refused();
+                self.say_refused(Ask::Now);
                 wire_columns(
                     &mut self.charts.doc,
                     &self.protocol.doc.model,
