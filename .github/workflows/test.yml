@@ -653,6 +653,15 @@ jobs:
       - name: conformance cell counts
         run: cargo xtask ci --step conformance
 
+      # The managed edition's tests, which the suite above does not build: it
+      # builds the full edition, and `--features managed-edition` is a second
+      # build of the shell crate. It runs on the last default-threads shard
+      # beside the two steps above, and its second command attaches a disk
+      # image to test a granted folder whose drive is unplugged, with a floor on
+      # how many of those tests executed.
+      - name: the managed edition's tests
+        run: cargo xtask ci --step managed-edition
+
       # On failure, hand back what the pixel tier actually rendered plus its
       # perceptual diff, so a red visual gate is diagnosable without a Mac.
       # `assets/starts` is where the start thumbnail gate in

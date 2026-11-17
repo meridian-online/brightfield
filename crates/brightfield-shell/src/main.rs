@@ -1335,6 +1335,9 @@ fn main() -> Result<(), String> {
     let menu_quit = Some((open_queue.clone(), 0));
     // The trust store lives in the config folder beside the Preferences, from here on.
     brightfield_shell::trust::use_config_dir();
+    // The folders the analyst granted, resolved and opened before anything reads a Protocol, so
+    // the one the last launch ended on reopens without asking.
+    brightfield_shell::grants::load_at_launch();
     eframe::run_native(
         &title,
         options,

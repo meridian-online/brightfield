@@ -339,6 +339,12 @@ pub static STEPS: &[Step] = &[
         run: conformance,
     },
     Step {
+        name: "managed-edition",
+        runs: "cargo test --locked -p brightfield-shell --features managed-edition --test edition --test grants, then --test grants -- --ignored, at least 1 executed",
+        only_in_ci: None,
+        run: managed_edition,
+    },
+    Step {
         name: "artifact-type-source-selftest",
         runs: "./scripts/check-artifact-type-source-selftest.sh",
         only_in_ci: None,
@@ -743,6 +749,72 @@ fn conformance(ctx: &Ctx) -> Result<(), String> {
         "--corpus",
         "curated",
     ])
+}
+
+/// The managed edition's own tests, in a build with its feature on: the
+/// workspace suite builds the full edition only, so nothing else compiles or
+/// runs them. It runs on the last default-threads shard beside the two steps
+/// before it, since its build of the shell crate is a second one.
+///
+/// The second command runs the grant store's ignored test, which attaches a
+/// disk image to unmount a granted folder's drive. Its executed count is held
+/// to a floor, because `-- --ignored` that matches nothing exits 0.
+fn managed_edition(ctx: &Ctx) -> Result<(), String> {
+    if !selection(ctx)?.protocols {
+        println!("the managed edition's tests run on the last default-threads shard, not this one");
+        return Ok(());
+    }
+    let feature = [
+        "test",
+        "--locked",
+        "-p",
+        "brightfield-shell",
+        "--features",
+        "managed-edition",
+    ];
+    let suite: Vec<&str> = feature
+        .iter()
+        .copied()
+        .chain(["--test", "edition", "--test", "grants"])
+        .collect();
+    ctx.run_cargo(&suite)?;
+    let floor = 1;
+    let log_path = ctx.scratch()?.join("managed-edition-ignored.log");
+    let log = File::create(&log_path)
+        .map_err(|e| format!("cannot create {}: {e}", log_path.display()))?;
+    let log_err = log
+        .try_clone()
+        .map_err(|e| format!("cannot reopen {}: {e}", log_path.display()))?;
+    let ignored: Vec<&str> = feature
+        .iter()
+        .copied()
+        .chain(["--test", "grants", "--", "--ignored", "--test-threads=1"])
+        .collect();
+    let status = ctx
+        .cargo(&ignored)
+        .stdout(log)
+        .stderr(log_err)
+        .status()
+        .map_err(|e| format!("could not start cargo test: {e}"))?;
+    let text = fs::read_to_string(&log_path)
+        .map_err(|e| format!("cannot read {}: {e}", log_path.display()))?;
+    print!("{text}");
+    let ran = executed_count(&text);
+    if !status.success() {
+        return Err(format!(
+            "`cargo {}` exited with {status}",
+            ignored.join(" ")
+        ));
+    }
+    if ran < floor {
+        let message = format!("expected at least {floor} ignored test(s) to execute in the grant store's tests, {ran} executed: a covered test was renamed, deleted or un-ignored");
+        report_error("executed too few tests", &message);
+        return Err(format!(
+            "{ran} of at least {floor} disk-image tests executed"
+        ));
+    }
+    println!("{ran} ignored grant-store test(s) executed and passed (floor {floor})");
+    Ok(())
 }
 
 #[cfg(test)]
