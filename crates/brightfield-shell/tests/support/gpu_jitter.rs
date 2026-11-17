@@ -11,7 +11,7 @@
 //! [`options`], and that count applies on the hosted runner's adapter alone,
 //! found by the name of the default wgpu adapter, which is the one the
 //! headless captures render on. Every other GPU, the reference machine
-//! included, keeps zero.
+//! included, keeps `kittest.toml`'s floor of zero.
 //!
 //! A test that calls `image_snapshot` or `harness.snapshot` directly takes
 //! `kittest.toml`'s floor, the hosted runner included. It moves to [`options`] when a
@@ -45,19 +45,14 @@ pub fn adapter_name() -> &'static str {
     })
 }
 
-/// `pixels` when this process renders on the GPU named `gpu`, and zero on any
-/// other: the value for `SnapshotOptions::failed_pixel_count_threshold`.
-pub fn budget_on(gpu: &str, pixels: usize) -> usize {
-    if adapter_name() == gpu {
-        pixels
-    } else {
-        0
-    }
-}
-
-/// `base` with a failed-pixel budget of `hosted_pixels` on the hosted runner
-/// and zero everywhere else. A test passes the count a hosted run measured for
+/// `base` with a failed-pixel budget of `hosted_pixels` on the hosted runner,
+/// and `base` unchanged everywhere else, so `kittest.toml`'s floor (or a
+/// per-OS table there) applies as it does to a direct `image_snapshot` call. A test passes the count a hosted run measured for
 /// it, and zero when that run matched the baseline exactly.
 pub fn options(base: SnapshotOptions, hosted_pixels: usize) -> SnapshotOptions {
-    base.failed_pixel_count_threshold(budget_on(HOSTED_RUNNER, hosted_pixels))
+    if adapter_name() == HOSTED_RUNNER {
+        base.failed_pixel_count_threshold(hosted_pixels)
+    } else {
+        base
+    }
 }
