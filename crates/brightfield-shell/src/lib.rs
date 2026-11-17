@@ -68,6 +68,8 @@
 //!   records it leaves beside the spec, read back newest first.
 //! - [`open_queue`] — the window's ways in as one queue of requests, and where each path goes:
 //!   a Protocol opened where it is, or a new one made of the data.
+//! - [`beyond_edition`] — the first step of a Protocol this edition cannot run, and why: what
+//!   opens a Protocol restricted in the managed edition, whatever its trust.
 //! - [`grants`] — the folders the analyst granted the managed edition, kept as security-scoped
 //!   bookmarks across launches, with `mac_grants` (built on macOS) making and resolving them.
 //! - `mac_open` (built on macOS) — the Mac's open events, a file from Finder or the Dock and a
@@ -99,6 +101,7 @@
 //!   noticed by mtime poll and surfaced through `Subject::status`.
 
 pub mod app;
+pub mod beyond_edition;
 pub mod brand;
 pub mod canvas;
 pub mod capture;
