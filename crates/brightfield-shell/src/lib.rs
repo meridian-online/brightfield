@@ -68,6 +68,8 @@
 //!   records it leaves beside the spec, read back newest first.
 //! - [`open_queue`] — the window's ways in as one queue of requests, and where each path goes:
 //!   a Protocol opened where it is, or a new one made of the data.
+//! - [`grants`] — the folders the analyst granted the managed edition, kept as security-scoped
+//!   bookmarks across launches, with `mac_grants` (built on macOS) making and resolving them.
 //! - `mac_open` (built on macOS) — the Mac's open events, a file from Finder or the Dock and a
 //!   `brightfield://` link, pushed onto that queue.
 //! - [`own_files`] — the Protocol folder an analyst's own files are written as: a load step
@@ -119,13 +121,19 @@ pub mod file_protocols;
 pub(crate) mod flat_cast;
 pub mod gallery;
 pub mod generated;
+pub mod grants;
 pub mod grid_foot;
 pub mod housing;
 pub mod inspector;
 pub mod interval_drag;
 pub mod legend;
-// The crate's one module that writes `unsafe`: Objective-C messages to the Apple Event manager,
-// the app menu, the open panel and the workspace's default-app call.
+// One of the crate's two modules that write `unsafe`, beside `mac_open`: Foundation's
+// security-scoped bookmark calls behind the grant store.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub mod mac_grants;
+// The other module that writes `unsafe`: Objective-C messages to the Apple Event manager, the app
+// menu, the open panel and the workspace's default-app call.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod mac_open;

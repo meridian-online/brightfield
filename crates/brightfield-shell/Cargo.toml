@@ -177,6 +177,11 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "NSAppleEventDescriptor",
     "NSAppleEventManager",
+    # NSArray, NSData and NSError are what `NSURL`'s security-scoped bookmark methods take and
+    # return, for the grant store (`crate::mac_grants`).
+    "NSArray",
+    "NSData",
+    "NSError",
     "NSNotification",
     "NSObject",
     "NSString",
@@ -220,8 +225,9 @@ path = "src/bin/brightfield-shot.rs"
 name = "bf-imgdiff"
 path = "src/bin/bf-imgdiff.rs"
 
-# The workspace's lints, restated so `unsafe_code` is `deny` rather than `forbid`: the one module
-# that sends Objective-C messages, `mac_open`, allows it, and nothing else in the crate may.
+# The workspace's lints, restated so `unsafe_code` is `deny` rather than `forbid`: the two modules
+# that send Objective-C messages, `mac_open` and `mac_grants`, allow it, and nothing else in the
+# crate may.
 [lints.rust]
 unused_must_use = "warn"
 missing_docs = "allow"
