@@ -15864,7 +15864,15 @@ impl MeridianApp {
     /// its folder, with DuckDB confined to them ([`crate::protocol_panels::load_shipped`]); one
     /// with no panels shows its spine on the canvas. A band over the canvas names where it came
     /// from and offers Trust.
-    fn open_restricted(&mut self, ctx: &egui::Context, dir: &std::path::Path) {
+    ///
+    /// `beyond` is the first step this edition cannot run, as the caller found it, which holds it
+    /// restricted for the edition rather than for its trust.
+    fn open_restricted(
+        &mut self,
+        ctx: &egui::Context,
+        dir: &std::path::Path,
+        beyond: Option<crate::beyond_edition::BeyondEdition>,
+    ) {
         // Spelled as it was given, made absolute, as the other routes hold a Protocol's folder.
         let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
         let spec = dir
@@ -15919,7 +15927,6 @@ impl MeridianApp {
                     .map_or_else(|| dir.display().to_string(), |p| p.display().to_string());
                 format!("a folder Brightfield did not make, in {place}")
             });
-        let beyond = crate::beyond_edition::of_folder(&dir, crate::edition::current());
         self.restricted = Some(Restricted {
             dir: dir.clone(),
             origin,
@@ -16141,7 +16148,7 @@ impl MeridianApp {
             // trusted, since trust does not let that step run.
             let beyond = crate::beyond_edition::of_folder(&dir, crate::edition::current());
             if beyond.is_some() || !store.is_trusted(&dir) {
-                self.open_restricted(ctx, &dir);
+                self.open_restricted(ctx, &dir, beyond);
                 return;
             }
             if let Err(e) = store.follow(&dir) {
