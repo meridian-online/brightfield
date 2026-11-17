@@ -23,9 +23,9 @@ fn full_allows_everything_managed_allows_nothing_on_the_list() {
     }
 }
 
-/// `Capability::ALL` names every capability once. A capability left out of it
-/// would escape the test above; the match fails to compile when a variant is
-/// added, which sends the person adding it here.
+/// `Capability::ALL` names each capability once, as this test holds. A
+/// capability left out of it would escape the test above; the match fails to
+/// compile when a variant is added, which sends the person adding it here.
 #[test]
 fn the_capability_list_is_complete() {
     let listed = |c: Capability| Capability::ALL.iter().filter(|&&a| a == c).count();

@@ -15,8 +15,8 @@
 //! in [`Edition::allows`], not a fork of every call site.
 //!
 //! The editions' names are working names while their final names are chosen.
-//! Every name an analyst may read comes from [`Edition::name`], so a rename
-//! changes this file and nothing else; the variant identifiers are internal.
+//! An edition's name as an analyst reads it comes from [`Edition::name`], so a
+//! rename changes this file and no other; the variant identifiers are internal.
 
 /// An edition of Brightfield.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
