@@ -71,9 +71,21 @@ impl Refusal {
     }
 
     /// The sentence saying how to let Brightfield in, for this edition: grant the folder in the
-    /// managed edition, or allow it in System Settings in the full one.
+    /// managed edition, or allow it in System Settings in the full one. A folder the managed
+    /// edition already holds a grant for was refused by its permissions, which a grant cannot
+    /// lift, so the sentence says to change them.
     #[must_use]
     pub fn remedy(&self) -> String {
+        let folder = self.folder();
+        if !edition::current().allows(Capability::UngrantedPaths)
+            && crate::grants::store().needs(std::slice::from_ref(&folder)).is_empty()
+        {
+            return format!(
+                "Brightfield may read {}, but the system still refused it: change its \
+                 permissions, then open the Protocol again.",
+                folder.display()
+            );
+        }
         if edition::current().allows(Capability::UngrantedPaths) {
             format!(
                 "Allow Brightfield to read {} under System Settings → Privacy & Security → Files \

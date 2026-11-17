@@ -13,7 +13,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::design::Mode;
@@ -80,7 +80,22 @@ fn refusal_is_impossible(dir: &Path) -> bool {
     fs::read_dir(dir.join("models")).is_ok()
 }
 
+/// Points the process's config folder at a scratch folder of this file's, before any window or
+/// grant store is made, so a managed-edition run reads and writes its own grant store rather
+/// than the developer's.
+fn scratch_config() {
+    static DONE: OnceLock<()> = OnceLock::new();
+    DONE.get_or_init(|| {
+        let config = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("refused_access_config_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&config);
+        fs::create_dir_all(&config).expect("a scratch config folder");
+        std::env::set_var(brightfield_shell::startup::CONFIG_DIR_VAR, &config);
+    });
+}
+
 fn window_over(dir: &Path) -> MeridianApp {
+    scratch_config();
     let spec = dir.join("arcform.yaml");
     let inputs = load_protocol_offline(spec.to_str().expect("utf-8 path")).expect("loads");
     MeridianApp::headless(Boot::protocol(inputs, Flow::Vertical, None), Mode::Light)
@@ -387,5 +402,52 @@ fn an_open_asks_once_for_the_refused_folder_in_the_managed_edition() {
         assert!(asked.is_empty(), "the full edition asks nothing: {asked:?}");
     }
     assert_eq!(app.refused().len(), 1, "the banner still names the refusal");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A folder the managed edition already holds a grant for, refused by its permissions, is not
+/// asked for: granting it again cannot lift the refusal. The banner says to change its
+/// permissions instead of to grant it.
+#[test]
+fn a_refused_folder_a_grant_already_covers_is_not_asked_for() {
+    let (dir, guard) = protocol("covered", true, false);
+    if refusal_is_impossible(&dir) {
+        eprintln!("SKIPPED: this process reads a 000 folder (running as root)");
+        return;
+    }
+    scratch_config();
+    if edition::current() == Edition::Managed {
+        brightfield_shell::grants::store()
+            .grant(&dir)
+            .expect("the Protocol's folder is granted");
+    }
+    let asked: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+    let record = Arc::clone(&asked);
+    let mut app =
+        window_over(&dir).asking_grants_with(Box::new(move |folder: &Path, _why: &str| {
+            record
+                .lock()
+                .expect("the record")
+                .push(folder.to_path_buf());
+            None
+        }));
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx);
+    drop(guard);
+
+    assert!(
+        asked.lock().expect("the record").is_empty(),
+        "a covered folder is not asked for"
+    );
+    let body = app
+        .notifications()
+        .iter()
+        .find(|n| n.title == REFUSED_TITLE)
+        .and_then(|n| n.body.clone())
+        .unwrap_or_default();
+    if edition::current() == Edition::Managed {
+        assert!(body.contains("change its permissions"), "{body}");
+        assert!(!body.contains("Grant access"), "{body}");
+    }
     let _ = fs::remove_dir_all(&dir);
 }
