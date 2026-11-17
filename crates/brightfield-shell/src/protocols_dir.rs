@@ -156,19 +156,100 @@ pub fn setting_problem() -> Option<String> {
 
 /// Where new Protocols are made: `$BRIGHTFIELD_PROTOCOLS_DIR`, else the folder chosen in
 /// Preferences, else `~/Documents/Protocols`.
+///
+/// In an edition that reads only granted folders, prefer [`granted_root`], which answers `None`
+/// until the analyst has granted one; this answers the default then, which under App Sandbox is
+/// inside the app's container, so that a caller written for the full edition still has a folder.
 #[must_use]
 pub fn root() -> PathBuf {
+    granted_root().unwrap_or_else(default_root)
+}
+
+/// The Protocols folder new Protocols are made in, when this edition may use one.
+///
+/// `$BRIGHTFIELD_PROTOCOLS_DIR` wins in every edition. Otherwise the full edition always has one:
+/// the folder chosen in Preferences, else `~/Documents/Protocols`. The managed edition has one
+/// only once the analyst has chosen it and the grant store covers it, which the first launch asks
+/// for ([`PROPOSED_NAME`]); until then it answers `None`, and whatever would make a Protocol asks
+/// for the folder first.
+#[must_use]
+pub fn granted_root() -> Option<PathBuf> {
+    use crate::edition::{self, Capability};
     if let Some(dir) = std::env::var_os(PROTOCOLS_DIR_VAR).filter(|v| !v.is_empty()) {
-        return PathBuf::from(dir);
+        return Some(PathBuf::from(dir));
     }
-    if let Some(dir) = setting() {
-        return dir;
+    let chosen = setting();
+    if edition::current().allows(Capability::UngrantedPaths) {
+        return Some(chosen.unwrap_or_else(default_root));
     }
+    chosen.filter(|dir| crate::grants::store().covering(dir).is_some())
+}
+
+/// `~/Documents/Protocols`, the full edition's Protocols folder until another is chosen.
+fn default_root() -> PathBuf {
     // A launch from the Mac's desktop always has a home directory.
     std::env::home_dir()
         .unwrap_or_default()
         .join("Documents")
         .join("Protocols")
+}
+
+/// The name the first launch's panel proposes for the Protocols folder.
+pub const PROPOSED_NAME: &str = "Protocols";
+
+/// The folder the first launch's panel opens on: the analyst's own Documents folder.
+///
+/// Under App Sandbox the home directory the app is given is its container,
+/// `~/Library/Containers/<bundle id>/Data`, whose Documents folder the analyst never sees, so the
+/// home directory the container sits in is used instead ([`home_outside_container`]).
+#[must_use]
+pub fn documents() -> PathBuf {
+    home_outside_container(&std::env::home_dir().unwrap_or_default()).join("Documents")
+}
+
+/// The home directory `home` is, or the one its App Sandbox container sits in when `home` is a
+/// container's `Data` folder (`<home>/Library/Containers/<bundle id>/Data`).
+#[must_use]
+pub fn home_outside_container(home: &Path) -> PathBuf {
+    let parts: Vec<_> = home.components().collect();
+    let n = parts.len();
+    let in_container = n >= 4
+        && parts[n - 1].as_os_str() == "Data"
+        && parts[n - 3].as_os_str() == "Containers"
+        && parts[n - 4].as_os_str() == "Library";
+    if in_container {
+        parts[..n - 4].iter().collect()
+    } else {
+        home.to_path_buf()
+    }
+}
+
+/// **Make `dir` the Protocols folder the first launch asked for**: make the folder if the panel
+/// named a new one, grant it, and keep it in Preferences ([`set_root_saying`]). The managed
+/// edition's [`granted_root`] answers it from then on, this launch and the next.
+///
+/// # Errors
+///
+/// A sentence saying why, as [`set_root_saying`] gives one, or the grant store's reason; the
+/// setting is then left as it was.
+pub fn adopt(dir: &Path) -> Result<Option<String>, String> {
+    std::fs::create_dir_all(dir).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            format!(
+                "Brightfield cannot make {} as the Protocols folder: the system refused it.",
+                dir.display()
+            )
+        } else {
+            format!("{}: {e}", dir.display())
+        }
+    })?;
+    let use_grants = !crate::edition::current().allows(crate::edition::Capability::UngrantedPaths);
+    if use_grants {
+        crate::grants::store()
+            .grant(dir)
+            .map_err(|e| format!("{} could not be granted: {e}", dir.display()))?;
+    }
+    set_root_saying(dir)
 }
 
 /// Make `dir` the Protocols folder in Preferences, after checking Brightfield may write in it:

@@ -2554,6 +2554,20 @@ pub const REFUSED_TITLE: &str = "Brightfield was refused access";
 pub const NEEDS_GRANT_BANNER: &str = "needs-grant";
 /// That banner's title.
 pub const NEEDS_GRANT_TITLE: &str = "Brightfield needs access to a folder";
+
+/// The banner that says the managed edition has no Protocols folder yet, after the analyst
+/// cancelled the panel that asks for it.
+pub const NO_PROTOCOLS_FOLDER_BANNER: &str = "no-protocols-folder";
+
+/// What waits on the panel that asks where the Protocols folder is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProtocolsFolderThen {
+    /// The first launch's ask, from the door: nothing waits on it.
+    Door,
+    /// New Protocol, whose sheet lists the Protocols folder: it opens once the folder is granted.
+    NewProtocol,
+}
+
 /// The banner saying a move or the sources browser's grant waited on another grant ask and was not
 /// carried out.
 pub const GRANT_WAITING_BANNER: &str = "grant-waiting";
@@ -3732,6 +3746,13 @@ pub struct MeridianApp {
     /// What answers a grant ask in place of the panel: a test's stand-in. Without one the panel is
     /// raised, where dialogs are allowed.
     grant_asker: Option<Box<crate::ask_grant::Asker>>,
+    /// What answers the panel that asks where the Protocols folder is, in place of the panel: a
+    /// test's stand-in. Without one the panel is raised, where dialogs are allowed.
+    protocols_asker: Option<Box<crate::ask_grant::ProtocolsAsker>>,
+    /// Whether the door has asked for the Protocols folder this launch: it asks once.
+    protocols_folder_asked: bool,
+    /// The Protocols folder to ask for after the frame, and what waits on it.
+    protocols_folder_ask: Option<ProtocolsFolderThen>,
     /// Whether the open under way is a launch's restore: a grant it needs is reported in the
     /// banner, not asked for.
     grant_report_only: bool,
@@ -4267,6 +4288,9 @@ impl MeridianApp {
             place_move: None,
             grant_ask: None,
             grant_asker: None,
+            protocols_asker: None,
+            protocols_folder_asked: false,
+            protocols_folder_ask: None,
             grant_report_only: false,
             grant_round: None,
             refused: Vec::new(),
@@ -5975,6 +5999,91 @@ impl MeridianApp {
     pub fn asking_grants_with(mut self, asker: Box<crate::ask_grant::Asker>) -> Self {
         self.grant_asker = Some(asker);
         self
+    }
+
+    /// **Answer the panel that asks where the Protocols folder is with `asker`**: a test's
+    /// stand-in, told the folder the panel would open on and the name it would propose, which
+    /// answers the folder named or `None` for a cancel. What it answers is made, granted and kept
+    /// as the Protocols folder, as the panel's answer is.
+    #[must_use]
+    pub fn asking_protocols_folder_with(
+        mut self,
+        asker: Box<crate::ask_grant::ProtocolsAsker>,
+    ) -> Self {
+        self.protocols_asker = Some(asker);
+        self
+    }
+
+    /// Whether this window has someone to answer a panel: a test's stand-in for it, or a person,
+    /// where dialogs are allowed.
+    fn can_ask_protocols_folder(&self) -> bool {
+        self.protocols_asker.is_some() || self.dialogs_allowed
+    }
+
+    /// **Take the Protocols-folder ask this frame left**: raise the panel (or its stand-in) on
+    /// the analyst's Documents folder with [`crate::protocols_dir::PROPOSED_NAME`] proposed, and
+    /// keep the folder named as the Protocols folder. A cancel leaves the door as it is, with a
+    /// banner saying New Protocol asks again; a folder that cannot be made or granted is said in
+    /// the Preferences banner, as Choose… says one.
+    fn answer_protocols_folder_ask(&mut self, ctx: &egui::Context) {
+        let Some(then) = self.protocols_folder_ask.take() else {
+            return;
+        };
+        let on = crate::protocols_dir::documents();
+        let proposed = crate::protocols_dir::PROPOSED_NAME;
+        let named = match self.protocols_asker.as_mut() {
+            Some(asker) => asker(&on, proposed),
+            None if self.dialogs_allowed => {
+                crate::ask_grant::ask_for_protocols_folder(&on, proposed)
+            }
+            None => None,
+        };
+        let Some(dir) = named else {
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(NO_PROTOCOLS_FOLDER_BANNER),
+                    Severity::Info,
+                    "No Protocols folder yet",
+                )
+                .body(
+                    "Brightfield needs a folder to keep new Protocols in. New Protocol asks for \
+                     it again, and Preferences can choose it.",
+                ),
+            );
+            ctx.request_repaint();
+            return;
+        };
+        match crate::protocols_dir::adopt(&dir) {
+            Ok(said) => {
+                self.notifications
+                    .dismiss(NotificationId::new(NO_PROTOCOLS_FOLDER_BANNER));
+                self.notifications
+                    .dismiss(NotificationId::new(PREFERENCES_BANNER));
+                if let Some(said) = said {
+                    self.notifications.raise(
+                        Notification::new(
+                            NotificationId::new(PREFERENCES_BANNER),
+                            Severity::Info,
+                            "The Protocols folder is set",
+                        )
+                        .body(said),
+                    );
+                }
+                self.forget_door_listing();
+                if then == ProtocolsFolderThen::NewProtocol {
+                    self.ask_new_protocol();
+                }
+            }
+            Err(why) => self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(PREFERENCES_BANNER),
+                    Severity::Error,
+                    "The Protocols folder was not set",
+                )
+                .body(why),
+            ),
+        }
+        ctx.request_repaint();
     }
 
     /// **Hold an open back until the folders it needs are granted**: `true` when `folders` is not
@@ -8140,6 +8249,8 @@ impl MeridianApp {
         }
         // An open held back for folders to grant, asked for now the frame is drawn.
         self.answer_grant_ask(&ctx);
+        // The Protocols folder, which the managed edition's first launch and New Protocol ask for.
+        self.answer_protocols_folder_ask(&ctx);
         // A saved Protocol picked off the door. No dialog and no gate: the path
         // came off a row this build already decided it can reopen, so unlike
         // the picker above this runs on every tier.
@@ -13543,8 +13654,16 @@ impl MeridianApp {
 
     /// **New Protocol**: ask where to make it, in a sheet listing the Protocols folder, chosen to
     /// begin with, the groups in it, and Other… for any folder.
+    ///
+    /// In the managed edition before a Protocols folder is granted, the panel asks for it first,
+    /// after the frame, and the sheet opens once it is granted.
     pub fn ask_new_protocol(&mut self) {
-        let root = crate::protocols_dir::root();
+        let Some(root) = crate::protocols_dir::granted_root() else {
+            if self.can_ask_protocols_folder() {
+                self.protocols_folder_ask = Some(ProtocolsFolderThen::NewProtocol);
+            }
+            return;
+        };
         let mut places = vec![NewProtocolPlace::Folder {
             name: NEW_PROTOCOL_ROOT.to_string(),
             dir: root.clone(),
@@ -16795,6 +16914,17 @@ impl MeridianApp {
     ///
     /// [`SavedLayout::recents`]: brightfield_workbench::SavedLayout::recents
     fn front_door_ui(&mut self, ui: &mut egui::Ui, requests: &mut Vec<Request>) {
+        // The managed edition's first launch asks one thing, once: where the Protocols folder is.
+        // A launch with the folder granted, and the full edition, which always has one, ask
+        // nothing.
+        if !self.protocols_folder_asked
+            && self.can_ask_protocols_folder()
+            && crate::protocols_dir::granted_root().is_none()
+        {
+            self.protocols_folder_asked = true;
+            self.protocols_folder_ask = Some(ProtocolsFolderThen::Door);
+            ui.ctx().request_repaint();
+        }
         self.door_cards.clear();
         self.door_card_feet.clear();
         self.door_sections.clear();

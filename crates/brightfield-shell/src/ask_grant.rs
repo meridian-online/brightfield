@@ -52,6 +52,33 @@ pub fn ask_for(folder: &Path, why: &str) -> Option<PathBuf> {
     grant_chosen(&chosen)
 }
 
+/// What stands in for the first launch's panel: called with the folder it opens on and the name
+/// it proposes, it answers the folder the analyst named, which may not exist yet, or `None` when
+/// they cancelled. A window is given one in a test.
+pub type ProtocolsAsker = dyn FnMut(&Path, &str) -> Option<PathBuf>;
+
+/// The sentence the first launch's panel shows.
+pub const WHY_PROTOCOLS: &str =
+    "Choose where Brightfield keeps your Protocols. Save makes the folder there and grants it.";
+
+/// **Ask where the Protocols folder is**: a panel opened on `on` with a folder named `proposed`
+/// filled in, so the common answer is one click, and any other place or name may be chosen.
+/// Answers the folder named, which the caller makes and grants
+/// ([`crate::protocols_dir::adopt`]), or `None` when the analyst cancelled.
+///
+/// It is a save panel because an open panel can only choose a folder that is already there and
+/// cannot propose a name. The system grants what a save panel names, so the folder may be made
+/// there under App Sandbox. Blocks until it is answered, so it is called after a frame.
+#[must_use]
+pub fn ask_for_protocols_folder(on: &Path, proposed: &str) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title(WHY_PROTOCOLS)
+        .set_directory(nearest_folder(on))
+        .set_file_name(proposed)
+        .set_can_create_directories(true)
+        .save_file()
+}
+
 /// Grant `chosen`, which a panel or its stand-in has just handed over: the folder, once the store
 /// has it, or `None` with the reason printed.
 #[must_use]
