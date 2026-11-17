@@ -379,7 +379,15 @@ fn gate_head(pr: u64, paths: &Paths, head: &str, scratch: &Scratch) -> Result<Po
         cargo: "cargo".into(),
         log: None,
     };
-    let engine = steps::pinned_duckdb(&invoking).map_err(fail(Stage::DuckDb))?;
+    let host = steps::host_triple().map_err(fail(Stage::DuckDb))?;
+    let candidate = steps::engine_path(root, std::env::var_os("ARC_DUCKDB_BIN"));
+    let engine = engine_for_tree(
+        &tree.join("scripts/fetch-duckdb-cli.sh"),
+        &host,
+        &candidate,
+        &paths.gate_dir.join("duckdb-cli"),
+    )
+    .map_err(fail(Stage::DuckDb))?;
     let open_analytics = steps::open_analytics(&invoking)
         .and_then(|dir| {
             fs::canonicalize(&dir).map_err(|e| format!("cannot resolve {}: {e}", dir.display()))
@@ -567,6 +575,52 @@ fn run_teed(mut command: Command, log: &Path) -> Result<ExitStatus, String> {
         .map_err(|e| format!("lost the tree's `cargo xtask ci`: {e}"))
 }
 
+/// How long the tree's script may take to download the DuckDB CLI.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The DuckDB CLI the merged tree pins, judged by the tree's own
+/// `fetch-duckdb-cli.sh`, since the tree's `cargo xtask ci` checks the engine
+/// it is handed with that script and a pull request may move the pin. The
+/// invoking checkout's engine (`candidate`) is used when the tree's script
+/// accepts it; then the gate's own copy in `cache`; otherwise the tree's
+/// script fetches its pinned release into `cache`, checking its hashes.
+fn engine_for_tree(
+    script: &Path,
+    host: &str,
+    candidate: &Path,
+    cache: &Path,
+) -> Result<PathBuf, String> {
+    let accepts = |dir: &Path| {
+        output_within(
+            script,
+            &["--check", host, &dir.to_string_lossy()],
+            CALL_TIMEOUT,
+        )
+        .is_ok()
+    };
+    if candidate.file_name().is_some_and(|name| name == "duckdb") {
+        if let Some(dir) = candidate.parent() {
+            if accepts(dir) {
+                return Ok(candidate.to_path_buf());
+            }
+        }
+    }
+    if accepts(cache) {
+        return Ok(cache.join("duckdb"));
+    }
+    fs::create_dir_all(cache).map_err(|e| format!("cannot create {}: {e}", cache.display()))?;
+    output_within(script, &[host, &cache.to_string_lossy()], FETCH_TIMEOUT)
+        .map_err(|e| format!("could not fetch the DuckDB CLI the branch pins: {e}"))?;
+    if accepts(cache) {
+        Ok(cache.join("duckdb"))
+    } else {
+        Err(format!(
+            "the DuckDB CLI fetched into {} is not the one the branch pins",
+            cache.display()
+        ))
+    }
+}
+
 /// Post the `local-gate` status on `sha` with `gh`, which runs with this
 /// process's own HOME and so its own credentials. A post happens under the
 /// gate lock, so it is held to `CALL_TIMEOUT` like the gate's other calls
@@ -739,9 +793,14 @@ fn read_one_backstop(workflow: &str) -> Result<Backstop, String> {
 
 /// Run kata in brightfield's project.
 fn kata(args: &[&str]) -> Result<String, String> {
+    kata_with(OsStr::new("kata"), args)
+}
+
+/// [`kata`] through `program`, so a test can stand a shim in for it.
+fn kata_with(program: &OsStr, args: &[&str]) -> Result<String, String> {
     let mut all = args.to_vec();
     all.extend(["--project", "brightfield"]);
-    output_of("kata", &all)
+    output_of(program, &all)
 }
 
 /// Run kata for its effect, printing a failure and carrying on.
@@ -755,7 +814,11 @@ fn kata_or_say(args: &[&str]) {
 
 /// The short id of the open `main-red` issue, if there is one.
 fn open_red_issue() -> Result<Option<String>, String> {
-    let json = kata(&["list", "--label", RED_LABEL, "--json"])?;
+    open_red_issue_with(OsStr::new("kata"))
+}
+
+fn open_red_issue_with(program: &OsStr) -> Result<Option<String>, String> {
+    let json = kata_with(program, &["list", "--label", RED_LABEL, "--json"])?;
     let doc: Value =
         serde_json::from_str(&json).map_err(|e| format!("`kata list` is not JSON: {e}"))?;
     Ok(doc
@@ -855,7 +918,16 @@ fn note_red(reds: &[Backstop]) {
 }
 
 fn note_green(sha: &str) {
-    let issue = match open_red_issue() {
+    note_green_with(OsStr::new("kata"), sha);
+}
+
+/// Close the open `main-red` issue with `sha`, the commit both workflows went
+/// green on, as its evidence: kata refuses a done close without evidence. The
+/// green note rides on the close as its `--comment`, which kata posts only once
+/// the close succeeds, so a refused close leaves no note to repeat on the next
+/// gate's run.
+fn note_green_with(program: &OsStr, sha: &str) {
+    let issue = match open_red_issue_with(program) {
         Ok(Some(issue)) => issue,
         Ok(None) => return,
         Err(e) => {
@@ -866,21 +938,30 @@ fn note_green(sha: &str) {
         }
     };
     let sha7: String = sha.chars().take(7).collect();
-    kata_or_say(&[
-        "comment",
-        &issue,
-        "--body",
-        &format!("main is green at {sha7}"),
-        "--agent",
-    ]);
-    kata_or_say(&[
-        "close",
-        &issue,
-        "--done",
-        "--message",
-        &format!("main's test and lint workflows are green again on one commit, {sha7}, as the gate read them"),
-        "--agent",
-    ]);
+    let message = format!(
+        "main's test and lint workflows are green again on one commit, {sha7}, as the gate read them"
+    );
+    let note = format!("main is green at {sha7}");
+    let closed = kata_with(
+        program,
+        &[
+            "close",
+            &issue,
+            "--done",
+            "--message",
+            &message,
+            "--commit",
+            sha,
+            "--comment",
+            &note,
+            "--agent",
+        ],
+    );
+    if let Err(e) = closed {
+        say(&format!(
+            "the issue tracker call failed, and the gate carries on: {e}"
+        ));
+    }
 }
 
 /// GitHub caps a commit status description at 140 characters.
@@ -1400,6 +1481,87 @@ mod tests {
         let error = post_status(gh.as_os_str(), "abc123", "success", "passed").unwrap_err();
         assert!(error.contains("not posted"), "{error}");
         assert!(error.contains("Bad credentials"), "{error}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A stand-in for the tree's `fetch-duckdb-cli.sh` whose pin is `pin`:
+    /// `--check` accepts a directory whose `duckdb` holds that text, and a
+    /// fetch writes it, logging each fetch.
+    fn fetch_script(dir: &Path, pin: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("fetch-duckdb-cli.sh");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = --check ]; then [ \"$(cat \"$3/duckdb\" 2>/dev/null)\" = {pin} ]; exit $?; fi\necho fetched >> '{}'\nprintf {pin} > \"$2/duckdb\"\necho \"$2/duckdb\"\n",
+                dir.join("fetches").display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    #[test]
+    fn the_engine_is_judged_by_the_trees_pin_and_fetched_once_when_it_moves() {
+        let dir = scratch("engine");
+        let invoking = dir.join("invoking");
+        fs::create_dir_all(&invoking).unwrap();
+        fs::write(invoking.join("duckdb"), "v1").unwrap();
+        let cache = dir.join("cache");
+
+        // The branch keeps main's pin: the invoking checkout's engine serves.
+        let same = fetch_script(&dir, "v1");
+        let engine = engine_for_tree(&same, "host", &invoking.join("duckdb"), &cache).unwrap();
+        assert_eq!(engine, invoking.join("duckdb"));
+        assert!(!dir.join("fetches").exists());
+
+        // The branch moves the pin: the tree's script fetches into the cache,
+        // once, and a second gate on the same pin reuses that copy.
+        let moved = fetch_script(&dir, "v2");
+        for _ in 0..2 {
+            let engine = engine_for_tree(&moved, "host", &invoking.join("duckdb"), &cache).unwrap();
+            assert_eq!(engine, cache.join("duckdb"));
+        }
+        let fetches = fs::read_to_string(dir.join("fetches")).unwrap();
+        assert_eq!(fetches.lines().count(), 1, "{fetches}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A kata that answers `list` with one open issue, logs every call, and
+    /// refuses a done close without evidence, as the real one does.
+    fn strict_kata(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let kata = dir.join("kata");
+        let log = dir.join("calls");
+        fs::write(
+            &kata,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$1\" in\n  list) echo '{{\"issues\":[{{\"short_id\":\"red1\"}}]}}' ;;\n  close) case \"$*\" in *--commit*) ;; *) echo 'evidence required for reason=done' >&2; exit 3 ;; esac ;;\nesac\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&kata, fs::Permissions::from_mode(0o755)).unwrap();
+        kata
+    }
+
+    #[test]
+    fn a_green_main_closes_the_red_issue_with_its_commit_and_notes_it_once() {
+        let dir = scratch("green-close");
+        let kata = strict_kata(&dir);
+        note_green_with(kata.as_os_str(), "abc1234def");
+        let calls = fs::read_to_string(dir.join("calls")).unwrap();
+        let lines: Vec<&str> = calls.lines().collect();
+        assert_eq!(lines.len(), 2, "{calls}");
+        assert!(lines[0].starts_with("list "), "{calls}");
+        assert!(lines[1].starts_with("close red1 --done"), "{calls}");
+        assert!(lines[1].contains("--commit abc1234def"), "{calls}");
+        assert!(
+            lines[1].contains("--comment main is green at abc1234"),
+            "{calls}"
+        );
+        assert!(!calls.contains("\ncomment "), "{calls}");
         fs::remove_dir_all(&dir).unwrap();
     }
 

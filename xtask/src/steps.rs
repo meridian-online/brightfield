@@ -467,7 +467,7 @@ fn selection(ctx: &Ctx) -> Result<shard::Selection, String> {
 /// Where the DuckDB CLI is: `set`, ARC_DUCKDB_BIN's value, read against
 /// `root` when relative, or `target/duckdb-cli/duckdb` under `root` when it is
 /// unset or empty. Always absolute when `root` is.
-fn engine_path(root: &Path, set: Option<OsString>) -> PathBuf {
+pub(crate) fn engine_path(root: &Path, set: Option<OsString>) -> PathBuf {
     match set {
         Some(path) if !path.is_empty() => root.join(path),
         _ => root.join("target/duckdb-cli/duckdb"),
@@ -501,7 +501,7 @@ pub(crate) fn pinned_duckdb(ctx: &Ctx) -> Result<PathBuf, String> {
     }
 }
 
-fn host_triple() -> Result<String, String> {
+pub(crate) fn host_triple() -> Result<String, String> {
     let output = Command::new("rustc")
         .arg("-vV")
         .output()
