@@ -38,7 +38,7 @@ A full `cargo xtask ci` runs `warm-cache` as a local step, which builds every te
 
 Running them together surfaced two tests that shared files across processes: five shell test targets pointed brightfield's config directory at one `CARGO_TARGET_TMPDIR/config`, which every test target of the crate shares, and one target removed a data file there that another target, in the other group, could be opening. Each target now uses a config folder named after it. A test that writes outside a folder of its own will race under the gate.
 
-The first full run, from a cold target directory, took 37 minutes: 14 minutes 29 seconds for `test-one-thread` and 24 minutes 19 seconds for `test-default`, overlapping.
+The first passing gate run, in November 2026 with two other sessions building Rust on the machine, took 1 hour 4 minutes: 2 minutes 21 seconds for `warm-cache`, then 16 minutes 17 seconds for `test-one-thread` and 57 minutes 18 seconds for `test-default`, overlapping.
 
 ## Pixel baselines
 
