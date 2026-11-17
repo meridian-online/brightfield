@@ -327,16 +327,28 @@ fn removed_from_child(key: &str) -> bool {
             | "CARGO_ENCODED_RUSTDOCFLAGS"
             | "RUSTC_WRAPPER"
             | "RUSTC_WORKSPACE_WRAPPER"
-            | "CC"
-            | "CXX"
-            | "CFLAGS"
-            | "CXXFLAGS"
-            | "CPPFLAGS"
-            | "LDFLAGS"
             | "MACOSX_DEPLOYMENT_TARGET"
-    ) || (key.starts_with("CARGO_BUILD_") && key != "CARGO_BUILD_JOBS")
+    ) || is_compiler_variable(key)
+        || (key.starts_with("CARGO_BUILD_") && key != "CARGO_BUILD_JOBS")
         || (key.starts_with("CARGO_TARGET_") && key != "CARGO_TARGET_DIR")
         || key.starts_with("CARGO_PROFILE_")
+}
+
+/// The C and C++ compiler and flag variables the `cc` crate reads, in each
+/// form it reads them: plain, `HOST_` or `TARGET_` prefixed, and suffixed with
+/// a target triple (`CXXFLAGS_aarch64_apple_darwin`, `CC_aarch64-apple-darwin`).
+fn is_compiler_variable(key: &str) -> bool {
+    const BASES: [&str; 7] = [
+        "CC", "CXX", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "AR",
+    ];
+    let bare = key
+        .strip_prefix("HOST_")
+        .or_else(|| key.strip_prefix("TARGET_"))
+        .unwrap_or(key);
+    BASES.iter().any(|base| {
+        bare.strip_prefix(base)
+            .is_some_and(|rest| rest.is_empty() || (bare == key && rest.starts_with('_')))
+    })
 }
 
 /// Build the tree to test, run its gate, and say what to post.
@@ -1688,6 +1700,10 @@ mod tests {
             "CXXFLAGS",
             "CC",
             "MACOSX_DEPLOYMENT_TARGET",
+            "HOST_CXXFLAGS",
+            "TARGET_CC",
+            "CXXFLAGS_aarch64_apple_darwin",
+            "CC_aarch64-apple-darwin",
         ] {
             assert!(removed_from_child(key), "{key} should not reach the run");
         }
@@ -1706,6 +1722,8 @@ mod tests {
             "RUST_TEST_THREADS",
             "HOME",
             "CARGO_TARGET_DIR",
+            "ARC_DUCKDB_BIN",
+            "CCACHE_DIR",
         ] {
             assert!(!removed_from_child(key), "{key} should reach the run");
         }
