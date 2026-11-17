@@ -5914,6 +5914,9 @@ impl MeridianApp {
         let Some(ask) = self.grant_ask.take() else {
             return;
         };
+        // What waited on this ask may be tried again now, whatever its answer.
+        self.notifications
+            .dismiss(NotificationId::new(GRANT_WAITING_BANNER));
         let mut granted: Vec<PathBuf> = Vec::new();
         for folder in &ask.folders {
             match self.ask_one_grant(folder, &(ask.why)(folder)) {
@@ -9572,16 +9575,17 @@ impl MeridianApp {
                 // An ask already standing is answered first, and this one says it waits. With
                 // none standing, the panel is asked for as the analyst asked, with no banner,
                 // since nothing was held back.
-                let standing = self.grant_ask.is_some();
-                self.hold_for_grants(
-                    ctx,
-                    vec![home],
-                    |_| crate::ask_grant::WHY_BROWSE.to_string(),
-                    GrantThen::Browse,
-                );
-                if !standing {
-                    self.notifications
-                        .dismiss(NotificationId::new(NEEDS_GRANT_BANNER));
+                let why: fn(&std::path::Path) -> String =
+                    |_| crate::ask_grant::WHY_BROWSE.to_string();
+                if self.grant_ask.is_some() {
+                    self.hold_for_grants(ctx, vec![home], why, GrantThen::Browse);
+                } else {
+                    self.grant_ask = Some(GrantAsk {
+                        folders: vec![home],
+                        why,
+                        then: GrantThen::Browse,
+                    });
+                    ctx.request_repaint();
                 }
             }
             _ => {}
