@@ -250,7 +250,7 @@ impl Grants {
 
     /// Why `path` is out of reach though a grant names it: its drive is not mounted, or, with the
     /// drive back, the grant no longer resolves (`an_unmounted_volume_is_reported_not_dropped`).
-    /// `None` when a grant covers it, or none names it.
+    /// `None` when a grant covers it, and when it lies outside the grants.
     #[must_use]
     pub fn unreachable(&self, path: &Path) -> Option<GrantError> {
         if self.covering(path).is_some() {
