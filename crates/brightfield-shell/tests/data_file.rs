@@ -2061,3 +2061,71 @@ fn an_open_that_fetches_an_extension_waits_for_a_frame_after_the_notice() {
     win.run(vec![Vec::new()]);
     assert_eq!(win.app.pending_open(), None, "the next frame runs the open");
 }
+
+/// The column names the grid drew in its last frame, read off the band the
+/// table laid out, with the table's own row count.
+fn grid_columns(app: &MeridianApp) -> (Vec<String>, u64) {
+    let drawn = app
+        .chart_doc()
+        .grid_drawn()
+        .expect("the grid pane laid a table out");
+    let names = drawn.band.iter().map(|cell| cell.name.clone()).collect();
+    (names, drawn.rows)
+}
+
+/// **A file opened after another draws its own columns on the first frame
+/// after it opens**, and never the previous file's.
+///
+/// The open reads the file, profiles its columns and attaches its session in
+/// one call on the UI thread, so there is no frame in which the window holds
+/// the new file and the grid has not yet read it: the frame after the open is
+/// the one this test reads, before any second frame could paper over a stale
+/// first one. The two tables share no column name and differ in width and
+/// length, so a grid serving the first file's rows under the second shows up
+/// in the names, the count of columns and the count of rows alike.
+#[test]
+fn a_file_opened_after_another_draws_its_own_columns_on_its_first_frame() {
+    let dir = TempDir::new("second-file-columns");
+    let first = dir.write(
+        "housing.csv",
+        "median_income,house_age\n1,10\n2,20\n3,30\n4,40\n5,50\n",
+    );
+    let second = dir.write(
+        "earthquakes.csv",
+        "depth,station,felt\n35,7,120\n10,3,48\n610,9,0\n",
+    );
+
+    let boot = Boot::data_file(&first.to_string_lossy())
+        .unwrap_or_else(|e| panic!("open {}: {e}", first.display()));
+    let mut win = Window {
+        app: MeridianApp::headless(boot, Mode::Light),
+        ctx: egui::Context::default(),
+        screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+    };
+    win.run(vec![Vec::new(), Vec::new(), Vec::new()]);
+    assert_eq!(
+        grid_columns(&win.app),
+        (
+            vec!["median_income".to_string(), "house_age".to_string()],
+            5
+        ),
+        "the grid drew the first file"
+    );
+
+    let ctx = win.ctx.clone();
+    win.app.open_data_file(&ctx, &second.to_string_lossy());
+    win.run(vec![Vec::new()]);
+    assert_eq!(
+        grid_columns(&win.app),
+        (
+            vec![
+                "depth".to_string(),
+                "station".to_string(),
+                "felt".to_string()
+            ],
+            3
+        ),
+        "the first frame after the second file opened drew the first file's \
+         columns or rows under it"
+    );
+}
