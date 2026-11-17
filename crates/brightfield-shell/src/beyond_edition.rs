@@ -1,10 +1,10 @@
 //! Which step of a Protocol, if any, this edition of Brightfield cannot run.
 //!
-//! The managed edition runs arc's own operators and the DuckDB extensions built into the app, and
-//! nothing else ([`crate::edition`]). A Protocol with a step outside that opens restricted, as an
-//! untrusted one does, and its band names the first such step, the reason, and where the full
-//! edition is. Trust does not lift this restriction; only the full edition does, so
-//! [`crate::trust::refuses_run`] refuses a run of such a Protocol however it is trusted.
+//! The managed edition runs arc's own operators and the DuckDB extensions built into the app
+//! ([`crate::edition`]). A Protocol with a step outside that opens restricted, as an untrusted one
+//! does, and its band names the first such step, the reason, and where the full edition is. Trust
+//! does not lift this restriction, so [`crate::trust::refuses_run`] refuses a run of such a
+//! Protocol however it is trusted (`trust_does_not_lift_the_edition_restriction`).
 //!
 //! A step is beyond the managed edition when it is:
 //!
@@ -104,7 +104,7 @@ pub fn beyond_edition(dir: &Path, manifest: &Manifest, edition: Edition) -> Opti
     every_step_beyond(dir, manifest, edition).into_iter().next()
 }
 
-/// Every step of `manifest`, a Protocol in `dir`, that `edition` cannot run, in the order
+/// The steps of `manifest`, a Protocol in `dir`, that `edition` cannot run, in the order
 /// [`beyond_edition`] asks about them, each with the first reason found for it.
 #[must_use]
 pub fn every_step_beyond(dir: &Path, manifest: &Manifest, edition: Edition) -> Vec<BeyondEdition> {
