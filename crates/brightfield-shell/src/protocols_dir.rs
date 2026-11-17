@@ -180,7 +180,7 @@ pub fn granted_root() -> Option<PathBuf> {
 
 /// [`root`] for a caller that asks on each frame it draws, such as the door's tree: it does not
 /// try again a grant that did not open, so a folder on a drive that is not plugged in is not
-/// resolved again on every frame. [`granted_root`], asked by whatever acts on the folder,
+/// resolved again as each frame is drawn. [`granted_root`], asked by whatever acts on the folder,
 /// tries it again.
 #[must_use]
 pub fn root_now() -> PathBuf {
