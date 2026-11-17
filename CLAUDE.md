@@ -16,11 +16,15 @@ Feature cards, specs, and decisions for Brightfield are tracked centrally, outsi
 
 ## The gate
 
-`cargo xtask ci` is the one gate, and CI runs it on each push to a pull request; a merge waits on it being green. It runs, in order, the steps a pull request's checks run, stops at the first that fails, and ends with a summary naming each step, its wall time, and the steps the failure skipped. CI's jobs call the same steps by name, so a green run here is a claim about the set CI runs. `cargo xtask ci --list` names the steps, and `cargo xtask ci --step <name>` re-runs one of them.
+`cargo xtask ci` is the one list of checks. It runs the steps in order, test-one-thread and test-default side by side, stops at the first that fails, and ends with a summary naming each step, its wall time, and the steps the failure skipped. `cargo xtask ci --list` names the steps, and `cargo xtask ci --step <name>` re-runs one of them. The workflow files call the same steps by name, and the `workflow-coverage` step keeps the two lists one list.
+
+A pull request's gate is `cargo xtask gate <pr>`, on the Mac Studio. It merges the pull request's head with `main` in a clean worktree, runs that tree's own `cargo xtask ci` in an isolated environment, and posts the verdict as the `local-gate` commit status on the head, which Forge shows beside GitHub's checks. A merge waits on a green `local-gate` and a closed roborev branch review. Start the gate as soon as the branch is pushed, without waiting for roborev, and run it again after each fix round, since a new head has no status until the gate runs on it. One gate runs on the machine at a time, and it is its session's one cargo build while it runs. A run from a cold target directory took 37 minutes in November 2026; `docs/pull-request-gate.md` says how it works and why.
+
+Hosted CI's `test` and `lint` no longer run on pull requests. They run on each merge to `main`, nightly and on demand (`gh workflow run test.yml --ref <branch>`), as the backstop for what only GitHub's runner sees. Each gate reads their latest runs on `main` first, and a red one is flagged on the `main-red` Kata issue and fixed forward, with no revert. `license`, `public-hygiene`, and the packaging workflows filtered to their paths still run on pull requests.
 
 Before each commit, run `cargo xtask ci --step fmt` and `--step clippy`, and the tests the change touches. After each commit, run `--step comment-citations`. It reads the branch's commits rather than the staged work and checks the claims in changed comments at `HEAD`, so a bad comment is caught before the branch is pushed.
 
-Run the full `cargo xtask ci` locally to reproduce a CI failure, not before each push. In October 2026 a full local run took between 4 and 55 minutes on a 16 GB Mac and a single-threaded run of the whole test suite over an hour, while CI's sharded run of the same steps took about 25 minutes. Quote test totals in a pull request from its CI run.
+Pixel baselines are drawn on the Mac Studio's Apple M5 Max, which holds every snapshot to `kittest.toml`'s floor. The hosted runner's paravirtual GPU is allowed the per-test failed-pixel counts its runs measured (`crates/brightfield-shell/tests/support/gpu_jitter.rs`). Never redraw a baseline from a hosted run's output.
 
 A full run needs the pinned toolchain, `cargo-deny`, `python3`, a clone of `open-analytics` beside this checkout, and the pinned DuckDB CLI in `target/duckdb-cli`. A step missing one of them stops and says what to install or where to put it.
 
