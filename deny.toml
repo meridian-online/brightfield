@@ -150,7 +150,8 @@ ignore = [
   "RUSTSEC-2026-0435",
   # chrono 0.4.44, chrono-tz 0.10.4 and humantime 2.4.0 — unmaintained-crate
   # NOTICES, not vulnerabilities, published together when chrono's maintainers
-  # stopped; humantime is flagged because it wraps chrono. No safe upgrade
+  # stopped; the humantime advisory says it wraps chrono, though the humantime
+  # in Cargo.lock depends on nothing, so here it is chrono's notice only. No safe upgrade
   # exists for any of them. This workspace uses chrono directly (brightfield-
   # protocol, brightfield-shell and brightfield-bench), arrow and duckdb-rs reach
   # chrono and chrono-tz through arrow-array, and humantime arrives with
