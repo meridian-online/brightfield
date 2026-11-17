@@ -18,7 +18,7 @@
 //! files ([`with_protocol_tables`]), so no chart's session touches the
 //! `.duckdb` file either.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use arc::spec::{PanelFinding, MANIFEST_FILENAME};
@@ -57,6 +57,9 @@ pub struct ProtocolPanels {
     pub tiles: Vec<PanelTile>,
     /// The Parquet snapshot the tiles read, removed when this drops.
     tables: tempfile::TempDir,
+    /// The tables the snapshot could not copy, by their names in lower case, with what stopped
+    /// each: a panel reading one holds that as its problem, and the other panels draw.
+    skipped: BTreeMap<String, String>,
     /// Whether the tiles are composed with DuckDB confined to the snapshot, as a Protocol nobody
     /// has trusted is drawn ([`load_shipped`]).
     pub confined: bool,
@@ -89,6 +92,7 @@ impl ProtocolPanels {
                     &tile.source,
                     &self.dir,
                     &tables,
+                    &self.skipped,
                     viewport,
                     mode,
                     self.confined,
@@ -123,6 +127,7 @@ impl ProtocolPanels {
             source,
             &self.dir,
             self.tables.path(),
+            &self.skipped,
             viewport,
             mode,
             self.confined,
@@ -152,6 +157,9 @@ impl ProtocolPanels {
             .tiles
             .get(index)
             .ok_or_else(|| format!("the Protocol has no panel {index}"))?;
+        if let Some(problem) = unreadable_table(&tile.source, &self.skipped) {
+            return Err(problem.message());
+        }
         let text = with_protocol_tables(&tile.source, self.tables.path())?;
         let parsed = brightfield_spec::parse_spec(&text, brightfield_spec::Format::Yaml)
             .map_err(|e| format!("parse error: {e}"))?;
@@ -203,6 +211,14 @@ pub enum PanelProblem {
     },
     /// The panel uses components Brightfield does not draw, by their wire names.
     Unsupported(Vec<String>),
+    /// A table the panel reads is in the database but could not be copied out of it for
+    /// drawing, such as one holding a type Parquet cannot store.
+    UnreadableTable {
+        /// The table, as the panel names it.
+        from: String,
+        /// What stopped the copy, in DuckDB's words.
+        reason: String,
+    },
     /// Anything else the composition refused, in its own words.
     Failed(String),
 }
@@ -227,6 +243,9 @@ impl PanelProblem {
             .to_string(),
             Self::Unsupported(names) => {
                 format!("Brightfield does not draw {} yet", names.join(", "))
+            }
+            Self::UnreadableTable { from, reason } => {
+                format!("the table {from} could not be read from the Protocol's database: {reason}")
             }
             Self::Failed(reason) => reason.clone(),
         }
@@ -383,7 +402,7 @@ pub fn load(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenProblem> {
                 "could not make a folder for the panels' tables: {e}"
             ))
         })?;
-    snapshot_tables(&db, &wanted, tables.path(), false)?;
+    let skipped = snapshot_tables(&db, &wanted, tables.path(), false)?;
     let run_id = arc::spec::run_tables(dir, None).ok().map(|run| run.run_id);
 
     let tiles = checked
@@ -398,6 +417,7 @@ pub fn load(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenProblem> {
                     &source,
                     dir,
                     tables.path(),
+                    &skipped,
                     viewport,
                     Mode::Light,
                     false,
@@ -425,6 +445,7 @@ pub fn load(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenProblem> {
         run_id,
         tiles,
         tables,
+        skipped,
         confined: false,
     })
 }
@@ -474,7 +495,7 @@ pub fn load_shipped(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenPr
                 "could not make a folder for the panels' tables: {e}"
             ))
         })?;
-    snapshot_tables(&db, &wanted, tables.path(), true)?;
+    let skipped = snapshot_tables(&db, &wanted, tables.path(), true)?;
     let run_id = arc::spec::run_tables(dir, None).ok().map(|run| run.run_id);
     let tiles = paths
         .iter()
@@ -488,6 +509,7 @@ pub fn load_shipped(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenPr
                 &source,
                 dir,
                 tables.path(),
+                &skipped,
                 viewport,
                 Mode::Light,
                 true,
@@ -508,6 +530,7 @@ pub fn load_shipped(dir: &Path, viewport: Rect) -> Result<ProtocolPanels, OpenPr
         run_id,
         tiles,
         tables,
+        skipped,
         confined: true,
     })
 }
@@ -700,10 +723,14 @@ fn compose_tile(
     source: &str,
     dir: &Path,
     tables_dir: &Path,
+    skipped: &BTreeMap<String, String>,
     viewport: Rect,
     mode: Mode,
     confined: bool,
 ) -> Result<(Composed, NoteBand), PanelProblem> {
+    if let Some(problem) = unreadable_table(source, skipped) {
+        return Err(problem);
+    }
     // Spelled as the system spells it, so the folder DuckDB is confined to and the files the
     // panel is given are one path.
     let tables_dir = &tables_dir
@@ -747,6 +774,15 @@ fn compose_tile(
         return Ok((composed, notes));
     }
     Ok((composed, notes))
+}
+
+/// The problem of the first table `source` reads from the database that the snapshot could not
+/// copy, by `skipped`, which [`snapshot_tables`] answers.
+fn unreadable_table(source: &str, skipped: &BTreeMap<String, String>) -> Option<PanelProblem> {
+    protocol_tables(source).into_iter().find_map(|from| {
+        let reason = skipped.get(&from.to_lowercase())?.clone();
+        Some(PanelProblem::UnreadableTable { from, reason })
+    })
 }
 
 /// Every `panels/*.yaml` file of the Protocol in `dir`, sorted: the files arc's
@@ -828,12 +864,15 @@ pub(crate) fn sql_string(text: &str) -> String {
 /// `confined`, DuckDB may touch the database and `out` alone, with external
 /// access, autoload and autoinstall off, so a view in the database that reads
 /// another file or the network fails instead of running.
+///
+/// A table that cannot be copied, or cannot be written to Parquet, is left out of `out`, and
+/// answered with what stopped it, by its name in lower case, so only the panels reading it fail.
 fn snapshot_tables(
     db: &Path,
     wanted: &BTreeSet<String>,
     out: &Path,
     confined: bool,
-) -> Result<(), OpenProblem> {
+) -> Result<BTreeMap<String, String>, OpenProblem> {
     let failed = |what: &str, e: duckdb::Error| {
         OpenProblem::Arc(format!(
             "could not read the Protocol's database {}: {what}: {e}",
@@ -883,23 +922,30 @@ fn snapshot_tables(
     let detached = conn
         .execute_batch(&format!("DETACH {}", quote(ATTACHED)))
         .map_err(|e| failed("detaching it", e));
-    let copied = copied?;
+    let (copied, mut skipped) = copied?;
     detached?;
 
     for table in copied {
         let file = out.join(parquet_name(&table));
-        conn.execute_batch(&format!(
+        if let Err(e) = conn.execute_batch(&format!(
             "COPY {} TO {} (FORMAT parquet)",
             quote(&table),
             sql_string(&file.to_string_lossy())
-        ))
-        .map_err(|e| failed("writing its tables to Parquet", e))?;
+        )) {
+            // A write that failed part way leaves no file a panel could half read.
+            let _ = std::fs::remove_file(&file);
+            skipped.insert(
+                table,
+                format!("writing it to Parquet: {}", first_line(&e.to_string())),
+            );
+        }
     }
-    Ok(())
+    Ok(skipped)
 }
 
 /// Copy each wanted table the attached database holds into the in-memory one,
-/// once per name in lower case, and answer the lower-cased names copied.
+/// once per name in lower case, and answer the lower-cased names copied, and
+/// those whose copy failed with what stopped it.
 ///
 /// A name resolves as arc's check resolves it, ignoring case: `schema.table`
 /// exactly, and a bare name as `main.name`, else the first schema holding it.
@@ -908,7 +954,7 @@ fn snapshot_tables(
 fn copy_attached(
     conn: &duckdb::Connection,
     wanted: &BTreeSet<String>,
-) -> Result<Vec<String>, duckdb::Error> {
+) -> Result<(Vec<String>, BTreeMap<String, String>), duckdb::Error> {
     let mut stmt = conn.prepare(
         "SELECT table_schema, table_name FROM information_schema.tables \
          WHERE table_catalog = ? ORDER BY table_schema, table_name",
@@ -917,9 +963,10 @@ fn copy_attached(
         .query_map([ATTACHED], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<Result<_, _>>()?;
     let mut copied: Vec<String> = Vec::new();
+    let mut skipped = BTreeMap::new();
     for name in wanted {
         let lowered = name.to_lowercase();
-        if copied.contains(&lowered) {
+        if copied.contains(&lowered) || skipped.contains_key(&lowered) {
             continue;
         }
         let found = match lowered.split_once('.') {
@@ -934,16 +981,23 @@ fn copy_attached(
         let Some((schema, table)) = found else {
             continue;
         };
-        conn.execute_batch(&format!(
+        match conn.execute_batch(&format!(
             "CREATE TABLE {} AS SELECT * FROM {}.{}.{}",
             quote(&lowered),
             quote(ATTACHED),
             quote(schema),
             quote(table)
-        ))?;
-        copied.push(lowered);
+        )) {
+            Ok(()) => copied.push(lowered),
+            Err(e) => {
+                skipped.insert(
+                    lowered,
+                    format!("copying it: {}", first_line(&e.to_string())),
+                );
+            }
+        }
     }
-    Ok(copied)
+    Ok((copied, skipped))
 }
 
 /// The problem arc's panel check of the Protocol in `dir` failing with `error`

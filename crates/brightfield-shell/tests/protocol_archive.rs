@@ -1518,11 +1518,28 @@ fn restricted_drawing_reads_only_shipped_results() {
     let panels = brightfield_shell::protocol_panels::load_shipped(
         &dir,
         brightfield_shell::panel_tiles::viewport(egui::vec2(480.0, 320.0)),
-    );
-    // The view's copy is refused as the snapshot is taken, so nothing opens from the database.
-    let problem = panels.err().map(|p| p.message()).unwrap_or_default();
+    )
+    .expect("a table the snapshot refuses stops only the panels reading it");
+    // The view's copy is refused as the snapshot is taken: its panel says so, and the others
+    // draw.
+    let tile = |file: &str| {
+        panels
+            .tiles
+            .iter()
+            .find(|t| t.file == Path::new(file))
+            .unwrap_or_else(|| panic!("no tile for {file}"))
+    };
+    assert!(tile("panels/overview.yaml").outcome.is_ok());
+    let problem = match &tile("panels/via_view.yaml").outcome {
+        Err(problems) => problems
+            .iter()
+            .map(brightfield_shell::protocol_panels::PanelProblem::message)
+            .collect::<Vec<_>>()
+            .join("; "),
+        Ok(_) => String::new(),
+    };
     assert!(
-        problem.contains("disabled by configuration"),
+        problem.contains("leaked") && problem.contains("disabled by configuration"),
         "the view's read of an outside file is refused: {problem}"
     );
 
@@ -1585,6 +1602,68 @@ fn restricted_drawing_reads_only_shipped_results() {
         &[dir.join("build")],
     );
     assert!(confined.is_err(), "a remote read is refused too");
+}
+
+/// One table the snapshot cannot write to Parquet stops only the panels that read it, whether
+/// the Protocol is drawn trusted or restricted. The table here has a name whose Parquet file name
+/// is longer than a file system allows, so its write fails at the step a type Parquet cannot
+/// hold fails at.
+#[test]
+fn a_table_parquet_cannot_hold_stops_only_its_own_panels() {
+    use brightfield_shell::protocol_panels::{load, load_shipped, PanelProblem, ProtocolPanels};
+
+    let dir = input("unwritable").join("unwritable");
+    shipped_protocol(&dir, "unwritable");
+    // Each `é` is two bytes, and each byte is three in the file name.
+    let long = "é".repeat(100);
+    {
+        let conn = duckdb::Connection::open(dir.join("build/unwritable.duckdb")).unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE \"{long}\" AS SELECT * FROM measures"
+        ))
+        .unwrap();
+    }
+    std::fs::write(
+        dir.join("panels/unwritable.yaml"),
+        measures_panel().replace("from: measures", &format!("from: \"{long}\"")),
+    )
+    .unwrap();
+
+    let viewport = brightfield_shell::panel_tiles::viewport(egui::vec2(480.0, 320.0));
+    let check = |panels: &ProtocolPanels, how: &str| {
+        let outcome = |file: &str| {
+            &panels
+                .tiles
+                .iter()
+                .find(|t| t.file == Path::new(file))
+                .unwrap_or_else(|| panic!("no tile for {file}"))
+                .outcome
+        };
+        assert!(
+            outcome("panels/overview.yaml").is_ok(),
+            "{how}: the panel over a table that wrote draws"
+        );
+        let Err(problems) = outcome("panels/unwritable.yaml") else {
+            panic!("{how}: the panel over the unwritable table drew");
+        };
+        assert!(
+            matches!(&problems[..], [PanelProblem::UnreadableTable { from, .. }] if *from == long),
+            "{how}: {problems:?}"
+        );
+        assert!(
+            problems[0].message().contains("Parquet"),
+            "{how}: {}",
+            problems[0].message()
+        );
+    };
+
+    let mut trusted = load(&dir, viewport).unwrap_or_else(|p| panic!("{}", p.message()));
+    check(&trusted, "trusted");
+    // Composing again at another size keeps the table's problem rather than a missing file's.
+    trusted.compose_tiles_at(viewport, Mode::Dark);
+    check(&trusted, "trusted, composed again");
+    let restricted = load_shipped(&dir, viewport).unwrap_or_else(|p| panic!("{}", p.message()));
+    check(&restricted, "restricted");
 }
 
 /// A Protocol archive chosen on this Mac unpacks on a worker, as a link's archive does: frames
