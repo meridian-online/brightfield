@@ -4686,8 +4686,8 @@ impl MeridianApp {
     }
 
     /// **Raise the refused-access banner over the open Protocol's refused model reads**, or take
-    /// it down when there are none. Called wherever [`Self::say_folder_refused`] is, so it follows
-    /// every document swap. In the managed edition each refused folder is also asked for once,
+    /// it down when there are none. Called beside [`Self::say_folder_refused`], so it follows the
+    /// document swaps that one does. In the managed edition each refused folder is also asked for once,
     /// after the frame, and the Protocol opened again when it is granted; a launch's restore only
     /// reports. In the full edition the banner names System Settings, since a grant there is not
     /// Brightfield's to make.
@@ -4727,7 +4727,7 @@ impl MeridianApp {
         });
     }
 
-    /// The refused-access banner over [`Self::refused`], or none when it is empty.
+    /// The refused-access banner over [`Self::refused`], dismissed when it is empty.
     fn raise_refused(&mut self) {
         let banner = NotificationId::new(REFUSED_BANNER);
         let Some(first) = self.refused.first() else {
@@ -11731,7 +11731,7 @@ impl MeridianApp {
     /// run to report, and reporting one would be the shell computing what the
     /// engine is the thing that computes.
     ///
-    /// While a refusal stands it is never [`RunState::Fresh`]: the Protocol is drawn without what
+    /// While a refusal stands it is not [`RunState::Fresh`]: the Protocol is drawn without what
     /// was refused, so it is not shown as complete, and a record that says fresh is shown as
     /// [`RunState::Failed`] until the refusal is lifted.
     fn recorded_run_state(&self) -> RunState {

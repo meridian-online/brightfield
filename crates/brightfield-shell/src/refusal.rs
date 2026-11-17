@@ -4,7 +4,7 @@
 //! A refusal reaches Brightfield in two shapes. The protocol graph classes a model file it could
 //! not open as unreadable ([`brightfield_protocol::Degradation::ModelUnreadable`]), and
 //! [`refusals_in_graph`] reads those back. A child that was refused (arc, DuckDB's CLI, dovetail)
-//! says so only in its own text, and [`refusal_in_engine_text`] finds the path in it.
+//! says so in its own text, and [`refusal_in_engine_text`] finds the path in it.
 //!
 //! Both editions report a refusal: in the managed edition it is usually a folder no grant covers,
 //! and in the full edition macOS's privacy controls refuse reads too. [`Refusal::remedy`] says
