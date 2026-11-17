@@ -166,9 +166,10 @@ fn the_headless_path_exits_3_on_a_refused_model() {
         err.contains("degraded step tier: unreadable: "),
         "the stderr detector line is unchanged: {err}"
     );
-    assert!(
-        err.contains("refused access: "),
-        "and the refused path is named: {err}"
+    assert_eq!(
+        err.matches("refused access: ").count(),
+        1,
+        "and the refused path is named once: {err}"
     );
     let _ = fs::remove_dir_all(&dir);
 }
