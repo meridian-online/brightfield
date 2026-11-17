@@ -97,9 +97,10 @@
 //! ([`brightfield_shell::refusal::EXIT_REFUSED`]), after the PNG is written and
 //! with one `refused access:` line per path, because that render is the
 //! Protocol drawn without its models while looking finished, and a check that
-//! reads only the exit code must not pass it. The refusal is the reader's to
-//! fix, not the Protocol's author's, which is why it alone is spent on the
-//! exit.
+//! reads the exit code must not pass it. The refusal is the reader's to
+//! fix, not the Protocol's author's, which is why it is spent on the exit
+//! (`the_headless_path_exits_3_on_a_refused_model` and
+//! `an_absent_model_still_exits_0` in `tests/refused_access.rs`).
 //!
 //! `--gallery` renders one design-gallery component solo through the same
 //! deterministic capture path — an agent that just changed a primitive can
