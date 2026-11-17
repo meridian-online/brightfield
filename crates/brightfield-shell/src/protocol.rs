@@ -256,6 +256,14 @@ impl ProtocolInputs {
             .collect()
     }
 
+    /// The model reads the system refused, read off the same full graph as
+    /// [`Self::degrade_report`]: what makes `brightfield-shot` exit
+    /// [`crate::refusal::EXIT_REFUSED`].
+    #[must_use]
+    pub fn refusals(&self) -> Vec<crate::refusal::Refusal> {
+        crate::refusal::refusals_in_graph(&self.graph_full)
+    }
+
     /// Name `table` as the relation an engine session holds, and give it the
     /// node of the dashboard Brightfield generates for it.
     ///
@@ -2521,6 +2529,13 @@ impl ProtocolModel {
     #[must_use]
     pub fn folder_refused(&self) -> Option<&str> {
         self.folder_refused.as_deref()
+    }
+
+    /// The model reads the system refused, off the full graph, so a refusal inside a folded
+    /// family is still found. See [`crate::refusal::refusals_in_graph`].
+    #[must_use]
+    pub fn refusals(&self) -> Vec<crate::refusal::Refusal> {
+        crate::refusal::refusals_in_graph(&self.graph_full)
     }
 
     /// The node of the table the step `name` makes, found by its label in the
