@@ -69,6 +69,10 @@ jobs:
         with:
           path: ~/.cache/vcpkg/archives
           key: duckdb-managed-${{ hashFiles('scripts/build-duckdb.sh', 'scripts/duckdb-managed/**', 'packaging/finetype-pin.env') }}
+          # vcpkg's archives are keyed by each port's ABI hash, so an older
+          # entry is safe to restore: vcpkg uses what still matches and builds
+          # the rest.
+          restore-keys: duckdb-managed-
 
       - name: build the managed edition's DuckDB and check it
         run: cargo xtask ci --step duckdb-managed

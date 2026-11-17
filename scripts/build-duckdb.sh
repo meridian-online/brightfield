@@ -151,6 +151,9 @@ PY
 # whose configuration says APPLY_PATCHES gets them applied, as commits, when its
 # source is cloned. The names start brightfield- so they sort after, and never
 # replace, any patch DuckDB ships for the same extension.
+# Copies from an earlier build are removed first, so the directory holds exactly
+# the patches scripts/duckdb-managed/patches/ holds now; DuckDB's own are kept.
+rm -f "${SRC}"/.github/patches/extensions/*/brightfield-*.patch
 for patch_dir in "${CONFIG_DIR}"/patches/*/; do
   ext=$(basename "$patch_dir")
   mkdir -p "${SRC}/.github/patches/extensions/${ext}"
@@ -186,10 +189,15 @@ tag_commit=$(git ls-remote "$FINETYPE_URL" "refs/tags/${FINETYPE_TAG}^{}" "refs/
 say "building FineType ${FINETYPE_TAG} as a static library"
 # crates/finetype-duckdb declares crate-type cdylib, the loadable extension;
 # `cargo rustc --crate-type staticlib` builds the same crate as an archive
-# instead, with nothing in FineType's own files changed.
+# instead, with nothing in FineType's own files changed. It builds with the
+# toolchain FineType's own rust-toolchain.toml pins, the one FineType is tested
+# on: run from `cargo xtask`, this script inherits rustup's RUSTUP_TOOLCHAIN for
+# Brightfield's toolchain, which would take precedence over FineType's file, so
+# it and the variables that name a cargo or rustc are cleared here.
 (
   cd "$FINETYPE_SRC"
-  MACOSX_DEPLOYMENT_TARGET=11.0 cargo rustc -p finetype_duckdb --release --locked \
+  env -u RUSTUP_TOOLCHAIN -u CARGO -u RUSTC -u RUSTDOC -u RUSTC_WRAPPER \
+    MACOSX_DEPLOYMENT_TARGET=11.0 cargo rustc -p finetype_duckdb --release --locked \
     -j "$JOBS" --crate-type staticlib >&2
 )
 FINETYPE_LIB="${FINETYPE_SRC}/target/release/libfinetype.a"
