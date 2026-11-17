@@ -53,6 +53,23 @@ impl Refusal {
             .map_or_else(|| self.path.clone(), Path::to_path_buf)
     }
 
+    /// What the banner says of this refusal: what was refused, what it cost, and the remedy.
+    /// Only a model read is drawn without; a refusal during a run or a write stopped it.
+    #[must_use]
+    pub fn sentence(&self) -> String {
+        let path = self.path.display();
+        match self.during {
+            RefusedDuring::ModelRead | RefusedDuring::SourceRead => format!(
+                "The system refused {path}, so the Protocol is drawn without it. {}",
+                self.remedy()
+            ),
+            RefusedDuring::Run | RefusedDuring::Write => format!(
+                "The system refused {path}, so the run could not finish. {}",
+                self.remedy()
+            ),
+        }
+    }
+
     /// The sentence saying how to let Brightfield in, for this edition: grant the folder in the
     /// managed edition, or allow it in System Settings in the full one.
     #[must_use]
@@ -65,7 +82,7 @@ impl Refusal {
             )
         } else {
             format!(
-                "Grant access to {} to draw it in full.",
+                "Grant access to {}, then try again.",
                 self.folder().display()
             )
         }
@@ -211,6 +228,20 @@ mod tests {
             unreadable_path("absent: /p/models/t.sql: No such file"),
             None
         );
+    }
+
+    #[test]
+    fn a_refusal_during_a_run_says_the_run_stopped_not_that_the_drawing_lacks_it() {
+        let run = Refusal {
+            path: PathBuf::from("/p/out"),
+            during: RefusedDuring::Run,
+        };
+        assert!(run.sentence().contains("the run could not finish"));
+        let read = Refusal {
+            during: RefusedDuring::ModelRead,
+            ..run
+        };
+        assert!(read.sentence().contains("drawn without it"));
     }
 
     #[test]

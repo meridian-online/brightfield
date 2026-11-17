@@ -4693,6 +4693,9 @@ impl MeridianApp {
     /// Brightfield's to make.
     fn say_refused(&mut self) {
         self.refused = self.protocol.doc.model.refusals();
+        for refusal in &self.refused {
+            eprintln!("refused access: {}", refusal.path.display());
+        }
         self.raise_refused();
         let asks = !crate::edition::current().allows(crate::edition::Capability::UngrantedPaths);
         if !asks || self.grant_report_only || self.grant_ask.is_some() {
@@ -4727,28 +4730,40 @@ impl MeridianApp {
         });
     }
 
+    /// Note a refusal the failed run `finished` reports in its log, and raise the banner over it.
+    /// Called on each way a run of the open Protocol lands: a graph, panel tiles or a shipped
+    /// start.
+    fn note_run_refusal(&mut self, finished: &crate::run::Finished) {
+        if finished.succeeded {
+            return;
+        }
+        let Some(path) = crate::refusal::refusal_in_engine_text(&finished.log) else {
+            return;
+        };
+        if self.refused.iter().all(|r| r.path != path) {
+            eprintln!("refused access: {}", path.display());
+            self.refused.push(crate::refusal::Refusal {
+                path,
+                during: crate::refusal::RefusedDuring::Run,
+            });
+        }
+        self.raise_refused();
+    }
+
     /// The refused-access banner over [`Self::refused`], dismissed when it is empty.
     fn raise_refused(&mut self) {
         let banner = NotificationId::new(REFUSED_BANNER);
-        let Some(first) = self.refused.first() else {
+        if self.refused.is_empty() {
             self.notifications.dismiss(banner);
             return;
-        };
-        let named: Vec<String> = self
+        }
+        let body: Vec<String> = self
             .refused
             .iter()
-            .map(|r| r.path.display().to_string())
+            .map(crate::refusal::Refusal::sentence)
             .collect();
-        for path in &named {
-            eprintln!("refused access: {path}");
-        }
-        self.notifications.raise(
-            Notification::new(banner, Severity::Error, REFUSED_TITLE).body(format!(
-                "The system refused {}, so the Protocol is drawn without it. {}",
-                named.join(" and "),
-                first.remedy()
-            )),
-        );
+        self.notifications
+            .raise(Notification::new(banner, Severity::Error, REFUSED_TITLE).body(body.join(" ")));
     }
 
     /// The paths the system refused this window, as the refused-access banner names them.
@@ -11741,7 +11756,8 @@ impl MeridianApp {
         }
     }
 
-    /// The run state this window shows for its Protocol: [`Self::recorded_run_state`].
+    /// The run state this window records for its Protocol's Recents row, which is where a
+    /// Protocol is shown as fresh: [`Self::recorded_run_state`].
     #[must_use]
     pub fn shown_run_state(&self) -> RunState {
         self.recorded_run_state()
@@ -16072,6 +16088,7 @@ impl MeridianApp {
             }
             return;
         }
+        self.note_run_refusal(&finished);
         if let Some(landing) = landing {
             self.land_shipped_run(ctx, landing, &finished);
             ctx.request_repaint();
@@ -16141,17 +16158,9 @@ impl MeridianApp {
                 format!("Ran {protocol} \u{b7} {word}"),
             ));
         }
-        if !finished.succeeded {
-            if let Some(path) = crate::refusal::refusal_in_engine_text(&finished.log) {
-                if self.refused.iter().all(|r| r.path != path) {
-                    self.refused.push(crate::refusal::Refusal {
-                        path,
-                        during: crate::refusal::RefusedDuring::Run,
-                    });
-                }
-                self.raise_refused();
-            }
-        }
+        // The Protocol was laid out again above, which read its refused models afresh, so the
+        // run's own refusal is noted again on top of them.
+        self.note_run_refusal(&finished);
         self.protocol.doc.model.set_run_log(finished.log);
         ctx.request_repaint();
     }

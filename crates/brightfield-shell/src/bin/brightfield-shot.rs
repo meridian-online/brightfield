@@ -233,9 +233,7 @@ fn main() -> ExitCode {
     if !wrote || refusals.is_empty() {
         return code;
     }
-    for refusal in &refusals {
-        eprintln!("refused access: {}", refusal.path.display());
-    }
+    // The window the capture drew printed one `refused access:` line per path as it opened.
     ExitCode::from(brightfield_shell::refusal::EXIT_REFUSED)
 }
 
