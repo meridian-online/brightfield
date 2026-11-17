@@ -5821,6 +5821,19 @@ impl MeridianApp {
         if folders.is_empty() {
             return false;
         }
+        // One ask at a time, and the banner names the folders the panel asks for. A request held
+        // while another ask stands waits behind it with the opens held for the close question, and
+        // is checked again once the ask is answered.
+        if self.grant_ask.is_some() && !self.grant_report_only {
+            match then {
+                GrantThen::Request(request) => self.held_for_question.push(request),
+                _ => eprintln!(
+                    "warning: an open waited on a grant while another was being asked for, and was \
+                     not carried out; ask for it again"
+                ),
+            }
+            return true;
+        }
         let named: Vec<String> = folders.iter().map(|f| f.display().to_string()).collect();
         self.notifications.raise(
             Notification::new(
@@ -5837,9 +5850,7 @@ impl MeridianApp {
             Some(asked) => folders.into_iter().filter(|f| !asked.contains(f)).collect(),
             None => folders,
         };
-        // One ask at a time: the queue waits behind it, so a second is seldom raised before the
-        // first is answered, and when one is, the first stands.
-        if !self.grant_report_only && !to_ask.is_empty() && self.grant_ask.is_none() {
+        if !self.grant_report_only && !to_ask.is_empty() {
             self.grant_ask = Some(GrantAsk {
                 folders: to_ask,
                 why,
