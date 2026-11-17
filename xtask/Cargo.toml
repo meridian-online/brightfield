@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "The repository's gate as one command: `cargo xtask ci` runs what a pull request's checks run, in order, and CI's jobs call its steps by name."
+description = "The repository's gate as one command: `cargo xtask ci` runs what CI's checks run, in order, `cargo xtask gate` runs it on each pull request, and CI's jobs call its steps by name."
 
 [dependencies]
 # Read for one thing: the test targets in `cargo metadata`, which decide how

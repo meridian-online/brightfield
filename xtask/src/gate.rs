@@ -305,8 +305,10 @@ struct Paths<'a> {
 
 /// True for a variable the gate's run must not inherit: one that points the
 /// run back into the real HOME, or picks the toolchain over the tree's own
-/// file, or changes what is built (build, per-target and profile settings),
-/// so the verdict is CI's. `CARGO_BUILD_JOBS` stays, since it caps the
+/// file, or changes what is built (build, per-target and profile settings, and
+/// the C and C++ compilers and flags the `cc` builds read, since a `CXXFLAGS`
+/// here would override the DuckDB version define in `.cargo/config.toml`), so
+/// the verdict is CI's. `CARGO_BUILD_JOBS` stays, since it caps the
 /// machine's build slots and changes no output, and `CARGO_TARGET_DIR` is the
 /// gate's own.
 fn removed_from_child(key: &str) -> bool {
@@ -325,6 +327,13 @@ fn removed_from_child(key: &str) -> bool {
             | "CARGO_ENCODED_RUSTDOCFLAGS"
             | "RUSTC_WRAPPER"
             | "RUSTC_WORKSPACE_WRAPPER"
+            | "CC"
+            | "CXX"
+            | "CFLAGS"
+            | "CXXFLAGS"
+            | "CPPFLAGS"
+            | "LDFLAGS"
+            | "MACOSX_DEPLOYMENT_TARGET"
     ) || (key.starts_with("CARGO_BUILD_") && key != "CARGO_BUILD_JOBS")
         || (key.starts_with("CARGO_TARGET_") && key != "CARGO_TARGET_DIR")
         || key.starts_with("CARGO_PROFILE_")
@@ -1514,6 +1523,9 @@ mod tests {
             "CARGO_BUILD_RUSTFLAGS",
             "RUSTUP_TOOLCHAIN",
             "XDG_CONFIG_HOME",
+            "CXXFLAGS",
+            "CC",
+            "MACOSX_DEPLOYMENT_TARGET",
         ] {
             assert!(removed_from_child(key), "{key} should not reach the run");
         }
