@@ -2,7 +2,17 @@
 # Assemble a FineType bundle from the FineType release and the model registry.
 #
 #   scripts/fetch-finetype-bundle.sh RUST_TARGET DEST_DIR
+#   scripts/fetch-finetype-bundle.sh --cli RUST_TARGET DEST_FILE
 #   scripts/fetch-finetype-bundle.sh --print-tag
+#
+# `--cli` fetches FineType's command line instead, the `finetype` binary arc
+# runs for its `finetype` operator, which the sandboxed Store build carries at
+# `Contents/Helpers/finetype` because it cannot run one the analyst installed.
+# It is the release's `finetype-<tag>-<target>.tar.gz`, checked against its
+# published `.sha256` like every other release asset here, and it must hold
+# that one binary and nothing else. The binary is then run for its version,
+# which must be the pinned tag's, so `--cli` fetches only for a target this
+# machine can run. It needs no model: the binary carries its own.
 #
 # Input: the pin (scripts/finetype-pin.sh, reading packaging/finetype-pin.env)
 # and a Rust target triple. Output: a directory of the shape
@@ -69,8 +79,14 @@ if [ "${1:-}" = "--print-tag" ]; then
   exit 0
 fi
 
-TARGET="${1:?usage: scripts/fetch-finetype-bundle.sh RUST_TARGET DEST_DIR}"
-DEST="${2:?usage: scripts/fetch-finetype-bundle.sh RUST_TARGET DEST_DIR}"
+CLI=0
+if [ "${1:-}" = "--cli" ]; then
+  CLI=1
+  shift
+fi
+
+TARGET="${1:?usage: scripts/fetch-finetype-bundle.sh [--cli] RUST_TARGET DEST}"
+DEST="${2:?usage: scripts/fetch-finetype-bundle.sh [--cli] RUST_TARGET DEST}"
 
 REVISION=$("${HERE}/finetype-pin.sh" --revision)
 
@@ -90,7 +106,11 @@ command -v python3 >/dev/null 2>&1 || fail "python3 is required to read the rele
 case "$DEST" in
   ""|"/") fail "refusing to use '${DEST}' as a bundle directory" ;;
 esac
-[ ! -e "$DEST" ] || [ -d "$DEST" ] || fail "${DEST} exists and is not a directory"
+if [ "$CLI" = 1 ]; then
+  [ ! -d "$DEST" ] || fail "${DEST} is a directory; --cli writes the binary to a file path"
+else
+  [ ! -e "$DEST" ] || [ -d "$DEST" ] || fail "${DEST} exists and is not a directory"
+fi
 rm -rf "$DEST"
 
 # The three release assets, named once. Only the extension is per-target.
@@ -141,6 +161,41 @@ get() {
 
   echo "   ${asset}  ${actual}"
 }
+
+# THE COMMAND LINE. One archive, one binary, the pinned version, and the
+# destination written only once all three hold — the same order as the bundle.
+if [ "$CLI" = 1 ]; then
+  CLI_ASSET="finetype-${TAG}-${TARGET}.tar.gz"
+  echo "== release: FineType ${TAG} command line for ${TARGET}"
+  echo "   from ${RELEASE_BASE}"
+  get "$CLI_ASSET"
+
+  # The archive's listing is read before anything is unpacked, so an entry
+  # with a path that climbs out of the working directory is never written.
+  entries=$(tar -tzf "${WORK}/${CLI_ASSET}") || fail "${CLI_ASSET} is not a gzipped tar archive"
+  [ "$entries" = "finetype" ] || fail "${CLI_ASSET} holds more than the finetype binary:
+$(printf '%s\n' "$entries" | sed 's/^/     /')"
+  mkdir "${WORK}/cli"
+  tar -xzf "${WORK}/${CLI_ASSET}" -C "${WORK}/cli" finetype \
+    || fail "${CLI_ASSET} did not unpack"
+  [ -f "${WORK}/cli/finetype" ] && [ ! -L "${WORK}/cli/finetype" ] \
+    || fail "${CLI_ASSET}'s finetype is not a regular file"
+  chmod 755 "${WORK}/cli/finetype"
+
+  # arc reads the version the same way (`finetype --version`, last word of the
+  # first line) and refuses an old one, so this is the answer arc will get.
+  version=$("${WORK}/cli/finetype" --version 2>&1 | head -1 | awk '{print $NF}') \
+    || fail "the fetched finetype did not run; --cli fetches only for a target this machine runs"
+  [ "v${version#v}" = "$TAG" ] || fail "the fetched finetype reports '${version}' while the \
+pin declares '${TAG}'"
+
+  mkdir -p "$(dirname "$DEST")"
+  cp "${WORK}/cli/finetype" "$DEST"
+  chmod 755 "$DEST"
+  echo "== command line: ${DEST}"
+  echo "   FineType ${TAG}, ${TARGET}"
+  exit 0
+fi
 
 echo "== release: FineType ${TAG} for ${TARGET}"
 echo "   from ${RELEASE_BASE}"

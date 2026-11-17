@@ -1,0 +1,16 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 778726b..51dde2f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -64,6 +64,11 @@ if(SPATIAL_USE_GEOS)
+   message(STATUS "Building with GEOS functionality")
+   find_package(GEOS REQUIRED)
+   set(EXTENSION_DEPENDENCIES ${EXTENSION_DEPENDENCIES} GEOS::geos_c)
++  # Brightfield: src/spatial/util/math.cpp calls geos_d2sfixed_buffered_n,
++  # which is in GEOS's C++ library, not its C API. Linked statically, geos_c's
++  # archive brought it along; with GEOS as a shared library, as Brightfield's
++  # managed edition builds it for the LGPL, the C++ library is linked as well.
++  set(EXTENSION_DEPENDENCIES ${EXTENSION_DEPENDENCIES} GEOS::geos)
+   add_definitions(-DSPATIAL_USE_GEOS=1)
+ endif()
+ 

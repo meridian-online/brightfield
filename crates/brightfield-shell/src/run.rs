@@ -95,6 +95,25 @@ pub fn staged_engine_beside(program: &Path) -> Option<PathBuf> {
     .find(|candidate| candidate.is_file())
 }
 
+/// The environment variable arc reads for FineType's command line, which its
+/// `finetype` operator and its profiling run: `finetype_bin` in arc's private
+/// `finetype_cli` module, so the name is spelled here. Unset, arc runs
+/// `finetype` from the search path.
+pub const FINETYPE_ENV: &str = "FINETYPE_BIN";
+
+/// The `finetype` helper an app bundle carries, when there is one.
+///
+/// Only the app layout, `Contents/Helpers/finetype` beside `Contents/MacOS/`:
+/// the sandboxed Store build carries it because it cannot run a `finetype` the
+/// analyst installed, and the full edition carries none and keeps arc's search
+/// of the path. `None` when it is not a file
+/// (`without_a_bundled_finetype_the_child_keeps_what_it_inherits`).
+#[must_use]
+pub fn staged_finetype_beside(program: &Path) -> Option<PathBuf> {
+    let candidate = program.parent()?.join("../Helpers/finetype");
+    candidate.is_file().then_some(candidate)
+}
+
 /// The query both DuckDBs answer for `--check-engine`: the release and the
 /// commit it was built from, so two builds of one version string still differ.
 pub const ENGINE_VERSION_QUERY: &str = "SELECT library_version, source_id FROM pragma_version()";
@@ -538,7 +557,8 @@ impl Run {
 
 /// The child that is `arc` run with `args` in `dir`: this binary under
 /// [`RUNNER_ENV`], colour off, no stdin, its history recorded under the way
-/// `brightfield`, and the staged engine when one sits beside `program`.
+/// `brightfield`, and the staged engine and `finetype` helper when they sit
+/// beside `program`.
 fn arc_command(program: &Path, dir: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(program);
     command
@@ -550,6 +570,9 @@ fn arc_command(program: &Path, dir: &Path, args: &[&str]) -> Command {
         .stdin(Stdio::null());
     if let Some(engine) = staged_engine_beside(program) {
         command.env(ENGINE_ENV, engine);
+    }
+    if let Some(finetype) = staged_finetype_beside(program) {
+        command.env(FINETYPE_ENV, finetype);
     }
     command
 }

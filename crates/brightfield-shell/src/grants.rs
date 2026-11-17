@@ -289,18 +289,29 @@ impl Grants {
 
     /// The folders still to grant before `paths` can be read: for each path no grant covers, the
     /// path itself when it is a folder and the folder it is in otherwise, each named once. Always
-    /// empty in an edition that reads ungranted paths.
+    /// empty in an edition that reads ungranted paths. Nothing in the Downloads folder is named,
+    /// since the managed edition's entitlements let it read and write there without a grant
+    /// (`downloads_needs_no_grant`).
     #[must_use]
     pub fn needs(&self, paths: &[PathBuf]) -> Vec<PathBuf> {
         if edition::current().allows(Capability::UngrantedPaths) {
             return Vec::new();
         }
+        let downloads = std::env::home_dir().map(|h| canonical(&h.join("Downloads")));
+        self.needs_beside(paths, downloads.as_deref())
+    }
+
+    /// [`Grants::needs`] with `downloads` the folder read without a grant, whatever the edition.
+    fn needs_beside(&self, paths: &[PathBuf], downloads: Option<&Path>) -> Vec<PathBuf> {
         let mut asked: Vec<PathBuf> = Vec::new();
         for path in paths {
             if self.covering(path).is_some() {
                 continue;
             }
             let path = canonical(path);
+            if downloads.is_some_and(|d| path.starts_with(d)) {
+                continue;
+            }
             let folder = if path.is_dir() {
                 path
             } else {
@@ -338,6 +349,18 @@ impl Grants {
     #[must_use]
     pub fn held(&self) -> Vec<PathBuf> {
         self.lock().holds.keys().cloned().collect()
+    }
+
+    /// The granted folders access is started on now, in the order they were granted; a grant on
+    /// a file alone is not listed.
+    #[must_use]
+    pub fn folders(&self) -> Vec<PathBuf> {
+        self.lock()
+            .entries
+            .iter()
+            .filter(|e| e.open && e.path.is_dir())
+            .map(|e| e.path.clone())
+            .collect()
     }
 
     /// What the load found it could not reach, and why.
@@ -596,6 +619,24 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn downloads_needs_no_grant() {
+        let root = std::env::temp_dir().join(format!("bf-grants-downloads-{}", std::process::id()));
+        let downloads = root.join("Downloads");
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&downloads).expect("a Downloads folder");
+        std::fs::create_dir_all(&elsewhere).expect("another folder");
+        let downloads = canonical(&downloads);
+        let elsewhere = canonical(&elsewhere);
+        let grants = Grants::in_memory();
+        let asked = grants.needs_beside(
+            &[downloads.join("a.csv"), elsewhere.join("b.csv")],
+            Some(&downloads),
+        );
+        assert_eq!(asked, vec![elsewhere]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn hex_round_trips() {

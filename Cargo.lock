@@ -897,6 +897,7 @@ dependencies = [
  "brightfield-sql",
  "calamine",
  "duckdb",
+ "libduckdb-sys",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
@@ -1010,6 +1011,7 @@ dependencies = [
  "egui_tiles",
  "image",
  "kurbo",
+ "libduckdb-sys",
  "meridian-design",
  "meridian-egui",
  "objc2 0.6.4",
@@ -4247,8 +4249,6 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 [[package]]
 name = "libduckdb-sys"
 version = "1.20000.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac1dcdcfde48e11bbd46112ed3b0423acd8c644413b3891e7be8104edce7fdda"
 dependencies = [
  "cc",
  "flate2",

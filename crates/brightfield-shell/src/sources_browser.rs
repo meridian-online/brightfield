@@ -199,14 +199,37 @@ impl Place {
             path: path.into(),
         }
     }
+
+    /// The "Grant a folder…" entry the managed edition's places end with: it goes nowhere, and
+    /// choosing it opens the panel to grant a folder ([`Effect::GrantFolder`]).
+    #[must_use]
+    pub fn grant_entry() -> Self {
+        Self::new(GRANT_A_FOLDER, PathBuf::new())
+    }
+
+    /// Whether this is the [`Place::grant_entry`], which names no folder.
+    #[must_use]
+    pub fn is_grant_entry(&self) -> bool {
+        self.path.as_os_str().is_empty()
+    }
 }
+
+/// The label of the places' last entry in the managed edition, which asks for a folder to grant.
+pub const GRANT_A_FOLDER: &str = "Grant a folder…";
 
 /// The places the browser offers on this Mac: the home folder, its Desktop, Documents and
 /// Downloads, the Protocols folder, and each volume mounted under `/Volumes` (a removable disk
 /// among them), leaving out a folder that is not there.
+///
+/// In the managed edition the places are the granted folders and Downloads instead, with
+/// "Grant a folder…" last ([`granted_places`]), so a folder there is one the browser can list
+/// (`the_sources_browser_lists_granted_places_and_downloads`).
 #[must_use]
 pub fn places() -> Vec<Place> {
     let home = std::env::home_dir().unwrap_or_default();
+    if !crate::edition::current().allows(crate::edition::Capability::UngrantedPaths) {
+        return granted_places(&crate::grants::store().folders(), &home.join("Downloads"));
+    }
     let mut places = vec![Place::new("Home", home.clone())];
     for name in ["Desktop", "Documents", "Downloads"] {
         places.push(Place::new(name, home.join(name)));
@@ -229,6 +252,30 @@ pub fn places() -> Vec<Place> {
     }
     let mut seen = BTreeSet::new();
     places.retain(|p| p.path.is_dir() && seen.insert(p.path.clone()));
+    places
+}
+
+/// The managed edition's places: each of `granted`, named by its folder's name, then
+/// `downloads`, which the edition's entitlements let it read without a grant
+/// ([`crate::grants::Grants::needs`] names nothing there), leaving out a folder that is not there
+/// or is listed already, and [`Place::grant_entry`] last
+/// (`the_sources_browser_lists_granted_places_and_downloads`).
+#[must_use]
+pub fn granted_places(granted: &[PathBuf], downloads: &Path) -> Vec<Place> {
+    let mut places: Vec<Place> = granted
+        .iter()
+        .map(|folder| {
+            let label = folder.file_name().map_or_else(
+                || folder.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            Place::new(label, folder.clone())
+        })
+        .collect();
+    places.push(Place::new("Downloads", downloads));
+    let mut seen = BTreeSet::new();
+    places.retain(|p| p.path.is_dir() && seen.insert(p.path.clone()));
+    places.push(Place::grant_entry());
     places
 }
 
@@ -272,6 +319,9 @@ pub enum Effect {
     Add(Vec<PathBuf>, Vec<AcceptedJoin>),
     /// Close the browser, adding nothing more.
     Close,
+    /// Open the panel to grant a folder, then show it among the places: the managed edition's
+    /// "Grant a folder…" was chosen.
+    GrantFolder,
 }
 
 /// The sources browser: where it is, what is under its cursor and marked, and which column holds
@@ -446,6 +496,13 @@ impl Browser {
         self.read_rows(fs);
     }
 
+    /// Show `places`, which now hold a folder just granted, and go to `folder` in the list.
+    pub fn show_granted(&mut self, places: Vec<Place>, folder: &Path, fs: &dyn Listing) {
+        self.places = places;
+        self.focus = Pane::List;
+        self.go_to(folder, None, fs);
+    }
+
     /// Read the list's rows from the disk again, keeping the cursor on the row it was on while
     /// that row is still listed: a file the Finder added or took away shows.
     pub fn refresh(&mut self, fs: &dyn Listing) {
@@ -591,6 +648,9 @@ impl Browser {
             MOVE_UP => self.place = self.place.saturating_sub(1),
             GO_IN_OR_ADD => {
                 if let Some(place) = self.places.get(self.place) {
+                    if place.is_grant_entry() {
+                        return Effect::GrantFolder;
+                    }
                     let path = place.path.clone();
                     self.go_to(&path, None, fs);
                     self.focus = Pane::List;
@@ -840,7 +900,7 @@ fn place_for(places: &[Place], dir: &Path) -> Option<usize> {
     places
         .iter()
         .enumerate()
-        .filter(|(_, p)| dir.starts_with(&p.path))
+        .filter(|(_, p)| !p.is_grant_entry() && dir.starts_with(&p.path))
         .max_by_key(|(_, p)| p.path.components().count())
         .map(|(i, _)| i)
 }

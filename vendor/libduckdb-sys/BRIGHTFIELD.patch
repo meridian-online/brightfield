@@ -1,0 +1,56 @@
+--- Cargo.toml
++++ Cargo.toml
+@@ -93,6 +93,9 @@ parquet = ["bundled"]
+ tpcds = ["bundled-cmake"]
+ tpch = ["bundled-cmake"]
+ winduckdb = []
++# Added by Brightfield: link the managed edition's DuckDB library in place of
++# the bundled build. See managed_linked.rs.
++managed-linked = []
+ 
+ [lib]
+ name = "libduckdb_sys"
+--- build.rs
++++ build.rs
+@@ -3,7 +3,7 @@ use std::{
+     path::{Path, PathBuf},
+ };
+ 
+-#[cfg(not(feature = "bundled"))]
++#[cfg(any(not(feature = "bundled"), feature = "managed-linked"))]
+ #[path = "src/build_paths.rs"]
+ mod build_paths;
+ 
+@@ -27,12 +27,23 @@ fn is_compiler(compiler_name: &str) -> bool {
+ 
+ fn main() {
+     let out_dir = env::var("OUT_DIR").unwrap();
++    // Brightfield's change to this crate: `managed-linked` links the DuckDB
++    // library Brightfield's managed edition builds (scripts/build-duckdb.sh), even
++    // where another crate in the graph asks for `bundled`. See managed_linked.rs.
++    if cfg!(feature = "managed-linked") {
++        #[cfg(feature = "managed-linked")]
++        managed_linked::main(&out_dir);
++        return;
++    }
+     #[cfg(feature = "bundled")]
+     build_bundled_backend::main(&out_dir);
+     #[cfg(not(feature = "bundled"))]
+     build_linked::main(&out_dir)
+ }
+ 
++#[cfg(feature = "managed-linked")]
++mod managed_linked;
++
+ /// Which DuckDB C API header a set of bindings is generated from.
+ ///
+ /// `V1` is `duckdb.h` (or `duckdb_extension.h` for loadable extensions) and is
+@@ -77,7 +88,7 @@ pub(crate) fn write_bindings(header_dir: &Path, out_dir: &str) {
+ mod build_bundled_cc;
+ #[cfg(all(feature = "bundled", feature = "bundled-cmake"))]
+ mod build_bundled_cmake;
+-#[cfg(not(feature = "bundled"))]
++#[cfg(any(not(feature = "bundled"), feature = "managed-linked"))]
+ mod build_linked;
+ /// Generates the bindings with bindgen from the DuckDB headers.
+ #[cfg(feature = "buildtime_bindgen")]

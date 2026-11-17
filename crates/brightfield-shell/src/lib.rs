@@ -101,6 +101,7 @@
 //!   noticed by mtime poll and surfaced through `Subject::status`.
 
 pub mod app;
+pub mod ask_grant;
 pub mod beyond_edition;
 pub mod brand;
 pub mod canvas;
