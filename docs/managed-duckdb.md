@@ -53,4 +53,5 @@ So the managed edition's DuckDB, its libraries and shell together, is about 134.
 
 ## Open
 
+- The LGPL's other obligations for GEOS fall to the Store packaging: the bundle carries GEOS's licence text and says where its source is. A replacement GEOS also has to keep one function from GEOS's C++ library, `geos_d2sfixed_buffered_n`, which spatial calls beside GEOS's stable C API (`scripts/duckdb-managed/patches/spatial/`).
 - An `INSTALL` of an extension that is already compiled in still goes to the network in this build, as in DuckDB's release. Offline it fails; online it would fetch an extension file. Turning installs and loads off in the managed edition is its own piece of work, which handles it.

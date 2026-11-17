@@ -260,12 +260,13 @@ clear_rpaths() {
 clear_rpaths "${OUT}/lib/libduckdb.dylib"
 install_name_tool -add_rpath "@loader_path" "${OUT}/lib/libduckdb.dylib"
 non_system() { otool -L "$1" | tail -n +2 | awk '{print $1}' | grep -vE '^(/usr/lib/|/System/)' || true; }
-staged=""
-pending="${OUT}/lib/libduckdb.dylib"
-while [ -n "$pending" ]; do
-  next=""
-  for file in $pending; do
-    for dep in $(non_system "$file"); do
+staged=()
+pending=("${OUT}/lib/libduckdb.dylib")
+while [ "${#pending[@]}" -gt 0 ]; do
+  next=()
+  for file in "${pending[@]}"; do
+    while IFS= read -r dep; do
+      [ -n "$dep" ] || continue
       name=$(basename "$dep")
       case "$dep" in
         "@rpath/libduckdb.dylib") continue ;;
@@ -285,14 +286,14 @@ while [ -n "$pending" ]; do
         install_name_tool -id "@rpath/${name}" "${OUT}/lib/${name}"
         clear_rpaths "${OUT}/lib/${name}"
         install_name_tool -add_rpath "@loader_path" "${OUT}/lib/${name}"
-        staged="${staged} ${name}"
-        next="${next} ${OUT}/lib/${name}"
+        staged+=("$name")
+        next+=("${OUT}/lib/${name}")
       fi
-    done
+    done < <(non_system "$file")
   done
-  pending="$next"
+  pending=("${next[@]+"${next[@]}"}")
 done
-[ -n "$staged" ] || fail "the library links no GEOS library of its own; the triplet should build GEOS shared"
+[ "${#staged[@]}" -gt 0 ] || fail "the library links no GEOS library of its own; the triplet should build GEOS shared"
 # The shell's build-tree rpaths point into this checkout; replace them with the
 # two layouts it runs from.
 clear_rpaths "${OUT}/bin/duckdb"
