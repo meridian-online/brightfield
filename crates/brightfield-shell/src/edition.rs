@@ -12,7 +12,10 @@
 //! one. This module is the one place that reads the feature. Code elsewhere
 //! asks [`current`] whether a [`Capability`] is allowed, rather than testing
 //! the feature itself, so a third edition is a new [`Edition`] value and a row
-//! in [`Edition::allows`], not a fork of every call site.
+//! in [`Edition::allows`], not a fork of every call site. A crate below the
+//! shell, such as the engine, cannot read this module without depending on the
+//! shell, so the shell passes it the answer as an argument rather than the
+//! crate gaining a feature of its own.
 //!
 //! The editions' names are working names while their final names are chosen.
 //! An edition's name as an analyst reads it comes from [`Edition::name`], so a
@@ -71,7 +74,8 @@ impl Edition {
         }
     }
 
-    /// The edition's name as an analyst reads it. A working name for now.
+    /// The edition's name as an analyst reads it, in lower case for use inside
+    /// a sentence ("the managed edition"). A working name for now.
     pub fn name(self) -> &'static str {
         match self {
             Edition::Full => "full",
