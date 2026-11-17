@@ -97,6 +97,25 @@ fn a_deleted_folder_is_dropped_and_reported() {
 }
 
 #[test]
+fn an_unreadable_store_is_set_aside_not_overwritten() {
+    let (_tmp, config, granted) = scratch();
+    std::fs::write(config.join(GRANTS_FILE), "{ not json").expect("a broken store");
+
+    let grants = Grants::load(&config);
+    assert!(
+        matches!(grants.problems().as_slice(), [GrantError::Io(_)]),
+        "{:?}",
+        grants.problems()
+    );
+    grants.grant(&granted).expect("the folder is granted");
+    assert_eq!(
+        std::fs::read_to_string(config.join("grants.json.unreadable")).expect("set aside"),
+        "{ not json"
+    );
+    assert_eq!(saved_paths(&config), vec![granted]);
+}
+
+#[test]
 fn a_hold_lasts_until_its_guard_drops() {
     let (_tmp, config, granted) = scratch();
     let grants = Grants::load(&config);

@@ -360,10 +360,12 @@ pub static STEPS: &[Step] = &[
 
 /// Compile what the test shards compile, so the job ahead of them can save
 /// it under the lockfile's cache key and each shard restores an exact match.
-/// Three builds, because the two steps after the suite each resolve their
-/// own feature set: `-p brightfield-protocol --test sibling_manifests` and
-/// `--bin conformance` both select a narrower graph than `--workspace`, and
-/// cargo builds `libduckdb-sys` again for each graph that differs. A full
+/// Four builds, because the three steps after the suite each resolve their
+/// own feature set: `-p brightfield-protocol --test sibling_manifests`,
+/// `--bin conformance` and the managed edition's `-p brightfield-shell
+/// --features managed-edition` each select a different graph from
+/// `--workspace`, and cargo builds `libduckdb-sys` again for each graph that
+/// differs. A full
 /// local run uses it too, as the row that builds every test binary before the
 /// two test steps start together.
 fn warm_cache(ctx: &Ctx) -> Result<(), String> {
@@ -377,7 +379,20 @@ fn warm_cache(ctx: &Ctx) -> Result<(), String> {
         "sibling_manifests",
         "--no-run",
     ])?;
-    ctx.run_cargo(&["build", "--locked", "--bin", "conformance"])
+    ctx.run_cargo(&["build", "--locked", "--bin", "conformance"])?;
+    ctx.run_cargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "brightfield-shell",
+        "--features",
+        "managed-edition",
+        "--test",
+        "edition",
+        "--test",
+        "grants",
+        "--no-run",
+    ])
 }
 
 /// Compile every test target in the workspace without running any, so the
@@ -778,6 +793,10 @@ fn managed_edition(ctx: &Ctx) -> Result<(), String> {
         .chain(["--test", "edition", "--test", "grants"])
         .collect();
     ctx.run_cargo(&suite)?;
+    if !cfg!(target_os = "macos") {
+        println!("the grant store's disk-image test attaches a disk image with hdiutil, so it is built and run on macOS only");
+        return Ok(());
+    }
     let floor = 1;
     let log_path = ctx.scratch()?.join("managed-edition-ignored.log");
     let log = File::create(&log_path)

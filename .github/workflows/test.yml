@@ -45,9 +45,10 @@ jobs:
   # exact key, and every shard after it restores a full match and compiles
   # only the workspace's own crates, which no cache keeps.
   #
-  # It also builds the two narrower graphs the last default shard compiles
-  # after the suite (see `cargo xtask ci --list`: the sibling-manifest test
-  # and the conformance binary each resolve their own `libduckdb-sys`). Before
+  # It also builds the three narrower graphs the last default shard compiles
+  # after the suite (see `cargo xtask ci --list`: the sibling-manifest test,
+  # the conformance binary and the managed edition's tests each resolve their
+  # own `libduckdb-sys`). Before
   # this job the shards all saved to one key and the first to finish won, so
   # those builds were usually missing from the cache and that shard compiled
   # them on warm runs as well.
@@ -55,7 +56,7 @@ jobs:
   # `prefix-key: v1-rust` on every cache step in this file, where the action's
   # default is `v0-rust`, so that no cache a shard saved is ever found here:
   # with one, the lookup below would hit and this job would never build the
-  # two narrower graphs into it. Each cache this workflow restores is one this
+  # three narrower graphs into it. Each cache this workflow restores is one this
   # job saved.
   #
   # A cancelled or failed run of this job saves nothing (the action saves only

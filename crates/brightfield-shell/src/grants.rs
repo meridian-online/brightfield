@@ -28,8 +28,8 @@
 //! grant a child is using.
 //!
 //! **Editions.** The store works the same in either edition, but only the managed edition reads
-//! through it: in the full edition [`Grants::needs`] is always empty (`needs_follows_the_edition`), so a caller needs no edition
-//! check of its own.
+//! through it: in the full edition [`Grants::needs`] is always empty
+//! (`needs_follows_the_edition`), so a caller needs no edition check of its own.
 //!
 //! **Where the store is.** The app loads it from its config folder at launch
 //! ([`load_at_launch`]). A process that has not, such as a test, keeps the store in the config
@@ -140,7 +140,13 @@ impl Grants {
         let entries = match read_file(&file) {
             Ok(entries) => entries,
             Err(e) => {
-                problems.push(GrantError::Io(e));
+                // Set aside rather than overwritten by the next save, so the bookmarks in it can
+                // still be recovered by hand.
+                let aside = file.with_extension("json.unreadable");
+                let moved = std::fs::rename(&file, &aside)
+                    .map(|()| format!("; set aside as {}", aside.display()))
+                    .unwrap_or_default();
+                problems.push(GrantError::Io(format!("{e}{moved}")));
                 Vec::new()
             }
         };
@@ -248,8 +254,9 @@ impl Grants {
             .map(|e| e.path.clone())
     }
 
-    /// Why `path` is out of reach though a grant names it: its drive is not mounted, or, with the
-    /// drive back, the grant no longer resolves (`an_unmounted_volume_is_reported_not_dropped`).
+    /// Why `path` is out of reach though a grant names it: its drive is not mounted
+    /// (`an_unmounted_volume_is_reported_not_dropped`), or, with the drive back, the grant no
+    /// longer resolves.
     /// `None` when a grant covers it, and when it lies outside the grants.
     #[must_use]
     pub fn unreachable(&self, path: &Path) -> Option<GrantError> {
