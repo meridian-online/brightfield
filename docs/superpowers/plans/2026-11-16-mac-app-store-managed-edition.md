@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Build slots: the signed download's sessions build first. Start no cargo build while three Brightfield sessions are building. Task 1 runs when a slot frees. Task 2 starts now: Hugh ruled on 2026-11-17 that it need not wait for the signed download, which waits on Apple's review of the developer enrolment rather than on code, and no Brightfield session was building; if the signing certificate arrives during it, the signing work takes the next free slot. Tasks 3 onwards wait for the signed download to ship.
+- Build slots: the signed download's sessions build first. Start no cargo build while three Brightfield sessions are building. Task 1 runs when a slot frees. Task 2 starts now: Hugh ruled on 2026-11-17 that it need not wait for the signed download, which waits on Apple's review of the developer enrolment rather than on code, and no Brightfield session was building; if the signing certificate arrives during it, the signing work takes the next free slot. Hugh ruled again on 2026-11-17, after the edition switch merged, that Tasks 3 onwards stop waiting too, for the same reason; their order among themselves is unchanged. Task 14's App Store submission still waits on the first release and on Apple.
 - Task 1's findings revise the spec before Task 2 starts. Where a finding contradicts a task below, the revised spec wins, and the task is edited before it is built.
 - One code base: every managed-edition difference is a question asked of `Edition` (Task 2). No `#[cfg]` on edition outside `edition.rs`.
 - The full edition's behaviour does not change, except the refused-access banner and the headless exit (Task 6), which apply to both editions.
