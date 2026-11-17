@@ -178,9 +178,9 @@ pub fn granted_root() -> Option<PathBuf> {
     granted_with(|dir| crate::grants::store().covering(dir).is_some())
 }
 
-/// [`root`] for a caller that asks on each frame it draws, such as the door's tree: it asks the
-/// grant store only about grants already open, so a folder on a drive that is not plugged in is
-/// not resolved again on every frame. [`granted_root`], asked by whatever acts on the folder,
+/// [`root`] for a caller that asks on each frame it draws, such as the door's tree: it does not
+/// try again a grant that did not open, so a folder on a drive that is not plugged in is not
+/// resolved again on every frame. [`granted_root`], asked by whatever acts on the folder,
 /// tries it again.
 #[must_use]
 pub fn root_now() -> PathBuf {
