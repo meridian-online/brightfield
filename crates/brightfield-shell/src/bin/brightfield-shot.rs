@@ -221,11 +221,9 @@ fn main() -> ExitCode {
             .and_then(|dims| crop_or_keep(&args.out, args.crop, dims));
         return report(result, &args.out);
     }
-    let refusals = if graph_on_canvas {
-        boot.protocol.refusals()
-    } else {
-        Vec::new()
-    };
+    // Whatever the canvas holds: a Protocol drawn as an agent's panels still read its models,
+    // and the window says so.
+    let refusals = boot.protocol.refusals();
     let result = capture_png(boot, args.mode, args.scale, &args.out, script)
         .and_then(|dims| crop_or_keep(&args.out, args.crop, dims));
     let wrote = result.is_ok();
