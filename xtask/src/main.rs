@@ -1,6 +1,6 @@
 //! The repository's gate as one command.
 //!
-//! `cargo xtask ci` runs what a pull request's checks run, in order except
+//! `cargo xtask ci` runs what CI's checks run, in order except
 //! that the two test steps run side by side, and stops at the first step that
 //! fails. It ends with a summary that names each step in
 //! the order run, with its wall time, the failed step, and the steps the
@@ -11,8 +11,11 @@
 //!
 //! The `workflow-coverage` step reads the workflow files and keeps the two
 //! lists one list: it is red for a step no workflow invokes, for a workflow
-//! invoking a step that does not exist, and for a workflow a pull request
-//! triggers calling a gate around the command.
+//! invoking a step that does not exist, and for a workflow a pull request or
+//! a push to `main` triggers calling a gate around the command. A pull
+//! request's checks are `cargo xtask gate <pr>`, which runs this command on the
+//! reference Mac; hosted CI runs the same steps on `main`, nightly and on
+//! demand.
 //!
 //! What a full run needs on the machine, each refused by name at its step when
 //! absent: the pinned toolchain, `cargo-deny`, `python3`, the sibling

@@ -43,7 +43,8 @@ jobs:
 
       # The command's own reading of the workflow files: every step it carries
       # is invoked by a workflow, no workflow invokes a step it lacks, and no
-      # workflow a pull request triggers calls a gate around it.
+      # workflow a pull request or a push to `main` triggers calls a gate
+      # around it.
       - name: the command and the workflows agree
         run: cargo xtask ci --step workflow-coverage
 
