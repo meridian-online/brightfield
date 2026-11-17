@@ -203,6 +203,11 @@ duckdb = { workspace = true, features = ["parquet"] }
 # graph: 1.x is already in Cargo.lock.
 plist = "1"
 
+[features]
+# Builds the managed edition, the sandboxed one for the Mac App Store, in place
+# of the full edition. Only `src/edition.rs` reads it.
+managed-edition = []
+
 [[bin]]
 name = "brightfield-shell"
 path = "src/main.rs"

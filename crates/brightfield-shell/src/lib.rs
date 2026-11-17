@@ -112,6 +112,7 @@ pub mod default_app;
 pub mod devtools;
 pub mod discovery;
 pub mod door_tree;
+pub mod edition;
 pub mod editor;
 pub mod export;
 pub mod file_protocols;
