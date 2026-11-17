@@ -4732,8 +4732,8 @@ impl MeridianApp {
     }
 
     /// Note a refusal the failed run `finished` reports in its log, and raise the banner over it.
-    /// Called on each way a run of the open Protocol lands: a graph, panel tiles or a shipped
-    /// start.
+    /// Called on each way a run of the open Protocol lands: a graph, panel tiles, a shipped start
+    /// or the model pane's Run.
     fn note_run_refusal(&mut self, finished: &crate::run::Finished) {
         if finished.succeeded {
             return;
@@ -15971,6 +15971,7 @@ impl MeridianApp {
                     .body(finished.log.trim().to_string()),
             );
         }
+        self.note_run_refusal(&finished);
         self.toasts.push(Toast::new(severity, said));
         ctx.request_repaint();
         landed
