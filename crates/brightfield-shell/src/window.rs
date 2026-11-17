@@ -2532,6 +2532,39 @@ pub enum Leaving {
     Reload,
 }
 
+/// The banner saying an open waits on a folder the analyst has not granted.
+pub const NEEDS_GRANT_BANNER: &str = "needs-grant";
+/// That banner's title.
+pub const NEEDS_GRANT_TITLE: &str = "Brightfield needs access to a folder";
+/// The banner saying a move or the sources browser's grant waited on another grant ask and was not
+/// carried out.
+pub const GRANT_WAITING_BANNER: &str = "grant-waiting";
+
+/// **Folders an open needs granted before it goes ahead**, and what to do once they are: the
+/// managed edition's ask, taken after the frame because the panel blocks.
+struct GrantAsk {
+    /// The folders, asked for one at a time, in order.
+    folders: Vec<PathBuf>,
+    /// The sentence the panel shows for a folder.
+    why: fn(&std::path::Path) -> String,
+    /// What goes ahead once every folder is granted.
+    then: GrantThen,
+}
+
+/// What a [`GrantAsk`] carries out once its folders are granted.
+enum GrantThen {
+    /// A request off the open queue, taken again as it was first taken.
+    Request(crate::open_queue::OpenRequest),
+    /// What one gesture handed over, opened again ([`MeridianApp::open_path`]).
+    Paths(Vec<PathBuf>),
+    /// A saved Protocol, opened again ([`MeridianApp::open_protocol_path`]).
+    Protocol(String),
+    /// A move of the open Protocol's folder, made again.
+    Move(Move),
+    /// The sources browser's "Grant a folder…": the folder chosen joins its places.
+    Browse,
+}
+
 /// **A change to where the open Protocol's folder is**: its name, or the folder it is in. Each is
 /// kept at once, as adding a source is, and is not a draft.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3651,6 +3684,20 @@ pub struct MeridianApp {
     place_rects: Option<(egui::Rect, egui::Rect)>,
     /// A rename or move typed into a place field and entered, latched for after the frame.
     place_move: Option<Move>,
+    /// Folders an open needs granted before it can go ahead, asked for after the frame, as the
+    /// other panels are ([`GrantAsk`]).
+    grant_ask: Option<GrantAsk>,
+    /// What answers a grant ask in place of the panel: a test's stand-in. Without one the panel is
+    /// raised, where dialogs are allowed.
+    grant_asker: Option<Box<crate::ask_grant::Asker>>,
+    /// Whether the open under way is a launch's restore: a grant it needs is reported in the
+    /// banner, not asked for.
+    grant_report_only: bool,
+    /// The folders the grant ask being carried out asked for, while what waited on it goes
+    /// ahead: a folder it still needs among them (the analyst chose another) is reported rather
+    /// than asked for again, and one found only now, such as a source folder read once the
+    /// Protocol's folder was granted, is asked for.
+    grant_round: Option<Vec<PathBuf>>,
     /// Where the Location field's Choose… button was drawn on the last frame.
     choose_rect: Option<egui::Rect>,
     /// Choose… was clicked: the folder picker is raised after the frame, outside every borrow,
@@ -4169,6 +4216,10 @@ impl MeridianApp {
             place_edit: None,
             place_rects: None,
             place_move: None,
+            grant_ask: None,
+            grant_asker: None,
+            grant_report_only: false,
+            grant_round: None,
             choose_rect: None,
             location_pick_requested: false,
             dialogs_allowed: false,
@@ -5749,6 +5800,162 @@ impl MeridianApp {
         self
     }
 
+    /// **Answer this window's grant asks with `asker` in place of the panel**: a test's stand-in,
+    /// which is told the folder the panel would open on and the sentence it would show, and
+    /// answers the folder chosen or `None` for a cancel. What it answers is granted as a panel's
+    /// choice is.
+    #[must_use]
+    pub fn asking_grants_with(mut self, asker: Box<crate::ask_grant::Asker>) -> Self {
+        self.grant_asker = Some(asker);
+        self
+    }
+
+    /// **Hold an open back until the folders it needs are granted**: `true` when `folders` is not
+    /// empty, after which the banner names them and, unless the open is one that only reports,
+    /// the panel asks for each after the frame, then `then` goes ahead. `false`, changing nothing,
+    /// when nothing is needed.
+    fn hold_for_grants(
+        &mut self,
+        ctx: &egui::Context,
+        folders: Vec<PathBuf>,
+        why: fn(&std::path::Path) -> String,
+        then: GrantThen,
+    ) -> bool {
+        if folders.is_empty() {
+            return false;
+        }
+        // One ask at a time, and the banner names the folders the panel asks for. A request held
+        // while another ask stands waits behind it with the opens held for the close question, and
+        // is checked again once the ask is answered.
+        if self.grant_ask.is_some() && !self.grant_report_only {
+            let request = match then {
+                GrantThen::Request(request) => Some(request),
+                GrantThen::Paths(paths) => crate::open_queue::OpenRequest::of_paths(paths),
+                GrantThen::Protocol(path) => {
+                    Some(crate::open_queue::OpenRequest::Path(PathBuf::from(path)))
+                }
+                GrantThen::Move(_) | GrantThen::Browse => None,
+            };
+            match request {
+                Some(request) => self.held_for_question.push(request),
+                None => self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new(GRANT_WAITING_BANNER),
+                        Severity::Warning,
+                        "Not done yet",
+                    )
+                    .body("Brightfield is asking for another folder first. Try again once it is answered."),
+                ),
+            }
+            return true;
+        }
+        let named: Vec<String> = folders.iter().map(|f| f.display().to_string()).collect();
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new(NEEDS_GRANT_BANNER),
+                Severity::Warning,
+                NEEDS_GRANT_TITLE,
+            )
+            .body(format!(
+                "Nothing was opened, so nothing is drawn half-read. Grant access to {} to open it.",
+                named.join(" and ")
+            )),
+        );
+        let to_ask: Vec<PathBuf> = match &self.grant_round {
+            Some(asked) => folders.into_iter().filter(|f| !asked.contains(f)).collect(),
+            None => folders,
+        };
+        if !self.grant_report_only && !to_ask.is_empty() {
+            self.grant_ask = Some(GrantAsk {
+                folders: to_ask,
+                why,
+                then,
+            });
+        }
+        ctx.request_repaint();
+        true
+    }
+
+    /// [`Self::hold_for_grants`] for opening `paths`, with the folders
+    /// [`crate::open_queue::admit`] finds them needing.
+    fn hold_open_for_grants(
+        &mut self,
+        ctx: &egui::Context,
+        paths: &[PathBuf],
+        why: fn(&std::path::Path) -> String,
+        then: GrantThen,
+    ) -> bool {
+        match crate::open_queue::admit(paths, crate::grants::store()) {
+            crate::open_queue::OpenOutcome::Opened => false,
+            crate::open_queue::OpenOutcome::NeedsGrant(folders) => {
+                self.hold_for_grants(ctx, folders, why, then)
+            }
+        }
+    }
+
+    /// Ask for one folder: the stand-in's answer granted, else the panel's where dialogs are
+    /// allowed, else nothing.
+    fn ask_one_grant(&mut self, folder: &std::path::Path, why: &str) -> Option<PathBuf> {
+        if let Some(asker) = self.grant_asker.as_mut() {
+            let chosen = asker(folder, why)?;
+            return crate::ask_grant::grant_chosen(&chosen);
+        }
+        if !self.dialogs_allowed {
+            return None;
+        }
+        crate::ask_grant::ask_for(folder, why)
+    }
+
+    /// **Take the grant ask this frame left**: ask for each folder in turn and, once every one is
+    /// granted, carry out what waited on them. A folder cancelled leaves the banner standing and
+    /// opens nothing. What goes ahead is checked again, and a folder it still needs (the analyst
+    /// chose another) is reported rather than asked for again.
+    fn answer_grant_ask(&mut self, ctx: &egui::Context) {
+        let Some(ask) = self.grant_ask.take() else {
+            return;
+        };
+        // What waited on this ask may be tried again now, whatever its answer.
+        self.notifications
+            .dismiss(NotificationId::new(GRANT_WAITING_BANNER));
+        let mut granted: Vec<PathBuf> = Vec::new();
+        for folder in &ask.folders {
+            match self.ask_one_grant(folder, &(ask.why)(folder)) {
+                Some(chosen) => granted.push(chosen),
+                None => return,
+            }
+        }
+        self.notifications
+            .dismiss(NotificationId::new(NEEDS_GRANT_BANNER));
+        let mut round = ask.folders.clone();
+        round.extend(granted.iter().cloned());
+        self.grant_round = Some(round);
+        match ask.then {
+            GrantThen::Request(request) => self.take_or_ask(ctx, request),
+            GrantThen::Paths(paths) => {
+                let installed = self
+                    .installed_extensions
+                    .clone()
+                    .unwrap_or_else(crate::data_file::installed_extensions);
+                self.open_paths_knowing(ctx, paths, &installed);
+            }
+            GrantThen::Protocol(path) => self.open_protocol_path(ctx, &path),
+            GrantThen::Move(to) => self.move_when_granted(ctx, to),
+            GrantThen::Browse => {
+                if let (Some(Overlay::SourcesBrowser(open)), Some(folder)) =
+                    (self.overlay.as_mut(), granted.first())
+                {
+                    open.sheet.browser.show_granted(
+                        crate::sources_browser::places(),
+                        folder,
+                        &crate::sources_browser::Disk,
+                    );
+                }
+            }
+        }
+        self.grant_round = None;
+        ctx.request_repaint();
+    }
+
     /// Give this window the store each Save of the chart records a version in.
     ///
     /// `main` passes [`brightfield_protocol::HistoryStore::Arcform`], arcform's
@@ -6023,6 +6230,8 @@ impl MeridianApp {
                 .filter_map(|f| f.path.clone())
                 .collect()
         });
+        // What a drop hands over the system grants, and in the managed edition it is kept.
+        crate::ask_grant::keep(&dropped);
         if self.front_door_is_live() {
             if let Some(request) = crate::open_queue::OpenRequest::of_paths(dropped) {
                 self.open_queue.push(request);
@@ -6071,14 +6280,18 @@ impl MeridianApp {
         } else if !matches!(
             self.overlay,
             Some(Overlay::CloseQuestion(_) | Overlay::WhichProtocol(_))
-        ) && !self.held_for_question.is_empty()
+        ) && self.grant_ask.is_none()
+            && !self.held_for_question.is_empty()
         {
             let request = self.held_for_question.remove(0);
             self.take_or_ask(&ctx, request);
         }
         // The Which Protocol sheet holds the queue as a pending open does: a request pushed
-        // while it is up waits for its answer, rather than opening under it.
+        // while it is up waits for its answer, rather than opening under it. So does an open
+        // waiting on a grant ask, so the requests behind it are taken in order once it is answered
+        // (`two_opens_waiting_on_grants_are_asked_for_and_opened_in_order`).
         while self.pending_open.is_none()
+            && self.grant_ask.is_none()
             && !matches!(self.overlay, Some(Overlay::WhichProtocol(_)))
         {
             let Some(request) = self.open_queue.pop() else {
@@ -7670,12 +7883,13 @@ impl MeridianApp {
                     .set_directory(&parent)
                     .pick_folder()
                 {
+                    crate::ask_grant::keep(std::slice::from_ref(&chosen));
                     self.place_move = Some(Move::Relocate(chosen));
                 }
             }
         }
         if let Some(to) = self.place_move.take() {
-            self.leave(&ctx, Leaving::Move(to));
+            self.move_when_granted(&ctx, to);
         }
         // New Protocol's Other… raises a system picker, after the frame and only where dialogs are
         // allowed, as Choose… does.
@@ -7685,6 +7899,7 @@ impl MeridianApp {
                 .set_directory(crate::protocols_dir::root())
                 .pick_folder()
             {
+                crate::ask_grant::keep(std::slice::from_ref(&chosen));
                 self.leave(&ctx, Leaving::Make(chosen));
             }
         }
@@ -7695,6 +7910,7 @@ impl MeridianApp {
                 .set_directory(crate::protocols_dir::root())
                 .pick_folder()
             {
+                crate::ask_grant::keep(std::slice::from_ref(&chosen));
                 self.choose_protocols_folder(&ctx, &chosen);
             }
         }
@@ -7755,6 +7971,8 @@ impl MeridianApp {
         if let Some(scope) = self.trust_asked.take() {
             self.trust_restricted(&ctx, scope);
         }
+        // An open held back for folders to grant, asked for now the frame is drawn.
+        self.answer_grant_ask(&ctx);
         // A saved Protocol picked off the door. No dialog and no gate: the path
         // came off a row this build already decided it can reopen, so unlike
         // the picker above this runs on every tier.
@@ -9348,8 +9566,29 @@ impl MeridianApp {
         if let Some(answer) = answered {
             self.answer_close_question(ctx, answer);
         }
-        if let Some((crate::sources_browser::Effect::Add(paths, joins), made_of)) = browser_effect {
-            self.browser_adds(ctx, paths, joins, made_of);
+        match browser_effect {
+            Some((crate::sources_browser::Effect::Add(paths, joins), made_of)) => {
+                self.browser_adds(ctx, paths, joins, made_of);
+            }
+            Some((crate::sources_browser::Effect::GrantFolder, _)) => {
+                let home = std::env::home_dir().unwrap_or_default();
+                // An ask already standing is answered first, and this one says it waits. With
+                // none standing, the panel is asked for as the analyst asked, with no banner,
+                // since nothing was held back.
+                let why: fn(&std::path::Path) -> String =
+                    |_| crate::ask_grant::WHY_BROWSE.to_string();
+                if self.grant_ask.is_some() {
+                    self.hold_for_grants(ctx, vec![home], why, GrantThen::Browse);
+                } else {
+                    self.grant_ask = Some(GrantAsk {
+                        folders: vec![home],
+                        why,
+                        then: GrantThen::Browse,
+                    });
+                    ctx.request_repaint();
+                }
+            }
+            _ => {}
         }
         if let Some(actions) = organise_apply {
             self.apply_organised_joins(ctx, &actions);
@@ -12363,6 +12602,14 @@ impl MeridianApp {
         paths: Vec<std::path::PathBuf>,
         installed: &[String],
     ) {
+        if self.hold_open_for_grants(
+            ctx,
+            &paths,
+            crate::ask_grant::why_open,
+            GrantThen::Paths(paths.clone()),
+        ) {
+            return;
+        }
         let mut needed: Vec<&'static str> = Vec::new();
         for path in &paths {
             for ext in crate::data_file::extensions_likely_needed(path) {
@@ -12549,6 +12796,32 @@ impl MeridianApp {
             self.held_for_question.push(request);
             return;
         }
+        // In the managed edition, an open whose folders are not all granted asks for them before
+        // anything is left or read, and goes ahead once they are; adding a source asks for the
+        // source's folder.
+        // A source added is data wherever it sits, even beside another Protocol's manifest, so
+        // its files are checked as they are; an open is checked as `admit` routes it.
+        let paths = request_paths(&request);
+        let held = match request {
+            OpenRequest::AddSource(_) | OpenRequest::AddSources(_) | OpenRequest::AddJoined(..) => {
+                let needed = crate::grants::store().needs(&paths);
+                self.hold_for_grants(
+                    ctx,
+                    needed,
+                    crate::ask_grant::why_source,
+                    GrantThen::Request(request.clone()),
+                )
+            }
+            _ => self.hold_open_for_grants(
+                ctx,
+                &paths,
+                crate::ask_grant::why_open,
+                GrantThen::Request(request.clone()),
+            ),
+        };
+        if held {
+            return;
+        }
         // A Protocol archive chosen on this Mac, held as any open is while the question is up,
         // otherwise starts unpacking at once, as a link's download does, and nothing is left
         // until it lands: the Protocol it brings then opens as any open does, asking first over
@@ -12655,7 +12928,19 @@ impl MeridianApp {
                             self.offer_folder_joins(ctx, &path);
                         }
                     }
-                    Err(e) => self.say_open_failed(ctx, chosen, e),
+                    // A database that needs a file beside it, such as its write-ahead log, asks
+                    // for its folder in the managed edition, and opens once that is granted.
+                    Err(e) => match crate::ask_grant::database_needs_folder(&path, &e) {
+                        Some(folder) => {
+                            self.hold_for_grants(
+                                ctx,
+                                vec![folder],
+                                crate::ask_grant::why_open,
+                                GrantThen::Paths(vec![path.clone()]),
+                            );
+                        }
+                        None => self.say_open_failed(ctx, chosen, e),
+                    },
                 }
             }
         }
@@ -12741,7 +13026,11 @@ impl MeridianApp {
             self.layout.live_mut().reopen_nothing();
             return;
         }
+        // A folder the grants no longer reach is reported rather than asked for: a panel at
+        // launch, before the analyst has asked for anything, is not what they came for.
+        self.grant_report_only = true;
         self.open_path_now(ctx, &dir.to_string_lossy());
+        self.grant_report_only = false;
         if self.front_door_is_live() {
             self.layout.live_mut().reopen_nothing();
         }
@@ -13376,7 +13665,26 @@ impl MeridianApp {
 
     /// **Move the open Protocol's folder into `parent`**, as [`Self::rename_protocol`] renames it.
     pub fn relocate_protocol(&mut self, ctx: &egui::Context, parent: &std::path::Path) {
-        self.leave(ctx, Leaving::Move(Move::Relocate(parent.to_path_buf())));
+        self.move_when_granted(ctx, Move::Relocate(parent.to_path_buf()));
+    }
+
+    /// Make the move `to`, the Location field's or the one [`Self::relocate_protocol`] asks for.
+    /// In the managed edition a folder to move into is taken only when it is granted; any other
+    /// opens the panel on it, and the move goes ahead once it is granted
+    /// (`the_location_field_accepts_only_a_granted_folder`).
+    fn move_when_granted(&mut self, ctx: &egui::Context, to: Move) {
+        let needed = match &to {
+            Move::Relocate(parent) => crate::grants::store().needs(std::slice::from_ref(parent)),
+            Move::Rename(_) => Vec::new(),
+        };
+        if !self.hold_for_grants(
+            ctx,
+            needed,
+            crate::ask_grant::why_location,
+            GrantThen::Move(to.clone()),
+        ) {
+            self.leave(ctx, Leaving::Move(to));
+        }
     }
 
     /// Which of the locator band's place fields is open for typing — a test hook.
@@ -16041,6 +16349,17 @@ impl MeridianApp {
     /// does.
     pub fn open_protocol_path(&mut self, ctx: &egui::Context, path: &str) {
         let named = std::path::Path::new(path);
+        // In the managed edition a Protocol whose folder, or a source folder it reads, is not
+        // granted is asked for, from Recents or the door, and reported at a launch's restore: it
+        // is never opened half-read (`recents_without_a_grant_ask_rather_than_open_half_read`).
+        if self.hold_open_for_grants(
+            ctx,
+            &[named.to_path_buf()],
+            crate::ask_grant::why_open,
+            GrantThen::Protocol(path.to_string()),
+        ) {
+            return;
+        }
         // A Protocol nobody trusted opens restricted, whatever shape it has and wherever it sits:
         // trust is a record in the store ([`crate::trust`]), not read from the folder
         // (`an_archive_carrying_a_made_by_brightfield_marker_or_the_one_step_layout_stays_restricted`).

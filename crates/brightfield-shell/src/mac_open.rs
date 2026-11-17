@@ -89,7 +89,10 @@ define_class!(
         ) {
             // The files of one event are one gesture, such as several chosen together in Finder,
             // so they go onto the queue together.
-            if let Some(request) = OpenRequest::of_paths(documents(event)) {
+            // What the Finder hands over the system grants, and in the managed edition it is kept.
+            let paths = documents(event);
+            crate::ask_grant::keep(&paths);
+            if let Some(request) = OpenRequest::of_paths(paths) {
                 self.ivars().queue.push(request);
             }
             (self.ivars().wake)();
@@ -405,6 +408,8 @@ pub fn begin_open_panel(
             }
             let paths = panel_paths(&chosen);
             if !paths.is_empty() {
+                // What the panel chose the system grants, and in the managed edition it is kept.
+                crate::ask_grant::keep(&paths);
                 answer(paths);
             }
         });
