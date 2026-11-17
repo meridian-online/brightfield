@@ -2535,7 +2535,7 @@ pub enum Leaving {
 }
 
 /// The banner saying the system refused a read or a write, naming the paths
-/// ([`MeridianApp::say_refused`]).
+/// (raised as the window opens a Protocol, and after its runs).
 pub const REFUSED_BANNER: &str = "refused-access";
 /// That banner's title.
 pub const REFUSED_TITLE: &str = "Brightfield was refused access";
@@ -11766,7 +11766,7 @@ impl MeridianApp {
     }
 
     /// The run state this window records for its Protocol's Recents row, which is where a
-    /// Protocol is shown as fresh: [`Self::recorded_run_state`].
+    /// Protocol is shown as fresh: not fresh while [`Self::refused`] holds a refusal.
     #[must_use]
     pub fn shown_run_state(&self) -> RunState {
         self.recorded_run_state()
