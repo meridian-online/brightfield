@@ -22,12 +22,13 @@
 //!
 //! **Children.** A sandboxed app's child processes inherit the grants the app holds when it starts
 //! them (`docs/app-sandbox.md`), so nothing is handed to arc, the DuckDB CLI or dovetail. What the
-//! app must do is keep access started while a child uses it: access is started at launch and never
-//! stopped, and a run or a join proposal takes a [`GrantHold`] on its folders for as long as it
-//! goes, so a later change to the store cannot end a grant a child is using.
+//! app must do is keep access started while a child uses it: access starts at launch and the store
+//! does not stop it, and a run or a join proposal takes a [`GrantHold`] on its folders for as long
+//! as it goes (`a_hold_lasts_until_its_guard_drops`), so a later change to the store cannot end a
+//! grant a child is using.
 //!
 //! **Editions.** The store works the same in either edition, but only the managed edition reads
-//! through it: in the full edition [`Grants::needs`] is always empty, so a caller needs no edition
+//! through it: in the full edition [`Grants::needs`] is always empty (`needs_follows_the_edition`), so a caller needs no edition
 //! check of its own.
 //!
 //! **Where the store is.** The app loads it from its config folder at launch
@@ -128,7 +129,8 @@ impl Drop for GrantHold<'_> {
 }
 
 impl Grants {
-    /// The store kept in `config_dir`, with every bookmark in it resolved and its access started.
+    /// The store kept in `config_dir`, with every bookmark in it resolved and its access started
+    /// (`grants_survive_a_reload`).
     /// A grant that moved is followed and saved where it is now; one that no longer resolves is
     /// dropped, and one whose drive is not mounted is kept. Both are in [`Grants::problems`].
     #[must_use]
@@ -247,7 +249,8 @@ impl Grants {
     }
 
     /// Why `path` is out of reach though a grant names it: its drive is not mounted, or, with the
-    /// drive back, the grant no longer resolves. `None` when a grant covers it, or none names it.
+    /// drive back, the grant no longer resolves (`an_unmounted_volume_is_reported_not_dropped`).
+    /// `None` when a grant covers it, or none names it.
     #[must_use]
     pub fn unreachable(&self, path: &Path) -> Option<GrantError> {
         if self.covering(path).is_some() {
