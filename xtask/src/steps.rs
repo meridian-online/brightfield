@@ -340,7 +340,7 @@ pub static STEPS: &[Step] = &[
     },
     Step {
         name: "managed-edition",
-        runs: "cargo test --locked -p brightfield-shell --features managed-edition --test edition --test grants, then --test grants -- --ignored, at least 1 executed",
+        runs: "cargo test --locked -p brightfield-shell --features managed-edition --test edition --test grants --test grant_on_open, then --test grants -- --ignored, at least 1 executed",
         only_in_ci: None,
         run: managed_edition,
     },
@@ -391,6 +391,8 @@ fn warm_cache(ctx: &Ctx) -> Result<(), String> {
         "edition",
         "--test",
         "grants",
+        "--test",
+        "grant_on_open",
         "--no-run",
     ])
 }
@@ -790,7 +792,14 @@ fn managed_edition(ctx: &Ctx) -> Result<(), String> {
     let suite: Vec<&str> = feature
         .iter()
         .copied()
-        .chain(["--test", "edition", "--test", "grants"])
+        .chain([
+            "--test",
+            "edition",
+            "--test",
+            "grants",
+            "--test",
+            "grant_on_open",
+        ])
         .collect();
     ctx.run_cargo(&suite)?;
     if !cfg!(target_os = "macos") {

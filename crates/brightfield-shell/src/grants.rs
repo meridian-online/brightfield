@@ -340,6 +340,18 @@ impl Grants {
         self.lock().holds.keys().cloned().collect()
     }
 
+    /// The granted folders access is started on now, in the order they were granted; a grant on
+    /// a file alone is not listed.
+    #[must_use]
+    pub fn folders(&self) -> Vec<PathBuf> {
+        self.lock()
+            .entries
+            .iter()
+            .filter(|e| e.open && e.path.is_dir())
+            .map(|e| e.path.clone())
+            .collect()
+    }
+
     /// What the load found it could not reach, and why.
     #[must_use]
     pub fn problems(&self) -> Vec<GrantError> {

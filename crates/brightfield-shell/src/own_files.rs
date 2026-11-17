@@ -336,6 +336,16 @@ pub fn add_sources_with(
     discovery: &dyn crate::discovery::Discovery,
 ) -> Result<Added, String> {
     let first = paths.first().ok_or("nothing was given to add")?;
+    // In the managed edition a source no grant covers is refused before anything is read; the
+    // window asks for its folder before it gets here.
+    let ungranted = crate::grants::store().needs(paths);
+    if !ungranted.is_empty() {
+        let named: Vec<String> = ungranted.iter().map(|f| f.display().to_string()).collect();
+        return Err(format!(
+            "Brightfield needs access to {} to read this source; grant it, then add it again",
+            named.join(" and ")
+        ));
+    }
     p.sources = read_sources(&p.dir)?;
     let mut found = sources::discover_all(paths)?;
     if found.tables.is_empty() {

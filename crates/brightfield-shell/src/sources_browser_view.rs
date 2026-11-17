@@ -339,7 +339,7 @@ fn where_shown(browser: &Browser) -> String {
     match browser
         .places
         .get(browser.place)
-        .filter(|p| dir.starts_with(&p.path))
+        .filter(|p| !p.is_grant_entry() && dir.starts_with(&p.path))
     {
         Some(place) => {
             let below: Vec<String> = dir
@@ -595,7 +595,8 @@ fn places(ui: &mut egui::Ui, sheet: &mut Sheet, fs: &dyn Listing) -> Option<Effe
             ui,
             ListRow::new(RowHeight::Grid).selected(focused && at == sheet.browser.place),
             |ui, _| {
-                let ink = if sheet.browser.dir().starts_with(&place.path) {
+                let ink = if !place.is_grant_entry() && sheet.browser.dir().starts_with(&place.path)
+                {
                     sem.text.primary
                 } else {
                     sem.text.secondary

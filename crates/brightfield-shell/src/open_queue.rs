@@ -71,6 +71,68 @@ pub fn route(path: &Path) -> Route {
     Route::New(path.to_path_buf())
 }
 
+/// Whether an open may go ahead under the grants the analyst has given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenOutcome {
+    /// Everything the open reads is covered by a grant, or the edition reads ungranted paths:
+    /// the open goes ahead.
+    Opened,
+    /// These folders are still to grant, in the order to ask for them. Nothing is opened until
+    /// they are, so no Protocol is drawn half-read.
+    NeedsGrant(Vec<PathBuf>),
+}
+
+/// **What opening `paths` needs granted first**, checked against `grants` before anything reads
+/// them. Each path counts as [`route`] places it:
+///
+/// - a Protocol, by its folder, its `arcform.yaml` or a file in it, needs its folder, and then
+///   the folders of the sources its record of sources names outside it
+///   (`a_protocol_with_an_ungranted_source_folder_asks_for_it`). A lone `arcform.yaml` granted on
+///   its own is not enough: its folder is asked for (`a_lone_manifest_asks_for_its_folder`);
+/// - an archive needs the archive file, which a grant on that file alone covers;
+/// - data needs itself: a data file the system granted on its own opens with that grant
+///   (`a_lone_data_file_opens_with_its_own_grant`), and a folder needs a grant on it.
+///
+/// The sources are read from the Protocol's folder, so while the folder is ungranted only the
+/// folder is asked for; once it is granted, the next check names any source folder still to ask.
+/// Always [`OpenOutcome::Opened`] in an edition that reads ungranted paths
+/// ([`crate::grants::Grants::needs`]).
+#[must_use]
+pub fn admit(paths: &[PathBuf], grants: &crate::grants::Grants) -> OpenOutcome {
+    use crate::edition::{self, Capability};
+    // Nothing to check, and so nothing read, in an edition that reads ungranted paths.
+    if edition::current().allows(Capability::UngrantedPaths) {
+        return OpenOutcome::Opened;
+    }
+    let mut wanted: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        match route(path) {
+            Route::Existing(dir) => {
+                if !grants.needs(std::slice::from_ref(&dir)).is_empty() {
+                    wanted.push(dir);
+                    continue;
+                }
+                for file in crate::own_files::source_files(&dir).unwrap_or_default() {
+                    wanted.push(if file.is_absolute() {
+                        file
+                    } else {
+                        dir.join(file)
+                    });
+                }
+                wanted.push(dir);
+            }
+            Route::Archive(archive) => wanted.push(archive),
+            Route::New(data) => wanted.push(data),
+        }
+    }
+    let needed = grants.needs(&wanted);
+    if needed.is_empty() {
+        OpenOutcome::Opened
+    } else {
+        OpenOutcome::NeedsGrant(needed)
+    }
+}
+
 /// The Protocol `path` is itself, rather than data: the Protocol directory, for that directory or
 /// its `arcform.yaml`, and the archive, for an archive of one. `None` for data, which includes a
 /// data file or a folder inside a Protocol's folder: a drop onto an open Protocol adds those as
