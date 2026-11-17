@@ -4734,11 +4734,19 @@ impl MeridianApp {
     /// Note a refusal the failed run `finished` reports in its log, and raise the banner over it.
     /// Called on each way a run of the open Protocol lands: a graph, panel tiles, a shipped start
     /// or the model pane's Run.
+    ///
+    /// The refusals the previous run reported are dropped first, so a run that no longer meets
+    /// one takes the banner down; the model reads' refusals stay until the models are read again.
     fn note_run_refusal(&mut self, finished: &crate::run::Finished) {
-        if finished.succeeded {
-            return;
-        }
-        let Some(path) = crate::refusal::refusal_in_engine_text(&finished.log) else {
+        self.refused
+            .retain(|r| r.during != crate::refusal::RefusedDuring::Run);
+        let refused = if finished.succeeded {
+            None
+        } else {
+            crate::refusal::refusal_in_engine_text(&finished.log)
+        };
+        let Some(path) = refused else {
+            self.raise_refused();
             return;
         };
         if self.refused.iter().all(|r| r.path != path) {
