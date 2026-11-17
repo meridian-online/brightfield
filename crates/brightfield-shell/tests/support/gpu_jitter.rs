@@ -14,7 +14,7 @@
 //! included, keeps zero.
 //!
 //! A test that calls `image_snapshot` or `harness.snapshot` directly takes
-//! `kittest.toml`'s floor on every machine. It moves to [`options`] when a
+//! `kittest.toml`'s floor, the hosted runner included. It moves to [`options`] when a
 //! hosted run measures jitter on it, and not before.
 
 #![allow(dead_code)]
