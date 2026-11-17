@@ -559,8 +559,9 @@ fn run_teed(mut command: Command, log: &Path) -> Result<ExitStatus, String> {
 }
 
 /// Post the `local-gate` status on `sha` with `gh`, which runs with this
-/// process's own HOME and so its own credentials. Every post happens under
-/// the gate lock, so it is held to `CALL_TIMEOUT` like the gate's other calls.
+/// process's own HOME and so its own credentials. A post happens under the
+/// gate lock, so it is held to `CALL_TIMEOUT` like the gate's other calls
+/// (`a_status_post_that_hangs_is_stopped_and_is_an_error`).
 pub fn post_status(gh: &OsStr, sha: &str, state: &str, text: &str) -> Result<(), String> {
     post_status_within(gh, sha, state, text, CALL_TIMEOUT)
 }
