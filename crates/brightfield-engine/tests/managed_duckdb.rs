@@ -1,6 +1,6 @@
 //! The managed edition's DuckDB, as the engine links it.
 //!
-//! Built with `--features managed-edition`, the engine runs on the library
+//! Built with `--features managed-duckdb`, the engine runs on the library
 //! `scripts/build-duckdb.sh` builds: DuckDB v2.0.0 with autocomplete, excel,
 //! sqlite, httpfs, ducklake, spatial and FineType compiled in, linked by its
 //! install name `@rpath/libduckdb.dylib`. These tests hold the two properties the
@@ -10,7 +10,7 @@
 //!
 //! Without the feature this file compiles to nothing, so the full edition's test
 //! run is unchanged.
-#![cfg(all(feature = "managed-edition", target_os = "macos"))]
+#![cfg(all(feature = "managed-duckdb", target_os = "macos"))]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

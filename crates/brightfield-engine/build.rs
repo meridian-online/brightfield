@@ -10,7 +10,7 @@
 
 fn main() {
     println!("cargo:rerun-if-env-changed=DEP_DUCKDB_LIB_DIR");
-    if std::env::var_os("CARGO_FEATURE_MANAGED_EDITION").is_none() {
+    if std::env::var_os("CARGO_FEATURE_MANAGED_DUCKDB").is_none() {
         return;
     }
     let lib_dir = std::env::var("DEP_DUCKDB_LIB_DIR")

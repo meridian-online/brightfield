@@ -11,7 +11,7 @@
 
 fn main() {
     println!("cargo:rerun-if-env-changed=DEP_DUCKDB_LIB_DIR");
-    if std::env::var_os("CARGO_FEATURE_MANAGED_EDITION").is_none() {
+    if std::env::var_os("CARGO_FEATURE_MANAGED_DUCKDB").is_none() {
         return;
     }
     println!("cargo:rustc-link-arg-bins=-Wl,-rpath,@executable_path/../Frameworks");

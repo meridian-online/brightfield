@@ -39,7 +39,7 @@ libduckdb-sys = { workspace = true, optional = true }
 # extensions compiled in, that scripts/build-duckdb.sh builds into
 # target/duckdb-managed/ and the Mac App Store bundle carries in
 # Contents/Frameworks. Without it the engine runs on duckdb-rs's bundled DuckDB.
-managed-edition = ["dep:libduckdb-sys", "libduckdb-sys/managed-linked"]
+managed-duckdb = ["dep:libduckdb-sys", "libduckdb-sys/managed-linked"]
 
 [dev-dependencies]
 tempfile = "3"

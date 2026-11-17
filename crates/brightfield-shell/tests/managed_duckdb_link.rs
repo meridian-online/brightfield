@@ -1,13 +1,13 @@
 //! Brightfield's managed edition loads the DuckDB library in its bundle, and no
 //! other DuckDB.
 //!
-//! Built with `--features managed-edition`, the app binary links
+//! Built with `--features managed-duckdb`, the app binary links
 //! `@rpath/libduckdb.dylib` and carries the rpath
 //! `@executable_path/../Frameworks` (build.rs). This test lays the binary and
 //! the library out as the Mac App Store bundle does, `Contents/MacOS/` beside
 //! `Contents/Frameworks/`, starts it, and reads which DuckDB images the dynamic
 //! loader loaded. Without the feature this file compiles to nothing.
-#![cfg(all(feature = "managed-edition", target_os = "macos"))]
+#![cfg(all(feature = "managed-duckdb", target_os = "macos"))]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
