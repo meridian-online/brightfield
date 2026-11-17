@@ -60,7 +60,7 @@ Done: `scripts/sandbox-measure.sh`, `scripts/sandbox-measure/` and `docs/app-san
 - [ ] **Step 2:** Write the failing test `current_is_full_without_the_feature`, which asserts `edition::current() == Edition::Full` in a default build.
 - [ ] **Step 3:** Run `cargo test -p brightfield-shell --test edition`. Expected: FAIL, because `edition` is unresolved.
 - [ ] **Step 4:** Implement `edition.rs` and the feature.
-- [ ] **Step 5:** Run `cargo test -p brightfield-shell --test edition`, then `cargo test -p brightfield-shell --features managed-edition --test edition -- --ignored current_is_managed_with_the_feature`. Expected: PASS for both.
+- [ ] **Step 5:** Run `cargo test -p brightfield-shell --test edition`, then `cargo test -p brightfield-shell --features managed-edition --test edition`. Each `current_is_*` test is ignored in the other build, so neither command needs `--ignored`, which with a filter would skip a test that is not ignored and pass on zero tests. Expected: PASS for both, one test ignored in each.
 - [ ] **Step 6:** Commit.
 
 **Verification:** the two commands in Step 5. About 5 to 15 minutes incremental; a cold build of the feature is longer.
