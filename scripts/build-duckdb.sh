@@ -75,6 +75,14 @@ for path in "$OUT" "$ROOT" "${BRIGHTFIELD_VCPKG_ROOT:-}"; do
   esac
 done
 
+# Compiler flags from the environment would go into every C and C++ compile
+# below: CMake takes CFLAGS and CXXFLAGS as its starting flags, and FineType's
+# C dependencies read them too. Run through `cargo xtask`, this script inherits
+# the CXXFLAGS that .cargo/config.toml sets for duckdb-rs's bundled DuckDB, a
+# second DUCKDB_VERSION define without DuckDB's own quoting, which breaks
+# DuckDB's version file. This build sets every flag it needs itself.
+unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
+
 # The DuckDB release this edition runs: the version libduckdb-sys 1.20000.0
 # links into the full edition, and the shell scripts/fetch-duckdb-cli.sh fetches.
 DUCKDB_VERSION_PIN="v2.0.0"
