@@ -2559,6 +2559,9 @@ pub const NEEDS_GRANT_TITLE: &str = "Brightfield needs access to a folder";
 /// cancelled the panel that asks for it.
 pub const NO_PROTOCOLS_FOLDER_BANNER: &str = "no-protocols-folder";
 
+/// The banner that says the Protocols folder chosen before is out of reach this launch.
+pub const PROTOCOLS_FOLDER_OUT_OF_REACH_BANNER: &str = "protocols-folder-out-of-reach";
+
 /// What waits on the panel that asks where the Protocols folder is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProtocolsFolderThen {
@@ -3749,7 +3752,8 @@ pub struct MeridianApp {
     /// What answers the panel that asks where the Protocols folder is, in place of the panel: a
     /// test's stand-in. Without one the panel is raised, where dialogs are allowed.
     protocols_asker: Option<Box<crate::ask_grant::ProtocolsAsker>>,
-    /// Whether the door has asked for the Protocols folder this launch: it asks once.
+    /// Whether the door has checked for the Protocols folder this launch: it checks, and asks,
+    /// once.
     protocols_folder_asked: bool,
     /// The Protocols folder to ask for after the frame, and what waits on it.
     protocols_folder_ask: Option<ProtocolsFolderThen>,
@@ -6017,7 +6021,7 @@ impl MeridianApp {
     /// Whether this window has someone to answer a panel: a test's stand-in for it, or a person,
     /// where dialogs are allowed.
     fn can_ask_protocols_folder(&self) -> bool {
-        self.protocols_asker.is_some() || self.dialogs_allowed
+        self.protocols_asker.is_some() || self.grant_asker.is_some() || self.dialogs_allowed
     }
 
     /// **Take the Protocols-folder ask this frame left**: raise the panel (or its stand-in) on
@@ -6029,6 +6033,10 @@ impl MeridianApp {
         let Some(then) = self.protocols_folder_ask.take() else {
             return;
         };
+        if let Some(dir) = crate::protocols_dir::out_of_reach() {
+            self.ask_protocols_folder_again(ctx, &dir, then);
+            return;
+        }
         let on = crate::protocols_dir::documents();
         let proposed = crate::protocols_dir::PROPOSED_NAME;
         let named = match self.protocols_asker.as_mut() {
@@ -6084,6 +6092,64 @@ impl MeridianApp {
             ),
         }
         ctx.request_repaint();
+    }
+
+    /// **Ask again for the Protocols folder chosen before, `dir`**, which is out of reach this
+    /// launch: the grant panel opened on it, as an open's ask is. Granted, `then` goes ahead; a
+    /// different folder chosen in the panel becomes the Protocols folder. A cancel keeps `dir` as
+    /// the setting and says so.
+    fn ask_protocols_folder_again(
+        &mut self,
+        ctx: &egui::Context,
+        dir: &std::path::Path,
+        then: ProtocolsFolderThen,
+    ) {
+        let granted = self.ask_one_grant(dir, &crate::ask_grant::why_protocols_again(dir));
+        let Some(granted) = granted else {
+            self.raise_protocols_out_of_reach(dir);
+            ctx.request_repaint();
+            return;
+        };
+        if crate::protocols_dir::granted_root().is_none() {
+            if let Err(why) = crate::protocols_dir::adopt(&granted) {
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new(PREFERENCES_BANNER),
+                        Severity::Error,
+                        "The Protocols folder was not set",
+                    )
+                    .body(why),
+                );
+                ctx.request_repaint();
+                return;
+            }
+        }
+        self.notifications
+            .dismiss(NotificationId::new(PROTOCOLS_FOLDER_OUT_OF_REACH_BANNER));
+        self.forget_door_listing();
+        if then == ProtocolsFolderThen::NewProtocol {
+            self.ask_new_protocol();
+        }
+        ctx.request_repaint();
+    }
+
+    /// Say that the Protocols folder chosen before, `dir`, is out of reach, and why.
+    fn raise_protocols_out_of_reach(&mut self, dir: &std::path::Path) {
+        let why = crate::grants::store()
+            .unreachable(dir)
+            .map_or_else(|| "it is not granted".to_string(), |e| e.to_string());
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::new(PROTOCOLS_FOLDER_OUT_OF_REACH_BANNER),
+                Severity::Warning,
+                "The Protocols folder is out of reach",
+            )
+            .body(format!(
+                "{}: {why}. It is still the Protocols folder: New Protocol asks for access to it \
+                 again, and Preferences can choose another.",
+                dir.display()
+            )),
+        );
     }
 
     /// **Hold an open back until the folders it needs are granted**: `true` when `folders` is not
@@ -16916,14 +16982,20 @@ impl MeridianApp {
     fn front_door_ui(&mut self, ui: &mut egui::Ui, requests: &mut Vec<Request>) {
         // The managed edition's first launch asks one thing, once: where the Protocols folder is.
         // A launch with the folder granted, and the full edition, which always has one, ask
-        // nothing.
-        if !self.protocols_folder_asked
-            && self.can_ask_protocols_folder()
-            && crate::protocols_dir::granted_root().is_none()
-        {
+        // nothing. A folder chosen before but out of reach is reported, not replaced; New
+        // Protocol asks for it again.
+        if !self.protocols_folder_asked {
             self.protocols_folder_asked = true;
-            self.protocols_folder_ask = Some(ProtocolsFolderThen::Door);
-            ui.ctx().request_repaint();
+            if crate::protocols_dir::granted_root().is_none() {
+                match crate::protocols_dir::out_of_reach() {
+                    Some(dir) => self.raise_protocols_out_of_reach(&dir),
+                    None if self.can_ask_protocols_folder() => {
+                        self.protocols_folder_ask = Some(ProtocolsFolderThen::Door);
+                    }
+                    None => {}
+                }
+                ui.ctx().request_repaint();
+            }
         }
         self.door_cards.clear();
         self.door_card_feet.clear();

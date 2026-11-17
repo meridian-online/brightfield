@@ -18,7 +18,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use brightfield_shell::design::Mode;
 use brightfield_shell::edition::{self, Edition};
 use brightfield_shell::protocols_dir;
-use brightfield_shell::window::{Boot, MeridianApp, NO_PROTOCOLS_FOLDER_BANNER};
+use brightfield_shell::window::{
+    Boot, MeridianApp, NO_PROTOCOLS_FOLDER_BANNER, PROTOCOLS_FOLDER_OUT_OF_REACH_BANNER,
+};
 
 fn managed() -> bool {
     edition::current() == Edition::Managed
@@ -239,6 +241,70 @@ fn the_full_edition_never_asks() {
         "the full edition always has a Protocols folder"
     );
     assert!(!raised(&app, NO_PROTOCOLS_FOLDER_BANNER));
+}
+
+#[test]
+fn a_chosen_folder_out_of_reach_is_asked_for_again_not_replaced() {
+    let _first = first_launch();
+    // A Protocols folder chosen on an earlier launch whose grant this launch cannot reach: as
+    // Preferences holds it, with no grant covering it.
+    let kept = scratch()
+        .join("chosen")
+        .join("out-of-reach")
+        .join("Protocols");
+    std::fs::create_dir_all(&kept).expect("the folder");
+    let preferences = scratch()
+        .join("config")
+        .join(protocols_dir::PREFERENCES_FILE);
+    std::fs::write(
+        &preferences,
+        serde_json::json!({ "protocols_dir": kept.to_string_lossy() }).to_string(),
+    )
+    .expect("the Preferences file");
+
+    let panel = Panel::default();
+    let regrant: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+    let answer: Arc<Mutex<bool>> = Arc::default();
+    let (asked, choose) = (regrant.clone(), answer.clone());
+    let ctx = egui::Context::default();
+    let mut app = launch(&panel).asking_grants_with(Box::new(move |folder: &Path, _why: &str| {
+        asked.lock().expect("the record").push(folder.to_path_buf());
+        (*choose.lock().expect("the answer")).then(|| folder.to_path_buf())
+    }));
+    for _ in 0..3 {
+        frame(&mut app, &ctx);
+    }
+    assert!(
+        panel.asked().is_empty(),
+        "a folder chosen before is not replaced by the first launch's proposal"
+    );
+    if !managed() {
+        assert!(regrant.lock().expect("the record").is_empty());
+        assert_eq!(protocols_dir::granted_root(), Some(kept));
+        return;
+    }
+    assert!(
+        regrant.lock().expect("the record").is_empty(),
+        "the launch asks nothing"
+    );
+    assert!(raised(&app, PROTOCOLS_FOLDER_OUT_OF_REACH_BANNER));
+    assert_eq!(protocols_dir::out_of_reach(), Some(kept.clone()));
+
+    // New Protocol asks for that folder again; cancelled, the setting stays.
+    app.ask_new_protocol();
+    frame(&mut app, &ctx);
+    assert_eq!(*regrant.lock().expect("the record"), vec![kept.clone()]);
+    assert_eq!(protocols_dir::chosen(), Some(kept.clone()));
+    assert_eq!(app.open_overlay(), None);
+
+    // Granted, the sheet opens on it, still the same folder.
+    *answer.lock().expect("the answer") = true;
+    app.ask_new_protocol();
+    frame(&mut app, &ctx);
+    assert_eq!(protocols_dir::granted_root(), Some(kept));
+    assert_eq!(app.open_overlay(), Some("new-protocol"));
+    assert!(panel.asked().is_empty());
+    assert!(!raised(&app, PROTOCOLS_FOLDER_OUT_OF_REACH_BANNER));
 }
 
 #[test]

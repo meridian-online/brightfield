@@ -66,17 +66,42 @@ pub const WHY_PROTOCOLS: &str =
 /// Answers the folder named, which the caller makes and grants
 /// ([`crate::protocols_dir::adopt`]), or `None` when the analyst cancelled.
 ///
-/// It is a save panel because an open panel can only choose a folder that is already there and
+/// It is a save panel because an open panel can choose only a folder that is already there and
 /// cannot propose a name. The system grants what a save panel names, so the folder may be made
-/// there under App Sandbox. Blocks until it is answered, so it is called after a frame.
+/// there under App Sandbox. When a folder of the proposed name can be seen there already, such as
+/// one the full edition made, an open panel is opened on it instead, so that Open chooses it and
+/// the save panel's question about replacing it is not asked. Blocks until it is answered, so it
+/// is called after a frame.
 #[must_use]
 pub fn ask_for_protocols_folder(on: &Path, proposed: &str) -> Option<PathBuf> {
+    let existing = on.join(proposed);
+    if existing.is_dir() {
+        return rfd::FileDialog::new()
+            .set_title(WHY_PROTOCOLS_EXISTING)
+            .set_directory(&existing)
+            .set_can_create_directories(true)
+            .pick_folder();
+    }
     rfd::FileDialog::new()
         .set_title(WHY_PROTOCOLS)
         .set_directory(nearest_folder(on))
         .set_file_name(proposed)
         .set_can_create_directories(true)
         .save_file()
+}
+
+/// The sentence the first launch's panel shows when a Protocols folder is there already.
+pub const WHY_PROTOCOLS_EXISTING: &str =
+    "Choose where Brightfield keeps your Protocols. Open uses this folder and grants it.";
+
+/// The sentence the panel shows when the Protocols folder chosen before, `folder`, is out of
+/// reach this launch.
+#[must_use]
+pub fn why_protocols_again(folder: &Path) -> String {
+    format!(
+        "Brightfield needs access to {} again to keep Protocols there. Choose Open to grant it.",
+        display(folder)
+    )
 }
 
 /// Grant `chosen`, which a panel or its stand-in has just handed over: the folder, once the store

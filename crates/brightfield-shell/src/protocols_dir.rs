@@ -185,6 +185,30 @@ pub fn granted_root() -> Option<PathBuf> {
     chosen.filter(|dir| crate::grants::store().covering(dir).is_some())
 }
 
+/// The Protocols folder Preferences holds, whether or not this edition may reach it now: `None`
+/// until one is chosen. `$BRIGHTFIELD_PROTOCOLS_DIR` is not consulted.
+#[must_use]
+pub fn chosen() -> Option<PathBuf> {
+    setting()
+}
+
+/// **The Protocols folder chosen before but out of reach now**, in the managed edition: one
+/// Preferences holds that the grant store does not cover this launch, because its drive is not
+/// plugged in or its grant no longer resolves. It is the analyst's folder, so it is asked for
+/// again as it is, not replaced by the first launch's proposal
+/// (`a_chosen_folder_out_of_reach_is_asked_for_again_not_replaced`). `None` in the full edition,
+/// while `$BRIGHTFIELD_PROTOCOLS_DIR` sets the folder, and when the folder is reachable or none
+/// is chosen.
+#[must_use]
+pub fn out_of_reach() -> Option<PathBuf> {
+    if std::env::var_os(PROTOCOLS_DIR_VAR).is_some_and(|v| !v.is_empty())
+        || crate::edition::current().allows(crate::edition::Capability::UngrantedPaths)
+    {
+        return None;
+    }
+    setting().filter(|dir| crate::grants::store().covering(dir).is_none())
+}
+
 /// `~/Documents/Protocols`, the full edition's Protocols folder until another is chosen.
 fn default_root() -> PathBuf {
     // A launch from the Mac's desktop always has a home directory.
