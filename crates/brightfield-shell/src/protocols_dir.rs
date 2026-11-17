@@ -157,8 +157,8 @@ pub fn setting_problem() -> Option<String> {
 /// Where new Protocols are made: `$BRIGHTFIELD_PROTOCOLS_DIR`, else the folder chosen in
 /// Preferences, else `~/Documents/Protocols`.
 ///
-/// In an edition that reads only granted folders, prefer [`granted_root`], which answers `None`
-/// until the analyst has granted one; this answers the default then, which under App Sandbox is
+/// In the managed edition, prefer [`granted_root`], which answers `None` until the analyst has
+/// granted a folder; this answers the default then, which under App Sandbox is
 /// inside the app's container, so that a caller written for the full edition still has a folder.
 #[must_use]
 pub fn root() -> PathBuf {
@@ -169,9 +169,9 @@ pub fn root() -> PathBuf {
 ///
 /// `$BRIGHTFIELD_PROTOCOLS_DIR` wins in every edition. Otherwise the full edition always has one:
 /// the folder chosen in Preferences, else `~/Documents/Protocols`. The managed edition has one
-/// only once the analyst has chosen it and the grant store covers it, which the first launch asks
-/// for ([`PROPOSED_NAME`]); until then it answers `None`, and whatever would make a Protocol asks
-/// for the folder first.
+/// once the analyst has chosen it and the grant store covers it, which the first launch asks for
+/// ([`PROPOSED_NAME`]); until then it answers `None`, and New Protocol asks for the folder first
+/// (`cancelling_leaves_the_door_open_and_asks_again_on_new_protocol`).
 #[must_use]
 pub fn granted_root() -> Option<PathBuf> {
     use crate::edition::{self, Capability};
@@ -200,7 +200,7 @@ pub const PROPOSED_NAME: &str = "Protocols";
 /// The folder the first launch's panel opens on: the analyst's own Documents folder.
 ///
 /// Under App Sandbox the home directory the app is given is its container,
-/// `~/Library/Containers/<bundle id>/Data`, whose Documents folder the analyst never sees, so the
+/// `~/Library/Containers/<bundle id>/Data`, whose Documents folder is not the analyst's own, so the
 /// home directory the container sits in is used instead ([`home_outside_container`]).
 #[must_use]
 pub fn documents() -> PathBuf {
