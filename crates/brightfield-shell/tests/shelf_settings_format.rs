@@ -23,6 +23,9 @@
 //!   brightfield-shell --test shelf_settings_format`, and read what moved before
 //!   committing it.
 
+#[path = "support/gpu_jitter.rs"]
+mod gpu_jitter;
+
 use brightfield_render::axis::compute_ticks_formatted;
 use brightfield_render::channel::Channel;
 use brightfield_render::scale::{Scale, ScaleSet};
@@ -995,7 +998,7 @@ fn baseline_of(name: &str, mode: Mode, mut list: ColumnList) {
             );
         });
     harness.run();
-    harness.snapshot_options(name, &SnapshotOptions::default());
+    harness.snapshot_options(name, &gpu_jitter::options(SnapshotOptions::default(), 0));
 }
 
 /// The format row on short over a population axis that runs to 35,682: the preset's

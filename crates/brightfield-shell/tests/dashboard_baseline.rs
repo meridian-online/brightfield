@@ -2405,10 +2405,6 @@ fn the_grid_in_ledger_columns_light_baseline() {
 fn the_grid_in_ledger_columns_dark_baseline() {
     assert_grid_in_ledger_columns_is_what_is_being_photographed();
     let image = capture_grid_in_ledger_columns(Mode::Dark, "grid_in_ledger_columns_dark");
-    // On an Apple M5 Max this frame renders six pixels that differ from the
-    // baseline by at most 7 of 255 in any channel, one of which crosses the
-    // threshold. Every other GPU, CI's included, keeps zero.
-    let options = egui_kittest::SnapshotOptions::default()
-        .failed_pixel_count_threshold(gpu_jitter::budget_on(gpu_jitter::APPLE_M5_MAX, 4));
+    let options = gpu_jitter::options(egui_kittest::SnapshotOptions::default(), 0);
     egui_kittest::image_snapshot_options(&image, "grid_in_ledger_columns_dark", &options);
 }

@@ -21,6 +21,9 @@
 //! If a GPU-less runner is ever added, mark these `#[ignore]` and opt in
 //! explicitly on the runners that can render, so a skip reads as a skip.
 
+#[path = "support/gpu_jitter.rs"]
+mod gpu_jitter;
+
 use brightfield_shell::design::{self, Mode};
 use egui_kittest::{Harness, SnapshotOptions};
 
@@ -80,6 +83,17 @@ fn options() -> SnapshotOptions {
     SnapshotOptions::default()
 }
 
+/// Names the GPU this run renders on, so a run's log says which machine's
+/// pixel budget in `support/gpu_jitter.rs` applied. It writes to stderr
+/// directly rather than through `eprintln!`, which the test harness captures
+/// and drops for a passing test.
+#[test]
+fn the_adapter_is_named_in_the_log() {
+    use std::io::Write;
+    let name = gpu_jitter::adapter_name();
+    let _ = writeln!(std::io::stderr(), "wgpu default adapter: {name:?}");
+}
+
 #[test]
 fn chrome_light_snapshot() {
     let mut demo = 0.5_f32;
@@ -90,7 +104,7 @@ fn chrome_light_snapshot() {
         .wgpu()
         .build_ui(move |ui| chrome_sheet(ui, Mode::Light, &mut demo, &mut checked));
     harness.run();
-    harness.snapshot_options("chrome_light", &options());
+    harness.snapshot_options("chrome_light", &gpu_jitter::options(options(), 0));
 }
 
 #[test]
@@ -103,5 +117,5 @@ fn chrome_dark_snapshot() {
         .wgpu()
         .build_ui(move |ui| chrome_sheet(ui, Mode::Dark, &mut demo, &mut checked));
     harness.run();
-    harness.snapshot_options("chrome_dark", &options());
+    harness.snapshot_options("chrome_dark", &gpu_jitter::options(options(), 0));
 }

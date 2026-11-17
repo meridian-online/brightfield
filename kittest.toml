@@ -7,17 +7,23 @@
 # These are the egui_kittest library defaults, restated here on purpose: the
 # strictness of the visual gate should be a deliberate, reviewable repo decision,
 # not an accident of whatever the dependency happens to default to this release.
-# Both committed baselines pass at this floor with zero differing pixels on the
-# reference machine, so nothing in the tree needs a looser setting today.
+# The reference machine is an Apple M5 Max (Metal 4, macOS 27.2): every
+# committed baseline is drawn on it, and every baseline passes this floor there
+# with no pixel past the threshold. The pull-request gate runs on that machine,
+# so the floor is what a change is held to.
 #
 # Policy: do not loosen these to make a red test green. A per-test
 # `SnapshotOptions` override is allowed only when its comment names the specific
 # rendering jitter it tolerates and the machine/driver where that jitter was
 # observed. A bare `.threshold(...)` with no such comment is a review blocker —
 # it silently buys back exactly the regressions this tier exists to catch.
-# When the jitter is one GPU's, as on the Apple M5 Max, key the override to that
-# GPU with `crates/brightfield-shell/tests/support/gpu_jitter.rs`, so every other
-# machine, CI's macOS runners included, keeps the floor below.
+# The one machine allowed jitter is the hosted macOS runner that tests each merge
+# to `main`: its paravirtual GPU rounds a few pixels of some baselines
+# differently. Each test passes the failed-pixel count a hosted run measured for
+# it to `crates/brightfield-shell/tests/support/gpu_jitter.rs`, which applies it
+# on that runner's adapter alone, so every other machine, the reference machine
+# included, keeps the floor below. A baseline is drawn on the reference machine,
+# never from a hosted run's output.
 #
 # If a second platform ever renders the chrome slightly differently, prefer a
 # per-OS override here over raising the global floor. The table keys are

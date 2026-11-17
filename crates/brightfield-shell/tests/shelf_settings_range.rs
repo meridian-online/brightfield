@@ -12,6 +12,9 @@
 //! chart's draw are in `shelf_settings_range_window.rs`, and a loaded file's log
 //! axis in `shelf_settings_range_log.rs`.
 
+#[path = "support/gpu_jitter.rs"]
+mod gpu_jitter;
+
 use brightfield_render::channel::Channel;
 use brightfield_render::mark::Projection;
 use brightfield_render::scale::{Scale, ScaleSet};
@@ -420,7 +423,7 @@ fn baseline_of(name: &str, mode: Mode, mut list: ColumnList) {
             );
         });
     harness.run();
-    harness.snapshot_options(name, &SnapshotOptions::default());
+    harness.snapshot_options(name, &gpu_jitter::options(SnapshotOptions::default(), 0));
 }
 
 /// The row over a population axis drawn from 0 to 35,682 that the file sets

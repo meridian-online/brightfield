@@ -34,6 +34,9 @@
 //! snapshot tier — see `snapshot.rs` for why there is deliberately no skip
 //! switch.
 
+#[path = "support/gpu_jitter.rs"]
+mod gpu_jitter;
+
 use brightfield_shell::app::{chart_registry_with, ChartDoc};
 use brightfield_shell::capture::capture_component;
 use brightfield_shell::design::Mode;
@@ -458,7 +461,7 @@ fn every_gated_component_has_light_and_dark_goldens() {
             let name = format!("gallery_{}_{suffix}", info.id.replace('-', "_"));
             let mut harness = solo_harness(component, mode, 2.0);
             harness.run();
-            harness.snapshot_options(&name, &SnapshotOptions::default());
+            harness.snapshot_options(&name, &gpu_jitter::options(SnapshotOptions::default(), 0));
             results.extend(harness.take_snapshot_results());
         }
     }

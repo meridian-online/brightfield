@@ -28,6 +28,9 @@
 //! the pane draws it in place of the plain rows, and with none, or after it is
 //! closed, the pane draws as it did before there was a list.
 
+#[path = "support/gpu_jitter.rs"]
+mod gpu_jitter;
+
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -1486,7 +1489,7 @@ fn baseline_of(name: &str, mode: Mode, mut list: ColumnList, word: Option<&'stat
             );
         });
     harness.run();
-    harness.snapshot_options(name, &options());
+    harness.snapshot_options(name, &gpu_jitter::options(options(), 0));
 }
 
 #[test]
