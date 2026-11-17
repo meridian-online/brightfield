@@ -445,3 +445,67 @@ fn a_database_that_needs_its_folder_asks_for_it() {
         "a failure of another kind asks for nothing"
     );
 }
+
+#[test]
+fn a_protocol_and_its_source_in_two_ungranted_folders_are_asked_for_in_turn() {
+    // A Protocol made as the app makes one, then moved in the Finder into a folder no grant
+    // covers, with the record of its sources pointed at a copy of its source in a second folder
+    // no grant covers.
+    let data = folder("two-asks-data");
+    let csv = housing_in(&data, "two_asks_housing.csv");
+    grants::store().grant(&csv).expect("the file is granted");
+    let panel = Panel::default();
+    let ctx = egui::Context::default();
+    let mut maker = app(&panel);
+    frame(&mut maker, &ctx);
+    maker.open_queue().push(OpenRequest::Path(csv.clone()));
+    frame(&mut maker, &ctx);
+    let made = scratch().join("protocols").join("two_asks_housing");
+    assert_eq!(
+        maker.own_protocol().map(|p| p.dir.clone()),
+        Some(made.clone()),
+        "{}",
+        said(&maker)
+    );
+    drop(maker);
+    let dir = folder("two-asks").join("two_asks_housing");
+    std::fs::rename(&made, &dir).expect("the Protocol is moved");
+    let sources = folder("two-asks-sources");
+    let copy = housing_in(&sources, "two_asks_housing.csv");
+    let record = dir.join(".sources.json");
+    let text = std::fs::read_to_string(&record).expect("its record of sources");
+    std::fs::write(
+        &record,
+        text.replace(&*csv.to_string_lossy(), &copy.to_string_lossy()),
+    )
+    .expect("the record names the copy");
+
+    panel.choose(true);
+    let mut app = app(&panel);
+    frame(&mut app, &ctx);
+    app.open_protocol_path(&ctx, &dir.join("arcform.yaml").to_string_lossy());
+    frame(&mut app, &ctx);
+    frame(&mut app, &ctx);
+    if !managed() {
+        assert!(
+            panel.asked().is_empty(),
+            "the full edition asks for nothing"
+        );
+        return;
+    }
+    assert_eq!(
+        panel.asked(),
+        vec![dir, sources],
+        "the Protocol's folder, then the source's folder found once the first was granted"
+    );
+    assert!(
+        !app.front_door_is_live(),
+        "one gesture opens it: {}",
+        said(&app)
+    );
+    assert!(
+        !needs_grant_raised(&app),
+        "and the banner goes: {}",
+        said(&app)
+    );
+}

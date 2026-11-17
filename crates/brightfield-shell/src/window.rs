@@ -3687,9 +3687,14 @@ pub struct MeridianApp {
     /// What answers a grant ask in place of the panel: a test's stand-in. Without one the panel is
     /// raised, where dialogs are allowed.
     grant_asker: Option<Box<crate::ask_grant::Asker>>,
-    /// Whether the open under way is a launch's restore or one retried after a grant ask: a grant
-    /// it still needs is reported in the banner rather than asked for again.
+    /// Whether the open under way is a launch's restore: a grant it needs is reported in the
+    /// banner, not asked for.
     grant_report_only: bool,
+    /// The folders the grant ask being carried out asked for, while what waited on it goes
+    /// ahead: a folder it still needs among them (the analyst chose another) is reported rather
+    /// than asked for again, and one found only now, such as a source folder read once the
+    /// Protocol's folder was granted, is asked for.
+    grant_round: Option<Vec<PathBuf>>,
     /// Where the Location field's Choose… button was drawn on the last frame.
     choose_rect: Option<egui::Rect>,
     /// Choose… was clicked: the folder picker is raised after the frame, outside every borrow,
@@ -4211,6 +4216,7 @@ impl MeridianApp {
             grant_ask: None,
             grant_asker: None,
             grant_report_only: false,
+            grant_round: None,
             choose_rect: None,
             location_pick_requested: false,
             dialogs_allowed: false,
@@ -5827,8 +5833,16 @@ impl MeridianApp {
                 named.join(" and ")
             )),
         );
-        if !self.grant_report_only {
-            self.grant_ask = Some(GrantAsk { folders, why, then });
+        let to_ask: Vec<PathBuf> = match &self.grant_round {
+            Some(asked) => folders.into_iter().filter(|f| !asked.contains(f)).collect(),
+            None => folders,
+        };
+        if !self.grant_report_only && !to_ask.is_empty() {
+            self.grant_ask = Some(GrantAsk {
+                folders: to_ask,
+                why,
+                then,
+            });
         }
         ctx.request_repaint();
         true
@@ -5881,7 +5895,9 @@ impl MeridianApp {
         }
         self.notifications
             .dismiss(NotificationId::new(NEEDS_GRANT_BANNER));
-        self.grant_report_only = true;
+        let mut round = ask.folders.clone();
+        round.extend(granted.iter().cloned());
+        self.grant_round = Some(round);
         match ask.then {
             GrantThen::Request(request) => self.take_or_ask(ctx, request),
             GrantThen::Paths(paths) => {
@@ -5892,7 +5908,7 @@ impl MeridianApp {
                 self.open_paths_knowing(ctx, paths, &installed);
             }
             GrantThen::Protocol(path) => self.open_protocol_path(ctx, &path),
-            GrantThen::Move(to) => self.leave(ctx, Leaving::Move(to)),
+            GrantThen::Move(to) => self.move_when_granted(ctx, to),
             GrantThen::Browse => {
                 if let (Some(Overlay::SourcesBrowser(open)), Some(folder)) =
                     (self.overlay.as_mut(), granted.first())
@@ -5905,7 +5921,7 @@ impl MeridianApp {
                 }
             }
         }
-        self.grant_report_only = false;
+        self.grant_round = None;
         ctx.request_repaint();
     }
 
@@ -9526,6 +9542,7 @@ impl MeridianApp {
                     why: |_| crate::ask_grant::WHY_BROWSE.to_string(),
                     then: GrantThen::Browse,
                 });
+                ctx.request_repaint();
             }
             _ => {}
         }

@@ -256,7 +256,8 @@ pub fn places() -> Vec<Place> {
 }
 
 /// The managed edition's places: each of `granted`, named by its folder's name, then
-/// `downloads`, which the edition may read without a grant, leaving out a folder that is not there
+/// `downloads`, which the edition's entitlements let it read without a grant
+/// ([`crate::grants::Grants::needs`] names nothing there), leaving out a folder that is not there
 /// or is listed already, and [`Place::grant_entry`] last
 /// (`the_sources_browser_lists_granted_places_and_downloads`).
 #[must_use]
