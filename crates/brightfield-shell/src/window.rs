@@ -9569,12 +9569,20 @@ impl MeridianApp {
             }
             Some((crate::sources_browser::Effect::GrantFolder, _)) => {
                 let home = std::env::home_dir().unwrap_or_default();
-                self.grant_ask = Some(GrantAsk {
-                    folders: vec![home],
-                    why: |_| crate::ask_grant::WHY_BROWSE.to_string(),
-                    then: GrantThen::Browse,
-                });
-                ctx.request_repaint();
+                // An ask already standing is answered first, and this one says it waits. With
+                // none standing, the panel is asked for as the analyst asked, with no banner,
+                // since nothing was held back.
+                let standing = self.grant_ask.is_some();
+                self.hold_for_grants(
+                    ctx,
+                    vec![home],
+                    |_| crate::ask_grant::WHY_BROWSE.to_string(),
+                    GrantThen::Browse,
+                );
+                if !standing {
+                    self.notifications
+                        .dismiss(NotificationId::new(NEEDS_GRANT_BANNER));
+                }
             }
             _ => {}
         }
