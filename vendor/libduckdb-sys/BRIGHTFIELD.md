@@ -19,4 +19,4 @@ Brightfield, arcform and dovetail each depend on `duckdb` with `bundled`. Cargo 
 
 ## Moving to a new version
 
-When the workspace's `duckdb` moves, copy the new libduckdb-sys out of Cargo's registry (`~/.cargo/registry/src/*/libduckdb-sys-<version>`) over this directory, apply `BRIGHTFIELD.patch` to it (`patch -p0 < BRIGHTFIELD.patch`, from this directory), move the published sha256 in `scripts/check-vendored-libduckdb-sys.sh`, and move the version in the workspace's `libduckdb-sys` entry with `duckdb`'s.
+When the workspace's `duckdb` moves, copy the new libduckdb-sys out of Cargo's registry (`~/.cargo/registry/src/*/libduckdb-sys-<version>`) over this directory, apply `BRIGHTFIELD.patch` to it (`patch -p0 -V none < BRIGHTFIELD.patch`, from this directory; `-V none` keeps patch from writing a backup over the crate's own `Cargo.toml.orig`), move the published sha256 in `scripts/check-vendored-libduckdb-sys.sh`, and move the version in the workspace's `libduckdb-sys` entry with `duckdb`'s.

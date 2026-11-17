@@ -41,7 +41,9 @@ got=$(shasum -a 256 "${SCRATCH}/crate.tar.gz" | awk '{print $1}')
 [ "$got" = "$CRATE_SHA256" ] || fail "${URL} has sha256 ${got}, not the published ${CRATE_SHA256}"
 tar -xzf "${SCRATCH}/crate.tar.gz" -C "$SCRATCH"
 PUBLISHED="${SCRATCH}/libduckdb-sys-${VERSION}"
-(cd "$PUBLISHED" && patch -s -p0 --no-backup-if-mismatch < "${VENDORED}/BRIGHTFIELD.patch") \
+# -V none: no backup file, from GNU patch and from macOS's alike. The crate
+# ships a Cargo.toml.orig of its own, which a backup would overwrite.
+(cd "$PUBLISHED" && patch -s -p0 -V none < "${VENDORED}/BRIGHTFIELD.patch") \
   || fail "BRIGHTFIELD.patch does not apply to the published crate"
 patched=$(grep -E '^\+\+\+ ' "${VENDORED}/BRIGHTFIELD.patch" | awk '{print $2}' | sort | tr '\n' ' ')
 [ "$patched" = "$(printf '%s\n' $CHANGED | sort | tr '\n' ' ')" ] \
