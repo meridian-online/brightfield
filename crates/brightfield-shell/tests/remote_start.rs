@@ -6,7 +6,8 @@
 //! The claim under test is about *time*: that the frames keep coming while the
 //! bytes are still arriving. Nothing in the shipped set can show that without a
 //! source that takes a measurable while to deliver, and the published lake is
-//! not one this suite may reach — `test.yml` runs on every push and a test that
+//! not one this suite may reach — `test.yml` runs on each push to `main` and
+//! nightly, the local gate on every pull request, and a test that
 //! fetched someone else's server would be green or red for reasons that have
 //! nothing to do with this repository (`crosswalk_chart.rs` makes the same
 //! trade in the other direction, with `#[ignore]`).

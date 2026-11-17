@@ -13,9 +13,8 @@ on:
 #   compile it makes is the `xtask` crate that runs them, which has a single
 #   dependency. It should be the first thing to go red, and it should still
 #   report when the Rust suite is queued or cancelled.
-# * `test` cancels in-progress runs per ref. That job is cheap enough that it
-#   never needs cancelling, and a failing gate must be reported on every pushed
-#   commit.
+# * `test` no longer runs on pull requests. This job is cheap enough to run
+#   on every pushed commit, and a failing gate must be reported on each one.
 #
 # The `artifact-type-source` job at the foot of this file is a separate job
 # because its check reads the host triple from rustc; its own comment argues

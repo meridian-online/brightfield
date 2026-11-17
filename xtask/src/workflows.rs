@@ -197,18 +197,21 @@ pub fn runs_on_pull_request(text: &str) -> bool {
     false
 }
 
-/// True when a push to `main` triggers the workflow: `on:` names `push`
-/// inline, or its `push:` block lists `main` under `branches:`, or filters by
-/// neither branch nor tag.
+/// True when a push to `main` triggers the workflow, or may: `on:` names
+/// `push` inline, or its `push:` block lists `main` or a glob under
+/// `branches:`, ignores branches without naming `main`, or filters by neither
+/// branch nor tag. A form it cannot read counts as a push to `main`, so a
+/// workflow it misreads is checked rather than skipped.
 pub fn runs_on_push_to_main(text: &str) -> bool {
     let mut in_on = false;
     let mut trigger_indent = None;
     let mut in_push = false;
-    let mut push: Option<Vec<&str>> = None;
-    for line in text.lines() {
-        if line.trim_start().starts_with('#') || line.trim().is_empty() {
+    let mut push: Option<Vec<String>> = None;
+    for raw in text.lines() {
+        if raw.trim_start().starts_with('#') || raw.trim().is_empty() {
             continue;
         }
+        let line = raw.split(" #").next().unwrap_or(raw);
         if indent(line) == 0 {
             if in_on {
                 break;
@@ -228,40 +231,65 @@ pub fn runs_on_push_to_main(text: &str) -> bool {
             continue;
         }
         if indent(line) == *trigger_indent.get_or_insert(indent(line)) {
-            in_push = line.trim() == "push:";
-            if in_push {
-                push = Some(Vec::new());
+            in_push = false;
+            if let Some(rest) = line.trim().strip_prefix("push:") {
+                let rest = rest.trim();
+                if rest.is_empty() {
+                    in_push = true;
+                    push = Some(Vec::new());
+                } else {
+                    // An inline mapping or a null: read it as one line of the
+                    // block, so only a tag-only filter is left out.
+                    return !rest.contains("tags") || rest.contains("branches");
+                }
             }
         } else if in_push {
             if let Some(body) = push.as_mut() {
-                body.push(line.trim());
+                body.push(line.trim().to_owned());
             }
         }
     }
     let Some(body) = push else {
         return false;
     };
+    let matches_main = |item: &str| {
+        item.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '*')
+            .any(|word| word == "main" || word.contains('*'))
+    };
     let names_main = |item: &str| {
         item.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
             .any(|word| word == "main")
     };
     let mut filtered = false;
-    let mut in_branches = false;
+    // Which branch list the `- item` lines belong to, if any.
+    let mut list: Option<bool> = None;
+    let mut ignore_names_main = false;
+    let mut has_ignore = false;
     for line in &body {
-        if let Some(rest) = line.strip_prefix("branches:") {
+        if let Some(rest) = line.strip_prefix("branches-ignore:") {
             filtered = true;
-            in_branches = true;
-            if names_main(rest) {
+            has_ignore = true;
+            list = Some(false);
+            ignore_names_main |= names_main(rest);
+        } else if let Some(rest) = line.strip_prefix("branches:") {
+            filtered = true;
+            list = Some(true);
+            if matches_main(rest) {
                 return true;
             }
         } else if let Some(item) = line.strip_prefix('-') {
-            if in_branches && names_main(item) {
-                return true;
+            match list {
+                Some(true) if matches_main(item) => return true,
+                Some(false) => ignore_names_main |= names_main(item),
+                _ => {}
             }
         } else {
-            in_branches = false;
-            filtered |= line.starts_with("branches") || line.starts_with("tags");
+            list = None;
+            filtered |= line.starts_with("tags");
         }
+    }
+    if has_ignore {
+        return !ignore_names_main;
     }
     !filtered
 }
@@ -400,6 +428,32 @@ mod tests {
             "on:\n  schedule:\n    - cron: '37 6 * * *'\n  workflow_dispatch:\njobs:\n"
         ));
         assert!(!runs_on_push_to_main("on:\n  pull_request:\njobs:\n"));
+    }
+
+    #[test]
+    fn the_push_reader_counts_a_form_it_cannot_rule_out_as_main() {
+        assert!(runs_on_push_to_main(
+            "on:\n  push:  # every branch\njobs:\n"
+        ));
+        assert!(runs_on_push_to_main(
+            "on:\n  push: {branches: [main]}\njobs:\n"
+        ));
+        assert!(runs_on_push_to_main("on:\n  push: ~\njobs:\n"));
+        assert!(!runs_on_push_to_main(
+            "on:\n  push: {tags: ['v*']}\njobs:\n"
+        ));
+        assert!(runs_on_push_to_main(
+            "on:\n  push:\n    branches: ['**']\njobs:\n"
+        ));
+        assert!(runs_on_push_to_main(
+            "on:\n  push:\n    branches:\n      - 'release/*'\njobs:\n"
+        ));
+        assert!(runs_on_push_to_main(
+            "on:\n  push:\n    branches-ignore: [release]\njobs:\n"
+        ));
+        assert!(!runs_on_push_to_main(
+            "on:\n  push:\n    branches-ignore:\n      - main\njobs:\n"
+        ));
     }
 
     #[test]

@@ -69,8 +69,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-# `test` groups per ref and cancels in flight, because stacked pushes to a PR
-# branch make earlier runs worthless. Neither half applies here. The group is
+# `test` groups per commit and event and cancels nothing. The group here is
 # the workflow itself (a schedule has one meaningful ref), and cancellation is
 # OFF: if a cron run is under way when somebody dispatches manually, the
 # already-running answer is the one worth keeping, and two runs of a job that

@@ -15,13 +15,16 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-# No run supersedes another. A merge used to cancel the `main` run still in
+# No run cancels another. A merge used to cancel the `main` run still in
 # flight for the merge before it, which ended that run with no verdict on a
 # commit that had already landed. The group is per commit for the same reason:
 # one group shared by every `main` run lets a third merge replace a second run
-# still queued behind the first, which is also a run with no verdict.
+# still queued behind the first, which is also a run with no verdict. The
+# event is in the group too, so a nightly or dispatched run of a commit never
+# shares a queue with its push run: GitHub cancels a pending run when a third
+# arrives in its group, whatever `cancel-in-progress` says.
 concurrency:
-  group: test-${{ github.sha }}
+  group: test-${{ github.sha }}-${{ github.event_name }}
   cancel-in-progress: false
 
 jobs:
@@ -267,9 +270,9 @@ jobs:
       # repo needs no extra credential), and `persist-credentials: false`
       # because nothing here pushes.
       #
-      # A red step below means either this PR moved the pin backwards or the
-      # sibling repo moved ahead of it. Both are worth a person's attention and
-      # both are fixed the same way — README §"The arcform dependency".
+      # A red step below means either a merged change moved the pin backwards
+      # or the sibling repo moved ahead of it. Both are worth a person's
+      # attention and both are fixed the same way — README §"The arcform dependency".
       - name: check out the sibling data repo's Protocols
         uses: actions/checkout@v4
         with:
