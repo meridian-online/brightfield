@@ -17,6 +17,7 @@ The built-in extensions are autocomplete, excel, sqlite, httpfs, ducklake, spati
 - **Pins.** DuckDB v2.0.0 at `d54cbbe3df`, fetched by commit and checked. The five out-of-tree extensions are at the commits DuckDB v2.0.0 itself pins, so this is the extension code the DuckDB release published as files. vcpkg, which builds the C libraries the extensions need (GDAL, PROJ, GEOS, curl, OpenSSL and others), is at the commit DuckDB's release workflows use, with a triplet that builds them for release only and for macOS 11, DuckDB's own floor (`scripts/duckdb-managed/triplets/`). FineType is at the tag `packaging/finetype-pin.env` names, and its commit is checked.
 - **The shell links the library.** Two checked edits to DuckDB's `tools/shell/CMakeLists.txt` point the shell at the shared library instead of a static copy. Its rpaths are `@executable_path/../lib`, for the build's layout, and `@executable_path/../Frameworks`, for an app bundle's `Contents/Helpers/`.
 - **FineType links statically, unchanged.** FineType is a Rust extension written against DuckDB's C extension API. DuckDB 2.0 links such an extension statically through a describe function (`duckdb_static_extension.h`), but loads it with no function table, expecting it to call DuckDB's C functions directly. FineType's bindings, duckdb-rs's `loadable-extension`, only call through that table. `scripts/duckdb-managed/finetype/` wraps FineType's entry point in a small one that hands it the table DuckDB gives a loaded extension file, built by DuckDB's own `CreateAPIv1()`. So the design's fallback, shipping without in-process FineType typing, was not needed.
+- **GEOS is a library of its own.** GEOS, which spatial and GDAL use, is LGPL-2.1, and the managed edition distributes it, where the full edition never does, since there spatial is fetched from DuckDB at run time. Hugh chose on 2026-11-17 to build GEOS as its own shared library, `libgeos.dylib` and `libgeos_c.dylib` beside `libduckdb.dylib` (in `Contents/Frameworks/` in the app), rather than statically inside it, so it can be replaced on its own as the LGPL asks. The vcpkg triplet builds GEOS alone shared; the library links it by `@rpath` and finds it through its `@loader_path` rpath. The build fails if the library links any other non-system library dynamically. Every other C library it links is under a permissive licence: curl, expat, GDAL, libjpeg-turbo, liblzma, minizip-ng, OpenSSL, PROJ, roaring, SQLite, libtiff and zlib.
 - **The sqlite extension's own SQLite is renamed.** The sqlite extension compiles its own SQLite, and spatial links vcpkg's for GDAL and PROJ. In one library their `sqlite3_*` symbols collide. A patch in `scripts/duckdb-managed/patches/sqlite_scanner/`, applied through DuckDB's own extension-patch mechanism, renames the sqlite extension's copy at compile time with a force-included header. Neither extension's code changes.
 
 A cold build is 30 to 90 minutes, most of it the C libraries spatial needs; vcpkg keeps those in its binary cache, so a later build skips them.
@@ -29,7 +30,7 @@ The managed edition's app binary carries the rpath `@executable_path/../Framewor
 
 ## What checks it
 
-- `scripts/build-duckdb-selftest.sh`, run by the `duckdb-managed` step after the build: the shell's `--version` prints `v2.0.0 (Cyanoptera) d54cbbe3df`, as the release does and as arc checks; the seven extensions are loaded and statically linked, and autocomplete, spatial and FineType answer; no extension file exists and none is written; the shell links exactly `@rpath/libduckdb.dylib`, binds DuckDB's symbols from it, and at run time loads that library and no other, from the build's layout and from an app bundle's.
+- `scripts/build-duckdb-selftest.sh`, run by the `duckdb-managed` step after the build: the shell's `--version` prints `v2.0.0 (Cyanoptera) d54cbbe3df`, as the release does and as arc checks; the seven extensions are loaded and statically linked, and autocomplete, spatial and FineType answer; no extension file exists and none is written; the shell links exactly `@rpath/libduckdb.dylib`, binds DuckDB's symbols from it, and at run time loads that library and no other, from the build's layout and from an app bundle's; and GEOS is its own library, carried in none of DuckDB's, loaded from `Contents/Frameworks/` in a bundle.
 - `crates/brightfield-engine/tests/managed_duckdb.rs`, in the `managed-duckdb-test` step: with the network denied and an empty extension directory, the engine reads a workbook and a SQLite file in process; and the test binary links the library and defines none of DuckDB's C API itself.
 - `crates/brightfield-shell/tests/managed_duckdb_link.rs`, in the same step: Brightfield, laid out as the bundle lays it out, loads `Contents/Frameworks/libduckdb.dylib` and no other DuckDB.
 
@@ -41,15 +42,15 @@ Measured on 2026-11-17 on Apple Silicon, release builds:
 
 | | bytes |
 |---|---|
-| `libduckdb.dylib`, DuckDB with the eleven extensions | 132,688,400 |
+| `libduckdb.dylib`, DuckDB with the eleven extensions | 129,800,352 |
+| `libgeos.dylib` and `libgeos_c.dylib`, GEOS beside it | 3,474,288 |
 | DuckDB's shell, linking that library | 958,864 |
 | DuckDB v2.0.0's release shell, for comparison | 66,244,528 |
 | Brightfield's binary, managed edition | 123,431,232 |
 | Brightfield's binary, full edition, with its static DuckDB | 184,100,272 |
 
-So the managed edition's DuckDB, library and shell together, is about 133.6 MB, against about 126.9 MB of DuckDB in the full edition's bundle before any extension is fetched: the 60.7 MB by which its Brightfield binary is larger, and the release shell. The full edition's v0.1.8 disk image is 117.9 MB. The managed edition's disk image is measured when its packaging is built.
+So the managed edition's DuckDB, its libraries and shell together, is about 134.2 MB, against about 126.9 MB of DuckDB in the full edition's bundle before any extension is fetched: the 60.7 MB by which its Brightfield binary is larger, and the release shell. The full edition's v0.1.8 disk image is 117.9 MB. The managed edition's disk image is measured when its packaging is built.
 
 ## Open
 
-- GEOS, which spatial uses, is LGPL-2.1, and it is linked statically into the library. Every other C library the build links is under a permissive licence. The full edition never distributes GEOS, since spatial is fetched from DuckDB at run time; the managed edition would. How the Store build meets the LGPL is Hugh's decision.
 - An `INSTALL` of an extension that is already compiled in still goes to the network in this build, as in DuckDB's release. Offline it fails; online it would fetch an extension file. Turning installs and loads off in the managed edition is its own piece of work, which handles it.

@@ -58,11 +58,15 @@ duckdb_extension_load(ducklake
     APPLY_PATCHES
     )
 
+# APPLY_PATCHES: Brightfield's patch from scripts/duckdb-managed/patches/spatial/,
+# which links GEOS's C++ library as well as its C API. Spatial calls one function
+# from it, and GEOS is a shared library in this build, for its LGPL licence.
 duckdb_extension_load(spatial
     GIT_URL https://github.com/duckdb/duckdb-spatial
     GIT_TAG 4e066c17e2d1f24625baff4c62430d68ceb4e41f
     INCLUDE_DIR src/spatial
     TEST_DIR test/sql
+    APPLY_PATCHES
     )
 
 # FineType is Meridian's own extension, written in Rust against DuckDB's C

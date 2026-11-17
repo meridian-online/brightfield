@@ -13,3 +13,12 @@ set(VCPKG_CMAKE_SYSTEM_NAME Darwin)
 set(VCPKG_OSX_ARCHITECTURES arm64)
 set(VCPKG_OSX_DEPLOYMENT_TARGET 11.0)
 set(VCPKG_BUILD_TYPE release)
+
+# GEOS, which spatial and GDAL use, is LGPL-2.1. Built as its own shared
+# library, it ships beside DuckDB's in the app's Contents/Frameworks rather than
+# inside it, so it can be replaced on its own as the LGPL asks. Hugh chose this
+# on 2026-11-17. Every other library here is under a permissive licence and stays
+# static.
+if(PORT STREQUAL "geos")
+  set(VCPKG_LIBRARY_LINKAGE dynamic)
+endif()

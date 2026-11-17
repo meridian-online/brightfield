@@ -20,7 +20,10 @@
 #      DuckDB's symbols from it rather than carrying its own, and at run time loads that library and no other, both
 #      from the output layout (bin/ beside lib/) and from an app bundle's
 #      (Contents/Helpers/ beside Contents/Frameworks/);
-#   6. the library's install name is @rpath/libduckdb.dylib.
+#   6. the library's install name is @rpath/libduckdb.dylib;
+#   7. GEOS, which is LGPL-2.1, is a library of its own beside DuckDB's, which
+#      links it by @rpath and carries none of GEOS's code itself, and from an app
+#      bundle the shell loads it from Contents/Frameworks/.
 #
 # It ends by printing the library's and the shell's sizes.
 set -euo pipefail
@@ -128,13 +131,29 @@ fi
 BUNDLE="${SCRATCH}/Brightfield.app/Contents"
 mkdir -p "${BUNDLE}/Helpers" "${BUNDLE}/Frameworks"
 cp "$CLI" "${BUNDLE}/Helpers/duckdb"
-cp "$LIB" "${BUNDLE}/Frameworks/libduckdb.dylib"
+cp "${DIR}"/lib/*.dylib "${BUNDLE}/Frameworks/"
 bundle_lib=$(cd "${BUNDLE}/Frameworks" && pwd -P)/libduckdb.dylib
 from_bundle=$(loaded_from "${BUNDLE}/Helpers/duckdb")
 if [ "$from_bundle" = "$bundle_lib" ]; then
   pass "in an app bundle's Helpers, the shell loads Contents/Frameworks/libduckdb.dylib and no other DuckDB"
 else
   fail "in an app bundle's Helpers, the shell loads: ${from_bundle:-no DuckDB library}"
+fi
+
+# Every file's rpaths are the ones the build gives it, so none reaches into a
+# build tree: @loader_path for each library, and bin/'s and an app's Helpers'
+# two layouts for the shell.
+rpaths() { otool -l "$1" | awk '/cmd LC_RPATH/ {getline; getline; print $2}' | tr '\n' ' '; }
+bad_rpaths=""
+for lib in "${DIR}"/lib/*.dylib; do
+  [ "$(rpaths "$lib")" = "@loader_path " ] || bad_rpaths="${bad_rpaths} $(basename "$lib"): $(rpaths "$lib");"
+done
+[ "$(rpaths "$CLI")" = "@executable_path/../lib @executable_path/../Frameworks " ] \
+  || bad_rpaths="${bad_rpaths} duckdb: $(rpaths "$CLI");"
+if [ -z "$bad_rpaths" ]; then
+  pass "every library's only rpath is @loader_path, and the shell's are its two layouts"
+else
+  fail "rpaths other than the build's own:${bad_rpaths}"
 fi
 
 # 6. The library's install name.
@@ -145,7 +164,32 @@ else
   fail "the library's install name is ${id}"
 fi
 
-echo "sizes: libduckdb.dylib $(stat -f %z "$LIB") bytes, duckdb $(stat -f %z "$CLI") bytes"
+# 7. GEOS, its own library.
+geos_links=$(otool -L "$LIB" | tail -n +2 | awk '{print $1}' | grep -i geos || true)
+if [ -n "$geos_links" ] && ! printf '%s\n' "$geos_links" | grep -qv '^@rpath/libgeos'; then
+  pass "the library links GEOS by rpath: $(printf '%s' "$geos_links" | tr '\n' ' ')"
+else
+  fail "the library links GEOS as: ${geos_links:-nothing}"
+fi
+if nm -gUj "$LIB" | grep -qE '^_GEOS'; then
+  fail "the library defines GEOS's functions itself, so GEOS is linked into it"
+else
+  pass "the library carries none of GEOS's code"
+fi
+geos_loaded=$(DYLD_PRINT_LIBRARIES=1 HOME="${SCRATCH}/home" DUCKDB_AGENT_MODE=0 "${BUNDLE}/Helpers/duckdb" -no-init -batch \
+  -c "SELECT ST_AsText(ST_Buffer(ST_Point(0, 0), 1)) IS NOT NULL;" 2>&1 >/dev/null \
+  | sed -n 's/^dyld\[[0-9]*\]: <[^>]*> //p' | grep -i '/libgeos[^/]*$' || true)
+frameworks=$(cd "${BUNDLE}/Frameworks" && pwd -P)
+if [ -n "$geos_loaded" ] && ! printf '%s\n' "$geos_loaded" | grep -qv "^${frameworks}/"; then
+  pass "in an app bundle, GEOS loads from Contents/Frameworks"
+else
+  fail "in an app bundle, GEOS loads from: ${geos_loaded:-nowhere}"
+fi
+
+for lib in "${DIR}"/lib/*.dylib; do
+  echo "size: $(basename "$lib") $(stat -f %z "$lib") bytes"
+done
+echo "size: duckdb $(stat -f %z "$CLI") bytes"
 if [ "$failures" -gt 0 ]; then
   echo "build-duckdb-selftest: ${failures} check(s) failed" >&2
   exit 1

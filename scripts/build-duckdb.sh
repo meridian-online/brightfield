@@ -10,12 +10,14 @@
 # Output, under target/duckdb-managed/ (BRIGHTFIELD_DUCKDB_MANAGED_DIR moves it):
 #   lib/libduckdb.dylib   DuckDB v2.0.0 at d54cbbe3df, its install name
 #                         @rpath/libduckdb.dylib
+#   lib/libgeos*.dylib    GEOS, which spatial uses, as its own library beside
+#                         it, since GEOS is LGPL-2.1
 #   include/              duckdb.h and the other C API headers
 #   bin/duckdb            DuckDB's shell, which loads lib/libduckdb.dylib through
 #                         its rpaths: @executable_path/../lib here, and
 #                         @executable_path/../Frameworks for an app bundle's
 #                         Contents/Helpers/
-#   sizes.txt             the sizes of the library and the shell
+#   sizes.txt             the sizes of the libraries and the shell
 #
 # WHY ONE LIBRARY. The Mac App Store edition runs DuckDB twice: in process, in
 # Brightfield's window, and as the shell arc runs a Protocol's SQL steps with.
@@ -239,11 +241,61 @@ cp "${SRC}/src/include/duckdb.h" "${SRC}/src/include/duckdb_extension.h" \
   "${SRC}/src/include/duckdb_static_extension.h" "${OUT}/include/"
 
 install_name_tool -id "@rpath/libduckdb.dylib" "${OUT}/lib/libduckdb.dylib"
+
+# The vcpkg libraries the library links dynamically: GEOS's two, which the
+# triplet builds shared because GEOS is LGPL-2.1 (scripts/duckdb-managed/
+# triplets/). Each is copied beside the library, named by @rpath, and found
+# through the library's @loader_path rpath, which is lib/ here and
+# Contents/Frameworks/ in the app. Any other library outside the system's
+# fails the build, so nothing lands in the app without being chosen.
+VCPKG_LIB="${BUILD}/vcpkg_installed/arm64-osx-brightfield/lib"
+# A staged file keeps only the rpaths given here: the link leaves ones into this
+# build's tree, which would load a library from the build instead of from
+# beside it.
+clear_rpaths() {
+  while read -r rpath; do
+    install_name_tool -delete_rpath "$rpath" "$1"
+  done < <(otool -l "$1" | awk '/cmd LC_RPATH/ {getline; getline; print $2}')
+}
+clear_rpaths "${OUT}/lib/libduckdb.dylib"
+install_name_tool -add_rpath "@loader_path" "${OUT}/lib/libduckdb.dylib"
+non_system() { otool -L "$1" | tail -n +2 | awk '{print $1}' | grep -vE '^(/usr/lib/|/System/)' || true; }
+staged=""
+pending="${OUT}/lib/libduckdb.dylib"
+while [ -n "$pending" ]; do
+  next=""
+  for file in $pending; do
+    for dep in $(non_system "$file"); do
+      name=$(basename "$dep")
+      case "$dep" in
+        "@rpath/libduckdb.dylib") continue ;;
+        "@rpath/${name}"|"${VCPKG_LIB}/${name}"|"@loader_path/${name}") ;;
+        *) fail "$(basename "$file") links ${dep}, which is neither DuckDB nor a vcpkg library this build chose to ship" ;;
+      esac
+      case "$name" in
+        libgeos*.dylib) ;;
+        *) fail "$(basename "$file") links ${name} dynamically; only GEOS is meant to ship as its own library" ;;
+      esac
+      [ "$dep" = "@rpath/${name}" ] || install_name_tool -change "$dep" "@rpath/${name}" "$file"
+      if [ ! -f "${OUT}/lib/${name}" ]; then
+        real=$(cd "$VCPKG_LIB" && pwd -P)/${name}
+        [ -f "$real" ] || fail "no ${name} in ${VCPKG_LIB}"
+        cp -L "$real" "${OUT}/lib/${name}"
+        chmod u+w "${OUT}/lib/${name}"
+        install_name_tool -id "@rpath/${name}" "${OUT}/lib/${name}"
+        clear_rpaths "${OUT}/lib/${name}"
+        install_name_tool -add_rpath "@loader_path" "${OUT}/lib/${name}"
+        staged="${staged} ${name}"
+        next="${next} ${OUT}/lib/${name}"
+      fi
+    done
+  done
+  pending="$next"
+done
+[ -n "$staged" ] || fail "the library links no GEOS library of its own; the triplet should build GEOS shared"
 # The shell's build-tree rpaths point into this checkout; replace them with the
 # two layouts it runs from.
-while read -r rpath; do
-  install_name_tool -delete_rpath "$rpath" "${OUT}/bin/duckdb"
-done < <(otool -l "${OUT}/bin/duckdb" | awk '/cmd LC_RPATH/ {getline; getline; print $2}')
+clear_rpaths "${OUT}/bin/duckdb"
 current=$(otool -L "${OUT}/bin/duckdb" | awk '/libduckdb/ {print $1}')
 [ -n "$current" ] || fail "the shell does not link libduckdb.dylib: $(otool -L "${OUT}/bin/duckdb")"
 [ "$current" = "@rpath/libduckdb.dylib" ] \
@@ -253,11 +305,15 @@ install_name_tool -add_rpath "@executable_path/../Frameworks" "${OUT}/bin/duckdb
 # install_name_tool invalidates the ad-hoc signature the linker gave each file,
 # and Apple Silicon refuses to run unsigned code. Sign them again, ad hoc; the
 # Store packaging signs them with the distribution identity.
-codesign --force --sign - "${OUT}/lib/libduckdb.dylib" >&2
+for lib in "${OUT}"/lib/*.dylib; do
+  codesign --force --sign - "$lib" >&2
+done
 codesign --force --sign - "${OUT}/bin/duckdb" >&2
 
 {
-  echo "libduckdb.dylib $(stat -f %z "${OUT}/lib/libduckdb.dylib")"
+  for lib in "${OUT}"/lib/*.dylib; do
+    echo "$(basename "$lib") $(stat -f %z "$lib")"
+  done
   echo "duckdb $(stat -f %z "${OUT}/bin/duckdb")"
 } > "${OUT}/sizes.txt"
 

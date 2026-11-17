@@ -89,9 +89,18 @@ fn the_app_loads_the_bundled_duckdb_and_no_other() {
     }
     let app = contents.join("MacOS/Brightfield");
     std::fs::copy(exe, &app).expect("copy the app binary into the bundle");
+    // DuckDB's library and the libraries it links beside it (GEOS), as the
+    // bundle carries them.
     let library = managed_library();
-    std::fs::copy(&library, contents.join("Frameworks/libduckdb.dylib"))
-        .unwrap_or_else(|e| panic!("copy {} into the bundle: {e}", library.display()));
+    let lib_dir = library.parent().expect("the library's directory");
+    for entry in std::fs::read_dir(lib_dir).expect("read the built libraries") {
+        let path = entry.expect("a built library").path();
+        if path.extension().is_some_and(|e| e == "dylib") {
+            let name = path.file_name().expect("a file name");
+            std::fs::copy(&path, contents.join("Frameworks").join(name))
+                .unwrap_or_else(|e| panic!("copy {} into the bundle: {e}", path.display()));
+        }
+    }
 
     let out = Command::new(&app)
         .arg("--version")
