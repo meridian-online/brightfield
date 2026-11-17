@@ -15435,6 +15435,29 @@ impl MeridianApp {
         if self.refuse_if_the_folder_is_gone(ctx) {
             return false;
         }
+        // A Protocol with a step this edition cannot run runs nothing in it, trusted or not: one
+        // held restricted for it, and one a Save just gave such a step.
+        let beyond = self
+            .held_protocol_dir()
+            .and_then(|dir| crate::beyond_edition::of_folder(&dir, crate::edition::current()));
+        if let Some(beyond) = beyond {
+            let body = format!(
+                "{} The full edition runs it: {}",
+                crate::beyond_edition::sentence(&beyond),
+                crate::edition::full_edition_url()
+            );
+            eprintln!("could not run the Protocol: {body}");
+            self.notifications.raise(
+                Notification::new(
+                    NotificationId::new(RESTRICTED_BANNER),
+                    Severity::Warning,
+                    BEYOND_EDITION_TITLE,
+                )
+                .body(body),
+            );
+            ctx.request_repaint();
+            return false;
+        }
         // A Protocol whose trust was taken away while it was open runs nothing either, though a
         // draft kept it on the canvas rather than opening it again restricted.
         if let Some(dir) = self.held_untrusted() {
@@ -15449,25 +15472,6 @@ impl MeridianApp {
                     NotificationId::new(RESTRICTED_BANNER),
                     Severity::Warning,
                     "This Protocol is not trusted, so it was not run",
-                )
-                .body(body),
-            );
-            ctx.request_repaint();
-            return false;
-        }
-        // A Protocol held for a step this edition cannot run runs nothing in it, trusted or not.
-        if let Some(beyond) = self.restricted.as_ref().and_then(|r| r.beyond.clone()) {
-            let body = format!(
-                "{} The full edition runs it: {}",
-                crate::beyond_edition::sentence(&beyond),
-                crate::edition::full_edition_url()
-            );
-            eprintln!("could not run the Protocol: {body}");
-            self.notifications.raise(
-                Notification::new(
-                    NotificationId::new(RESTRICTED_BANNER),
-                    Severity::Warning,
-                    BEYOND_EDITION_TITLE,
                 )
                 .body(body),
             );
@@ -15919,7 +15923,7 @@ impl MeridianApp {
         self.restricted = Some(Restricted {
             dir: dir.clone(),
             origin,
-            beyond,
+            beyond: beyond.clone(),
         });
         // Remembered as any Protocol opened from disk is, so Recents and the next launch reopen
         // it, restricted again until it is trusted.
@@ -15935,13 +15939,18 @@ impl MeridianApp {
             self.grid_spot,
             now_secs(),
         );
-        self.toasts.push(Toast::new(
-            Severity::Info,
+        let opened = if beyond.is_some() {
+            format!(
+                "Opened {}, restricted: this edition can't run it",
+                display_name(&dir)
+            )
+        } else {
             format!(
                 "Opened {}, restricted until you trust it",
                 display_name(&dir)
-            ),
-        ));
+            )
+        };
+        self.toasts.push(Toast::new(Severity::Info, opened));
         self.retitle(ctx);
         ctx.request_repaint();
     }
@@ -16054,7 +16063,7 @@ impl MeridianApp {
     /// `keep_editing_after_untrusting_refuses_a_run`); this is the one that says so in a banner.
     fn held_untrusted(&self) -> Option<PathBuf> {
         self.held_protocol_dir()
-            .filter(|dir| crate::trust::refuses_run(dir))
+            .filter(|dir| crate::trust::revoked_and_untrusted(dir))
     }
 
     /// The Protocol the window holds restricted, while one is open.

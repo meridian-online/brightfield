@@ -82,9 +82,15 @@ static REVOKED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 /// one opened from the command line, which runs with no record, still runs.
 #[must_use]
 pub fn refuses_run(dir: &Path) -> bool {
-    if crate::beyond_edition::of_folder(dir, crate::edition::current()).is_some() {
-        return true;
-    }
+    crate::beyond_edition::of_folder(dir, crate::edition::current()).is_some()
+        || revoked_and_untrusted(dir)
+}
+
+/// Whether this process stopped trusting the Protocol in `dir` and the store does not trust it
+/// again: the half of [`refuses_run`] that trust answers, which the window names apart from a step
+/// beyond the edition.
+#[must_use]
+pub fn revoked_and_untrusted(dir: &Path) -> bool {
     let path = Place::of(dir).path;
     REVOKED
         .lock()

@@ -350,6 +350,30 @@ fn a_trusted_protocol_beyond_the_edition_opens_restricted_in_the_window() {
         !app.run_protocol(&ctx),
         "a Protocol beyond the edition does not run"
     );
+    let raised: Vec<(String, String)> = app
+        .notifications()
+        .iter()
+        .map(|n| {
+            (
+                n.title.to_string(),
+                n.body.clone().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    assert!(
+        raised.iter().any(
+            |(title, body)| title == brightfield_shell::window::BEYOND_EDITION_TITLE
+                && body.contains("Step clean runs uv")
+                && body.contains(brightfield_shell::edition::full_edition_url())
+        ),
+        "the Run names the step and the full edition, not trust: {raised:?}"
+    );
+    assert!(
+        !raised
+            .iter()
+            .any(|(_, body)| body.contains("stopped trusting")),
+        "{raised:?}"
+    );
 }
 
 /// In the full edition the same trusted Protocol opens unrestricted.
