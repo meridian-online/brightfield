@@ -17,6 +17,9 @@ default-run = "brightfield-shell"
 brightfield-render = { workspace = true }
 # Spec -> engine -> executed marks -> Vello scene pipeline (all framework-free).
 brightfield-engine = { workspace = true }
+# Only for the managed-duckdb feature, whose build script reads the DuckDB
+# library's directory from it (build.rs).
+libduckdb-sys = { workspace = true, optional = true }
 brightfield-spec = { workspace = true }
 brightfield-sql = { workspace = true }
 # The portability contract: the preflight walk answering "which parts of this
@@ -210,8 +213,14 @@ plist = "1"
 
 [features]
 # Builds the managed edition, the sandboxed one for the Mac App Store, in place
-# of the full edition. Only `src/edition.rs` reads it.
+# of the full edition. Only `src/edition.rs` reads it. On its own it keeps
+# duckdb-rs's bundled DuckDB, so the edition's tests build in minutes.
 managed-edition = []
+# The managed edition as the Mac App Store ships it: the edition, running on the
+# DuckDB library scripts/build-duckdb.sh builds (docs/managed-duckdb.md) in
+# place of the bundled one. The Store build turns this on; it needs that script
+# to have run.
+managed-duckdb = ["managed-edition", "brightfield-engine/managed-duckdb", "dep:libduckdb-sys"]
 
 [[bin]]
 name = "brightfield-shell"

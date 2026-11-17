@@ -230,6 +230,13 @@ jobs:
       - name: fetch-step drop self-test
         run: cargo xtask ci --step drop-fetch-steps-selftest
 
+      # vendor/libduckdb-sys is crates.io's libduckdb-sys with one feature
+      # added for the managed edition. Cargo.lock records no checksum for a
+      # path dependency, so this compares it, file by file, with the published
+      # crate, checked against the checksum crates.io's index records.
+      - name: the vendored libduckdb-sys is the published crate and its one change
+        run: cargo xtask ci --step vendored-libduckdb-sys
+
   # THE ONE GATE IN THIS WORKFLOW WHOSE CHECK READS RUSTC. It became a job of
   # its own so the job above could run with no toolchain; that job installs
   # one now, to build the command, and this job stays its own check on a pull

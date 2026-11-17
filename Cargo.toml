@@ -66,6 +66,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # `bundled` builds DuckDB from source, so no member needs a system libduckdb. One
 # spec here is one `duckdb` build in the graph.
 duckdb = { version = "=1.20000.0", features = ["bundled"] }
+# DuckDB's C API crate, named directly only by the managed edition's feature, to
+# switch it to `managed-linked` (vendor/libduckdb-sys). On duckdb's version line.
+libduckdb-sys = { version = "=1.20000.0" }
 # VERSION LOCK — egui 0.35 rides wgpu 29, the same wgpu major Vello 0.9 uses, so
 # `egui_wgpu`'s wgpu and `vello::wgpu` resolve to ONE crate instance and therefore
 # one `wgpu::Device`. That is what lets a Vello scene rasterise onto a texture egui
@@ -128,6 +131,16 @@ pedantic = { level = "allow", priority = -1 }
 # this card asks that a lever which does not pay be written down as one.
 [profile.dev]
 debug = "line-tables-only"
+
+# libduckdb-sys as crates.io publishes 1.20000.0, with one feature added,
+# `managed-linked`, which the managed edition turns on to link the DuckDB library
+# scripts/build-duckdb.sh builds instead of compiling the bundled one. Every
+# DuckDB user in the graph (this workspace, arcform and dovetail) asks for
+# `bundled`, and a feature cannot be switched off once one crate turns it on, so
+# the switch has to live in the crate's build script. vendor/libduckdb-sys/
+# BRIGHTFIELD.md lists the change and how to carry it to a new version.
+[patch.crates-io]
+libduckdb-sys = { path = "vendor/libduckdb-sys" }
 
 # DuckDB's C++ is built without debug info in a dev build, and so as DuckDB's
 # release build is. From 1.20000.0, libduckdb-sys defines DuckDB's `DEBUG` when

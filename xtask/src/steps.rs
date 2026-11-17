@@ -339,6 +339,54 @@ pub static STEPS: &[Step] = &[
         run: conformance,
     },
     Step {
+        name: "vendored-libduckdb-sys",
+        runs: "./scripts/check-vendored-libduckdb-sys.sh",
+        only_in_ci: None,
+        run: |c| c.script("scripts/check-vendored-libduckdb-sys.sh", &[]),
+    },
+    Step {
+        name: "duckdb-managed",
+        runs: "./scripts/build-duckdb.sh, then ./scripts/build-duckdb-selftest.sh",
+        only_in_ci: Some(
+            "it builds DuckDB and seven extensions from source, 30 to 90 minutes cold; \
+             managed-duckdb.yml runs it when the build changes, and --step runs it here",
+        ),
+        run: |c| {
+            c.script("scripts/build-duckdb.sh", &[])?;
+            c.script("scripts/build-duckdb-selftest.sh", &[])
+        },
+    },
+    Step {
+        name: "managed-duckdb-test",
+        runs: "cargo test --locked --features managed-duckdb, -p brightfield-engine --test managed_duckdb and -p brightfield-shell --test managed_duckdb_link",
+        only_in_ci: Some(
+            "it links the library the duckdb-managed step builds; managed-duckdb.yml runs it \
+             after that step, and --step runs it here once the library is built",
+        ),
+        run: |c| {
+            c.run_cargo(&[
+                "test",
+                "--locked",
+                "-p",
+                "brightfield-engine",
+                "--features",
+                "managed-duckdb",
+                "--test",
+                "managed_duckdb",
+            ])?;
+            c.run_cargo(&[
+                "test",
+                "--locked",
+                "-p",
+                "brightfield-shell",
+                "--features",
+                "managed-duckdb",
+                "--test",
+                "managed_duckdb_link",
+            ])
+        },
+    },
+    Step {
         name: "managed-edition",
         runs: "cargo test --locked -p brightfield-shell --features managed-edition --test edition --test grants, then --test grants -- --ignored, at least 1 executed",
         only_in_ci: None,
