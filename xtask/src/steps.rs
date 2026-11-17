@@ -358,7 +358,7 @@ pub static STEPS: &[Step] = &[
     },
     Step {
         name: "managed-duckdb-test",
-        runs: "cargo test --locked --features managed-edition, -p brightfield-engine --test managed_duckdb and -p brightfield-shell --test managed_duckdb_link",
+        runs: "cargo test --locked --features managed-edition, -p brightfield-engine --test managed_duckdb and -p brightfield-shell --test managed_duckdb_link --test edition",
         only_in_ci: Some(
             "it links the library the duckdb-managed step builds; managed-duckdb.yml runs it \
              after that step, and --step runs it here once the library is built",
@@ -383,6 +383,8 @@ pub static STEPS: &[Step] = &[
                 "managed-edition",
                 "--test",
                 "managed_duckdb_link",
+                "--test",
+                "edition",
             ])
         },
     },

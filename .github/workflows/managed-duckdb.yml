@@ -36,6 +36,8 @@ on:
       - crates/brightfield-engine/tests/managed_duckdb.rs
       - crates/brightfield-shell/build.rs
       - crates/brightfield-shell/tests/managed_duckdb_link.rs
+      - crates/brightfield-shell/src/edition.rs
+      - crates/brightfield-shell/tests/edition.rs
       - Cargo.lock
       # The feature wiring: the workspace's patch of libduckdb-sys, the
       # managed-edition feature lists, and what the two steps run.

@@ -9,6 +9,11 @@
 //! cargo test -p brightfield-shell --test edition
 //! cargo test -p brightfield-shell --features managed-edition --test edition
 //! ```
+//!
+//! The managed build links the DuckDB library `scripts/build-duckdb.sh` builds,
+//! so the second command needs that script to have run first. The
+//! `managed-duckdb-test` step of `cargo xtask ci` runs it after the library is
+//! built.
 
 use brightfield_shell::edition::{self, Capability, Edition};
 
