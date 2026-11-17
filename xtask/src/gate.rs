@@ -152,9 +152,11 @@ pub fn run(pr: u64) -> ExitCode {
     let logs = gate_dir.join("logs");
     let log = logs.join(format!("pr-{pr}-{sha7}.log"));
     let kept = logs.join(format!("pr-{pr}-{sha7}.test-default.log"));
+    let run = format!("brightfield-gate-{pr}-{}", std::process::id());
     let scratch = Scratch {
         root: root.clone(),
-        dir: std::env::temp_dir().join(format!("brightfield-gate-{pr}-{}", std::process::id())),
+        dir: std::env::temp_dir().join(&run),
+        tree: tree_beside_target(&gate_dir, &run),
     };
     let verdict = gate_head(
         pr,
@@ -259,13 +261,26 @@ pub fn check_head_repository(name_with_owner: &str) -> Result<(), String> {
 /// The run's temporary directory and worktree, removed when dropped.
 struct Scratch {
     root: PathBuf,
+    /// The run's fresh HOME and TMPDIR, in the system's temporary directory.
     dir: PathBuf,
+    /// The merged worktree, from [`tree_beside_target`].
+    tree: PathBuf,
 }
 
 impl Scratch {
     fn tree(&self) -> PathBuf {
-        self.dir.join("tree")
+        self.tree.clone()
     }
+}
+
+/// Where a run's worktree goes: under the gate's directory, beside its
+/// persistent `target`, as a checkout's tree sits beside its own `target` in
+/// CI. A test that spells a scratch file relative to its working directory
+/// then climbs a few levels to the gate's directory, as it climbs two in CI,
+/// rather than to `/`; a climb to `/` reaches the same file from anywhere
+/// shallower, which `status_rail`'s relative-watch test refuses.
+fn tree_beside_target(gate_dir: &Path, run: &str) -> PathBuf {
+    gate_dir.join("trees").join(run)
 }
 
 impl Drop for Scratch {
@@ -281,6 +296,7 @@ impl Drop for Scratch {
                 .status();
         }
         let _ = fs::remove_dir_all(&self.dir);
+        let _ = fs::remove_dir_all(&self.tree);
         let _ = Command::new("git")
             .arg("-C")
             .arg(&self.root)
@@ -1538,6 +1554,23 @@ mod tests {
         let fetches = fs::read_to_string(dir.join("fetches")).unwrap();
         assert_eq!(fetches.lines().count(), 1, "{fetches}");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_tree_sits_beside_the_gate_target_so_relative_climbs_stay_short() {
+        let gate_dir = Path::new("/home/someone/.cache/meridian/gate");
+        let tree = tree_beside_target(gate_dir, "brightfield-gate-1-2");
+        let cwd = tree.join("crates/brightfield-shell");
+        let scratch = gate_dir.join("target/tmp/some-test");
+        let shared = cwd
+            .components()
+            .zip(scratch.components())
+            .take_while(|(a, b)| a == b)
+            .count();
+        // The climb from a test's working directory to its scratch file stops
+        // at the gate's directory, never at the filesystem root.
+        assert_eq!(shared, gate_dir.components().count());
+        assert_eq!(cwd.components().count() - shared, 4);
     }
 
     /// A kata that answers `list` with one open issue, logs every call, and
